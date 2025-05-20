@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.log
+*.zip
+.vscode/
+*.egg-info/
+checkpoints/
+logs/
+models/
+optuna_sac.db
