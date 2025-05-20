@@ -1,0 +1,52 @@
+2025-05-19 23:21:38,660 - INFO - Starting SAC training script
+2025-05-19 23:21:39,276 - INFO - SAC Trial #1 starting
+2025-05-19 23:21:43,033 - INFO - TensorBoard logging started
+2025-05-19 23:24:42,179 - INFO - TensorBoard logging closed
+2025-05-19 23:24:42,189 - INFO - SAC Trial #1 -> Sharpe=0.000 DD=1.000 PF=0.000 Corr=0.000 Exits=0 Score=0.000
+2025-05-19 23:24:42,232 - INFO - SAC Trial #2 starting
+2025-05-19 23:24:42,582 - INFO - TensorBoard logging started
+2025-05-19 23:27:49,989 - INFO - TensorBoard logging closed
+2025-05-19 23:27:50,002 - INFO - SAC Trial #2 -> Sharpe=0.000 DD=1.000 PF=0.000 Corr=0.000 Exits=0 Score=0.000
+2025-05-19 23:27:50,070 - INFO - SAC Trial #3 starting
+2025-05-19 23:27:50,486 - INFO - TensorBoard logging started
+2025-05-19 23:31:22,258 - INFO - TensorBoard logging closed
+2025-05-19 23:31:22,270 - INFO - SAC Trial #3 -> Sharpe=0.000 DD=1.000 PF=0.000 Corr=0.000 Exits=0 Score=0.000
+2025-05-19 23:31:22,315 - INFO - SAC Trial #4 starting
+2025-05-19 23:31:22,762 - INFO - TensorBoard logging started
+2025-05-19 23:35:22,104 - INFO - TensorBoard logging closed
+2025-05-19 23:35:22,121 - INFO - SAC Trial #4 -> Sharpe=0.000 DD=1.000 PF=0.000 Corr=0.000 Exits=0 Score=0.000
+2025-05-19 23:35:22,179 - INFO - SAC Trial #5 starting
+2025-05-19 23:35:22,745 - INFO - TensorBoard logging started
+2025-05-19 23:39:31,733 - INFO - TensorBoard logging closed
+2025-05-19 23:39:31,745 - INFO - SAC Trial #5 -> Sharpe=0.000 DD=1.000 PF=0.000 Corr=0.000 Exits=0 Score=0.000
+2025-05-19 23:39:32,157 - INFO - TensorBoard logging started
+2025-05-19 23:42:47,353 - INFO - [Overall @ Step 1000] Training Score: 0.00/100
+2025-05-19 23:42:47,390 - INFO - TensorBoard logging closed
+2025-05-19 23:42:47,473 - INFO - SAC model saved -> models\sac_final_model.zip
+2025-05-19 23:42:47,473 - INFO - Finished SAC training script
+2025-05-20 00:18:16,016 - INFO - Starting SAC training script
+2025-05-20 00:18:16,386 - INFO - SAC Trial #6 starting
+2025-05-20 00:18:19,656 - INFO - TensorBoard logging started
+2025-05-20 00:21:18,905 - INFO - TensorBoard logging closed
+2025-05-20 00:21:18,921 - INFO - SAC Trial #6 -> Sharpe=0.000 DD=1.000 PF=0.000 Corr=0.000 Exits=0 Score=0.000
+2025-05-20 00:21:18,957 - INFO - SAC Trial #7 starting
+2025-05-20 00:21:19,354 - INFO - TensorBoard logging started
+2025-05-20 00:24:46,100 - INFO - TensorBoard logging closed
+2025-05-20 00:24:46,115 - INFO - SAC Trial #7 -> Sharpe=0.000 DD=1.000 PF=0.000 Corr=0.000 Exits=0 Score=0.000
+2025-05-20 00:24:46,146 - INFO - SAC Trial #8 starting
+2025-05-20 00:24:46,571 - INFO - TensorBoard logging started
+2025-05-20 00:28:24,077 - INFO - TensorBoard logging closed
+2025-05-20 00:28:24,091 - INFO - SAC Trial #8 -> Sharpe=0.000 DD=1.000 PF=0.000 Corr=0.000 Exits=0 Score=0.000
+2025-05-20 00:28:24,140 - INFO - SAC Trial #9 starting
+2025-05-20 00:28:24,691 - INFO - TensorBoard logging started
+2025-05-20 00:32:13,566 - INFO - TensorBoard logging closed
+2025-05-20 00:32:13,580 - INFO - SAC Trial #9 -> Sharpe=0.000 DD=1.000 PF=0.000 Corr=0.000 Exits=0 Score=0.000
+2025-05-20 00:32:13,628 - INFO - SAC Trial #10 starting
+2025-05-20 00:32:14,124 - INFO - TensorBoard logging started
+2025-05-20 00:35:58,421 - INFO - TensorBoard logging closed
+2025-05-20 00:35:58,435 - INFO - SAC Trial #10 -> Sharpe=0.000 DD=1.000 PF=0.000 Corr=0.000 Exits=0 Score=0.000
+2025-05-20 00:35:58,953 - INFO - TensorBoard logging started
+2025-05-20 00:39:07,427 - INFO - [Overall @ Step 1000] Training Score: 0.00/100
+2025-05-20 00:39:07,460 - INFO - TensorBoard logging closed
+2025-05-20 00:39:07,538 - INFO - SAC model saved -> models\sac_final_model.zip
+2025-05-20 00:39:07,538 - INFO - Finished SAC training script
