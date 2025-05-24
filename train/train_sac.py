@@ -1,4 +1,25 @@
 from __future__ import annotations
+import warnings
+
+_warns = [
+    # module regex, message regex, category
+    ("gymnasium.envs.registration", r".*Overriding environment.*", UserWarning),
+    ("numpy", r"Mean of empty slice", RuntimeWarning),
+    ("numpy", r"Degrees of freedom <= 0 for slice", RuntimeWarning),
+    ("numpy", r"invalid value encountered in scalar divide", RuntimeWarning),
+    ("numpy", r"invalid value encountered in subtract", RuntimeWarning),
+    ("keras.src.layers.rnn.rnn", r"Do not pass an `input_shape`.*", UserWarning),
+]
+# ────────────────────────────── Warnings
+warnings.filterwarnings(
+    "ignore",
+    category=RuntimeWarning,
+    message="invalid value encountered in divide",
+    module="numpy"
+)
+
+for mod_re, msg_re, cat in _warns:
+    warnings.filterwarnings("ignore", message=msg_re, category=cat, module=mod_re)
 
 # ────────────────────────────── Std-lib
 import os
@@ -46,26 +67,6 @@ from utils.meta_learning import AdaptiveMetaLearner, MetaLearningCallback
 # ╔═════════════════════════════════════════════════════════════════════╗
 # ║                  Warning filters (clean console)                   ║
 # ╚═════════════════════════════════════════════════════════════════════╝
-_warns = [
-    # module regex, message regex, category
-    ("gymnasium.envs.registration", r".*Overriding environment.*", UserWarning),
-    ("numpy", r"Mean of empty slice", RuntimeWarning),
-    ("numpy", r"Degrees of freedom <= 0 for slice", RuntimeWarning),
-    ("numpy", r"invalid value encountered in scalar divide", RuntimeWarning),
-    ("numpy", r"invalid value encountered in subtract", RuntimeWarning),
-    ("keras.src.layers.rnn.rnn", r"Do not pass an `input_shape`.*", UserWarning),
-]
-
-import warnings, numpy as _np
-warnings.filterwarnings(
-    "ignore",
-    category=RuntimeWarning,
-    message="invalid value encountered in divide",
-    module="numpy"
-)
-
-for mod_re, msg_re, cat in _warns:
-    warnings.filterwarnings("ignore", message=msg_re, category=cat, module=mod_re)
 
 
 
@@ -91,13 +92,13 @@ class TrainingConfig:
     def __post_init__(self):
         if self.test_mode:
             self.n_trials = 5
-            self.timesteps_per_trial = 1000
-            self.final_training_steps = 1000
+            self.timesteps_per_trial = 2000
+            self.final_training_steps = 10000
             self.pruner_startup_trials = 1
-            self.pruner_warmup_steps = 100
-            self.pruner_interval_steps = 100
-            self.tb_log_freq = 500
-            self.n_eval_episodes = 0
+            self.pruner_warmup_steps = 500
+            self.pruner_interval_steps = 500
+            self.tb_log_freq = 1000
+            self.n_eval_episodes = 3
         else:
             self.n_trials = 50
             self.timesteps_per_trial = 500_000
@@ -418,21 +419,23 @@ def make_vecenv(builders, n):
 def optimise_agent(trial: optuna.trial.Trial) -> float:
     env_logger.info("SAC Trial #%d starting", trial.number + 1)
 
-    # sample h-params
-    hp = dict(
-        learning_rate=trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True),
-        batch_size=trial.suggest_categorical("batch_size", [64, 128, 256]),
-        buffer_size=trial.suggest_categorical("buffer_size", [50_000, 100_000, 200_000]),
-        tau=trial.suggest_float("tau", 0.005, 0.02),
-        gamma=trial.suggest_float("gamma", 0.90, 0.9999),
-        ent_coef=trial.suggest_float("ent_coef", 0.0, 0.05),
-        target_entropy="auto",
-        no_trade_penalty=trial.suggest_float("no_trade_penalty", 0.0, 1.0),
-    )
+    # 1) Sample hyperparameters
+    hp = {
+        "learning_rate": trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True),
+        "batch_size":    trial.suggest_categorical("batch_size", [64, 128, 256]),
+        "buffer_size":   trial.suggest_categorical("buffer_size", [50_000, 100_000, 200_000]),
+        "tau":           trial.suggest_float("tau", 0.005, 0.02),
+        "gamma":         trial.suggest_float("gamma", 0.90, 0.9999),
+        "ent_coef":      trial.suggest_float("ent_coef", 0.0, 0.05),
+        "target_entropy":"auto",
+        "no_trade_penalty": trial.suggest_float("no_trade_penalty", 0.0, 1.0),
+    }
     no_trade_penalty = hp.pop("no_trade_penalty")
 
+    # 2) Load your data
     data = load_data("data/processed")
 
+    # 3) Env constructor factory (must return a *picklable* callable)
     def make_env(rank: int):
         def _init():
             return EnhancedTradingEnv(
@@ -442,16 +445,25 @@ def optimise_agent(trial: optuna.trial.Trial) -> float:
                 debug=False,
                 checkpoint_dir=CHECKPOINT_DIR,
                 no_trade_penalty=no_trade_penalty,
-                init_seed=cfg.global_seed + rank,
+                init_seed=int(cfg.global_seed + rank),  # ensure integer seed
             )
         return _init
 
-    train_env = make_vecenv([make_env(i) for i in range(cfg.num_envs)], cfg.num_envs)
-    eval_env = make_vecenv([make_env(cfg.num_envs)], 1)
+    # 4) Build both train and eval VecEnvs, with Windows fallback
+    from sys import platform
+    use_subproc = (cfg.num_envs > 1) and (platform != "win32")
+    builders = [make_env(i) for i in range(cfg.num_envs)]
+    if use_subproc:
+        train_env = SubprocVecEnv(builders)
+        eval_env  = SubprocVecEnv(builders)
+    else:
+        train_env = DummyVecEnv(builders)
+        eval_env  = DummyVecEnv(builders)
 
+    # 5) Instantiate your SAC agent
     model = StableTradingSACAgent(
-        "MlpPolicy",
-        train_env,
+        policy="MlpPolicy",
+        env=train_env,
         device="cuda" if torch.cuda.is_available() else "cpu",
         policy_kwargs={"net_arch": [256, 256], "activation_fn": torch.nn.ReLU},
         meta_lr=1e-4,
@@ -461,31 +473,31 @@ def optimise_agent(trial: optuna.trial.Trial) -> float:
         **hp,
     )
 
-    callbacks = CallbackList(
-        [
-            MetaLearningCallback(model.meta_learner),
-            EvalCallback(
-                eval_env,
-                best_model_save_path=MODEL_DIR,
-                log_path=LOG_DIR,
-                eval_freq=10_000,
-                n_eval_episodes=cfg.n_eval_episodes,
-                warn=False,
-            ),
-            WatchdogNaNCallback(),
-            DetailedTensorboardCallback(cfg.tb_log_freq),
-            OptunaPruningCallback(trial, eval_env, cfg.pruner_interval_steps),
-            SimpleTqdmCallback(cfg.timesteps_per_trial, trial.number, 1_000),
-        ]
-    )
+    # 6) Set up callbacks
+    callbacks = CallbackList([
+        MetaLearningCallback(model.meta_learner),
+        EvalCallback(
+            eval_env,
+            best_model_save_path=MODEL_DIR,
+            log_path=LOG_DIR,
+            eval_freq=10_000,
+            n_eval_episodes=cfg.n_eval_episodes,
+            warn=False,
+        ),
+        WatchdogNaNCallback(),
+        DetailedTensorboardCallback(cfg.tb_log_freq),
+        OptunaPruningCallback(trial, eval_env, cfg.pruner_interval_steps),
+        SimpleTqdmCallback(cfg.timesteps_per_trial, trial.number, print_freq=1_000),
+    ])
 
+    # 7) Run training (with pruning support)
     try:
         model.learn(total_timesteps=cfg.timesteps_per_trial, callback=callbacks)
     except TrialPruned:
         trial.set_user_attr("metrics", calculate_trial_metrics(trial, 3_000))
         raise
 
-    # detailed eval
+    # 8) Detailed evaluation logs
     detailed_logs: List[List[Dict[str, Any]]] = []
     for _ in range(cfg.n_eval_episodes):
         obs = eval_env.reset()
@@ -493,20 +505,30 @@ def optimise_agent(trial: optuna.trial.Trial) -> float:
         ep_log: List[Dict[str, Any]] = []
         while not done:
             action, _ = model.predict(obs, deterministic=True)
-            obs, _, term, trunc, info = eval_env.step(action)
-            done = term or trunc
-            ep_log.append(
-                {
-                    "balance": info["balance"],
-                    "pnl": info["pnl"],
-                    "drawdown": info["drawdown"],
-                    "volatility": eval_env.envs[0].get_volatility_profile(),
-                    "exit_reasons": eval_env.envs[0].get_trade_exit_reasons(),
-                    "correlation": eval_env.envs[0].get_current_correlation(),
-                }
-            )
+            next_obs, _, dones, infos = eval_env.step(action)
+
+            # Handle vectorized outputs
+            done = dones[0] if isinstance(dones, (list, tuple)) else dones
+            info = infos[0] if isinstance(infos, (list, tuple)) else infos
+
+            # Query inner env metrics via get_attr (works for Dummy & Subproc)
+            vol_profile = eval_env.get_attr("get_volatility_profile", indices=0)[0]
+            exits       = eval_env.get_attr("get_trade_exit_reasons", indices=0)[0]
+            corr        = eval_env.get_attr("get_current_correlation", indices=0)[0]
+
+            ep_log.append({
+                "balance":      info["balance"],
+                "pnl":          info.get("pnl", 0.0),
+                "drawdown":     info["drawdown"],
+                "volatility":   vol_profile,
+                "exit_reasons": exits,
+                "correlation":  corr,
+            })
+
+            obs = next_obs
         detailed_logs.append(ep_log)
 
+    # 9) Attach metrics and compute composite score
     trial.set_user_attr("full_logs", detailed_logs)
     metrics = calculate_trial_metrics(trial, 3_000)
     trial.set_user_attr("metrics", metrics)
@@ -518,7 +540,6 @@ def optimise_agent(trial: optuna.trial.Trial) -> float:
         + 0.1 * metrics["profit_factor"]
         - 0.2 * metrics["correlation"]
     )
-
     env_logger.info(
         "SAC Trial #%d → Sharpe=%.3f DD=%.3f PF=%.3f Corr=%.3f Exits=%d Score=%.3f",
         trial.number + 1,
@@ -529,11 +550,15 @@ def optimise_agent(trial: optuna.trial.Trial) -> float:
         metrics["exit_diversity"],
         comp_score,
     )
+
     return comp_score
 
-# ╔═════════════════════════════════════════════════════════════════════╗
-# ║                               Main                                 ║
-# ╚═════════════════════════════════════════════════════════════════════╝
+
+
+
+# ╔════════════════════════════════════════════════════════════╗
+# ║                         Main                              ║
+# ╚════════════════════════════════════════════════════════════╝
 def main():
     set_global_seed(cfg.global_seed)
 
@@ -551,7 +576,7 @@ def main():
         direction="maximize",
         pruner=pruner,
         load_if_exists=True,
-        sampler=optuna.samplers.TPESampler(seed=cfg.global_seed, multivariate=True),
+        sampler=optuna.samplers.TPESampler(seed=cfg.global_seed),
     )
 
     study.optimize(
@@ -560,6 +585,8 @@ def main():
         n_jobs=1,
         show_progress_bar=False,
     )
+
+
 
     best = study.trials[rank_trials(study)[0]]
     best_hp = best.params.copy()
