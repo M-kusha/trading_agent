@@ -3,11 +3,10 @@ import os
 import json
 import datetime
 import logging
-import time
 from typing import List, Dict, Any, Optional
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel

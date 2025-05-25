@@ -87,3 +87,12 @@ class PortfolioRiskSystem(Module):
     # ------------------------------------------------------------------ #
     def get_observation_components(self) -> np.ndarray:
         return np.zeros(len(self.instruments) or 1, np.float32)
+    
+
+    def get_state(self):
+        return {
+            "risk_config": self.risk_config,  # Assuming 'risk_config' exists
+        }
+
+    def set_state(self, state):
+        self.risk_config = state.get("risk_config", {})

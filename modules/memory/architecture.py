@@ -4,9 +4,6 @@
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
-
 from modules.core.core import Module
 
 
@@ -44,6 +41,15 @@ class NeuralMemoryArchitect(Module):
         return vec
     def get_observation_components(self)->np.ndarray:
         return np.zeros(self.embed_dim, dtype=np.float32)
-
     
+
+    def get_state(self):
+        return {
+            "weights": self.model.state_dict(),
+            "architecture": self.model_architecture,
+        }
+
+    def set_state(self, state):
+        self.model.load_state_dict(state.get("weights", {}))
+        self.model_architecture = state.get("architecture", None)   
  

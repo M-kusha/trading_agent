@@ -71,3 +71,12 @@ class ComplianceModule(Module):
 
     def _flag(self, msg: str) -> None:
         self.last_flags.append(msg)
+
+
+    def get_state(self):
+        return {
+            "rules": self.rules,  # Assuming 'rules' are part of the module
+        }
+
+    def set_state(self, state):
+        self.rules = state.get("rules", {})

@@ -45,3 +45,23 @@ class PlaybookClusterer(Module):
 
     def get_observation_components(self) -> np.ndarray:
         return np.zeros(self.n_clusters, np.float32)
+
+
+    def get_state(self):
+        return {
+            "clusters": self.clusters,
+        }
+
+    def set_state(self, state):
+        self.clusters = state.get("clusters", [])
+
+
+    def get_state(self):
+        return {
+            "features": self._features,
+            "pnls": self._pnls,
+        }
+
+    def set_state(self, state):
+        self._features = state.get("features", [])
+        self._pnls = state.get("pnls", [])

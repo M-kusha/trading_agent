@@ -3,7 +3,7 @@
 """Typed message container passed between modules at every environment step."""
 from __future__ import annotations
 
-from typing import TypedDict, List, Dict, Any, Literal, Optional
+from typing import TypedDict, List, Dict, Any, Literal
 
 
 class PositionInfo(TypedDict):

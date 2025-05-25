@@ -28,3 +28,12 @@ class OpponentSimulator(Module):
         return out
     def get_observation_components(self) -> np.ndarray:
         return np.zeros(1, dtype=np.float32)
+    
+    def get_state(self):
+        return {
+            "simulation_state": self.simulation_state,
+    }
+
+    def set_state(self, state):
+        self.simulation_state = state.get("simulation_state", {})
+

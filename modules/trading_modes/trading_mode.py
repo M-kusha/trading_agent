@@ -153,3 +153,10 @@ class TradingModeManager(Module):
         arr = np.zeros(len(self.MODES), np.float32)
         arr[self.MODES.index(self.mode)] = 1.0
         return arr
+    def get_state(self):
+        return {
+            "current_mode": self.current_mode,
+        }
+
+    def set_state(self, state):
+        self.current_mode = state.get("current_mode", "safe")

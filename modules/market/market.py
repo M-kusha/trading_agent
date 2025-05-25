@@ -2,11 +2,9 @@
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
-from scipy.ndimage import gaussian_filter
 from scipy.stats import linregress, zscore
 from collections import deque
-from typing import List, Dict, Tuple, Any
+from typing import Any, List, Dict, Tuple
 import pywt
 from sklearn.cluster import MiniBatchKMeans       # online‑friendly
 import tensorflow as tf
@@ -169,6 +167,15 @@ class MarketThemeDetector(Module):
         It is here to satisfy the Module interface.
         """
         pass
+
+    def get_state(self):
+        return {
+            "themes": self.detected_themes,  # Assuming 'detected_themes' exists
+        }
+
+    def set_state(self, state):
+        self.detected_themes = state.get("themes", [])
+
 
 # --------------------------------------------------------------------------- #
 # FractalRegimeConfirmation
@@ -347,7 +354,9 @@ class LiquidityHeatmapLayer(Module):
     Maintains recent (spread, depth) tuples and LSTM‑forecasts short‑term liquidity.
     """
 
-    def __init__(self, debug: bool = False):
+    def __init__(self, action_dim: int, debug: bool = False):
+        super().__init__()
+        self.action_dim = action_dim
         self.debug = debug
         self.bids: List[Tuple[float, float]] = []
         self.asks: List[Tuple[float, float]] = []
@@ -358,14 +367,14 @@ class LiquidityHeatmapLayer(Module):
 
     # ------------------------------------------------------------------ #
     def _build_lstm(self):
-        model = tf.keras.Sequential(
-            [
-                tf.keras.layers.LSTM(32, input_shape=(10, 2)),
+        with tf.device("/CPU:0"):  # <- Force CPU to avoid GPU/XLA bug
+            model = tf.keras.Sequential([
+                tf.keras.layers.Input(shape=(10, 2)),
+                tf.keras.layers.LSTM(32),
                 tf.keras.layers.Dense(2),
-            ]
-        )
-        model.compile(optimizer="adam", loss="mse")
-        return model
+            ])
+            model.compile(optimizer="adam", loss="mse")
+            return model
 
     # ------------------------------------------------------------------ #
     def reset(self):
@@ -445,6 +454,22 @@ class LiquidityHeatmapLayer(Module):
 
     def get_observation_components(self) -> np.ndarray:
         return np.array([self.current_score()], np.float32)
+    
+    def propose_action(self, obs: Any) -> np.ndarray:
+        liq = float(np.clip(self.current_score(), 0.1, 1.0))
+        return np.full(self.action_dim, liq, dtype=np.float32)
+
+    def confidence(self, obs: Any) -> float:
+        """
+        Higher confidence in high liquidity environments.
+        """
+        score = self.current_score()
+        conf = float(np.clip(score, 0.1, 1.0))  # Avoid zero
+        if self.debug:
+            print(f"[LiquidityHeatmapLayer] Liquidity score={score:.2f}, confidence={conf:.2f}")
+        return conf
+
+
 
 # --------------------------------------------------------------------------- #
 # RegimePerformanceMatrix

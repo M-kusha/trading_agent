@@ -76,8 +76,8 @@ class CurriculumPlannerPlus(Module):
 class StrategyGenomePool(Module):
     """
     Maintains a population of 4‑parameter genomes:
-
-        [sl_base, tp_base, vol_scale, regime_adapt]
+    
+    [sl_base, tp_base, vol_scale, regime_adapt]
 
     Evolves them by tournament selection + crossover + mutation, with
     diversity‑preserving injection and parameter bounds.
@@ -222,6 +222,18 @@ class StrategyGenomePool(Module):
         return np.array([mean_f, max_f, diversity], dtype=np.float32)
 
 
+    def get_state(self):
+        return {
+            "population": self.population,
+            "fitness": self.fitness,
+            "epoch": self.epoch,
+        }
+
+    def set_state(self, state):
+        self.population = state.get("population", [])
+        self.fitness = state.get("fitness", [])
+        self.epoch = state.get("epoch", 0)
+
 
 
 # ───────────────────────────────────────────────────────────────────────────────
@@ -247,6 +259,24 @@ class MetaAgent(Module):
             return np.zeros(2, dtype=np.float32)
         arr = np.array(self.history, dtype=np.float32)
         return np.array([arr.mean(), arr.std()], dtype=np.float32)
+    
+    def get_intensity(self, instrument: str) -> float:
+        """
+        Returns a normalized intensity signal [-1, 1] based on recent performance.
+        """
+        if not self.history:
+            return 0.0  # No data yet
+        
+        # Simple scoring logic: recent average PnL determines intensity
+        avg_pnl = np.mean(self.history[-self.window:])
+        scale = 0.01 * self.window  # Scale based on memory window
+        intensity = np.clip(avg_pnl / scale, -1.0, 1.0)
+        
+        if self.debug:
+            print(f"[MetaAgent] Intensity for {instrument}: {intensity:.3f} (avg_pnl={avg_pnl:.3f})")
+
+        return float(intensity)
+
 
 
 class MetaCognitivePlanner(Module):
@@ -507,22 +537,37 @@ class MetaRLController(nn.Module, Module):
     def _forward_dist(self, obs: torch.Tensor) -> Dict[str, torch.Tensor]:
         # 1) Extract genome params
         genome = obs[...,:4]  # [sl_base,tp_base,vol_scale,regime_adapt]
+
         # 2) Base action
         mu_base = self.actor(obs)
+
+        # Check for NaN values in mu_base and replace them if any
+        if torch.isnan(mu_base).any():
+            print("NaN detected in mu_base, replacing with zeroes")
+            mu_base = torch.nan_to_num(mu_base, nan=0.0)  # Replace NaN values with 0
+
         # 3) Regime scaling
-        regime_scale = 0.1 + genome[...,3].unsqueeze(-1) * 0.3
+        regime_scale = 0.1 + genome[..., 3].unsqueeze(-1) * 0.3
+
         # 4) Liquidity factor (assumes last obs dim is liquidity score)
         liquidity_factor = obs[..., -1].unsqueeze(-1).clamp(min=0.1, max=1.0)
         scale = regime_scale * liquidity_factor
         mu    = mu_base * scale
 
+        # Check for NaN values in mu and replace them if any
+        if torch.isnan(mu).any():
+            print("NaN detected in mu, replacing with zeroes")
+            mu = torch.nan_to_num(mu, nan=0.0)  # Replace NaN values with 0
+
         dist = torch.distributions.Normal(mu, 0.1)
         a    = dist.rsample()
+
         return {
             "action": a,
-            "logp":   dist.log_prob(a).sum(dim=-1),
-            "value":  self.critic(obs).squeeze(-1)
+            "logp": dist.log_prob(a).sum(dim=-1),
+            "value": self.critic(obs).squeeze(-1)
         }
+
 
     def _ppo_update(self, batch: Dict[str, torch.Tensor], epochs: int = 4):
         obs, actions_old = batch["obs"], batch["actions"]
@@ -558,3 +603,12 @@ class MetaRLController(nn.Module, Module):
 
     def get_observation_components(self) -> torch.Tensor:
         return torch.zeros(0, dtype=torch.float32)
+    
+
+    def get_state(self):
+        return {
+            "model_state": self.model.state_dict(),
+    }
+
+    def set_state(self, state):
+        self.model.load_state_dict(state.get("model_state", {}))

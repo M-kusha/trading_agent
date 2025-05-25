@@ -2,12 +2,9 @@
 
 from typing import List
 import numpy as np
-from collections import deque
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.neighbors import NearestNeighbors
-import torch
-import torch.nn as nn
 from ..core.core import Module
 
 class MistakeMemory(Module):
@@ -88,6 +85,15 @@ class MistakeMemory(Module):
         """Wrapper expected by unit‑tests."""
         self.step(trades=[trade])
 
+    def get_state(self):
+        return {
+            "records": self._records,
+            "kmeans": self._kmeans,  # Save the KMeans object
+        }
+
+    def set_state(self, state):
+        self._records = state.get("records", [])
+        self._kmeans = state.get("kmeans", KMeans(n_clusters=self.n_clusters))
 
 # ─── all_modules.py ─ MemoryCompressor ─────────────────────────────────────────
 
@@ -161,6 +167,17 @@ class MemoryCompressor(Module):
 
     def get_observation_components(self) -> np.ndarray:
         return self.intuition_vector.copy()
+    
+    def get_state(self):
+        return {
+            "memory": self.memory,
+            "intuition_vector": self.intuition_vector,
+        }
+
+    def set_state(self, state):
+        self.memory = state.get("memory", [])
+        self.intuition_vector = state.get("intuition_vector", np.zeros(self.n_components, np.float32))
+
 
 
 class HistoricalReplayAnalyzer(Module):
