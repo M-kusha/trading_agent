@@ -8,3 +8,21 @@ checkpoints/
 logs/
 models/
 optuna_sac.db
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+# Ignore Python virtual environments
+venv/
+# Ignore data files
+data/
+# Ignore configuration files
+config.yaml
+# Ignore temporary files
+*.tmp
+# Ignore coverage reports
+.coverage
+# Ignore build artifacts
+build/
+# Ignore test output
+test_output/
+# Ignore IDE specific files
+.idea/
