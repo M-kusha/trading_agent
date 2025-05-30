@@ -17,6 +17,7 @@ class ComplianceModule(Module):
 
     def __init__(self) -> None:
         super().__init__()
+        # collect any violation messages here
         self.last_flags: List[str] = []
 
     def reset(self) -> None:
@@ -29,6 +30,7 @@ class ComplianceModule(Module):
         and then applies your old logic.
         """
         info = InfoBus(**data)
+        # start each call with a fresh flag list
         self.last_flags.clear()
 
         symbol        = info.get("extras", {}).get("symbol")
@@ -42,7 +44,7 @@ class ComplianceModule(Module):
             self._flag(f"Trading {symbol} is prohibited.")
 
         # 2) Single-position risk
-        if raw_action and "size" in extras:
+        if raw_action is not None and "size" in extras:
             size = extras["size"]
             position_value = size * current_price
             if position_value / risk.get("equity", 1e-8) > self.MAX_SINGLE_POSITION_RISK:
@@ -56,11 +58,46 @@ class ComplianceModule(Module):
         if lev > self.MAX_LEVERAGE:
             self._flag(f"Leverage {lev:.1f}× exceeded {self.MAX_LEVERAGE}× limit.")
 
+        # if any flags were raised, write them back into the bus and fail
         if self.last_flags:
             info.setdefault("compliance_flags", []).extend(self.last_flags)
             return False
 
         return True
+
+    def validate_trade(self, trade: dict, env) -> bool:
+        """
+        Build the InfoBus inputs from the env + trade dict, then call step().
+        Returns True if the trade passes all compliance rules.
+        """
+        symbol = trade.get("instrument")
+        size   = abs(trade.get("size", 0.0))
+
+        # lookup current price
+        df = env.data.get(symbol, {}).get("D1")
+        if df is None or env.current_step >= len(df):
+            # if we can't look up price, deny
+            return False
+        current_price = float(df.iloc[env.current_step]["close"])
+
+        # equity and margin used
+        equity      = float(env.balance)
+        margin_used = size * current_price  # simplistic margin calc
+
+        data = {
+            "extras": {
+                "symbol": symbol,
+                "size": size
+            },
+            "current_price": current_price,
+            "risk": {
+                "equity": equity,
+                "margin_used": margin_used
+            },
+            # raw_action is the signed intensity or size
+            "raw_action": trade.get("size")
+        }
+        return self.step(**data)
 
     def get_observation_components(self) -> np.ndarray:
         """
@@ -69,14 +106,17 @@ class ComplianceModule(Module):
         """
         return np.zeros(0, np.float32)
 
-    def _flag(self, msg: str) -> None:
-        self.last_flags.append(msg)
-
-
     def get_state(self):
-        return {
-            "rules": self.rules,  # Assuming 'rules' are part of the module
-        }
+        """
+        No internal persisted state in this module besides last_flags,
+        which we don't need to serialize across sessions.
+        """
+        return {}
 
     def set_state(self, state):
-        self.rules = state.get("rules", {})
+        """Nothing to reload."""
+        return
+
+    def _flag(self, msg: str) -> None:
+        """Helper to record a compliance violation message."""
+        self.last_flags.append(msg)

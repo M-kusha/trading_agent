@@ -57,7 +57,11 @@ class DynamicRiskController(Module):
 
 
     def get_observation_components(self) -> np.ndarray:
-        return np.array([self.freeze_counter], dtype=np.float32)
+        # 0.0 during a freeze, 1.0 otherwise
+        scale = 0.0 if self.freeze_counter > 0 else 1.0
+        if self.debug:
+            print(f"[DynamicRiskController] freeze_counter={self.freeze_counter} → rcoef={scale}")
+        return np.array([scale], dtype=np.float32)
     
     def get_state(self):
         return {

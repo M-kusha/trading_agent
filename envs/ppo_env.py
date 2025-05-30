@@ -106,7 +106,7 @@ class EnhancedTradingEnv(gym.Env):
         data_dict: Dict[str, Dict[str, pd.DataFrame]],
         initial_balance: float = 3000.0,
         max_steps: int = 200,
-        debug: bool = True,
+        debug: bool = False,
         no_trade_penalty: float = 0.3,
         init_seed: int = 0,
         checkpoint_dir: str = "checkpoints",
@@ -136,8 +136,12 @@ class EnhancedTradingEnv(gym.Env):
 
         self.debug = debug
         self.no_trade_penalty = no_trade_penalty
-
-        # Data
+        self.episode_count = 0
+        self.consensus_min = 0.15    # Reduced from 0.2
+        self.consensus_max = 0.5     # Reduced from 0.6
+        self.max_episodes   = 10000
+        self.ep_step = 0
+            # Data
         self.orig_data = data_dict
         self.data = copy.deepcopy(data_dict)
         self.instruments = list(data_dict.keys())
@@ -351,6 +355,7 @@ class EnhancedTradingEnv(gym.Env):
                 self.action_space.seed(seed)
 
         # Restore data & balances
+        self.episode_count += 1
         self.data = copy.deepcopy(self.orig_data)
         info = None  # Placeholder for live mode; replace with actual MT5 call
         real_balance = float(info.balance) if info and hasattr(info, "balance") else self.initial_balance
@@ -358,7 +363,9 @@ class EnhancedTradingEnv(gym.Env):
 
         # Index bookkeeping
         # Ensure current_step is within bounds
-        self.current_step = min(7, len(self.data["XAU/USD"]["D1"]) - 1)  # Set to max valid index (6)
+        self.current_step = random.randint(100, len(self.data["XAU/USD"]["D1"]) - self.max_steps - 1)
+        self.ep_step = 0
+
 
         self.current_drawdown = 0.0
         self.sl_multiplier = self.tp_multiplier = 1.0
@@ -437,88 +444,112 @@ class EnhancedTradingEnv(gym.Env):
     #  STEP
     # ==================================================================
     def step(self, actions: np.ndarray):
+        """
+        Gym‐style step with:
+        - action clipping & mode scaling
+        - correlation + drawdown rescue
+        - dynamic risk cap adjustment
+        - committee voting & blending
+        - market‐regime explanation
+        - dynamic consensus threshold
+        - trade execution
+        - reward calculation, memory, bookkeeping
+        - termination based on ep_step
+        """
         self.logger.debug(f"Actions before adjustment: {actions}")
         self.logger.debug(f"Agent step: current_step={self.current_step}, balance={self.balance}")
 
         try:
-            # Mode coefficients based on the current mode
+            # ─── CLIP & MODE SCALING ───────────────────────────────────
+            actions = np.clip(actions, self.action_space.low, self.action_space.high)
             mode_coef = {"safe": 0.5, "normal": 1.0, "aggressive": 1.25, "extreme": 1.5}
             cur_mode = self.mode_manager.get_mode()
-            actions = np.array(actions) * mode_coef.get(cur_mode, 1.0)
-            print(f"Mode Coefficient: {mode_coef.get(cur_mode, 1.0)}")  # Log mode coef
-            print(f"Proposed actions before scaling: {actions}")  # Log raw actions
-            
-            # Other actions and logic...
+            actions = actions * mode_coef.get(cur_mode, 1.0)
+
+            # ─── CORRELATION + DRAWDOWN RESCUE ─────────────────────────
             self.active_monitor.step(open_trades=self.open_positions)
             corr_dict = self.get_instrument_correlations()
             high_corr = self.corr_controller.step(correlations=corr_dict)
+
             if high_corr:
                 self.position_manager.max_pct *= 0.5
+                self.logger.info(f"High correlation detected → halving max_pct to {self.position_manager.max_pct:.4f}")
 
-            dd_trigger = self.dd_rescue.step(current_drawdown=self.current_drawdown)
-            if dd_trigger:
+            if self.dd_rescue.step(current_drawdown=self.current_drawdown):
                 self.logger.info("Drawdown rescue → skipping trades")
                 return self._finalize_step([], actions, corr_dict, vol0=None, reward=0)
 
-            print(f"Mode Coefficient: {mode_coef.get(cur_mode, 1.0)}")  # Log the mode coefficient
-
+            # ─── RISK CAP ADJUSTMENT ───────────────────────────────────
             df0  = self.data[self.instruments[0]]["D1"]
             vol0 = df0.iloc[self.current_step]["volatility"]
-            self.risk_controller.adjust_risk({"drawdown": self.current_drawdown, "volatility": vol0})
+            self.risk_controller.adjust_risk({
+                "drawdown":   self.current_drawdown,
+                "volatility": vol0,
+            })
             rcoef = float(self.risk_controller.get_observation_components()[0])
-            self.position_manager.max_pct = min(rcoef * 0.5, 0.25)
 
-            # Prepare the committee for votes
-            votes_by_sym_tf = {}
+            base_pct = getattr(self.position_manager, "default_max_pct", None) or self.position_manager.max_pct
+            cap = min(base_pct * rcoef, base_pct)
+            # if already halved for high_corr, we keep that reduction
+            self.position_manager.max_pct = cap
+            self.logger.debug(f"Applied max_pct cap: {cap:.4f} (base={base_pct:.4f}, rcoef={rcoef:.4f}, high_corr={high_corr})")
+
+            # ─── COMMITTEE VOTING ─────────────────────────────────────
+            votes_by_sym_tf   = {}
             blended_by_sym_tf = {}
             committee = [m.__class__.__name__ for m in self.arbiter.members]
 
             for inst in self.instruments:
                 for tf in ("H1", "H4", "D1"):
-                    hist = self.data[inst][tf]["close"]\
-                        .iloc[self.current_step-7:self.current_step].values.astype(np.float32)
+                    hist = (
+                        self.data[inst][tf]["close"]
+                        .iloc[self.current_step-7:self.current_step]
+                        .values.astype(np.float32)
+                    )
                     obs_tf = self._get_full_observation({
-                        "env": self,
+                        "env":       self,
                         f"price_{tf.lower()}": hist,
-                        "actions": actions
+                        "actions":   actions,
                     })
-                    obs = self.sanitize_obs(obs_tf)  # use obs_tf here
-
                     blend = self.arbiter.propose(obs_tf)
-                    if self.arbiter.last_alpha is not None:
-                        alpha = self.arbiter.last_alpha.copy()
-                    else:
-                        alpha = np.zeros(self.action_dim)  # default behavior if None
-
-                    votes_by_sym_tf[(inst, tf)] = dict(zip(committee, alpha.tolist()))
+                    alpha = (
+                        self.arbiter.last_alpha.copy()
+                        if self.arbiter.last_alpha is not None
+                        else np.zeros(self.action_dim, dtype=np.float32)
+                    )
+                    votes_by_sym_tf[(inst, tf)]   = dict(zip(committee, alpha.tolist()))
                     blended_by_sym_tf[(inst, tf)] = blend
 
-            # Aggregate the final action based on the votes
+            # blend into final action vector
             actions = self._blend_committee_votes(blended_by_sym_tf)
 
-            # Check the market regime
+            # ─── MARKET REGIME & EXPLAINER ────────────────────────────
             regime_label, _ = self.fractal_confirm.step(
-                data_dict=self.data, current_step=self.current_step, theme_detector=self.theme_detector
+                data_dict=self.data,
+                current_step=self.current_step,
+                theme_detector=self.theme_detector,
             )
             self.explainer.step(
                 actions,
                 np.mean([list(v.values()) for v in votes_by_sym_tf.values()], axis=0),
-                committee, regime=regime_label,
+                committee,
+                regime=regime_label,
                 volatility=self.get_volatility_profile(),
                 drawdown=self.current_drawdown,
                 genome_metrics=self.get_genome_metrics(),
             )
 
-            # Log trades before they are executed
+            # ─── LOG PROPOSED TRADES ──────────────────────────────────
             self.logger.info(f"Proposed trades: {actions}")
-            print(f"Proposed trades: {actions}")
 
-            # Store the votes and reasoning for future reference
+            # ─── PERSIST VOTE HISTORY & REASONING ────────────────────
             merged = {
                 **{"big_" + m: w for m, w in zip(committee, self.arbiter.weights.tolist())},
-                **{f"{inst}_{tf}_{mod}": w
-                for (inst, tf), vv in votes_by_sym_tf.items()
-                for mod, w in vv.items()}
+                **{
+                    f"{inst}_{tf}_{mod}": w
+                    for (inst, tf), vv in votes_by_sym_tf.items()
+                    for mod, w in vv.items()
+                }
             }
             self.votes_log.append(merged)
             self.reasoning_trace.append(self.explainer.last_explanation)
@@ -526,41 +557,56 @@ class EnhancedTradingEnv(gym.Env):
             with open("logs/votes_history.json", "w") as fp:
                 json.dump(self.votes_log, fp, indent=2)
 
-            alpha = getattr(self.arbiter, "last_alpha", None)
-            cons = float(np.mean(alpha)) if isinstance(alpha, (list, np.ndarray)) else 0.0
-            if cons < 0.5:
-                self.logger.info(f"Consensus {cons:.2f} < 0.50 → no trades")
+            # ─── DYNAMIC CONSENSUS ────────────────────────────────────
+            frac = min(self.episode_count / self.max_episodes, 1.0)
+            thr  = self.consensus_min + (self.consensus_max - self.consensus_min) * frac
+            alpha = (
+                self.arbiter.last_alpha
+                if self.arbiter.last_alpha is not None
+                else np.zeros(self.action_dim, dtype=np.float32)
+            )
+            cons = float(np.mean(alpha))
+            if cons < thr:
+                self.logger.info(f"[DYN] Consensus {cons:.2f} < {thr:.2f} → skipping all trades")
                 return self._finalize_step([], actions, corr_dict, vol0, reward=0)
 
-            # Execute trades
+            # ─── EXECUTE TRADES ───────────────────────────────────────
             trades = []
             for i, inst in enumerate(self.instruments):
                 self.logger.debug(f"Calling _execute_trade for {inst}")
                 tr = self._execute_trade(inst, actions[2*i], actions[2*i+1])
-
-                # Log before executing trade
                 self.logger.info(f"Executing trade for {inst}: {tr}")
-
                 if tr and self.compliance.validate_trade(tr, self):
-                    tr["explanation"] = self.explainer.last_explanation
+                    tr["explanation"]     = self.explainer.last_explanation
                     tr["votes_by_sym_tf"] = votes_by_sym_tf
                     trades.append(tr)
                 self.logger.info(f"Executed trade for {inst}: {tr}")
 
-            # Store trades and open positions
-            self.trades = trades
+            self.trades         = trades
             self.open_positions = getattr(self.position_manager, "positions", self.open_positions)
-
-            # Log the trades that were executed
             self.logger.info(f"Executed trades: {trades}")
 
-            # Finalize step
-            return self._finalize_step(trades, actions, corr_dict, vol0, reward=0)
+            # ─── FINALIZE STEP (stats, reward, obs, etc.) ─────────────
+            obs, reward, terminated, truncated, info = self._finalize_step(trades, actions, corr_dict, vol0, reward=0)
+
+            # ─── EPISODE COUNTER & TERMINATION ────────────────────────
+            # increment your episode‐local step counter
+            self.ep_step += 1
+
+            # override termination to use ep_step rather than data index
+            terminated = (
+                self.balance <= 0 or
+                self.ep_step    >= self.max_steps or
+                self.current_step >= len(df0) - 1
+            )
+            if terminated:
+                self._finish_episode(sum(t["pnl"] for t in trades))
+
+            return obs, reward, terminated, truncated, info
 
         except Exception:
             self.logger.exception("Error in step()")
             raise
-
 
 
     def _finalize_step(self, trades, actions, corr_dict, vol0, reward):
@@ -570,7 +616,7 @@ class EnhancedTradingEnv(gym.Env):
         """
         # Log reward before using it
         self.logger.info(f"Calculated reward: {reward}, No trade penalty applied: {self.no_trade_penalty}")
-        print(f"Calculated reward: {reward}, No trade penalty applied: {self.no_trade_penalty}")
+        # print(f"Calculated reward: {reward}, No trade penalty applied: {self.no_trade_penalty}")
 
         # Stats and other logic...
         self._ep_pnls.extend(t["pnl"] for t in trades)
@@ -614,7 +660,7 @@ class EnhancedTradingEnv(gym.Env):
             self.balance, trades, self.current_drawdown,
             regime_onehot=reg_onehot, actions=actions
         )
-        print(f"Calculated reward: {reward}, No trade penalty applied: {self.no_trade_penalty}")  # Log reward
+        # print(f"Calculated reward: {reward}, No trade penalty applied: {self.no_trade_penalty}")  # Log reward
         reward += self.replay_analyzer.maybe_replay(self.current_step)
         if not trades:
             reward -= self.no_trade_penalty * (1 + self.current_drawdown)
@@ -632,7 +678,7 @@ class EnhancedTradingEnv(gym.Env):
             "drawdown": self.current_drawdown, "memory": mem, "pnl": pnl,
             "correlations": corr_dict
         })
-        print(f"Current observation: {obs}") 
+        # print(f"Current observation: {obs}") 
 
         # Perform monitoring and anomaly detection
         self.exec_monitor.step(trade_executions=trades)
@@ -710,27 +756,51 @@ class EnhancedTradingEnv(gym.Env):
         intensity: float,
         duration_norm: float,
     ) -> dict:
-        
-
+        """
+        Execute a single trade (live or simulated), with NaN/Inf protection
+        and an enforced cap at max_pct of account equity.
+        """
         df = self.data[instrument]["D1"]
         if self.current_step >= len(df):
             return {}
-        bar   = df.iloc[self.current_step]
-        price = bar["close"]
-        vol   = max(bar.get("volatility", 0.0), 1e-4)
+        bar = df.iloc[self.current_step]
 
+        # ─── Price & volatility ───────────────────────────────────────:
+        price = float(bar["close"])
+        raw_vol = bar.get("volatility", 0.0)
+        vol = float(np.nan_to_num(raw_vol, nan=self.position_manager.min_volatility))
+        vol = max(vol, self.position_manager.min_volatility)
+
+        # ─── Position sizing ──────────────────────────────────────────
         raw_size = self.position_manager.calculate_size(
             volatility=vol,
-            intensity=intensity,
-            balance=self.balance,
-            drawdown=self.current_drawdown,
+            intensity=float(np.nan_to_num(intensity, nan=0.0)),
+            balance=float(np.nan_to_num(self.balance, nan=self.position_manager.initial_balance)),
+            drawdown=float(np.nan_to_num(self.current_drawdown, nan=0.0)),
         )
+        if not np.isfinite(raw_size):
+            raw_size = 0.0
+        sign = np.sign(raw_size)
+        size = abs(raw_size)
+
+        # ─── Enforce max_pct cap ──────────────────────────────────────
+        # Max dollars risked = balance * max_pct
+        point_val = self.point_value.get(instrument, 1.0)
+        max_dollars = self.balance * self.position_manager.max_pct
+        # Convert to lots: dollars = lots * price * point_val
+        max_lots = max_dollars / (price * point_val + 1e-12)
+        if size > max_lots:
+            self.logger.info(
+                f"[{instrument}] raw size {size:.3f} lots exceeds cap "
+                f"{max_lots:.3f} lots → capping"
+            )
+            size = max_lots
+
         self.logger.info(
             f"[{instrument}] intensity={intensity:.3f} | "
             f"max_pct={self.position_manager.max_pct:.3f} | "
-            f"raw_size={raw_size:.4f} lots"
+            f"raw_size={raw_size:.4f} lots | capped_size={size:.4f} lots"
         )
-        size = abs(raw_size)
 
         # ── LIVE TRADING BRANCH ───────────────────────────────────────
         # if self.live_mode:
@@ -746,13 +816,9 @@ class EnhancedTradingEnv(gym.Env):
         #     vmin = info.volume_min  or step
         #     vmax = info.volume_max  or 100.0
         #     size = math.floor(size / step) * step
-        #     # if size < vmin:
-        #     #     self.logger.info(f"Signal too small ({size:.3f} < {vmin}) – skipping")
         #     if size < vmin:
         #         self.logger.info(f"Signal too small ({size:.3f} < {vmin}) – FORCING MINIMUM SIZE")
-        #         size = vmin  # force minimum size
-        #         # continue sending the trade
-                
+        #         size = vmin
         #     size = min(size, vmax)
         #     tick = mt5.symbol_info_tick(symbol)
         #     if tick is None:
@@ -788,36 +854,59 @@ class EnhancedTradingEnv(gym.Env):
         #         "pnl": 0.0,
         #         "duration": 1,
         #         "exit_reason": "executed",
-        #         "size": size if intensity > 0 else -size,
+        #         "size": size if sign > 0 else -size,
         #         "features": np.array([price_live, 0.0, 0.0], np.float32),
         #     }
 
         # ── SIMULATION / BACKTEST BRANCH ──────────────────────────────
         self.logger.info(f"[SIM] TRADE START {instrument} "
-                 f"{'BUY' if intensity>0 else 'SELL'} {size:.3f} @ {price:.4f}")
+                         f"{'BUY' if sign > 0 else 'SELL'} {size:.3f} @ {price:.4f}")
         hold_steps = max(int(duration_norm * self.max_holding_period), 1)
-        exit_idx   = min(self.current_step + hold_steps, len(df) - 1)
-        exit_price = df.iloc[exit_idx]["close"]
-        self.logger.info(f"[SIM] TRADE END   {instrument} "
-                 f"exit {exit_price:.4f}  pnl={pnl:.2f}")
-        point_val  = self.point_value[instrument]
-        pnl = (exit_price - price) * size * point_val if intensity > 0 else \
-              (price - exit_price) * size * point_val
-        self.balance += pnl
+        exit_idx = min(self.current_step + hold_steps, len(df) - 1)
+        exit_price = float(df.iloc[exit_idx]["close"])
+
+        # ─── PnL calculation ──────────────────────────────────────────
+        if sign > 0:
+            pnl = (exit_price - price) * size * point_val
+        else:
+            pnl = (price - exit_price) * size * point_val
+        pnl = float(np.nan_to_num(pnl, nan=0.0, posinf=0.0, neginf=0.0))
+
+        self.logger.info(f"[SIM] TRADE END   {instrument} exit {exit_price:.4f} pnl={pnl:.2f}")
+
+        # ─── Update balance & reasoning ───────────────────────────────
+        self.balance = float(np.nan_to_num(self.balance + pnl,
+                                           nan=self.position_manager.initial_balance + pnl))
         self.peak_balance = max(self.peak_balance, self.balance)
-        self.reasoning_trace.append(f"Executed trade for {instrument}:")
-        self.reasoning_trace.append(f"    Entry Price: {price:.4f}, Exit Price: {exit_price:.4f}")
-        self.reasoning_trace.append(f"    Decision: {'Buy' if intensity > 0 else 'Sell'}")
-        self.reasoning_trace.append(f"    Volatility: {vol:.3f}, Raw Size: {raw_size:.4f} lots")
-        self.logger.info(f"Reasoning: {self.reasoning_trace[-1]}")
+        self.current_drawdown = max(
+            (self.peak_balance - self.balance) / (self.peak_balance + 1e-12),
+            0.0
+        )
+
+        self.reasoning_trace.extend([
+            f"Executed trade for {instrument}:",
+            f"    Entry Price: {price:.4f}, Exit Price: {exit_price:.4f}",
+            f"    Decision: {'Buy' if sign>0 else 'Sell'}",
+            f"    Volatility: {vol:.6f}, Raw Size: {raw_size:.6f} lots, Capped to {size:.6f}"
+        ])
+        self.logger.info(self.reasoning_trace[-1])
+        self.logger.info(
+            f"[{instrument}] intensity={intensity:.4f} | "
+            f"size={size:.6f} | vol={vol:.6f} | "
+            f"dd={self.current_drawdown:.4f} | "
+            f"max_pct={self.position_manager.max_pct:.4f}"
+        )
+
         return {
             "instrument":  instrument,
             "pnl":         pnl,
             "duration":    hold_steps,
             "exit_reason": "timeout",
-            "size":        size if intensity > 0 else -size,
+            "size":        size if sign > 0 else -size,
             "features":    np.array([exit_price, pnl, hold_steps], np.float32),
         }
+
+
 
     # ==================================================================
     #  Genome metrics, helpers, checkpointing — UNCHANGED

@@ -1,33 +1,50 @@
 import numpy as np
-from typing import Any, Dict, List
-from modules.core.core import Module
+from typing import Any, Dict, List, Optional
+
+from modules.trading_modes.trading_mode import TradingModeManager
 
 
-class PositionManager(Module):
+class PositionManager:
     """
     Manages position sizing with volatility‐adjusted calculations,
     enhanced risk controls, and dynamic confidence scoring.
     """
-    def __init__(self, initial_balance: float, instruments: List[str], max_pct: float = 0.10, debug: bool = False):
+
+    def __init__(
+        self,
+        initial_balance: float,
+        instruments: List[str],
+        max_pct: float = 0.10,
+        max_consecutive_losses: int = 5,
+        loss_reduction: float = 0.2,
+        max_instrument_concentration: float = 0.25,
+        min_volatility: float = 0.015,
+        debug: bool = False,
+    ):  
+        # Core params
+        self.mode_manager      = TradingModeManager(initial_mode="safe", window=50)
         self.initial_balance = initial_balance
-        self.instruments = instruments  # Added instruments as a parameter
+        self.instruments = instruments
         self.default_max_pct = max_pct
         self.max_pct = max_pct
         self.debug = debug
 
-        # risk‐management enhancements
+        # Loss streak breaker
         self.consecutive_losses = 0
-        self.max_consecutive_losses = 5
-        self.loss_reduction = 0.2              # shrink size after too many losses
-        self.max_instrument_concentration = 0.25  # 25% of equity
+        self.max_consecutive_losses = max_consecutive_losses
+        self.loss_reduction = loss_reduction
 
-        # track open positions as {instrument: {"size":…, "volatility":…, …}, …}
-        self.open_positions: Dict[Any, Dict[str, float]] = {}
-        self.min_volatility = 0.015  # 1.5% floor
+        # Concentration & volatility floor
+        self.max_instrument_concentration = max_instrument_concentration
+        self.min_volatility = min_volatility
 
-        # will be assigned in step()
-        self.env = None  # reference to the environment for sizing & confidence calls
-    def set_env(self, env):
+        # Track open positions: {instrument: {"size": float, "volatility": float}}
+        self.open_positions: Dict[str, Dict[str, float]] = {}
+
+        # Hook to the trading environment
+        self.env = None  # set via set_env()
+
+    def set_env(self, env: Any):
         self.env = env
 
     def reset(self):
@@ -36,144 +53,181 @@ class PositionManager(Module):
         self.open_positions.clear()
 
     def step(self, **kwargs):
-        # capture env reference for sizing & confidence calls
         env = kwargs.get("env", None)
         if env:
             self.env = env
-        if env and env.live_mode:
+        if self.env and getattr(self.env, "live_mode", False):
             self._sync_live_positions()
 
     def _sync_live_positions(self):
         if self.debug:
             print("[PositionManager] Syncing live positions…")
-        # (Your logic to pull live orders into self.open_positions)
-
+        # TODO: pull actual live positions into self.open_positions
     def calculate_size(
         self,
         volatility: float,
         intensity: float,
         balance: float,
-        drawdown: float
+        drawdown: float,
+        correlation: Optional[float] = None,
+        current_exposure: Optional[float] = None,
     ) -> float:
-        # Floor volatility to avoid very small values
-        vol = max(float(volatility), self.min_volatility)
+        """
+        volatility: raw vol estimate (floored at self.min_volatility)
+        intensity: trading signal in [-1,1]
+        balance: current account equity
+        drawdown: current drawdown [0..1]
+        correlation: optional override for env.get_current_correlation()
+        current_exposure: optional override for sum(abs(sizes))/balance
+        """
 
-        # Clamp intensity signal between -1 and 1
-        clamped_intensity = np.clip(intensity, -1.0, 1.0)
+        # 0) Sanitize any NaNs before we start
+        volatility = float(np.nan_to_num(volatility, nan=self.min_volatility))
+        intensity  = float(np.nan_to_num(intensity,  nan=0.0))
+        drawdown   = float(np.nan_to_num(drawdown,   nan=0.0))
 
-        # Basic risk capacity & volatility adjustment
-        risk_capacity = balance * self.max_pct
-        vol_adjusted = risk_capacity / vol
-
-        # Apply drawdown scaling (up to 80% reduction)
-        drawdown_factor = 1.0 - np.clip(drawdown, 0.0, 0.8)
-
-        # Calculate raw position size
-        raw_size = clamped_intensity * vol_adjusted * drawdown_factor
-
-        # Correlation penalty
-        corr = 0.0
-        if self.env is not None:
-            corr = self.env.get_current_correlation()
-        corr_penalty = 1.0 - min(abs(corr) * 0.5, 1.0)
-        raw_size *= corr_penalty
-
-        # Clip to the maximum allowable size
-        max_allowable = balance * self.max_pct
-        final_size = np.clip(raw_size, -max_allowable, max_allowable)
-
-        # Apply a circuit breaker after consecutive losses
-        if self.consecutive_losses >= self.max_consecutive_losses:
-            final_size *= self.loss_reduction
-
-        # Instrument concentration check
-        exposure = 0.0
-        if self.open_positions and self.env is not None:
-            exposure = sum(abs(p["size"]) for p in self.open_positions.values())
-            exposure /= max(1.0, self.env.balance)
-        if exposure > self.max_instrument_concentration:
-            final_size = 0.0
+        # 1) Volatility & signal floors
+        vol   = max(volatility, self.min_volatility)     # enforce vol floor
+        inten = np.clip(intensity, -1.0, 1.0)             # clamp signal
 
         if self.debug:
-            print(f"[PositionManager] vol={vol:.4f}, drawdown={drawdown:.2%}, corr={corr:.2f}, "
-                f"raw={raw_size:.2f}, final={final_size:.2f}, expo={exposure:.2%}")
+            print(f"[PM] inputs → raw_vol={volatility:.6f}, raw_inten={intensity:.3f}, raw_dd={drawdown:.3f}")
+            print(f"[PM] floored → vol={vol:.6f}, inten={inten:.3f}")
 
-        return float(final_size)
+        # 2) Risk‐percent floor
+        pct = max(self.max_pct, getattr(self, "min_risk", 0.05))
+        risk_cap = balance * pct
+        vol_adj_size = risk_cap / vol
+
+        # 3) Drawdown scaling (only in non‐safe mode)
+        cur_mode = getattr(self.mode_manager, "current_mode", "safe")
+        if cur_mode == "safe":
+            dd_factor = 1.0
+        else:
+            dd_factor = 1.0 - np.clip(drawdown, 0.0, 0.8)
+
+        # 4) Raw lot‐size
+        raw = inten * vol_adj_size * dd_factor
+
+        # 5) Correlation penalty
+        corr = (correlation
+                if correlation is not None
+                else (self.env.get_current_correlation() if self.env else 0.0))
+        corr_pen = 1.0 - min(abs(corr) * 0.5, 1.0)
+        raw *= corr_pen
+
+        # 6) Hard clip to pct of account
+        max_allow = balance * pct
+        size = float(np.clip(raw, -max_allow, max_allow))
+
+        # 7) Enforce a minimum trade‐size on strong signals
+        min_size = 0.01 * balance   # e.g. 1% of account
+        if abs(size) < min_size and abs(inten) > 0.3:
+            size = np.sign(size or inten) * min_size
+            if self.debug:
+                print(f"[PM] applied min‐size floor → {size:.2f}")
+
+        # 8) Loss‐streak reduction
+        if self.consecutive_losses >= self.max_consecutive_losses:
+            size *= self.loss_reduction
+            if self.debug:
+                print(f"[PM] loss‐streak reduction → {size:.2f}")
+
+        # 9) Instrument concentration check
+        if current_exposure is None:
+            total_expo = sum(abs(v["size"]) for v in self.open_positions.values())
+            expo = total_expo / max(balance, 1.0)
+        else:
+            expo = current_exposure
+        if expo > self.max_instrument_concentration:
+            if self.debug:
+                print(f"[PM] expo {expo:.2%} > cap → zeroing size")
+            size = 0.0
+
+        if self.debug:
+            print(
+                f"[PM] final_size={size:.2f}, vol={vol:.4f}, pct={pct:.3f}, "
+                f"corr={corr:.2f}, expo={expo:.2%}, drawdown={drawdown:.2%}"
+            )
+
+        return float(size)
+
+
 
     def propose_action(self, obs: Any) -> np.ndarray:
-        signals = []
+        """
+        Build an action vector of (intensity, duration) per instrument,
+        where intensity ∈ [–1,1] and duration is normalized to 1.
+        The actual lot-size conversion happens later in _execute_trade().
+        """
+        signals: List[float] = []
+
         for inst in self.instruments:
-            df = self.env.data[inst]["D1"]
-            bar = df.iloc[self.env.current_step]
-            volatility = float(bar.get("volatility", self.min_volatility))
-            intensity = self.env.meta_agent.get_intensity(inst)  # <- You must define this per instrument
-            size = self.calculate_size(
-                volatility=volatility,
-                intensity=intensity,
-                balance=self.env.balance,
-                drawdown=self.env.current_drawdown
-            )
-            duration = 1
-            signals.extend([size, duration])
+            # 1) Pull raw signal and clamp to [–1,1]
+            raw_inten = self.env.meta_agent.get_intensity(inst)
+            inten = float(np.clip(raw_inten, -1.0, 1.0))
+
+            # 2) Use a fixed (normalized) duration of 1
+            duration = 1.0
+
+            if self.debug:
+                print(f"[PositionManager] propose_action → {inst}: inten={inten:.3f}, dur={duration}")
+
+            signals.extend([inten, duration])
+
         return np.array(signals, dtype=np.float32)
 
-
     def confidence(self, obs: Any) -> float:
-        """
-        Real‐time confidence [0.1–1.0] based on:
-        - current drawdown
-        - position volatility
-        - recent meta-agent performance
-        - market liquidity
-        - concentration
-        """
-        # drawdown penalty
+        # drawdown
         dd = getattr(self.env, "current_drawdown", 0.0)
-        drawdown_penalty = max(0.0, 1.0 - dd * 1.5)
+        dd_pen = max(0.0, 1.0 - dd * 1.5)
 
-        # position volatility
-        vols = [p.get("volatility", self.min_volatility) for p in self.open_positions.values()]
+        # vol of open positions
+        vols = [p["volatility"] for p in self.open_positions.values()]
         avg_vol = float(np.mean(vols)) if vols else self.min_volatility
-        vol_penalty = 1.0 - np.clip(avg_vol / 0.05, 0.0, 1.0)
+        vol_pen = 1.0 - np.clip(avg_vol / 0.05, 0.0, 1.0)
 
-        # concentration penalty
-        sizes = [p.get("size", 0.0) for p in self.open_positions.values()]
-        concentration = (sum(abs(s) for s in sizes) / max(1.0, self.env.balance)) if self.env else 0.0
-        conc_penalty = 1.0 - np.clip(concentration / 0.5, 0.0, 1.0)
+        # concentration
+        tot_sz = sum(abs(p["size"]) for p in self.open_positions.values())
+        conc = tot_sz / max(self.env.balance if self.env else 1.0, 1.0)
+        conc_pen = 1.0 - np.clip(conc / 0.5, 0.0, 1.0)
 
-        # recent performance boost from meta-agent
-        perf = 1.0
-        if self.env and hasattr(self.env, "meta_agent"):
-            perf = self.env.meta_agent.get_observation_components()[0]
+        # meta-agent perf
+        perf = (
+            self.env.meta_agent.get_observation_components()[0]
+            if self.env and hasattr(self.env, "meta_agent")
+            else 1.0
+        )
         perf_boost = np.clip(perf * 2.0, 0.5, 1.5)
 
-        # ✅ FIXED: liquidity must call the method
-        liquidity = (
+        # liquidity
+        liq = (
             self.env.liquidity_layer.current_score()
             if self.env and hasattr(self.env, "liquidity_layer")
             else 1.0
         )
 
-        score = drawdown_penalty * vol_penalty * perf_boost * liquidity * conc_penalty
+        score = dd_pen * vol_pen * perf_boost * liq * conc_pen
         return float(np.clip(score, 0.1, 1.0))
 
-
     def get_observation_components(self) -> np.ndarray:
-        # expose current drawdown and last confidence
-        conf = self.confidence(None)
-        return np.array([self.env.current_drawdown, conf], dtype=np.float32)
+        return np.array(
+            [self.env.current_drawdown, self.confidence(None)], dtype=np.float32
+        )
 
-    def get_state(self):
+    def get_state(self) -> Dict[str, Any]:
         return {
             "positions": self.open_positions,
             "max_pct": self.max_pct,
             "consecutive_losses": self.consecutive_losses,
         }
 
-    def set_state(self, state):
-        self.open_positions = state.get("positions", [])
+    def set_state(self, state: Dict[str, Any]):
+        self.open_positions = state.get("positions", {})
         self.max_pct = state.get("max_pct", self.default_max_pct)
         self.consecutive_losses = state.get("consecutive_losses", 0)
         if self.debug:
-            print(f"[PositionManager] State restored: {self.open_positions}, max_pct={self.max_pct}, "
-                  f"consecutive_losses={self.consecutive_losses}")
+            print(
+                f"[PositionManager] Restored state: max_pct={self.max_pct}, "
+                f"losses={self.consecutive_losses}, positions={self.open_positions}"
+            )

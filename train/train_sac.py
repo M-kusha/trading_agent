@@ -304,7 +304,7 @@ class DetailedTensorboardCallback(BaseCallback):
         self.writer.add_scalar("env/sharpe_ratio", m.get("sharpe_ratio", 0.0), ts)
         self.writer.add_scalar("env/profit_factor", m.get("profit_factor", 0.0), ts)
         self.writer.add_scalar("env/exit_diversity", len(set(self.training_env.envs[0].get_trade_exit_reasons())), ts)
-        self.writer.add_scalar("env/trial_id", self.model.meta_learner.trial.number if hasattr(self.model, "meta_learner") else -1, ts)
+       
         self.writer.add_scalar("env/trades_executed", len(self.training_env.envs[0].trades), ts)
 
 

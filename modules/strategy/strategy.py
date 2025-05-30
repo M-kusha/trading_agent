@@ -263,19 +263,24 @@ class MetaAgent(Module):
     def get_intensity(self, instrument: str) -> float:
         """
         Returns a normalized intensity signal [-1, 1] based on recent performance.
+        Emits a small random signal if no PnL history exists yet.
         """
         if not self.history:
-            return 0.0  # No data yet
-        
-        # Simple scoring logic: recent average PnL determines intensity
+            # Emit a small signal early to allow trading to start
+            intensity = np.random.uniform(-0.3, 0.3)
+            if self.debug:
+                print(f"[MetaAgent] No history yet — emitting bootstrapped intensity: {intensity:.3f}")
+            return float(intensity)
+
         avg_pnl = np.mean(self.history[-self.window:])
-        scale = 0.01 * self.window  # Scale based on memory window
+        scale = 0.01 * self.window  # scale based on memory window
         intensity = np.clip(avg_pnl / scale, -1.0, 1.0)
-        
+
         if self.debug:
             print(f"[MetaAgent] Intensity for {instrument}: {intensity:.3f} (avg_pnl={avg_pnl:.3f})")
 
         return float(intensity)
+
 
 
 
