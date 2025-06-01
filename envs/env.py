@@ -118,7 +118,7 @@ class EnhancedTradingEnv(gym.Env):
         data_dict: Dict[str, Dict[str, pd.DataFrame]],
         initial_balance: float = 3000.0,
         max_steps: int = 200,
-        debug: bool = False,
+        debug: bool = True,
         no_trade_penalty: float = 0.3,
         init_seed: int = 0,
         checkpoint_dir: str = "checkpoints",
@@ -317,7 +317,11 @@ class EnhancedTradingEnv(gym.Env):
     #  RESET
     # ==================================================================
     def sanitize_obs(self, obs: np.ndarray) -> np.ndarray:
+        # Ensure no NaNs are present before processing
+        assert not np.any(np.isnan(obs)), "NaN detected in observation!"
+        # Replace NaN values with zeros
         return np.nan_to_num(obs, nan=0.0)  # Replace NaN with 0 or another default value
+
 
     def _blend_committee_votes(
         self,
@@ -411,7 +415,7 @@ class EnhancedTradingEnv(gym.Env):
         self.meta_agent.reset()
         self.meta_planner.reset()
         if getattr(self, "meta_rl", None) is not None:
-             self.meta_rl.reset()
+            self.meta_rl.reset()
 
         self.memory_vector = self.long_term_memory.retrieve(None)
         self.opp_enhancer.reset()
@@ -470,34 +474,44 @@ class EnhancedTradingEnv(gym.Env):
         self.trades = []  # Reset trades for this step
 
         try:
-            # ── MetaRL adjustment ───────────────────────────────────────
-            obs_for_meta = self._get_full_observation(self._dummy_input())
-            obs_tensor = torch.tensor(obs_for_meta, dtype=torch.float32, device="cpu").unsqueeze(0)
-            meta_action_out = self.meta_rl.act(obs_tensor)
+            # Before processing actions, ensure there are no NaNs
+            assert not np.any(np.isnan(actions)), "NaN detected in actions!"
 
-            # Handle dict vs tensor output
+            if self.meta_rl is not None:
+                obs_for_meta = self._get_full_observation(self._dummy_input())
+            assert np.all(np.isfinite(obs_for_meta)), f"Non-finite values in obs_for_meta: {obs_for_meta}"
+            obs_tensor = torch.tensor(obs_for_meta, dtype=torch.float32, device="cpu").unsqueeze(0)
+            if torch.isnan(obs_tensor).any():
+                self.logger.error(f"NaN detected in obs_tensor before RL act: {obs_tensor}")
+                obs_tensor = torch.nan_to_num(obs_tensor, nan=0.0)
+
+            meta_action_out = self.meta_rl.act(obs_tensor)
             if isinstance(meta_action_out, dict):
                 meta_action = meta_action_out["action"]
             else:
                 meta_action = meta_action_out
-
-            if isinstance(meta_action, torch.Tensor):
-                meta_action = meta_action.detach().cpu().numpy()
-
             meta_action = np.asarray(meta_action).reshape(-1)
-            if meta_action.shape[0] != self.action_dim:
-                raise ValueError(f"meta_action shape mismatch: {meta_action.shape} (expected {self.action_dim})")
 
-            # Apply meta_action and mode scaling
+            # Ensure no NaNs in meta_action
+            assert not np.any(np.isnan(meta_action)), "NaN detected in meta_action!"
+
             actions = actions + meta_action * self.current_genome[2]
             actions = np.clip(actions, self.action_space.low, self.action_space.high)
-            mode_coef = {"safe": 0.5, "normal": 1.0, "aggressive": 1.25, "extreme": 1.5}
-            cur_mode = self.mode_manager.get_mode()
-            actions = actions * mode_coef.get(cur_mode, 1.0)
 
-            # ── Risk / correlation checks ─────────────────────────────────
-            self.active_monitor.step(open_trades=self.open_positions)
+            # Risk / correlation checks
             corr_dict = self.get_instrument_correlations()
+
+            # Log the correlation data for debugging purposes
+            self.logger.debug(f"Correlation data: {corr_dict}")
+
+            # Check for NaN in correlation data
+            for key, value in corr_dict.items():
+                if not isinstance(value, (int, float)):  # Skip if value is not numeric
+                    self.logger.warning(f"Non-numeric value in correlation data: {key} => {value}")
+                elif np.isnan(value):
+                    self.logger.error(f"NaN detected in correlation data for {key}: {value}")
+                    raise ValueError(f"NaN detected in correlation data for {key}: {value}")
+
             high_corr = self.corr_controller.step(correlations=corr_dict)
             if high_corr:
                 self.position_manager.max_pct *= 0.5
@@ -507,21 +521,22 @@ class EnhancedTradingEnv(gym.Env):
                 self.logger.info("Drawdown rescue → skipping trades")
                 return self._finalize_step([], actions, corr_dict, vol0=None, reward=0)
 
-            # ── Adjust risk controller ────────────────────────────────────
+            # Adjust risk controller
             df0 = self.data[self.instruments[0]]["D1"]
             vol0 = df0.iloc[self.current_step]["volatility"]
             self.risk_controller.adjust_risk({
-                "drawdown":   self.current_drawdown,
+                "drawdown": self.current_drawdown,
                 "volatility": float(vol0),
             })
+
             rcoef = float(self.risk_controller.get_observation_components()[0])
             base_pct = getattr(self.position_manager, "default_max_pct", None) or self.position_manager.max_pct
             cap = min(base_pct * rcoef, base_pct)
             self.position_manager.max_pct = cap
             self.logger.debug(f"Applied max_pct cap: {cap:.4f} (base={base_pct:.4f}, rcoef={rcoef:.4f}, high_corr={high_corr})")
 
-            # ── Committee vote blending ───────────────────────────────────
-            votes_by_sym_tf   = {}
+            # Blending committee votes
+            votes_by_sym_tf = {}
             blended_by_sym_tf = {}
             committee = [m.__class__.__name__ for m in self.arbiter.members]
 
@@ -533,9 +548,9 @@ class EnhancedTradingEnv(gym.Env):
                         .values.astype(np.float32)
                     )
                     obs_tf = self._get_full_observation({
-                        "env":       self,
+                        "env": self,
                         f"price_{tf.lower()}": hist,
-                        "actions":   actions,
+                        "actions": actions,
                     })
                     blend = self.arbiter.propose(obs_tf)
 
@@ -545,12 +560,17 @@ class EnhancedTradingEnv(gym.Env):
                         else np.zeros(self.action_dim, dtype=np.float32)
                     )
 
-                    votes_by_sym_tf[(inst, tf)]   = dict(zip(committee, alpha.tolist()))
+                    # Ensure no NaNs in votes
+                    assert not np.any(np.isnan(alpha)), "NaN detected in alpha (committee votes)!"
+
+                    votes_by_sym_tf[(inst, tf)] = dict(zip(committee, alpha.tolist()))
                     blended_by_sym_tf[(inst, tf)] = blend
 
+            # Ensure no NaNs in blended actions
             actions = self._blend_committee_votes(blended_by_sym_tf)
+            assert not np.any(np.isnan(actions)), "NaN detected in blended actions!"
 
-            # ── Regime confirmation & explanation ─────────────────────────
+            # Regime confirmation & explanation
             regime_label, _ = self.fractal_confirm.step(
                 data_dict=self.data,
                 current_step=self.current_step,
@@ -582,9 +602,9 @@ class EnhancedTradingEnv(gym.Env):
             with open("logs/votes_history.json", "w") as fp:
                 json.dump(self.votes_log, fp, indent=2)
 
-            # ── Dynamic consensus threshold ───────────────────────────────
+            # Dynamic consensus threshold
             frac = min(self.episode_count / self.max_episodes, 1.0)
-            thr  = self.consensus_min + (self.consensus_max - self.consensus_min) * frac
+            thr = self.consensus_min + (self.consensus_max - self.consensus_min) * frac
             alpha = (
                 self.arbiter.last_alpha
                 if self.arbiter.last_alpha is not None
@@ -595,7 +615,7 @@ class EnhancedTradingEnv(gym.Env):
                 self.logger.info(f"[DYN] Consensus {cons:.2f} < {thr:.2f} → skipping all trades")
                 return self._finalize_step([], actions, corr_dict, vol0, reward=0)
 
-            # ── Execute trades for each instrument ─────────────────────────
+            # Execute trades for each instrument
             trades = []
             for i, inst in enumerate(self.instruments):
                 intensity = actions[2*i]
@@ -609,7 +629,7 @@ class EnhancedTradingEnv(gym.Env):
                     passed = self.compliance.validate_trade(tr, self)
                     self.logger.debug(f"Compliance check for {inst}: {passed}")
                     if passed:
-                        tr["explanation"]     = self.explainer.last_explanation
+                        tr["explanation"] = self.explainer.last_explanation
                         tr["votes_by_sym_tf"] = votes_by_sym_tf
                         trades.append(tr)
                         self.logger.info(f"Executed trade for {inst}: {tr}")
@@ -622,7 +642,7 @@ class EnhancedTradingEnv(gym.Env):
             self.trades = trades
             self.logger.info(f"Final trades list for this step: {self.trades}")
 
-            # ── Neuro/meta logging ───────────────────────────────────────
+            # Neuro/meta logging
             pnl = sum(t["pnl"] for t in trades)
             self.meta_agent.record(pnl)
             self.meta_planner.record_episode({"pnl": pnl, "drawdown": self.current_drawdown})
@@ -630,10 +650,8 @@ class EnhancedTradingEnv(gym.Env):
             self.curriculum_planner.step(result={"pnl": pnl, "obs": obs_for_meta})
             self.playbook_clusterer.step(trades=trades, obs=obs_for_meta)
 
-            # ── Finalize step (compute reward, next obs, etc.) ───────────
-            obs, reward, terminated, truncated, info = (
-                self._finalize_step(trades, actions, corr_dict, vol0, reward=0)
-            )
+            # Finalize step (compute reward, next obs, etc.)
+            obs, reward, terminated, truncated, info = self._finalize_step(trades, actions, corr_dict, vol0, reward=0)
             self.ep_step += 1
 
             terminated = (
@@ -655,6 +673,7 @@ class EnhancedTradingEnv(gym.Env):
             raise
 
     def _finalize_step(self, trades, actions, corr_dict, vol0, reward):
+        assert not np.isnan(reward), f"NaN detected in reward calculation at step {self.current_step}"
         # Log entry to _finalize_step, including current trades list
         self.logger.info(f"Entering _finalize_step: current reward={reward}, no_trade_penalty={self.no_trade_penalty}")
         self.logger.debug(f" → Trades passed into _finalize_step: {trades!r}")
@@ -677,6 +696,7 @@ class EnhancedTradingEnv(gym.Env):
 
         # Update balance based on this step’s PnL
         pnl = sum(t["pnl"] for t in trades)
+        assert not np.isnan(pnl), f"NaN detected in PnL calculation at step {self.current_step}"
         self.balance += pnl
         self.peak_balance = max(self.peak_balance, self.balance)
         self.current_drawdown = max(
@@ -781,6 +801,7 @@ class EnhancedTradingEnv(gym.Env):
     # ==================================================================
     def _get_full_observation(self, data: Dict[str, Any]) -> np.ndarray:
         base = self.pipeline.step(data)
+        assert not np.any(np.isnan(base)), "NaN detected in base observation components!"
         pool = self.strategy_pool.get_observation_components()
         meta_agent = self.meta_agent.get_observation_components()
         meta_planner = self.meta_planner.get_observation_components()
@@ -801,6 +822,7 @@ class EnhancedTradingEnv(gym.Env):
                 obs = np.pad(obs, (0, expected_dim - obs.shape[0]), constant_values=0)
             elif obs.shape[0] > expected_dim:
                 obs = obs[:expected_dim]
+        assert not np.any(np.isnan(obs)), "NaN detected in full observation!"
         return obs
 
     # ==================================================================
@@ -834,10 +856,15 @@ class EnhancedTradingEnv(gym.Env):
             balance=float(np.nan_to_num(self.balance, nan=self.position_manager.initial_balance)),
             drawdown=float(np.nan_to_num(self.current_drawdown, nan=0.0)),
         )
-        if not np.isfinite(raw_size):
-            raw_size = 0.0
+
         sign = np.sign(raw_size)
-        size = abs(raw_size)
+        size = abs(raw_size)  # assign size here
+
+        if not np.isfinite(size) or abs(size) > 1e6:
+            size = 0.0  # forcibly clamp large sizes
+            if self.debug:
+                print(f"[_execute_trade] Clamped size from PositionManager: {size}")
+
 
         # ─── Enforce max_pct cap ──────────────────────────────────────
         point_val = self.point_value.get(instrument, 1.0)
@@ -868,11 +895,21 @@ class EnhancedTradingEnv(gym.Env):
         exit_price = float(df.iloc[exit_idx]["close"])
 
         # ─── PnL calculation ──────────────────────────────────────────
-        if sign > 0:
-            pnl = (exit_price - price) * size * point_val
+        if any(np.isnan(x) for x in [price, exit_price, size, point_val]):
+            pnl = 0.0
+            if self.debug:
+                print("[_execute_trade] NaN detected in inputs to PnL calculation; setting pnl=0")
         else:
-            pnl = (price - exit_price) * size * point_val
-        pnl = float(np.nan_to_num(pnl, nan=0.0, posinf=0.0, neginf=0.0))
+            if sign > 0:
+                pnl = (exit_price - price) * size * point_val
+            else:
+                pnl = (price - exit_price) * size * point_val
+
+        pnl = np.nan_to_num(pnl, nan=0.0, posinf=0.0, neginf=0.0)
+        # Clamp pnl to a realistic range, e.g., ±10x initial balance:
+        pnl = np.clip(pnl, -10 * self.initial_balance, 10 * self.initial_balance)
+
+
 
         self.logger.info(f"[SIM] TRADE END   {instrument} exit {exit_price:.4f} pnl={pnl:.2f}")
 
@@ -1199,12 +1236,22 @@ class EnhancedTradingEnv(gym.Env):
             df1 = self.data[i1]["D1"]["close"].pct_change().dropna()
             df2 = self.data[i2]["D1"]["close"].pct_change().dropna()
             arr1, arr2 = df1.iloc[-100:].values, df2.iloc[-100:].values
+
+            # Check if the correlation arrays are valid
             if arr1.size == 0 or arr2.size == 0:
                 corr = 0.0
             else:
-                corr = float(np.corrcoef(arr1, arr2)[0, 1])
+                corr = np.corrcoef(arr1, arr2)[0, 1]
+
+            # Ensure the correlation is a valid number
+            if not isinstance(corr, (int, float)) or np.isnan(corr):
+                self.logger.warning(f"Invalid correlation detected between {i1} and {i2}: {corr}")
+                corr = 0.0  # Default to 0 if the correlation is invalid
+
             corrs[(i1, i2)] = corr
+
         return corrs
+
 
     def get_volatility_profile(self) -> Dict[str, float]:
         vols: Dict[str, float] = {}

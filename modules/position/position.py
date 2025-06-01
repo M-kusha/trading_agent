@@ -1,7 +1,6 @@
 import numpy as np
 from typing import Any, Dict, List, Optional
 import copy
-
 from modules.trading_modes.trading_mode import TradingModeManager
 
 class PositionManager:
@@ -139,8 +138,8 @@ class PositionManager:
         inten = np.clip(intensity, -1.0, 1.0)  # clamp signal
 
         if self.debug:
-            print(f"[PM] inputs → raw_vol={volatility:.6f}, raw_inten={intensity:.3f}, raw_dd={drawdown:.3f}")
-            print(f"[PM] floored → vol={vol:.6f}, inten={inten:.3f}")
+            print(f"[PositionManager] inputs → raw_vol={volatility:.6f}, raw_inten={intensity:.3f}, raw_dd={drawdown:.3f}")
+            print(f"[PositionManager] floored → vol={vol:.6f}, inten={inten:.3f}")
 
         # 2) Risk‐percent floor
         pct = max(self.max_pct, getattr(self, "min_risk", 0.05))
@@ -175,13 +174,13 @@ class PositionManager:
         if abs(size) < min_size and abs(inten) > 0.3:
             size = np.sign(size or inten) * min_size
             if self.debug:
-                print(f"[PM] applied min‐size floor → {size:.2f}")
+                print(f"[PositionManager] applied min‐size floor → {size:.2f}")
 
         # 8) Loss‐streak reduction
         if self.consecutive_losses >= self.max_consecutive_losses:
             size *= self.loss_reduction
             if self.debug:
-                print(f"[PM] loss‐streak reduction → {size:.2f}")
+                print(f"[PositionManager] loss‐streak reduction → {size:.2f}")
 
         # 9) Instrument concentration check
         if current_exposure is None:
@@ -191,7 +190,7 @@ class PositionManager:
             expo = current_exposure
         if expo > self.max_instrument_concentration:
             if self.debug:
-                print(f"[PM] expo {expo:.2%} > cap → zeroing size")
+                print(f"[PositionManager] expo {expo:.2%} > cap → zeroing size")
             size = 0.0
 
         # 10) Final NaN/Inf defense
@@ -199,7 +198,7 @@ class PositionManager:
 
         if self.debug:
             print(
-                f"[PM] final_size={size:.2f}, vol={vol:.4f}, pct={pct:.3f}, "
+                f"[PositionManager] final_size={size:.2f}, vol={vol:.4f}, pct={pct:.3f}, "
                 f"corr={corr:.2f}, expo={expo:.2%}, drawdown={drawdown:.2%}"
             )
 

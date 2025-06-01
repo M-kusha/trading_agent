@@ -723,6 +723,10 @@ class SACAgent(nn.Module, Module):
             for t, m in zip(target.parameters(), main.parameters()):
                 t.data.copy_(t.data * (1-self.tau) + m.data * self.tau)
 
+    def reset(self):
+        """Reset the agent's internal state"""
+        self.last_action = np.zeros_like(self.last_action)  # Reset actions to zero
+
     def get_observation_components(self):
         return np.array([float(self.last_action.mean()), float(self.last_action.std())], dtype=np.float32)
 
@@ -750,19 +754,14 @@ class SACAgent(nn.Module, Module):
         self.critic2_opt.load_state_dict(state["critic2_opt"])
         self.last_action = np.array(state.get("last_action", [0,0]), dtype=np.float32)
 
-    def reset(self):
-        self.last_action = np.zeros_like(self.last_action)
     def step(self, *args, **kwargs):
         pass
-    def select_action(self, obs_tensor):
-        with torch.no_grad():
-            action = self.actor(obs_tensor)
-            return action
 
     def select_action(self, obs_tensor):
         with torch.no_grad():
             action = self.actor(obs_tensor)
             return action
+
 
 # ──────────────────────────────────────────────
 class TD3Agent(nn.Module, Module):
@@ -921,6 +920,10 @@ class TD3Agent(nn.Module, Module):
 
 
 
+import logging
+import numpy as np
+from typing import Callable, List
+
 class MetaRLController(Module):
     """
     Switchable controller for PPO, SAC, TD3 with shared API.
@@ -966,7 +969,11 @@ class MetaRLController(Module):
         Record a step for the active agent.
         """
         self.logger.debug(f"Recording step for {self.mode} agent.")
-        return self.agent.record_step(*args, **kwargs)
+        result = self.agent.record_step(*args, **kwargs)
+        
+        # Log more details here if necessary
+        self.logger.debug(f"Step recorded: {result}")
+        return result
 
     def end_episode(self, *args, **kwargs):
         """
@@ -980,7 +987,14 @@ class MetaRLController(Module):
         Get observation components for the active agent.
         """
         self.logger.debug(f"Getting observation components for {self.mode} agent.")
-        return self.agent.get_observation_components()
+        obs = self.agent.get_observation_components()
+
+        # Check for NaN in the observation
+        if np.any(np.isnan(obs)):
+            self.logger.error(f"NaN detected in observation: {obs}")
+            obs = np.nan_to_num(obs)  # Replace NaNs with zeros or a default value
+
+        return obs
 
     def get_state(self):
         """
@@ -998,9 +1012,11 @@ class MetaRLController(Module):
         Set the state of the controller and all agents.
         """
         self.mode = state.get("mode", self.mode)
-        for k, v in state["agents"].items():
-            if k in self._agents:
-                self._agents[k].set_state(v, strict=strict)
+        for agent_name, agent_state in state["agents"].items():
+            if agent_name in self._agents:
+                self._agents[agent_name].set_state(agent_state, strict=strict)
+            else:
+                self.logger.error(f"Agent {agent_name} not found in the controller!")
         self.agent = self._agents[self.mode]
         
         self.logger.info(f"State set to mode: {self.mode}")
@@ -1030,7 +1046,6 @@ class MetaRLController(Module):
         if self.debug:
             print(f"[MetaRLController] Loaded state dict: {state_dict}")
 
-
     def reset(self):
         """
         Reset the controller and all agents.
@@ -1045,10 +1060,19 @@ class MetaRLController(Module):
         Get action from the active agent.
         """
         self.logger.debug(f"Getting action from {self.mode} agent.")
+        
         action = self.agent.select_action(obs_tensor)
         
+        # Ensure action is a valid numpy array and check for NaNs
+        action = np.asarray(action)
+        
+        if np.isnan(action).any():  # Check if any value in the action is NaN
+            self.logger.error(f"NaN detected in action: {action}")
+            action = np.nan_to_num(action)  # Replace NaNs with zeros or a default value
+            
         self.logger.debug(f"Action selected: {action}")
         return action
+
 
     def step(self, *args, **kwargs):
         """

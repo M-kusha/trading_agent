@@ -3,23 +3,23 @@ import os
 import warnings
 
 # Deep learning libraries (TensorFlow/Keras/PyTorch) backend spam
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"           # Suppress TensorFlow messages
-os.environ["KMP_WARNINGS"] = "0"                   # Suppress OpenMP warnings
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"        # Suppress duplicate lib error
-os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"          # Suppress TF performance warnings
-os.environ["CUDA_VISIBLE_DEVICES"] = ""            # Pretend no CUDA, removes CUDA warnings
+# os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"           # Suppress TensorFlow messages
+# os.environ["KMP_WARNINGS"] = "0"                   # Suppress OpenMP warnings
+# os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"        # Suppress duplicate lib error
+# os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"          # Suppress TF performance warnings
+# os.environ["CUDA_VISIBLE_DEVICES"] = ""            # Pretend no CUDA, removes CUDA warnings
 
-# Ignore Python runtime warnings for numpy, pandas, etc.
-warnings.filterwarnings("ignore", category=RuntimeWarning)
-warnings.filterwarnings("ignore", category=FutureWarning)
-warnings.filterwarnings("ignore", category=UserWarning)
-os.environ["GLOG_minloglevel"] = "3"               # Silence glog-based logs from cuDNN/cuBLAS
+# # Ignore Python runtime warnings for numpy, pandas, etc.
+# warnings.filterwarnings("ignore", category=RuntimeWarning)
+# warnings.filterwarnings("ignore", category=FutureWarning)
+# warnings.filterwarnings("ignore", category=UserWarning)
+# os.environ["GLOG_minloglevel"] = "3"               # Silence glog-based logs from cuDNN/cuBLAS
 
-# now suppress Abseil’s Python-side warnings
-from absl import logging as absl_logging
-absl_logging.set_verbosity(absl_logging.ERROR)
-# prevent that “WARNING: All log messages before absl::InitializeLog()…” banner
-absl_logging._warn_preinit_stderr = False
+# # now suppress Abseil’s Python-side warnings
+# from absl import logging as absl_logging
+# absl_logging.set_verbosity(absl_logging.ERROR)
+# # prevent that “WARNING: All log messages before absl::InitializeLog()…” banner
+# absl_logging._warn_preinit_stderr = False
 
 # === Set up file-based logging for ComplianceModule and root warnings ===
 # 1) Ensure the logs directory exists
@@ -100,8 +100,8 @@ class TrainingConfig:
 
     def __post_init__(self):
         if self.test_mode:
-            self.n_trials = 2
-            self.timesteps_per_trial = 2000
+            self.n_trials = 1
+            self.timesteps_per_trial = 100
             self.final_training_steps = 10000
             self.pruner_startup_trials = 1
             self.pruner_warmup_steps = 500
@@ -452,9 +452,7 @@ def optimise_agent(trial: optuna.trial.Trial) -> float:
         "gamma":         trial.suggest_float("gamma", 0.90, 0.9999),
         "ent_coef":      trial.suggest_float("ent_coef", 0.0, 0.05),
         "target_entropy":"auto",
-        "no_trade_penalty": trial.suggest_float("no_trade_penalty", 0.0, 1.0),
     }
-    no_trade_penalty = hp.pop("no_trade_penalty")
     data = load_data("data/processed")
     def make_env(rank: int):
         def _init():
@@ -464,7 +462,6 @@ def optimise_agent(trial: optuna.trial.Trial) -> float:
                 max_steps=200,
                 debug=False,
                 checkpoint_dir=CHECKPOINT_DIR,
-                no_trade_penalty=no_trade_penalty,
                 init_seed=int(cfg.global_seed + rank),
             )
         return _init
@@ -585,7 +582,7 @@ def main():
     )
     best = study.trials[rank_trials(study)[0]]
     best_hp = best.params.copy()
-    best_no_trade_penalty = best_hp.pop("no_trade_penalty", 0.3)
+
     data = load_data("data/processed")
     def make_env_final(rank: int):
         def _init():
@@ -595,7 +592,7 @@ def main():
                 max_steps=500,
                 debug=False,
                 checkpoint_dir=CHECKPOINT_DIR,
-                no_trade_penalty=best_no_trade_penalty,
+
                 init_seed=cfg.global_seed + rank,
             )
         return _init
