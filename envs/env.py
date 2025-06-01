@@ -231,7 +231,8 @@ class EnhancedTradingEnv(gym.Env):
         self.dd_rescue         = DrawdownRescue(dd_limit=0.3)
         self.exec_monitor      = ExecutionQualityMonitor()
         self.anomaly_detector  = AnomalyDetector()
-        self.news_sentiment    = NewsSentimentModule(enabled=False, debug=debug)
+        self.news_sentiment = NewsSentimentModule(enabled=True, debug=debug)
+
 
         # Evolution pool
         self.strategy_pool     = StrategyGenomePool(20, debug=debug)

@@ -1,5 +1,6 @@
 # modules/memory.py
 
+import logging
 from typing import List, Any, Dict, Optional
 import numpy as np
 from sklearn.cluster import KMeans
@@ -11,16 +12,7 @@ import copy
 
 # ─────────────────────────────────────────────────────────────
 class MistakeMemory(Module):
-    """Clusters losing trades and provides stats to the agent.
-
-    **Fixes introduced**
-    --------------------
-    * `interval` is accepted as an alias for `max_mistakes` to stay compatible
-      with the existing env constructor.
-    * `step()` now understands the *env*’s current call‑signature:
-        – If called with `trades=[…]` it extracts `(features, pnl)` pairs.
-        – The classic direct `(features, pnl)` call still works.
-    """
+    """Clusters losing trades and provides stats to the agent."""
 
     def __init__(
         self,
@@ -37,27 +29,26 @@ class MistakeMemory(Module):
         self.debug        = debug
         self.reset()
 
-    # ------------------------------------------------------------------ #
+        # Logger for mistakes
+        self.logger = logging.getLogger("MistakeMemoryLogger")
+        if not self.logger.handlers:
+            handler = logging.FileHandler("logs/mistakes.log")
+            formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+        self.logger.setLevel(logging.INFO)  # Set to DEBUG for more detailed logs
+
     def reset(self):
         self._buf: List[tuple[np.ndarray, float, dict]] = []  # [(features, pnl, info)]
         self._km: KMeans | None = None
         self._mean_dist = 0.0
         self._last_dist = 0.0
 
-    # ------------------------------------------------------------------ #
     def step(self, *, trades: List[dict] | None = None,
                    features: np.ndarray | None = None,
                    pnl: float | None = None,
                    info: dict | None = None, **kw):
-        """Register new mistakes.
-
-        Parameters
-        ----------
-        trades  : list of trade‑dicts as passed by the env (optional)
-        features: single feature vector (fallback path)
-        pnl     : scalar PnL associated with *features*
-        info    : arbitrary extra dict
-        """
+        """Register new mistakes."""
         # ------- env pathway: a list of trade dicts ---------------------
         if trades is not None:
             for tr in trades:
@@ -67,13 +58,18 @@ class MistakeMemory(Module):
         # ------- direct pathway ----------------------------------------
         if features is None or pnl is None or pnl >= 0:
             return  # only record *losing* trades with valid data
+
         entry = (np.asarray(features, np.float32), float(pnl), info or {})
         self._buf.append(entry)
         if len(self._buf) > self.max_mistakes:
             self._buf = self._buf[-self.max_mistakes:]
+
         self._fit_clusters()
 
-    # ------------------------------------------------------------------ #
+        # Log mistake (if the PnL is negative)
+        if pnl < 0:
+            self.logger.info(f"New mistake recorded - PnL: {pnl:.2f}, Features: {features}")
+
     def _fit_clusters(self):
         if len(self._buf) < self.n_clusters:
             self._km = None; self._mean_dist = self._last_dist = 0.0; return
@@ -87,12 +83,10 @@ class MistakeMemory(Module):
         if self.debug:
             print(f"[MistakeMemory] fitted {len(X)} pts – mean={self._mean_dist:.4f}, last={self._last_dist:.4f}")
 
-    # ------------------------------------------------------------------ #
     def get_observation_components(self) -> np.ndarray:
         k = float(self.n_clusters if self._km is not None else 0)
         return np.array([k, self._mean_dist, self._last_dist], np.float32)
 
-    # State helpers unchanged ------------------------------------------ #
     def get_state(self):
         st = {
             "buf": [(f.tolist(), pnl, info) for f, pnl, info in self._buf],
@@ -111,7 +105,6 @@ class MistakeMemory(Module):
             self._km = KMeans(n_clusters=self.n_clusters, n_init=10, random_state=42)
             self._km.cluster_centers_ = np.asarray(st["km_centers"], np.float32)
 
-    # Neuro‑evolution hooks unchanged ---------------------------------- #
     def mutate(self, noise_std=0.05):
         if self._km is not None:
             self._km.cluster_centers_ += np.random.randn(*self._km.cluster_centers_.shape).astype(np.float32) * noise_std

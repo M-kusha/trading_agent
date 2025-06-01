@@ -100,7 +100,7 @@ class TrainingConfig:
 
     def __post_init__(self):
         if self.test_mode:
-            self.n_trials = 5
+            self.n_trials = 2
             self.timesteps_per_trial = 2000
             self.final_training_steps = 10000
             self.pruner_startup_trials = 1

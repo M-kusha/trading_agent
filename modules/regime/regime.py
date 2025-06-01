@@ -2,6 +2,7 @@ import numpy as np
 from collections import deque
 from ..core.core import Module
 import copy
+import logging
 
 class MarketRegimeSwitcher(Module):
     """
@@ -35,6 +36,15 @@ class MarketRegimeSwitcher(Module):
         self.vol_low_pct = vol_low_pct
         self.debug = debug
         self.reset()
+
+        # Logger for regime changes
+        self.logger = logging.getLogger("MarketRegimeSwitcherLogger")
+        if not self.logger.handlers:
+            handler = logging.FileHandler("logs/market_regime.log")
+            formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+        self.logger.setLevel(logging.INFO)  # Set to DEBUG for more detailed logs
 
     # Evolutionary mutation/crossover methods
     def mutate(self, std: float = 0.1):
@@ -105,6 +115,9 @@ class MarketRegimeSwitcher(Module):
             self.regime = "mean_reverting"
         else:
             self.regime = "neutral"
+
+        # Log regime changes
+        self.logger.info(f"Market regime changed: {self.regime} | Mean Return: {mean_ret:.4f}, Volatility: {self.volatility:.4f}")
 
         if self.debug:
             print(f"[MarketRegimeSwitcher] regime={self.regime} (mean_ret={mean_ret:.4f}, vol={self.volatility:.4f})")

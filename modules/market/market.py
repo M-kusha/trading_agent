@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
@@ -258,6 +259,14 @@ class FractalRegimeConfirmation(Module):
             "coeff_vr": self.coeff_vr,
             "coeff_we": self.coeff_we,
         }
+                # Logger for market regime changes
+        self.logger = logging.getLogger("MarketRegimeLogger")
+        if not self.logger.handlers:
+            handler = logging.FileHandler("logs/market_regime.log")
+            formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+        self.logger.setLevel(logging.INFO)  # Set to DEBUG for more detailed logs
 
     def reset(self):
         self._buf.clear()
@@ -337,18 +346,20 @@ class FractalRegimeConfirmation(Module):
         self._buf.append(score)
         self.regime_strength = float(np.mean(self._buf) * theme_conf)
 
-        if self.regime_strength > 0.6:
-            self.label = "trending"
-        elif self.regime_strength < 0.3:
-            self.label = "volatile"
-        else:
-            self.label = "noise"
+        new_label = "trending" if self.regime_strength > 0.6 else ("volatile" if self.regime_strength < 0.3 else "noise")
+        
+        # Check if the regime has changed
+        if new_label != self.label:
+            # Log the change
+            self.logger.info(f"Market regime changed from {self.label} to {new_label}. Strength: {self.regime_strength:.3f}")
+            self.label = new_label
 
         if self.debug:
             print(
                 f"[FRC] label={self.label:<9}  strength={self.regime_strength:.3f}"
             )
         return self.label, self.regime_strength
+
 
     def force_regime(self, label: str, strength: float):
         self._forced_label = label

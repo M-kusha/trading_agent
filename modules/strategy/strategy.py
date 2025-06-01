@@ -918,6 +918,9 @@ class TD3Agent(nn.Module, Module):
             return action
 
     # ──────────────────────────────────────────────
+
+
+
 class MetaRLController(Module):
     """
     Switchable controller for PPO, SAC, TD3 with shared API.
@@ -928,6 +931,7 @@ class MetaRLController(Module):
         self.act_size = act_size
         self.debug = debug
 
+        # Initialize agents for PPO, SAC, TD3
         self._agents = {
             "ppo": PPOAgent(obs_size, act_size=act_size, device=device, debug=debug),
             "sac": SACAgent(obs_size, act_size=act_size, device=device, debug=debug),
@@ -936,40 +940,129 @@ class MetaRLController(Module):
         self.mode = method
         self.agent = self._agents[self.mode]
 
+        # Initialize logging
+        self.logger = logging.getLogger("MetaRLController")
+        self.logger.setLevel(logging.DEBUG if debug else logging.INFO)
+        handler = logging.FileHandler("logs/MetaRLController.log")
+        handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+        self.logger.addHandler(handler)
+
+        # Log initialization
+        self.logger.info(f"Initialized with {self.mode} agent.")
+
     def set_mode(self, method: str):
+        """
+        Change the active agent mode.
+        """
         assert method in self._agents, f"Unknown method: {method}"
         self.mode = method
         self.agent = self._agents[method]
 
+        # Log mode change
+        self.logger.info(f"Mode switched to {self.mode}.")
+
     def record_step(self, *args, **kwargs):
+        """
+        Record a step for the active agent.
+        """
+        self.logger.debug(f"Recording step for {self.mode} agent.")
         return self.agent.record_step(*args, **kwargs)
 
     def end_episode(self, *args, **kwargs):
+        """
+        End an episode for the active agent.
+        """
+        self.logger.debug(f"Ending episode for {self.mode} agent.")
         return self.agent.end_episode(*args, **kwargs)
 
     def get_observation_components(self):
+        """
+        Get observation components for the active agent.
+        """
+        self.logger.debug(f"Getting observation components for {self.mode} agent.")
         return self.agent.get_observation_components()
 
     def get_state(self):
-        return {
+        """
+        Return the state of the controller and all agents.
+        """
+        state = {
             "mode": self.mode,
             "agents": {k: v.get_state() for k, v in self._agents.items()}
         }
+        self.logger.debug(f"Getting state: {state}")
+        return state
 
     def set_state(self, state, strict=False):
+        """
+        Set the state of the controller and all agents.
+        """
         self.mode = state.get("mode", self.mode)
         for k, v in state["agents"].items():
             if k in self._agents:
                 self._agents[k].set_state(v, strict=strict)
         self.agent = self._agents[self.mode]
+        
+        self.logger.info(f"State set to mode: {self.mode}")
+
+    def state_dict(self):
+        """
+        Returns the state of the controller and all agents as a dictionary.
+        """
+        state = {
+            "mode": self.mode,
+            "agents": {k: v.get_state() for k, v in self._agents.items()}
+        }
+        if self.debug:
+            print(f"[MetaRLController] State dict: {state}")
+        return state
+
+    def load_state_dict(self, state_dict):
+        """
+        Loads the state from a dictionary into the controller and all agents.
+        """
+        self.mode = state_dict["mode"]
+        for agent_name, agent_state in state_dict["agents"].items():
+            if agent_name in self._agents:
+                self._agents[agent_name].set_state(agent_state)
+        self.agent = self._agents[self.mode]
+        
+        if self.debug:
+            print(f"[MetaRLController] Loaded state dict: {state_dict}")
+
 
     def reset(self):
+        """
+        Reset the controller and all agents.
+        """
         for agent in self._agents.values():
             agent.reset()
-    def step(self, *args, **kwargs):   # <--- add this method
+
+        self.logger.info("Resetting all agents.")
+            
+    def act(self, obs_tensor):
+        """
+        Get action from the active agent.
+        """
+        self.logger.debug(f"Getting action from {self.mode} agent.")
+        action = self.agent.select_action(obs_tensor)
+        
+        self.logger.debug(f"Action selected: {action}")
+        return action
+
+    def step(self, *args, **kwargs):
+        """
+        This method should be triggered if you need to apply step logic directly.
+        For instance, for an active learning setup.
+        """
+        self.logger.debug("Step method called.")
         pass
 
-
-
-    def act(self, obs_tensor):
-        return self.agent.select_action(obs_tensor)
+    def save_state(self, log_path="logs/meta_rl_state.log"):
+        """
+        Save the current state of the controller and agents to a log file.
+        """
+        state = self.get_state()
+        with open(log_path, "a") as log_file:
+            log_file.write(f"State at epoch {self.mode}: {state}\n")
+            self.logger.info(f"State saved to {log_path}.")
