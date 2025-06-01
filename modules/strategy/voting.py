@@ -166,166 +166,126 @@ class AlternativeRealitySampler:
 # StrategyArbiter – two‑phase reinforcement‑style weight adaptation
 # --------------------------------------------------------------------------- #
 class StrategyArbiter(Module):
-    """Blend multiple strategy modules into a single coherent action.
+    """Committee‑of‑experts action blender with REINFORCE weight updates.
 
-    The arbiter performs two phases each environment step:
-
-    1. :py:meth:`propose`: query every member, compute a confidence‑weighted
-       blend of their proposals, and return the final action vector.
-
-    2. :py:meth:`update_reward`: update the internal soft weight vector via a
-       REINFORCE‑style gradient using the observed scalar *reward*.
-
-    Optional hooks are provided for entropy‑based smoothing, horizon
-    alignment, and collusion detection (currently only passive).
+    **New in this patch**
+    ---------------------
+    * `PRIOR_BLEND` – how much the *learned* weight vector influences the final
+      per‑step weights. Set to ~0.3 by default (tweakable).
+    * `propose()` now combines *both* the committee’s *current* confidences and
+      the *persistent* `self.weights` learned via policy‑gradient updates.
+    * Everything else (gradient update logic, helper hooks) is unchanged.
     """
 
+    PRIOR_BLEND: float = 0.3  # weight on learned prior vs fresh confidences
+
+    # ------------------------------ INIT ----------------------------------- #
     def __init__(
         self,
         members: List[Module],
         init_weights: List[float] | np.ndarray,
         action_dim: int,
         adapt_rate: float = 0.01,
-        consensus: ConsensusDetector | None = None,
-        collusion: CollusionAuditor | None = None,
-        horizon_aligner: TimeHorizonAligner | None = None,
+        consensus: Module | None = None,
+        collusion: Module | None = None,
+        horizon_aligner: Module | None = None,
         debug: bool = True,
-    ):
-        # --- committee definition ----------------------------------------- #
+    ) -> None:
         self.members = members
         self.weights = np.asarray(init_weights, np.float32)
         assert self.weights.shape == (len(members),)
 
-        # --- hyperparameters --------------------------------------------- #
         self.action_dim = action_dim
         self.adapt_rate = adapt_rate
 
-        # --- optional helpers -------------------------------------------- #
         self.consensus = consensus
         self.collusion = collusion
-        self.haligner = horizon_aligner
-        self.debug = debug
+        self.haligner  = horizon_aligner
+        self.debug     = debug
 
-        # --- step‑local caches ------------------------------------------- #
         self.last_alpha: np.ndarray | None = None
-        self._b = 0.0  # exponential moving baseline for advantage estimation
-        self._b_beta = 0.98
+        self._b       = 0.0   # moving baseline for REINFORCE advantage
+        self._b_beta  = 0.98
 
     # -------------------------------------------------------------------- #
-    # Public interface
+    # Main interaction surface
     # -------------------------------------------------------------------- #
     def propose(self, obs: Any) -> np.ndarray:
-        """Return blended action vector for observation *obs*.
+        """Return blended action vector for *obs* (see docstring for flow)."""
+        proposals, confidences = [], []
 
-        Flow:
-        1. Collect proposals and confidences from each member.
-        2. Optionally regularise confidences (entropy, horizon).
-        3. Blend proposals using the (normalised) confidences.
-        4. Save the final per‑member weights for the REINFORCE update.
-
-        Any member failure results in a zero proposal and default confidence.
-        """
-        proposals: list[np.ndarray] = []
-        confidences: list[float] = []
-
-        # -------------------- gather committee inputs -------------------- #
         for m in self.members:
-            # --- proposal ------------------------------------------------ #
+            # ------- proposal ---------------------------------------------
             try:
                 prop = m.propose_action(obs)
                 if prop.shape != (self.action_dim,):
-                    raise ValueError(
-                        f"Proposal shape {prop.shape} ≠ expected {(self.action_dim,)}"
-                    )
+                    raise ValueError("shape mismatch")
             except Exception as e:  # noqa: BLE001
                 if self.debug:
-                    print(f"[Arbiter] {m.__class__.__name__} failed: {e}")
+                    print(f"[Arbiter] {m.__class__.__name__} propose_error: {e}")
                 prop = np.zeros(self.action_dim, np.float32)
-
             proposals.append(prop)
 
-            # --- confidence --------------------------------------------- #
+            # ------- confidence -------------------------------------------
             try:
                 conf = float(m.confidence(obs))
                 if not np.isfinite(conf):
                     raise ValueError("non‑finite confidence")
             except Exception as e:  # noqa: BLE001
                 if self.debug:
-                    print(f"[Arbiter] {m.__class__.__name__} confidence error: {e}")
-                conf = 0.5  # neutral default
-
+                    print(f"[Arbiter] {m.__class__.__name__} conf_error: {e}")
+                conf = 0.5
             confidences.append(conf)
 
-        # -------------------- stack & normalise -------------------------- #
-        proposals_arr = np.stack(proposals, axis=0)  # (M, A)
-        confidences_arr = np.asarray(confidences, np.float32)
+        proposals_arr   = np.stack(proposals, axis=0)         # (M, A)
+        confidences_arr = np.asarray(confidences, np.float32) # (M,)
 
-        # --- optional entropy boost ------------------------------------- #
+        # ---- optional helpers -------------------------------------------
         if self.consensus is not None:
             confidences_arr = self.consensus.apply(confidences_arr)
-
-        # --- optional horizon alignment --------------------------------- #
         if self.haligner is not None:
             confidences_arr = self.haligner.apply(confidences_arr)
 
-        # --- final blend ------------------------------------------------- #
-        w = confidences_arr / (confidences_arr.sum() + 1e-8)
-        action = np.dot(w, proposals_arr)  # (A,)
+        # ---- blend prior (learned) and likelihood (current confidence) ---
+        prior = self.weights / (self.weights.sum() + 1e-8)
+        like  = confidences_arr / (confidences_arr.sum() + 1e-8)
+        w_raw = (1.0 - self.PRIOR_BLEND) * like + self.PRIOR_BLEND * prior
+        w     = w_raw / (w_raw.sum() + 1e-8)
 
-        # guard against NaNs / infs
+        action = np.dot(w, proposals_arr)  # (A,)
         if not np.all(np.isfinite(action)):
             if self.debug:
-                print("[Arbiter] NaN detected in blended action → zeroing")
+                print("[Arbiter] NaN in blended action → zeroing")
             action = np.nan_to_num(action)
 
-        # Save for REINFORCE update
         self.last_alpha = w.copy()
         return action.astype(np.float32, copy=False)
 
+    # -------------------------------------------------------------------- #
     def update_reward(self, reward: float) -> None:
-        """Update committee weights from the observed *reward*."""
         if self.last_alpha is None:
             return
-
-        # --- advantage estimate ----------------------------------------- #
         self._b = self._b_beta * self._b + (1 - self._b_beta) * reward
-        adv = reward - self._b
-
-        grad = adv * (self.last_alpha - self.last_alpha.mean())
+        adv     = reward - self._b
+        grad    = adv * (self.last_alpha - self.last_alpha.mean())
         self.weights += self.adapt_rate * grad
-
-        # --- stabilise --------------------------------------------------- #
-        self.weights = np.clip(self.weights, 1e-4, None)
+        self.weights  = np.clip(self.weights, 1e-4, None)
         self.weights /= self.weights.sum()
         self.adapt_rate = max(1e-4, self.adapt_rate * 0.999)
-
-        # Clear step‑local state
         self.last_alpha = None
 
-    # -------------------------------------------------------------------- #
-    # `Module` boiler‑plate
-    # -------------------------------------------------------------------- #
-    def reset(self) -> None:
-        self.last_alpha = None
+    # ------------ misc helpers (unchanged) ------------------------------ #
+    @property
+    def genome_dim(self) -> int: return len(self.weights)
+    def get_genome(self) -> np.ndarray: return self.weights.copy()
+    def set_genome(self, g: np.ndarray):
+        assert g.shape == (len(self.weights),)
+        self.weights = np.clip(g, 1e-4, None)
+        self.weights /= self.weights.sum()
 
-    def step(self, **kwargs):  # noqa: D401
-        """Disabled.  Use :py:meth:`propose` / :py:meth:`update_reward`."""
-        raise RuntimeError("Use propose()/update_reward()")
-
-    def get_observation_components(self) -> np.ndarray:
-        return self.weights.copy()
-
-    # -------------------------------------------------------------------- #
-    # Persistence helpers
-    # -------------------------------------------------------------------- #
-    def get_state(self):
-        """Return serialisable snapshot useful for checkpointing."""
-        return {"weights": self.weights}
-
-    def set_state(self, state):
-        self.weights = state.get("weights", np.zeros(len(self.weights)))
-        if self.weights.shape != (len(self.members),):
-            raise ValueError(
-                f"Invalid weights shape: {self.weights.shape}, "
-                f"expected {(len(self.members),)}"
-            )
+    # Module boiler‑plate --------------------------------------------------
+    def reset(self): self.last_alpha = None
+    def step(self, **kw): raise RuntimeError("use propose()/update_reward()")
+    def get_observation_components(self): return self.weights.copy()
+    def get_state(self): return {"weights": self.weights}
+    def set_state(self, st): self.set_genome(np.asarray(st.get("weights", self.weights)))

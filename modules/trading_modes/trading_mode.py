@@ -1,4 +1,4 @@
-#modules/trading_mode.py
+# modules/trading_mode.py
 
 from typing import List, Dict, Any, Optional
 import numpy as np
@@ -13,8 +13,8 @@ class TradingModeManager(Module):
     def __init__(self, initial_mode: str = "safe", window: int = 50, log_file: Optional[str] = None):
         assert initial_mode in self.MODES
         self.mode = initial_mode
-        self.auto = True  # Default to auto mode
-        self.window = window  # Rolling stats window size
+        self.auto = True
+        self.window = window
         self.stats_history: List[Dict[str, Any]] = []
         self.log_file = log_file or "mode_manager.log"
         self._setup_logger()
@@ -153,10 +153,19 @@ class TradingModeManager(Module):
         arr = np.zeros(len(self.MODES), np.float32)
         arr[self.MODES.index(self.mode)] = 1.0
         return arr
+
     def get_state(self):
         return {
-            "current_mode": self.current_mode,
+            "mode": self.mode,
+            "auto": self.auto,
+            "stats_history": self.stats_history,
+            "last_switch_time": self.last_switch_time,
+            "last_reason": self.last_reason,
         }
 
     def set_state(self, state):
-        self.current_mode = state.get("current_mode", "safe")
+        self.mode = state.get("mode", "safe")
+        self.auto = state.get("auto", True)
+        self.stats_history = state.get("stats_history", [])
+        self.last_switch_time = state.get("last_switch_time", None)
+        self.last_reason = state.get("last_reason", "")

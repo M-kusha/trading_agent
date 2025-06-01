@@ -56,3 +56,9 @@ class TradeExplanationAuditor(Module):
         if self.explanations and self.explanations[-1].get("confidence") is not None:
             return np.array([self.explanations[-1]["confidence"]], dtype=np.float32)
         return np.zeros(1, dtype=np.float32)
+    
+    def get_state(self):
+        return {"explanations": self.explanations.copy()}
+
+    def set_state(self, state):
+        self.explanations = state.get("explanations", []).copy()

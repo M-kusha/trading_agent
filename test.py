@@ -2,7 +2,7 @@ import logging
 import pytest
 import pandas as pd
 from unittest.mock import patch
-from envs.ppo_env import EnhancedTradingEnv
+from envs.env import EnhancedTradingEnv
 import os
 
 @pytest.fixture

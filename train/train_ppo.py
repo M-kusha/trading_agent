@@ -64,7 +64,7 @@ from optuna.pruners import MedianPruner
 from optuna.exceptions import TrialPruned
 
 
-from envs.ppo_env import EnhancedTradingEnv
+from envs.env import EnhancedTradingEnv
 from utils.data_utils import load_data
 from utils.meta_learning import AdaptiveMetaLearner
 

@@ -54,7 +54,7 @@ from stable_baselines3.common.evaluation import evaluate_policy
 
 from tqdm import tqdm
 
-from envs.ppo_env import EnhancedTradingEnv
+from envs.env import EnhancedTradingEnv
 from utils.data_utils import load_data
 from utils.meta_learning import AdaptiveMetaLearner, MetaLearningCallback
 import logging.handlers

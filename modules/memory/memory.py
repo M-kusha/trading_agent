@@ -1,105 +1,135 @@
 # modules/memory.py
 
-from typing import List
+from typing import List, Any, Dict, Optional
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.neighbors import NearestNeighbors
 from ..core.core import Module
+import random
+import copy
 
+# ─────────────────────────────────────────────────────────────
 class MistakeMemory(Module):
+    """Clusters losing trades and provides stats to the agent.
+
+    **Fixes introduced**
+    --------------------
+    * `interval` is accepted as an alias for `max_mistakes` to stay compatible
+      with the existing env constructor.
+    * `step()` now understands the *env*’s current call‑signature:
+        – If called with `trades=[…]` it extracts `(features, pnl)` pairs.
+        – The classic direct `(features, pnl)` call still works.
     """
-    Stores losing‑trade feature vectors & clusters them every `interval` episodes.
-    """
-    def __init__(self, interval: int, n_clusters: int = 3, debug=False):
-        self.interval = interval
-        self.n_clusters = n_clusters
-        self.debug = debug
+
+    def __init__(
+        self,
+        max_mistakes: int = 100,
+        n_clusters: int = 5,
+        *,
+        interval: int | None = None,   # <- backward‑compat alias
+        debug: bool = False,
+    ) -> None:
+        if interval is not None:  # prefer explicit param, otherwise fallback
+            max_mistakes = interval
+        self.max_mistakes = int(max_mistakes)
+        self.n_clusters   = int(n_clusters)
+        self.debug        = debug
         self.reset()
 
+    # ------------------------------------------------------------------ #
     def reset(self):
-            # start fresh each episode
-            self._records: List[np.ndarray] = []
-            # use k-means++ for more stable clustering
-            self._kmeans = KMeans(
-                n_clusters=self.n_clusters,
-                init='k-means++',
-                random_state=0
-            )
-            self._episode_counter = 0
-            self._last_features: np.ndarray | None = None
+        self._buf: List[tuple[np.ndarray, float, dict]] = []  # [(features, pnl, info)]
+        self._km: KMeans | None = None
+        self._mean_dist = 0.0
+        self._last_dist = 0.0
 
-    def cluster_mistakes(self, episode: int) -> None:
-        """Explicit trigger used by older tests."""
-        self._episode_counter = episode - 1
-        self.step(episode_done=True)
+    # ------------------------------------------------------------------ #
+    def step(self, *, trades: List[dict] | None = None,
+                   features: np.ndarray | None = None,
+                   pnl: float | None = None,
+                   info: dict | None = None, **kw):
+        """Register new mistakes.
 
-    def cluster_match_penalty(self, features: np.ndarray) -> float:
-        if not hasattr(self._kmeans, 'cluster_centers_'):
-            return 0.0
-            
-        f = np.asarray(features, np.float32).ravel()[:3]
-        if f.size < 3:
-            f = np.pad(f, (0, 3-f.size))
-        d = np.linalg.norm(self._kmeans.cluster_centers_ - f, axis=1)
-        return float(np.min(d) / (np.max(d) + 1e-8))
-    
-    def step(self, trades: List[dict] | None = None, episode_done: bool = False):
-        if trades:
-            losers = [tr for tr in trades if tr.get("pnl", 0.0) < 0 and "features" in tr]
-            for tr in losers:
-                vec = np.asarray(tr["features"], np.float32)
-                if vec.size != 3:
-                    vec = np.pad(vec, (0, 3 - vec.size))[:3]
-                self._records.append(vec)
-                self._last_features = vec
+        Parameters
+        ----------
+        trades  : list of trade‑dicts as passed by the env (optional)
+        features: single feature vector (fallback path)
+        pnl     : scalar PnL associated with *features*
+        info    : arbitrary extra dict
+        """
+        # ------- env pathway: a list of trade dicts ---------------------
+        if trades is not None:
+            for tr in trades:
+                self.step(features=tr.get("features"), pnl=tr.get("pnl"), info=tr)
+            return
 
-        if episode_done:
-            self._episode_counter += 1
-            if self._episode_counter % self.interval == 0 and len(self._records) >= self.n_clusters:
-                X = np.vstack(self._records)
-                try:
-                    # Fit on copy to preserve original kmeans object if fit fails
-                    new_kmeans = KMeans(n_clusters=self.n_clusters, random_state=0).fit(X)
-                    self._kmeans = new_kmeans
-                    if self.debug:
-                        print(f"[MistakeMemory] clustered on {len(X)} samples")
-                except Exception as e:
-                    if self.debug:
-                        print(f"[MistakeMemory] clustering failed: {str(e)}")
+        # ------- direct pathway ----------------------------------------
+        if features is None or pnl is None or pnl >= 0:
+            return  # only record *losing* trades with valid data
+        entry = (np.asarray(features, np.float32), float(pnl), info or {})
+        self._buf.append(entry)
+        if len(self._buf) > self.max_mistakes:
+            self._buf = self._buf[-self.max_mistakes:]
+        self._fit_clusters()
 
+    # ------------------------------------------------------------------ #
+    def _fit_clusters(self):
+        if len(self._buf) < self.n_clusters:
+            self._km = None; self._mean_dist = self._last_dist = 0.0; return
+        X = np.stack([f for f, _, _ in self._buf])
+        self._km = KMeans(n_clusters=self.n_clusters, n_init=10, random_state=42)
+        self._km.fit(X)
+        d = self._km.transform(X)
+        mins = d.min(axis=1)
+        self._mean_dist = float(mins.mean())
+        self._last_dist = float(d[-1].min())
+        if self.debug:
+            print(f"[MistakeMemory] fitted {len(X)} pts – mean={self._mean_dist:.4f}, last={self._last_dist:.4f}")
+
+    # ------------------------------------------------------------------ #
     def get_observation_components(self) -> np.ndarray:
-        if (self._last_features is None or 
-            not hasattr(self._kmeans, 'cluster_centers_') or 
-            self._kmeans.cluster_centers_.size == 0):
-            return np.zeros(1, np.float32)
-            
-        try:
-            d = np.linalg.norm(self._kmeans.cluster_centers_ - self._last_features, axis=1)
-            pen = float(np.min(d) / (np.max(d) + 1e-8))
-            return np.array([pen], np.float32)
-        except Exception:
-            return np.zeros(1, np.float32)
+        k = float(self.n_clusters if self._km is not None else 0)
+        return np.array([k, self._mean_dist, self._last_dist], np.float32)
 
-    def record(self, trade: dict) -> None:
-        """Wrapper expected by unit‑tests."""
-        self.step(trades=[trade])
-
+    # State helpers unchanged ------------------------------------------ #
     def get_state(self):
-        return {
-            "records": self._records,
-            "kmeans": self._kmeans,  # Save the KMeans object
+        st = {
+            "buf": [(f.tolist(), pnl, info) for f, pnl, info in self._buf],
+            "mean": self._mean_dist,
+            "last": self._last_dist,
         }
+        if self._km is not None:
+            st["km_centers"] = self._km.cluster_centers_.tolist()
+        return st
 
-    def set_state(self, state):
-        self._records = state.get("records", [])
-        self._kmeans = state.get("kmeans", KMeans(n_clusters=self.n_clusters))
+    def set_state(self, st):
+        self._buf       = [(np.asarray(f, np.float32), pnl, info) for f, pnl, info in st.get("buf", [])]
+        self._mean_dist = float(st.get("mean", 0.0))
+        self._last_dist = float(st.get("last", 0.0))
+        if "km_centers" in st:
+            self._km = KMeans(n_clusters=self.n_clusters, n_init=10, random_state=42)
+            self._km.cluster_centers_ = np.asarray(st["km_centers"], np.float32)
 
-# ─── all_modules.py ─ MemoryCompressor ─────────────────────────────────────────
+    # Neuro‑evolution hooks unchanged ---------------------------------- #
+    def mutate(self, noise_std=0.05):
+        if self._km is not None:
+            self._km.cluster_centers_ += np.random.randn(*self._km.cluster_centers_.shape).astype(np.float32) * noise_std
+    def crossover(self, other: "MistakeMemory"):
+        child = MistakeMemory(self.max_mistakes, self.n_clusters, debug=self.debug)
+        if self._km is not None and other._km is not None:
+            c1, c2 = self._km.cluster_centers_, other._km.cluster_centers_
+            mix = np.where(np.random.rand(*c1.shape) > 0.5, c1, c2)
+            child._km = KMeans(n_clusters=self.n_clusters, n_init=10, random_state=42)
+            child._km.cluster_centers_ = mix
+        return child
 
-
-
+# ─────────────────────────────────────────────────────────────
 class MemoryCompressor(Module):
+    """
+    Compresses feature memory using PCA, outputs an "intuition vector" representing the main axes of variation.
+    Now includes evolutionary mutation/crossover for the intuition vector.
+    """
     def __init__(self, compress_interval: int, n_components: int, debug=False):
         self.compress_interval = compress_interval
         self.n_components      = n_components
@@ -111,76 +141,68 @@ class MemoryCompressor(Module):
         self.intuition_vector         = np.zeros(self.n_components, np.float32)
 
     def step(self, *_, **__):
-        # no‐op for pipeline
         return self.intuition_vector.copy()
 
     def compress(self, episode: int, trades: List[dict]):
-            # accumulate feature vectors
-            for tr in trades:
-                if "features" in tr:
-                    vec = np.asarray(tr["features"], np.float32)
-                    # pad/trim to n_components
-                    if vec.size != self.n_components:
-                        vec = np.pad(
-                            vec,
-                            (0, max(0, self.n_components - vec.size))
-                        )[: self.n_components]
-                    self.memory.append(vec)
+        for tr in trades:
+            if "features" in tr:
+                vec = np.asarray(tr["features"], np.float32)
+                if vec.size != self.n_components:
+                    vec = np.pad(vec, (0, max(0, self.n_components - vec.size)))[:self.n_components]
+                self.memory.append(vec)
+        if episode % self.compress_interval != 0 or len(self.memory) < self.n_components:
+            return
 
-            # only run PCA every compress_interval steps
-            if episode % self.compress_interval != 0 or len(self.memory) < self.n_components:
-                return
-
-            X = np.vstack(self.memory)  # shape (T, n_components)
-
-            # 1) trivial case: all rows identical → mean
-            if X.shape[0] > 1 and np.allclose(X, X[0], atol=1e-8):
+        X = np.vstack(self.memory)
+        if X.shape[0] > 1 and np.allclose(X, X[0], atol=1e-8):
+            self.intuition_vector = X.mean(axis=0).astype(np.float32)
+        else:
+            stds = X.std(axis=0)
+            keep = stds > 0.0
+            if keep.sum() == 0:
                 self.intuition_vector = X.mean(axis=0).astype(np.float32)
-                if self.debug:
-                    print(f"[MemoryCompressor] skip PCA (all rows identical)")
             else:
-                stds = X.std(axis=0)
-                keep = stds > 0.0
-                if keep.sum() == 0:
-                    # no variance anywhere
-                    self.intuition_vector = X.mean(axis=0).astype(np.float32)
-                    if self.debug:
-                        print(f"[MemoryCompressor] skip PCA (all cols constant)")
-                else:
-                    # run PCA on varying dims
-                    X2 = X[:, keep]
-                    n_comp = min(self.n_components, X2.shape[1])
-                    pca = PCA(n_components=n_comp)
-                    Z   = pca.fit_transform(X2)
-
-                    # **Preserve** original means on dropped dims
-                    X_mean = X.mean(axis=0)
-                    iv = X_mean.astype(np.float32).copy()
-                    iv[keep] = Z.mean(axis=0).astype(np.float32)
-
-                    self.intuition_vector = iv
-                    if self.debug:
-                        print(f"[MemoryCompressor] compressed {X.shape[0]}→{n_comp} dims")
-
-            # clear for next cycle
-            self.memory.clear()
+                X2 = X[:, keep]
+                n_comp = min(self.n_components, X2.shape[1])
+                pca = PCA(n_components=n_comp)
+                Z   = pca.fit_transform(X2)
+                X_mean = X.mean(axis=0)
+                iv = X_mean.astype(np.float32).copy()
+                iv[keep] = Z.mean(axis=0).astype(np.float32)
+                self.intuition_vector = iv
+        self.memory.clear()
 
     def get_observation_components(self) -> np.ndarray:
         return self.intuition_vector.copy()
-    
+
     def get_state(self):
         return {
-            "memory": self.memory,
-            "intuition_vector": self.intuition_vector,
+            "memory": [m.tolist() for m in self.memory],
+            "intuition_vector": self.intuition_vector.tolist(),
         }
 
     def set_state(self, state):
-        self.memory = state.get("memory", [])
-        self.intuition_vector = state.get("intuition_vector", np.zeros(self.n_components, np.float32))
+        self.memory = [np.asarray(m, np.float32) for m in state.get("memory", [])]
+        self.intuition_vector = np.asarray(state.get("intuition_vector", np.zeros(self.n_components, np.float32)), np.float32)
 
+    # --- NEUROEVOLUTION INTERFACE ---
+    def mutate(self, noise_std=0.05):
+        noise = np.random.normal(0, noise_std, self.intuition_vector.shape).astype(np.float32)
+        self.intuition_vector += noise
+        if self.debug:
+            print("[MemoryCompressor] Mutated intuition vector")
 
+    def crossover(self, other: "MemoryCompressor"):
+        child = MemoryCompressor(self.compress_interval, self.n_components, self.debug)
+        mask = np.random.rand(*self.intuition_vector.shape) > 0.5
+        child.intuition_vector = np.where(mask, self.intuition_vector, other.intuition_vector)
+        return child
 
+# ─────────────────────────────────────────────────────────────
 class HistoricalReplayAnalyzer(Module):
+    """
+    Placeholder for episodic replay analysis (now evolves its 'bonus' param).
+    """
     def __init__(self, interval: int=10, bonus: float=0.1, debug=False):
         self.interval = interval
         self.bonus    = bonus
@@ -195,8 +217,21 @@ class HistoricalReplayAnalyzer(Module):
     def get_observation_components(self) -> np.ndarray:
         return np.zeros(1, dtype=np.float32)
 
+    # --- NEUROEVOLUTION INTERFACE ---
+    def mutate(self, noise_std=0.05):
+        self.bonus = float(np.clip(self.bonus + np.random.normal(0, noise_std), 0.0, 1.0))
+        if self.debug:
+            print("[HRA] Mutated bonus parameter")
+    def crossover(self, other: "HistoricalReplayAnalyzer"):
+        child = HistoricalReplayAnalyzer(self.interval, self.bonus, self.debug)
+        child.bonus = random.choice([self.bonus, other.bonus])
+        return child
 
+# ─────────────────────────────────────────────────────────────
 class PlaybookMemory(Module):
+    """
+    Stores feature-action-PnL tuples, recalls past profit by similarity, evolves by k-nearest config.
+    """
     def __init__(self, max_entries: int=500, k: int=5, debug=False):
         self.max_entries = max_entries
         self.k           = k
@@ -204,11 +239,14 @@ class PlaybookMemory(Module):
         self._features   = []
         self._pnls       = []
         self._nbrs       = None
+
     def reset(self):
         self._features.clear()
         self._pnls.clear()
         self._nbrs = None
+
     def step(self, **kwargs): pass
+
     def record(self, features: np.ndarray, actions: np.ndarray, pnl: float):
         if len(self._features) >= self.max_entries:
             self._features.pop(0)
@@ -217,18 +255,33 @@ class PlaybookMemory(Module):
         self._pnls.append(pnl)
         if len(self._features) >= self.k:
             X = np.vstack(self._features)
-            self._nbrs = NearestNeighbors(n_neighbors=min(self.k,len(X))).fit(X)
+            self._nbrs = NearestNeighbors(n_neighbors=min(self.k, len(X))).fit(X)
+
     def recall(self, features: np.ndarray) -> float:
         if self._nbrs is None: return 0.0
         _, idx = self._nbrs.kneighbors(features.reshape(1,-1))
         vals = [self._pnls[i] for i in idx[0]]
         return float(np.mean(vals))
+
     def get_observation_components(self) -> np.ndarray:
         return np.zeros(1, dtype=np.float32)
 
+    # --- NEUROEVOLUTION INTERFACE ---
+    def mutate(self):
+        # Randomly mutate k within allowed bounds
+        old_k = self.k
+        self.k = int(np.clip(self.k + np.random.choice([-1, 1]), 1, self.max_entries))
+        if self.debug:
+            print(f"[PlaybookMemory] Mutated k: {old_k} -> {self.k}")
+    def crossover(self, other: "PlaybookMemory"):
+        child = PlaybookMemory(self.max_entries, random.choice([self.k, other.k]), self.debug)
+        return child
 
-
+# ─────────────────────────────────────────────────────────────
 class MemoryBudgetOptimizer(Module):
+    """
+    Evolves memory size allocation limits for trades, mistakes, and plays.
+    """
     def __init__(self, max_trades: int, max_mistakes: int, max_plays: int, debug=False):
         self.max_trades, self.max_mistakes, self.max_plays = max_trades, max_mistakes, max_plays
         self.debug = debug
@@ -237,8 +290,24 @@ class MemoryBudgetOptimizer(Module):
         pass
 
     def step(self, env=None, **kwargs):
-        # pipeline may pass env=current_env here; no-op for now
         return
 
     def get_observation_components(self) -> np.ndarray:
         return np.zeros(1, dtype=np.float32)
+
+    # --- NEUROEVOLUTION INTERFACE ---
+    def mutate(self):
+        # Mutate one of the memory limits randomly
+        param = random.choice(['max_trades', 'max_mistakes', 'max_plays'])
+        old_val = getattr(self, param)
+        setattr(self, param, max(1, old_val + random.choice([-1, 1])))
+        if self.debug:
+            print(f"[MemoryBudgetOptimizer] Mutated {param}: {old_val} -> {getattr(self, param)}")
+    def crossover(self, other: "MemoryBudgetOptimizer"):
+        child = MemoryBudgetOptimizer(
+            max_trades=random.choice([self.max_trades, other.max_trades]),
+            max_mistakes=random.choice([self.max_mistakes, other.max_mistakes]),
+            max_plays=random.choice([self.max_plays, other.max_plays]),
+            debug=self.debug
+        )
+        return child

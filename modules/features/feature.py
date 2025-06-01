@@ -1,33 +1,3 @@
-# modules/feature.py
-
-import numpy as np
-import torch, torch.nn as nn, torch.nn.functional as F
-from ..core.core import Module
-
-class AdvancedFeatureEngine(Module):
-    def __init__(self, window_sizes=[7, 14, 28], debug=False):
-        self.windows = window_sizes
-        self.debug = debug
-        self.last_feats = np.zeros(len(self.windows) + 1, np.float32)
-
-    def reset(self):
-        self.last_feats[:] = 0.0          # ← ensures fresh episode starts clean
-
-    def step(self, **kwargs): pass       # not used directly by pipeline
-
-    def transform(self, price_series: np.ndarray) -> np.ndarray:
-        feats = []
-        for w in self.windows:
-            block = price_series[-w:] if len(price_series) >= w else price_series
-            feats.append(np.std(block).astype(np.float32))
-        spread = np.mean(np.diff(price_series)).astype(np.float32) if len(price_series) > 1 else 0.0
-        feats.append(spread)
-        self.last_feats = np.array(feats, np.float32)
-        return self.last_feats
-
-    def get_observation_components(self) -> np.ndarray:
-        return self.last_feats.copy()
-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -35,6 +5,46 @@ import torch.nn.functional as F
 from ..core.core import Module
 from typing import Optional
 
+# ─────────────────────────────────────────────────────────────
+class AdvancedFeatureEngine(Module):
+    def __init__(self, window_sizes=[7, 14, 28], debug=False):
+        self.windows = window_sizes
+        self.debug = debug
+        self.last_feats = np.zeros(len(self.windows) + 1, np.float32)
+
+    def reset(self):
+        self.last_feats[:] = 0.0
+
+    def step(self, **kwargs):
+        pass  # Not used directly, present for interface compatibility
+
+    def transform(self, price_series: np.ndarray) -> np.ndarray:
+        # Ensure valid input
+        price_series = np.asarray(price_series, dtype=np.float32)
+        feats = []
+        for w in self.windows:
+            block = price_series[-w:] if len(price_series) >= w else price_series
+            if len(block) == 0 or np.any(np.isnan(block)) or np.any(np.isinf(block)):
+                val = 0.0
+            else:
+                val = np.std(block).astype(np.float32)
+            feats.append(np.nan_to_num(val, nan=0.0, posinf=1e6, neginf=-1e6))
+        if len(price_series) > 1:
+            spread = np.mean(np.diff(price_series)).astype(np.float32)
+        else:
+            spread = 0.0
+        feats.append(np.nan_to_num(spread, nan=0.0, posinf=1e6, neginf=-1e6))
+        self.last_feats = np.array(feats, np.float32)
+        if self.debug:
+            print(f"[AFE] windows={self.windows}, feats={self.last_feats}")
+        return self.last_feats
+
+    def get_observation_components(self) -> np.ndarray:
+        # Always returns valid shape, NaN/Inf-safe
+        arr = np.nan_to_num(self.last_feats, nan=0.0, posinf=1e6, neginf=-1e6)
+        return arr.copy()
+
+# ─────────────────────────────────────────────────────────────
 class MultiScaleFeatureEngine(Module):
     def __init__(
         self,
@@ -42,13 +52,10 @@ class MultiScaleFeatureEngine(Module):
         embed_dim: int = 32,
         debug: bool = False,
     ):
-        self.afe   = afe
+        self.afe = afe
         self.debug = debug
-
-        # input dim = (# windows in AFE) + 1
         in_dim = len(afe.windows) + 1
 
-        # ─── Replace simple Linear with Linear→ReLU→LayerNorm ───────────────
         self.proj = nn.Sequential(
             nn.Linear(in_dim, embed_dim),
             nn.ReLU(),
@@ -57,19 +64,20 @@ class MultiScaleFeatureEngine(Module):
         self.to_q = nn.Linear(embed_dim, embed_dim)
         self.to_k = nn.Linear(embed_dim, embed_dim)
         self.to_v = nn.Linear(embed_dim, embed_dim)
-        self.out  = nn.Linear(embed_dim, embed_dim)
+        self.out = nn.Linear(embed_dim, embed_dim)
 
-        # device handling
+        # Proper device handling (can add CUDA support if needed)
         self.device = torch.device("cpu")
+        self._move_to_device()
+
+        self.last_embedding = np.zeros(embed_dim, dtype=np.float32)
+
+    def _move_to_device(self):
         for m in (self.proj, self.to_q, self.to_k, self.to_v, self.out):
             m.to(self.device)
 
-        # last embedding placeholder
-        self.last_embedding = np.zeros(embed_dim, dtype=np.float32)
-
     def reset(self):
-        # nothing persistent to flush
-        pass
+        self.last_embedding[:] = 0.0
 
     def step(
         self,
@@ -77,45 +85,45 @@ class MultiScaleFeatureEngine(Module):
         price_h4: Optional[np.ndarray] = None,
         price_d1: Optional[np.ndarray] = None,
     ):
-        """
-        3-scale fusion:
-         - if a timeframe is missing, fall back sensibly:
-           H4→H1, D1→H4→H1
-        """
         def _to_ser(arr: Optional[np.ndarray]) -> np.ndarray:
-            if arr is None:
+            if arr is None or len(arr) == 0:
                 return np.zeros(1, dtype=np.float32)
-            return np.asarray(arr, np.float32)
+            arr = np.asarray(arr, dtype=np.float32)
+            arr = np.nan_to_num(arr, nan=0.0, posinf=1e6, neginf=-1e6)
+            return arr
 
-        # ensure numeric arrays
+        # Timeframe fallback logic
         h1 = _to_ser(price_h1)
-        h4 = _to_ser(price_h4) if price_h4 is not None else h1
-        d1 = _to_ser(price_d1) if price_d1 is not None else h4
+        h4 = _to_ser(price_h4) if price_h4 is not None and len(price_h4) > 0 else h1
+        d1 = _to_ser(price_d1) if price_d1 is not None and len(price_d1) > 0 else h4
 
-        # extract AFE features at each scale
-        f1 = self.afe.transform(h1)
-        f4 = self.afe.transform(h4)
-        fD = self.afe.transform(d1)
+        # Extract AFE features at each scale (robust to NaN/Inf)
+        f1 = np.nan_to_num(self.afe.transform(h1), nan=0.0, posinf=1e6, neginf=-1e6)
+        f4 = np.nan_to_num(self.afe.transform(h4), nan=0.0, posinf=1e6, neginf=-1e6)
+        fD = np.nan_to_num(self.afe.transform(d1), nan=0.0, posinf=1e6, neginf=-1e6)
 
-        # project & self-attend
+        # Project & self-attend (always safe for batch dim)
         X = torch.stack([
             self.proj(torch.from_numpy(f1).to(self.device)),
             self.proj(torch.from_numpy(f4).to(self.device)),
             self.proj(torch.from_numpy(fD).to(self.device)),
-        ], dim=0)  # shape (3, embed_dim)
+        ], dim=0)  # (3, embed_dim)
 
         Q, K, V = self.to_q(X), self.to_k(X), self.to_v(X)
-        scores  = (Q @ K.transpose(-2, -1)) / np.sqrt(Q.shape[-1])
+        scores = (Q @ K.transpose(-2, -1)) / np.sqrt(Q.shape[-1])
         weights = torch.softmax(scores, dim=-1)
-        fused   = weights @ V
+        fused = weights @ V
 
-        # aggregate and output
         agg = fused.mean(dim=0)
         out = self.out(agg).detach().cpu().numpy().astype(np.float32)
 
+        out = np.nan_to_num(out, nan=0.0, posinf=1e6, neginf=-1e6)
         self.last_embedding = out
+
         if self.debug:
-            print(f"[MSFE] embed={out}")
+            print(f"[MSFE] H1={f1}, H4={f4}, D1={fD}, embed={out}")
 
     def get_observation_components(self) -> np.ndarray:
-        return self.last_embedding.copy()
+        # Always returns valid shape, NaN/Inf safe
+        arr = np.nan_to_num(self.last_embedding, nan=0.0, posinf=1e6, neginf=-1e6)
+        return arr.copy()

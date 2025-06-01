@@ -14,7 +14,7 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 # ==== Imports ====
 from live_connector import LiveDataConnector
-from envs.ppo_env import EnhancedTradingEnv
+from envs.env import EnhancedTradingEnv
 from stable_baselines3 import PPO, SAC, TD3
 from modules.strategy.voting import StrategyArbiter
 from modules.position.position import PositionManager
