@@ -3,19 +3,17 @@ import os
 import warnings
 
 # Deep learning libraries (TensorFlow/Keras/PyTorch) backend spam
-# os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"           # Suppress TensorFlow messages
-# os.environ["KMP_WARNINGS"] = "0"                   # Suppress OpenMP warnings
-# os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"        # Suppress duplicate lib error
-# os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"          # Suppress TF performance warnings
-# os.environ["CUDA_VISIBLE_DEVICES"] = ""            # Optional: pretend no CUDA, removes some CUDA warnings
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"           # Suppress TensorFlow messages
+os.environ["KMP_WARNINGS"] = "0"                   # Suppress OpenMP warnings
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"        # Suppress duplicate lib error
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"          # Suppress TF performance warnings
+os.environ["CUDA_VISIBLE_DEVICES"] = ""            # Pretend no CUDA, removes CUDA warnings
 
-# # Ignore Python runtime warnings for numpy, pandas, etc.
-# warnings.filterwarnings("ignore", category=RuntimeWarning)
-# warnings.filterwarnings("ignore", category=FutureWarning)
-# warnings.filterwarnings("ignore", category=UserWarning)
-# os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  
-# # also silence glog-based logs from cuDNN/cuBLAS
-# os.environ["GLOG_minloglevel"]   = "3"
+# Ignore Python runtime warnings for numpy, pandas, etc.
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+os.environ["GLOG_minloglevel"] = "3"               # Silence glog-based logs from cuDNN/cuBLAS
 
 # now suppress Abseil’s Python-side warnings
 from absl import logging as absl_logging
@@ -23,12 +21,31 @@ absl_logging.set_verbosity(absl_logging.ERROR)
 # prevent that “WARNING: All log messages before absl::InitializeLog()…” banner
 absl_logging._warn_preinit_stderr = False
 
-# Optionally, if you really want to suppress *all* stderr output (not just warnings):
-# sys.stderr = open(os.devnull, 'w')
+# === Set up file-based logging for ComplianceModule and root warnings ===
+# 1) Ensure the logs directory exists
+os.makedirs("logs", exist_ok=True)
+
+# 2) Create a common formatter
+import logging
+formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
+# 3) ComplianceModule logger → logs/compliance.log (DEBUG+)
+compliance_logger = logging.getLogger("ComplianceModule")
+compliance_logger.setLevel(logging.DEBUG)
+fh_compliance = logging.FileHandler("logs/compliance.log", mode="a", encoding="utf-8")
+fh_compliance.setFormatter(formatter)
+compliance_logger.addHandler(fh_compliance)
+
+# 4) Root logger → logs/root_warnings.log (WARNING+)
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.WARNING)
+fh_root = logging.FileHandler("logs/root_warnings.log", mode="a", encoding="utf-8")
+fh_root.setFormatter(formatter)
+root_logger.addHandler(fh_root)
+# ========================================================================
 
 # Now do your standard imports
 import random
-import logging
 from sys import platform
 import argparse
 from dataclasses import dataclass
@@ -58,8 +75,11 @@ from envs.env import EnhancedTradingEnv
 from utils.data_utils import load_data
 from utils.meta_learning import AdaptiveMetaLearner, MetaLearningCallback
 import logging.handlers
-# from torch.utils.tensorboard import SummaryWriter
 from tensorboardX import SummaryWriter
+
+from tqdm import tqdm
+from stable_baselines3.common.callbacks import BaseCallback
+
 
 
 @dataclass
@@ -180,8 +200,6 @@ def log_training_progress(logs: List[Dict[str, Any]], step: int):
     env_logger.info(msg)
     score_logger.info(msg)
 
-from tqdm import tqdm
-from stable_baselines3.common.callbacks import BaseCallback
 
 class LiveTqdmCallback(BaseCallback):
     def __init__(self, total_timesteps: int, trial_id: int, print_freq: int = 500):

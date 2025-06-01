@@ -40,7 +40,7 @@ class ComplianceModule(Module):
         import logging
         lg = logging.getLogger("ComplianceModule")
         if not lg.handlers:
-            h = logging.FileHandler("compliance.log")
+            h = logging.FileHandler("logs/compliance.log")
             h.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
             lg.addHandler(h)
         lg.setLevel(logging.DEBUG)

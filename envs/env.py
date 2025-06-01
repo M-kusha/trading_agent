@@ -3,6 +3,7 @@ from __future__ import annotations
 
 # ─────────────────────────── Std-lib ──────────────────────────────────
 from itertools import combinations
+import math
 import json, os, copy, random, logging, pickle
 from typing import Any, Dict, List
 
@@ -58,6 +59,17 @@ from modules.risk.risk_monitor import (
 )
 from modules.external.news_sentiment import NewsSentimentModule
 
+# ─────────────────────────── Logger setup for "SGP" ──────────────────────────
+# Capture all "SGP" logs into a separate file, and prevent console output.
+sgp_logger = logging.getLogger("SGP")
+if not sgp_logger.handlers:
+    sgp_handler = logging.FileHandler("logs/sgp.log")
+    sgp_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    sgp_handler.setFormatter(sgp_formatter)
+    sgp_logger.addHandler(sgp_handler)
+sgp_logger.propagate = False
+sgp_logger.setLevel(logging.INFO)
+
 # ╔═════════════════════════════════════════════════════════════════════╗
 # ║                         Helper utilities                           ║
 # ╚═════════════════════════════════════════════════════════════════════╝
@@ -112,16 +124,17 @@ class EnhancedTradingEnv(gym.Env):
         checkpoint_dir: str = "checkpoints",
     ):
         super().__init__()
-        # Logger setup
+
+        # ──────────────── Logger setup for EnhancedTradingEnv ─────────────────
         self.logger = logging.getLogger("EnhancedTradingEnv")
         if not self.logger.handlers:
-            handler = logging.FileHandler("env.log")
+            handler = logging.FileHandler("logs/env.log")
             formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
-        # Prevent any records from propagating up to the root logger (so nothing prints to console)
-        self.logger.propagate = False
         self.logger.setLevel(logging.DEBUG)
+        # Prevent propagation to the root logger (so logs won’t also print to console)
+        self.logger.propagate = False
         self.logger.info("Logger initialized")
 
         # Episode parameters
@@ -142,7 +155,7 @@ class EnhancedTradingEnv(gym.Env):
         self.consensus_max = 0.5     # Reduced from 0.6
         self.max_episodes   = 10000
         self.ep_step = 0
-            # Data
+        # Data
         self.orig_data = data_dict
         self.data = copy.deepcopy(data_dict)
         self.instruments = list(data_dict.keys())
@@ -159,18 +172,18 @@ class EnhancedTradingEnv(gym.Env):
 
         self.open_positions    = getattr(self.position_manager, "positions", [])
         self.reward_shaper     = RiskAdjustedReward(self.initial_balance, env=self, debug=debug)
-        action_dim = 2 * len(self.instruments)          # already defined a few lines later
+        action_dim = 2 * len(self.instruments)
         self.liquidity_layer = LiquidityHeatmapLayer(
             action_dim=action_dim,
             debug=debug
-)
+        )
         self.risk_controller   = DynamicRiskController({
             "freeze_counter": 0, "freeze_duration": 5,
             "vol_history_len": 100, "dd_threshold": 0.2,
             "vol_ratio_threshold": 1.5,
-        }, debug=debug, action_dim=action_dim)  
+        }, debug=debug, action_dim=action_dim)
 
-        self.meta_rl = None 
+        self.meta_rl = None
 
         # Memory / analysis
         self.mistake_memory    = MistakeMemory(interval=10, n_clusters=3, debug=debug)
@@ -188,7 +201,7 @@ class EnhancedTradingEnv(gym.Env):
         self.theme_detector    = MarketThemeDetector(self.instruments, 4, 100, debug=debug)
         self.fractal_confirm   = FractalRegimeConfirmation(100, debug=debug)
         self.time_risk_scaler  = TimeAwareRiskScaling(debug=debug)
-        
+
         self.visualizer        = VisualizationInterface(debug=debug)
 
         # Long-horizon & meta
@@ -276,8 +289,7 @@ class EnhancedTradingEnv(gym.Env):
 
         # Live-trading bookkeeping
         self.live_mode = False
-        # info = mt5.account_info()
-        info = None  # Placeholder for live mode; replace with actual MT5 call
+        info = None  # Placeholder for live mode
         real_bal = float(info.balance) if info and hasattr(info, "balance") else self.initial_balance
         self.balance = self.peak_balance = real_bal
 
@@ -305,7 +317,6 @@ class EnhancedTradingEnv(gym.Env):
     # ==================================================================
     def sanitize_obs(self, obs: np.ndarray) -> np.ndarray:
         return np.nan_to_num(obs, nan=0.0)  # Replace NaN with 0 or another default value
-
 
     def _blend_committee_votes(
         self,
@@ -420,7 +431,6 @@ class EnhancedTradingEnv(gym.Env):
         if getattr(self, "meta_rl", None) is not None:
             self.meta_rl.last_embedding = np.zeros_like(obs)
 
-
         # House-keeping
         self.votes_log = [{}]
         self.reasoning_trace = [""]
@@ -431,7 +441,6 @@ class EnhancedTradingEnv(gym.Env):
         self.logger.debug(f"Environment reset: initial balance={self.balance}, max steps={self.max_steps}")
 
         return obs, {}
-
 
     # ------------------------------------------------------------------
     #  Dummy input for very first observation
@@ -450,6 +459,7 @@ class EnhancedTradingEnv(gym.Env):
             "pnl":         0.0,
             "correlations": {},
         }
+
     # ==================================================================
     #  STEP
     # ==================================================================
@@ -585,7 +595,6 @@ class EnhancedTradingEnv(gym.Env):
                 return self._finalize_step([], actions, corr_dict, vol0, reward=0)
 
             # ── Execute trades for each instrument ─────────────────────────
-# ── Execute trades for each instrument ─────────────────────────
             trades = []
             for i, inst in enumerate(self.instruments):
                 intensity = actions[2*i]
@@ -602,7 +611,6 @@ class EnhancedTradingEnv(gym.Env):
                         tr["explanation"]     = self.explainer.last_explanation
                         tr["votes_by_sym_tf"] = votes_by_sym_tf
                         trades.append(tr)
-                        # Only log after we've confirmed compliance
                         self.logger.info(f"Executed trade for {inst}: {tr}")
                     else:
                         self.logger.debug(f"Dropped trade for {inst} due to compliance.")
@@ -612,7 +620,6 @@ class EnhancedTradingEnv(gym.Env):
             # Assign trades before finalizing
             self.trades = trades
             self.logger.info(f"Final trades list for this step: {self.trades}")
-
 
             # ── Neuro/meta logging ───────────────────────────────────────
             pnl = sum(t["pnl"] for t in trades)
@@ -645,8 +652,6 @@ class EnhancedTradingEnv(gym.Env):
         except Exception:
             self.logger.exception("Error in step()")
             raise
-
-
 
     def _finalize_step(self, trades, actions, corr_dict, vol0, reward):
         # Log entry to _finalize_step, including current trades list
@@ -770,11 +775,9 @@ class EnhancedTradingEnv(gym.Env):
 
         return obs, float(reward), terminated, False, info
 
-
-
     # ==================================================================
     #  Helper: full observation vector construction
-        # ==================================================================
+    # ==================================================================
     def _get_full_observation(self, data: Dict[str, Any]) -> np.ndarray:
         base = self.pipeline.step(data)
         pool = self.strategy_pool.get_observation_components()
@@ -799,9 +802,8 @@ class EnhancedTradingEnv(gym.Env):
                 obs = obs[:expected_dim]
         return obs
 
-
     # ==================================================================
-    #  Trade execution (live / simulated) — UNCHANGED except no self.mode
+    #  Trade execution (live / simulated)
     # ==================================================================
     def _execute_trade(
         self,
@@ -837,10 +839,8 @@ class EnhancedTradingEnv(gym.Env):
         size = abs(raw_size)
 
         # ─── Enforce max_pct cap ──────────────────────────────────────
-        # Max dollars risked = balance * max_pct
         point_val = self.point_value.get(instrument, 1.0)
         max_dollars = self.balance * self.position_manager.max_pct
-        # Convert to lots: dollars = lots * price * point_val
         max_lots = max_dollars / (price * point_val + 1e-12)
         if size > max_lots:
             self.logger.info(
@@ -854,63 +854,11 @@ class EnhancedTradingEnv(gym.Env):
             f"max_pct={self.position_manager.max_pct:.3f} | "
             f"raw_size={raw_size:.4f} lots | capped_size={size:.4f} lots"
         )
-
-        # ── LIVE TRADING BRANCH ───────────────────────────────────────
-        # if self.live_mode:
-        #     symbol = instrument.replace("/", "")
-        #     if not mt5.symbol_select(symbol, True):
-        #         self.logger.warning(f"Could not select {symbol}")
-        #         return {}
-        #     info = mt5.symbol_info(symbol)
-        #     if info is None:
-        #         self.logger.warning(f"No symbol info for {symbol}")
-        #         return {}
-        #     step = info.volume_step or 0.01
-        #     vmin = info.volume_min  or step
-        #     vmax = info.volume_max  or 100.0
-        #     size = math.floor(size / step) * step
-        #     if size < vmin:
-        #         self.logger.info(f"Signal too small ({size:.3f} < {vmin}) – FORCING MINIMUM SIZE")
-        #         size = vmin
-        #     size = min(size, vmax)
-        #     tick = mt5.symbol_info_tick(symbol)
-        #     if tick is None:
-        #         self.logger.warning(f"No tick for {symbol}")
-        #         return {}
-        #     price_live = tick.ask if intensity > 0 else tick.bid
-        #     request = {
-        #         "action":       mt5.TRADE_ACTION_DEAL,
-        #         "symbol":       symbol,
-        #         "volume":       size,
-        #         "type":         mt5.ORDER_TYPE_BUY if intensity > 0 else mt5.ORDER_TYPE_SELL,
-        #         "price":        price_live,
-        #         "deviation":    20,
-        #         "magic":        202406,
-        #         "comment":      "AI live trade",
-        #         "type_time":    mt5.ORDER_TIME_GTC,
-        #         "type_filling": mt5.ORDER_FILLING_IOC,
-        #     }
-        #     result = mt5.order_send(request)
-        #     if result.retcode != mt5.TRADE_RETCODE_DONE:
-        #         self.logger.warning(f"MT5 order failed: {result.comment}")
-        #         return {}
-        #     acc = mt5.account_info()
-        #     if acc and hasattr(acc, "balance"):
-        #         self.balance = float(acc.balance)
-        #         self.peak_balance = max(self.peak_balance, self.balance)
-        #     self.logger.info(
-        #         f"LIVE {'BUY' if intensity > 0 else 'SELL'} {symbol} "
-        #         f"{size:.2f} lot @ {price_live}"
-        #     )
-        #     return {
-        #         "instrument": instrument,
-        #         "pnl": 0.0,
-        #         "duration": 1,
-        #         "exit_reason": "executed",
-        #         "size": size if sign > 0 else -size,
-        #         "features": np.array([price_live, 0.0, 0.0], np.float32),
-        #     }
-
+         
+        # ─── Live vs Simulation ──────────────────────────────────────
+        if self.live_mode:
+            return self._execute_live_trade(instrument, size, intensity)
+        
         # ── SIMULATION / BACKTEST BRANCH ──────────────────────────────
         self.logger.info(f"[SIM] TRADE START {instrument} "
                          f"{'BUY' if sign > 0 else 'SELL'} {size:.3f} @ {price:.4f}")
@@ -958,7 +906,88 @@ class EnhancedTradingEnv(gym.Env):
             "size":        size if sign > 0 else -size,
             "features":    np.array([exit_price, pnl, hold_steps], np.float32),
         }
+    
+    # # ==================================================================
+    # #  Live trade execution via MetaTrader5
+    # # ==================================================================
+    # def _execute_live_trade(self, instrument: str, size: float, intensity: float) -> dict:
+    #     """
+    #     Execute a single live trade via MetaTrader5.
+    #     Assumes:
+    #     - `self.live_mode` is True
+    #     - `self.logger` is available for logging
+    #     - `self.balance` and `self.peak_balance` track account balance
+    #     - `self.point_value` is defined (if needed for any conversions)
+    #     Returns a trade dict on success, or an empty dict on failure.
+    #     """
+    #     # Convert symbol and ensure it's selected
+    #     symbol = instrument.replace("/", "")
+    #     if not mt5.symbol_select(symbol, True):
+    #         self.logger.warning(f"Could not select {symbol}")
+    #         return {}
 
+    #     info = mt5.symbol_info(symbol)
+    #     if info is None:
+    #         self.logger.warning(f"No symbol info for {symbol}")
+    #         return {}
+
+    #     # Determine volume step & min/max volumes
+    #     step = info.volume_step or 0.01
+    #     vmin = info.volume_min or step
+    #     vmax = info.volume_max or 100.0
+
+    #     # Round down `size` to nearest step
+    #     size = math.floor(size / step) * step
+    #     if size < vmin:
+    #         self.logger.info(f"Signal too small ({size:.3f} < {vmin}) – forcing minimum size")
+    #         size = vmin
+    #     size = min(size, vmax)
+
+    #     # Get tick data for bid/ask
+    #     tick = mt5.symbol_info_tick(symbol)
+    #     if tick is None:
+    #         self.logger.warning(f"No tick for {symbol}")
+    #         return {}
+
+    #     price_live = tick.ask if intensity > 0 else tick.bid
+
+    #     # Build and send the order request
+    #     request = {
+    #         "action":       mt5.TRADE_ACTION_DEAL,
+    #         "symbol":       symbol,
+    #         "volume":       size,
+    #         "type":         mt5.ORDER_TYPE_BUY if intensity > 0 else mt5.ORDER_TYPE_SELL,
+    #         "price":        price_live,
+    #         "deviation":    20,
+    #         "magic":        202406,
+    #         "comment":      "AI live trade",
+    #         "type_time":    mt5.ORDER_TIME_GTC,
+    #         "type_filling": mt5.ORDER_FILLING_IOC,
+    #     }
+    #     result = mt5.order_send(request)
+    #     if result.retcode != mt5.TRADE_RETCODE_DONE:
+    #         self.logger.warning(f"MT5 order failed: {result.comment}")
+    #         return {}
+
+    #     # Update balance from account_info
+    #     acc = mt5.account_info()
+    #     if acc and hasattr(acc, "balance"):
+    #         self.balance = float(acc.balance)
+    #         self.peak_balance = max(self.peak_balance, self.balance)
+
+    #     self.logger.info(
+    #         f"LIVE {'BUY' if intensity > 0 else 'SELL'} {symbol} "
+    #         f"{size:.2f} lot @ {price_live}"
+    #     )
+
+    #     return {
+    #         "instrument":  instrument,
+    #         "pnl":         0.0,
+    #         "duration":    1,
+    #         "exit_reason": "executed",
+    #         "size":        size if intensity > 0 else -size,
+    #         "features":    np.array([price_live, 0.0, 0.0], np.float32),
+    #     }
 
 
     # ==================================================================
@@ -985,7 +1014,6 @@ class EnhancedTradingEnv(gym.Env):
             "close":      tail["close"].tolist(),
             "volatility": tail["volatility"].tolist(),
         }
-    
 
     def _finish_episode(self, last_pnl: float):
         if not self._ep_pnls:
@@ -1016,11 +1044,10 @@ class EnhancedTradingEnv(gym.Env):
             self._save_checkpoints()
         except Exception as e:
             self.logger.error(f"Env checkpoint save failed: {e}")
-    
-        
+
     # ==================================================================
-#  Serialization helpers
-# ==================================================================
+    #  Serialization helpers
+    # ==================================================================
     def get_state(self) -> Dict[str, Any]:
         """Return enough to restore a paused episode."""
         return {
@@ -1047,19 +1074,16 @@ class EnhancedTradingEnv(gym.Env):
         # restore nested module
         self.position_manager.set_state(state.get("position_manager", {}))
 
-
     def _ckpt(self, name: str) -> str:
         return os.path.join(self.ckpt_dir, name)
 
     def _save_checkpoints(self):
         try:
             # Save meta-learning model state (meta_rl)
-                        # In _save_checkpoints()
             if hasattr(self.meta_rl, "state_dict"):
                 torch.save(self.meta_rl.state_dict(), self._ckpt("meta_rl.pt"))
             else:
                 self.logger.info("MetaRLController has no state_dict, skipping its checkpoint save.")
-
 
             # Save the strategy arbiter weights
             np.save(self._ckpt("arbiter_w.npy"), self.arbiter.weights)
@@ -1133,7 +1157,6 @@ class EnhancedTradingEnv(gym.Env):
             self.logger.info("Checkpoints loaded successfully.")
         except Exception as e:
             self.logger.warning(f"Checkpoint load failed: {e}. Starting fresh.")
-
 
     # ==================================================================
     #  Diagnostic helper getters — UNCHANGED

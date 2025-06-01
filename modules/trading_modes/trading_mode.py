@@ -16,7 +16,7 @@ class TradingModeManager(Module):
         self.auto = True
         self.window = window
         self.stats_history: List[Dict[str, Any]] = []
-        self.log_file = log_file or "mode_manager.log"
+        self.log_file = log_file or "logs/mode_manager.log"
         self._setup_logger()
         self.last_reason = ""
         self.last_switch_time = None

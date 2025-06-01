@@ -96,7 +96,7 @@ class StrategyGenomePool:
         mutation_scale: float = 0.2,
         max_generations_kept: int = 10_000,
         debug: bool = False,
-        log_file: str = "sgp.log",
+        log_file: str = "logs/sgp.log",
     ) -> None:
         self.genome_size = 4
         self.pop_size = int(population_size)
