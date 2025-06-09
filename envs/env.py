@@ -50,6 +50,10 @@ from modules.strategy.voting import (
     TimeHorizonAligner, AlternativeRealitySampler,
     StrategyArbiter,
 )
+from modules.strategy.voting_wrappers import (
+    ThemeExpert, SeasonalityRiskExpert,
+    MetaRLExpert, TradeMonitorVetoExpert, RegimeBiasExpert
+)
 
 # NEW — adaptive mode, risk monitoring, sentiment
 from modules.trading_modes.trading_mode import TradingModeManager
@@ -151,8 +155,8 @@ class EnhancedTradingEnv(gym.Env):
         self.debug = debug
         self.no_trade_penalty = no_trade_penalty
         self.episode_count = 0
-        self.consensus_min = 0.15    # Reduced from 0.2
-        self.consensus_max = 0.5     # Reduced from 0.6
+        self.consensus_min = 0.05
+        self.consensus_max = 0.35   # Reduced from 0.6
         self.max_episodes   = 10000
         self.ep_step = 0
         # Data
@@ -269,23 +273,38 @@ class EnhancedTradingEnv(gym.Env):
 
         self.meta_rl = MetaRLController(obs.size, self.action_space.shape[0])
         self.meta_rl.obs_dim = obs.size
+        theme_expert   = ThemeExpert(self.theme_detector, self)
+        season_expert  = SeasonalityRiskExpert(self.time_risk_scaler, self)
+        meta_rl_expert = MetaRLExpert(self.meta_rl, self)
+        veto_expert    = TradeMonitorVetoExpert(self.active_monitor, self)
+        regime_expert  = RegimeBiasExpert(self.fractal_confirm, self)
 
         # Voting committee (unchanged)
-        committee = [self.position_manager, self.risk_controller, self.liquidity_layer]
+        committee = [
+            self.position_manager,
+            self.risk_controller,
+            self.liquidity_layer,
+            theme_expert,
+            season_expert,
+            meta_rl_expert,
+            veto_expert,
+            regime_expert,
+        ]
         init_w = np.full(len(committee), 1 / len(committee), np.float32)
-        self.consensus  = ConsensusDetector(len(committee), 0.7)
-        self.collusion  = CollusionAuditor(len(committee), 0.95)
-        self.haligner   = TimeHorizonAligner(
-            [getattr(m, "decision_horizon", 0) for m in committee]
-        )
-        self.arbiter    = StrategyArbiter(
+
+        self.consensus = ConsensusDetector(len(committee), 0.7)
+        self.collusion = CollusionAuditor(len(committee), 0.95)
+        self.haligner  = TimeHorizonAligner([0]*len(committee))
+
+        self.arbiter = StrategyArbiter(
             committee, init_w,
             action_dim=self.action_space.shape[0],
-            adapt_rate=0.01,
+            adapt_rate=0.02,
             consensus=self.consensus,
             collusion=self.collusion,
             horizon_aligner=self.haligner,
         )
+
         self.alt_sampler = AlternativeRealitySampler(len(committee))
 
         # Live-trading bookkeeping
@@ -697,7 +716,7 @@ class EnhancedTradingEnv(gym.Env):
         # Update balance based on this step’s PnL
         pnl = sum(t["pnl"] for t in trades)
         assert not np.isnan(pnl), f"NaN detected in PnL calculation at step {self.current_step}"
-        self.balance += pnl
+        
         self.peak_balance = max(self.peak_balance, self.balance)
         self.current_drawdown = max(
             (self.peak_balance - self.balance) / (self.peak_balance + 1e-8), 0.0
@@ -731,8 +750,12 @@ class EnhancedTradingEnv(gym.Env):
             self.logger.debug(" → No trades detected this step ⇒ applying no_trade_penalty")
             reward -= self.no_trade_penalty * (1 + self.current_drawdown)
 
-        # Tell arbiter the final reward for this step
-        self.arbiter.update_reward(reward)
+        alpha_vec = self.arbiter.last_alpha.copy() if self.arbiter.last_alpha is not None else None
+        cons      = float(np.mean(alpha_vec)) if alpha_vec is not None else 0.0
+
+        self.arbiter.update_reward(reward)   
+        shadow_trades = self.shadow_sim.simulate(env=self, actions=actions)
+        self.logger.info(f"ShadowSim: {len(shadow_trades)} trades simulated.")
 
         # Build next‐step observation
         df0 = self.data[self.instruments[0]]["D1"]
@@ -782,8 +805,6 @@ class EnhancedTradingEnv(gym.Env):
         }
 
         v0 = vol0 if vol0 is not None else self.get_volatility_profile().get(self.instruments[0], 0.0)
-        alpha = getattr(self.arbiter, "last_alpha", None)
-        cons = float(np.mean(alpha)) if isinstance(alpha, (list, np.ndarray)) else 0.0
         self.mode_manager.step(
             trade_result="win" if pnl > 0 else "loss",
             pnl=float(pnl),
@@ -793,6 +814,7 @@ class EnhancedTradingEnv(gym.Env):
         )
         self.theme_detector.fit_if_needed(self.data, self.current_step)
         self.current_step += 1
+        self.logger.debug(f"End-of-step balance={self.balance:.2f}")
 
         return obs, float(reward), terminated, False, info
 
