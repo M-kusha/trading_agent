@@ -84,7 +84,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 @dataclass
 class TrainingConfig:
-    test_mode: bool = True
+    test_mode: bool = False
     num_envs: int = 1
     global_seed: int = 42
 
@@ -111,9 +111,9 @@ class TrainingConfig:
             self.meta_eval_freq = 500
 
         else:
-            self.n_trials = 50
-            self.timesteps_per_trial = 500_000
-            self.final_training_steps = 5_000_000
+            self.n_trials = 10
+            self.timesteps_per_trial = 100_000
+            self.final_training_steps = 2_000_000
             self.pruner_startup_trials = 5
             self.pruner_warmup_steps = 50_000
             self.pruner_interval_steps = 100_000
@@ -124,6 +124,7 @@ class TrainingConfig:
 parser = argparse.ArgumentParser()
 parser.add_argument("--prod", action="store_true", help="Run full-budget training.")
 cfg = TrainingConfig(test_mode=not parser.parse_args().prod)
+TOTAL_TRIALS = cfg.n_trials
 
 def set_global_seed(seed: int):
     random.seed(seed)
@@ -211,7 +212,7 @@ class LiveTqdmCallback(BaseCallback):
         self.last_update = 0
 
     def _on_training_start(self):
-        desc = f"Trial {self.trial_id}" if self.trial_id >= 0 else "Final"
+        desc = f"Trial {self.trial_id + 1}/{TOTAL_TRIALS}" if self.trial_id >= 0 else "Final"
         self.pbar = tqdm(total=self.total, desc=desc, ncols=70, unit="step")
 
     def _on_step(self):
@@ -443,7 +444,10 @@ def make_vecenv(builders, n):
     return DummyVecEnv(builders) if n == 1 else SubprocVecEnv(builders)
 
 def optimise_agent(trial: optuna.trial.Trial) -> float:
+    trial_number = trial.number + 1  # ← Add this line
+    "[Trial %d/%d Complete] Sharpe=%.3f DD=%.3f PF=%.3f Corr=%.3f Exits=%d Score=%.3f",
     env_logger.info("SAC Trial #%d starting", trial.number + 1)
+    env_logger.info(f"[Trial {trial_number}/{TOTAL_TRIALS}] Starting")
     hp = {
         "learning_rate": trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True),
         "batch_size":    trial.suggest_categorical("batch_size", [64, 128, 256]),
@@ -559,74 +563,133 @@ def optimise_agent(trial: optuna.trial.Trial) -> float:
 
 def main():
     set_global_seed(cfg.global_seed)
-    pruner = ForexGoldPruner(
-        max_dd_thresh=0.30,
-        corr_thresh=0.60,
-        n_startup_trials=cfg.pruner_startup_trials,
-        n_warmup_steps=cfg.pruner_warmup_steps,
-        interval_steps=cfg.pruner_interval_steps,
-    )
-    study = optuna.create_study(
-        study_name="sac_trading_optimisation",
-        storage="sqlite:///optuna_sac.db",
-        direction="maximize",
-        pruner=pruner,
-        load_if_exists=True,
-        sampler=optuna.samplers.TPESampler(seed=cfg.global_seed),
-    )
-    study.optimize(
-        optimise_agent,
-        n_trials=cfg.n_trials,
-        n_jobs=1,
-        show_progress_bar=False,
-    )
-    best = study.trials[rank_trials(study)[0]]
-    best_hp = best.params.copy()
 
+    # Check for existing checkpoints
+    latest_checkpoint = None
+    start_step = 0
+    if os.path.isdir(CHECKPOINT_DIR):
+        checkpoints = [
+            f for f in os.listdir(CHECKPOINT_DIR)
+            if f.startswith("model_step_") and f.endswith(".zip")
+        ]
+        if checkpoints:
+            checkpoints.sort(key=lambda x: int(x.split("_")[-1].split(".")[0]), reverse=True)
+            latest_checkpoint = os.path.join(CHECKPOINT_DIR, checkpoints[0])
+            # Parse the checkpoint step from filename
+            try:
+                fname = os.path.basename(latest_checkpoint)
+                if "model_step_" in fname:
+                    start_step = int(fname.replace("model_step_", "").replace(".zip", ""))
+                else:
+                    raise ValueError("Unexpected checkpoint filename format.")
+            except Exception as e:
+                env_logger.error(f"Could not determine checkpoint step: {e}")
+                start_step = 0
+
+    # Load training data
     data = load_data("data/processed")
-    def make_env_final(rank: int):
-        def _init():
-            return EnhancedTradingEnv(
-                data,
-                initial_balance=3_000,
-                max_steps=500,
-                debug=False,
-                checkpoint_dir=CHECKPOINT_DIR,
 
-                init_seed=cfg.global_seed + rank,
-            )
-        return _init
-    use_subproc = cfg.num_envs > 1 and platform != "win32"
-    env = make_vecenv([make_env_final(i) for i in range(cfg.num_envs)],
-                      cfg.num_envs if use_subproc else 1)
-    final_model = SAC(
-        "MlpPolicy",
-        env,
-        device="cuda" if torch.cuda.is_available() else "cpu",
-        policy_kwargs={"net_arch": [256, 256], "activation_fn": torch.nn.ReLU},
-        verbose=1,
-        tensorboard_log=os.path.join(LOG_DIR, "tensorboard"),
-        **best_hp,
-    )
-    final_model.learn(
-        total_timesteps=cfg.final_training_steps,
-        callback=CallbackList(
-            [
+    # If resuming from checkpoint
+    if latest_checkpoint and os.path.isfile(latest_checkpoint):
+        env_logger.info(f"Resuming from checkpoint: {latest_checkpoint}")
+
+        def make_env_final(rank: int):
+            def _init():
+                return EnhancedTradingEnv(
+                    data,
+                    initial_balance=3_000,
+                    max_steps=500,
+                    debug=False,
+                    checkpoint_dir=CHECKPOINT_DIR,
+                    init_seed=cfg.global_seed + rank,
+                )
+            return _init
+
+        use_subproc = cfg.num_envs > 1 and platform != "win32"
+        env = make_vecenv(
+            [make_env_final(i) for i in range(cfg.num_envs)],
+            cfg.num_envs if use_subproc else 1
+        )
+
+        final_model = SAC.load(latest_checkpoint, env=env)
+
+    else:
+        # No checkpoint → run full optimization
+        pruner = ForexGoldPruner(
+            max_dd_thresh=0.30,
+            corr_thresh=0.60,
+            n_startup_trials=cfg.pruner_startup_trials,
+            n_warmup_steps=cfg.pruner_warmup_steps,
+            interval_steps=cfg.pruner_interval_steps,
+        )
+        study = optuna.create_study(
+            study_name="sac_trading_optimisation",
+            storage="sqlite:///optuna_sac.db",
+            direction="maximize",
+            pruner=pruner,
+            load_if_exists=True,
+            sampler=optuna.samplers.TPESampler(seed=cfg.global_seed),
+        )
+        study.optimize(
+            optimise_agent,
+            n_trials=cfg.n_trials,
+            n_jobs=1,
+            show_progress_bar=False,
+        )
+        best = study.trials[rank_trials(study)[0]]
+        best_hp = best.params.copy()
+
+        def make_env_final(rank: int):
+            def _init():
+                return EnhancedTradingEnv(
+                    data,
+                    initial_balance=3_000,
+                    max_steps=500,
+                    debug=False,
+                    checkpoint_dir=CHECKPOINT_DIR,
+                    init_seed=cfg.global_seed + rank,
+                )
+            return _init
+
+        use_subproc = cfg.num_envs > 1 and platform != "win32"
+        env = make_vecenv(
+            [make_env_final(i) for i in range(cfg.num_envs)],
+            cfg.num_envs if use_subproc else 1
+        )
+
+        final_model = SAC(
+            "MlpPolicy",
+            env,
+            device="cuda" if torch.cuda.is_available() else "cpu",
+            policy_kwargs={"net_arch": [256, 256], "activation_fn": torch.nn.ReLU},
+            verbose=1,
+            tensorboard_log=os.path.join(LOG_DIR, "tensorboard"),
+            **best_hp,
+        )
+
+    # === Robust Resume Logic ===
+    remaining_steps = cfg.final_training_steps - start_step
+    if remaining_steps <= 0:
+        env_logger.info("Training already completed, no more steps required.")
+    else:
+        env_logger.info(f"Resuming training from step {start_step}, running for {remaining_steps} steps (until {cfg.final_training_steps})")
+        final_model.learn(
+            total_timesteps=remaining_steps,
+            reset_num_timesteps=False,  # <- KEY for proper resume!
+            callback=CallbackList([
                 DetailedTensorboardCallback(cfg.tb_log_freq),
                 HumanLoggerCallback(print_freq=1_000),
                 LiveTqdmCallback(cfg.final_training_steps, 0, print_freq=10),
-
-
                 CheckpointCallback(
-                    save_freq=5000, 
-                    save_path=CHECKPOINT_DIR, 
-                    env=env,  # Pass the environment to the callback
+                    save_freq=5000,
+                    save_path=CHECKPOINT_DIR,
+                    env=env,
                     verbose=0
                 )
+            ]),
+        )
 
-            ]
-        ),
-    )
+    # Save the final model
     model_path = os.path.join(MODEL_DIR, "sac_final_model.zip")
     final_model.save(model_path)
     env_logger.info("SAC model saved -> %s", model_path)

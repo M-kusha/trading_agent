@@ -272,7 +272,10 @@ class StrategyArbiter(Module):
         self.weights  = np.clip(self.weights, 1e-4, None)
         self.weights /= self.weights.sum()
         self.adapt_rate = max(1e-4, self.adapt_rate * 0.999)
+        
+        self.prev_alpha = self.last_alpha      # <-- keep a copy
         self.last_alpha = None
+
 
     # ------------ misc helpers (unchanged) ------------------------------ #
     @property
