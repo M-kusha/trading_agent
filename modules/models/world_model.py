@@ -17,7 +17,7 @@ class RNNWorldModel(nn.Module, Module):
         dropout: float = 0.1,
         lr: float = 1e-3,
         device: str = "cpu",
-        debug=False
+        debug=True
     ):
         super().__init__()
         self.device    = torch.device(device)

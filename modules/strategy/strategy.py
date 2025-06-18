@@ -12,7 +12,7 @@ from modules.core.core import Module
 
 # ──────────────────────────────────────────────
 class StrategyIntrospector(Module):
-    def __init__(self, history_len: int = 10, debug: bool = False):
+    def __init__(self, history_len: int = 10, debug: bool = True):
         self.history_len = history_len
         self.debug = debug
         self._records: List[Dict[str, float]] = []
@@ -45,7 +45,7 @@ class CurriculumPlannerPlus(Module):
     """
     If not actively adapting environment, serves as a performance tracker.
     """
-    def __init__(self, window: int=10, debug=False):
+    def __init__(self, window: int=10, debug=True):
         self.window   = window
         self.debug    = debug
         self._history: List[Dict[str,float]] = []
@@ -95,7 +95,7 @@ class StrategyGenomePool:
         mutation_rate: float = 0.1,
         mutation_scale: float = 0.2,
         max_generations_kept: int = 10_000,
-        debug: bool = False,
+        debug: bool = True,
         log_file: str = "logs/sgp.log",
     ) -> None:
         self.genome_size = 4
@@ -225,9 +225,9 @@ class StrategyGenomePool:
                 if not np.array_equal(child_before, child):
                     before_str = ", ".join(f"{x:.3f}" for x in child_before)
                     after_str = ", ".join(f"{x:.3f}" for x in child)
-                    self.logger.info(
-                        f"[SGP] Mutated child from [{before_str}] → [{after_str}]"
-                    )
+                    # self.logger.info(
+                    #     f"[SGP] Mutated child from [{before_str}] → [{after_str}]"
+                    # )
             new_pop.append(child.astype(np.float32))
 
         # 4) If we injected fresh genomes, tack them on
@@ -328,7 +328,7 @@ class StrategyGenomePool:
 
 # ──────────────────────────────────────────────
 class MetaAgent(Module):
-    def __init__(self, window: int=20, debug=False):
+    def __init__(self, window: int=20, debug=True):
         self.window = window
         self.debug  = debug
         self.reset()
@@ -365,7 +365,7 @@ class MetaAgent(Module):
 
 # ──────────────────────────────────────────────
 class MetaCognitivePlanner(Module):
-    def __init__(self, window: int=20, debug=False):
+    def __init__(self, window: int=20, debug=True):
         self.window = window
         self.debug  = debug
         self.reset()
@@ -389,7 +389,7 @@ class MetaCognitivePlanner(Module):
 
 # ──────────────────────────────────────────────
 class BiasAuditor(Module):
-    def __init__(self, history_len: int=100, debug=False):
+    def __init__(self, history_len: int=100, debug=True):
         self.history_len = history_len
         self.debug       = debug
         self.reset()
@@ -414,7 +414,7 @@ class BiasAuditor(Module):
 
 # ──────────────────────────────────────────────
 class OpponentModeEnhancer(Module):
-    def __init__(self, modes: List[str]=None, debug=False):
+    def __init__(self, modes: List[str]=None, debug=True):
         self.modes = modes or ["random","shock","reversal"]
         self.debug = debug
         self.reset()
@@ -436,7 +436,7 @@ class OpponentModeEnhancer(Module):
 
 # ──────────────────────────────────────────────
 class ThesisEvolutionEngine(Module):
-    def __init__(self, capacity: int=20, debug=False):
+    def __init__(self, capacity: int=20, debug=True):
         self.capacity = capacity
         self.debug    = debug
         self.reset()
@@ -466,7 +466,7 @@ class ThesisEvolutionEngine(Module):
 
 # ──────────────────────────────────────────────
 class ExplanationGenerator(Module):
-    def __init__(self, debug: bool = False):
+    def __init__(self, debug: bool = True):
         self.debug = debug
         self.last_explanation = ""
 
@@ -513,7 +513,7 @@ class ExplanationGenerator(Module):
 
 # ──────────────────────────────────────────────
 class PPOAgent(nn.Module, Module):
-    def __init__(self, obs_size, act_size=2, hidden_size=64, lr=3e-4, device="cpu", debug=False):
+    def __init__(self, obs_size, act_size=2, hidden_size=64, lr=3e-4, device="cpu", debug=True):
         super().__init__()
         self.device = torch.device(device)
         self.debug = debug
@@ -623,7 +623,7 @@ class PPOAgent(nn.Module, Module):
 
 # ──────────────────────────────────────────────
 class SACAgent(nn.Module, Module):
-    def __init__(self, obs_size, act_size=2, hidden_size=64, lr=3e-4, alpha=0.2, device="cpu", debug=False):
+    def __init__(self, obs_size, act_size=2, hidden_size=64, lr=3e-4, alpha=0.2, device="cpu", debug=True):
         super().__init__()
         self.device = torch.device(device)
         self.debug = debug
@@ -765,7 +765,7 @@ class SACAgent(nn.Module, Module):
 
 # ──────────────────────────────────────────────
 class TD3Agent(nn.Module, Module):
-    def __init__(self, obs_size, act_size=2, hidden_size=64, lr=3e-4, device="cpu", debug=False):
+    def __init__(self, obs_size, act_size=2, hidden_size=64, lr=3e-4, device="cpu", debug=True):
         super().__init__()
         self.device = torch.device(device)
         self.debug = debug
@@ -924,7 +924,7 @@ class MetaRLController(Module):
     """
     Switchable controller for PPO, SAC, TD3 with shared API.
     """
-    def __init__(self, obs_size: int, act_size: int=2, method="sac", device="cpu", debug=False):
+    def __init__(self, obs_size: int, act_size: int=2, method="sac", device="cpu", debug=True):
         self.device = device
         self.obs_size = obs_size
         self.act_size = act_size
@@ -980,17 +980,24 @@ class MetaRLController(Module):
 
     def get_observation_components(self):
         """
-        Get observation components for the active agent.
+        Get observation components for the active agent, always as a 4-length vector.
+        Pads with zeros if shorter, truncates if longer.
         """
         self.logger.debug(f"Getting observation components for {self.mode} agent.")
         obs = self.agent.get_observation_components()
 
-        # Check for NaN in the observation
+        # ---- CRITICAL: Force fixed size for observation vector ----
+        TARGET_LEN = 4  # <-- Set to whatever was used during model training!
+        obs = np.asarray(obs)
+        if obs.shape[0] < TARGET_LEN:
+            obs = np.pad(obs, (0, TARGET_LEN - obs.shape[0]), constant_values=0)
+        elif obs.shape[0] > TARGET_LEN:
+            obs = obs[:TARGET_LEN]
         if np.any(np.isnan(obs)):
             self.logger.error(f"NaN detected in observation: {obs}")
-            obs = np.nan_to_num(obs)  # Replace NaNs with zeros or a default value
-
+            obs = np.nan_to_num(obs)
         return obs
+
 
     def get_state(self):
         """
@@ -1086,3 +1093,18 @@ class MetaRLController(Module):
         with open(log_path, "a") as log_file:
             log_file.write(f"State at epoch {self.mode}: {state}\n")
             self.logger.info(f"State saved to {log_path}.")
+    def get_weights(self) -> Dict[str, Any]:
+        """
+        Expose underlying agent weights (for get_neuro_activity).
+        """
+        if hasattr(self.agent, "get_weights"):
+            return self.agent.get_weights()
+        return {}
+
+    def get_gradients(self) -> Dict[str, Any]:
+        """
+        Expose underlying agent gradients (for get_neuro_activity).
+        """
+        if hasattr(self.agent, "get_gradients"):
+            return self.agent.get_gradients()
+        return {}

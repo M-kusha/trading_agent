@@ -1,3 +1,4 @@
+# File: live/api.py
 from __future__ import annotations
 import os
 import json
@@ -87,19 +88,32 @@ def set_mode(req: ModeToggle):
     except Exception as e:
         logger.error(f"Mode change error: {e}")
         return JSONResponse({"error": str(e)}, status_code=400)
+from fastapi.responses import JSONResponse
 
 @app.get("/mode")
 def get_mode():
-    stats = trader.env.mode_manager.get_stats()
-    return {
-        "mode": stats["mode"],
-        "auto": stats["auto"],
-        "last_switch_time": stats["last_switch_time"],
-        "reason": stats["last_reason"],
-        "win_rate": stats["win_rate"],
-        "drawdown": stats["drawdown"],
-        "volatility": stats["volatility"],
-    }
+    try:
+        stats = trader.env.mode_manager.get_stats()
+        return {
+            # only expose the fields your UI actually uses:
+            "mode": stats.get("mode", "normal"),
+            "auto": stats.get("auto", False),
+            "reason": stats.get("last_reason", ""),
+            # if you want you can pluck more, but guard missing keys:
+            "last_switch_time": stats.get("last_switch_time"),
+            "win_rate": stats.get("win_rate", 0.0),
+            "drawdown": stats.get("drawdown", trader.env.current_drawdown),
+            "volatility": stats.get(
+                "volatility",
+                float(
+                    sum(trader.env.get_volatility_profile().values()) /
+                    max(len(trader.env.get_volatility_profile()), 1)
+                )
+            ),
+        }
+    except Exception:
+        logger.exception("Failed to fetch mode stats")
+        return JSONResponse({"error": "Could not fetch mode stats"}, status_code=500)
 
 
 # ════════════════════ Dashboard summary/status ═══════════════════

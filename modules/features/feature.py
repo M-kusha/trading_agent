@@ -7,7 +7,7 @@ from typing import Optional
 
 # ─────────────────────────────────────────────────────────────
 class AdvancedFeatureEngine(Module):
-    def __init__(self, window_sizes=[7, 14, 28], debug=False):
+    def __init__(self, window_sizes=[7, 14, 28], debug=True):
         self.windows = window_sizes
         self.debug = debug
         self.last_feats = np.zeros(len(self.windows) + 1, np.float32)

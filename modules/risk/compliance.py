@@ -1,77 +1,96 @@
+# modules/risk/compliance.py
+
 from __future__ import annotations
-from typing import Any, List, Set
+from typing import Any, List, Dict
 import numpy as np
-import random
-from modules.utils.info_bus import InfoBus
+import json
+import os
+import logging
+from logging.handlers import RotatingFileHandler
+
+from modules.utils.info_bus import InfoBus, now_utc
 from modules.core.core import Module
 
 class ComplianceModule(Module):
     """
-    Evolutionary, rule-based compliance check.  
-    – max_leverage: maximum allowed leverage (default 20×)  
-    – max_single_position_risk: the maximum % of equity that a single trade may consume (now default 10%)  
-    – prohibited_symbols: any symbols that are never allowed
+    Rule-based compliance module with explainability and resilient audit trail.
+    Enforces a configurable allow-list and strict risk/leverage limits.
     """
 
+    DEFAULT_ALLOWED = {"XAUUSD", "EURUSD"}
+
     def __init__(
-        self, 
-        max_leverage: float = 20.0, 
-        max_single_position_risk: float = 0.10,  # raised from 0.02 up to 0.10
-        prohibited_symbols: Set[str] = None
+        self,
+        max_leverage: float = 20.0,
+        max_single_position_risk: float = 0.10,
+        audit_log_path: str = "logs/compliance_audit.jsonl",
+        allowed_symbols: List[str] | None = None,
+        debug: bool = False,
     ):
+        # Module superclass takes no args
         super().__init__()
+        self.debug = debug
 
-        # 1) maximum allowable leverage (e.g. 20×)  
+        # 1) Load or override allow-list
+        env_syms = os.getenv("COMPLIANCE_SYMBOLS")
+        if allowed_symbols:
+            self.allowed_symbols = set(sym.strip().upper() for sym in allowed_symbols)
+        elif env_syms:
+            self.allowed_symbols = set(s.strip().upper() for s in env_syms.split(","))
+        else:
+            self.allowed_symbols = set(self.DEFAULT_ALLOWED)
+
+        # 2) Risk parameters
         self.max_leverage = float(max_leverage)
-
-        # 2) single‐position risk is now 10% of equity (was 2%)  
         self.max_single_position_risk = float(max_single_position_risk)
 
-        # 3) which symbols are outright forbidden  
-        self.prohibited_symbols = set(prohibited_symbols) if prohibited_symbols else {"RUB", "TRY"}
+        # 3) Audit trail
+        self.audit_log_path = audit_log_path
+        # ensure audit log directory exists
+        os.makedirs(os.path.dirname(audit_log_path) or ".", exist_ok=True)
 
-        # we’ll accumulate any “flag” messages here  
+        # 4) State
         self.last_flags: List[str] = []
+        self.last_audit: Dict[str, Any] = {}
 
-        # set up a logger so we can debug exactly which rule is failing, if any  
+        # 5) Dedicated human-readable logger with rotation
         self.logger = self._get_logger()
 
-    def _get_logger(self):
-        import logging
+    def _get_logger(self) -> logging.Logger:
         lg = logging.getLogger("ComplianceModule")
-        if not lg.handlers:
-            h = logging.FileHandler("logs/compliance.log")
-            h.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-            lg.addHandler(h)
-        lg.setLevel(logging.DEBUG)
+        if not any(isinstance(h, RotatingFileHandler) for h in lg.handlers):
+            # make sure the logs folder exists
+            log_path = "logs/compliance.log"
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+            handler = RotatingFileHandler(
+                log_path, maxBytes=10_000_000, backupCount=5
+            )
+            handler.setFormatter(
+                logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+            )
+            lg.addHandler(handler)
+        lg.setLevel(logging.DEBUG if self.debug else logging.INFO)
+        lg.propagate = False
         return lg
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Evolutionary operators (unchanged)  
-    # ──────────────────────────────────────────────────────────────────────────
-    def mutate(self, std=0.1):
-        # Slightly nudge leverage / risk thresholds
+    def mutate(self, std: float = 0.1):
+        """Evolutionary tuning of risk limits."""
         self.max_leverage += np.random.normal(0, std * 5)
         self.max_leverage = float(np.clip(self.max_leverage, 1.0, 100.0))
 
         self.max_single_position_risk += np.random.normal(0, std * 0.02)
-        # Clamp to [0.001, 0.5] so risk % stays reasonable
         self.max_single_position_risk = float(
             np.clip(self.max_single_position_risk, 0.001, 0.5)
         )
 
-        # Occasionally add or remove one “prohibited” symbol
-        if np.random.rand() < 0.1:
-            choices = ["RUB", "TRY", "BTC", "XAU", "USD", "CNY", "INR", "ZAR", "BRL"]
-            if np.random.rand() < 0.5 and self.prohibited_symbols:
-                to_remove = random.choice(list(self.prohibited_symbols))
-                self.prohibited_symbols.discard(to_remove)
-            else:
-                to_add = random.choice(choices)
-                self.prohibited_symbols.add(to_add)
+        self.logger.debug(
+            f"[mutate] max_leverage={self.max_leverage:.2f}, "
+            f"max_single_position_risk={self.max_single_position_risk:.3f}"
+        )
 
-    def crossover(self, other: "ComplianceModule"):
-        # Blend hyperparameters and merge prohibited sets
+    def crossover(self, other: "ComplianceModule") -> "ComplianceModule":
+        """Combine parameters from two modules."""
         child = ComplianceModule(
             max_leverage=(
                 self.max_leverage
@@ -83,109 +102,158 @@ class ComplianceModule(Module):
                 if np.random.rand() > 0.5
                 else other.max_single_position_risk
             ),
-            prohibited_symbols=(
-                self.prohibited_symbols | other.prohibited_symbols
-                if np.random.rand() > 0.5
-                else self.prohibited_symbols & other.prohibited_symbols
-            )
+            audit_log_path=self.audit_log_path,
+            allowed_symbols=list(self.allowed_symbols),
+            debug=self.debug,
         )
+        child.logger.debug("[crossover] created child with combined parameters")
         return child
 
-    def get_params(self):
+    def get_params(self) -> Dict[str, Any]:
         return {
             "max_leverage": self.max_leverage,
             "max_single_position_risk": self.max_single_position_risk,
-            "prohibited_symbols": list(self.prohibited_symbols),
+            "allowed_symbols": sorted(self.allowed_symbols),
         }
 
     def reset(self) -> None:
+        """Clear per-trade state flags and audit record."""
         self.last_flags.clear()
+        self.last_audit = {}
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # This is the core logic that checks a single trade’s inputs  
-    # ──────────────────────────────────────────────────────────────────────────
     def step(self, **data: Any) -> bool:
         """
-        Run through our rule checks.  If any rule “flags,” return False.  
-        Otherwise return True.
+        Run rule checks only when validating a real trade.
+        Returns True if all checks pass, else False.
+        Logs a structured audit trail to self.audit_log_path.
         """
+        # 1) Early-exit on non-trade calls
+        extras = data.get("extras", {})
+        if not extras or extras.get("symbol") is None:
+            return True
+
+        # 2) Build context
         info = InfoBus(**data)
         self.last_flags.clear()
 
-        symbol        = info.get("extras", {}).get("symbol")
-        current_price = info.get("current_price", 0.0)
-        risk          = info.get("risk", {})
-        raw_action    = info.get("raw_action")
-        extras        = info.get("extras", {})
+        symbol_raw = extras.get("symbol", "").upper()
+        symbol = symbol_raw.replace("/", "")
 
-        # ——————————————————————————————————————————————————————
-        # 1) Prohibited‐symbol check
-        # ——————————————————————————————————————————————————————
-        if symbol in self.prohibited_symbols:
-            msg = f"– Compliance: trading {symbol} is prohibited."
+        rationale: Dict[str, Any] = {
+            "timestamp":     info.get("timestamp") or now_utc(),
+            "symbol_raw":    symbol_raw,
+            "symbol":        symbol,
+            "current_price": info.get("current_price", 0.0),
+            "risk":          info.get("risk", {}),
+            "raw_action":    info.get("raw_action"),
+            "params":        self.get_params(),
+            "results":       [],
+            "final_decision": "ACCEPT",
+        }
+
+        # 3) Allow-list
+        if symbol not in self.allowed_symbols:
+            msg = f"Trading {symbol_raw} is not permitted by allow-list."
+            rationale["results"].append({
+                "rule":   "allowed_symbol",
+                "passed": False,
+                "symbol": symbol_raw,
+                "detail": msg
+            })
             self.last_flags.append(msg)
             self.logger.debug(msg)
+        else:
+            rationale["results"].append({
+                "rule":   "allowed_symbol",
+                "passed": True,
+                "symbol": symbol_raw
+            })
 
-        # ——————————————————————————————————————————————————————
-        # 2) Single‐position‐risk check (now uses 10% of equity)
-        # ——————————————————————————————————————————————————————
-        if (raw_action is not None) and ("size" in extras):
-            size = extras["size"]  # absolute lots
-            position_value = size * current_price
-            equity = risk.get("equity", 1e-8)
+        # 4) Single-position-risk
+        if isinstance(extras.get("size"), (int, float)):
+            size = float(extras["size"])
+            price = float(info.get("current_price", 0.0))
+            equity = float(info.get("risk", {}).get("equity", 1e-8))
+            fraction_risk = (size * price) / max(equity, 1e-8)
 
-            # If position_value/equity exceeds 10% → flag it
-            fraction_risk = position_value / max(equity, 1e-8)
             if fraction_risk > self.max_single_position_risk:
                 msg = (
-                    f"– Compliance: single trade risk "
-                    f"{fraction_risk:.2%} exceeds "
-                    f"{self.max_single_position_risk:.0%} limit."
+                    f"Single trade risk {fraction_risk:.2%} "
+                    f"exceeds {self.max_single_position_risk:.0%} limit."
                 )
+                rationale["results"].append({
+                    "rule":   "max_single_position_risk",
+                    "passed": False,
+                    "value":  fraction_risk,
+                    "detail": msg
+                })
                 self.last_flags.append(msg)
                 self.logger.debug(msg)
+            else:
+                rationale["results"].append({
+                    "rule":   "max_single_position_risk",
+                    "passed": True,
+                    "value":  fraction_risk
+                })
 
-        # ——————————————————————————————————————————————————————
-        # 3) Leverage check
-        # ——————————————————————————————————————————————————————
-        lev = risk.get("margin_used", 0.0) / max(risk.get("equity", 1e-8), 1e-9)
+        # 5) Leverage check
+        risk = info.get("risk", {})
+        margin = float(risk.get("margin_used", 0.0))
+        equity = float(risk.get("equity", 1e-8))
+        lev = margin / max(equity, 1e-9)
+
         if lev > self.max_leverage:
-            msg = (
-                f"– Compliance: leverage {lev:.1f}× "
-                f"exceeded {self.max_leverage:.1f}× limit."
-            )
+            msg = f"Leverage {lev:.1f}× exceeds {self.max_leverage:.1f}× limit."
+            rationale["results"].append({
+                "rule":   "max_leverage",
+                "passed": False,
+                "value":  lev,
+                "detail": msg
+            })
             self.last_flags.append(msg)
             self.logger.debug(msg)
+        else:
+            rationale["results"].append({
+                "rule":   "max_leverage",
+                "passed": True,
+                "value":  lev
+            })
 
-        # If we have collected any flags → reject the trade
+        # 6) Final decision
+        result = True
         if self.last_flags:
-            # push flagged messages back into the InfoBus so caller can see them
-            info.setdefault("compliance_flags", []).extend(self.last_flags)
-            return False
+            rationale["final_decision"] = "REJECT"
+            data.setdefault("compliance_flags", []).extend(self.last_flags)
+            result = False
 
-        # No flags = valid
-        return True
+        # 7) Audit-trail write (resilient)
+        self.last_audit = rationale
+        try:
+            with open(self.audit_log_path, "a") as f:
+                f.write(json.dumps(rationale) + "\n")
+        except Exception as e:
+            self.logger.error("Failed to write audit log: %s", e)
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # validate_trade is called from the environment.  We reconstruct exactly
-    # what `step(...)` wants to see:
-    # ──────────────────────────────────────────────────────────────────────────
+        return result
+
     def validate_trade(self, trade: dict, env) -> bool:
         """
-        Build a small ‘info‐dict’ from `trade` + `env` and pass it to `step(...)`.
+        Adapter from a trade dict to compliance.step(). Returns False if
+        trade is invalid or data missing.
         """
-
         symbol = trade.get("instrument")
         size   = abs(trade.get("size", 0.0))
+
         df = env.data.get(symbol, {}).get("D1")
-        if (df is None) or (env.current_step >= len(df)):
+        if df is None or env.current_step >= len(df):
+            self.logger.error("validate_trade: missing price series for %s", symbol)
             return False
 
         current_price = float(df.iloc[env.current_step]["close"])
         equity        = float(env.balance)
-        margin_used   = size * current_price  # assume 1:1 margin = notional
+        margin_used   = size * current_price
 
-        data = {
+        payload = {
             "extras": {
                 "symbol": symbol,
                 "size":   size
@@ -197,23 +265,45 @@ class ComplianceModule(Module):
             },
             "raw_action": trade.get("size"),
         }
+        return self.step(**payload)
 
-        return self.step(**data)
+    def get_last_audit(self) -> Dict[str, Any]:
+        """Get the last audit rationale for UI/LLM/analysis."""
+        return self.last_audit.copy()
+
+    def get_audit_log(self, n: int = 50) -> List[Dict[str, Any]]:
+        """Return the last n audit entries."""
+        if not os.path.exists(self.audit_log_path):
+            return []
+        try:
+            with open(self.audit_log_path, "r") as f:
+                lines = f.readlines()[-n:]
+            return [json.loads(l) for l in lines]
+        except Exception as e:
+            self.logger.error("get_audit_log failed: %s", e)
+            return []
 
     def get_observation_components(self) -> np.ndarray:
-        # Compliance does not add to the observation vector
+        """Compliance produces no numeric features."""
         return np.zeros(0, np.float32)
 
-    def get_state(self):
+    def get_state(self) -> Dict[str, Any]:
         return {
             "max_leverage":             self.max_leverage,
             "max_single_position_risk": self.max_single_position_risk,
-            "prohibited_symbols":       list(self.prohibited_symbols)
+            "allowed_symbols":          sorted(self.allowed_symbols),
         }
 
-    def set_state(self, state):
+    def set_state(self, state: Dict[str, Any]) -> None:
         self.max_leverage = float(state.get("max_leverage", self.max_leverage))
         self.max_single_position_risk = float(
             state.get("max_single_position_risk", self.max_single_position_risk)
         )
-        self.prohibited_symbols = set(state.get("prohibited_symbols", self.prohibited_symbols))
+        allowed = state.get("allowed_symbols")
+        if isinstance(allowed, list):
+            self.allowed_symbols = set(s.upper() for s in allowed)
+        self.logger.debug(
+            f"set_state: max_leverage={self.max_leverage}, "
+            f"max_single_position_risk={self.max_single_position_risk}, "
+            f"allowed_symbols={self.allowed_symbols}"
+        )

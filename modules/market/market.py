@@ -1,4 +1,5 @@
 import logging
+import os
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
@@ -12,54 +13,106 @@ from ..core.core import Module
 import copy
 import random
 
-# --------------------------------------------------------------------------- #
-# MarketThemeDetector (now evolutionary)
-# --------------------------------------------------------------------------- #
-class MarketThemeDetector(Module):
-    """
-    Online MiniBatch‑KMeans over multi‑time‑frame price features + macro data.
-    Produces an n‑dim one‑hot‑ish theme‑strength vector.
-    Now supports evolutionary (genome) adaptation.
-    """
+# ────────────────────────────────────────────────────────────────────────────
+def _ensure_dir(path: str):
+    if not os.path.isdir(path):
+        os.makedirs(path, exist_ok=True)
+# ────────────────────────────────────────────────────────────────────────────
 
+class MarketThemeDetector:
     def __init__(
         self,
         instruments: List[str],
         n_themes: int = 4,
         window: int = 100,
-        debug: bool = False,
-        genome: Dict[str, Any] = None,
+        debug: bool = True,
+        genome: Dict[str, Any] | None = None,
     ):
-        # Evolve these hyperparams!
+        # ── genome overrides ───────────────────────────────────────────
         if genome:
             n_themes = genome.get("n_themes", n_themes)
-            window = genome.get("window", window)
+            window   = genome.get("window",   window)
 
-        self.instruments   = instruments
-        self.n_themes      = n_themes
-        self.window        = window
-        self.debug         = debug
+        self.instruments = instruments
+        self.n_themes    = n_themes
+        self.window      = window
+        self.debug       = debug
 
-        self.scaler        = StandardScaler()
-        self.km            = MiniBatchKMeans(
+        # ── ML helpers ────────────────────────────────────────────────
+        self.scaler = StandardScaler()
+        self.km     = MiniBatchKMeans(
             n_clusters=n_themes,
             batch_size=max(64, n_themes * 16),
             random_state=0,
         )
-        self._fit_buffer   = deque(maxlen=2000)
-        self._theme_vec    = np.zeros(n_themes, np.float32)
+        self._fit_buffer = deque(maxlen=2000)
+        self._theme_vec  = np.zeros(n_themes, np.float32)
 
-        # dynamic scaler for macro data
+        # ── macro placeholder (scaled) ────────────────────────────────
         self._macro_scaler = StandardScaler()
         self._macro_scaler.fit([[20.0, 0.5, 3.0]])
         self.macro_data = {"vix": 20.0, "yield_curve": 0.5, "cpi": 3.0}
 
-        # Evolutionary genome
-        self.genome = {
-            "n_themes": self.n_themes,
-            "window": self.window
-        }
+        # ── evolutionary DNA ──────────────────────────────────────────
+        self.genome = {"n_themes": n_themes, "window": window}
 
+        # ── logger setup ──────────────────────────────────────────────
+        _ensure_dir("logs")
+        self.logger = logging.getLogger("MarketThemeDetector")
+        if not self.logger.handlers:
+            h = logging.FileHandler("logs/market_regime.log")
+            fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+            h.setFormatter(fmt)
+            h.setLevel(logging.DEBUG if debug else logging.INFO)
+            self.logger.addHandler(h)
+        self.logger.setLevel(logging.DEBUG if debug else logging.INFO)
+        self.logger.propagate = False
+
+    # ───────────────────────── helpers ────────────────────────────────
+    @staticmethod
+    def _hurst(series: np.ndarray) -> float:
+        series = series[:500]
+        if series.size < 10 or np.all(series == series[0]):
+            return 0.5
+        lags  = np.arange(2, min(100, series.size // 2))
+        tau   = [np.std(series[lag:] - series[:-lag]) for lag in lags]
+        slope, *_ = linregress(np.log(lags), np.log(tau))
+        return float(slope * 2.0) if np.isfinite(slope) else 0.5
+
+    @staticmethod
+    def _wavelet_energy(series: np.ndarray, wavelet: str = "db4") -> float:
+        series = series[:256]
+        if series.size < 16:
+            return 0.0
+        level   = min(1, pywt.dwt_max_level(len(series), pywt.Wavelet(wavelet).dec_len))
+        coeffs  = pywt.wavedec(series, wavelet, level=level)
+        return float(np.sum(coeffs[-1] ** 2) / (np.sum(series ** 2) + 1e-8))
+
+    # ───────────────────────── feature builder ────────────────────────
+    def _mts_features(
+        self, data: Dict[str, Dict[str, pd.DataFrame]], t: int
+    ) -> np.ndarray:
+        feats: List[float] = []
+        for tf in ("H1", "H4", "D1"):
+            for inst in self.instruments:
+                df  = data[inst][tf]
+                sl  = df.iloc[max(0, t - self.window): t]["close"]
+                ret = sl.pct_change().dropna().values.astype(np.float32)
+
+                feats += [
+                    ret.mean(), ret.std(),
+                    pd.Series(ret).skew(), pd.Series(ret).kurtosis(),
+                    (df["high"] - df["low"]).iloc[max(0, t - self.window): t].mean(),
+                    self._hurst(ret), self._wavelet_energy(ret),
+                ]
+
+        macro = self._macro_scaler.transform([[self.macro_data["vix"],
+                                               self.macro_data["yield_curve"],
+                                               self.macro_data["cpi"]]])[0]
+        feats.extend(macro.tolist())
+        return np.asarray(feats, np.float32)
+
+    # ───────────────────────── public API ─────────────────────────────
     def reset(self):
         self._fit_buffer.clear()
         self._theme_vec.fill(0.0)
@@ -68,74 +121,6 @@ class MarketThemeDetector(Module):
         if indicator in self.macro_data:
             self.macro_data[indicator] = value
 
-    @staticmethod
-    def _hurst(series: np.ndarray) -> float:
-        series = series[:500]
-        if series.size < 10 or np.all(series == series[0]):
-            return 0.5
-
-        lags = np.arange(2, min(100, series.size // 2))
-        if lags.size == 0:
-            return 0.5
-
-        tau = [np.std(series[lag:] - series[:-lag]) for lag in lags]
-        try:
-            with np.errstate(divide="ignore", invalid="ignore"):
-                log_lags = np.log(lags)
-                log_tau = np.log(tau)
-                slope, *_ = linregress(log_lags, log_tau)
-            return float(slope * 2.0) if np.isfinite(slope) else 0.5
-        except Exception:
-            return 0.5
-
-    @staticmethod
-    def _wavelet_energy(series: np.ndarray, wavelet: str = "db4") -> float:
-        series = series[:256]
-        if series.size < 16:
-            return 0.0
-        try:
-            level = min(1, pywt.dwt_max_level(len(series), pywt.Wavelet(wavelet).dec_len))
-            coeffs = pywt.wavedec(series, wavelet, level=level)
-            return float(np.sum(coeffs[-1] ** 2) / (np.sum(series ** 2) + 1e-8))
-        except Exception:
-            return 0.0
-
-    def _mts_features(
-        self, data: Dict[str, Dict[str, pd.DataFrame]], t: int
-    ) -> np.ndarray:
-        feats: List[float] = []
-        for tf in ["H1", "H4", "D1"]:
-            for inst in self.instruments:
-                df = data[inst][tf]
-                sl = df.iloc[max(0, t - self.window) : t]["close"]
-                ret = sl.pct_change().dropna().values.astype(np.float32)
-
-                feats.extend(
-                    [
-                        ret.mean(),
-                        ret.std(),
-                        pd.Series(ret).skew(),
-                        pd.Series(ret).kurtosis(),
-                        (df["high"] - df["low"])
-                        .iloc[max(0, t - self.window) : t]
-                        .mean(),
-                        self._hurst(ret),
-                        self._wavelet_energy(ret),
-                    ]
-                )
-
-        macro = self._macro_scaler.transform(
-            [
-                [
-                    self.macro_data["vix"],
-                    self.macro_data["yield_curve"],
-                    self.macro_data["cpi"],
-                ]
-            ]
-        )[0]
-        feats.extend(macro.tolist())
-        return np.asarray(feats, np.float32)
-
     def fit_if_needed(self, data: Dict, t: int):
         x = self._mts_features(data, t)
         self._fit_buffer.append(x)
@@ -143,84 +128,97 @@ class MarketThemeDetector(Module):
             return
         X = self.scaler.fit_transform(np.vstack(self._fit_buffer))
         self.km.partial_fit(X)
+        if self.debug and len(self._fit_buffer) % 500 == 0:
+            self.logger.debug(f"[MTD] partial-fit on {len(self._fit_buffer)} points.")
 
     def detect(self, data: Dict, t: int) -> Tuple[int, float]:
         if not hasattr(self.scaler, "mean_"):
             return 0, 0.0
-        x_raw = self._mts_features(data, t).reshape(1, -1)
-        x = self.scaler.transform(x_raw)
-        lab = int(self.km.predict(x)[0])
-        dist = self.km.transform(x)[0].min()
+        x      = self.scaler.transform(self._mts_features(data, t).reshape(1, -1))
+        lab    = int(self.km.predict(x)[0])
+        dist   = self.km.transform(x)[0].min()
         strength = float(1.0 / (1.0 + dist))
         self._theme_vec.fill(0.0)
         self._theme_vec[lab] = strength
         return lab, strength
+    
+        # ────────── NEW: hooks required by StrategyArbiter ──────────
+    def set_action_dim(self, dim: int):
+        """Call once from the env so we know how many numbers to output."""
+        self._action_dim = int(dim)
 
+    def propose_action(self, obs: Any = None) -> np.ndarray:
+        """
+        Very simple policy: broadcast the strongest-theme confidence
+        across every action dimension in [-1, 1].
+        """
+        bias = 2.0 * float(self._theme_vec.max()) - 1.0     # 0…1  →  -1…1
+        return np.full(getattr(self, "_action_dim", 1), bias, np.float32)
+
+    def confidence(self, obs: Any = None) -> float:
+        """Return the detector’s current certainty (0…1)."""
+        return float(self._theme_vec.max())
+    # ─────────────────────────────────────────────────────────────
+
+    # —— Gym-style hook ————————————————————————————————
     def get_observation_components(self) -> np.ndarray:
         return self._theme_vec.copy()
 
-    def step(self, **kwargs):
+    def step(self, **kwargs):        # kept for interface compatibility
         pass
 
-    # --- Evolutionary methods ---
-    def get_genome(self):
-        return self.genome.copy()
-    def set_genome(self, genome):
-        # Only allow hyperparam changes
+    # ───────────────────────── evolution utils ────────────────────────
+    def get_genome(self):  return self.genome.copy()
+
+    def set_genome(self, genome: Dict[str, Any]):
         self.n_themes = int(genome.get("n_themes", self.n_themes))
-        self.window = int(genome.get("window", self.window))
-        self.genome = {"n_themes": self.n_themes, "window": self.window}
-        # Re-init the MiniBatchKMeans to use new n_themes
-        self.km = MiniBatchKMeans(
-            n_clusters=self.n_themes,
-            batch_size=max(64, self.n_themes * 16),
-            random_state=0,
-        )
+        self.window   = int(genome.get("window",   self.window))
+        self.genome   = {"n_themes": self.n_themes, "window": self.window}
+        self.km       = MiniBatchKMeans(n_clusters=self.n_themes,
+                                        batch_size=max(64, self.n_themes * 16),
+                                        random_state=0)
         self._theme_vec = np.zeros(self.n_themes, np.float32)
-    def mutate(self, mutation_rate=0.2):
-        g = self.genome.copy()
-        if random.random() < mutation_rate:
-            g["n_themes"] = int(np.clip(self.n_themes + np.random.randint(-1, 2), 2, 8))
-        if random.random() < mutation_rate:
-            g["window"] = int(np.clip(self.window + np.random.randint(-20, 20), 20, 200))
+
+    def mutate(self, rate: float = 0.2):
+        g = self.get_genome()
+        if random.random() < rate:
+            g["n_themes"] = int(np.clip(self.n_themes + random.choice([-1, 1]), 2, 8))
+        if random.random() < rate:
+            g["window"]   = int(np.clip(self.window   + random.randint(-20, 20), 20, 200))
         self.set_genome(g)
-    def crossover(self, other):
-        g1, g2 = self.genome, other.genome
-        new_g = {k: random.choice([g1[k], g2[k]]) for k in g1}
+
+    def crossover(self, other: "MarketThemeDetector"):
+        new_g = {k: random.choice([self.genome[k], other.genome[k]]) for k in self.genome}
         return MarketThemeDetector(self.instruments, genome=new_g, debug=self.debug)
 
-    # --- State save/load below is unchanged, see your previous version ---
-
+    # ───────────────────────── persistence ────────────────────────────
     def get_state(self):
-        scaler_state = {
-            "mean_": self.scaler.mean_.tolist() if hasattr(self.scaler, "mean_") else None,
-            "scale_": self.scaler.scale_.tolist() if hasattr(self.scaler, "scale_") else None,
-        }
-        km_state = {
-            "cluster_centers_": self.km.cluster_centers_.tolist() if hasattr(self.km, "cluster_centers_") else None
-        }
-        macro_state = dict(self.macro_data)
-        fit_buffer = list(self._fit_buffer)
-        theme_vec = self._theme_vec.tolist()
         return {
-            "scaler": scaler_state,
-            "km": km_state,
-            "macro_data": macro_state,
-            "fit_buffer": fit_buffer,
-            "theme_vec": theme_vec,
-            "genome": self.genome.copy()
+            "scaler": {
+                "mean_":  self.scaler.mean_.tolist()  if hasattr(self.scaler, "mean_")  else None,
+                "scale_": self.scaler.scale_.tolist() if hasattr(self.scaler, "scale_") else None,
+            },
+            "km": {
+                "cluster_centers_":
+                    self.km.cluster_centers_.tolist() if hasattr(self.km, "cluster_centers_") else None
+            },
+            "macro_data":     dict(self.macro_data),
+            "fit_buffer":     list(self._fit_buffer),
+            "theme_vec":      self._theme_vec.tolist(),
+            "genome":         self.genome.copy()
         }
+
     def set_state(self, state):
-        scaler = state.get("scaler", {})
-        if scaler.get("mean_") is not None and scaler.get("scale_") is not None:
-            self.scaler.mean_ = np.array(scaler["mean_"], dtype=np.float64)
-            self.scaler.scale_ = np.array(scaler["scale_"], dtype=np.float64)
+        sc = state.get("scaler", {})
+        if sc.get("mean_") is not None:
+            self.scaler.mean_  = np.asarray(sc["mean_"])
+            self.scaler.scale_ = np.asarray(sc["scale_"])
         km = state.get("km", {})
         if km.get("cluster_centers_") is not None:
-            self.km.cluster_centers_ = np.array(km["cluster_centers_"], dtype=np.float64)
-        self.macro_data = dict(state.get("macro_data", self.macro_data))
+            self.km.cluster_centers_ = np.asarray(km["cluster_centers_"])
+        self.macro_data  = dict(state.get("macro_data", self.macro_data))
         self._fit_buffer = deque(state.get("fit_buffer", []), maxlen=2000)
-        self._theme_vec = np.array(state.get("theme_vec", [0.0]*self.n_themes), dtype=np.float32)
+        self._theme_vec  = np.asarray(state.get("theme_vec", [0.0]*self.n_themes), np.float32)
         self.set_genome(state.get("genome", self.genome))
 
 
@@ -233,7 +231,7 @@ class FractalRegimeConfirmation(Module):
     Confirms market regime (trending, volatile, noise) using fractal metrics
     plus macro theme confidence. Now supports evolutionary adaptation!
     """
-    def __init__(self, window: int = 100, debug: bool = False, genome: Dict[str, Any] = None):
+    def __init__(self, window: int = 100, debug: bool = True, genome: Dict[str, Any] = None):
         if genome:
             window = genome.get("window", window)
             self.coeff_h = genome.get("coeff_h", 0.4)
@@ -244,11 +242,17 @@ class FractalRegimeConfirmation(Module):
             self.coeff_vr = 0.3
             self.coeff_we = 0.3
 
+        self._noise_to_volatile    = 0.30
+        self._volatile_to_noise    = 0.20
+        self._volatile_to_trending = 0.60
+        self._trending_to_volatile = 0.50
+
         self.window = window
-        self.debug = debug
-        self._buf = deque(maxlen=int(window * 0.75))
-        self.regime_strength: float = 0.0
-        self.label: str = "noise"
+        self.debug  = debug
+        self._buf   = deque(maxlen=int(window * 0.75))
+        self.regime_strength = 0.0
+        self.label          = "noise"
+
         self._forced_label: str | None = None  # Used for test monkeypatching
         self._forced_strength: float | None = None
 
@@ -316,49 +320,93 @@ class FractalRegimeConfirmation(Module):
 
     def step(
         self,
-        data_dict: Dict[str, Dict[str, pd.DataFrame]],
-        current_step: int,
+        data_dict: Dict[str, Dict[str, pd.DataFrame]] | None = None,
+        current_step: int | None = None,
         theme_detector: Any = None,
     ) -> Tuple[str, float]:
-        if self._forced_label is not None and self._forced_strength is not None:
-            if self.debug:
-                print(f"[FRC] Forced regime: {self._forced_label} ({self._forced_strength:.3f})")
-            self.label = self._forced_label
-            self.regime_strength = self._forced_strength
+        """
+        Compute H, VR, WE; blend with theme_conf; update label with hysteresis.
+        Called by the env once per bar **and** once during reset with no args.
+        """
+        # ── early-exit on dummy call ───────────────────────────────────────
+        if data_dict is None or current_step is None:
             return self.label, self.regime_strength
 
+        # 1) Forced override (for testing)
+        if self._forced_label is not None:
+            self.label = self._forced_label
+            self.regime_strength = self._forced_strength  # type: ignore
+            return self.label, self.regime_strength
+
+        # 2) Extract price series
         inst = next(iter(data_dict))
-        ts = (
-            data_dict[inst]["D1"]["close"]
-            .values[max(0, current_step - self.window) : current_step]
-            .astype(np.float32)
-        )
-        H = self._hurst(ts)
+        ts = data_dict[inst]["D1"]["close"] \
+               .values[max(0, current_step - self.window) : current_step] \
+               .astype(np.float32)
+
+        # 3) Compute fractal metrics
+        H  = self._hurst(ts)
         VR = self._var_ratio(ts)
         WE = self._wavelet_energy(ts)
-        theme_conf = 1.0
 
+        # 4) Theme weighting
+        theme_conf = 1.0
         if theme_detector is not None:
             theme_detector.fit_if_needed(data_dict, current_step)
             _, theme_conf = theme_detector.detect(data_dict, current_step)
 
+        # 5) Aggregate score & buffer
         score = self.coeff_h * H + self.coeff_vr * VR + self.coeff_we * WE
         self._buf.append(score)
-        self.regime_strength = float(np.mean(self._buf) * theme_conf)
+        strength = float(np.mean(self._buf) * theme_conf)
+        self.regime_strength = strength
 
-        new_label = "trending" if self.regime_strength > 0.6 else ("volatile" if self.regime_strength < 0.3 else "noise")
-        
-        # Check if the regime has changed
-        if new_label != self.label:
-            # Log the change
-            self.logger.info(f"Market regime changed from {self.label} to {new_label}. Strength: {self.regime_strength:.3f}")
-            self.label = new_label
+        # 6) State-machine with hysteresis
+        old = self.label
+        if old == "noise":
+            new = "volatile" if strength >= self._noise_to_volatile else "noise"
 
-        if self.debug:
-            print(
-                f"[FRC] label={self.label:<9}  strength={self.regime_strength:.3f}"
+        elif old == "volatile":
+            if strength >= self._volatile_to_trending:
+                new = "trending"
+            elif strength < self._volatile_to_noise:
+                new = "noise"
+            else:
+                new = "volatile"
+
+        else:  # old == "trending"
+            new = "volatile" if strength < self._trending_to_volatile else "trending"
+
+        # 7) Log once on real change
+        if new != old:
+            self.logger.info(
+                f"Market regime changed from {old} to {new}. Strength: {strength:.3f}"
             )
-        return self.label, self.regime_strength
+            self.label = new
+
+        # 8) Optional debug print
+        if self.debug:
+            print(f"[FRC] label={self.label:<8} strength={strength:.3f}")
+
+        return self.label, strength
+    
+
+     # ────────── NEW voting-committee hooks ──────────
+    def set_action_dim(self, dim: int):
+        self._action_dim = int(dim)
+
+    def propose_action(self, obs: Any = None) -> np.ndarray:
+        """
+        Map regime → direction:
+        trending ⇒ +strength, volatile ⇒ –strength, noise ⇒ 0.
+        """
+        sgn = {"trending": 1.0, "volatile": -1.0}.get(self.label, 0.0)
+        return np.full(getattr(self, "_action_dim", 1),
+                       sgn * self.regime_strength, np.float32)
+
+    def confidence(self, obs: Any = None) -> float:
+        return float(self.regime_strength)
+    # ────────────────────────────────────────────────
 
 
     def force_regime(self, label: str, strength: float):
@@ -431,7 +479,7 @@ class TimeAwareRiskScaling(Module):
     Adjusts portfolio-level risk by hourly volatility and session seasonality.
     Now supports evolutionary adaptation!
     """
-    def __init__(self, debug: bool = False, genome: Dict[str, Any] = None):
+    def __init__(self, debug: bool = True, genome: Dict[str, Any] = None):
         # Genome-based parameters
         if genome:
             self.asian_end = int(genome.get("asian_end", 8))
@@ -553,7 +601,7 @@ class LiquidityHeatmapLayer(Module):
     Now supports neuroevolution: evolve both architecture (genome) AND weights!
     """
 
-    def __init__(self, action_dim: int, debug: bool = False, genome: dict = None, weights: list = None):
+    def __init__(self, action_dim: int, debug: bool = True, genome: dict = None, weights: list = None):
         super().__init__()
         # Evolvable architecture params (genome)
         if genome:
@@ -795,7 +843,7 @@ class RegimePerformanceMatrix(Module):
     Tracks PnL across realised vs predicted volatility regimes.
     """
 
-    def __init__(self, n_regimes: int = 3, decay: float = 0.95, debug: bool = False):
+    def __init__(self, n_regimes: int = 3, decay: float = 0.95, debug: bool = True):
         self.n = n_regimes
         self.decay = decay
         self.debug = debug

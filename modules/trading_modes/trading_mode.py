@@ -10,7 +10,14 @@ from modules.core.core import Module
 class TradingModeManager(Module):
     MODES = ["safe", "normal", "aggressive", "extreme"]
 
-    def __init__(self, initial_mode: str = "safe", window: int = 50, log_file: Optional[str] = None):
+    def __init__(
+        self,
+        initial_mode: str = "extreme",
+        window: int = 50,
+        log_file: Optional[str] = None,
+        market_schedule: Optional[Dict[str, Any]] = None,  # NEW
+        audit_log_size: int = 100,  # NEW
+    ):
         assert initial_mode in self.MODES
         self.mode = initial_mode
         self.auto = True
@@ -20,6 +27,13 @@ class TradingModeManager(Module):
         self._setup_logger()
         self.last_reason = ""
         self.last_switch_time = None
+
+        # NEW: Decision/audit trace for every mode decision
+        self._decision_trace: List[Dict[str, Any]] = []
+        self._audit_log_size = audit_log_size
+
+        # NEW: Market schedule for close/holiday awareness
+        self.market_schedule = market_schedule
 
     def _setup_logger(self):
         self.logger = logging.getLogger("TradingModeManager")
@@ -35,6 +49,7 @@ class TradingModeManager(Module):
         self.mode = mode
         self.auto = False
         self._log_switch(prev_mode, mode, "Manual override")
+        self._append_trace(prev_mode, mode, "Manual override", is_auto=False)
 
     def set_auto(self, auto: bool):
         self.auto = auto
@@ -83,7 +98,55 @@ class TradingModeManager(Module):
             sharpe=sharpe
         )
 
+    def _market_is_open(self) -> bool:
+        """
+        Returns True if market is open based on the current time and self.market_schedule.
+        Schedule format:
+        {
+            "timezone": "Europe/Berlin",
+            "open_hour": 0,
+            "close_hour": 23,
+            "close_days": [5, 6],  # Saturday=5, Sunday=6
+            "holidays": ["2024-12-25", ...]
+        }
+        """
+        if not self.market_schedule:
+            return True  # assume always open if not specified
+
+        import pytz
+        tzname = self.market_schedule.get("timezone", "UTC")
+        tz = pytz.timezone(tzname)
+        now = datetime.datetime.now(tz)
+        day = now.weekday()  # Monday=0, Sunday=6
+        hour = now.hour
+
+        # Closed for weekends/holidays
+        if day in self.market_schedule.get("close_days", [5, 6]):
+            return False
+        if "holidays" in self.market_schedule:
+            today = now.strftime("%Y-%m-%d")
+            if today in self.market_schedule["holidays"]:
+                return False
+        open_hour = self.market_schedule.get("open_hour", 0)
+        close_hour = self.market_schedule.get("close_hour", 23)
+        if hour < open_hour or hour >= close_hour:
+            return False
+        return True
+
     def decide_mode(self) -> str:
+        # --------- Market schedule logic (always safe when closed) ---------
+        if not self._market_is_open():
+            prev_mode = self.mode
+            self.mode = "safe"
+            reason = "Market is closed – set to SAFE"
+            if prev_mode != self.mode:
+                self._log_switch(prev_mode, self.mode, reason)
+                self.last_switch_time = datetime.datetime.utcnow().isoformat()
+                self.last_reason = reason
+                self._append_trace(prev_mode, self.mode, reason, is_auto=True)
+            return self.mode
+
+        # --------- Normal auto logic ----------
         if not self.auto:
             return self.mode
 
@@ -120,6 +183,7 @@ class TradingModeManager(Module):
             self._log_switch(prev_mode, self.mode, reason)
             self.last_switch_time = datetime.datetime.utcnow().isoformat()
             self.last_reason = reason
+            self._append_trace(prev_mode, self.mode, reason, is_auto=True)
 
         return self.mode
 
@@ -135,14 +199,30 @@ class TradingModeManager(Module):
         return stats
 
     def _log_switch(self, prev_mode, new_mode, reason):
-        msg = f"Mode changed: {prev_mode} → {new_mode} | {reason}"
+        msg = f"Mode changed: {prev_mode}  {new_mode} | {reason}"
         self.logger.info(msg)
         print(f"[ModeManager] {msg}")
+
+    def _append_trace(self, prev_mode, new_mode, reason, is_auto=True):
+        entry = {
+            "prev_mode": prev_mode,
+            "new_mode": new_mode,
+            "reason": reason,
+            "auto": is_auto,
+            "time": datetime.datetime.utcnow().isoformat(),
+        }
+        self._decision_trace.append(entry)
+        if len(self._decision_trace) > self._audit_log_size:
+            self._decision_trace = self._decision_trace[-self._audit_log_size:]
+
+    def get_last_decisions(self, n=5) -> List[Dict[str, Any]]:
+        return self._decision_trace[-n:]
 
     def reset(self):
         self.stats_history.clear()
         self.last_switch_time = None
         self.last_reason = ""
+        self._decision_trace.clear()
 
     def step(self, trade_result=None, pnl=None, consensus=None, volatility=None, drawdown=None, sharpe=None, **kwargs):
         if trade_result is not None:
@@ -161,6 +241,8 @@ class TradingModeManager(Module):
             "stats_history": self.stats_history,
             "last_switch_time": self.last_switch_time,
             "last_reason": self.last_reason,
+            "market_schedule": self.market_schedule,
+            "decision_trace": self._decision_trace,
         }
 
     def set_state(self, state):
@@ -169,3 +251,5 @@ class TradingModeManager(Module):
         self.stats_history = state.get("stats_history", [])
         self.last_switch_time = state.get("last_switch_time", None)
         self.last_reason = state.get("last_reason", "")
+        self.market_schedule = state.get("market_schedule", None)
+        self._decision_trace = state.get("decision_trace", [])

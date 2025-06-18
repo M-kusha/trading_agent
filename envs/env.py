@@ -13,11 +13,13 @@ import pandas as pd
 import torch
 import gymnasium as gym
 from gymnasium import spaces
+import MetaTrader5 as mt5
 
 # ──────────────────────── Internal modules ────────────────────────────
 from modules.core.core import Module
 from modules.features.feature import AdvancedFeatureEngine, MultiScaleFeatureEngine
 from modules.position.position import PositionManager
+from modules.regime.regime import MarketRegimeSwitcher
 from modules.reward.reward import RiskAdjustedReward
 from modules.risk.risk_controller import DynamicRiskController
 from modules.market.market import (
@@ -63,8 +65,8 @@ from modules.risk.risk_monitor import (
 )
 from modules.external.news_sentiment import NewsSentimentModule
 
-# ─────────────────────────── Logger setup for "SGP" ──────────────────────────
-# Capture all "SGP" logs into a separate file, and prevent console output.
+os.makedirs("logs", exist_ok=True)              # ← make sure the directory exists
+
 sgp_logger = logging.getLogger("SGP")
 if not sgp_logger.handlers:
     sgp_handler = logging.FileHandler("logs/sgp.log")
@@ -140,6 +142,12 @@ class EnhancedTradingEnv(gym.Env):
         # Prevent propagation to the root logger (so logs won’t also print to console)
         self.logger.propagate = False
         self.logger.info("Logger initialized")
+        self.live_mode = True   # Set live_mode FIRST
+        self.current_drawdown = 0.0  # <-- Add this right at the top!
+        self.balance = 0.0           # <-- All other attributes referenced in reset
+        self.peak_balance = 0.0
+        self.current_step = 0
+        self.open_positions = []
 
         # Episode parameters
         self.initial_balance = float(initial_balance)
@@ -155,14 +163,22 @@ class EnhancedTradingEnv(gym.Env):
         self.debug = debug
         self.no_trade_penalty = no_trade_penalty
         self.episode_count = 0
-        self.consensus_min = 0.05
-        self.consensus_max = 0.35   # Reduced from 0.6
+        self.consensus_min = 0.30 
+        self.consensus_max = 0.70    # Reduced from 0.6
+
+
         self.max_episodes   = 10000
         self.ep_step = 0
         # Data
-        self.orig_data = data_dict
-        self.data = copy.deepcopy(data_dict)
+        self.orig_data  = data_dict
+        self.data       = copy.deepcopy(data_dict)
         self.instruments = list(data_dict.keys())
+
+        # ── conviction / rotation parameters ──────────────────────────
+        self.min_intensity       = 0.25   # |intensity| must exceed this
+        self.min_inst_confidence = 0.60   # mean α required
+        self.rotation_gap        = 5      # bars to wait before re-trading
+        self._last_trade_step    = {inst: -999 for inst in self.instruments}
 
         # ────────────────── Module instantiation ──────────────────────
         base_afe = AdvancedFeatureEngine(debug=debug)
@@ -173,10 +189,19 @@ class EnhancedTradingEnv(gym.Env):
             debug=debug
         )
         self.position_manager.set_env(self)  # <--- CRITICAL LINE
+        self.theme_detector    = MarketThemeDetector(self.instruments, 4, 100, debug=debug)
 
-        self.open_positions    = getattr(self.position_manager, "positions", [])
+        self.fractal_confirm   = FractalRegimeConfirmation(100, debug=debug)
+        self.regime_switcher   = MarketRegimeSwitcher(debug=debug)
+        
+
+        self.open_positions = self.position_manager.open_positions
         self.reward_shaper     = RiskAdjustedReward(self.initial_balance, env=self, debug=debug)
-        action_dim = 2 * len(self.instruments)
+        action_dim = 2 * len(self.instruments)          # ← already in your code
+        self.regime_switcher.set_action_dim(action_dim)
+        self.theme_detector.set_action_dim(action_dim)  # ← move here & use action_dim
+        self.fractal_confirm.set_action_dim(action_dim) # ← same
+
         self.liquidity_layer = LiquidityHeatmapLayer(
             action_dim=action_dim,
             debug=debug
@@ -201,9 +226,7 @@ class EnhancedTradingEnv(gym.Env):
         self.role_coach        = RoleCoach(debug=debug)
         self.opponent_sim      = OpponentSimulator(debug=debug)
 
-        # Market context
-        self.theme_detector    = MarketThemeDetector(self.instruments, 4, 100, debug=debug)
-        self.fractal_confirm   = FractalRegimeConfirmation(100, debug=debug)
+        #
         self.time_risk_scaler  = TimeAwareRiskScaling(debug=debug)
 
         self.visualizer        = VisualizationInterface(debug=debug)
@@ -235,13 +258,12 @@ class EnhancedTradingEnv(gym.Env):
         self.dd_rescue         = DrawdownRescue(dd_limit=0.3)
         self.exec_monitor      = ExecutionQualityMonitor()
         self.anomaly_detector  = AnomalyDetector()
-        self.news_sentiment = NewsSentimentModule(enabled=True, debug=debug)
+        # self.news_sentiment = NewsSentimentModule(enabled=True, debug=debug)
 
 
         # Evolution pool
         self.strategy_pool     = StrategyGenomePool(20, debug=debug)
 
-        # ────────────── Analysis pipeline (observation) ───────────────
         core_modules = [
             self.feature_engine, self.compliance, self.risk_system,
             self.theme_detector, self.time_risk_scaler, self.liquidity_layer,
@@ -250,16 +272,28 @@ class EnhancedTradingEnv(gym.Env):
             self.regime_matrix, self.trade_thesis,
             self.mode_manager, self.active_monitor, self.corr_controller,
             self.dd_rescue, self.exec_monitor, self.anomaly_detector,
-            self.news_sentiment,
+            self.position_manager, self.fractal_confirm, self.regime_switcher, 
+            # self.news_sentiment,
         ]
+
+        # only include these back-test–only modules when NOT live
+        if not self.live_mode:
+            core_modules += [
+                self.shadow_sim,
+                self.role_coach,
+                self.opponent_sim,
+            ]
+
         self.pipeline = TradingPipeline(core_modules)
 
-        # Toggle dictionary
+        # ─────────────── Toggles ────────────────
         self.module_enabled = {
             m.__class__.__name__: True
             for m in core_modules + [
-                self.position_manager, self.risk_controller,
-                self.mistake_memory, self.memory_compressor,
+                self.position_manager,
+                self.risk_controller,
+                self.mistake_memory,
+                self.memory_compressor,
             ]
         }
 
@@ -295,21 +329,38 @@ class EnhancedTradingEnv(gym.Env):
         self.consensus = ConsensusDetector(len(committee), 0.7)
         self.collusion = CollusionAuditor(len(committee), 0.95)
         self.haligner  = TimeHorizonAligner([0]*len(committee))
+        lhl      = self.liquidity_layer            # LiquidityHeatmapLayer
+        frc      = self.fractal_confirm            # FractalRegimeConfirmation
+        mtd      = self.theme_detector             # MarketThemeDetector
+       
 
-        self.arbiter = StrategyArbiter(
-            committee, init_w,
-            action_dim=self.action_space.shape[0],
-            adapt_rate=0.02,
-            consensus=self.consensus,
-            collusion=self.collusion,
-            horizon_aligner=self.haligner,
+        # 2)  Simple realised-volatility accessor for the Arbiter’s gate.
+        #     You can replace this with something better (e.g. ATR) later.
+        def _realised_vol():
+            try:
+                df0 = self.data[self.instruments[0]]["D1"]
+                return float(df0.iloc[self.current_step]["volatility"])
+            except Exception:
+                return 0.0
+# ────────────────────────────────────────────────────────────────────
+
+        arbiter = StrategyArbiter(
+            members=[lhl, frc, mtd, self.regime_switcher],
+            init_weights=[0.25, 0.25, 0.25, 0.25],
+            action_dim=self.action_space.shape[0],   # ← use self not “env”
+            consensus=ConsensusDetector(4),
+            horizon_aligner=TimeHorizonAligner([1, 4, 24, 24]),
+            debug=True,
         )
+        self.arbiter = arbiter
+        self.arbiter.update_market_state(_realised_vol())
+
 
         self.alt_sampler = AlternativeRealitySampler(len(committee))
 
         # Live-trading bookkeeping
-        self.live_mode = False
-        info = None  # Placeholder for live mode
+        
+        info = mt5.account_info() if self.live_mode else None
         real_bal = float(info.balance) if info and hasattr(info, "balance") else self.initial_balance
         self.balance = self.peak_balance = real_bal
 
@@ -329,7 +380,7 @@ class EnhancedTradingEnv(gym.Env):
         os.makedirs(self.ckpt_dir, exist_ok=True)
         self._maybe_load_checkpoints()
 
-        # Point value for simulated PnL
+        # Point value for simulated PnLc
         self.point_value = {instr: 1.0 for instr in self.instruments}
 
     # ==================================================================
@@ -391,40 +442,84 @@ class EnhancedTradingEnv(gym.Env):
         # Restore data & balances
         self.episode_count += 1
         self.data = copy.deepcopy(self.orig_data)
-        info = None  # Placeholder for live mode
+        info = mt5.account_info() if self.live_mode else None
         real_balance = float(info.balance) if info and hasattr(info, "balance") else self.initial_balance
         self.balance = self.peak_balance = real_balance
 
-        # Index bookkeeping
-        self.current_step = random.randint(100, len(self.data["XAU/USD"]["D1"]) - self.max_steps - 1)
+        bars_available = min(
+            len(self.data[inst]["D1"])
+            for inst in self.instruments
+            if "D1" in self.data[inst]
+        )
+
+        min_index = 100
+        max_index = bars_available - self.max_steps - 1
+        if max_index <= min_index:
+            self.current_step = 0
+            self.logger.warning(
+                f"Insufficient XAU/USD D1 history (bars={bars_available}) for "
+                f"max_steps={self.max_steps}; defaulting current_step to 0"
+            )
+        else:
+            self.current_step = random.randint(min_index, max_index)
+
         self.ep_step = 0
         self.current_drawdown = 0.0
         self.sl_multiplier = self.tp_multiplier = 1.0
 
-        # Reset all modules and meta/neuro modules
+
         core_modules = [
             self.feature_engine, self.position_manager, self.reward_shaper,
             self.risk_controller, self.mistake_memory, self.memory_compressor,
-            self.replay_analyzer, self.shadow_sim, self.playbook_memory,
+            self.replay_analyzer, self.playbook_memory,
             self.strategy_intros, self.curriculum_planner, self.memory_budget,
-            self.role_coach, self.opponent_sim, self.theme_detector,
-            self.visualizer, self.fractal_confirm, self.time_risk_scaler,
-            self.liquidity_layer, self.playbook_clusterer, self.long_term_memory,
-            self.meta_agent, self.meta_planner, self.bias_auditor,
-            self.opp_enhancer, self.thesis_engine, self.regime_matrix,
-            self.trade_map_vis, self.trade_thesis, self.world_model,
-            self.compliance, self.risk_system, self.explainer,
-            self.mode_manager, self.active_monitor, self.corr_controller,
-            self.dd_rescue, self.exec_monitor, self.anomaly_detector,
-            self.news_sentiment,
+            self.theme_detector, self.visualizer, self.fractal_confirm,
+            self.time_risk_scaler, self.liquidity_layer, self.playbook_clusterer,
+            self.long_term_memory, self.meta_agent, self.meta_planner,
+            self.bias_auditor, self.opp_enhancer, self.thesis_engine,
+            self.regime_matrix, self.trade_map_vis, self.trade_thesis,
+            self.world_model, self.compliance, self.risk_system,
+            self.explainer, self.mode_manager, self.active_monitor,
+            self.corr_controller, self.dd_rescue, self.exec_monitor,
+            self.anomaly_detector,
+            # (news_sentiment if you ever enable it)
         ]
+
+        # only include these back-test–only modules when NOT live
+        if not self.live_mode:
+            core_modules += [
+                self.shadow_sim,
+                self.role_coach,
+                self.opponent_sim,
+            ]
+
+        # meta/neuro wrappers
         for attr in ("meta_rl", "arbiter", "consensus", "collusion", "haligner"):
             mod = getattr(self, attr, None)
             if mod is not None:
                 core_modules.append(mod)
+
+        # finally reset everything
         for m in core_modules:
             if hasattr(m, "reset"):
                 m.reset()
+
+        try:
+            price_dict = {}
+            for inst in self.instruments:
+                df = self.data[inst]["D1"]
+                idx1 = self.current_step
+                idx0 = max(idx1 - self.risk_system.var_window, 0)
+                # Always get at least var_window+1 bars
+                prices = df["close"].iloc[idx0:idx1+1].values
+                price_dict[inst] = prices
+            if all(len(v) > self.risk_system.var_window for v in price_dict.values()):
+                self.risk_system.prime_returns_with_history(price_dict)
+            else:
+                self.risk_system.prime_returns_with_random()
+        except Exception as e:
+            self.logger.warning(f"Could not prime PortfolioRiskSystem: {e}")
+            self.risk_system.prime_returns_with_random()
 
         # ----------- NEURO/EVOLUTIONARY RESET -----------
         # Select a new genome for this episode (neuro-evolution)
@@ -487,77 +582,94 @@ class EnhancedTradingEnv(gym.Env):
     # ==================================================================
     #  STEP
     # ==================================================================
+    # ═══════════════════════════════════════════════════════════════════
+    #  STEP
+    # ═══════════════════════════════════════════════════════════════════
     def step(self, actions: np.ndarray):
         self.logger.debug(f"Actions before adjustment: {actions}")
-        self.logger.debug(f"Agent step: current_step={self.current_step}, balance={self.balance}")
-        self.trades = []  # Reset trades for this step
+        self.logger.debug(
+            f"Agent step: current_step={self.current_step}, balance={self.balance}"
+        )
+
+        # --------------------------------------------------------------
+        # 0) housekeeping before anything else
+        # --------------------------------------------------------------
+        self.trades = []                      # clear previous step’s trades
+        self.position_manager.step()          # update trailing-SL etc.
+
+        # Update mode manager even on a “hold”
+        self.mode_manager.step(
+            trade_result="hold",
+            pnl=0.0,
+            consensus=0.0,
+            volatility=self.get_volatility_profile().get(self.instruments[0], 0.0),
+            drawdown=self.current_drawdown,
+        )
 
         try:
-            # Before processing actions, ensure there are no NaNs
-            assert not np.any(np.isnan(actions)), "NaN detected in actions!"
+            # ----------------------------------------------------------
+            # 1)  Meta-RL overlay (adds its own delta to the action)
+            # ----------------------------------------------------------
+            assert not np.any(np.isnan(actions)), "NaN detected in raw actions"
 
-            if self.meta_rl is not None:
-                obs_for_meta = self._get_full_observation(self._dummy_input())
-            assert np.all(np.isfinite(obs_for_meta)), f"Non-finite values in obs_for_meta: {obs_for_meta}"
-            obs_tensor = torch.tensor(obs_for_meta, dtype=torch.float32, device="cpu").unsqueeze(0)
-            if torch.isnan(obs_tensor).any():
-                self.logger.error(f"NaN detected in obs_tensor before RL act: {obs_tensor}")
-                obs_tensor = torch.nan_to_num(obs_tensor, nan=0.0)
+            obs_for_meta = self._get_full_observation(self._dummy_input())
+            assert np.all(np.isfinite(obs_for_meta)), "Non-finite obs_for_meta"
+
+            obs_tensor = torch.tensor(
+                obs_for_meta, dtype=torch.float32
+            ).unsqueeze(0)
 
             meta_action_out = self.meta_rl.act(obs_tensor)
-            if isinstance(meta_action_out, dict):
-                meta_action = meta_action_out["action"]
-            else:
-                meta_action = meta_action_out
+            meta_action = (
+                meta_action_out["action"]
+                if isinstance(meta_action_out, dict) else meta_action_out
+            )
             meta_action = np.asarray(meta_action).reshape(-1)
+            assert not np.isnan(meta_action).any(), "NaN in meta_action"
 
-            # Ensure no NaNs in meta_action
-            assert not np.any(np.isnan(meta_action)), "NaN detected in meta_action!"
+            actions = np.clip(
+                actions + meta_action * self.current_genome[2],
+                self.action_space.low,
+                self.action_space.high,
+            )
 
-            actions = actions + meta_action * self.current_genome[2]
-            actions = np.clip(actions, self.action_space.low, self.action_space.high)
-
-            # Risk / correlation checks
+            # ----------------------------------------------------------
+            # 2)  Risk / correlation pre-checks
+            # ----------------------------------------------------------
             corr_dict = self.get_instrument_correlations()
-
-            # Log the correlation data for debugging purposes
-            self.logger.debug(f"Correlation data: {corr_dict}")
-
-            # Check for NaN in correlation data
-            for key, value in corr_dict.items():
-                if not isinstance(value, (int, float)):  # Skip if value is not numeric
-                    self.logger.warning(f"Non-numeric value in correlation data: {key} => {value}")
-                elif np.isnan(value):
-                    self.logger.error(f"NaN detected in correlation data for {key}: {value}")
-                    raise ValueError(f"NaN detected in correlation data for {key}: {value}")
-
-            high_corr = self.corr_controller.step(correlations=corr_dict)
-            if high_corr:
+            if self.corr_controller.step(correlations=corr_dict):
                 self.position_manager.max_pct *= 0.5
-                self.logger.info(f"High correlation detected → halving max_pct to {self.position_manager.max_pct:.4f}")
+                self.logger.info(
+                    f"High correlation — halving max_pct to "
+                    f"{self.position_manager.max_pct:.4f}"
+                )
 
             if self.dd_rescue.step(current_drawdown=self.current_drawdown):
-                self.logger.info("Drawdown rescue → skipping trades")
+                self.logger.info("Drawdown rescue: skipping trades")
                 return self._finalize_step([], actions, corr_dict, vol0=None, reward=0)
 
-            # Adjust risk controller
-            df0 = self.data[self.instruments[0]]["D1"]
+            # dynamic volatility-scaled risk cap
+            df0  = self.data[self.instruments[0]]["D1"]
             vol0 = df0.iloc[self.current_step]["volatility"]
-            self.risk_controller.adjust_risk({
-                "drawdown": self.current_drawdown,
-                "volatility": float(vol0),
-            })
 
-            rcoef = float(self.risk_controller.get_observation_components()[0])
-            base_pct = getattr(self.position_manager, "default_max_pct", None) or self.position_manager.max_pct
-            cap = min(base_pct * rcoef, base_pct)
-            self.position_manager.max_pct = cap
-            self.logger.debug(f"Applied max_pct cap: {cap:.4f} (base={base_pct:.4f}, rcoef={rcoef:.4f}, high_corr={high_corr})")
+            # >>> NEW — feed realised σ to the Arbiter’s smart gate
+            self.arbiter.update_market_state(float(vol0))
+            # <<<
 
-            # Blending committee votes
-            votes_by_sym_tf = {}
+            self.risk_controller.adjust_risk(
+                {"drawdown": self.current_drawdown, "volatility": float(vol0)}
+            )
+            rcoef     = float(self.risk_controller.get_observation_components()[0])
+            base_pct  = getattr(self.position_manager, "default_max_pct",
+                                self.position_manager.max_pct)
+            self.position_manager.max_pct = min(base_pct * rcoef, base_pct)
+
+            # ----------------------------------------------------------
+            # 3)  Committee vote blending (unchanged)
+            # ----------------------------------------------------------
+            votes_by_sym_tf   = {}
             blended_by_sym_tf = {}
-            committee = [m.__class__.__name__ for m in self.arbiter.members]
+            committee         = [m.__class__.__name__ for m in self.arbiter.members]
 
             for inst in self.instruments:
                 for tf in ("H1", "H4", "D1"):
@@ -567,34 +679,33 @@ class EnhancedTradingEnv(gym.Env):
                         .values.astype(np.float32)
                     )
                     obs_tf = self._get_full_observation({
-                        "env": self,
-                        f"price_{tf.lower()}": hist,
-                        "actions": actions,
+                        "env":       self,
+                        "price_h1":  hist if tf == "H1" else np.zeros_like(hist),
+                        "price_h4":  hist if tf == "H4" else np.zeros_like(hist),
+                        "price_d1":  hist if tf == "D1" else np.zeros_like(hist),
+                        "actions":   actions,
                     })
-                    blend = self.arbiter.propose(obs_tf)
-
-                    alpha = (
+                    blend  = self.arbiter.propose(obs_tf)
+                    alpha  = (
                         self.arbiter.last_alpha.copy()
                         if self.arbiter.last_alpha is not None
-                        else np.zeros(self.action_dim, dtype=np.float32)
+                        else np.zeros(self.action_dim)
                     )
-
-                    # Ensure no NaNs in votes
-                    assert not np.any(np.isnan(alpha)), "NaN detected in alpha (committee votes)!"
-
                     votes_by_sym_tf[(inst, tf)] = dict(zip(committee, alpha.tolist()))
                     blended_by_sym_tf[(inst, tf)] = blend
 
-            # Ensure no NaNs in blended actions
             actions = self._blend_committee_votes(blended_by_sym_tf)
-            assert not np.any(np.isnan(actions)), "NaN detected in blended actions!"
+            assert not np.isnan(actions).any(), "NaN in blended actions"
 
-            # Regime confirmation & explanation
-            regime_label, _ = self.fractal_confirm.step(
+            # ----------------------------------------------------------
+            # 4)  Explainability, dynamic consensus threshold
+            # ----------------------------------------------------------
+            _ = self.fractal_confirm.step(
                 data_dict=self.data,
                 current_step=self.current_step,
                 theme_detector=self.theme_detector,
             )
+            regime_label = self.fractal_confirm.label
             self.explainer.step(
                 actions,
                 np.mean([list(v.values()) for v in votes_by_sym_tf.values()], axis=0),
@@ -604,73 +715,102 @@ class EnhancedTradingEnv(gym.Env):
                 drawdown=self.current_drawdown,
                 genome_metrics=self.get_genome_metrics(),
             )
-
-            self.logger.info(f"Proposed trades after arbiter blending: {actions}")
-            merged = {
-                **{"big_" + m: w for m, w in zip(committee, self.arbiter.weights.tolist())},
-                **{
-                    f"{inst}_{tf}_{mod}": w
-                    for (inst, tf), vv in votes_by_sym_tf.items()
-                    for mod, w in vv.items()
-                }
-            }
-            self.votes_log.append(merged)
-            self.reasoning_trace.append(self.explainer.last_explanation)
-
-            os.makedirs("logs", exist_ok=True)
-            with open("logs/votes_history.json", "w") as fp:
-                json.dump(self.votes_log, fp, indent=2)
-
-            # Dynamic consensus threshold
             frac = min(self.episode_count / self.max_episodes, 1.0)
-            thr = self.consensus_min + (self.consensus_max - self.consensus_min) * frac
-            alpha = (
-                self.arbiter.last_alpha
-                if self.arbiter.last_alpha is not None
-                else np.zeros(self.action_dim, np.float32)
-            )
-            cons = float(np.mean(alpha))
-            if cons < thr:
-                self.logger.info(f"[DYN] Consensus {cons:.2f} < {thr:.2f} → skipping all trades")
+            thr  = self.consensus_min + (self.consensus_max - self.consensus_min) * frac
+            alpha_vec = self.arbiter.last_alpha
+            if alpha_vec is None:
+                alpha_vec = np.zeros(self.action_dim, np.float32)
+
+            # >>> FIX — use the right variable
+            consensus = float(np.sort(alpha_vec)[-2:].sum()) 
+            # <<<
+
+            if consensus < thr:
+                self.logger.info(
+                    f"[DYN] Consensus {consensus:.2f} < {thr:.2f} — no trades"
+                )
                 return self._finalize_step([], actions, corr_dict, vol0, reward=0)
 
-            # Execute trades for each instrument
+            # ----------------------------------------------------------
+            # 5)  *** Trade-execution loop with new gates ***
+            # ----------------------------------------------------------
             trades = []
+            self.logger.info(
+                f"[GATE DIAGNOSTICS] Step={self.ep_step} | "
+                f"Consensus={consensus:.4f} (thresh={thr:.4f}) | "
+                f"RotationGap={self.rotation_gap} | "
+                f"IntensityMin={self.min_intensity} | "
+                f"ConfidenceMin={self.min_inst_confidence} | "
+                f"PositionMaxPct={self.position_manager.max_pct:.4f}"
+            )
             for i, inst in enumerate(self.instruments):
-                intensity = actions[2*i]
-                duration_norm = actions[2*i + 1]
 
-                self.logger.debug(f"Calling _execute_trade for {inst} with intensity={intensity:.4f}, duration_norm={duration_norm:.4f}")
+                # rotation-gap gate
+                if (self.ep_step - self._last_trade_step.get(inst, -999)
+                        < self.rotation_gap):
+                    continue
+
+                intensity     = actions[2 * i]
+                duration_norm = actions[2 * i + 1]
+
+                # strength gate
+                if abs(intensity) < self.min_intensity:
+                    self.logger.debug(
+                        f"Skipping {inst} — intensity {intensity:.3f} "
+                        f"< {self.min_intensity:.2f}"
+                    )
+                    continue
+
+                # confidence gate (mean α over TFs × experts)
+                conf = float(np.mean([
+                    votes_by_sym_tf[(inst, tf)][m]
+                    for tf in ("H1", "H4", "D1")
+                    for m  in committee
+                ]))
+                if conf < self.min_inst_confidence:
+                    self.logger.debug(
+                        f"Skipping {inst} — confidence {conf:.2f} "
+                        f"< {self.min_inst_confidence:.2f}"
+                    )
+                    continue
+
+                # all gates passed → try to trade
+                self.logger.debug(
+                    f"Executing {inst}: intensity={intensity:.4f}, "
+                    f"duration_norm={duration_norm:.4f}"
+                )
                 tr = self._execute_trade(inst, intensity, duration_norm)
-                self.logger.debug(f"_execute_trade returned: {tr!r}")
 
-                if tr:
-                    passed = self.compliance.validate_trade(tr, self)
-                    self.logger.debug(f"Compliance check for {inst}: {passed}")
-                    if passed:
-                        tr["explanation"] = self.explainer.last_explanation
-                        tr["votes_by_sym_tf"] = votes_by_sym_tf
-                        trades.append(tr)
-                        self.logger.info(f"Executed trade for {inst}: {tr}")
-                    else:
-                        self.logger.debug(f"Dropped trade for {inst} due to compliance.")
-                else:
-                    self.logger.debug(f"No trade object returned for {inst} (empty dict)")
+                if not tr:
+                    continue  # zero-size or live error
 
-            # Assign trades before finalizing
+                if not self.compliance.validate_trade(tr, self):
+                    self.logger.debug(f"Compliance drop for {inst}")
+                    continue
+
+                tr["explanation"]     = self.explainer.last_explanation
+                tr["votes_by_sym_tf"] = votes_by_sym_tf
+                trades.append(tr)
+                self._last_trade_step[inst] = self.ep_step
+                self.logger.info(f"Executed trade for {inst}: {tr}")
+
+            # ----------------------------------------------------------
+            # 6)  Post-trade bookkeeping, reward, termination
+            # ----------------------------------------------------------
             self.trades = trades
-            self.logger.info(f"Final trades list for this step: {self.trades}")
+            pnl         = sum(t["pnl"] for t in trades)
 
-            # Neuro/meta logging
-            pnl = sum(t["pnl"] for t in trades)
             self.meta_agent.record(pnl)
-            self.meta_planner.record_episode({"pnl": pnl, "drawdown": self.current_drawdown})
+            self.meta_planner.record_episode(
+                {"pnl": pnl, "drawdown": self.current_drawdown}
+            )
             self.opp_enhancer.step(trades=trades, pnl=pnl)
             self.curriculum_planner.step(result={"pnl": pnl, "obs": obs_for_meta})
             self.playbook_clusterer.step(trades=trades, obs=obs_for_meta)
 
-            # Finalize step (compute reward, next obs, etc.)
-            obs, reward, terminated, truncated, info = self._finalize_step(trades, actions, corr_dict, vol0, reward=0)
+            obs, reward, terminated, truncated, info = self._finalize_step(
+                trades, actions, corr_dict, vol0, reward=0
+            )
             self.ep_step += 1
 
             terminated = (
@@ -687,15 +827,19 @@ class EnhancedTradingEnv(gym.Env):
 
             return obs, reward, terminated, truncated, info
 
+        # --------------------------------------------------------------
+        # 7)  fail-loudly: log & re-raise
+        # --------------------------------------------------------------
         except Exception:
             self.logger.exception("Error in step()")
             raise
+
 
     def _finalize_step(self, trades, actions, corr_dict, vol0, reward):
         assert not np.isnan(reward), f"NaN detected in reward calculation at step {self.current_step}"
         # Log entry to _finalize_step, including current trades list
         self.logger.info(f"Entering _finalize_step: current reward={reward}, no_trade_penalty={self.no_trade_penalty}")
-        self.logger.debug(f" → Trades passed into _finalize_step: {trades!r}")
+        self.logger.debug(f"  Trades passed into _finalize_step: {trades!r}")
 
         # Record PnL, durations, and drawdowns
         self._ep_pnls.extend(t["pnl"] for t in trades)
@@ -716,23 +860,19 @@ class EnhancedTradingEnv(gym.Env):
         # Update balance based on this step’s PnL
         pnl = sum(t["pnl"] for t in trades)
         assert not np.isnan(pnl), f"NaN detected in PnL calculation at step {self.current_step}"
-        
         self.peak_balance = max(self.peak_balance, self.balance)
         self.current_drawdown = max(
             (self.peak_balance - self.balance) / (self.peak_balance + 1e-8), 0.0
         )
         self.risk_system.step(pnl=pnl)
 
-        # Fractal confirmation may adjust TP/SL multipliers
-        label, strength = self.fractal_confirm.step(
-            data_dict=self.data, current_step=self.current_step, theme_detector=self.theme_detector
-        )
-        if label == "trending":
-            self.tp_multiplier *= 1.2
-            self.sl_multiplier *= 0.8
-        elif label == "volatile":
-            self.tp_multiplier *= 0.8
-            self.sl_multiplier *= 1.2
+                # ── audit the current limits to disk ────────────────────────────────
+        limits = self.risk_system.get_limits(self.balance)
+        self.logger.info(f"[PortfolioRiskSystem] limits at step {self.current_step}: {limits}")
+
+        # —— use the regime already computed in step(), no second call —— 
+        label   = self.fractal_confirm.label
+        strength= self.fractal_confirm.regime_strength
 
         # Compute the reward via RiskAdjustedReward
         reg_onehot = np.full_like(self.reward_shaper.regime_weights, strength, np.float32)
@@ -745,17 +885,21 @@ class EnhancedTradingEnv(gym.Env):
         reward += self.replay_analyzer.maybe_replay(self.current_step)
 
         # ── DEBUG: Check if we are about to apply no‐trade penalty ─────
-        self.logger.debug(f" → After reward shaping, trades = {trades!r}")
+        self.logger.debug(f"  After reward shaping, trades = {trades!r}")
         if not trades:
-            self.logger.debug(" → No trades detected this step ⇒ applying no_trade_penalty")
+            self.logger.debug("  No trades detected this step  applying no_trade_penalty")
             reward -= self.no_trade_penalty * (1 + self.current_drawdown)
 
         alpha_vec = self.arbiter.last_alpha.copy() if self.arbiter.last_alpha is not None else None
         cons      = float(np.mean(alpha_vec)) if alpha_vec is not None else 0.0
 
-        self.arbiter.update_reward(reward)   
-        shadow_trades = self.shadow_sim.simulate(env=self, actions=actions)
-        self.logger.info(f"ShadowSim: {len(shadow_trades)} trades simulated.")
+        self.arbiter.update_reward(reward)
+        # ── 8) Shadow‐simulation (only in backtests) ────────────────────
+        if not self.live_mode:
+            shadow_trades = self.shadow_sim.simulate(env=self, actions=actions)
+            self.logger.info(f"ShadowSim: {len(shadow_trades)} trades simulated.")
+        else:
+            shadow_trades = []
 
         # Build next‐step observation
         df0 = self.data[self.instruments[0]]["D1"]
@@ -763,16 +907,16 @@ class EnhancedTradingEnv(gym.Env):
         mem = self.long_term_memory.retrieve(self.feature_engine.last_embedding)
         obs = self._get_full_observation({
             "env": self,
-            "price_h1": hist,
-            "price_h4": hist,
-            "price_d1": hist,
-            "actions": actions,
-            "trades": trades,
+            "price_h1":    hist,
+            "price_h4":    hist,
+            "price_d1":    hist,
+            "actions":     actions,
+            "trades":      trades,
             "open_trades": self.open_positions,
-            "drawdown": self.current_drawdown,
-            "memory": mem,
-            "pnl": pnl,
-            "correlations": corr_dict
+            "drawdown":    self.current_drawdown,
+            "memory":      mem,
+            "pnl":         pnl,
+            "correlations":corr_dict
         })
 
         # Post‐processing monitors
@@ -817,6 +961,7 @@ class EnhancedTradingEnv(gym.Env):
         self.logger.debug(f"End-of-step balance={self.balance:.2f}")
 
         return obs, float(reward), terminated, False, info
+
 
     # ==================================================================
     #  Helper: full observation vector construction
@@ -888,16 +1033,21 @@ class EnhancedTradingEnv(gym.Env):
                 print(f"[_execute_trade] Clamped size from PositionManager: {size}")
 
 
-        # ─── Enforce max_pct cap ──────────────────────────────────────
         point_val = self.point_value.get(instrument, 1.0)
         max_dollars = self.balance * self.position_manager.max_pct
         max_lots = max_dollars / (price * point_val + 1e-12)
         if size > max_lots:
             self.logger.info(
                 f"[{instrument}] raw size {size:.3f} lots exceeds cap "
-                f"{max_lots:.3f} lots → capping"
+                f"{max_lots:.3f} lots  capping"
             )
             size = max_lots
+
+        # ── Skip zero-sized trades ───────────────────────────────────
+        if size == 0.0:
+            if self.debug:
+                self.logger.debug(f"[SIM] Zero size for {instrument}  skipping trade")
+            return {}
 
         self.logger.info(
             f"[{instrument}] intensity={intensity:.3f} | "
@@ -967,87 +1117,90 @@ class EnhancedTradingEnv(gym.Env):
             "features":    np.array([exit_price, pnl, hold_steps], np.float32),
         }
     
-    # # ==================================================================
-    # #  Live trade execution via MetaTrader5
-    # # ==================================================================
-    # def _execute_live_trade(self, instrument: str, size: float, intensity: float) -> dict:
-    #     """
-    #     Execute a single live trade via MetaTrader5.
-    #     Assumes:
-    #     - `self.live_mode` is True
-    #     - `self.logger` is available for logging
-    #     - `self.balance` and `self.peak_balance` track account balance
-    #     - `self.point_value` is defined (if needed for any conversions)
-    #     Returns a trade dict on success, or an empty dict on failure.
-    #     """
-    #     # Convert symbol and ensure it's selected
-    #     symbol = instrument.replace("/", "")
-    #     if not mt5.symbol_select(symbol, True):
-    #         self.logger.warning(f"Could not select {symbol}")
-    #         return {}
 
-    #     info = mt5.symbol_info(symbol)
-    #     if info is None:
-    #         self.logger.warning(f"No symbol info for {symbol}")
-    #         return {}
+        # ==================================================================
+    #  Live trade execution via MetaTrader5
+    # ==================================================================
+    def _execute_live_trade(
+        self,
+        instrument: str,
+        size: float,
+        intensity: float,
+    ) -> dict:
+        """
+        Send a market order through MT5, and *immediately* register the
+        open position in PositionManager so that trailing / hard-stop
+        logic can act on the very next bar.
+        """
+        symbol = instrument.replace("/", "")
+        if not mt5.symbol_select(symbol, True):
+            self.logger.warning(f"[LIVE] Cannot select {symbol}")
+            return {}
 
-    #     # Determine volume step & min/max volumes
-    #     step = info.volume_step or 0.01
-    #     vmin = info.volume_min or step
-    #     vmax = info.volume_max or 100.0
+        s_info = mt5.symbol_info(symbol)
+        if s_info is None:
+            self.logger.warning(f"[LIVE] No symbol_info for {symbol}")
+            return {}
 
-    #     # Round down `size` to nearest step
-    #     size = math.floor(size / step) * step
-    #     if size < vmin:
-    #         self.logger.info(f"Signal too small ({size:.3f} < {vmin}) – forcing minimum size")
-    #         size = vmin
-    #     size = min(size, vmax)
+        # ——— round volume to broker’s step and inside min–max —————————
+        step = s_info.volume_step or 0.01
+        vmin = s_info.volume_min  or step
+        vmax = s_info.volume_max  or 100.0
+        size = max(vmin, min(vmax, math.floor(size / step) * step))
 
-    #     # Get tick data for bid/ask
-    #     tick = mt5.symbol_info_tick(symbol)
-    #     if tick is None:
-    #         self.logger.warning(f"No tick for {symbol}")
-    #         return {}
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            self.logger.warning(f"[LIVE] No tick for {symbol}")
+            return {}
 
-    #     price_live = tick.ask if intensity > 0 else tick.bid
+        price_live = tick.ask if intensity > 0 else tick.bid
 
-    #     # Build and send the order request
-    #     request = {
-    #         "action":       mt5.TRADE_ACTION_DEAL,
-    #         "symbol":       symbol,
-    #         "volume":       size,
-    #         "type":         mt5.ORDER_TYPE_BUY if intensity > 0 else mt5.ORDER_TYPE_SELL,
-    #         "price":        price_live,
-    #         "deviation":    20,
-    #         "magic":        202406,
-    #         "comment":      "AI live trade",
-    #         "type_time":    mt5.ORDER_TIME_GTC,
-    #         "type_filling": mt5.ORDER_FILLING_IOC,
-    #     }
-    #     result = mt5.order_send(request)
-    #     if result.retcode != mt5.TRADE_RETCODE_DONE:
-    #         self.logger.warning(f"MT5 order failed: {result.comment}")
-    #         return {}
+        request = {
+            "action":       mt5.TRADE_ACTION_DEAL,
+            "symbol":       symbol,
+            "volume":       size,
+            "type":         mt5.ORDER_TYPE_BUY
+                            if intensity > 0 else mt5.ORDER_TYPE_SELL,
+            "price":        price_live,
+            "deviation":    20,
+            "magic":        202406,
+            "comment":      "AI live trade",
+            "type_time":    mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        result = mt5.order_send(request)
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            self.logger.warning(f"[LIVE] Order failed: {result.comment}")
+            return {}
 
-    #     # Update balance from account_info
-    #     acc = mt5.account_info()
-    #     if acc and hasattr(acc, "balance"):
-    #         self.balance = float(acc.balance)
-    #         self.peak_balance = max(self.peak_balance, self.balance)
+        # -------- immediately register the position -------------------
+        self.position_manager.open_positions[instrument] = {
+            "ticket"      : result.order,
+            "side"        : 1 if intensity > 0 else -1,
+            "lots"        : size,
+            "price_open"  : price_live,
+            "peak_profit" : 0.0,
+        }
 
-    #     self.logger.info(
-    #         f"LIVE {'BUY' if intensity > 0 else 'SELL'} {symbol} "
-    #         f"{size:.2f} lot @ {price_live}"
-    #     )
+        # -------- update cached balance -------------------------------
+        acc = mt5.account_info()
+        if acc and hasattr(acc, "balance"):
+            self.balance      = float(acc.balance)
+            self.peak_balance = max(self.peak_balance, self.balance)
 
-    #     return {
-    #         "instrument":  instrument,
-    #         "pnl":         0.0,
-    #         "duration":    1,
-    #         "exit_reason": "executed",
-    #         "size":        size if intensity > 0 else -size,
-    #         "features":    np.array([price_live, 0.0, 0.0], np.float32),
-    #     }
+        self.logger.info(
+            f"[LIVE] {'BUY' if intensity>0 else 'SELL'} {symbol} "
+            f"{size:.2f} lot @ {price_live:.5f}"
+        )
+        return {
+            "instrument":  instrument,
+            "pnl":          0.0,  # PnL is zero at execution time
+            "duration":    1,
+            "exit_reason": "executed",
+            "size":        size if intensity > 0 else -size,
+            "features":    np.array([price_live, 0.0, 0.0], np.float32),
+        }
+
 
 
     # ==================================================================

@@ -353,7 +353,7 @@ class StableTradingPPOAgent(PPO):
 
 def optimize_agent(trial: optuna.trial.Trial) -> float:
     print(f"\n🚀  Starting Trial #{trial.number + 1} …")
-    env_logger.info(f"→ Trial #{trial.number + 1} starting")
+    env_logger.info(f" Trial #{trial.number + 1} starting")
 
     # Initialise empty metrics so custom pruner always has keys
     trial.set_user_attr(
@@ -472,7 +472,7 @@ def optimize_agent(trial: optuna.trial.Trial) -> float:
     )
 
     env_logger.info(
-        "🎯  Trial #%d → Sharpe=%.3f DD=%.3f PF=%.3f Corr=%.3f Exits=%d Score=%.3f",
+        "🎯  Trial #%d  Sharpe=%.3f DD=%.3f PF=%.3f Corr=%.3f Exits=%d Score=%.3f",
         trial.number + 1,
         metrics["sharpe"],
         metrics["max_dd"],
@@ -523,7 +523,7 @@ def main() -> None:
     no_trade_penalty = best_params.pop("no_trade_penalty")
 
     env_logger.info(
-        "Best trial #%d → score=%.4f, params=%s",
+        "Best trial #%d  score=%.4f, params=%s",
         best_trial.number + 1,
         best_trial.value,
         best_params,
@@ -588,7 +588,7 @@ def main() -> None:
     )
 
     final_model.save("models/ppo_final_model.zip")
-    env_logger.info("✅ Final PPO model saved → models/ppo_final_model.zip")
+    env_logger.info("✅ Final PPO model saved  models/ppo_final_model.zip")
 
 
 

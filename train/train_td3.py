@@ -153,21 +153,12 @@ def _setup_logger(name: str, file_name: str, level=logging.INFO) -> logging.Logg
 env_logger   = _setup_logger("env_logger",   "training.log")
 score_logger = _setup_logger("score_logger", "training_score.log")
 
-def _ascii(msg: str) -> str:
-    return (
-        msg.replace("→", "->")
-           .replace("►►", ">>")
-           .replace("🎯", "[*]")
-           .replace("⚡️", "**")
-    )
 
-class AsciiFilter(logging.Filter):
-    def filter(self, record):
-        record.msg = _ascii(record.msg)
-        return True
+
+
 
 for _lg in (env_logger, score_logger):
-    _lg.addFilter(AsciiFilter())
+    _lg.addFilter(lambda record: record.levelno >= logging.INFO)
 
 # ╔═════════════════════════════════════════════════════════════════════╗
 # ║                        Metrics helpers                             ║
@@ -360,7 +351,7 @@ def rank_trials(study: optuna.Study) -> List[int]:
 # ║                       Optuna objective                             ║
 # ╚═════════════════════════════════════════════════════════════════════╝
 def optimise_agent(trial: optuna.trial.Trial) -> float:
-    env_logger.info("→ TD3 Trial %d starting", trial.number + 1)
+    env_logger.info(" TD3 Trial %d starting", trial.number + 1)
 
     # 1) Sample hyperparameters (names matching TD3.__init__)
     hp = dict(
@@ -471,7 +462,7 @@ def optimise_agent(trial: optuna.trial.Trial) -> float:
         - 0.2 * metrics["correlation"]
     )
     env_logger.info(
-        "🎯 TD3 Trial %d → Sharpe=%.3f DD=%.3f PF=%.3f Corr=%.3f Exits=%d Score=%.3f",
+        "🎯 TD3 Trial %d  Sharpe=%.3f DD=%.3f PF=%.3f Corr=%.3f Exits=%d Score=%.3f",
         trial.number + 1,
         metrics["sharpe"],
         metrics["max_dd"],
@@ -554,7 +545,7 @@ def main():
     )
     model_path = os.path.join(MODEL_DIR, "td3_final_model.zip")
     final_model.save(model_path)
-    env_logger.info("✅ TD3 model saved → %s", model_path)
+    env_logger.info("✅ TD3 model saved  %s", model_path)
 
 if __name__ == "__main__":
     env_logger.info("Starting TD3 training script")

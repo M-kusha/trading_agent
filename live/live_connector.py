@@ -6,7 +6,7 @@ import logging
 import pandas as pd
 import MetaTrader5 as mt5
 
-from mt5_credentials import MT5Credentials
+from live.mt5_credentials import MT5Credentials
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ class LiveDataConnector:
         """Fetch historical bars for all instruments and timeframes, and inject volatility."""
         data = {}
         for sym in self.instruments:
-            sym_internal = sym[:3] + "/" + sym[3:]  # "XAUUSD" → "XAU/USD"
+            sym_internal = sym[:3] + "/" + sym[3:]  # "XAUUSD"  "XAU/USD"
             data[sym_internal] = {}
             for tf in self.timeframes:
                 df = self.fetch_historical(sym, tf, n_bars)
