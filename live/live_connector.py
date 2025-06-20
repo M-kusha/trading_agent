@@ -1,5 +1,5 @@
-# live_connector.py
 #!/usr/bin/env python3
+
 import time
 import datetime
 import logging
@@ -64,33 +64,36 @@ class LiveDataConnector:
     def fetch_historical(
         self, symbol: str, timeframe: str, n_bars: int
     ) -> pd.DataFrame:
-        """Fetch last `n_bars` of OHLC + tick_volume."""
+        """Fetch last `n_bars` of OHLC + tick_volume (renamed to volume)."""
+        if timeframe not in self._tf_map:
+            raise ValueError(
+                f"Invalid timeframe '{timeframe}'. "
+                f"Valid options are: {list(self._tf_map.keys())}"
+            )
         tf = self._tf_map[timeframe]
         now = datetime.datetime.now()
         rates = mt5.copy_rates_from(symbol, tf, now, n_bars)
+        if rates is None or len(rates) == 0:
+            return pd.DataFrame(columns=["open","high","low","close","volume"])
         df = pd.DataFrame(rates)
         df["time"] = pd.to_datetime(df["time"], unit="s")
         df.set_index("time", inplace=True)
-        return df[["open", "high", "low", "close", "tick_volume"]]
+        if "tick_volume" in df.columns:
+            df = df[["open","high","low","close","tick_volume"]]
+            df.rename(columns={"tick_volume": "volume"}, inplace=True)
+        else:
+            df = df[["open","high","low","close","volume"]]
+        df["volatility"] = df["high"] - df["low"]
+        return df[["open","high","low","close","volume","volatility"]]
 
     def get_historical_data(self, n_bars: int = 1000) -> dict[str, dict[str, pd.DataFrame]]:
-        """Fetch historical bars for all instruments and timeframes, and inject volatility."""
-        data = {}
+        """Fetch historical bars for all instruments and timeframes."""
+        data: dict[str, dict[str, pd.DataFrame]] = {}
         for sym in self.instruments:
-            sym_internal = sym[:3] + "/" + sym[3:]  # "XAUUSD"  "XAU/USD"
+            sym_internal = sym[:3] + "/" + sym[3:]
             data[sym_internal] = {}
             for tf in self.timeframes:
                 df = self.fetch_historical(sym, tf, n_bars)
-                # Volatility: high-low range for every bar, every timeframe
-                df["volatility"] = df["high"] - df["low"]
-
-                # Optional: If you want ATR for D1 only, uncomment below
-                # if tf == "D1":
-                #     tr = df[["high", "low", "close"]].copy()
-                #     tr["prev_close"] = tr["close"].shift(1)
-                #     tr["tr"] = tr[["high", "prev_close"]].max(axis=1) - tr[["low", "prev_close"]].min(axis=1)
-                #     df["volatility"] = tr["tr"].rolling(10).mean().fillna(0.0)
-
                 data[sym_internal][tf] = df
         return data
 
@@ -112,27 +115,38 @@ class LiveDataConnector:
         `side` is "buy" or "sell", `volume` in lots.
         """
         tick = self.get_latest_tick(symbol)
-        if tick is None:
-            raise RuntimeError(f"No tick available for {symbol}")
+        if (
+            tick is None
+            or not hasattr(tick, "ask")
+            or not hasattr(tick, "bid")
+            or tick.ask is None
+            or tick.bid is None
+        ):
+            raise RuntimeError(f"No valid tick data (ask/bid) available for {symbol}")
 
-        order_type = mt5.ORDER_TYPE_BUY if side.lower() == "buy" else mt5.ORDER_TYPE_SELL
+        side_lower = side.lower()
+        if side_lower not in ("buy", "sell"):
+            raise ValueError(f"Invalid side '{side}'. Must be 'buy' or 'sell'.")
+
+        order_type = mt5.ORDER_TYPE_BUY if side_lower == "buy" else mt5.ORDER_TYPE_SELL
         price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
-
         req = {
-            "action":      mt5.TRADE_ACTION_DEAL,
-            "symbol":      symbol,
-            "volume":      volume,
-            "type":        order_type,
-            "price":       price,
-            "deviation":   deviation,
-            "magic":       magic,
-            "comment":     comment,
-            "type_time":   mt5.ORDER_TIME_GTC,
-            "type_filling":mt5.ORDER_FILLING_IOC,
+            "action":       mt5.TRADE_ACTION_DEAL,
+            "symbol":       symbol,
+            "volume":       volume,
+            "type":         order_type,
+            "price":        price,
+            "deviation":    deviation,
+            "magic":        magic,
+            "comment":      comment,
+            "type_time":    mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
         }
         res = mt5.order_send(req)
         if res.retcode != mt5.TRADE_RETCODE_DONE:
-            logger.warning(f"Order failed: {res.comment}")
+            logger.warning(
+                f"Order failed: retcode={res.retcode}, comment={res.comment}, full_response={res}"
+            )
         else:
             logger.info(f"Order sent: {symbol} {side} {volume}@{price}")
         return res

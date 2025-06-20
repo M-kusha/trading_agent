@@ -17,7 +17,7 @@ import MetaTrader5 as mt5
 
 # ==== Imports ====
 from live.live_connector import LiveDataConnector
-from envs.env import EnhancedTradingEnv
+from envs.env import EnhancedTradingEnv, TradingConfig
 from stable_baselines3 import PPO, SAC, TD3
 from modules.strategy.voting import StrategyArbiter
 from modules.risk.risk_controller import DynamicRiskController
@@ -81,13 +81,16 @@ class LiveTradingSystem:
         self.connector.connect()
         hist = self.connector.get_historical_data(n_bars=Config.HIST_BARS)
 
-        # 3) Create environment with real balance
+        # 3) Create environment with real balance & custom max_steps
+        cfg = TradingConfig(
+            initial_balance=live_balance,
+            max_steps=10_000_000,
+            live_mode=True
+        )
         self.env = EnhancedTradingEnv(
             data_dict=hist,
-            initial_balance=live_balance,
-            max_steps=10_000_000
+            config=cfg
         )
-        self.env.live_mode = True
 
         # 4) Load chosen RL agent
         agent_name, model_path = Config.AGENT_MAP[Config.AGENT_ID]
@@ -107,10 +110,19 @@ class LiveTradingSystem:
             action_dim=self.env.action_space.shape[0]
         )
 
+    @staticmethod
+    def format_symbol(symbol):
+        # Converts "EURUSD" to "EUR/USD" or returns as-is if already formatted
+        if "/" in symbol:
+            return symbol
+        if len(symbol) == 6:
+            return symbol[:3] + "/" + symbol[3:]
+        return symbol
+
     def append_new_bar(self):
         new = self.connector.get_historical_data(n_bars=1)
         for sym_raw in Config.INSTRUMENTS:
-            sym_internal = sym_raw[:3] + "/" + sym_raw[3:]
+            sym_internal = self.format_symbol(sym_raw)
             for tf in Config.TIMEFRAMES:
                 try:
                     old = self.env.data[sym_internal][tf]
@@ -138,23 +150,23 @@ class LiveTradingSystem:
                     obs = obs[:exp_dim]
                 elif obs.shape[0] < exp_dim:
                     pad_width = exp_dim - obs.shape[0]
-                    obs = np.pad(obs, (0, pad_width), mode="constant", constant_values=0.0)
+                    obs = np.pad(obs, (0, pad_width),
+                                 mode="constant", constant_values=0.0)
                 # ────────────────────────────────────────────────────────────────
 
                 # 1) get actions
-                action, _     = self.model.predict(obs, deterministic=True)
-                raw_action, _ = self.model.predict(obs, deterministic=True)
+                model_action, _ = self.model.predict(obs, deterministic=True)
                 arbiter_action = self.arbiter.propose(obs)
 
                 # 2) blend & clip
-                action = np.clip(
-                    raw_action + arbiter_action,
+                final_action = np.clip(
+                    model_action + arbiter_action,
                     self.env.action_space.low,
                     self.env.action_space.high
                 )
 
                 # 3) step the environment
-                obs, reward, done, truncated, info = self.env.step(action)
+                obs, _, done, _, info = self.env.step(final_action)
 
                 logger.info(
                     f"Live Step  Balance={info['balance']:.2f} | "
@@ -187,24 +199,31 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    # Set configuration globally before instantiating the system
     Config.AGENT_ID   = args.agent
     Config.SLEEP_SECS = args.sleep
 
+    # Initialize live trading system
     system = LiveTradingSystem()
 
-    # Optional: start status API
+    # Optional: start status API server in a background thread
     from live.api import start_api
     import threading
     threading.Thread(target=lambda: start_api(system), daemon=True).start()
 
-    # Graceful shutdown
+    # Setup graceful shutdown on Ctrl+C or kill
     def graceful_exit(signum, frame):
-        logger.info("Received exit signal; cleaning up")
+        logger.info("Received exit signal; cleaning up...")
         system.connector.disconnect()
+        if hasattr(system.env, "close"):
+            system.env.close()
         sys.exit(0)
-    signal.signal(signal.SIGINT,  graceful_exit)
+
+    signal.signal(signal.SIGINT, graceful_exit)
     signal.signal(signal.SIGTERM, graceful_exit)
 
+    # Start main trading loop
     system.run()
 
 if __name__ == "__main__":

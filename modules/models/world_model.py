@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-from ..core.core import Module
+from modules.core.core import Module
 import copy
 
 class RNNWorldModel(nn.Module, Module):
@@ -22,8 +22,10 @@ class RNNWorldModel(nn.Module, Module):
         super().__init__()
         self.device    = torch.device(device)
         self.debug     = debug
-        self.lstm      = nn.LSTM(input_size, hidden_size, num_layers,
-                                  batch_first=True, dropout=dropout)
+        self.lstm      = nn.LSTM(
+            input_size, hidden_size, num_layers,
+            batch_first=True, dropout=dropout if num_layers > 1 else 0.0
+        )
         self.head      = nn.Linear(hidden_size, input_size)
         self.opt       = optim.Adam(self.parameters(), lr=lr)
         self.criterion = nn.MSELoss()
@@ -37,30 +39,40 @@ class RNNWorldModel(nn.Module, Module):
         pass  # No RNN state to clear for stateless batch ops
 
     def step(self, **kwargs) -> None:
-        pass
-
+        pass  # Placeholder implementation
+    
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out, _ = self.lstm(x)
-        return self.head(out[:, -1, :])
+        """
+        Forward pass of the RNNWorldModel.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, seq_len, input_size).
+        Returns:
+            torch.Tensor: Output tensor of shape (batch_size, input_size).
+        """
+        lstm_out, _ = self.lstm(x)
+        return self.head(lstm_out[:, -1, :])
+        
+
 
     def fit(
         self,
-        returns: np.ndarray,
-        volatility: np.ndarray,
+        feature1: np.ndarray,
+        feature2: np.ndarray,
         seq_len: int = 50,
         batch_size: int = 64,
         epochs: int = 5
     ):
         X, Y = [], []
-        T = len(returns)
+        T = len(feature1)
         for i in range(seq_len, T-1):
-            seq = np.stack([returns[i-seq_len:i], volatility[i-seq_len:i]], axis=1)
-            tgt = np.array([returns[i], volatility[i]], dtype=np.float32)
+            seq = np.stack([feature1[i-seq_len:i], feature2[i-seq_len:i]], axis=1)
+            tgt = np.array([feature1[i], feature2[i]], dtype=np.float32)
             X.append(seq)
             Y.append(tgt)
 
-        X = torch.tensor(np.stack(X), dtype=torch.float32, device=self.device)
-        Y = torch.tensor(np.stack(Y), dtype=torch.float32, device=self.device)
+        ds = TensorDataset(X, Y)
+        loader = DataLoader(ds, batch_size=batch_size, shuffle=True)
         ds = TensorDataset(X, Y)
         loader = DataLoader(ds, batch_size=batch_size, shuffle=True)
 
@@ -99,7 +111,10 @@ class RNNWorldModel(nn.Module, Module):
         return np.array(out, dtype=np.float32)
 
     def get_observation_components(self) -> np.ndarray:
-        # world model does not expose obs components
+        """
+        Returns an empty array because the world model does not directly expose observation components.
+        This method is provided for interface compatibility with other modules.
+        """
         return np.zeros(0, dtype=np.float32)
 
     # ===================== NEUROEVOLUTION ============================
@@ -111,14 +126,14 @@ class RNNWorldModel(nn.Module, Module):
             for param in self.parameters():
                 noise = torch.randn_like(param) * std
                 param.add_(noise.to(param.device))
-        if self.debug:
-            print("[RNNWorldModel] Mutated all weights")
-
     def crossover(self, other: "RNNWorldModel"):
         """
         Crossover weights with another world model to create a new offspring.
+
+        Note:
+            Both models must have identical architectures (same layer sizes, number of layers, etc.)
+            for the crossover to work correctly.
         """
-        # NOTE: Both models must have the same architecture.
         child = copy.deepcopy(self)
         with torch.no_grad():
             for p_child, p_self, p_other in zip(child.parameters(), self.parameters(), other.parameters()):
@@ -129,7 +144,9 @@ class RNNWorldModel(nn.Module, Module):
         return child
 
     def get_state(self):
-        # Save full weights and optimizer for checkpointing
+        """
+        Save full weights and optimizer for checkpointing
+        """
         return {
             "model_state": self.state_dict(),
             "optimizer_state": self.opt.state_dict(),
@@ -139,6 +156,9 @@ class RNNWorldModel(nn.Module, Module):
         }
 
     def set_state(self, state):
+        """
+        Loads the model and optimizer state from the provided dictionary.
+        """
         self.load_state_dict(state["model_state"])
         if "optimizer_state" in state:
             self.opt.load_state_dict(state["optimizer_state"])
