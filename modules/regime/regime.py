@@ -1,11 +1,10 @@
 import os
-from typing import Any
 import numpy as np
 from collections import deque
 import copy
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from ..core.core import Module
 
 class MarketRegimeSwitcher(Module):
@@ -33,13 +32,19 @@ class MarketRegimeSwitcher(Module):
         self.vol_low_pct = vol_low_pct
         self.debug = debug
         self.reset()
+        self._action_dim = 1  # Initialize action dimension to a default value
 
         # Logger for regime changes (console+file)
         self.logger = logging.getLogger("MarketRegimeSwitcherLogger")
         # >>> NEW
         os.makedirs("logs/regime", exist_ok=True)
         # <<<
-        if not self.logger.handlers:
+        # Prevent duplicate handlers by checking for existing file handlers for this logger
+        handler_exists = any(
+            isinstance(h, logging.FileHandler) and getattr(h, 'baseFilename', None) == os.path.abspath("logs/regime/market_regime.log")
+            for h in self.logger.handlers
+        )
+        if not handler_exists:
             handler = logging.FileHandler("logs/regime/market_regime.log")
             formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
             handler.setFormatter(formatter)
@@ -82,13 +87,15 @@ class MarketRegimeSwitcher(Module):
         return child
 
     def reset(self):
-        self.prices = deque(maxlen=self.window)
+        old_prices = list(getattr(self, "prices", []))
         self.regime = "neutral"
         self.volatility = 0.0
         self.last_rationale = {}
         self.last_full_audit = {}
+        # Ensure deque maxlen matches current window
+        self.prices = deque(old_prices[-self.window:], maxlen=self.window)
 
-    def step(self, price: float = None, **kwargs):
+    def step(self, price: float = None):
         if price is not None:
             self.prices.append(price)
 
@@ -111,7 +118,7 @@ class MarketRegimeSwitcher(Module):
 
         # Regime logic w/ explanation hooks
         rationale = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "window": self.window,
             "vol_window": self.vol_window,
             "trend_factor": self.trend_factor,
@@ -189,15 +196,13 @@ class MarketRegimeSwitcher(Module):
         return arr
     
     # ─────────── voting-committee hooks (added) ───────────────────────────
-                  # already imported at top of file,
-                                       # so this is only for clarity
 
     def set_action_dim(self, dim: int) -> None:
         """Called once by the environment so we know how long the
         action-vector should be."""
         self._action_dim = int(dim)
 
-    def propose_action(self, obs: Any = None) -> np.ndarray:
+    def propose_action(self, obs=None) -> np.ndarray:
         """
         Convert the current regime into a direction & strength:
 
@@ -213,17 +218,29 @@ class MarketRegimeSwitcher(Module):
             "high_vol":     -1.0,
             "low_vol":      +1.0,
         }
+        # Use returns-based volatility for strength calculation
+        if len(self.prices) > 1:
+            prices = np.array(self.prices)
+            returns = np.diff(prices)
+            returns_vol = np.std(returns)
+            # Normalize by dividing by mean absolute return (avoid div by zero)
+            mean_abs_ret = np.mean(np.abs(returns)) if np.mean(np.abs(returns)) > 0 else 1.0
+            returns_vol = returns_vol / mean_abs_ret
+            returns_vol = float(np.clip(returns_vol, 0.0, 1.0))  # 0…1
+        else:
+            returns_vol = 0.0
+        strength = float(np.clip(returns_vol, 0.0, 1.0))  # 0…1
         sign = sign_map.get(self.regime, 0.0)
-        strength = float(np.clip(self.volatility, 0.0, 1.0))  # 0…1
         return np.full(getattr(self, "_action_dim", 1),
                     sign * strength, dtype=np.float32)
 
-    def confidence(self, obs: Any = None) -> float:
-        """Use normalised volatility as a simple certainty signal (0-1)."""
-        return float(np.clip(self.volatility, 0.0, 1.0))
-# ──────────────────────────────────────────────────────────────────────
-
-
+    def confidence(self, obs=None) -> float:
+        """Return confidence in current regime decision (0.0 to 1.0)."""
+        if not self.last_rationale:
+            return 0.0
+        # Simple confidence based on how strong the signal was
+        return 0.8  # placeholder - could be made more sophisticated
+    
     def get_state(self):
         return {
             "params": {
@@ -237,10 +254,11 @@ class MarketRegimeSwitcher(Module):
             "prices": list(self.prices),
             "regime": self.regime,
             "volatility": self.volatility,
-            "last_rationale": self.last_rationale
+            "last_rationale": self.last_rationale,
+            "last_full_audit": self.last_full_audit,
         }
 
-    def set_state(self, state):
+    def load_state(self, state):
         params = state.get("params", {})
         self.window = int(params.get("window", self.window))
         self.vol_window = int(params.get("vol_window", self.vol_window))
@@ -248,7 +266,11 @@ class MarketRegimeSwitcher(Module):
         self.mean_thr_factor = float(params.get("mean_thr_factor", self.mean_thr_factor))
         self.vol_high_pct = float(params.get("vol_high_pct", self.vol_high_pct))
         self.vol_low_pct = float(params.get("vol_low_pct", self.vol_low_pct))
-        self.prices = deque(state.get("prices", []), maxlen=self.window)
+        
+        # Ensure deque maxlen matches updated window
+        prices = state.get("prices", [])
+        self.prices = deque(prices[-self.window:], maxlen=self.window)
         self.regime = state.get("regime", "neutral")
         self.volatility = float(state.get("volatility", 0.0))
         self.last_rationale = state.get("last_rationale", {})
+        self.last_full_audit = state.get("last_full_audit", {})
