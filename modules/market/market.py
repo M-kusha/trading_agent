@@ -5,9 +5,9 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from scipy.stats import linregress, zscore
 from collections import deque
-from typing import Any, List, Dict, Tuple
+from typing import Any, List, Dict, Tuple, Optional
 import pywt
-from sklearn.cluster import MiniBatchKMeans       # online‑friendly
+from sklearn.cluster import MiniBatchKMeans
 import tensorflow as tf
 from ..core.core import Module
 import copy
@@ -47,6 +47,11 @@ class MarketThemeDetector:
         )
         self._fit_buffer = deque(maxlen=2000)
         self._theme_vec  = np.zeros(n_themes, np.float32)
+        
+        # NEW: Track theme characteristics for better signal generation
+        self._theme_profiles = {}  # Will store mean features per theme
+        self._current_theme = 0
+        self._theme_momentum = deque(maxlen=10)  # Track theme changes
 
         # ── macro placeholder (scaled) ────────────────────────────────
         self._macro_scaler = StandardScaler()
@@ -75,8 +80,11 @@ class MarketThemeDetector:
         if series.size < 10 or np.all(series == series[0]):
             return 0.5
         lags  = np.arange(2, min(100, series.size // 2))
+        if lags.size == 0:
+            return 0.5
         tau   = [np.std(series[lag:] - series[:-lag]) for lag in lags]
-        slope, *_ = linregress(np.log(lags), np.log(tau))
+        with np.errstate(divide='ignore', invalid='ignore'):
+            slope, *_ = linregress(np.log(lags), np.log(tau))
         return float(slope * 2.0) if np.isfinite(slope) else 0.5
 
     @staticmethod
@@ -84,9 +92,12 @@ class MarketThemeDetector:
         series = series[:256]
         if series.size < 16:
             return 0.0
-        level   = min(1, pywt.dwt_max_level(len(series), pywt.Wavelet(wavelet).dec_len))
-        coeffs  = pywt.wavedec(series, wavelet, level=level)
-        return float(np.sum(coeffs[-1] ** 2) / (np.sum(series ** 2) + 1e-8))
+        try:
+            level = min(1, pywt.dwt_max_level(len(series), pywt.Wavelet(wavelet).dec_len))
+            coeffs = pywt.wavedec(series, wavelet, level=level)
+            return float(np.sum(coeffs[-1] ** 2) / (np.sum(series ** 2) + 1e-8))
+        except:
+            return 0.0
 
     # ───────────────────────── feature builder ────────────────────────
     def _mts_features(
@@ -97,13 +108,23 @@ class MarketThemeDetector:
             for inst in self.instruments:
                 df  = data[inst][tf]
                 sl  = df.iloc[max(0, t - self.window): t]["close"]
+                if len(sl) < 2:
+                    feats.extend([0.0] * 7)
+                    continue
+                    
                 ret = sl.pct_change().dropna().values.astype(np.float32)
+                if len(ret) < 1:
+                    feats.extend([0.0] * 7)
+                    continue
 
                 feats += [
-                    ret.mean(), ret.std(),
-                    pd.Series(ret).skew(), pd.Series(ret).kurtosis(),
-                    (df["high"] - df["low"]).iloc[max(0, t - self.window): t].mean(),
-                    self._hurst(ret), self._wavelet_energy(ret),
+                    float(ret.mean()), 
+                    float(ret.std()),
+                    float(pd.Series(ret).skew()) if len(ret) > 2 else 0.0, 
+                    float(pd.Series(ret).kurtosis()) if len(ret) > 2 else 0.0,
+                    float((df["high"] - df["low"]).iloc[max(0, t - self.window): t].mean()),
+                    self._hurst(ret), 
+                    self._wavelet_energy(ret),
                 ]
 
         macro = self._macro_scaler.transform([[self.macro_data["vix"],
@@ -116,6 +137,9 @@ class MarketThemeDetector:
     def reset(self):
         self._fit_buffer.clear()
         self._theme_vec.fill(0.0)
+        self._theme_profiles.clear()
+        self._current_theme = 0
+        self._theme_momentum.clear()
 
     def update_macro(self, indicator: str, value: float):
         if indicator in self.macro_data:
@@ -128,6 +152,12 @@ class MarketThemeDetector:
             return
         X = self.scaler.fit_transform(np.vstack(self._fit_buffer))
         self.km.partial_fit(X)
+        
+        # Update theme profiles
+        if hasattr(self.km, 'cluster_centers_'):
+            for i in range(self.n_themes):
+                self._theme_profiles[i] = self.km.cluster_centers_[i]
+        
         if self.debug and len(self._fit_buffer) % 500 == 0:
             self.logger.debug(f"[MTD] partial-fit on {len(self._fit_buffer)} points.")
 
@@ -138,27 +168,91 @@ class MarketThemeDetector:
         lab    = int(self.km.predict(x)[0])
         dist   = self.km.transform(x)[0].min()
         strength = float(1.0 / (1.0 + dist))
+        
+        # Update theme tracking
+        self._current_theme = lab
+        self._theme_momentum.append(lab)
+        
         self._theme_vec.fill(0.0)
         self._theme_vec[lab] = strength
         return lab, strength
     
-        # ────────── NEW: hooks required by StrategyArbiter ──────────
+    # ────────── IMPROVED: hooks required by StrategyArbiter ──────────
     def set_action_dim(self, dim: int):
         """Call once from the env so we know how many numbers to output."""
         self._action_dim = int(dim)
 
     def propose_action(self, obs: Any = None) -> np.ndarray:
         """
-        Very simple policy: broadcast the strongest-theme confidence
-        across every action dimension in [-1, 1].
+        Improved action generation based on theme characteristics
         """
-        bias = 2.0 * float(self._theme_vec.max()) - 1.0     # 0…1  →  -1…1
-        return np.full(getattr(self, "_action_dim", 1), bias, np.float32)
+        if not hasattr(self, "_action_dim"):
+            self._action_dim = 2
+            
+        action = np.zeros(self._action_dim, np.float32)
+        
+        # Get current theme strength
+        theme_strength = float(self._theme_vec.max())
+        current_theme = int(np.argmax(self._theme_vec))
+        
+        # Analyze theme momentum (are we transitioning between themes?)
+        if len(self._theme_momentum) >= 3:
+            recent_themes = list(self._theme_momentum)[-3:]
+            theme_stability = len(set(recent_themes)) == 1
+        else:
+            theme_stability = False
+        
+        # Generate signals based on theme characteristics
+        if theme_strength > 0.3:  # Only trade when we have confidence
+            # Map themes to trading strategies
+            if current_theme == 0:  # E.g., "Risk-on" theme
+                # Tend to be long risk assets
+                for i in range(0, self._action_dim, 2):
+                    action[i] = 0.3 * theme_strength
+                    action[i+1] = 0.5  # Medium duration
+                    
+            elif current_theme == 1:  # E.g., "Risk-off" theme
+                # Tend to be long safe havens (XAU), short risk (EUR)
+                if self._action_dim >= 4:
+                    action[0] = -0.3 * theme_strength  # Short EUR/USD
+                    action[1] = 0.5
+                    action[2] = 0.3 * theme_strength   # Long XAU/USD
+                    action[3] = 0.7  # Longer duration for safe haven
+                    
+            elif current_theme == 2:  # E.g., "High volatility" theme
+                # Smaller positions, shorter duration
+                for i in range(0, self._action_dim, 2):
+                    if theme_stability:
+                        action[i] = np.random.choice([-0.1, 0.1]) * theme_strength
+                        action[i+1] = 0.3  # Short duration
+                        
+            elif current_theme == 3:  # E.g., "Trending" theme
+                # Follow momentum with higher confidence
+                if hasattr(self, '_theme_profiles') and current_theme in self._theme_profiles:
+                    profile = self._theme_profiles[current_theme]
+                    # Use first component as direction indicator
+                    direction = np.sign(profile[0]) if len(profile) > 0 else 1.0
+                    for i in range(0, self._action_dim, 2):
+                        action[i] = direction * 0.4 * theme_strength
+                        action[i+1] = 0.7  # Longer duration for trends
+        
+        # Apply theme transition penalty
+        if not theme_stability and len(self._theme_momentum) > 1:
+            action *= 0.5  # Reduce size during transitions
+            
+        return action
 
     def confidence(self, obs: Any = None) -> float:
-        """Return the detector’s current certainty (0…1)."""
-        return float(self._theme_vec.max())
-    # ─────────────────────────────────────────────────────────────
+        """Return the detector's current certainty (0…1)."""
+        base_conf = float(self._theme_vec.max())
+        
+        # Boost confidence if theme is stable
+        if len(self._theme_momentum) >= 3:
+            recent_themes = list(self._theme_momentum)[-3:]
+            if len(set(recent_themes)) == 1:
+                base_conf = min(base_conf * 1.2, 1.0)
+                
+        return base_conf
 
     # —— Gym-style hook ————————————————————————————————
     def get_observation_components(self) -> np.ndarray:
@@ -168,7 +262,8 @@ class MarketThemeDetector:
         pass
 
     # ───────────────────────── evolution utils ────────────────────────
-    def get_genome(self):  return self.genome.copy()
+    def get_genome(self):  
+        return self.genome.copy()
 
     def set_genome(self, genome: Dict[str, Any]):
         self.n_themes = int(genome.get("n_themes", self.n_themes))
@@ -205,7 +300,10 @@ class MarketThemeDetector:
             "macro_data":     dict(self.macro_data),
             "fit_buffer":     list(self._fit_buffer),
             "theme_vec":      self._theme_vec.tolist(),
-            "genome":         self.genome.copy()
+            "genome":         self.genome.copy(),
+            "theme_profiles": {k: v.tolist() for k, v in self._theme_profiles.items()},
+            "current_theme":  self._current_theme,
+            "theme_momentum": list(self._theme_momentum),
         }
 
     def set_state(self, state):
@@ -220,7 +318,11 @@ class MarketThemeDetector:
         self._fit_buffer = deque(state.get("fit_buffer", []), maxlen=2000)
         self._theme_vec  = np.asarray(state.get("theme_vec", [0.0]*self.n_themes), np.float32)
         self.set_genome(state.get("genome", self.genome))
-
+        
+        # Restore new state
+        self._theme_profiles = {int(k): np.asarray(v) for k, v in state.get("theme_profiles", {}).items()}
+        self._current_theme = state.get("current_theme", 0)
+        self._theme_momentum = deque(state.get("theme_momentum", []), maxlen=10)
 
 
 # --------------------------------------------------------------------------- #
@@ -252,6 +354,10 @@ class FractalRegimeConfirmation(Module):
         self._buf   = deque(maxlen=int(window * 0.75))
         self.regime_strength = 0.0
         self.label          = "noise"
+        
+        # NEW: Track regime characteristics
+        self._regime_history = deque(maxlen=50)
+        self._trend_direction = 0.0  # -1 to 1
 
         self._forced_label: str | None = None  # Used for test monkeypatching
         self._forced_strength: float | None = None
@@ -263,7 +369,8 @@ class FractalRegimeConfirmation(Module):
             "coeff_vr": self.coeff_vr,
             "coeff_we": self.coeff_we,
         }
-                # Logger for market regime changes
+                
+        # Logger for market regime changes
         self.logger = logging.getLogger("MarketRegimeLogger")
         if not self.logger.handlers:
             handler = logging.FileHandler("logs/market_regime.log")
@@ -277,6 +384,8 @@ class FractalRegimeConfirmation(Module):
         self.regime_strength, self.label = 0.0, "noise"
         self._forced_label = None
         self._forced_strength = None
+        self._regime_history.clear()
+        self._trend_direction = 0.0
 
     @staticmethod
     def _hurst(series: np.ndarray) -> float:
@@ -340,9 +449,14 @@ class FractalRegimeConfirmation(Module):
 
         # 2) Extract price series
         inst = next(iter(data_dict))
-        ts = data_dict[inst]["D1"]["close"] \
-               .values[max(0, current_step - self.window) : current_step] \
-               .astype(np.float32)
+        df = data_dict[inst]["D1"]
+        ts = df["close"].values[max(0, current_step - self.window) : current_step].astype(np.float32)
+        
+        # Calculate trend direction
+        if len(ts) >= 20:
+            recent = ts[-20:]
+            old = ts[-40:-20] if len(ts) >= 40 else ts[:20]
+            self._trend_direction = np.clip((recent.mean() - old.mean()) / (old.std() + 1e-8), -1, 1)
 
         # 3) Compute fractal metrics
         H  = self._hurst(ts)
@@ -383,31 +497,68 @@ class FractalRegimeConfirmation(Module):
                 f"Market regime changed from {old} to {new}. Strength: {strength:.3f}"
             )
             self.label = new
+            
+        # Track regime history
+        self._regime_history.append((self.label, strength, self._trend_direction))
 
         # 8) Optional debug print
         if self.debug:
-            print(f"[FRC] label={self.label:<8} strength={strength:.3f}")
+            print(f"[FRC] label={self.label:<8} strength={strength:.3f} trend_dir={self._trend_direction:.3f}")
 
         return self.label, strength
     
-
-     # ────────── NEW voting-committee hooks ──────────
+    # ────────── IMPROVED voting-committee hooks ──────────
     def set_action_dim(self, dim: int):
         self._action_dim = int(dim)
 
     def propose_action(self, obs: Any = None) -> np.ndarray:
         """
-        Map regime → direction:
-        trending ⇒ +strength, volatile ⇒ –strength, noise ⇒ 0.
+        Improved action generation based on regime and trend direction
         """
-        sgn = {"trending": 1.0, "volatile": -1.0}.get(self.label, 0.0)
-        return np.full(getattr(self, "_action_dim", 1),
-                       sgn * self.regime_strength, np.float32)
+        if not hasattr(self, "_action_dim"):
+            self._action_dim = 2
+            
+        action = np.zeros(self._action_dim, np.float32)
+        
+        # Base signal from regime
+        if self.label == "trending":
+            # Follow the trend direction
+            base_signal = self._trend_direction * self.regime_strength
+            duration = 0.7  # Longer duration for trends
+            
+        elif self.label == "volatile":
+            # Counter-trend with smaller size
+            base_signal = -self._trend_direction * self.regime_strength * 0.5
+            duration = 0.3  # Short duration in volatile markets
+            
+        else:  # noise
+            # No strong signal in noise regime
+            base_signal = 0.0
+            duration = 0.5
+            
+        # Apply to all instruments
+        for i in range(0, self._action_dim, 2):
+            action[i] = base_signal
+            action[i+1] = duration
+            
+        # Adjust based on regime stability
+        if len(self._regime_history) >= 5:
+            recent_regimes = [r[0] for r in list(self._regime_history)[-5:]]
+            if len(set(recent_regimes)) > 2:  # Regime is unstable
+                action *= 0.5  # Reduce position size
+                
+        return action
 
     def confidence(self, obs: Any = None) -> float:
-        return float(self.regime_strength)
-    # ────────────────────────────────────────────────
-
+        base_conf = float(self.regime_strength)
+        
+        # Higher confidence in trending regimes
+        if self.label == "trending":
+            base_conf = min(base_conf * 1.3, 1.0)
+        elif self.label == "noise":
+            base_conf *= 0.7
+            
+        return base_conf
 
     def force_regime(self, label: str, strength: float):
         self._forced_label = label
@@ -419,11 +570,12 @@ class FractalRegimeConfirmation(Module):
 
     def get_observation_components(self) -> np.ndarray:
         label_id = {"trending": 1, "volatile": -1, "noise": 0}.get(self.label, 0)
-        return np.array([float(label_id), float(self.regime_strength)], dtype=np.float32)
+        return np.array([float(label_id), float(self.regime_strength), self._trend_direction], dtype=np.float32)
 
     # --- Evolutionary methods ---
     def get_genome(self):
         return self.genome.copy()
+        
     def set_genome(self, genome):
         self.window = int(genome.get("window", self.window))
         self.coeff_h = float(genome.get("coeff_h", self.coeff_h))
@@ -436,6 +588,7 @@ class FractalRegimeConfirmation(Module):
             "coeff_we": self.coeff_we,
         }
         self._buf = deque(maxlen=int(self.window * 0.75))
+        
     def mutate(self, mutation_rate=0.2):
         g = self.genome.copy()
         if random.random() < mutation_rate:
@@ -447,6 +600,7 @@ class FractalRegimeConfirmation(Module):
         if random.random() < mutation_rate:
             g["coeff_we"] = float(np.clip(self.coeff_we + np.random.uniform(-0.1, 0.1), 0.1, 1.0))
         self.set_genome(g)
+        
     def crossover(self, other):
         g1, g2 = self.genome, other.genome
         new_g = {k: random.choice([g1[k], g2[k]]) for k in g1}
@@ -460,6 +614,8 @@ class FractalRegimeConfirmation(Module):
             "_forced_label": self._forced_label,
             "_forced_strength": self._forced_strength,
             "genome": self.genome.copy(),
+            "_regime_history": list(self._regime_history),
+            "_trend_direction": float(self._trend_direction),
         }
 
     def set_state(self, state: Dict[str, Any]):
@@ -469,6 +625,8 @@ class FractalRegimeConfirmation(Module):
         self._forced_label = state.get("_forced_label", None)
         self._forced_strength = state.get("_forced_strength", None)
         self.set_genome(state.get("genome", self.genome))
+        self._regime_history = deque(state.get("_regime_history", []), maxlen=50)
+        self._trend_direction = float(state.get("_trend_direction", 0.0))
 
 
 # --------------------------------------------------------------------------- #
@@ -528,12 +686,14 @@ class TimeAwareRiskScaling(Module):
         if rets.size == 0:
             rets = np.zeros(100, np.float32)
         vol = float(np.nanstd(rets))
+        
         # decay old profile to evolve
         self.vol_profile = self.vol_profile * self.decay
         self.vol_profile[hour] = vol
 
         max_vol = self.vol_profile.max() + 1e-8
         base_factor = self.base_factor - (vol / max_vol)
+        base_factor = float(np.clip(base_factor, 0.0, 2.0))  # Clamp to [0.0, 2.0]
 
         session = self._session(hour)
         sess_map = {
@@ -555,6 +715,7 @@ class TimeAwareRiskScaling(Module):
     # --- Evolutionary methods ---
     def get_genome(self):
         return self.genome.copy()
+        
     def set_genome(self, genome):
         self.asian_end = int(genome.get("asian_end", self.asian_end))
         self.euro_end = int(genome.get("euro_end", self.euro_end))
@@ -566,6 +727,7 @@ class TimeAwareRiskScaling(Module):
             "decay": self.decay,
             "base_factor": self.base_factor,
         }
+        
     def mutate(self, mutation_rate=0.2):
         g = self.genome.copy()
         if np.random.rand() < mutation_rate:
@@ -577,6 +739,7 @@ class TimeAwareRiskScaling(Module):
         if np.random.rand() < mutation_rate:
             g["base_factor"] = float(np.clip(self.base_factor + np.random.uniform(-0.2, 0.2), 0.5, 1.5))
         self.set_genome(g)
+        
     def crossover(self, other):
         g1, g2 = self.genome, other.genome
         new_g = {k: np.random.choice([g1[k], g2[k]]) for k in g1}
@@ -588,6 +751,7 @@ class TimeAwareRiskScaling(Module):
             "seasonality_factor": float(self.seasonality_factor),
             "genome": self.genome.copy()
         }
+        
     def set_state(self, state):
         self.vol_profile = np.array(state.get("vol_profile", [0.0]*24), dtype=np.float32)
         self.seasonality_factor = float(state.get("seasonality_factor", 1.0))
@@ -672,8 +836,7 @@ class LiquidityHeatmapLayer(Module):
         self.asks.clear()
         self.history.clear()
         self._trained = False
-        self._model = self._build_lstm()
-        self._set_weights(self._get_weights())  # Keep weights as before
+        # Don't rebuild model on reset, just clear training flag
 
     # ------------------------------------------------------
 
@@ -696,38 +859,23 @@ class LiquidityHeatmapLayer(Module):
                 print(f"[LHL] trained on {len(X)} sequences (units={self.lstm_units}, seq_len={self.seq_len})")
 
     def step(self, **kwargs):
-        if "order_book" not in kwargs:
-            return
-
-        order_book = kwargs["order_book"]
-        raw_bids = order_book.get("bids", [])
-        raw_asks = order_book.get("asks", [])
-
-        bid_sizes = np.array([q for _, q in raw_bids], np.float32)
-        ask_sizes = np.array([q for _, q in raw_asks], np.float32)
-
-        bid_mask = (
-            np.abs(zscore(bid_sizes)) < 2.5 if bid_sizes.size else np.array([], bool)
-        )
-        ask_mask = (
-            np.abs(zscore(ask_sizes)) < 2.5 if ask_sizes.size else np.array([], bool)
-        )
-
-        bids_f = [raw_bids[i] for i in range(len(raw_bids)) if bid_mask.size and bid_mask[i]]
-        asks_f = [raw_asks[i] for i in range(len(raw_asks)) if ask_mask.size and ask_mask[i]]
-
-        self.bids = sorted(bids_f, key=lambda x: -x[1])[:5]
-        self.asks = sorted(asks_f, key=lambda x: x[1])[:5]
-
-        bid_depth = sum(q for _, q in self.bids)
-        ask_depth = sum(q for _, q in self.asks)
-        spread = self.asks[0][0] - self.bids[0][0] if (self.bids and self.asks) else 0.0
-
-        self.history.append((spread, bid_depth + ask_depth))
-        self._train_if_ready()
-
-        if self.debug:
-            print(f"[LHL] spread={spread:.6f} depth={bid_depth+ask_depth:.1f}")
+        # For now, simulate liquidity data since we don't have real order book
+        # In production, this would use real order book data
+        
+        # Simulate spread and depth based on volatility
+        if "env" in kwargs:
+            env = kwargs["env"]
+            vol = env.get_volatility_profile().get(env.instruments[0], 0.01)
+            
+            # Higher volatility = wider spread, lower depth
+            spread = vol * np.random.uniform(0.5, 1.5)
+            depth = 1000 / (1 + vol * 10) * np.random.uniform(0.8, 1.2)
+            
+            self.history.append((spread, depth))
+            self._train_if_ready()
+            
+            if self.debug and len(self.history) % 50 == 0:
+                print(f"[LHL] spread={spread:.6f} depth={depth:.1f}")
 
     def predict_liquidity(self, steps: int = 4) -> Tuple[float, float]:
         if not self._trained or len(self.history) < self.seq_len:
@@ -740,17 +888,35 @@ class LiquidityHeatmapLayer(Module):
         if not self.history:
             return 1.0
         spread, depth = self.history[-1]
-        return float(np.log1p(depth) * np.exp(-spread * 100.0))
+        # Lower spread and higher depth = better liquidity
+        score = float(np.log1p(depth) * np.exp(-spread * 100.0))
+        return np.clip(score, 0.0, 1.0)
 
     def get_observation_components(self) -> np.ndarray:
         return np.array([self.current_score()], np.float32)
 
     def propose_action(self, obs: Any) -> np.ndarray:
-        liq = float(np.clip(self.current_score(), 0.1, 1.0))
-        return np.full(self.action_dim, liq, dtype=np.float32)
+        """
+        Adjust position size based on liquidity conditions
+        """
+        liq_score = self.current_score()
+        action = np.zeros(self.action_dim, np.float32)
+        
+        if liq_score < 0.3:
+            # Poor liquidity - no trading
+            return action
+            
+        # Scale position size by liquidity
+        base_size = 0.3
+        for i in range(0, self.action_dim, 2):
+            action[i] = base_size * liq_score
+            action[i+1] = 0.5  # Standard duration
+            
+        return action
 
     def confidence(self, obs: Any) -> float:
         score = self.current_score()
+        # High confidence when liquidity is good
         conf = float(np.clip(score, 0.1, 1.0))
         if self.debug:
             print(f"[LiquidityHeatmapLayer] Liquidity score={score:.2f}, confidence={conf:.2f}")
@@ -761,6 +927,7 @@ class LiquidityHeatmapLayer(Module):
         return self.genome.copy()
 
     def set_genome(self, genome):
+        old_units = self.lstm_units
         self.lstm_units = int(genome.get("lstm_units", self.lstm_units))
         self.seq_len = int(genome.get("seq_len", self.seq_len))
         self.dense_units = int(genome.get("dense_units", self.dense_units))
@@ -771,7 +938,10 @@ class LiquidityHeatmapLayer(Module):
             "dense_units": self.dense_units,
             "train_epochs": self.train_epochs,
         }
-        self._model = self._build_lstm()
+        # Only rebuild model if architecture changed
+        if old_units != self.lstm_units:
+            self._model = self._build_lstm()
+            self._trained = False
 
     def mutate(self, mutation_rate=0.2, weight_mutate_std=0.05):
         g = self.genome.copy()
@@ -786,31 +956,34 @@ class LiquidityHeatmapLayer(Module):
         self.set_genome(g)
 
         # Mutate weights (add small Gaussian noise)
-        weights = self._get_weights()
-        mutated = []
-        for w in weights:
-            if np.issubdtype(w.dtype, np.floating):
-                noise = np.random.randn(*w.shape) * weight_mutate_std
-                mutated.append(w + noise)
-            else:
-                mutated.append(w)
-        self._set_weights(mutated)
+        if self._trained:
+            weights = self._get_weights()
+            mutated = []
+            for w in weights:
+                if np.issubdtype(w.dtype, np.floating):
+                    noise = np.random.randn(*w.shape) * weight_mutate_std
+                    mutated.append(w + noise)
+                else:
+                    mutated.append(w)
+            self._set_weights(mutated)
 
     def crossover(self, other, weight_mix_prob=0.5):
         # Mix architecture
         g1, g2 = self.genome, other.genome
         new_g = {k: np.random.choice([g1[k], g2[k]]) for k in g1}
 
-        # Mix weights
-        ws1, ws2 = self._get_weights(), other._get_weights()
-        new_ws = []
-        for w1, w2 in zip(ws1, ws2):
-            if np.issubdtype(w1.dtype, np.floating) and w1.shape == w2.shape:
-                mask = np.random.rand(*w1.shape) < weight_mix_prob
-                mixed = np.where(mask, w1, w2)
-                new_ws.append(mixed)
-            else:
-                new_ws.append(w1)
+        # Mix weights only if architectures match
+        new_ws = None
+        if self._weights_like(other):
+            ws1, ws2 = self._get_weights(), other._get_weights()
+            new_ws = []
+            for w1, w2 in zip(ws1, ws2):
+                if np.issubdtype(w1.dtype, np.floating) and w1.shape == w2.shape:
+                    mask = np.random.rand(*w1.shape) < weight_mix_prob
+                    mixed = np.where(mask, w1, w2)
+                    new_ws.append(mixed)
+                else:
+                    new_ws.append(w1)
 
         return LiquidityHeatmapLayer(
             self.action_dim, debug=self.debug, genome=new_g, weights=new_ws
@@ -821,18 +994,15 @@ class LiquidityHeatmapLayer(Module):
             "history": list(self.history),
             "trained": bool(self._trained),
             "genome": self.genome.copy(),
-            "weights": [w.copy() for w in self._get_weights()],
+            "weights": [w.copy() for w in self._get_weights()] if self._trained else None,
         }
 
     def set_state(self, state):
         self.history = deque(state.get("history", []), maxlen=200)
         self._trained = bool(state.get("trained", False))
         self.set_genome(state.get("genome", self.genome))
-        if "weights" in state:
+        if state.get("weights") is not None and self._trained:
             self._set_weights(state["weights"])
-
-
-
 
 
 # --------------------------------------------------------------------------- #
@@ -858,7 +1028,6 @@ class RegimePerformanceMatrix(Module):
         self.last_liquidity = 1.0
         self.vol_history.clear()
 
-    # ------------------------------------------------------------------ #
     def step(self, **kwargs):
         if not all(k in kwargs for k in ("pnl", "volatility", "predicted_regime")):
             return  # skip if any required input is missing
@@ -888,8 +1057,6 @@ class RegimePerformanceMatrix(Module):
                 f"pnl={pnl:+.2f} thr={self.volatility_regimes.round(4)}"
             )
 
-
-    # ------------------------------------------------------------------ #
     def stress_test(
         self,
         scenario: str,
@@ -904,14 +1071,21 @@ class RegimePerformanceMatrix(Module):
 
         vol = volatility if volatility is not None else self.last_volatility
         liq = liquidity_score if liquidity_score is not None else self.last_liquidity
-        return {"volatility": vol * crisis["vol_mult"], "liquidity": liq * crisis["liq_mult"]}
+        
+        return {
+            "volatility": vol * crisis["vol_mult"], 
+            "liquidity": liq * crisis["liq_mult"]
+        }
 
     def get_observation_components(self) -> np.ndarray:
         flat = self.matrix.flatten()
-        acc = [
-            float(self.matrix[i, i] / (self.matrix[i].sum() + 1e-8))
-            for i in range(self.n)
-        ]
+        acc = []
+        for i in range(self.n):
+            row_sum = self.matrix[i].sum()
+            if row_sum > 1e-4:
+                acc.append(float(self.matrix[i, i] / row_sum))
+            else:
+                acc.append(0.0)
         return np.concatenate([flat, np.asarray(acc, np.float32)])
     
     def get_state(self):
@@ -922,10 +1096,10 @@ class RegimePerformanceMatrix(Module):
             "last_volatility": float(self.last_volatility),
             "last_liquidity": float(self.last_liquidity),
         }
+        
     def set_state(self, state):
         self.matrix = np.array(state.get("matrix", np.zeros((self.n, self.n))), dtype=np.float32)
         self.vol_history = deque(state.get("vol_history", []), maxlen=500)
         self.volatility_regimes = np.array(state.get("volatility_regimes", [0.1, 0.3, 0.5]), dtype=np.float32)
         self.last_volatility = float(state.get("last_volatility", 0.0))
         self.last_liquidity = float(state.get("last_liquidity", 1.0))
-
