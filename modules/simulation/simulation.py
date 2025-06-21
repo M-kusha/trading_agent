@@ -209,9 +209,9 @@ class RoleCoach(Module):
         over = max(0, n - self.max_trades)
         score = over * self.penalty
         rationale = (
-            f"{n} trades (max {self.max_trades}) → penalty {score}"
+            f"{n} trades (max {self.max_trades})  penalty {score}"
             if over else
-            f"{n} trades within limit ({self.max_trades}) → no penalty"
+            f"{n} trades within limit ({self.max_trades})  no penalty"
         )
         entry = {
             "timestamp":       utcnow(),

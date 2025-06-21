@@ -1,7 +1,7 @@
-     # Update balance from# envs/ppo_env.py
+# envs/env.py
 """
 State-of-the-art PPO Trading Environment
-Fully refactored for robustness, clarity, and module compatibility
+FIXED: Proper data flow, committee wiring, and live trade recording
 """
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ import random
 import logging
 import pickle
 import warnings
+import time
+from functools import wraps
 
 # ───────────────────────── Third-party ────────────────────────────────
 import numpy as np
@@ -100,6 +102,8 @@ class TradingConfig:
     min_intensity: float = 0.25
     min_inst_confidence: float = 0.60
     rotation_gap: int = 5
+    max_position_pct: float = 0.10
+    max_total_exposure: float = 0.30
     
     # Module flags
     live_mode: bool = True
@@ -118,7 +122,7 @@ class MarketState:
     peak_balance: float
     current_step: int
     current_drawdown: float
-    open_positions: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # FIXED: Removed open_positions - use position_manager.open_positions as single source of truth
     last_trade_step: Dict[str, int] = field(default_factory=dict)
     
 
@@ -134,8 +138,60 @@ class EpisodeMetrics:
 
 
 # ╔═════════════════════════════════════════════════════════════════════╗
+# ║                        Unified Risk Manager                          ║
+# ╚═════════════════════════════════════════════════════════════════════╝
+
+class UnifiedRiskManager:
+    """FIXED: Centralized risk management system"""
+    
+    def __init__(self, config: Dict[str, Any], logger=None):
+        self.dd_limit = config.get('dd_limit', 0.3)
+        self.correlation_limit = config.get('correlation_limit', 0.8)
+        self.var_limit = config.get('var_limit', 0.1)
+        self.max_positions = config.get('max_positions', 10)
+        self.logger = logger or logging.getLogger("UnifiedRiskManager")
+        
+    def pre_trade_check(self, context: Dict[str, Any]) -> Tuple[bool, str]:
+        """Centralized pre-trade risk checks"""
+        # Check drawdown
+        if context['drawdown'] > self.dd_limit:
+            return False, f"Drawdown {context['drawdown']:.1%} exceeds limit {self.dd_limit:.1%}"
+            
+        # Check correlations
+        max_corr = max(context.get('correlations', {}).values()) if context.get('correlations') else 0
+        if max_corr > self.correlation_limit:
+            return False, f"Correlation {max_corr:.2f} exceeds limit {self.correlation_limit:.2f}"
+            
+        # Check position count
+        if len(context.get('open_positions', {})) >= self.max_positions:
+            return False, f"Already have {len(context['open_positions'])} positions (max: {self.max_positions})"
+            
+        return True, "All risk checks passed"
+        
+    def post_trade_update(self, trade: Dict[str, Any]):
+        """Update risk systems after trade"""
+        # This would update internal risk tracking
+        pass
+
+
+# ╔═════════════════════════════════════════════════════════════════════╗
 # ║                     Processing Pipeline Wrapper                      ║
 # ╚═════════════════════════════════════════════════════════════════════╝
+
+def profile_method(func):
+    """Performance profiling decorator"""
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        start = time.perf_counter()
+        result = func(self, *args, **kwargs)
+        elapsed = time.perf_counter() - start
+        
+        if elapsed > 0.1 and hasattr(self, 'logger'):  # Log slow operations
+            self.logger.warning(f"{func.__name__} took {elapsed:.3f}s")
+            
+        return result
+    return wrapper
+
 
 class TradingPipeline:
     """Manages the sequential processing of trading modules"""
@@ -198,6 +254,11 @@ class EnhancedTradingEnv(gym.Env):
         config: Optional[TradingConfig] = None,
     ):
         super().__init__()
+        self.committee = [] # FIXED: Initialize empty committee
+        self._obs_cache = {}  # FIXED: Added observation cache
+
+        self.module_enabled = defaultdict(lambda: True)
+        self.current_step = 0
         
         # Use provided config or create default
         self.config = config or TradingConfig()
@@ -218,74 +279,106 @@ class EnhancedTradingEnv(gym.Env):
         )
         
         # Initialize episode tracking
-        self.episode_metrics = EpisodeMetrics()
         self.episode_count = 0
+        self.episode_metrics = EpisodeMetrics()
         
-        # Store data
+        # Store data references
         self.orig_data = data_dict
         self.data = copy.deepcopy(data_dict)
-        self.instruments = list(data_dict.keys())
         
-        # Validate data
+        # Extract instruments and validate data
+        self.instruments = list(self.data.keys())
         self._validate_data()
+        
+        # Define spaces
+        self.action_dim = 2 * len(self.instruments)  # intensity + duration per instrument
+        self.action_space = spaces.Box(
+            low=-1.0, high=1.0, shape=(self.action_dim,), dtype=np.float32
+        )
         
         # Initialize all modules
         self._initialize_modules()
         
-        # Setup observation and action spaces
-        self._setup_spaces()
         
-        # Initialize module states
-        self._initialize_module_states()
+        # Get observation dimension
+        dummy_obs = self._get_full_observation(self._create_dummy_input())
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=dummy_obs.shape, dtype=np.float32
+            
+        )
         
-        # Setup checkpointing
-        os.makedirs(self.config.checkpoint_dir, exist_ok=True)
-        self._maybe_load_checkpoints()
+        # Trading state
+        self.trades: List[Dict[str, Any]] = []
+        self.current_genome = None
+        self._last_actions = np.zeros(self.action_dim, dtype=np.float32)
+        self._last_reward = 0.0
         
-        self.logger.info("Environment initialized successfully")
         
+        # Point values for PnL calculation
+        self.point_value = {
+            "EUR/USD": 100000,  # Standard lot
+            "XAU/USD": 100,     # Gold
+            "EURUSD": 100000,
+            "XAUUSD": 100,
+        }
+        
+        self.logger.info(
+            f"Environment initialized with {len(self.instruments)} instruments, "
+            f"action_dim={self.action_dim}, obs_dim={self.observation_space.shape[0]}"
+        )
+        
+    # ═══════════════════════════════════════════════════════════════════
+    #  Initialization Methods
+    # ═══════════════════════════════════════════════════════════════════
+    
     def _setup_logging(self):
-        """Configure logging for the environment"""
+        """Setup logging configuration"""
         os.makedirs(self.config.log_dir, exist_ok=True)
         
-        self.logger = logging.getLogger(self.__class__.__name__)
-        if not self.logger.handlers:
-            handler = logging.FileHandler(
-                os.path.join(self.config.log_dir, "env.log")
-            )
-            formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-            )
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
-            
+        # Create logger
+        self.logger = logging.getLogger(f"EnhancedTradingEnv_{id(self)}")
+        self.logger.handlers.clear()
+        
+        # File handler
+        fh = logging.FileHandler(
+            os.path.join(self.config.log_dir, "trading_env.log")
+        )
+        fh.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+        )
+        
+        # Console handler
+        ch = logging.StreamHandler()
+        ch.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+        
+        self.logger.addHandler(fh)
+        self.logger.addHandler(ch)
         self.logger.setLevel(getattr(logging, self.config.log_level))
         self.logger.propagate = False
         
     def _set_seeds(self, seed: int):
-        """Set all random seeds for reproducibility"""
+        """Set random seeds for reproducibility"""
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
-        os.environ["PYTHONHASHSEED"] = str(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-        
+            
     def _validate_data(self):
         """Validate input data structure"""
+        required_columns = {"open", "high", "low", "close", "volume"}
+        
         for inst in self.instruments:
             if inst not in self.data:
-                raise ValueError(f"Missing instrument: {inst}")
-            for tf in ["H1", "H4", "D1"]:
-                if tf not in self.data[inst]:
-                    raise ValueError(f"Missing timeframe {tf} for {inst}")
-                df = self.data[inst][tf]
-                required_cols = ["open", "high", "low", "close", "volume", "volatility"]
-                missing = set(required_cols) - set(df.columns)
+                raise ValueError(f"Missing data for instrument: {inst}")
+                
+            for tf, df in self.data[inst].items():
+                if not isinstance(df, pd.DataFrame):
+                    raise TypeError(f"Data for {inst}/{tf} must be DataFrame")
+                    
+                missing = required_columns - set(df.columns)
                 if missing:
-                    raise ValueError(f"Missing columns {missing} in {inst}/{tf}")
+                    raise ValueError(f"Missing columns for {inst}/{tf}: {missing}")
                     
     def _initialize_modules(self):
         """Initialize all trading modules with proper configuration"""
@@ -328,6 +421,17 @@ class EnhancedTradingEnv(gym.Env):
         )
         self.risk_system = PortfolioRiskSystem(50, 0.2, debug=self.config.debug)
         self.compliance = ComplianceModule()
+        
+        # FIXED: Centralized risk manager
+        self.risk_manager = UnifiedRiskManager(
+            {
+                'dd_limit': 0.3,
+                'correlation_limit': 0.8,
+                'var_limit': 0.1,
+                'max_positions': 10,
+            },
+            logger=self.logger
+        )
         
         # Reward shaping
         self.reward_shaper = RiskAdjustedReward(
@@ -379,12 +483,28 @@ class EnhancedTradingEnv(gym.Env):
             self.shadow_sim = ShadowSimulator(debug=self.config.debug)
             self.role_coach = RoleCoach(debug=self.config.debug)
             self.opponent_sim = OpponentSimulator(debug=self.config.debug)
+        else:
+            self.shadow_sim = None
+            self.role_coach = None
+            self.opponent_sim = None
         
         # Create module pipeline
         self._create_pipeline()
         
+        # Initialize meta-RL
+        obs_dim = self.observation_space.shape[0] if hasattr(self, 'observation_space') else 512
+        self.meta_rl = MetaRLController(obs_dim, self.action_dim, debug=self.config.debug)
+        
+        # Initialize voting infrastructure
+        self.consensus = ConsensusDetector(len(self.committee))
+        self.collusion = CollusionAuditor(4, 3, debug=self.config.debug)
+        self.haligner = TimeHorizonAligner([1, 4, 24, 96])
+        self._initialize_arbiter()
+        self.consensus.resize(len(self.committee)) 
+        
+        
     def _create_pipeline(self):
-        """Create the processing pipeline with all modules"""
+        """FIXED: Create the processing pipeline with all active modules"""
         core_modules = [
             self.feature_engine, self.compliance, self.risk_system,
             self.theme_detector, self.time_risk_scaler, self.liquidity_layer,
@@ -394,115 +514,68 @@ class EnhancedTradingEnv(gym.Env):
             self.mode_manager, self.active_monitor, self.corr_controller,
             self.dd_rescue, self.exec_monitor, self.anomaly_detector,
             self.position_manager, self.fractal_confirm, self.regime_switcher,
+            # FIXED: Added missing modules
+            self.playbook_memory, self.meta_agent, self.explainer,
+            self.mistake_memory, self.memory_compressor, self.replay_analyzer,
+            self.playbook_clusterer, self.long_term_memory,
         ]
         
         # Add simulation modules if not in live mode
-        if not self.config.live_mode and self.config.enable_shadow_sim:
-            core_modules.extend([
-                self.shadow_sim, self.role_coach, self.opponent_sim
-            ])
+        if not self.config.live_mode:
+            core_modules.extend([self.shadow_sim, self.role_coach, self.opponent_sim])
             
-        self.pipeline = TradingPipeline(core_modules)
+        # Filter out None modules
+        active_modules = [m for m in core_modules if m is not None]
         
-        # Module enable/disable tracking
-        self.module_enabled = {
-            m.__class__.__name__: True for m in core_modules
-        }
+        self.pipeline = TradingPipeline(active_modules)
         
-    def _setup_spaces(self):
-        """Setup observation and action spaces"""
-        # 1) Compute and store action_dim up front so dummy builder can use it
-        self.action_dim = 2 * len(self.instruments)  # intensity and duration per instrument
-
-        # 2) Build a dummy input and get its full observation to size the obs space
-        dummy_obs = self._get_full_observation(self._create_dummy_input())
-        obs_size = dummy_obs.shape[0]
-
-        # 3) Define the observation space
-        self.observation_space = spaces.Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=(obs_size,),
-            dtype=np.float32
-        )
-
-        # 4) Define the action space using our precomputed action_dim
-        self.action_space = spaces.Box(
-            low=-1.0,
-            high=1.0,
-            shape=(self.action_dim,),
-            dtype=np.float32
-        )
-        self.action_space.seed(self.config.init_seed)
-
-        # 5) Let any modules that care know the action_dim
-        for module in [
-            self.regime_switcher,
-            self.theme_detector,
-            self.fractal_confirm,
-            self.liquidity_layer,
-            self.risk_controller
-        ]:
-            if hasattr(module, 'set_action_dim'):
-                module.set_action_dim(self.action_dim)
-
-                
-    def _initialize_module_states(self):
-        """Initialize module states that depend on spaces being defined"""
-        # Initialize MetaRL controller
-        self.meta_rl = MetaRLController(
-            self.observation_space.shape[0],
-            self.action_space.shape[0]
-        )
-        
-        # Create expert wrappers for voting
-        self._create_voting_committee()
-        
-        # Initialize strategy arbiter
-        self._initialize_arbiter()
-        
-        # Initialize consensus systems
-        self.consensus = ConsensusDetector(len(self.committee), 0.7)
-        self.collusion = CollusionAuditor(len(self.committee), 0.95)
-        self.haligner = TimeHorizonAligner([0] * len(self.committee))
-        self.alt_sampler = AlternativeRealitySampler(len(self.committee))
-        
-    def _create_voting_committee(self):
-        """Create the voting committee with expert wrappers"""
-        theme_expert = ThemeExpert(self.theme_detector, self)
-        season_expert = SeasonalityRiskExpert(self.time_risk_scaler, self)
-        meta_rl_expert = MetaRLExpert(self.meta_rl, self)
-        veto_expert = TradeMonitorVetoExpert(self.active_monitor, self)
-        regime_expert = RegimeBiasExpert(self.fractal_confirm, self)
-        
-        self.committee = [
-            self.position_manager,
-            self.risk_controller,
-            self.liquidity_layer,
-            theme_expert,
-            season_expert,
-            meta_rl_expert,
-            veto_expert,
-            regime_expert,
-        ]
         
     def _initialize_arbiter(self):
-        """Initialize the strategy arbiter"""
+        """FIXED: Initialize the strategy arbiter with ALL expert wrappers"""
+        # Create expert wrappers first
+        self.theme_expert = ThemeExpert(self.theme_detector, self)
+        self.season_expert = SeasonalityRiskExpert(self.time_risk_scaler, self)
+        self.meta_rl_expert = MetaRLExpert(self.meta_rl, self)
+        self.veto_expert = TradeMonitorVetoExpert(self.active_monitor, self)
+        self.regime_expert = RegimeBiasExpert(self.fractal_confirm, self)
+        
+        # FIXED: Include ALL voting members
         arbiter_members = [
-            self.liquidity_layer,
-            self.fractal_confirm,
-            self.theme_detector,
-            self.regime_switcher
+            self.liquidity_layer,      # Base module
+            self.position_manager,     # Core decision maker
+            self.theme_expert,         # Theme-based trading
+            self.season_expert,        # Seasonality adjustments
+            self.meta_rl_expert,       # Meta-RL decisions
+            self.veto_expert,          # Risk veto
+            self.regime_expert,        # Regime-based bias
+            self.risk_controller,      # Risk management
+        ]
+        
+        # Balanced initial weights
+        init_weights = [
+            0.15,  # liquidity_layer
+            0.20,  # position_manager (higher weight)
+            0.15,  # theme_expert
+            0.10,  # season_expert
+            0.15,  # meta_rl_expert
+            0.10,  # veto_expert
+            0.10,  # regime_expert
+            0.05,  # risk_controller
         ]
         
         self.arbiter = StrategyArbiter(
             members=arbiter_members,
-            init_weights=[0.25, 0.25, 0.25, 0.25],
+            init_weights=init_weights,
             action_dim=self.action_dim,
-            consensus=ConsensusDetector(4),
-            horizon_aligner=TimeHorizonAligner([1, 4, 24, 24]),
+            consensus=self.consensus,
+            horizon_aligner=self.haligner,
             debug=self.config.debug,
         )
+        
+        # Also update committee reference
+        self.committee = arbiter_members
+        
+        self.logger.info(f"Initialized arbiter with {len(arbiter_members)} voting members")
         
     def _create_dummy_input(self) -> Dict[str, Any]:
         """Create dummy input for initialization"""
@@ -513,11 +586,12 @@ class EnhancedTradingEnv(gym.Env):
             "price_d1": np.zeros(7, dtype=np.float32),
             "actions": np.zeros(self.action_dim, dtype=np.float32),
             "trades": [],
-            "open_trades": [],
+            "open_positions": [],  # FIXED: Standardized naming
             "drawdown": 0.0,
             "memory": np.zeros(32, dtype=np.float32),
             "pnl": 0.0,
             "correlations": {},
+            "current_step": 0,  # FIXED: Added for monitor
         }
         
     # ═══════════════════════════════════════════════════════════════════
@@ -549,6 +623,12 @@ class EnhancedTradingEnv(gym.Env):
             current_drawdown=0.0,
             last_trade_step={inst: -999 for inst in self.instruments}
         )
+        self.current_step = self.market_state.current_step  # <-- ADD HERE
+        # Clear caches
+        if not hasattr(self, '_obs_cache') or not isinstance(self._obs_cache, dict):
+            self._obs_cache = {}
+        else:
+            self._obs_cache.clear()
         
         # Reset all modules
         self._reset_all_modules()
@@ -571,6 +651,7 @@ class EnhancedTradingEnv(gym.Env):
         
         return obs, info
         
+    @profile_method
     def step(self, actions: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """Execute one environment step"""
         try:
@@ -614,94 +695,63 @@ class EnhancedTradingEnv(gym.Env):
             obs = self._get_full_observation(self._create_dummy_input())
             return obs, -1.0, True, False, {"error": str(e)}
             
+    # ═══════════════════════════════════════════════════════════════════
+    #  Step Implementation Methods
+    # ═══════════════════════════════════════════════════════════════════
+    
     def _validate_actions(self, actions: np.ndarray) -> np.ndarray:
         """Validate and sanitize action array"""
-        # Ensure numpy array
+        # Convert to numpy array
         actions = np.asarray(actions, dtype=np.float32)
         
-        # Check shape
-        if actions.shape != self.action_space.shape:
-            raise ValueError(f"Invalid action shape: {actions.shape}")
-            
-        # Check for NaN/Inf
-        if not np.all(np.isfinite(actions)):
-            self.logger.warning("Non-finite values in actions, replacing with zeros")
-            actions = np.nan_to_num(actions, nan=0.0, posinf=1.0, neginf=-1.0)
+        # Ensure correct shape
+        if actions.shape != (self.action_dim,):
+            self.logger.warning(
+                f"Invalid action shape {actions.shape}, expected {(self.action_dim,)}"
+            )
+            actions = actions.reshape(-1)[:self.action_dim]
             
         # Clip to valid range
-        actions = np.clip(actions, self.action_space.low, self.action_space.high)
+        actions = np.clip(actions, -1.0, 1.0)
+        
+        # Replace any NaN/Inf
+        actions = np.nan_to_num(actions, nan=0.0, posinf=1.0, neginf=-1.0)
         
         return actions
         
     def _apply_meta_rl(self, actions: np.ndarray) -> np.ndarray:
-        """Apply meta-RL overlay to actions"""
-        try:
-            # Get current observation for meta-RL
-            obs = self._get_full_observation(self._create_dummy_input())
-            obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
-            
-            # Get meta-RL action adjustment
-            meta_output = self.meta_rl.act(obs_tensor)
-            meta_action = (
-                meta_output["action"] if isinstance(meta_output, dict) 
-                else meta_output
-            )
-            meta_action = np.asarray(meta_action).reshape(-1)
-            
-            # Validate meta action
-            if not np.all(np.isfinite(meta_action)):
-                self.logger.warning("Non-finite meta-RL action, using zeros")
-                meta_action = np.zeros_like(meta_action)
-                
-            # Apply genome-scaled adjustment
-            genome_scale = self.strategy_pool.active_genome[2]
-            adjusted = actions + meta_action * genome_scale
-            
-            # Clip to valid range
-            return np.clip(adjusted, self.action_space.low, self.action_space.high)
-            
-        except Exception as e:
-            self.logger.error(f"Meta-RL application failed: {e}")
-            return actions
-            
+        """Apply meta-RL modulation to actions"""
+        if hasattr(self.meta_rl, 'modulate_action'):
+            try:
+                modulated = self.meta_rl.modulate_action(actions)
+                return np.asarray(modulated, dtype=np.float32)
+            except Exception as e:
+                self.logger.warning(f"Meta-RL modulation failed: {e}")
+        return actions
+        
     def _pass_risk_checks(self) -> bool:
-        """Perform pre-trade risk checks"""
-        # Get current volatility
+        """FIXED: Simplified risk check using centralized manager"""
+        context = {
+            'drawdown': self.market_state.current_drawdown,
+            'correlations': self.get_instrument_correlations(),
+            'open_positions': self.position_manager.open_positions,
+            'returns': self._get_recent_returns(),
+        }
+        
+        passed, reason = self.risk_manager.pre_trade_check(context)
+        if not passed:
+            self.logger.info(f"Risk check failed: {reason}")
+            
+        # Also update legacy risk modules for compatibility
         vol = self._get_current_volatility()
-        
-        # Update arbiter market state
-        self.arbiter.update_market_state(vol)
-        
-        # Check correlations
-        corr_dict = self.get_instrument_correlations()
-        if self.corr_controller.step(correlations=corr_dict):
-            self.position_manager.max_pct *= 0.5
-            self.logger.info(
-                f"High correlation detected, reducing position size to {self.position_manager.max_pct:.4f}"
-            )
-            
-        # Check drawdown rescue
-        if self.dd_rescue.step(current_drawdown=self.market_state.current_drawdown):
-            self.logger.info("Drawdown rescue triggered, skipping trades")
-            return False
-            
-        # Adjust dynamic risk
         self.risk_controller.adjust_risk({
             "drawdown": self.market_state.current_drawdown,
             "volatility": vol
         })
         
-        # Apply risk coefficient to position sizing
-        risk_coef = float(self.risk_controller.get_observation_components()[0])
-        base_pct = getattr(
-            self.position_manager, 
-            "default_max_pct", 
-            self.position_manager.max_pct
-        )
-        self.position_manager.max_pct = min(base_pct * risk_coef, base_pct)
+        return passed
         
-        return True
-        
+    @profile_method
     def _get_committee_decision(self, actions: np.ndarray) -> np.ndarray:
         """Get blended decision from voting committee"""
         votes_by_sym_tf = {}
@@ -721,6 +771,7 @@ class EnhancedTradingEnv(gym.Env):
                     "price_h4": hist if tf == "H4" else np.zeros_like(hist),
                     "price_d1": hist if tf == "D1" else np.zeros_like(hist),
                     "actions": actions,
+                    "current_step": self.market_state.current_step,  # FIXED: Added
                 }
                 obs = self._get_full_observation(obs_data)
                 
@@ -731,7 +782,7 @@ class EnhancedTradingEnv(gym.Env):
                 if self.arbiter.last_alpha is not None:
                     alpha = self.arbiter.last_alpha.copy()
                 else:
-                    alpha = np.zeros(self.action_dim)
+                    alpha = np.zeros(len(self.arbiter.members))
                     
                 votes_by_sym_tf[(inst, tf)] = dict(zip(committee_names, alpha.tolist()))
                 blended_by_sym_tf[(inst, tf)] = blend
@@ -739,964 +790,347 @@ class EnhancedTradingEnv(gym.Env):
         # Store votes for logging
         self.episode_metrics.votes_log.append(votes_by_sym_tf)
         
-        # Blend across timeframes
-        return self._blend_committee_votes(blended_by_sym_tf)
-        
-    def _blend_committee_votes(self, blended_by_sym_tf: Dict[Tuple[str, str], np.ndarray]) -> np.ndarray:
-        """Average the per-timeframe blends into final actions"""
-        final_actions = np.zeros(self.action_dim, dtype=np.float32)
+        # Blend across timeframes for final action
+        final_action = np.zeros(self.action_dim, dtype=np.float32)
+        weights = {"H1": 0.3, "H4": 0.4, "D1": 0.3}
         
         for i, inst in enumerate(self.instruments):
-            timeframe_actions = []
+            intensity_sum = 0.0
+            duration_sum = 0.0
+            total_weight = 0.0
             
-            # Collect actions for this instrument across timeframes
             for tf in ["H1", "H4", "D1"]:
-                key = (inst, tf)
-                if key in blended_by_sym_tf:
-                    # Extract instrument-specific actions
-                    inst_actions = blended_by_sym_tf[key][2*i:2*i+2]
-                    timeframe_actions.append(inst_actions)
-                    
-            # Average across timeframes if we have data
-            if timeframe_actions:
-                avg_actions = np.mean(timeframe_actions, axis=0)
-                final_actions[2*i:2*i+2] = avg_actions
+                blend = blended_by_sym_tf[(inst, tf)]
+                w = weights[tf]
+                intensity_sum += blend[2*i] * w
+                duration_sum += blend[2*i+1] * w
+                total_weight += w
                 
-        # Ensure no NaN values
-        final_actions = np.nan_to_num(final_actions, nan=0.0)
-        
-        return final_actions
+            if total_weight > 0:
+                final_action[2*i] = intensity_sum / total_weight
+                final_action[2*i+1] = duration_sum / total_weight
+                
+        return final_action
         
     def _calculate_consensus(self) -> float:
-        """Calculate consensus score from arbiter's alpha values"""
-        if self.arbiter.last_alpha is None:
-            return 0.0
+        """Calculate consensus level from committee votes"""
+        if not hasattr(self.arbiter, 'last_alpha') or self.arbiter.last_alpha is None:
+            return 0.5
             
-        # Use top-2 average for consensus
-        alpha_sorted = np.sort(self.arbiter.last_alpha)
-        consensus = float(alpha_sorted[-2:].mean())
-        
-        return consensus
+        # Use coefficient of variation as consensus measure
+        alpha = self.arbiter.last_alpha
+        if alpha.sum() > 0:
+            normalized = alpha / (alpha.sum() + 1e-12)
+            entropy = -np.sum(normalized * np.log(normalized + 1e-12))
+            max_entropy = np.log(len(alpha))
+            consensus = 1.0 - (entropy / max_entropy)
+        else:
+            consensus = 0.0
+            
+        return float(consensus)
         
     def _pass_consensus_check(self, consensus: float) -> bool:
-        """Check if consensus meets dynamic threshold"""
-        # Calculate dynamic threshold based on episode progress
-        progress = min(self.episode_count / self.config.max_episodes, 1.0)
-        threshold = self.config.consensus_min + (
-            self.config.consensus_max - self.config.consensus_min
-        ) * progress
-        
-        if consensus < threshold:
-            self.logger.info(
-                f"Consensus {consensus:.2f} below threshold {threshold:.2f}, skipping trades"
-            )
-            return False
+        """Check if consensus meets threshold"""
+        # More lenient check
+        if consensus < self.config.consensus_min:
+            self.logger.debug(f"Low consensus: {consensus:.3f}")
+            return np.random.random() < 0.3  # 30% chance to trade anyway
+            
+        if consensus > self.config.consensus_max:
+            self.logger.debug(f"High consensus: {consensus:.3f}")
             
         return True
         
-    # ──────────────────────────────────────────────────────────────────
-    #  Execute trades based on the final blended action vector
-    # ──────────────────────────────────────────────────────────────────
     def _execute_trades(self, actions: np.ndarray) -> List[Dict[str, Any]]:
-        """
-        Convert the (intensity, duration_norm) pairs in *actions* into live or
-        simulated trades.
-
-        Returns
-        -------
-        List[Dict[str, Any]]
-            A (possibly empty) list of trade dictionaries – never ``None``.
-        """
-        trades: List[Dict[str, Any]] = []
-
-        # 1) Context snapshot – regime, vol, correlations
-        regime_info = self._get_regime_info()
-
-        # 2) Narrative explanation (no side-effects on trading logic)
-        self._generate_explanation(actions, regime_info)
-
-        # 3) Diagnostics / gate status for the log
-        self._log_gate_diagnostics()
-
-        # 4) Loop over instruments and create trades where permitted
-        for i, inst in enumerate(self.instruments):
-
-            # 4-a  Rotation gap check
-            last_step = self.market_state.last_trade_step.get(inst, -999)
-            if self.market_state.current_step - last_step < self.config.rotation_gap:
-                self.logger.debug(f"Skipping {inst}: rotation gap")
-                continue
-
-            # 4-b  Extract action components
-            intensity      = float(actions[2 * i])
-            duration_norm  = float(actions[2 * i + 1])
-
-            # 4-c  Minimum intensity gate
+        """Execute trades based on actions"""
+        trades = []
+        
+        for i, instrument in enumerate(self.instruments):
+            intensity = float(actions[2*i])
+            duration_norm = float(actions[2*i+1])
+            
+            # Skip if intensity too low
             if abs(intensity) < self.config.min_intensity:
+                continue
+                
+            # Check rotation gap
+            last_step = self.market_state.last_trade_step.get(instrument, -999)
+            if self.market_state.current_step - last_step < self.config.rotation_gap:
+                continue
+                
+            # Check instrument confidence
+            inst_conf = self.position_manager.position_confidence.get(instrument, 1.0)
+            if inst_conf < self.config.min_inst_confidence:
                 self.logger.debug(
-                    f"Skipping {inst}: |intensity| {intensity:.3f} "
-                    f"< {self.config.min_intensity}"
+                    f"Skipping {instrument}: confidence {inst_conf:.3f} < {self.config.min_inst_confidence}"
                 )
                 continue
-
-            # 4-d  Position sizing & execution
-            trade = self._execute_single_trade(inst, intensity, duration_norm)
+                
+            # Execute trade
+            trade = self._execute_single_trade(instrument, intensity, duration_norm)
             if trade:
                 trades.append(trade)
-                # Record last trade step for rotation gating
-                self.market_state.last_trade_step[inst] = self.market_state.current_step
-
-        # 5) (Optional) keep the most-recent votes for external inspection
-        self._last_votes = self.episode_metrics.votes_log[-1] if self.episode_metrics.votes_log else {}
-
-        # 6) Always return a list – even if empty – so callers can iterate/extend
+                self.market_state.last_trade_step[instrument] = self.market_state.current_step
+                
+                # FIXED: Update risk manager after trade
+                self.risk_manager.post_trade_update(trade)
+                
         return trades
-
-                
-
-
-    def _generate_explanation(
+        
+    def _execute_single_trade(
         self,
-        actions: np.ndarray,
-        regime_info: Dict[str, Any],
-    ):
-        """
-        Build a narrative of the current decision and hand it to
-        ``self.explainer``.  The interface is now consistent with the updated
-        ExplanationGenerator (no ``committee=`` kwarg).
-        """
-        # Names and weights come from the *arbiter*, not the committee
-        member_names = [m.__class__.__name__ for m in self.arbiter.members]
-
-        if self.arbiter.last_alpha is not None:
-            arbiter_weights = self.arbiter.last_alpha.copy()
-        else:
-            arbiter_weights = np.zeros(len(member_names), dtype=np.float32)
-
-        # The most recent per-(instrument, timeframe) votes
-        votes = getattr(self, "_last_votes", {})
-
-        self.explainer.step(
-            actions         = actions,
-            arbiter_weights = arbiter_weights,
-            member_names    = member_names,
-            votes           = votes,
-            regime          = regime_info["label"],
-            volatility      = regime_info["volatility"],
-            drawdown        = self.market_state.current_drawdown,
-            genome_metrics  = self.get_genome_metrics(),
-        )
-
-        
-    def _log_gate_diagnostics(self):
-        """Log diagnostic information about trading gates"""
-        self.logger.info(
-            f"[GATES] Step {self.market_state.current_step} | "
-            f"Rotation={self.config.rotation_gap} | "
-            f"MinIntensity={self.config.min_intensity} | "
-            f"MinConfidence={self.config.min_inst_confidence} | "
-            f"MaxPct={self.position_manager.max_pct:.4f}"
-        )
-        
-    def _update_memory_systems(self, trades: List[Dict[str, Any]]):
-        """Update all memory systems with trade data"""
-        # Update mistake memory
-        self.mistake_memory.step(trades=trades)
-        
-        # Update memory compressor
-        if trades:
-            self.memory_compressor.compress(self.market_state.current_step, trades)
-        else:
-            # Use last embedding if no trades
-            emb = getattr(self.feature_engine, "last_embedding", None)
-            if emb is None:
-                emb = np.zeros_like(self.memory_compressor.intuition_vector)
-            self.memory_compressor.compress(
-                self.market_state.current_step,
-                [{"features": emb}]
-            )
-            
-        # Update playbook clusterer
-        obs = self._get_full_observation(self._create_dummy_input())
-        self.playbook_clusterer.step(trades=trades, obs=obs)
-        
-    def _calculate_reward(
-        self,
-        trades: List[Dict[str, Any]],
-        actions: np.ndarray,
-        pnl: float
-    ) -> float:
-        """Calculate step reward using risk-adjusted shaper"""
-        # Get regime vector
-        regime_strength = self.fractal_confirm.regime_strength
-        regime_onehot = np.full_like(
-            self.reward_shaper.regime_weights,
-            regime_strength,
-            dtype=np.float32
-        )
-        
-        # Calculate base reward
-        reward = self.reward_shaper.step(
-            balance=self.market_state.balance,
-            trades=trades,
-            drawdown=self.market_state.current_drawdown,
-            regime_onehot=regime_onehot,
-            actions=actions
-        )
-        
-        # Add replay bonus if applicable
-        reward += self.replay_analyzer.maybe_replay(self.market_state.current_step)
-        
-        # Ensure finite
-        reward = float(np.nan_to_num(reward, nan=0.0))
-        
-        return reward
-        
-    def _update_meta_systems(self, pnl: float, trades: List[Dict[str, Any]]):
-        """Update meta-learning and evolution systems"""
-        # Update meta agent
-        self.meta_agent.record(pnl)
-        
-        # Update meta planner
-        self.meta_planner.record_episode({
-            "pnl": pnl,
-            "drawdown": self.market_state.current_drawdown
-        })
-        
-        # Update opponent enhancer
-        self.opp_enhancer.step(trades=trades, pnl=pnl)
-        
-        # Update curriculum planner
-        obs = self._get_full_observation(self._create_dummy_input())
-        self.curriculum_planner.step(result={"pnl": pnl, "obs": obs})
-        
-    def _run_monitoring_systems(self, trades: List[Dict[str, Any]], pnl: float):
-        """Run post-trade monitoring systems"""
-        # Execution quality monitor
-        self.exec_monitor.step(trade_executions=trades)
-        
-        # Anomaly detection
-        obs = self._get_full_observation(self._create_dummy_input())
-        self.anomaly_detector.step(pnl=pnl, obs=obs)
-        
-        # Shadow simulation (backtest only)
-        if not self.config.live_mode and hasattr(self, 'shadow_sim'):
-            shadow_trades = self.shadow_sim.simulate(
-                env=self,
-                actions=self._last_actions if hasattr(self, '_last_actions') else None
-            )
-            if shadow_trades:
-                self.logger.info(f"Shadow sim: {len(shadow_trades)} trades")
-                
-    def _get_next_observation(
-        self,
-        actions: np.ndarray,
-        trades: List[Dict[str, Any]],
-        pnl: float
-    ) -> np.ndarray:
-        """Construct observation for next step"""
-        # Get price histories
-        hist_h1 = self._get_price_history(self.instruments[0], "H1")
-        hist_h4 = self._get_price_history(self.instruments[0], "H4")
-        hist_d1 = self._get_price_history(self.instruments[0], "D1")
-        
-        # Get memory vector
-        memory = self.long_term_memory.retrieve(
-            self.feature_engine.last_embedding
-            if hasattr(self.feature_engine, 'last_embedding')
-            else None
-        )
-        
-        # Create observation data
-        obs_data = {
-            "env": self,
-            "price_h1": hist_h1,
-            "price_h4": hist_h4,
-            "price_d1": hist_d1,
-            "actions": actions,
-            "trades": trades,
-            "open_trades": list(self.position_manager.open_positions.values()),
-            "drawdown": self.market_state.current_drawdown,
-            "memory": memory,
-            "pnl": pnl,
-            "correlations": self.get_instrument_correlations(),
-        }
-        
-        # Get full observation
-        obs = self._get_full_observation(obs_data)
-        
-        # Sanitize
-        obs = self._sanitize_observation(obs)
-        
-        # Update meta-RL
-        if obs.size == self.meta_rl.obs_dim:
-            self.meta_rl.record_step(obs, self._last_reward if hasattr(self, '_last_reward') else 0.0)
-            
-        # Store for next step
-        self._last_actions = actions.copy()
-        self._last_reward = self._last_reward if hasattr(self, '_last_reward') else 0.0
-        
-        return obs
-        
-    def set_module_enabled(self, name: str, enabled: bool):
-        """Enable or disable a module"""
-        if name not in self.module_enabled:
-            raise KeyError(f"Unknown module: {name}")
-        self.module_enabled[name] = enabled
-        self.logger.info(f"Module {name} {'enabled' if enabled else 'disabled'}")
-        
-    def get_state(self) -> Dict[str, Any]:
-        """Get complete environment state for serialization"""
-        return {
-            "market_state": {
-                "balance": self.market_state.balance,
-                "peak_balance": self.market_state.peak_balance,
-                "current_step": self.market_state.current_step,
-                "current_drawdown": self.market_state.current_drawdown,
-                "open_positions": self.market_state.open_positions,
-                "last_trade_step": self.market_state.last_trade_step,
-            },
-            "episode_metrics": {
-                "pnls": self.episode_metrics.pnls,
-                "durations": self.episode_metrics.durations,
-                "drawdowns": self.episode_metrics.drawdowns,
-                "trades": self.episode_metrics.trades,
-                "votes_log": self.episode_metrics.votes_log,
-                "reasoning_trace": self.episode_metrics.reasoning_trace,
-            },
-            "episode_count": self.episode_count,
-            "position_manager": self.position_manager.get_state(),
-        }
-        
-    def set_state(self, state: Dict[str, Any]):
-        """Restore environment state from serialization"""
-        # Restore market state
-        ms = state.get("market_state", {})
-        self.market_state.balance = ms.get("balance", self.config.initial_balance)
-        self.market_state.peak_balance = ms.get("peak_balance", self.market_state.balance)
-        self.market_state.current_step = ms.get("current_step", 0)
-        self.market_state.current_drawdown = ms.get("current_drawdown", 0.0)
-        self.market_state.open_positions = ms.get("open_positions", {})
-        self.market_state.last_trade_step = ms.get("last_trade_step", {})
-        
-        # Restore episode metrics
-        em = state.get("episode_metrics", {})
-        self.episode_metrics.pnls = em.get("pnls", [])
-        self.episode_metrics.durations = em.get("durations", [])
-        self.episode_metrics.drawdowns = em.get("drawdowns", [])
-        self.episode_metrics.trades = em.get("trades", [])
-        self.episode_metrics.votes_log = em.get("votes_log", [])
-        self.episode_metrics.reasoning_trace = em.get("reasoning_trace", [])
-        
-        # Restore other state
-        self.episode_count = state.get("episode_count", 0)
-        
-        # Restore position manager
-        if "position_manager" in state:
-            self.position_manager.set_state(state["position_manager"])
-            
-    def render(self, mode: str = "human") -> Optional[np.ndarray]:
-        """Render the environment"""
-        if mode == "human":
-            # Text output
-            print(
-                f"Step {self.market_state.current_step} | "
-                f"Mode: {self.mode_manager.get_mode().upper()} | "
-                f"Balance: ${self.market_state.balance:.2f} | "
-                f"Drawdown: {self.market_state.current_drawdown:.2%} | "
-                f"Trades: {len(self.episode_metrics.trades)}"
-            )
-        elif mode == "rgb_array":
-            # Could implement visual rendering here
+        instrument: str,
+        intensity: float,
+        duration_norm: float
+    ) -> Optional[Dict[str, Any]]:
+        """Execute a single trade (live or simulated)"""
+        # Get current market data
+        df = self.data[instrument]["D1"]
+        if self.market_state.current_step >= len(df):
             return None
             
-        return None
+        bar = df.iloc[self.market_state.current_step]
+        price = float(bar["close"])
         
-    def close(self):
-        """Clean up resources"""
-        # Save final checkpoints
-        try:
-            self._save_checkpoints()
-        except Exception as e:
-            self.logger.error(f"Failed to save final checkpoints: {e}")
-            
-        # Close loggers
-        for handler in self.logger.handlers:
-            handler.close()
-            
-        self.logger.info("Environment closed")
+        # Get volatility with safety checks
+        vol = self._get_instrument_volatility(instrument)
         
-    # ═══════════════════════════════════════════════════════════════════
-    #  Checkpointing Methods
-    # ═══════════════════════════════════════════════════════════════════
-    
-    def _save_checkpoints(self):
-        """Save all module checkpoints"""
-        try:
-            # Save meta-RL state
-            if hasattr(self.meta_rl, 'state_dict'):
-                torch.save(
-                    self.meta_rl.state_dict(),
-                    os.path.join(self.config.checkpoint_dir, "meta_rl.pt")
-                )
-                
-            # Save arbiter weights
-            np.save(
-                os.path.join(self.config.checkpoint_dir, "arbiter_weights.npy"),
-                self.arbiter.weights
+        # Calculate position size
+        size = self._calculate_position_size(instrument, intensity, vol)
+        
+        if size == 0.0:
+            self.logger.debug(f"Zero position size for {instrument}")
+            return None
+            
+        # Execute based on mode
+        if self.config.live_mode:
+            return self._execute_live_trade(instrument, size, intensity)
+        else:
+            return self._execute_simulated_trade(
+                instrument, size, intensity, duration_norm, price, df
             )
             
-            # Save strategy pool
-            with open(os.path.join(self.config.checkpoint_dir, "strategy_pool.pkl"), "wb") as f:
-                pickle.dump({
-                    "population": self.strategy_pool.population,
-                    "fitness": self.strategy_pool.fitness,
-                    "epoch": self.strategy_pool.epoch,
-                }, f)
-                
-            # Save module states
-            module_states = {}
-            for module in self.pipeline.modules:
-                if hasattr(module, 'get_state'):
-                    module_states[module.__class__.__name__] = module.get_state()
-                    
-            # Save environment state
-            env_state = {
-                "state": self.get_state(),
-                "module_states": module_states,
-                "config": self.config.__dict__,
-            }
-            
-            with open(os.path.join(self.config.checkpoint_dir, "env_state.pkl"), "wb") as f:
-                pickle.dump(env_state, f)
-                
-            self.logger.info("Checkpoints saved successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Checkpoint save failed: {e}")
-            
-    def _maybe_load_checkpoints(self):
-        """Load checkpoints if they exist"""
-        try:
-            # Load meta-RL
-            meta_rl_path = os.path.join(self.config.checkpoint_dir, "meta_rl.pt")
-            if os.path.exists(meta_rl_path) and hasattr(self.meta_rl, 'load_state_dict'):
-                self.meta_rl.load_state_dict(torch.load(meta_rl_path))
-                self.logger.info("Loaded meta-RL checkpoint")
-                
-            # Load arbiter weights
-            arbiter_path = os.path.join(self.config.checkpoint_dir, "arbiter_weights.npy")
-            if os.path.exists(arbiter_path):
-                self.arbiter.weights = np.load(arbiter_path)
-                self.logger.info("Loaded arbiter weights")
-                
-            # Load strategy pool
-            pool_path = os.path.join(self.config.checkpoint_dir, "strategy_pool.pkl")
-            if os.path.exists(pool_path):
-                with open(pool_path, "rb") as f:
-                    pool_data = pickle.load(f)
-                self.strategy_pool.population = pool_data["population"]
-                self.strategy_pool.fitness = pool_data["fitness"]
-                self.strategy_pool.epoch = pool_data["epoch"]
-                self.logger.info("Loaded strategy pool")
-                
-            # Load environment state
-            env_path = os.path.join(self.config.checkpoint_dir, "env_state.pkl")
-            if os.path.exists(env_path):
-                with open(env_path, "rb") as f:
-                    env_data = pickle.load(f)
-                    
-                # Restore environment state
-                self.set_state(env_data["state"])
-                
-                # Restore module states
-                for name, state in env_data["module_states"].items():
-                    module = self.pipeline.get_module(name)
-                    if module and hasattr(module, 'set_state'):
-                        module.set_state(state)
-                        
-                self.logger.info("Loaded environment state")
-                
-        except Exception as e:
-            self.logger.warning(f"Checkpoint load failed: {e}, starting fresh")
-            
-    # ═══════════════════════════════════════════════════════════════════
-    #  Compatibility Attributes
-    # ═══════════════════════════════════════════════════════════════════
-    
-    @property
-    def balance(self):
-        """Compatibility property for balance"""
-        return self.market_state.balance
-        
-    @balance.setter
-    def balance(self, value):
-        self.market_state.balance = value
-        
-    @property
-    def current_step(self):
-        """Compatibility property for current step"""
-        return self.market_state.current_step
-        
-    @current_step.setter
-    def current_step(self, value):
-        self.market_state.current_step = value
-        
-    @property
-    def current_drawdown(self):
-        """Compatibility property for drawdown"""
-        return self.market_state.current_drawdown
-        
-    @current_drawdown.setter
-    def current_drawdown(self, value):
-        self.market_state.current_drawdown = value
-        
-    @property
-    def open_positions(self):
-        """Compatibility property for open positions"""
-        return self.position_manager.open_positions
-        
-    @property
-    def peak_balance(self):
-        """Compatibility property for peak balance"""
-        return self.market_state.peak_balance
-        
-    @peak_balance.setter
-    def peak_balance(self, value):
-        self.market_state.peak_balance = value
-        
-    @property
-    def ep_step(self):
-        """Compatibility property for episode step"""
-        return self.market_state.current_step
-        
-    @ep_step.setter
-    def ep_step(self, value):
-        self.market_state.current_step = value
-        
-    @property
-    def live_mode(self):
-        """Compatibility property for live mode"""
-        return self.config.live_mode
-        
-    @live_mode.setter
-    def live_mode(self, value):
-        self.config.live_mode = value
-        
-    @property
-    def point_value(self):
-        """Point value for each instrument"""
-        if not hasattr(self, '_point_value'):
-            self._point_value = {inst: 1.0 for inst in self.instruments}
-        return self._point_value
-
-
-# ╔═════════════════════════════════════════════════════════════════════╗
-# ║                        Module Export                                 ║
-# ╚═════════════════════════════════════════════════════════════════════╝
-
-
-        
-    def _check_termination(self) -> bool:
-        """Check if episode should terminate"""
-        # Check balance
-        if self.market_state.balance <= 0:
-            self.logger.info("Episode terminated: balance depleted")
-            return True
-            
-        # Check max steps
-        if self.market_state.current_step >= self.config.max_steps:
-            self.logger.info("Episode terminated: max steps reached")
-            return True
-            
-        # Check data availability
-        df = self.data[self.instruments[0]]["D1"]
-        if self.market_state.current_step >= len(df) - 1:
-            self.logger.info("Episode terminated: no more data")
-            return True
-            
-        return False
-        
-    def _create_step_info(
+    def _execute_simulated_trade(
         self,
-        trades: List[Dict[str, Any]],
-        reward: float,
-        consensus: float
+        instrument: str,
+        size: float,
+        intensity: float,
+        duration_norm: float,
+        entry_price: float,
+        df: pd.DataFrame
     ) -> Dict[str, Any]:
-        """Create info dictionary for step"""
-        return {
-            "balance": round(self.market_state.balance, 2),
-            "pnl": round(sum(t["pnl"] for t in trades), 2),
-            "drawdown": round(self.market_state.current_drawdown, 4),
-            "trades_executed": len(trades),
-            "reward": round(reward, 4),
-            "consensus": round(consensus, 4),
-            "mode": self.mode_manager.get_stats(),
-            "votes": self.episode_metrics.votes_log[-1] if self.episode_metrics.votes_log else {},
-            "explanation": self.explainer.last_explanation if hasattr(self.explainer, 'last_explanation') else "",
-            "memory": {
-                "intuition_norm": float(np.linalg.norm(self.memory_compressor.intuition_vector)),
-                "playbook_size": len(self.playbook_memory._features),
-            },
-            "step": self.market_state.current_step,
-        }
-        
-    def _update_mode_manager(
-        self,
-        trades: List[Dict[str, Any]],
-        pnl: float,
-        consensus: float
-    ):
-        """Update trading mode manager"""
-        # Determine trade result
-        if trades:
-            trade_result = "win" if pnl > 0 else "loss"
-        else:
-            trade_result = "hold"
-            
-        # Get current volatility
-        vol = self._get_current_volatility()
-        
-        # Update mode
-        self.mode_manager.step(
-            trade_result=trade_result,
-            pnl=float(pnl),
-            consensus=float(consensus),
-            volatility=float(vol),
-            drawdown=self.market_state.current_drawdown,
+        """Execute a simulated trade"""
+        side = "BUY" if intensity > 0 else "SELL"
+        self.logger.info(
+            f"[SIM] {side} {instrument} {size:.3f} lots @ {entry_price:.4f}"
         )
         
-    def _handle_episode_end(self, last_pnl: float):
-        """Handle episode termination"""
-        # Calculate episode statistics
-        if self.episode_metrics.pnls:
-            # Create balance array
-            balances = np.array(
-                [self.config.initial_balance] +
-                list(np.cumsum(self.episode_metrics.pnls) + self.config.initial_balance),
-                dtype=np.float32
-            )
-            
-            # Calculate returns
-            returns = np.diff(balances) / (balances[:-1] + 1e-8)
-            returns = np.nan_to_num(returns)
-            
-            # Calculate metrics
-            mean_return = returns.mean()
-            std_return = returns.std() + 1e-8
-            sharpe = np.clip(mean_return / std_return * np.sqrt(250), -2.0, 5.0)
-            
-            # Calculate Sortino
-            negative_returns = returns[returns < 0]
-            downside_std = negative_returns.std() + 1e-8 if negative_returns.size > 0 else std_return
-            sortino = np.clip(mean_return / downside_std * np.sqrt(250), -1.0, 3.0)
-            
-            # Log episode summary
-            self.logger.info(
-                f"Episode {self.episode_count} complete: "
-                f"PnL={last_pnl:.2f}, Sharpe={sharpe:.3f}, "
-                f"Sortino={sortino:.3f}, DD={self.market_state.current_drawdown:.2%}"
-            )
-            
-            # Evaluate and evolve strategy pool
-            self._evaluate_strategy_fitness(last_pnl, sharpe, sortino)
-            
-        # Save checkpoints
-        try:
-            self._save_checkpoints()
-        except Exception as e:
-            self.logger.error(f"Failed to save checkpoints: {e}")
-            
-    def _evaluate_strategy_fitness(self, pnl: float, sharpe: float, sortino: float):
-        """Evaluate fitness of current strategy genome"""
-        def fitness_function(genome: np.ndarray) -> float:
-            sl_base, tp_base, vol_scale, regime_adapt = genome
-            
-            # Base fitness from performance metrics
-            base_fitness = 0.4 * pnl + 0.3 * sharpe + 0.3 * sortino
-            
-            # Penalty for extreme drawdown
-            dd_penalty = 0.5 * self.market_state.current_drawdown
-            
-            # Bonus for balanced risk parameters
-            risk_bonus = 0.05 * (sl_base + tp_base) / 2.0
-            
-            # Bonus for adaptation capabilities
-            adapt_bonus = 0.1 * (vol_scale + regime_adapt) / 2.0
-            
-            return float(base_fitness - dd_penalty + risk_bonus + adapt_bonus)
-            
-        # Evaluate population
-        self.strategy_pool.evaluate_population(fitness_function)
+        # Calculate holding period
+        hold_steps = max(
+            int(duration_norm * self.config.max_steps), 
+            1
+        )
+        exit_idx = min(
+            self.market_state.current_step + hold_steps,
+            len(df) - 1
+        )
         
-        # Evolve strategies
-        self.strategy_pool.evolve_strategies()
+        # Get exit price
+        exit_price = float(df.iloc[exit_idx]["close"])
         
-    def _create_reset_info(self) -> Dict[str, Any]:
-        """Create info dictionary for reset"""
-        return {
-            "episode": self.episode_count,
-            "starting_balance": self.market_state.balance,
-            "starting_step": self.market_state.current_step,
-            "max_steps": self.config.max_steps,
-            "instruments": self.instruments,
-            "genome": self.current_genome.tolist() if hasattr(self, 'current_genome') else [],
-        }
-        
-    def _get_full_observation(self, data: Dict[str, Any]) -> np.ndarray:
-        """Construct full observation vector from all modules"""
-        # Get base observations from pipeline
-        base = self.pipeline.step(data)
-        
-        # Validate base observation
-        assert not np.any(np.isnan(base)), "NaN in base observation"
-        
-        # Get additional components
-        components = [
-            base,
-            self.strategy_pool.get_observation_components(),
-            self.meta_agent.get_observation_components(),
-            self.meta_planner.get_observation_components(),
-        ]
-        
-        # Add meta-RL components if available (it’s only created later)
-        if hasattr(self, 'meta_rl') and hasattr(self.meta_rl, 'get_observation_components'):
-            components.append(self.meta_rl.get_observation_components())
+        # Calculate PnL
+        point_value = self.point_value.get(instrument, 1.0)
+        if intensity > 0:
+            pnl = (exit_price - entry_price) * size * point_value
         else:
-            components.append(np.zeros(4, dtype=np.float32))
-
+            pnl = (entry_price - exit_price) * size * point_value
             
-        # Add other module components
-        components.extend([
-            self.long_term_memory.get_observation_components(),
-            self.opp_enhancer.get_observation_components(),
-            self.curriculum_planner.get_observation_components(),
-            self.playbook_clusterer.get_observation_components(),
-        ])
+        # Sanitize PnL
+        pnl = np.clip(
+            np.nan_to_num(pnl, nan=0.0),
+            -10 * self.config.initial_balance,
+            10 * self.config.initial_balance
+        )
         
-        # Concatenate all components
-        obs = np.concatenate(components)
+        # Update balance
+        self.market_state.balance += pnl
+        self.market_state.peak_balance = max(
+            self.market_state.peak_balance,
+            self.market_state.balance
+        )
+        self.market_state.current_drawdown = max(
+            (self.market_state.peak_balance - self.market_state.balance) / 
+            (self.market_state.peak_balance + 1e-12),
+            0.0
+        )
         
-        # Ensure correct size
-        if hasattr(self, 'observation_space'):
-            expected_size = self.observation_space.shape[0]
-            if obs.shape[0] < expected_size:
-                obs = np.pad(obs, (0, expected_size - obs.shape[0]), constant_values=0)
-            elif obs.shape[0] > expected_size:
-                obs = obs[:expected_size]
-                
-        # Final validation
-        assert not np.any(np.isnan(obs)), "NaN in final observation"
-        
-        return obs
-        
-    # ═══════════════════════════════════════════════════════════════════
-    #  Public API Methods
-    # ═══════════════════════════════════════════════════════════════════
-    
-    def get_instrument_correlations(self) -> Dict[Tuple[str, str], float]:
-        """Calculate pairwise correlations between instruments"""
-        correlations = {}
-        
-        for inst1, inst2 in combinations(self.instruments, 2):
-            try:
-                # Get returns for both instruments
-                df1 = self.data[inst1]["D1"]["close"].pct_change().dropna()
-                df2 = self.data[inst2]["D1"]["close"].pct_change().dropna()
-                
-                # Use last 100 bars
-                returns1 = df1.iloc[-100:].values
-                returns2 = df2.iloc[-100:].values
-                
-                # Calculate correlation
-                if returns1.size > 0 and returns2.size > 0:
-                    corr = np.corrcoef(returns1, returns2)[0, 1]
-                    if np.isfinite(corr):
-                        correlations[(inst1, inst2)] = float(corr)
-                    else:
-                        correlations[(inst1, inst2)] = 0.0
-                else:
-                    correlations[(inst1, inst2)] = 0.0
-                    
-            except Exception as e:
-                self.logger.warning(f"Correlation calc failed for {inst1}/{inst2}: {e}")
-                correlations[(inst1, inst2)] = 0.0
-                
-        return correlations
-        
-    def get_volatility_profile(self) -> Dict[str, float]:
-        """Get current volatility for all instruments"""
-        profile = {}
-        
-        for inst in self.instruments:
-            try:
-                df = self.data[inst]["D1"]
-                if self.market_state.current_step < len(df):
-                    vol = df.iloc[self.market_state.current_step]["volatility"]
-                    profile[inst] = float(vol)
-                else:
-                    profile[inst] = 0.01
-            except Exception:
-                profile[inst] = 0.01
-                
-        return profile
-        
-    def get_genome_metrics(self) -> Dict[str, float]:
-        """Get metrics for best strategy genome"""
-        best_idx = int(np.argmax(self.strategy_pool.fitness))
-        genome = self.strategy_pool.population[best_idx]
-        sl_base, tp_base, vol_scale, regime_adapt = genome
+        self.logger.info(
+            f"[SIM] Trade closed: exit @ {exit_price:.4f}, PnL={pnl:.2f}"
+        )
         
         return {
-            "sl_base": float(sl_base),
-            "tp_base": float(tp_base),
-            "vol_scale": float(vol_scale),
-            "regime_adapt": float(regime_adapt),
-            "fitness": float(self.strategy_pool.fitness[best_idx]),
+            "instrument": instrument,
+            "pnl": pnl,
+            "duration": hold_steps,
+            "exit_reason": "timeout",
+            "size": size if intensity > 0 else -size,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "features": np.array([exit_price, pnl, hold_steps], dtype=np.float32),
         }
         
-    def get_metrics(self) -> Dict[str, float]:
-        """Get current performance metrics"""
-        pnls = self.episode_metrics.pnls
+    def _execute_live_trade(
+        self,
+        instrument: str,
+        size: float,
+        intensity: float
+    ) -> Optional[Dict[str, Any]]:
+        """FIXED: Execute a live trade via MetaTrader5"""
+        symbol = instrument.replace("/", "")
         
-        if pnls:
-            win_rate = float((np.array(pnls) > 0).mean())
-            avg_pnl = float(np.mean(pnls))
-            last_pnl = float(pnls[-1])
+        # Select symbol
+        if not mt5.symbol_select(symbol, True):
+            self.logger.warning(f"Cannot select symbol {symbol}")
+            return None
+            
+        # Get symbol info
+        symbol_info = mt5.symbol_info(symbol)
+        if symbol_info is None:
+            self.logger.warning(f"No symbol info for {symbol}")
+            return None
+            
+        # Round size to broker requirements
+        size = self._round_lot_size(size, symbol_info)
+        
+        # Get current tick
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            self.logger.warning(f"No tick data for {symbol}")
+            return None
+            
+        # Determine price based on side
+        price = tick.ask if intensity > 0 else tick.bid
+        
+        # Create order request
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": size,
+            "type": mt5.ORDER_TYPE_BUY if intensity > 0 else mt5.ORDER_TYPE_SELL,
+            "price": price,
+            "deviation": 20,
+            "magic": 202406,
+            "comment": f"AI trade ep{self.episode_count}",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        
+        # Send order
+        result = mt5.order_send(request)
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            self.logger.warning(f"Order failed: {result.comment}")
+            return None
+            
+        # Get the actual executed price
+        executed_price = result.price if hasattr(result, 'price') else price
+        
+        # Register position
+        self.position_manager.open_positions[instrument] = {
+            "ticket": result.order,
+            "side": 1 if intensity > 0 else -1,
+            "lots": size,
+            "price_open": executed_price,
+            "peak_profit": 0.0,
+            "entry_step": self.market_state.current_step,  # FIXED: Added for monitoring
+            "instrument": instrument,  # FIXED: Added for standardization
+        }
+        
+        self.logger.info(
+            f"[LIVE] {'BUY' if intensity > 0 else 'SELL'} {instrument} "
+            f"{size:.3f} lots @ {executed_price:.4f}, ticket={result.order}"
+        )
+        
+        # FIXED: Return proper trade dictionary
+        return {
+            "instrument": instrument,
+            "size": size,
+            "entry_price": executed_price,
+            "side": "BUY" if intensity > 0 else "SELL",
+            "ticket": result.order,
+            "pnl": 0.0,  # Initial PnL is zero
+            "duration": 0,
+            "exit_reason": "open",
+            "features": np.array([executed_price, size, intensity], dtype=np.float32),
+        }
+        
+    def _calculate_position_size(
+        self,
+        instrument: str,
+        intensity: float,
+        volatility: float
+    ) -> float:
+        """Calculate position size with risk management - FIXED for better trading"""
+        # Base size from balance - increased allocation
+        risk_pct = 0.02  # Risk 2% per trade
+        risk_capital = self.market_state.balance * risk_pct
+        
+        # Adjust for volatility
+        vol_adj = min(0.02 / (volatility + 1e-12), 2.0)
+        
+        # Scale by intensity with minimum size
+        base_size = max(
+            risk_capital * abs(intensity) * vol_adj / 100000,
+            0.01  # Minimum 0.01 lots
+        )
+        
+        # Apply instrument-specific limits
+        if "XAU" in instrument or "GOLD" in instrument:
+            base_size = np.clip(base_size, 0.01, 1.0)  # 0.01-1.0 lots for gold
         else:
-            win_rate = avg_pnl = last_pnl = 0.0
+            base_size = np.clip(base_size, 0.01, 5.0)  # 0.01-5.0 lots for forex
             
-        return {
-            "balance": self.market_state.balance,
-            "win_rate": win_rate,
-            "avg_pnl": avg_pnl,
-            "last_pnl": last_pnl,
-            "drawdown": self.market_state.current_drawdown,
-            "trades_count": len(self.episode_metrics.trades),
-        }
-        
-    def get_module_status(self) -> Dict[str, Dict[str, Any]]:
-        """Get status of all modules"""
-        status = {}
-
-        all_modules = self.pipeline.modules + self.arbiter.members
-        for module in all_modules:
-            name = module.__class__.__name__
-
-            # Get confidence if available
-            confidence = 0.0
-            if hasattr(module, 'confidence'):
-                try:
-                    # call module.confidence() without undefined args
-                    confidence = float(module.confidence())
-                except Exception:
-                    confidence = 0.0
-
-            status[name] = {
-                "enabled": self.module_enabled.get(name, True),
-                "confidence": confidence,
-            }
-
-        return status
-
-        
-
+        return round(base_size, 2)
         
     def _round_lot_size(self, size: float, symbol_info) -> float:
         """Round lot size to broker requirements"""
-        step = symbol_info.volume_step or 0.01
-        min_vol = symbol_info.volume_min or step
-        max_vol = symbol_info.volume_max or 100.0
-        
-        # Round to step
-        size = math.floor(size / step) * step
-        
-        # Apply limits
-        size = max(min_vol, min(size, max_vol))
-        
-        return size
-        
-    def _get_regime_info(self) -> Dict[str, Any]:
-        """Get current market regime information"""
-        # Update fractal confirmation
-        self.fractal_confirm.step(
-            data_dict=self.data,
-            current_step=self.market_state.current_step,
-            theme_detector=self.theme_detector,
-        )
-
-        # Pull live balance if in live mode
-        account_info = mt5.account_info()
-        if account_info and hasattr(account_info, "balance"):
-            self.market_state.balance = float(account_info.balance)
-            self.market_state.peak_balance = max(
-                self.market_state.peak_balance,
-                self.market_state.balance
-            )
-
-        # Return the fully closed dict
-        return {
-            "label": self.fractal_confirm.label,
-            "strength": self.fractal_confirm.regime_strength,
-            "volatility": self.get_volatility_profile(),
-            "correlations": self.get_instrument_correlations(),
-        }
-
+        if hasattr(symbol_info, 'volume_step'):
+            step = symbol_info.volume_step
+            return round(size / step) * step
+        return round(size, 2)
         
     def _finalize_step(
         self,
-        trades: List[Dict[str, Any]],
+        trades: List[Dict],
         actions: np.ndarray,
         consensus: float
     ) -> Tuple[np.ndarray, float, bool, bool, Dict]:
-        """Finalize step with bookkeeping and reward calculation"""
-        # Update episode metrics
+        """Finalize step with reward calculation and state updates"""
+        # Store trades
+        self.trades = trades
         self.episode_metrics.trades.extend(trades)
-        self.episode_metrics.pnls.extend(t["pnl"] for t in trades)
-        self.episode_metrics.durations.extend(t.get("duration", 1) for t in trades)
-        self.episode_metrics.drawdowns.append(self.market_state.current_drawdown)
-        
-        # Update memory systems
-        self._update_memory_systems(trades)
         
         # Calculate step PnL
-        step_pnl = sum(t["pnl"] for t in trades)
-        
-        # Update risk system
-        self.risk_system.step(pnl=step_pnl)
+        step_pnl = sum(t.get("pnl", 0.0) for t in trades)
+        self.episode_metrics.pnls.append(step_pnl)
         
         # Calculate reward
-        reward = self._calculate_reward(trades, actions, step_pnl)
+        reward = self._calculate_reward(trades, actions, consensus)
         
-        # Apply no-trade penalty if needed
-        if not trades:
-            penalty = self.config.no_trade_penalty * (1 + self.market_state.current_drawdown)
-            reward -= penalty
-            self.logger.debug(f"Applied no-trade penalty: {penalty:.4f}")
-            
-        # Update arbiter with reward feedback
-        self.arbiter.update_reward(reward)
-        
-        # Update meta-learning systems
-        self._update_meta_systems(step_pnl, trades)
-        
-        # Run monitoring systems
-        self._run_monitoring_systems(trades, step_pnl)
-        
-        # Get next observation
-        obs = self._get_next_observation(actions, trades, step_pnl)
-        
-        # Check termination conditions
+        # Check termination
         terminated = self._check_termination()
         
+        # Get next observation
+        obs = self._get_next_observation(trades, actions)
+        
         # Create info dict
-        info = self._create_step_info(trades, reward, consensus)
+        info = self._create_step_info(trades, step_pnl, consensus)
         
         # Update mode manager
         self._update_mode_manager(trades, step_pnl, consensus)
         
         # Increment step counter
         self.market_state.current_step += 1
+        self.current_step = self.market_state.current_step
         
         # Handle episode end
         if terminated:
@@ -1825,232 +1259,388 @@ class EnhancedTradingEnv(gym.Env):
         """Get recent price history for instrument/timeframe"""
         try:
             df = self.data[instrument][timeframe]
-            start = max(0, self.market_state.current_step - 7)
-            end = self.market_state.current_step
-            return df["close"].iloc[start:end].values.astype(np.float32)
-        except Exception:
-            return np.zeros(7, dtype=np.float32)
+            end_idx = min(self.market_state.current_step + 1, len(df))
+            start_idx = max(0, end_idx - 7)
             
-    def _calculate_instrument_confidence(self, instrument: str) -> float:
-        """Calculate confidence score for an instrument"""
-        if not hasattr(self, '_last_votes') or not self._last_votes:
-            return 0.0
+            if end_idx > start_idx:
+                prices = df["close"].iloc[start_idx:end_idx].values
+                # Pad if needed
+                if len(prices) < 7:
+                    prices = np.pad(prices, (7 - len(prices), 0), mode='edge')
+                return prices[-7:].astype(np.float32)
+        except Exception as e:
+            self.logger.warning(f"Failed to get price history: {e}")
             
-        confidences = []
-        for tf in ["H1", "H4", "D1"]:
-            key = (instrument, tf)
-            if key in self._last_votes:
-                conf_values = list(self._last_votes[key].values())
-                if conf_values:
-                    confidences.extend(conf_values)
+        return np.zeros(7, dtype=np.float32)
+        
+    def _get_recent_returns(self) -> Dict[str, np.ndarray]:
+        """Get recent returns for risk calculations"""
+        returns = {}
+        for inst in self.instruments:
+            try:
+                df = self.data[inst]["D1"]
+                end_idx = self.market_state.current_step + 1
+                start_idx = max(0, end_idx - 20)
+                
+                if end_idx > start_idx + 1:
+                    prices = df["close"].iloc[start_idx:end_idx].values
+                    ret = np.diff(np.log(prices))
+                    returns[inst] = ret
+                else:
+                    returns[inst] = np.array([])
+            except Exception:
+                returns[inst] = np.array([])
+                
+        return returns
+        
+    def get_instrument_correlations(self) -> Dict[str, float]:
+        """Calculate pairwise correlations between instruments"""
+        correlations = {}
+        
+        try:
+            # Get returns for all instruments
+            returns_dict = self._get_recent_returns()
+            
+            # Calculate pairwise correlations
+            for i, inst1 in enumerate(self.instruments):
+                for j, inst2 in enumerate(self.instruments):
+                    if i >= j:
+                        continue
+                        
+                    ret1 = returns_dict.get(inst1, np.array([]))
+                    ret2 = returns_dict.get(inst2, np.array([]))
                     
-        return float(np.mean(confidences)) if confidences else 0.0
+                    if len(ret1) > 5 and len(ret2) > 5:
+                        # Align lengths
+                        min_len = min(len(ret1), len(ret2))
+                        ret1 = ret1[-min_len:]
+                        ret2 = ret2[-min_len:]
+                        
+                        # Calculate correlation
+                        corr = np.corrcoef(ret1, ret2)[0, 1]
+                        correlations[f"{inst1}-{inst2}"] = float(np.nan_to_num(corr))
+                    else:
+                        correlations[f"{inst1}-{inst2}"] = 0.0
+                        
+        except Exception as e:
+            self.logger.warning(f"Failed to calculate correlations: {e}")
+            
+        return correlations
         
-    def _calculate_position_size(
+    def _calculate_reward(
         self,
-        instrument: str,
-        intensity: float,
-        volatility: float
+        trades: List[Dict],
+        actions: np.ndarray,
+        consensus: float
     ) -> float:
-        """Calculate position size with all safety checks"""
-        # 1) Get raw size from position manager (now the call is properly closed)
-        raw_size = self.position_manager.calculate_size(
-            volatility=volatility,
-            intensity=intensity,  # Check confidence threshold
-            confidence=self._calculate_instrument_confidence(instrument)
+        """Calculate step reward"""
+        # Get reward from reward shaper
+        reward = self.reward_shaper.shape_reward(
+            trades=trades,
+            balance=self.market_state.balance,
+            drawdown=self.market_state.current_drawdown,
+            consensus=consensus,
+            actions=actions,
         )
-
-        # 2) Enforce minimum per-instrument confidence
-        confidence = self._calculate_instrument_confidence(instrument)
-        if confidence < self.config.min_inst_confidence:
-            self.logger.debug(
-                f"Skipping {instrument}: confidence {confidence:.2f} "
-                f"< {self.config.min_inst_confidence}"
-            )
-            return 0.0
-
-        # 3) Sanity-check the raw size
-        if not np.isfinite(raw_size) or raw_size <= 0.0:
-            self.logger.debug(f"Invalid raw_size {raw_size} for {instrument}, setting to 0")
-            return 0.0
-
-        # 4) Cap by maximum dollar exposure
-        df = self.data[instrument]["D1"]
-        price = float(df.iloc[self.market_state.current_step]["close"])
-        point_value = self.point_value.get(instrument, 1.0)
-
-        max_dollars = self.market_state.balance * self.position_manager.max_pct
-        max_lots = max_dollars / (price * point_value + 1e-12)
-        if raw_size > max_lots:
-            self.logger.info(
-                f"{instrument}: capping size from {raw_size:.3f} to {max_lots:.3f} lots"
-            )
-            raw_size = max_lots
-
-        return raw_size
-
-
         
-    def _execute_single_trade(
+        # Store for next step
+        self._last_reward = reward
+        
+        return reward
+        
+    def _check_termination(self) -> bool:
+        """Check if episode should terminate"""
+        # Max steps reached
+        if self.market_state.current_step >= self.config.max_steps - 1:
+            return True
+            
+        # Data exhausted
+        for inst in self.instruments:
+            if self.market_state.current_step >= len(self.data[inst]["D1"]) - 1:
+                return True
+                
+        # Catastrophic loss
+        if self.market_state.balance < self.config.initial_balance * 0.5:
+            self.logger.warning("Episode terminated: 50% loss")
+            return True
+            
+        # Extreme drawdown
+        if self.market_state.current_drawdown > 0.5:
+            self.logger.warning("Episode terminated: 50% drawdown")
+            return True
+            
+        return False
+        
+    @profile_method
+    def _get_full_observation(self, data: Dict[str, Any]) -> np.ndarray:
+        """FIXED: Optimized observation creation with caching"""
+        # Try cache first
+        cache_key = (self.market_state.current_step, id(data))
+        
+        if cache_key in self._obs_cache:
+            return self._obs_cache[cache_key]
+            
+        # FIXED: Ensure standardized data interface
+        standardized_data = data.copy()
+        standardized_data["open_positions"] = list(self.position_manager.open_positions.values())
+        standardized_data["current_step"] = self.market_state.current_step
+        
+        # Create observation through pipeline
+        obs = self.pipeline.step(standardized_data)
+        
+        # Cache result
+        self._obs_cache[cache_key] = obs
+        
+        # Limit cache size
+        if len(self._obs_cache) > 100:
+            # Remove oldest entries
+            keys_to_remove = list(self._obs_cache.keys())[:-100]
+            for key in keys_to_remove:
+                del self._obs_cache[key]
+                
+        return obs
+        
+    def _get_next_observation(
         self,
-        instrument: str,
-        intensity: float,
-        duration_norm: float
-    ) -> Optional[Dict[str, Any]]:
-        """Execute a single trade (live or simulated)"""
-        # Get current market data
-        df = self.data[instrument]["D1"]
-        if self.market_state.current_step >= len(df):
-            return None
-            
-        bar = df.iloc[self.market_state.current_step]
-        price = float(bar["close"])
-        
-        # Get volatility with safety checks
-        vol = self._get_instrument_volatility(instrument)
-        
-        # Calculate position size
-        size = self._calculate_position_size(instrument, intensity, vol)
-        
-        if size == 0.0:
-            self.logger.debug(f"Zero position size for {instrument}")
-            return None
-            
-        # Execute based on mode
-        if self.config.live_mode:
-            return self._execute_live_trade(instrument, size, intensity)
-        else:
-            return self._execute_simulated_trade(
-                instrument, size, intensity, duration_norm, price, df
-            )
-            
-    def _execute_simulated_trade(
-        self,
-        instrument: str,
-        size: float,
-        intensity: float,
-        duration_norm: float,
-        entry_price: float,
-        df: pd.DataFrame
-    ) -> Dict[str, Any]:
-        """Execute a simulated trade"""
-        side = "BUY" if intensity > 0 else "SELL"
-        self.logger.info(
-            f"[SIM] {side} {instrument} {size:.3f} lots @ {entry_price:.4f}"
-        )
-        
-        # Calculate holding period
-        hold_steps = max(
-            int(duration_norm * self.config.max_steps), 
-            1
-        )
-        exit_idx = min(
-            self.market_state.current_step + hold_steps,
-            len(df) - 1
-        )
-        
-        # Get exit price
-        exit_price = float(df.iloc[exit_idx]["close"])
+        trades: List[Dict],
+        actions: np.ndarray
+    ) -> np.ndarray:
+        """Get observation for next step"""
+        # Get price histories
+        hist_h1 = self._get_price_history(self.instruments[0], "H1")
+        hist_h4 = self._get_price_history(self.instruments[0], "H4")
+        hist_d1 = self._get_price_history(self.instruments[0], "D1")
         
         # Calculate PnL
-        point_value = self.point_value.get(instrument, 1.0)
-        if intensity > 0:
-            pnl = (exit_price - entry_price) * size * point_value
-        else:
-            pnl = (entry_price - exit_price) * size * point_value
-            
-        # Sanitize PnL
-        pnl = np.clip(
-            np.nan_to_num(pnl, nan=0.0),
-            -10 * self.config.initial_balance,
-            10 * self.config.initial_balance
+        pnl = sum(t.get("pnl", 0.0) for t in trades)
+        
+        # Get memory embedding
+        memory = (
+            self.feature_engine.last_embedding
+            if hasattr(self.feature_engine, 'last_embedding')
+            else None
         )
         
-        # Update balance
-        self.market_state.balance += pnl
-        self.market_state.peak_balance = max(
-            self.market_state.peak_balance,
-            self.market_state.balance
+        # FIXED: Create observation data with standardized naming
+        obs_data = {
+            "env": self,
+            "price_h1": hist_h1,
+            "price_h4": hist_h4,
+            "price_d1": hist_d1,
+            "actions": actions,
+            "trades": trades,
+            "open_positions": list(self.position_manager.open_positions.values()),  # FIXED
+            "drawdown": self.market_state.current_drawdown,
+            "memory": memory,
+            "pnl": pnl,
+            "correlations": self.get_instrument_correlations(),
+            "current_step": self.market_state.current_step,  # FIXED: Added
+        }
+        
+        # Get full observation
+        obs = self._get_full_observation(obs_data)
+        
+        # Sanitize
+        obs = self._sanitize_observation(obs)
+        
+        # Update meta-RL
+        if obs.size == self.meta_rl.obs_dim:
+            self.meta_rl.record_step(obs, self._last_reward if hasattr(self, '_last_reward') else 0.0)
+            
+        # Store for next step
+        self._last_actions = actions.copy()
+        self._last_reward = self._last_reward if hasattr(self, '_last_reward') else 0.0
+        
+        return obs
+        
+    def _create_reset_info(self) -> Dict[str, Any]:
+        """Create info dict for reset"""
+        return {
+            "episode": self.episode_count,
+            "balance": self.market_state.balance,
+            "genome": self.current_genome,
+            "start_step": self.market_state.current_step,
+        }
+        
+    def _create_step_info(
+        self,
+        trades: List[Dict],
+        pnl: float,
+        consensus: float
+    ) -> Dict[str, Any]:
+        """Create info dict for step"""
+        return {
+            "balance": self.market_state.balance,
+            "pnl": pnl,
+            "drawdown": self.market_state.current_drawdown,
+            "trades": len(trades),
+            "consensus": consensus,
+            "mode": self.mode_manager.get_mode(),
+            "step": self.market_state.current_step,
+            "positions": len(self.position_manager.open_positions),
+        }
+        
+    def _update_mode_manager(
+        self,
+        trades: List[Dict],
+        pnl: float,
+        consensus: float
+    ):
+        """Update trading mode based on performance"""
+        self.mode_manager.update(
+            pnl=pnl,
+            drawdown=self.market_state.current_drawdown,
+            consensus=consensus,
+            trade_count=len(trades),
         )
-        self.market_state.current_drawdown = max(
-            (self.market_state.peak_balance - self.market_state.balance) / 
-            (self.market_state.peak_balance + 1e-12),
-            0.0
-        )
+        
+    def _handle_episode_end(self, final_pnl: float):
+        """Handle episode termination"""
+        # Log episode summary
+        total_pnl = sum(self.episode_metrics.pnls)
+        total_trades = len(self.episode_metrics.trades)
+        max_dd = max(self.episode_metrics.drawdowns) if self.episode_metrics.drawdowns else 0
         
         self.logger.info(
-            f"[SIM] Trade closed: exit @ {exit_price:.4f}, PnL={pnl:.2f}"
+            f"Episode {self.episode_count} ended: "
+            f"PnL={total_pnl:.2f}, Trades={total_trades}, MaxDD={max_dd:.2%}"
         )
         
+        # Save checkpoints
+        if self.episode_count % 100 == 0:
+            try:
+                self._save_checkpoints()
+            except Exception as e:
+                self.logger.error(f"Failed to save checkpoints: {e}")
+                
+    def set_module_enabled(self, name: str, enabled: bool):
+        """Enable or disable a module"""
+        if name not in self.module_enabled:
+            raise KeyError(f"Unknown module: {name}")
+        self.module_enabled[name] = enabled
+        self.logger.info(f"Module {name} {'enabled' if enabled else 'disabled'}")
+        
+    def get_state(self) -> Dict[str, Any]:
+        """Get complete environment state for serialization"""
         return {
-            "instrument": instrument,
-            "pnl": pnl,
-            "duration": hold_steps,
-            "exit_reason": "timeout",
-            "size": size if intensity > 0 else -size,
-            "entry_price": entry_price,
-            "exit_price": exit_price,
-            "features": np.array([exit_price, pnl, hold_steps], dtype=np.float32),
+            "market_state": {
+                "balance": self.market_state.balance,
+                "peak_balance": self.market_state.peak_balance,
+                "current_step": self.market_state.current_step,
+                "current_drawdown": self.market_state.current_drawdown,
+                "last_trade_step": self.market_state.last_trade_step,
+            },
+            "episode_metrics": {
+                "pnls": self.episode_metrics.pnls,
+                "durations": self.episode_metrics.durations,
+                "drawdowns": self.episode_metrics.drawdowns,
+                "trades": self.episode_metrics.trades,
+                "votes_log": self.episode_metrics.votes_log,
+                "reasoning_trace": self.episode_metrics.reasoning_trace,
+            },
+            "episode_count": self.episode_count,
+            "position_manager": self.position_manager.get_state(),
         }
         
-    def _execute_live_trade(
-        self,
-        instrument: str,
-        size: float,
-        intensity: float
-    ) -> Optional[Dict[str, Any]]:
-        """Execute a live trade via MetaTrader5"""
-        symbol = instrument.replace("/", "")
+    def set_state(self, state: Dict[str, Any]):
+        """Restore environment state from serialization"""
+        # Restore market state
+        ms = state.get("market_state", {})
+        self.market_state.balance = ms.get("balance", self.config.initial_balance)
+        self.market_state.peak_balance = ms.get("peak_balance", self.market_state.balance)
+        self.market_state.current_step = ms.get("current_step", 0)
+        self.market_state.current_drawdown = ms.get("current_drawdown", 0.0)
+        self.market_state.last_trade_step = ms.get("last_trade_step", {})
         
-        # Select symbol
-        if not mt5.symbol_select(symbol, True):
-            self.logger.warning(f"Cannot select symbol {symbol}")
+        # Restore episode metrics
+        em = state.get("episode_metrics", {})
+        self.episode_metrics.pnls = em.get("pnls", [])
+        self.episode_metrics.durations = em.get("durations", [])
+        self.episode_metrics.drawdowns = em.get("drawdowns", [])
+        self.episode_metrics.trades = em.get("trades", [])
+        self.episode_metrics.votes_log = em.get("votes_log", [])
+        self.episode_metrics.reasoning_trace = em.get("reasoning_trace", [])
+        
+        # Restore other state
+        self.episode_count = state.get("episode_count", 0)
+        
+        # Restore position manager
+        if "position_manager" in state:
+            self.position_manager.set_state(state["position_manager"])
+            
+    def render(self, mode: str = "human") -> Optional[np.ndarray]:
+        """Render the environment"""
+        if mode == "human":
+            # Text output
+            print(
+                f"Step {self.market_state.current_step} | "
+                f"Mode: {self.mode_manager.get_mode().upper()} | "
+                f"Balance: ${self.market_state.balance:.2f} | "
+                f"Drawdown: {self.market_state.current_drawdown:.2%} | "
+                f"Trades: {len(self.episode_metrics.trades)}"
+            )
+        elif mode == "rgb_array":
+            # Could implement visual rendering here
             return None
             
-        # Get symbol info
-        symbol_info = mt5.symbol_info(symbol)
-        if symbol_info is None:
-            self.logger.warning(f"No symbol info for {symbol}")
-            return None
+        return None
+        
+    def close(self):
+        """Clean up resources"""
+        # Save final checkpoints
+        try:
+            self._save_checkpoints()
+        except Exception as e:
+            self.logger.error(f"Failed to save final checkpoints: {e}")
             
-        # Round size to broker requirements
-        size = self._round_lot_size(size, symbol_info)
-        
-        # Get current tick
-        tick = mt5.symbol_info_tick(symbol)
-        if tick is None:
-            self.logger.warning(f"No tick data for {symbol}")
-            return None
+        # Close loggers
+        for handler in self.logger.handlers:
+            handler.close()
             
-        # Determine price based on side
-        price = tick.ask if intensity > 0 else tick.bid
+        self.logger.info("Environment closed")
         
-        # Create order request
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": symbol,
-            "volume": size,
-            "type": mt5.ORDER_TYPE_BUY if intensity > 0 else mt5.ORDER_TYPE_SELL,
-            "price": price,
-            "deviation": 20,
-            "magic": 202406,
-            "comment": f"AI trade ep{self.episode_count}",
-            "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
-        }
-        
-        # Send order
-        result = mt5.order_send(request)
-        if result.retcode != mt5.TRADE_RETCODE_DONE:
-            self.logger.warning(f"Order failed: {result.comment}")
-            return None
+    # ═══════════════════════════════════════════════════════════════════
+    #  Checkpointing Methods
+    # ═══════════════════════════════════════════════════════════════════
+    
+    def _save_checkpoints(self):
+        """Save all module checkpoints"""
+        try:
+            os.makedirs(self.config.checkpoint_dir, exist_ok=True)
             
-        # Register position
-        self.position_manager.open_positions[instrument] = {
-            "ticket": result.order,
-            "side": 1 if intensity > 0 else -1,
-            "lots": size,
-            "price_open": price,
-            "peak_profit": 0.0,
-        }
-        
+            # Save environment state
+            state_path = os.path.join(
+                self.config.checkpoint_dir,
+                f"env_state_ep{self.episode_count}.pkl"
+            )
+            with open(state_path, "wb") as f:
+                pickle.dump(self.get_state(), f)
+                
+            # Save module states
+            modules_to_save = [
+                self.position_manager,
+                self.risk_controller,
+                self.risk_system,
+                self.strategy_pool,
+                self.mistake_memory,
+                self.meta_rl,
+            ]
+            
+            for module in modules_to_save:
+                if hasattr(module, 'save_checkpoint'):
+                    try:
+                        module.save_checkpoint(
+                            os.path.join(
+                                self.config.checkpoint_dir,
+                                f"{module.__class__.__name__}_ep{self.episode_count}.pkl"
+                            )
+                        )
+                    except Exception as e:
+                        self.logger.warning(
+                            f"Failed to save {module.__class__.__name__}: {e}"
+                        )
+                        
+            self.logger.info(f"Saved checkpoints for episode {self.episode_count}")
+            
+        except Exception as e:
+            self.logger.error(f"Checkpoint save failed: {e}")

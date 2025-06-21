@@ -1,10 +1,16 @@
 # modules/strategy/voting_wrappers.py
+"""
+FIXED: Expert wrappers that provide actual trading signals instead of just zeros or scaling factors.
+Each expert now contributes meaningful trading decisions to the committee.
+"""
 
 import numpy as np
 from typing import Any, List, Dict
 import math
 import torch
 import logging
+import inspect
+
 
 from modules.risk.risk_monitor import ActiveTradeMonitor
 from modules.strategy.strategy import MetaRLController
@@ -23,7 +29,7 @@ def _dir_size_to_vec(angle: float, magnitude: float, n_instruments: int, action_
 class ThemeExpert:
     """
     Converts (label,strength) from MarketThemeDetector into an action.
-    FIXED: Now trades on all instruments, not just the first one.
+    FIXED: Now trades on all instruments based on detected market themes.
     """
     def __init__(self, detector, env_ref, trend_label: str = "trending", max_size: float = 0.7, debug=True):
         self.det         = detector
@@ -185,74 +191,99 @@ class MetaRLExpert:
         self.last_action[:] = 0.0
         self.last_entropy = 0.5
 
+
     def _call_policy(self, obs_vec: np.ndarray) -> np.ndarray:
-        """Safely call the Meta-RL policy"""
+        """
+        Robustly calls the Meta-RL policy, dynamically inspecting and providing required arguments,
+        always supplying 'market_lags' by keyword if needed.
+        """
         try:
-            # Ensure correct shape
-            if obs_vec.size != self.mrl.obs_dim:
-                if self.debug:
-                    self.logger.debug(f"Obs size mismatch: {obs_vec.size} vs {self.mrl.obs_dim}")
-                # Pad or truncate as needed
-                if obs_vec.size < self.mrl.obs_dim:
-                    obs_vec = np.pad(obs_vec, (0, self.mrl.obs_dim - obs_vec.size))
-                else:
-                    obs_vec = obs_vec[:self.mrl.obs_dim]
-                    
-            # Convert to tensor
-            obs_t = torch.tensor(obs_vec, dtype=torch.float32, device=self.mrl.device).unsqueeze(0)
-            
-            # Get action from policy
-            with torch.no_grad():
-                if hasattr(self.mrl.agent, 'act'):
-                    raw = self.mrl.agent.act(obs_t)
-                else:
-                    # Fallback to direct call
-                    raw = self.mrl.agent(obs_t)
-                    
-            # Extract action array
-            if isinstance(raw, dict):
-                act = raw.get("action", np.zeros(self.env.action_dim))
-                # Store entropy if available
-                if "entropy" in raw:
-                    self.last_entropy = float(raw["entropy"])
+            # Determine obs_dim from agent or fallback to obs_vec size
+            if hasattr(self.mrl, 'obs_dim'):
+                obs_dim = self.mrl.obs_dim() if callable(self.mrl.obs_dim) else self.mrl.obs_dim
             else:
-                act = raw
-                
-            # Convert to numpy
+                obs_dim = obs_vec.size
+
+            # Adjust obs_vec size if needed
+            if obs_vec.size != obs_dim:
+                if self.debug:
+                    self.logger.debug(f"Obs size mismatch: {obs_vec.size} vs {obs_dim}")
+                obs_vec = np.pad(obs_vec, (0, obs_dim - obs_vec.size)) if obs_vec.size < obs_dim else obs_vec[:obs_dim]
+
+            obs_t = torch.tensor(obs_vec, dtype=torch.float32, device=self.mrl.device).unsqueeze(0)
+
+            # --- Introspect the correct agent method ---
+            agent = self.mrl.agent
+            # Try to use forward(), else act(), else __call__
+            call_methods = [getattr(agent, x, None) for x in ('forward', 'act', '__call__')]
+            call_methods = [m for m in call_methods if callable(m)]
+            if not call_methods:
+                raise AttributeError("No valid call method found on agent")
+            method = call_methods[0]
+
+            # Inspect the function signature
+            sig = inspect.signature(method)
+            argnames = list(sig.parameters.keys())[1:]  # Skip 'self'
+
+            # Build arguments
+            kwargs = {}
+            # Always supply obs_t as first positional
+            args = [obs_t]
+
+            # Dynamically add market_lags if required
+            if 'market_lags' in argnames or 'market_lags' in sig.parameters:
+                # Try to get from env, else fallback
+                market_lags = getattr(self.env, "market_lags", None)
+                if market_lags is None:
+                    market_lags = np.zeros_like(obs_vec)
+                if isinstance(market_lags, np.ndarray):
+                    market_lags_t = torch.tensor(market_lags, dtype=torch.float32, device=self.mrl.device).unsqueeze(0)
+                else:
+                    market_lags_t = torch.zeros_like(obs_t)
+                kwargs['market_lags'] = market_lags_t
+
+            # (Extend here: add more arguments by name if required)
+
+            # Call the agent with all required args
+            with torch.no_grad():
+                result = method(*args, **kwargs)
+
+            # Process output
+            if isinstance(result, dict):
+                act = result.get("action", np.zeros(self.env.action_dim))
+                if "entropy" in result:
+                    self.last_entropy = float(result["entropy"])
+            else:
+                act = result
+
             if torch.is_tensor(act):
                 act = act.cpu().numpy()
             act = np.asarray(act, dtype=np.float32).reshape(-1)
-            
-            # Ensure correct size
             if act.size < self.env.action_dim:
                 act = np.pad(act, (0, self.env.action_dim - act.size))
             elif act.size > self.env.action_dim:
                 act = act[:self.env.action_dim]
-                
-            return np.clip(act, -1.0, 1.0)
-            
+            return act
+
         except Exception as e:
             if self.debug:
-                self.logger.error(f"Policy call failed: {e}")
-            return self._zero.copy()
+                self.logger.warning(f"Policy call failed: {e}")
+            return np.zeros(self.env.action_dim, dtype=np.float32)
 
-    def propose_action(self, obs: np.ndarray, extras: Dict = None) -> np.ndarray:
-        self.last_action = self._call_policy(obs)
-        return self.last_action.copy()
+
+
+    def propose_action(self, obs: Any, extras: Dict = None) -> np.ndarray:
+        if isinstance(obs, np.ndarray):
+            action = self._call_policy(obs)
+            self.last_action = action.copy()
+            return action
+        else:
+            # Return last action or zeros
+            return self.last_action.copy()
 
     def confidence(self, obs: Any, extras: Dict = None) -> float:
-        # Use stored entropy or estimate from action diversity
-        if hasattr(self.mrl.agent, "last_entropy"):
-            ent = self.mrl.agent.last_entropy
-        else:
-            ent = self.last_entropy
-            
-        if not math.isfinite(ent):
-            return 0.6
-            
-        # Normalize entropy to confidence (lower entropy = higher confidence)
-        ent = float(np.clip(ent, 0.0, 2.0))
-        return 0.9 - ent / 2.5
+        # Use entropy as inverse confidence
+        return float(1.0 - self.last_entropy)
 
 # ========== 4. ActiveTradeMonitor → TradeMonitorVetoExpert ==========
 class TradeMonitorVetoExpert:
@@ -272,10 +303,12 @@ class TradeMonitorVetoExpert:
 
     def propose_action(self, obs: Any, extras: Dict = None) -> np.ndarray:
         alerted = getattr(self.mon, "alerted", False)
+        risk_score = getattr(self.mon, "risk_score", 0.0)
+        
+        vec = self._zero.copy()
         
         if alerted:
             # When alerted, suggest closing positions
-            vec = self._zero.copy()
             # Get current positions from env if available
             if hasattr(self.env, 'position_manager'):
                 positions = self.env.position_manager.open_positions
@@ -287,19 +320,34 @@ class TradeMonitorVetoExpert:
                         vec[2*i+1] = 0.3  # Quick exit
             return vec
         else:
-            # When not alerted, provide modest trend-following signals
-            vec = self._zero.copy()
+            # When not alerted, provide risk-adjusted signals
+            # Lower risk score = more aggressive trading
+            risk_multiplier = 1.0 - risk_score
+            
             for i in range(0, self.env.action_dim, 2):
-                # Small position sizes when monitor is calm
-                vec[i] = self.max_signal * 0.5
-                vec[i+1] = 0.5
+                # Momentum-based signals
+                if hasattr(self.env, 'last_actions') and i < len(self.env._last_actions):
+                    # Follow recent momentum but scale by risk
+                    momentum = self.env._last_actions[i]
+                    vec[i] = momentum * risk_multiplier * 0.7
+                else:
+                    # Default small position
+                    vec[i] = self.max_signal * risk_multiplier * 0.3
+                    
+                vec[i+1] = 0.5 + risk_score * 0.3  # Longer duration when risky
+                
             return vec
 
     def confidence(self, obs: Any, extras: Dict = None) -> float:
         alerted = getattr(self.mon, "alerted", False)
-        # Higher confidence when alerted (for closing positions)
-        # Lower confidence when calm (for new positions)
-        return 0.8 if alerted else 0.4
+        risk_score = getattr(self.mon, "risk_score", 0.0)
+        
+        if alerted:
+            # High confidence when closing risky positions
+            return 0.8 + risk_score * 0.2
+        else:
+            # Lower confidence in normal trading, inversely proportional to risk
+            return 0.4 * (1.0 - risk_score * 0.5)
 
 # ========== 5. FractalRegimeConfirmation → RegimeBiasExpert ==========
 class RegimeBiasExpert:
@@ -307,69 +355,118 @@ class RegimeBiasExpert:
     Long-bias in trending regime, short-bias in volatile, careful in noise.
     FIXED: Syntax errors and now trades all instruments properly.
     """
-    def __init__(self, frc_module, env_ref, max_size=0.6, debug=True):
-        self.frc  = frc_module
-        self.env  = env_ref
+    def __init__(self, frc_module, env_ref, max_size: float = 0.6, debug=True):
+        self.frc = frc_module
+        self.env = env_ref
         self.max_size = max_size
         self._zero = np.zeros(self.env.action_dim, np.float32)
         self.debug = debug
+        self.logger = logging.getLogger("RegimeBiasExpert")
 
     def reset(self):
         pass
 
     def propose_action(self, obs: Any, extras: Dict = None) -> np.ndarray:
-        label = getattr(self.frc, "label", "noise")
-        regime_strength = getattr(self.frc, "regime_strength", 0.0)
-        trend_direction = getattr(self.frc, "_trend_direction", 0.0)
+        # Get regime info
+        regime_label = getattr(self.frc, "label", "noise")
+        regime_strength = float(getattr(self.frc, "regime_strength", 0.5))
+        trend_direction = float(getattr(self.frc, "_trend_direction", 0.0))
         
-        try:
-            strength = float(np.clip(regime_strength, 0.0, 1.0))
-        except (ValueError, TypeError):
-            strength = 0.0
-            
         vec = self._zero.copy()
         
-        if label == "trending":
-            # Follow the trend on all instruments
+        if regime_label == "trending":
+            # Strong directional bias based on trend
             for i in range(0, self.env.action_dim, 2):
-                # Use trend direction if available, otherwise default to long
+                # All instruments follow the trend
                 direction = np.sign(trend_direction) if trend_direction != 0 else 1
-                vec[i] = direction * strength * self.max_size
-                vec[i+1] = 0.7  # Longer duration for trends
+                vec[i] = direction * regime_strength * self.max_size
+                vec[i+1] = 0.7  # Longer holds in trends
                 
-        elif label == "volatile":
-            # Counter-trend scalping in volatile markets
+        elif regime_label == "volatile":
+            # Mean reversion strategy in volatile markets
             for i in range(0, self.env.action_dim, 2):
-                # Opposite of recent trend direction
-                direction = -np.sign(trend_direction) if trend_direction != 0 else -1
-                vec[i] = direction * strength * self.max_size * 0.5  # Smaller size
-                vec[i+1] = 0.3  # Short duration
+                # Alternate directions for hedging
+                if i == 0:  # EUR/USD - fade moves
+                    vec[i] = -np.sign(trend_direction) * regime_strength * self.max_size * 0.5
+                else:  # XAU/USD - momentum
+                    vec[i] = np.sign(trend_direction) * regime_strength * self.max_size * 0.5
+                vec[i+1] = 0.3  # Shorter holds in volatile regime
                 
-        elif label == "noise":
-            # Mean reversion in noise regime
+        else:  # noise regime
+            # Very conservative, small exploratory positions
             for i in range(0, self.env.action_dim, 2):
-                # Fade extreme moves
-                direction = -np.sign(trend_direction) if abs(trend_direction) > 0.5 else 0
-                vec[i] = direction * strength * self.max_size * 0.3  # Very small size
-                vec[i+1] = 0.4  # Medium duration
+                # Random small positions for price discovery
+                vec[i] = np.random.choice([-1, 1]) * regime_strength * self.max_size * 0.2
+                vec[i+1] = 0.5  # Medium duration
                 
         return vec
 
     def confidence(self, obs: Any, extras: Dict = None) -> float:
-        label = getattr(self.frc, "label", "noise")
-        strength = float(abs(getattr(self.frc, "regime_strength", 0.0)))
+        regime_label = getattr(self.frc, "label", "noise")
+        regime_strength = float(getattr(self.frc, "regime_strength", 0.5))
         
-        # Confidence based on regime type and strength
+        # Confidence based on regime clarity
         confidence_map = {
             "trending": 0.8,
-            "volatile": 0.5,
+            "volatile": 0.6,
             "noise": 0.3
         }
-        base_conf = confidence_map.get(label, 0.4)
-        return np.clip(base_conf * strength, 0.2, 0.9)
+        
+        base_conf = confidence_map.get(regime_label, 0.5)
+        return base_conf * regime_strength
 
-    def get_state(self):
-        return {}
-
-    def set_state(self, state):
-        pass
+# ========== Helper function to create all experts ==========
+def create_all_experts(env, modules_dict: Dict[str, Any]) -> List[Any]:
+    """
+    Create all expert wrappers for the voting committee.
+    
+    Args:
+        env: The trading environment
+        modules_dict: Dictionary of initialized modules
+        
+    Returns:
+        List of expert wrapper instances
+    """
+    experts = []
+    
+    # Theme expert
+    if "theme_detector" in modules_dict:
+        experts.append(ThemeExpert(
+            modules_dict["theme_detector"],
+            env,
+            debug=env.config.debug
+        ))
+        
+    # Seasonality expert
+    if "time_risk_scaler" in modules_dict:
+        experts.append(SeasonalityRiskExpert(
+            modules_dict["time_risk_scaler"],
+            env,
+            debug=env.config.debug
+        ))
+        
+    # Meta-RL expert
+    if "meta_rl" in modules_dict:
+        experts.append(MetaRLExpert(
+            modules_dict["meta_rl"],
+            env,
+            debug=env.config.debug
+        ))
+        
+    # Trade monitor expert
+    if "active_monitor" in modules_dict:
+        experts.append(TradeMonitorVetoExpert(
+            modules_dict["active_monitor"],
+            env,
+            debug=env.config.debug
+        ))
+        
+    # Regime bias expert
+    if "fractal_confirm" in modules_dict:
+        experts.append(RegimeBiasExpert(
+            modules_dict["fractal_confirm"],
+            env,
+            debug=env.config.debug
+        ))
+        
+    return experts

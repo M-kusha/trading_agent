@@ -91,6 +91,31 @@ class TradingModeManager(Module):
         if len(self.stats_history) > self.window * 2:
             self.stats_history = self.stats_history[-self.window*2:]
 
+    def update(self, pnl: float = 0.0, drawdown: float = 0.0, consensus: float = 0.5, trade_count: int = 0, sharpe: Optional[float] = None):
+        """Update mode based on recent performance metrics"""
+        # Record the trade result
+        if trade_count > 0:
+            # Determine if it was a win or loss based on PnL
+            trade_result = "win" if pnl > 0 else "loss"
+        else:
+            trade_result = "hold"
+        
+        # Get current volatility (simplified - you might want to pass this in)
+        volatility = 0.02  # Default volatility
+        
+        # Update stats
+        self.update_stats(
+            trade_result=trade_result,
+            pnl=pnl,
+            consensus=consensus,
+            volatility=volatility,
+            drawdown=drawdown,
+            sharpe= sharpe if sharpe is not None else 0.0
+        )
+        
+        # Decide on new mode
+        self.decide_mode()
+
     def _rolling_stats(self):
         """Calculate rolling statistics with better handling of edge cases"""
         if not self.stats_history:
@@ -291,7 +316,7 @@ class TradingModeManager(Module):
         return stats
 
     def _log_switch(self, prev_mode, new_mode, reason):
-        msg = f"Mode changed: {prev_mode} → {new_mode} | {reason}"
+        msg = f"Mode changed: {prev_mode}  {new_mode} | {reason}"
         self.logger.info(msg)
         print(f"[ModeManager] {msg}")
 

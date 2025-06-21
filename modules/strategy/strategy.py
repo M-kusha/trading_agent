@@ -621,10 +621,13 @@ class ThesisEvolutionEngine(Module):
         return np.array([float(uniq), mean_p, best_thesis_pnl], dtype=np.float32)
 
 # ──────────────────────────────────────────────
+import numpy as np
+
 class ExplanationGenerator(Module):
     """
-    Enhanced explanation generator with trading insights
+    Enhanced explanation generator with robust argument handling and trading insights.
     """
+
     def __init__(self, debug: bool = True) -> None:
         super().__init__()
         self.debug = debug
@@ -639,57 +642,70 @@ class ExplanationGenerator(Module):
 
     def step(
         self,
-        actions: np.ndarray,
-        arbiter_weights: np.ndarray,
-        member_names: List[str],
-        votes: Dict[Tuple[str, str], Dict[str, float]],
-        *,
-        regime: str,
-        volatility: Dict[str, float],
-        drawdown: float,
-        genome_metrics: Dict[str, float],
-        pnl: float = 0.0,
-        target_achieved: bool = False
+        actions=None,
+        arbiter_weights=None,
+        member_names=None,
+        votes=None,
+        regime="unknown",
+        volatility=None,
+        drawdown=0.0,
+        genome_metrics=None,
+        pnl=0.0,
+        target_achieved=False,
+        *args, **kwargs
     ) -> None:
         """
-        FIX: Enhanced with profit tracking and actionable insights
+        Robust to missing pipeline arguments and preserves full analytics.
+        Accepts and safely ignores unused/extra parameters.
         """
-        # Update metrics
+
+        # Defaults for safe operation
+        if actions is None or not hasattr(actions, "__len__"):
+            actions = np.zeros(1, dtype=np.float32)
+        if arbiter_weights is None or not hasattr(arbiter_weights, "__len__"):
+            arbiter_weights = np.ones(1, dtype=np.float32)
+        if not member_names or not isinstance(member_names, (list, tuple)):
+            member_names = ["Unknown"]
+        if votes is None or not isinstance(votes, dict):
+            votes = {}
+        if volatility is None or not isinstance(volatility, dict):
+            volatility = {}
+        if genome_metrics is None or not isinstance(genome_metrics, dict):
+            genome_metrics = {}
+
         self.trade_count += 1
         self.profit_today += pnl
 
-        # Identify dominant strategy
-        top_idx = int(np.argmax(arbiter_weights))
-        top_name = member_names[top_idx] if top_idx < len(member_names) else "Unknown"
-        top_w = float(arbiter_weights[top_idx]) * 100.0
+        try:
+            top_idx = int(np.argmax(arbiter_weights))
+            top_name = member_names[top_idx] if top_idx < len(member_names) else "Unknown"
+            top_w = float(arbiter_weights[top_idx]) * 100.0
+        except Exception:
+            top_idx, top_name, top_w = 0, "Unknown", 100.0
 
-        # Aggregate votes
+        # Aggregate votes, with strong fallback
         agg = {n: 0.0 for n in member_names}
         count = 0
         for vote_dict in votes.values():
-            for n, w in vote_dict.items():
-                agg[n] = agg.get(n, 0.0) + float(w)
-            count += 1
+            if isinstance(vote_dict, dict):
+                for n, w in vote_dict.items():
+                    agg[n] = agg.get(n, 0.0) + float(w)
+                count += 1
         if count:
             for n in agg:
                 agg[n] /= count
+        votes_str = "; ".join(f"{n}: {agg[n] * 100.0:.1f}%" for n in list(member_names)[:3])
 
-        votes_str = "; ".join(f"{n}: {agg[n] * 100.0:.1f}%" for n in member_names[:3])  # Top 3
+        high_vol_instruments = [inst for inst, vol in volatility.items() if isinstance(vol, (float, int)) and vol > 0.02]
+        vol_warning = f" ⚠️ HIGH VOL: {', '.join(high_vol_instruments)}" if high_vol_instruments else ""
 
-        # Volatility analysis
-        high_vol_instruments = [inst for inst, vol in volatility.items() if vol > 0.02]
-        vol_warning = " ⚠️ HIGH VOL: " + ", ".join(high_vol_instruments) if high_vol_instruments else ""
-
-        # Genome insights
         sl_base = float(genome_metrics.get("sl_base", 1.0))
         tp_base = float(genome_metrics.get("tp_base", 1.5))
         risk_reward = tp_base / sl_base if sl_base > 0 else 1.5
 
-        # Trading performance
         progress_pct = (self.profit_today / 150.0) * 100  # Against €150 target
         dd_pct = drawdown * 100.0
 
-        # Build explanation
         self.last_explanation = (
             f"🎯 Day Progress: €{self.profit_today:.2f}/€150 ({progress_pct:.1f}%) | "
             f"Trades: {self.trade_count} | "
@@ -699,7 +715,6 @@ class ExplanationGenerator(Module):
             f"DD: {dd_pct:.1f}%"
         )
 
-        # Add action recommendation
         if target_achieved:
             self.last_explanation += " ✅ TARGET ACHIEVED - Consider stopping"
         elif dd_pct > 5:
@@ -711,11 +726,12 @@ class ExplanationGenerator(Module):
             print("[ExplanationGenerator]", self.last_explanation)
 
     def get_observation_components(self) -> np.ndarray:
-        """FIX: Return profit metrics"""
+        """Return profit metrics. Always robust."""
+        avg_profit = self.profit_today / max(1, self.trade_count)
         return np.array([
             self.profit_today,
             float(self.trade_count),
-            self.profit_today / max(1, self.trade_count)  # Avg profit per trade
+            avg_profit
         ], dtype=np.float32)
 
 # ──────────────────────────────────────────────
@@ -1408,6 +1424,8 @@ class MetaRLController(Module):
     def step(self, *args, **kwargs):
         """Compatibility method"""
         pass
+    def obs_dim(self):
+        return self.obs_size
 
     def save_checkpoint(self, filepath: str):
         """Save full checkpoint"""

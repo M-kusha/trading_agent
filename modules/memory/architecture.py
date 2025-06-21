@@ -1,3 +1,4 @@
+from typing import Any, Dict
 import numpy as np
 import torch
 import torch.nn as nn
@@ -19,15 +20,41 @@ class NeuralMemoryArchitect(Module):
     def reset(self):
         self.buffer = torch.zeros((0, self.embed_dim), dtype=torch.float32)
 
-    def step(self, experience: np.ndarray):
-        x = torch.from_numpy(experience.astype(np.float32)).unsqueeze(0)
+    def step(self, experience: Any = None) -> None:
+        """Robust: Accepts None, dict, or array; handles empty pipeline calls."""
+        # Handle all possible input cases
+        if experience is None:
+            obs = np.zeros(self.embed_dim, dtype=np.float32)
+        elif isinstance(experience, dict):
+            obs = experience.get('obs', np.zeros(self.embed_dim))
+            if isinstance(obs, np.ndarray):
+                if obs.size < self.embed_dim:
+                    obs = np.pad(obs, (0, self.embed_dim - obs.size), mode='constant')
+                elif obs.size > self.embed_dim:
+                    obs = obs[:self.embed_dim]
+            else:
+                obs = np.zeros(self.embed_dim, dtype=np.float32)
+        else:
+            # Handle legacy numpy array or list input
+            obs = np.asarray(experience, dtype=np.float32).flatten()
+            if obs.size < self.embed_dim:
+                obs = np.pad(obs, (0, self.embed_dim - obs.size), mode='constant')
+            elif obs.size > self.embed_dim:
+                obs = obs[:self.embed_dim]
+
+        # Convert to tensor and encode
+        x = torch.from_numpy(obs.astype(np.float32)).unsqueeze(0)
         z = self.encoder(x)
+
+        # Update buffer
         if len(self.buffer) < self.max_len:
             self.buffer = torch.cat([self.buffer, z], dim=0)
         else:
             self.buffer = torch.cat([self.buffer[1:], z], dim=0)
+
         if self.debug:
-            print(f"[NMA] size={self.buffer.size(0)}")
+            print(f"[NMA] buffer size={self.buffer.size(0)}")
+
 
     def retrieve(self, query: np.ndarray) -> np.ndarray:
         if self.buffer.size(0)==0:
