@@ -5,9 +5,12 @@ FIXED: Proper data flow, committee wiring, and live trade recording
 """
 from __future__ import annotations
 
+
 # ─────────────────────────── Std-lib ──────────────────────────────────
+import io
 from itertools import combinations
 from dataclasses import dataclass, field
+import sys
 from typing import Any, Dict, List, Optional, Tuple, Union
 from collections import defaultdict
 import math
@@ -29,6 +32,7 @@ from gymnasium import spaces
 import MetaTrader5 as mt5
 
 # ──────────────────────── Internal modules ────────────────────────────
+from modules.auditing.explanation_auditor import TradeExplanationAuditor
 from modules.core.core import Module
 from modules.features.feature import AdvancedFeatureEngine, MultiScaleFeatureEngine
 from modules.position.position import PositionManager
@@ -91,6 +95,7 @@ class TradingConfig:
     debug: bool = True
     init_seed: int = 0
     checkpoint_dir: str = "checkpoints"
+    max_steps_per_episode: int = field(init=False)
     
     # Trading parameters
     no_trade_penalty: float = 0.3
@@ -106,13 +111,17 @@ class TradingConfig:
     max_total_exposure: float = 0.30
     
     # Module flags
-    live_mode: bool = True
+    live_mode: bool = False
     enable_shadow_sim: bool = True
     enable_news_sentiment: bool = False
     
     # Logging
     log_dir: str = "logs"
     log_level: str = "INFO"
+
+    def __post_init__(self) -> None:
+        # create the alias *after* dataclass finishes init
+        object.__setattr__(self, "max_steps_per_episode", self.max_steps)
 
 
 @dataclass
@@ -193,50 +202,89 @@ def profile_method(func):
     return wrapper
 
 
+# ╔═════════════════════════════════════════════════════════════════════╗
+# ║                     Processing Pipeline Wrapper                      ║
+# ╚═════════════════════════════════════════════════════════════════════╝
 class TradingPipeline:
     """Manages the sequential processing of trading modules"""
-    
+
     def __init__(self, modules: List[Module]):
         self.modules = modules
         self._module_map = {m.__class__.__name__: m for m in modules}
-        
+
+        # --- new -------------------------------------------------------
+        self.expected_size: Optional[int] = None  # length the model already saw
+        # ---------------------------------------------------------------
+
     def reset(self):
-        """Reset all modules in the pipeline"""
         for module in self.modules:
             try:
                 module.reset()
             except Exception as e:
                 logging.warning(f"Failed to reset {module.__class__.__name__}: {e}")
-                
+
+
+
+    # in modules below TradingPipeline class
     def step(self, data: Dict[str, Any]) -> np.ndarray:
-        """Process data through all enabled modules"""
+        """
+        Run each module.step(), collect its observation components, then
+        concatenate (with padding/truncation) into a fixed‐size vector.
+        """
         env = data.get("env")
-        observations = []
-        
+        obs_parts: List[np.ndarray] = []
+
         for module in self.modules:
+            # respect per‐module enable/disable
             if env and not env.module_enabled.get(module.__class__.__name__, True):
                 continue
-                
+
             try:
-                # Get method signature and call with matching parameters
+                # build kwargs from signature
                 sig = module.step.__code__.co_varnames[1:module.step.__code__.co_argcount]
                 kwargs = {k: data[k] for k in sig if k in data}
                 module.step(**kwargs)
-                
-                # Collect observation components
-                obs = module.get_observation_components()
-                observations.append(obs)
+                part = module.get_observation_components()
             except Exception as e:
                 logging.error(f"Error in {module.__class__.__name__}.step(): {e}")
-                # Append zeros on error to maintain shape consistency
-                observations.append(np.zeros(0, dtype=np.float32))
-                
-        # Concatenate all observations
-        return np.concatenate(observations) if observations else np.zeros(0, dtype=np.float32)
-    
+                part = np.zeros(0, dtype=np.float32)
+
+            # ensure 1D float32
+            part = np.asarray(part, dtype=np.float32).ravel()
+
+            # ←— New sanity check: crash into pdb if any NaN/Inf
+            if not np.all(np.isfinite(part)):
+                logging.error(f"🛑 {module.__class__.__name__} output contained NaN/Inf: {part}")
+                # dump last inputs for this module
+                for k in kwargs:
+                    v = kwargs[k]
+                    if isinstance(v, np.ndarray) and not np.all(np.isfinite(v)):
+                        logging.error(f"    input '{k}' has bad values: {v}")
+                import pdb; pdb.set_trace()
+            # ————————————————————————————————
+
+            obs_parts.append(part)
+
+        # concatenate or default to empty
+        obs = np.concatenate(obs_parts) if obs_parts else np.zeros(0, np.float32)
+
+        # on first call, lock in expected size; afterwards pad/truncate
+        if self.expected_size is None:
+            self.expected_size = obs.size
+        else:
+            if obs.size != self.expected_size:
+                if obs.size < self.expected_size:
+                    pad = np.zeros(self.expected_size - obs.size, dtype=np.float32)
+                    obs = np.concatenate([obs, pad])
+                else:
+                    obs = obs[: self.expected_size]
+
+        return obs
+
+
     def get_module(self, name: str) -> Optional[Module]:
-        """Get a module by class name"""
         return self._module_map.get(name)
+
 
 
 # ╔═════════════════════════════════════════════════════════════════════╗
@@ -245,31 +293,28 @@ class TradingPipeline:
 
 class EnhancedTradingEnv(gym.Env):
     """State-of-the-art trading environment with robust module integration"""
-    
+
     metadata = {"render_modes": ["human", "rgb_array"]}
-    
+
     def __init__(
         self,
         data_dict: Dict[str, Dict[str, pd.DataFrame]],
         config: Optional[TradingConfig] = None,
     ):
         super().__init__()
-        self.committee = [] # FIXED: Initialize empty committee
-        self._obs_cache = {}  # FIXED: Added observation cache
 
-        self.module_enabled = defaultdict(lambda: True)
+        # ─── Core placeholders ───────────────────────────────────────
+        self.committee = []                  # filled by arbiter
+        self._obs_cache = {}                 # for cached observations
         self.current_step = 0
-        
-        # Use provided config or create default
+        self.module_enabled = defaultdict(lambda: True)
+
+        # ─── Config, logging, seeds ─────────────────────────────────
         self.config = config or TradingConfig()
-        
-        # Initialize logging
         self._setup_logging()
-        
-        # Set random seeds for reproducibility
         self._set_seeds(self.config.init_seed)
-        
-        # Initialize market state
+
+        # ─── Market & episode state ─────────────────────────────────
         initial_bal = self._get_initial_balance()
         self.market_state = MarketState(
             balance=initial_bal,
@@ -277,56 +322,77 @@ class EnhancedTradingEnv(gym.Env):
             current_step=0,
             current_drawdown=0.0,
         )
-        
-        # Initialize episode tracking
         self.episode_count = 0
         self.episode_metrics = EpisodeMetrics()
-        
-        # Store data references
+
+        # ─── Data & instruments ──────────────────────────────────────
         self.orig_data = data_dict
         self.data = copy.deepcopy(data_dict)
-        
-        # Extract instruments and validate data
         self.instruments = list(self.data.keys())
         self._validate_data()
-        
-        # Define spaces
-        self.action_dim = 2 * len(self.instruments)  # intensity + duration per instrument
+
+        # ─── Action space ───────────────────────────────────────────
+        self.action_dim = 2 * len(self.instruments)
         self.action_space = spaces.Box(
             low=-1.0, high=1.0, shape=(self.action_dim,), dtype=np.float32
         )
-        
-        # Initialize all modules
-        self._initialize_modules()
-        
-        
-        # Get observation dimension
-        dummy_obs = self._get_full_observation(self._create_dummy_input())
-        self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=dummy_obs.shape, dtype=np.float32
-            
+        self.trade_auditor = TradeExplanationAuditor(
+            history_len=200, debug=self.config.debug
         )
-        
-        # Trading state
+
+        # ─── Stub out meta_rl so arbiter creation won't break ────────
+        self.meta_rl = None
+
+        # ─── Consensus & horizon‐aligner for arbiter ────────────────
+        self.consensus = ConsensusDetector(0)  # will resize after arbiter
+        self.haligner = TimeHorizonAligner([1, 4, 24, 96])
+        # (collusion isn’t consumed by arbiter, but env.step() might use it)
+        self.collusion = CollusionAuditor(4, 3, debug=self.config.debug)
+
+        # ─── Initialize all core modules ────────────────────────────
+        self._initialize_modules()
+
+        # ─── Wire up strategy arbiter & pipeline ────────────────────
+        self._initialize_arbiter()            # uses self.consensus & self.haligner
+        self._initialize_dependent_modules()  # builds self.pipeline
+
+        # ─── Now that committee is known, resize consensus properly ──
+        self.consensus.resize(len(self.committee))
+
+        # ─── Create stable observation space (pipeline must exist) ──
+        self.observation_space = self._get_stable_observation_space()
+        obs_dim = self.observation_space.shape[0]
+
+        # ─── Instantiate the real MetaRL controller ─────────────────
+        self.meta_rl = MetaRLController(
+            obs_dim, self.action_dim, debug=self.config.debug
+        )
+
+        # ─── Replace the stub MetaRLExpert inside the arbiter ───────
+        from modules.strategy.voting_wrappers import MetaRLExpert
+        for idx, member in enumerate(self.arbiter.members):
+            if isinstance(member, MetaRLExpert):
+                self.arbiter.members[idx] = MetaRLExpert(self.meta_rl, self)
+                break
+
+        # ─── Final trading‐state fields ─────────────────────────────
         self.trades: List[Dict[str, Any]] = []
         self.current_genome = None
         self._last_actions = np.zeros(self.action_dim, dtype=np.float32)
         self._last_reward = 0.0
-        
-        
-        # Point values for PnL calculation
+        self.info_bus = None
         self.point_value = {
-            "EUR/USD": 100000,  # Standard lot
-            "XAU/USD": 100,     # Gold
+            "EUR/USD": 100000,
+            "XAU/USD": 100,
             "EURUSD": 100000,
             "XAUUSD": 100,
         }
-        
+
         self.logger.info(
             f"Environment initialized with {len(self.instruments)} instruments, "
-            f"action_dim={self.action_dim}, obs_dim={self.observation_space.shape[0]}"
+            f"action_dim={self.action_dim}, obs_dim={obs_dim}"
         )
-        
+
     # ═══════════════════════════════════════════════════════════════════
     #  Initialization Methods
     # ═══════════════════════════════════════════════════════════════════
@@ -363,10 +429,37 @@ class EnhancedTradingEnv(gym.Env):
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
+
+    def seed(self, seed=None):
+        """Set the seed for this env's random number generator(s).
+        Kept for backward compatibility with older gym versions."""
+        self._set_seeds(seed if seed is not None else self.config.init_seed)
+        return [seed]
+    
+
+    def _get_stable_observation_space(self) -> spaces.Box:
+        """Get a stable observation space that won't change during training"""
+        # Create dummy observation to get initial size
+        dummy_obs = self._get_full_observation(self._create_dummy_input())
+        
+        # Add buffer for potential growth (10% extra)
+        buffer_size = int(dummy_obs.shape[0] * 0.1)
+        stable_size = dummy_obs.shape[0] + buffer_size
+        
+        # Ensure the pipeline knows the expected size
+        self.pipeline.expected_size = stable_size
+        
+        return spaces.Box(
+            low=-np.inf, 
+            high=np.inf, 
+            shape=(stable_size,), 
+            dtype=np.float32
+        )
             
     def _validate_data(self):
-        """Validate input data structure"""
-        required_columns = {"open", "high", "low", "close", "volume"}
+        """Validate input data structure and fix column issues"""
+        # FIXED: Modified to handle 'real_volume' vs 'volume' mismatch
+        required_columns = {"open", "high", "low", "close"}  # Base required columns
         
         for inst in self.instruments:
             if inst not in self.data:
@@ -376,12 +469,24 @@ class EnhancedTradingEnv(gym.Env):
                 if not isinstance(df, pd.DataFrame):
                     raise TypeError(f"Data for {inst}/{tf} must be DataFrame")
                     
+                # Check base required columns
                 missing = required_columns - set(df.columns)
                 if missing:
                     raise ValueError(f"Missing columns for {inst}/{tf}: {missing}")
+                
+                # FIXED: Handle volume column specifically
+                if 'volume' not in df.columns:
+                    # If real_volume exists, use it for volume
+                    if 'real_volume' in df.columns:
+                        self.logger.info(f"Creating 'volume' from 'real_volume' for {inst}/{tf}")
+                        self.data[inst][tf]['volume'] = self.data[inst][tf]['real_volume']
+                    else:
+                        # Create a dummy volume column with ones
+                        self.logger.warning(f"No volume data for {inst}/{tf}, creating dummy volume")
+                        self.data[inst][tf]['volume'] = 1.0
                     
     def _initialize_modules(self):
-        """Initialize all trading modules with proper configuration"""
+        """Initialize core trading modules (no dependencies on arbiter)"""
         # Core feature extraction
         base_afe = AdvancedFeatureEngine(debug=self.config.debug)
         self.feature_engine = MultiScaleFeatureEngine(base_afe, 32, self.config.debug)
@@ -459,7 +564,7 @@ class EnhancedTradingEnv(gym.Env):
         self.meta_planner = MetaCognitivePlanner(debug=self.config.debug)
         self.bias_auditor = BiasAuditor(debug=self.config.debug)
         self.thesis_engine = ThesisEvolutionEngine(debug=self.config.debug)
-        self.explainer = ExplanationGenerator(debug=self.config.debug)
+        # NOTE: ExplanationGenerator will be created AFTER arbiter is initialized
         
         # Trading mode and monitoring
         self.mode_manager = TradingModeManager(initial_mode="safe", window=50)
@@ -487,20 +592,8 @@ class EnhancedTradingEnv(gym.Env):
             self.shadow_sim = None
             self.role_coach = None
             self.opponent_sim = None
+
         
-        # Create module pipeline
-        self._create_pipeline()
-        
-        # Initialize meta-RL
-        obs_dim = self.observation_space.shape[0] if hasattr(self, 'observation_space') else 512
-        self.meta_rl = MetaRLController(obs_dim, self.action_dim, debug=self.config.debug)
-        
-        # Initialize voting infrastructure
-        self.consensus = ConsensusDetector(len(self.committee))
-        self.collusion = CollusionAuditor(4, 3, debug=self.config.debug)
-        self.haligner = TimeHorizonAligner([1, 4, 24, 96])
-        self._initialize_arbiter()
-        self.consensus.resize(len(self.committee)) 
         
         
     def _create_pipeline(self):
@@ -514,6 +607,7 @@ class EnhancedTradingEnv(gym.Env):
             self.mode_manager, self.active_monitor, self.corr_controller,
             self.dd_rescue, self.exec_monitor, self.anomaly_detector,
             self.position_manager, self.fractal_confirm, self.regime_switcher,
+            self.trade_auditor,
             # FIXED: Added missing modules
             self.playbook_memory, self.meta_agent, self.explainer,
             self.mistake_memory, self.memory_compressor, self.replay_analyzer,
@@ -576,6 +670,19 @@ class EnhancedTradingEnv(gym.Env):
         self.committee = arbiter_members
         
         self.logger.info(f"Initialized arbiter with {len(arbiter_members)} voting members")
+
+    def _initialize_dependent_modules(self):
+        """Initialize modules that depend on arbiter"""
+        # NOW we can create ExplanationGenerator with the arbiter
+        self.explainer = ExplanationGenerator(
+            regime_switcher=self.regime_switcher,
+            strategy_arbiter=self.arbiter,
+            debug=self.config.debug
+        )
+        
+        # Create module pipeline with all modules
+        self._create_pipeline()
+
         
     def _create_dummy_input(self) -> Dict[str, Any]:
         """Create dummy input for initialization"""
@@ -623,7 +730,8 @@ class EnhancedTradingEnv(gym.Env):
             current_drawdown=0.0,
             last_trade_step={inst: -999 for inst in self.instruments}
         )
-        self.current_step = self.market_state.current_step  # <-- ADD HERE
+        self.current_step = self.market_state.current_step  # FIXED: Sync step counters
+        
         # Clear caches
         if not hasattr(self, '_obs_cache') or not isinstance(self._obs_cache, dict):
             self._obs_cache = {}
@@ -753,10 +861,53 @@ class EnhancedTradingEnv(gym.Env):
         
     @profile_method
     def _get_committee_decision(self, actions: np.ndarray) -> np.ndarray:
-        """Get blended decision from voting committee"""
+        """
+        FIXED: Enhanced committee decision with proper data flow to regime modules
+        """
         votes_by_sym_tf = {}
         blended_by_sym_tf = {}
         committee_names = [m.__class__.__name__ for m in self.arbiter.members]
+        
+        # FIXED: Get current market data for regime detection
+        current_price = None
+        volatility = 0.01
+        
+        try:
+            inst = self.instruments[0]
+            df = self.data[inst]["D1"]
+            step = self.market_state.current_step
+            
+            if step < len(df):
+                current_price = float(df.iloc[step]["close"])
+                
+                # Calculate volatility from recent prices
+                if step >= 20:
+                    recent_prices = df["close"].iloc[max(0, step-20):step+1].values
+                    returns = np.diff(recent_prices) / recent_prices[:-1]
+                    volatility = float(np.std(returns[np.isfinite(returns)]))
+                    
+        except Exception as e:
+            self.logger.warning(f"Failed to extract market data: {e}")
+            current_price = 2000.0
+            volatility = 0.01
+        
+        # FIXED: Update regime switcher with current price before committee decision
+        try:
+            self.regime_switcher.step(
+                price=current_price,
+                data_dict=self.data,
+                current_step=self.market_state.current_step
+            )
+            
+            # Also update fractal confirmation
+            self.fractal_confirm.step(
+                data_dict=self.data,
+                current_step=self.market_state.current_step,
+                theme_detector=self.theme_detector
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Failed to update regime modules: {e}")
         
         # Collect votes for each instrument/timeframe combination
         for inst in self.instruments:
@@ -764,14 +915,19 @@ class EnhancedTradingEnv(gym.Env):
                 # Get price history
                 hist = self._get_price_history(inst, tf)
                 
-                # Create observation for this timeframe
+                # Create comprehensive observation for this timeframe
                 obs_data = {
                     "env": self,
                     "price_h1": hist if tf == "H1" else np.zeros_like(hist),
                     "price_h4": hist if tf == "H4" else np.zeros_like(hist),
                     "price_d1": hist if tf == "D1" else np.zeros_like(hist),
                     "actions": actions,
-                    "current_step": self.market_state.current_step,  # FIXED: Added
+                    "current_step": self.market_state.current_step,
+                    "data_dict": self.data,
+                    "price": current_price,
+                    "volatility": volatility,
+                    "balance": self.market_state.balance,
+                    "drawdown": self.market_state.current_drawdown,
                 }
                 obs = self._get_full_observation(obs_data)
                 
@@ -811,6 +967,7 @@ class EnhancedTradingEnv(gym.Env):
                 final_action[2*i+1] = duration_sum / total_weight
                 
         return final_action
+
         
     def _calculate_consensus(self) -> float:
         """Calculate consensus level from committee votes"""
@@ -1105,38 +1262,62 @@ class EnhancedTradingEnv(gym.Env):
         consensus: float
     ) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """Finalize step with reward calculation and state updates"""
-        # Store trades
+        # 1) Store trades
         self.trades = trades
         self.episode_metrics.trades.extend(trades)
-        
-        # Calculate step PnL
+
+        # 2) Calculate step PnL
         step_pnl = sum(t.get("pnl", 0.0) for t in trades)
         self.episode_metrics.pnls.append(step_pnl)
-        
-        # Calculate reward
+
+        # --- feed RegimePerformanceMatrix ----------------------------------
+        #   a) get realized volatility for this bar
+        vol = self._get_current_volatility()
+
+        #   b) ask your FractalRegimeConfirmation what it predicted
+        reg_label, _ = self.fractal_confirm.step(
+            data_dict=self.data,
+            current_step=self.market_state.current_step,
+            theme_detector=self.theme_detector
+        )
+        #   c) map label → index (must match your RPM.n)
+        regime_map = {"noise": 0, "volatile": 1, "trending": 2}
+        pred_idx = regime_map.get(reg_label, 0)
+
+        #   d) update the matrix
+        self.regime_matrix.step(
+            pnl=step_pnl,
+            volatility=vol,
+            predicted_regime=pred_idx
+        )
+        # --------------------------------------------------------------------
+
+        # 3) Calculate reward
         reward = self._calculate_reward(trades, actions, consensus)
-        
-        # Check termination
+
+        # 4) Check for termination
         terminated = self._check_termination()
-        
-        # Get next observation
+
+        # 5) Build next observation
         obs = self._get_next_observation(trades, actions)
-        
-        # Create info dict
+
+        # 6) Pack info dict
         info = self._create_step_info(trades, step_pnl, consensus)
-        
-        # Update mode manager
+
+        # 7) Update trading mode
         self._update_mode_manager(trades, step_pnl, consensus)
-        
-        # Increment step counter
+
+        # 8) Advance step counter
         self.market_state.current_step += 1
-        self.current_step = self.market_state.current_step
-        
-        # Handle episode end
+        self.current_step = self.market_state.current_step  # keep in sync
+
+        # 9) Handle end of episode
         if terminated:
             self._handle_episode_end(step_pnl)
-            
+
+        # 10) Return exactly the Gym API tuple
         return obs, float(reward), terminated, False, info
+
         
     def _create_no_trade_step(self, actions: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """Create step output when no trades are executed"""
@@ -1206,7 +1387,7 @@ class EnhancedTradingEnv(gym.Env):
                 prices = df["close"].iloc[start_idx:end_idx].values
                 price_dict[inst] = prices
                 
-            if all(len(p) > self.risk_system.var_window for p in price_dict.values()):
+            if all(len(p) > 10 for p in price_dict.values()):
                 self.risk_system.prime_returns_with_history(price_dict)
             else:
                 self.risk_system.prime_returns_with_random()
@@ -1370,36 +1551,63 @@ class EnhancedTradingEnv(gym.Env):
             return True
             
         return False
-        
+    
+
     @profile_method
     def _get_full_observation(self, data: Dict[str, Any]) -> np.ndarray:
-        """FIXED: Optimized observation creation with caching"""
-        # Try cache first
+        """
+        Build a unified observation by passing `standardized_data` through
+        the pipeline, then guard against NaNs before sanitizing/caching.
+        """
         cache_key = (self.market_state.current_step, id(data))
-        
         if cache_key in self._obs_cache:
             return self._obs_cache[cache_key]
-            
-        # FIXED: Ensure standardized data interface
+
+        # augment inputs for modules
         standardized_data = data.copy()
-        standardized_data["open_positions"] = list(self.position_manager.open_positions.values())
-        standardized_data["current_step"] = self.market_state.current_step
-        
-        # Create observation through pipeline
+        standardized_data.update({
+            "env": self,
+            "open_positions": list(self.position_manager.open_positions.values()),
+            "current_step": self.market_state.current_step,
+            "data_dict": self.data,
+            "price": standardized_data.get("price", None),
+            "balance": self.market_state.balance,
+            "drawdown": self.market_state.current_drawdown,
+            "instruments": self.instruments,
+        })
+
         obs = self.pipeline.step(standardized_data)
-        
-        # Cache result
+
+        # ←— New sanity check right after pipeline
+        if not np.all(np.isfinite(obs)):
+            self.logger.error(f"🛑 NaN/Inf in obs at step {self.market_state.current_step}: {obs}")
+            self.logger.error(f"  input keys: {list(standardized_data.keys())}")
+            for k, v in standardized_data.items():
+                if isinstance(v, np.ndarray) and not np.all(np.isfinite(v)):
+                    self.logger.error(f"    '{k}' has bad values: {v}")
+            import pdb; pdb.set_trace()
+        # ————————————————————————————————————————
+
+        # ensure matches declared observation_space size
+        if hasattr(self, "observation_space"):
+            target = self.observation_space.shape[0]
+            if obs.size < target:
+                obs = np.concatenate([obs, np.zeros(target - obs.size, dtype=np.float32)])
+            elif obs.size > target:
+                obs = obs[:target]
+
+        # sanitize infinities, extreme outliers, and cache
+        obs = self._sanitize_observation(obs)
         self._obs_cache[cache_key] = obs
-        
-        # Limit cache size
+
+        # trim cache if it grows too big
         if len(self._obs_cache) > 100:
-            # Remove oldest entries
-            keys_to_remove = list(self._obs_cache.keys())[:-100]
-            for key in keys_to_remove:
+            for key in list(self._obs_cache)[:-100]:
                 del self._obs_cache[key]
-                
+
         return obs
-        
+
+
     def _get_next_observation(
         self,
         trades: List[Dict],
@@ -1563,6 +1771,7 @@ class EnhancedTradingEnv(gym.Env):
         
         # Restore other state
         self.episode_count = state.get("episode_count", 0)
+        self.current_step = self.market_state.current_step  # FIXED: Sync step counters
         
         # Restore position manager
         if "position_manager" in state:
@@ -1644,3 +1853,30 @@ class EnhancedTradingEnv(gym.Env):
             
         except Exception as e:
             self.logger.error(f"Checkpoint save failed: {e}")
+
+
+    def _setup_logging(self):
+        """Setup logging configuration with UTF-8 console support"""
+        os.makedirs(self.config.log_dir, exist_ok=True)
+        
+        # Create logger
+        self.logger = logging.getLogger(f"EnhancedTradingEnv_{id(self)}")
+        self.logger.handlers.clear()
+        
+        # File handler (always UTF-8)
+        fh = logging.FileHandler(
+            os.path.join(self.config.log_dir, "trading_env.log"),
+            encoding="utf-8"
+        )
+        fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        self.logger.addHandler(fh)
+        
+        # UTF-8 console handler
+        # wrap stdout.buffer so we can force UTF-8
+        utf8_stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", line_buffering=True)
+        ch = logging.StreamHandler(utf8_stdout)
+        ch.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+        self.logger.addHandler(ch)
+        
+        self.logger.setLevel(getattr(logging, self.config.log_level))
+        self.logger.propagate = False

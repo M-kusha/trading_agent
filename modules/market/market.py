@@ -61,17 +61,23 @@ class MarketThemeDetector:
         # ── evolutionary DNA ──────────────────────────────────────────
         self.genome = {"n_themes": n_themes, "window": window}
 
-        # ── logger setup ──────────────────────────────────────────────
-        _ensure_dir("logs")
+        log_file = "logs/regime/market_theme_regime.log"
+        
+        # 2) Ensure the full directory exists
+        _ensure_dir(os.path.dirname(log_file))
+
+        # 3) Configure logger
         self.logger = logging.getLogger("MarketThemeDetector")
         if not self.logger.handlers:
-            h = logging.FileHandler("logs/market_regime.log")
-            fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-            h.setFormatter(fmt)
-            h.setLevel(logging.DEBUG if debug else logging.INFO)
-            self.logger.addHandler(h)
+            handler = logging.FileHandler(log_file)
+            formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+            handler.setFormatter(formatter)
+            handler.setLevel(logging.DEBUG if debug else logging.INFO)
+            self.logger.addHandler(handler)
         self.logger.setLevel(logging.DEBUG if debug else logging.INFO)
         self.logger.propagate = False
+
+        self.logger.info("[MarketThemeDetector] Initialized")
 
     # ───────────────────────── helpers ────────────────────────────────
     @staticmethod
@@ -371,9 +377,9 @@ class FractalRegimeConfirmation(Module):
         }
                 
         # Logger for market regime changes
-        self.logger = logging.getLogger("MarketRegimeLogger")
+        self.logger = logging.getLogger("FractalRegimeConfirmation")
         if not self.logger.handlers:
-            handler = logging.FileHandler("logs/market_regime.log")
+            handler = logging.FileHandler("logs/regime/fractal_regime.log")
             formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)

@@ -1,5 +1,6 @@
 # modules/trading_modes/trading_mode.py
 
+import os
 from typing import List, Dict, Any, Optional
 import numpy as np
 import logging
@@ -24,7 +25,7 @@ class TradingModeManager(Module):
         self.auto = True
         self.window = window
         self.stats_history: List[Dict[str, Any]] = []
-        self.log_file = log_file or "logs/mode_manager.log"
+        self.log_file = log_file or "logs/trading_modes/mode_manager.log"
         self._setup_logger()
         self.last_reason = ""
         self.last_switch_time = None
@@ -45,17 +46,18 @@ class TradingModeManager(Module):
         logger_name = f"TradingModeManager.{id(self)}"  # Unique logger per instance
         self.logger = logging.getLogger(logger_name)
         self.logger.setLevel(logging.INFO)
-        
-        # Clear existing handlers to prevent duplicates
         self.logger.handlers.clear()
         
-        # Add file handler
-        try:
-            fh = logging.FileHandler(self.log_file)
-            fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s - %(message)s"))
-            self.logger.addHandler(fh)
-        except Exception as e:
-            print(f"[TradingModeManager] Failed to create log file: {e}")
+        # Ensure log directory exists
+        log_dir = os.path.dirname(self.log_file)
+        if log_dir and not os.path.exists(log_dir):
+            os.makedirs(log_dir, exist_ok=True)
+        
+        # Now safely add file handler
+        fh = logging.FileHandler(self.log_file)
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s - %(message)s"))
+        self.logger.addHandler(fh)
+
 
     def set_mode(self, mode: str):
         if mode not in self.MODES:

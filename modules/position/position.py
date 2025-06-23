@@ -142,8 +142,9 @@ class PositionManager:
         import os
         self.logger = logging.getLogger("PositionManager")
         if not self.logger.handlers:
-            os.makedirs("logs", exist_ok=True)
-            handler = logging.FileHandler("logs/position_manager.log")
+            log_dir = os.path.join("logs", "position")
+            os.makedirs(log_dir, exist_ok=True)
+            handler = logging.FileHandler("logs/position/position_manager.log")
             handler.setFormatter(
                 logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
             )

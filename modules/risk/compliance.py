@@ -44,7 +44,7 @@ class ComplianceModule(Module):
         max_daily_trades: int = 100,  # Prevent overtrading
         min_trade_size: float = 0.01,  # Minimum lot size
         max_trade_size: float = 10.0,  # Maximum lot size
-        audit_log_path: str = "logs/compliance_audit.jsonl",
+        audit_log_path: str = "logs/risk/compliance_audit.jsonl",
         allowed_symbols: Optional[List[str]] = None,
         restricted_hours: Optional[List[int]] = None,  # Hours when trading is restricted
         debug: bool = False,
@@ -114,7 +114,7 @@ class ComplianceModule(Module):
         """Setup rotating file logger"""
         logger = logging.getLogger(f"ComplianceModule_{id(self)}")
         if not logger.handlers:
-            log_path = "logs/compliance.log"
+            log_path = "logs/risk/compliance.log"
             os.makedirs(os.path.dirname(log_path), exist_ok=True)
             
             handler = RotatingFileHandler(

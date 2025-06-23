@@ -42,14 +42,14 @@ class OpponentSimulator(Module):
         self._audit_log_size = int(audit_log_size)
 
         # Persistent JSONL audit file
-        self.audit_log_path = "logs/opponent_simulator_audit.jsonl"
+        self.audit_log_path = "logs/simulation/opponent_simulator_audit.jsonl"
         os.makedirs(os.path.dirname(self.audit_log_path), exist_ok=True)
 
         # Standard logger
         self.logger = logging.getLogger("OpponentSimulator")
         if not self.logger.handlers:
-            os.makedirs("logs", exist_ok=True)
-            handler = logging.FileHandler("logs/opponent_simulator.log")
+            os.makedirs("logs/simulation", exist_ok=True)
+            handler = logging.FileHandler("logs/simulation/opponent_simulator.log")
             handler.setFormatter(logging.Formatter(
                 "%(asctime)s - %(levelname)s - %(message)s"
             ))

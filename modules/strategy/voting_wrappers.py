@@ -176,114 +176,96 @@ class SeasonalityRiskExpert:
 # ========== 3. MetaRLController → MetaRLExpert ==========
 class MetaRLExpert:
     """
-    Uses the Meta-RL policy's own action; confidence ~ (1 − entropy).
-    FIXED: Proper implementation with error handling.
+    Wraps your MetaRLController: calls controller.act(),
+    inspects for extra kwargs (e.g. market_lags), and returns
+    a fixed-size action vector. Confidence is 1 - last_entropy.
     """
-    def __init__(self, meta_rl: "MetaRLController", env_ref, debug=True):
-        self.mrl  = meta_rl
-        self.env  = env_ref
-        self.last_action = np.zeros(self.env.action_dim, np.float32)
+    def __init__(self, meta_rl: "MetaRLController", env_ref, debug: bool = True):
+        self.mrl          = meta_rl
+        self.env          = env_ref
+        self.last_action  = np.zeros(self.env.action_dim, dtype=np.float32)
         self.last_entropy = 0.5
-        self.debug = debug
+        self.debug        = debug
+
         self.logger = logging.getLogger("MetaRLExpert")
+        if self.debug and not any(isinstance(h, logging.StreamHandler)
+                                  for h in self.logger.handlers):
+            h = logging.StreamHandler()
+            h.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+            self.logger.addHandler(h)
+            self.logger.setLevel(logging.DEBUG)
 
     def reset(self):
-        self.last_action[:] = 0.0
+        """Clear history at episode start."""
+        self.last_action.fill(0.0)
         self.last_entropy = 0.5
 
-
-    def _call_policy(self, obs_vec: np.ndarray) -> np.ndarray:
-        """
-        Robustly calls the Meta-RL policy, dynamically inspecting and providing required arguments,
-        always supplying 'market_lags' by keyword if needed.
-        """
+    def _call_controller(self, obs_vec: np.ndarray) -> np.ndarray:
         try:
-            # Determine obs_dim from agent or fallback to obs_vec size
-            if hasattr(self.mrl, 'obs_dim'):
-                obs_dim = self.mrl.obs_dim() if callable(self.mrl.obs_dim) else self.mrl.obs_dim
-            else:
-                obs_dim = obs_vec.size
+            # --- ensure obs length matches controller.obs_size ---
+            od = getattr(self.mrl, "obs_size", obs_vec.size)
+            obs_dim = od() if callable(od) else od
+            flat = np.asarray(obs_vec, dtype=np.float32).ravel()
+            if flat.size < obs_dim:
+                flat = np.pad(flat, (0, obs_dim - flat.size))
+            elif flat.size > obs_dim:
+                flat = flat[:obs_dim]
 
-            # Adjust obs_vec size if needed
-            if obs_vec.size != obs_dim:
-                if self.debug:
-                    self.logger.debug(f"Obs size mismatch: {obs_vec.size} vs {obs_dim}")
-                obs_vec = np.pad(obs_vec, (0, obs_dim - obs_vec.size)) if obs_vec.size < obs_dim else obs_vec[:obs_dim]
+            # --- build torch tensor ---
+            device = getattr(self.mrl, "device", "cpu")
+            obs_t = torch.tensor(flat, dtype=torch.float32, device=device).unsqueeze(0)
 
-            obs_t = torch.tensor(obs_vec, dtype=torch.float32, device=self.mrl.device).unsqueeze(0)
-
-            # --- Introspect the correct agent method ---
-            agent = self.mrl.agent
-            # Try to use forward(), else act(), else __call__
-            call_methods = [getattr(agent, x, None) for x in ('forward', 'act', '__call__')]
-            call_methods = [m for m in call_methods if callable(m)]
-            if not call_methods:
-                raise AttributeError("No valid call method found on agent")
-            method = call_methods[0]
-
-            # Inspect the function signature
-            sig = inspect.signature(method)
-            argnames = list(sig.parameters.keys())[1:]  # Skip 'self'
-
-            # Build arguments
+            # --- inspect act() signature for market_lags ---
+            sig = inspect.signature(self.mrl.act)
             kwargs = {}
-            # Always supply obs_t as first positional
-            args = [obs_t]
+            if "market_lags" in sig.parameters:
+                lags = getattr(self.env, "market_lags", None)
+                if not isinstance(lags, np.ndarray):
+                    lags = np.zeros_like(flat, dtype=np.float32)
+                ml_t = torch.tensor(lags, dtype=torch.float32, device=device).unsqueeze(0)
+                kwargs["market_lags"] = ml_t
 
-            # Dynamically add market_lags if required
-            if 'market_lags' in argnames or 'market_lags' in sig.parameters:
-                # Try to get from env, else fallback
-                market_lags = getattr(self.env, "market_lags", None)
-                if market_lags is None:
-                    market_lags = np.zeros_like(obs_vec)
-                if isinstance(market_lags, np.ndarray):
-                    market_lags_t = torch.tensor(market_lags, dtype=torch.float32, device=self.mrl.device).unsqueeze(0)
-                else:
-                    market_lags_t = torch.zeros_like(obs_t)
-                kwargs['market_lags'] = market_lags_t
-
-            # (Extend here: add more arguments by name if required)
-
-            # Call the agent with all required args
+            # --- call your controller ---
             with torch.no_grad():
-                result = method(*args, **kwargs)
+                action = self.mrl.act(obs_t, **kwargs)
 
-            # Process output
-            if isinstance(result, dict):
-                act = result.get("action", np.zeros(self.env.action_dim))
-                if "entropy" in result:
-                    self.last_entropy = float(result["entropy"])
+            # --- convert to numpy 1D ---
+            if torch.is_tensor(action):
+                act = action.squeeze(0).cpu().numpy()
             else:
-                act = result
+                act = np.asarray(action, dtype=np.float32).ravel()
 
-            if torch.is_tensor(act):
-                act = act.cpu().numpy()
-            act = np.asarray(act, dtype=np.float32).reshape(-1)
+            # --- capture entropy if your controller exposed it ---
+            ent = getattr(self.mrl, "last_entropy", None)
+            if isinstance(ent, float):
+                self.last_entropy = ent
+
+            # --- fix final length to env.action_dim ---
             if act.size < self.env.action_dim:
                 act = np.pad(act, (0, self.env.action_dim - act.size))
             elif act.size > self.env.action_dim:
-                act = act[:self.env.action_dim]
+                act = act[: self.env.action_dim]
+
+            self.last_action = act.copy()
             return act
 
         except Exception as e:
             if self.debug:
-                self.logger.warning(f"Policy call failed: {e}")
+                self.logger.warning(f"MetaRLExpert call failed: {e}")
             return np.zeros(self.env.action_dim, dtype=np.float32)
 
-
-
-    def propose_action(self, obs: Any, extras: Dict = None) -> np.ndarray:
+    def propose_action(self, obs: np.ndarray, extras: dict = None) -> np.ndarray:
+        """
+        Entry point from the arbiter: if we have an ndarray obs,
+        actually call the controller; otherwise return last_action.
+        """
         if isinstance(obs, np.ndarray):
-            action = self._call_policy(obs)
-            self.last_action = action.copy()
-            return action
-        else:
-            # Return last action or zeros
-            return self.last_action.copy()
+            return self._call_controller(obs)
+        return self.last_action.copy()
 
-    def confidence(self, obs: Any, extras: Dict = None) -> float:
-        # Use entropy as inverse confidence
-        return float(1.0 - self.last_entropy)
+    def confidence(self, obs: np.ndarray = None, extras: dict = None) -> float:
+        """Simple confidence = 1 − entropy, clipped to [0,1]."""
+        return float(np.clip(1.0 - self.last_entropy, 0.0, 1.0))
 
 # ========== 4. ActiveTradeMonitor → TradeMonitorVetoExpert ==========
 class TradeMonitorVetoExpert:
