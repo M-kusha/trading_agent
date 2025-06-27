@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from typing import Dict, Any, List, Callable, Optional, Tuple
 from collections import deque
 from modules.core.core import Module
-from modules.regime.regime import MarketRegimeSwitcher
+from modules.market.market import FractalRegimeConfirmation
 from modules.strategy.voting import StrategyArbiter
 
 # Setup logging directories
@@ -1486,13 +1486,13 @@ class ExplanationGenerator(Module):
     FIX: Enhanced explanation generator with comprehensive logging
     """
 
-    def __init__(self, regime_switcher: MarketRegimeSwitcher, strategy_arbiter: StrategyArbiter, debug: bool = True):
+    def __init__(self, fractal_regime: FractalRegimeConfirmation, strategy_arbiter: StrategyArbiter, debug: bool = True):
         super().__init__()
         self.debug = debug
         self.last_explanation = ""
         self.trade_count = 0
         self.profit_today = 0.0
-        self.regime_switcher = regime_switcher
+        self.fractal_regime = fractal_regime
         self.strategy_arbiter = strategy_arbiter
         self.arbiter = strategy_arbiter
         self._step_count = 0
@@ -1550,7 +1550,7 @@ class ExplanationGenerator(Module):
                 pnl = 0.0
 
             if regime is None or str(regime).lower() == "unknown":
-                regime = self.regime_switcher.get_regime()
+                self.fractal_regime.label
                 self.logger.debug(f"Retrieved regime from switcher: {regime}")
 
             # Get expert names/weights from arbiter if not provided

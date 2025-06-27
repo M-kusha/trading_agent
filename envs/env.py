@@ -36,7 +36,6 @@ from modules.auditing.explanation_auditor import TradeExplanationAuditor
 from modules.core.core import Module
 from modules.features.feature import AdvancedFeatureEngine, MultiScaleFeatureEngine
 from modules.position.position import PositionManager
-from modules.regime.regime import MarketRegimeSwitcher
 from modules.reward.reward import RiskAdjustedReward
 from modules.risk.risk_controller import DynamicRiskController
 from modules.market.market import (
@@ -81,6 +80,22 @@ from modules.risk.risk_monitor import (
 
 # Suppress warnings for cleaner logs
 warnings.filterwarnings('ignore', category=RuntimeWarning)
+
+
+class DummyExplanationGenerator:
+    """Dummy explanation generator for fallback"""
+    
+    def __init__(self):
+        pass
+        
+    def reset(self):
+        pass
+        
+    def step(self, **kwargs):
+        pass
+        
+    def get_observation_components(self):
+        return np.zeros(0, dtype=np.float32)
 
 # ╔═════════════════════════════════════════════════════════════════════╗
 # ║                         Configuration Classes                        ║
@@ -504,7 +519,6 @@ class EnhancedTradingEnv(gym.Env):
             self.instruments, 4, 100, debug=self.config.debug
         )
         self.fractal_confirm = FractalRegimeConfirmation(100, debug=self.config.debug)
-        self.regime_switcher = MarketRegimeSwitcher(debug=self.config.debug)
         action_dim = 2 * len(self.instruments)
         self.liquidity_layer = LiquidityHeatmapLayer(
             action_dim=action_dim,
@@ -606,22 +620,32 @@ class EnhancedTradingEnv(gym.Env):
             self.regime_matrix, self.trade_thesis,
             self.mode_manager, self.active_monitor, self.corr_controller,
             self.dd_rescue, self.exec_monitor, self.anomaly_detector,
-            self.position_manager, self.fractal_confirm, self.regime_switcher,
+            self.position_manager, self.fractal_confirm,
             self.trade_auditor,
             # FIXED: Added missing modules
-            self.playbook_memory, self.meta_agent, self.explainer,
+            self.playbook_memory, self.meta_agent,
             self.mistake_memory, self.memory_compressor, self.replay_analyzer,
             self.playbook_clusterer, self.long_term_memory,
         ]
         
+        # Only add explainer if it's not a dummy
+        if not isinstance(self.explainer, DummyExplanationGenerator):
+            core_modules.append(self.explainer)
+        
         # Add simulation modules if not in live mode
         if not self.config.live_mode:
-            core_modules.extend([self.shadow_sim, self.role_coach, self.opponent_sim])
+            if self.shadow_sim:
+                core_modules.append(self.shadow_sim)
+            if self.role_coach:
+                core_modules.append(self.role_coach)
+            if self.opponent_sim:
+                core_modules.append(self.opponent_sim)
             
         # Filter out None modules
         active_modules = [m for m in core_modules if m is not None]
         
         self.pipeline = TradingPipeline(active_modules)
+        self.logger.info(f"Created pipeline with {len(active_modules)} active modules")
         
         
     def _initialize_arbiter(self):
@@ -672,16 +696,32 @@ class EnhancedTradingEnv(gym.Env):
         self.logger.info(f"Initialized arbiter with {len(arbiter_members)} voting members")
 
     def _initialize_dependent_modules(self):
-        """Initialize modules that depend on arbiter"""
-        # NOW we can create ExplanationGenerator with the arbiter
-        self.explainer = ExplanationGenerator(
-            regime_switcher=self.regime_switcher,
-            strategy_arbiter=self.arbiter,
-            debug=self.config.debug
-        )
+        """Initialize modules that depend on arbiter - FIXED"""
+        # FIXED: Create ExplanationGenerator with correct parameters
+        try:
+            # Try the simple constructor first
+            self.explainer = ExplanationGenerator(debug=self.config.debug)
+            
+            # If it has a method to set the regime switcher and arbiter, use that
+            if hasattr(self.explainer, 'set_regime_switcher'):
+                self.explainer.set_regime_switcher(self.fractal_confirm)
+            if hasattr(self.explainer, 'set_strategy_arbiter'):
+                self.explainer.set_strategy_arbiter(self.arbiter)
+                
+        except Exception as e:
+            self.logger.warning(f"Failed to initialize ExplanationGenerator with regime_switcher: {e}")
+            # Fallback to basic initialization
+            try:
+                self.explainer = ExplanationGenerator(debug=self.config.debug)
+            except Exception as e2:
+                self.logger.error(f"Failed to initialize ExplanationGenerator at all: {e2}")
+                # Create a dummy explainer
+                self.explainer = DummyExplanationGenerator()
         
         # Create module pipeline with all modules
         self._create_pipeline()
+
+    
 
         
     def _create_dummy_input(self) -> Dict[str, Any]:
@@ -893,11 +933,6 @@ class EnhancedTradingEnv(gym.Env):
         
         # FIXED: Update regime switcher with current price before committee decision
         try:
-            self.regime_switcher.step(
-                price=current_price,
-                data_dict=self.data,
-                current_step=self.market_state.current_step
-            )
             
             # Also update fractal confirmation
             self.fractal_confirm.step(

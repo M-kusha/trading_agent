@@ -5,6 +5,7 @@ Starts both backend and frontend services with proper coordination
 """
 
 import os
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 import sys
 import time
 import signal
@@ -149,8 +150,13 @@ class DashboardLauncher:
         
         try:
             backend_cmd = [
-                sys.executable, 'backend/main.py'
+                sys.executable, "-m", "uvicorn",
+                "backend.main:app",
+                "--host", "0.0.0.0",
+                "--port", str(self.port_backend),
+                "--reload"
             ]
+
             
             # Set environment variables
             env = os.environ.copy()
