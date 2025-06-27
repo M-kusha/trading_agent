@@ -8,6 +8,7 @@ checkpoints/
 logs/
 models/
 optuna_sac.db
+
 # Ignore Jupyter Notebook checkpoints
 .ipynb_checkpoints/
 # Ignore Python virtual environments
@@ -26,3 +27,13 @@ build/
 test_output/
 # Ignore IDE specific files
 .idea/
+# ignore frontend build artifacts
+frontend/dist/
+# Ignore Docker files
+Dockerfile
+# Ignore Docker Compose files
+docker-compose.yml
+# Ignore environment files
+.env
+frontend/node_modules/
+frontend/package-lock.json
