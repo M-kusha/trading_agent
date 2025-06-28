@@ -1185,10 +1185,10 @@ class MemoryBudgetOptimizer(Module):
         self.reset()
 
     def reset(self):
-        # FIX: Track memory utilization and performance
+        # FIX: Track memory utilization and performance with all required keys
         self.memory_performance = {
             "trades": {"size": self.max_trades, "hits": 0, "profit": 0.0},
-            "mistakes": {"size": self.max_mistakes, "hits": 0, "saves": 0.0},
+            "mistakes": {"size": self.max_mistakes, "hits": 0, "profit": 0.0},  # Changed "saves" to "profit"
             "plays": {"size": self.max_plays, "hits": 0, "profit": 0.0}
         }
         self.optimization_count = 0
@@ -1198,7 +1198,7 @@ class MemoryBudgetOptimizer(Module):
         self.logger.info("MemoryBudgetOptimizer reset - performance tracking cleared")
 
     def step(self, env=None, **kwargs):
-        """FIX: Track memory usage and effectiveness"""
+        """FIXED: Track memory usage and effectiveness with proper error handling"""
         self._step_count += 1
         
         try:
@@ -1209,13 +1209,22 @@ class MemoryBudgetOptimizer(Module):
                     self.memory_performance[memory_type]["hits"] += 1
                     self.logger.debug(f"Step {self._step_count}: Memory hit for {memory_type}")
                     
-            # Track profit attribution
+            # Track profit attribution - FIXED
             if "profit" in kwargs and "source" in kwargs:
                 source = kwargs["source"]
-                profit = kwargs["profit"]
-                if source in self.memory_performance:
-                    self.memory_performance[source]["profit"] += profit
-                    self.logger.debug(f"Step {self._step_count}: Profit €{profit:.2f} attributed to {source}")
+                profit = float(kwargs["profit"])  # Ensure it's a float
+                
+                # FIXED: Ensure the source exists in memory_performance
+                if source not in self.memory_performance:
+                    self.logger.warning(f"Unknown memory source: {source}")
+                    return
+                    
+                # FIXED: Ensure profit key exists
+                if "profit" not in self.memory_performance[source]:
+                    self.memory_performance[source]["profit"] = 0.0
+                    
+                self.memory_performance[source]["profit"] += profit
+                self.logger.debug(f"Step {self._step_count}: Profit €{profit:.2f} attributed to {source}")
                 self.total_profit += profit
                 
             # Log summary periodically
@@ -1224,16 +1233,30 @@ class MemoryBudgetOptimizer(Module):
                 
         except Exception as e:
             self.logger.error(f"Error in step: {e}")
+            self.logger.error(f"kwargs: {kwargs}")
+            self.logger.error(f"memory_performance: {self.memory_performance}")
+
+                
+        except Exception as e:
+            self.logger.error(f"Error in step: {e}")
 
     def _log_performance_summary(self):
-        """Log current performance summary"""
+        """Log current performance summary - FIXED"""
         try:
             self.logger.info(f"Step {self._step_count} - Performance Summary:")
             for mem_type, stats in self.memory_performance.items():
-                efficiency = stats["profit"] / max(1, stats["hits"])
-                self.logger.info(f"  {mem_type}: size={stats['size']}, hits={stats['hits']}, profit=€{stats['profit']:.2f}, efficiency=€{efficiency:.2f}/hit")
+                # FIXED: Use .get() to safely access dictionary values
+                size = stats.get("size", 0)
+                hits = stats.get("hits", 0)
+                profit = stats.get("profit", 0.0)  # This was causing the error
+                
+                efficiency = profit / max(1, hits) if hits > 0 else 0.0
+                
+                self.logger.info(f"  {mem_type}: size={size}, hits={hits}, profit=€{profit:.2f}, efficiency=€{efficiency:.2f}/hit")
         except Exception as e:
             self.logger.error(f"Error logging performance summary: {e}")
+            # Log the actual stats structure for debugging
+            self.logger.error(f"Memory performance structure: {self.memory_performance}")
 
     def optimize_allocation(self, episode: int):
         """FIX: Periodically rebalance memory based on performance"""

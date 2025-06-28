@@ -11,15 +11,14 @@ def utcnow() -> str:
 
 class RiskAdjustedReward(Module):
     """
-    FIXED: Balanced risk-adjusted reward shaper that encourages profitable trading
-    while managing risk appropriately.
+    FIXED: Balanced risk-adjusted reward shaper with unified calculation logic.
     
-    Key improvements:
-    - Positive reinforcement for successful trades
-    - Progressive penalties that scale with account state
-    - Better bootstrapping behavior
-    - Sharpe ratio bonus for consistent performance
-    - PROPER LOGGING IN ALL METHODS
+    Key fixes:
+    - Single source of truth for reward calculation
+    - No duplicate state updates
+    - Consistent reward logic
+    - Stable Sharpe ratio calculation
+    - Controlled logging frequency
     """
 
     def __init__(
@@ -28,7 +27,7 @@ class RiskAdjustedReward(Module):
         env=None,
         debug: bool = True,
         history: int = 50,
-        min_trade_bonus: float = 0.5,  # Minimum bonus for taking trades
+        min_trade_bonus: float = 0.5,
     ):
         self.initial_balance = initial_balance
         self.env = env
@@ -36,23 +35,23 @@ class RiskAdjustedReward(Module):
         self.history_size = history
         self.min_trade_bonus = min_trade_bonus
 
-        # More balanced reward weights (all evolvable)
-        self.regime_weights = np.array([0.3, 0.4, 0.3], np.float32)  # noise, normal, trending
+        # Balanced reward weights (all evolvable)
+        self.regime_weights = np.array([0.3, 0.4, 0.3], np.float32)
         
-        # REDUCED penalties to encourage trading
-        self.dd_pen_weight = 2.0          # Reduced from 10.0
-        self.risk_pen_weight = 0.1        # Reduced from 0.3
-        self.tail_pen_weight = 0.5        # Reduced from 1.0
-        self.mistake_pen_weight = 0.3     # Reduced from 0.5
-        self.no_trade_penalty_weight = 0.05  # Reduced from 0.1
+        # Reasonable penalties
+        self.dd_pen_weight = 2.0
+        self.risk_pen_weight = 0.1
+        self.tail_pen_weight = 0.5
+        self.mistake_pen_weight = 0.3
+        self.no_trade_penalty_weight = 0.05
         
-        # NEW: Positive reinforcement weights
-        self.win_bonus_weight = 1.0       # Bonus for profitable trades
-        self.consistency_bonus_weight = 0.5  # Bonus for consistent performance
-        self.sharpe_bonus_weight = 0.3    # Bonus for good risk-adjusted returns
-        self.trade_frequency_bonus = 0.2  # Bonus for maintaining activity
+        # Positive reinforcement weights
+        self.win_bonus_weight = 1.0
+        self.consistency_bonus_weight = 0.5
+        self.sharpe_bonus_weight = 0.3
+        self.trade_frequency_bonus = 0.2
         
-        # Performance tracking
+        # FIXED: Single state management
         self._reward_history = deque(maxlen=history)
         self._pnl_history = deque(maxlen=history)
         self._trade_count_history = deque(maxlen=20)
@@ -60,6 +59,7 @@ class RiskAdjustedReward(Module):
         self._last_reason = ""
         self._total_trades = 0
         self._winning_trades = 0
+        self._call_count = 0  # For controlled logging
         
         # Audit trail
         self.audit_trail: List[Dict[str, Any]] = []
@@ -69,16 +69,14 @@ class RiskAdjustedReward(Module):
         self._setup_logging()
 
     def _setup_logging(self):
-        """FIXED: Proper logging configuration"""
-        # Setup logging
+        """FIXED: Proper logging configuration with controlled frequency"""
         log_dir = os.path.join("logs", "reward")
         os.makedirs(log_dir, exist_ok=True)
         log_path = os.path.join(log_dir, "risk_adjusted_reward.log")
 
-        # Create unique logger name to avoid conflicts
         logger_name = f"RiskAdjustedReward_{id(self)}"
         self.logger = logging.getLogger(logger_name)
-        self.logger.handlers.clear()  # Clear existing handlers
+        self.logger.handlers.clear()
         
         # File handler
         file_handler = logging.FileHandler(log_path)
@@ -95,32 +93,26 @@ class RiskAdjustedReward(Module):
             console_handler.setFormatter(console_formatter)
             self.logger.addHandler(console_handler)
         
-        # Set levels
         self.logger.setLevel(logging.DEBUG if self.debug else logging.INFO)
-        self.logger.propagate = False  # Prevent conflicts
+        self.logger.propagate = False
         
-        # FIXED: Test logging to verify it works
-        self.logger.info("RiskAdjustedReward initialized with enhanced logging")
-        if self.debug:
-            self.logger.debug("Debug logging enabled")
-        
-        print(f"[REWARD INIT] Logging to: {log_path}")  # Console confirmation
+        self.logger.info("RiskAdjustedReward initialized with unified calculation")
+        print(f"[REWARD INIT] Logging to: {log_path}")
 
     def _record_audit(self, details: Dict[str, Any]) -> None:
-        """FIXED: Enhanced audit recording with logging"""
+        """FIXED: Controlled audit recording"""
         details["timestamp"] = utcnow()
         self.audit_trail.append(details)
         
         if len(self.audit_trail) > self._audit_log_size:
             self.audit_trail = self.audit_trail[-self._audit_log_size:]
         
-        # FIXED: Always log audit in debug mode
-        if self.debug:
-            self.logger.debug(f"[AUDIT] {details}")
-        
-        # FIXED: Log important events even in non-debug mode
-        if abs(details.get("final_reward", 0)) > 0.1:
-            self.logger.info(f"Significant reward: {details.get('final_reward', 0):.4f}")
+        # Only log significant rewards to avoid spam
+        final_reward = details.get("final_reward", 0)
+        if abs(final_reward) > 0.1:
+            self.logger.info(f"Significant reward: {final_reward:.4f}")
+            if self.debug:
+                self.logger.debug(f"[AUDIT] {details}")
 
     def get_last_audit(self) -> Dict[str, Any]:
         return self.audit_trail[-1] if self.audit_trail else {}
@@ -135,9 +127,9 @@ class RiskAdjustedReward(Module):
         # Mutate regime weights
         self.regime_weights += np.random.normal(0, std, size=3)
         self.regime_weights = np.clip(self.regime_weights, 0.0, 1.0)
-        self.regime_weights /= (self.regime_weights.sum() + 1e-8)  # Normalize
+        self.regime_weights /= (self.regime_weights.sum() + 1e-8)
         
-        # Mutate penalty weights (keep them reasonable)
+        # Mutate penalty weights
         self.dd_pen_weight = np.clip(
             self.dd_pen_weight + np.random.normal(0, std * 2), 0.5, 5.0
         )
@@ -164,9 +156,6 @@ class RiskAdjustedReward(Module):
         self.sharpe_bonus_weight = np.clip(
             self.sharpe_bonus_weight + np.random.normal(0, std), 0.0, 1.0
         )
-        
-        if self.debug:
-            self.logger.debug(f"Mutated weights: {self.get_weights()}")
 
     def crossover(self, other: "RiskAdjustedReward") -> "RiskAdjustedReward":
         """Create offspring via crossover"""
@@ -177,7 +166,6 @@ class RiskAdjustedReward(Module):
             history=self.history_size
         )
         
-        # Crossover all weight attributes
         weight_attrs = [
             "regime_weights", "dd_pen_weight", "risk_pen_weight",
             "tail_pen_weight", "mistake_pen_weight", "no_trade_penalty_weight",
@@ -197,8 +185,6 @@ class RiskAdjustedReward(Module):
                     value = value.copy()
                 setattr(child, attr, value)
                 
-        if self.debug:
-            self.logger.debug("Crossover complete.")
         return child
 
     def get_weights(self) -> Dict[str, Any]:
@@ -227,23 +213,31 @@ class RiskAdjustedReward(Module):
         self._last_reason = ""
         self._total_trades = 0
         self._winning_trades = 0
+        self._call_count = 0
         
         if self.debug:
             self.logger.debug("Reward shaper reset")
 
     def _calculate_sharpe_bonus(self) -> float:
-        """Calculate bonus based on Sharpe ratio of recent rewards"""
+        """FIXED: Stable Sharpe ratio calculation"""
         if len(self._reward_history) < 5:
             return 0.0
             
         rewards = np.array(self._reward_history)
-        if rewards.std() < 1e-8:
-            return 0.0
-            
-        sharpe = rewards.mean() / (rewards.std() + 1e-8) * np.sqrt(len(rewards))
-        # Normalize to 0-1 range
-        normalized_sharpe = np.tanh(sharpe / 2.0)
-        return float(normalized_sharpe * self.sharpe_bonus_weight)
+        
+        # FIXED: More stable Sharpe calculation
+        mean_reward = rewards.mean()
+        std_reward = rewards.std()
+        
+        # Ensure minimum std to prevent explosion
+        min_std = max(0.1, abs(mean_reward) * 0.1)
+        std_reward = max(std_reward, min_std)
+        
+        sharpe = mean_reward / std_reward * np.sqrt(min(len(rewards), 252))
+        
+        # FIXED: More conservative normalization
+        normalized_sharpe = np.tanh(sharpe / 5.0)  # Reduced sensitivity
+        return float(np.clip(normalized_sharpe * self.sharpe_bonus_weight, -0.5, 0.5))
 
     def _calculate_consistency_bonus(self) -> float:
         """Calculate bonus for consistent positive performance"""
@@ -253,8 +247,7 @@ class RiskAdjustedReward(Module):
         recent_pnls = list(self._pnl_history)[-10:]
         positive_ratio = sum(1 for p in recent_pnls if p > 0) / len(recent_pnls)
         
-        # Bonus for steady positive performance
-        consistency_score = positive_ratio ** 2  # Quadratic to reward high consistency
+        consistency_score = positive_ratio ** 2
         return float(consistency_score * self.consistency_bonus_weight)
 
     def _calculate_activity_bonus(self) -> float:
@@ -263,7 +256,7 @@ class RiskAdjustedReward(Module):
             return 0.0
             
         recent_activity = np.mean(self._trade_count_history)
-        # Target 0.5-2 trades per step on average
+        
         if recent_activity < 0.5:
             activity_score = recent_activity / 0.5
         elif recent_activity > 2.0:
@@ -273,192 +266,22 @@ class RiskAdjustedReward(Module):
             
         return float(max(0, activity_score) * self.trade_frequency_bonus)
 
-    def step(
-        self,
-        balance: float,
-        trades: List[dict],
-        drawdown: float,
-        regime_onehot: np.ndarray,
-        actions: np.ndarray,
-        info: Optional[Dict[str, Any]] = None,
-        **kwargs  # Accept old parameter names
-    ) -> float:
-        """
-        Calculate risk-adjusted reward with balanced incentives.
-        
-        FIXED:
-        - Rewards successful trades beyond just PnL
-        - Progressive penalties based on account state
-        - Bonuses for consistency and good risk management
-        - Minimal penalty for exploration
-        - COMPREHENSIVE LOGGING
-        """
-        # Handle legacy parameters
-        if 'current_balance' in kwargs:
-            balance = kwargs['current_balance']
-        if 'current_drawdown' in kwargs:
-            drawdown = kwargs['current_drawdown']
-            
-        # Prepare audit record
-        rec: Dict[str, Any] = {
-            "reason": None,
-            "pnl": 0.0,
-            "drawdown_penalty": 0.0,
-            "risk_penalty": 0.0,
-            "tail_penalty": 0.0,
-            "regime_bonus": 0.0,
-            "mistake_penalty": 0.0,
-            "no_trade_penalty": 0.0,
-            "win_bonus": 0.0,
-            "consistency_bonus": 0.0,
-            "sharpe_bonus": 0.0,
-            "activity_bonus": 0.0,
-            "raw_actions_norm": float(np.linalg.norm(actions)),
-        }
-
-        # Calculate PnL and track trades
-        pnl = sum(t["pnl"] for t in trades) if trades else 0.0
+    def _update_state_once(self, trades: List[dict], pnl: float, reward: float) -> None:
+        """FIXED: Single state update method to prevent duplicates"""
+        # Update histories
         self._pnl_history.append(pnl)
         self._trade_count_history.append(len(trades))
-        
-        if trades:
-            self._total_trades += len(trades)
-            self._winning_trades += sum(1 for t in trades if t["pnl"] > 0)
-            
-        # Base reward is PnL
-        reward = pnl
-        rec["pnl"] = pnl
-        
-        # ========== PENALTIES (kept reasonable) ==========
-        
-        # 1. Drawdown penalty (progressive)
-        if drawdown > 0.05:  # Only penalize significant drawdown
-            dd_penalty = drawdown ** 2 * self.dd_pen_weight  # Quadratic scaling
-            reward -= dd_penalty
-            rec["drawdown_penalty"] = dd_penalty
-            
-        # 2. Risk penalty (minimal to avoid discouraging trades)
-        risk_penalty = min(rec["raw_actions_norm"] * self.risk_pen_weight, 0.1)
-        reward -= risk_penalty
-        rec["risk_penalty"] = risk_penalty
-        
-        # 3. Tail risk penalty (only for actual losses)
-        if trades:
-            losses = [t["pnl"] for t in trades if t["pnl"] < 0]
-            if losses:
-                tail_penalty = abs(np.mean(losses)) * self.tail_pen_weight * 0.1
-                reward -= tail_penalty
-                rec["tail_penalty"] = tail_penalty
-                
-        # 4. Mistake memory penalty (if available)
-        if self.env and hasattr(self.env, "mistake_memory"):
-            try:
-                mm_score = float(self.env.mistake_memory.get_observation_components()[0])
-                mm_penalty = mm_score * self.mistake_pen_weight
-                reward -= mm_penalty
-                rec["mistake_penalty"] = mm_penalty
-            except:
-                pass
-                
-        # ========== BONUSES (encourage good behavior) ==========
-        
-        # 1. Regime bonus
-        regime_bonus = float(np.dot(regime_onehot, self.regime_weights))
-        reward += regime_bonus
-        rec["regime_bonus"] = regime_bonus
-        
-        # 2. Win bonus (reward profitable trades)
-        if trades:
-            win_ratio = sum(1 for t in trades if t["pnl"] > 0) / len(trades)
-            win_bonus = win_ratio * self.win_bonus_weight
-            reward += win_bonus
-            rec["win_bonus"] = win_bonus
-            rec["reason"] = "trade"
-        else:
-            rec["reason"] = "no-trade"
-            
-        # 3. Consistency bonus
-        consistency_bonus = self._calculate_consistency_bonus()
-        reward += consistency_bonus
-        rec["consistency_bonus"] = consistency_bonus
-        
-        # 4. Sharpe bonus
-        sharpe_bonus = self._calculate_sharpe_bonus()
-        reward += sharpe_bonus
-        rec["sharpe_bonus"] = sharpe_bonus
-        
-        # 5. Activity bonus
-        activity_bonus = self._calculate_activity_bonus()
-        reward += activity_bonus
-        rec["activity_bonus"] = activity_bonus
-        
-        # ========== NO-TRADE HANDLING ==========
-        if not trades:
-            # Very light penalty, mainly to encourage exploration
-            no_trade_penalty = self.no_trade_penalty_weight
-            
-            # Reduce penalty if we're in drawdown (defensive is ok)
-            if drawdown > 0.1:
-                no_trade_penalty *= 0.5
-                
-            # Reduce penalty if action was small (genuinely no opportunity)
-            if rec["raw_actions_norm"] < 0.1:
-                no_trade_penalty *= 0.3
-                
-            reward -= no_trade_penalty
-            rec["no_trade_penalty"] = no_trade_penalty
-            
-            # But still give minimum exploration bonus
-            reward += self.min_trade_bonus * 0.1
-            
-        # ========== FINAL ADJUSTMENTS ==========
-        
-        # Ensure reward is bounded to prevent instability
-        reward = np.clip(reward, -10.0, 10.0)
-        
-        # Bootstrap bonus: Be more forgiving early on
-        if self._total_trades < 10:
-            reward += 0.1  # Small exploration bonus
-            
-        # Update history and audit
-        self._last_reward = float(reward)
-        self._last_reason = rec["reason"]
         self._reward_history.append(reward)
         
-        # Add final reward to record
-        rec["final_reward"] = reward
-        rec["method"] = "step"
-        self._record_audit(rec)
-        
-        # Populate info dict if provided
-        if info is not None:
-            info["shaped_reward"] = reward
-            info["reward_components"] = rec.copy()
-            info["win_rate"] = (
-                self._winning_trades / self._total_trades 
-                if self._total_trades > 0 else 0.0
-            )
-        
-        # FIXED: Always log when step() is called
-        self.logger.info(
-            f"step: reward={reward:.4f}, pnl={pnl:.4f}, "
-            f"trades={len(trades)}, drawdown={drawdown:.3f}"
-        )
-        
-        # Log detailed breakdown
-        if self.debug or abs(reward) > 0.1:
-            self.logger.debug(f"Detailed components: {rec}")
-        
-        # Log performance metrics
-        if self._total_trades > 0 and self._total_trades % 10 == 0:
-            win_rate = self._winning_trades / self._total_trades
-            avg_reward = np.mean(self._reward_history) if self._reward_history else 0
-            self.logger.info(
-                f"Performance update: trades={self._total_trades}, "
-                f"win_rate={win_rate:.3f}, avg_reward={avg_reward:.4f}"
-            )
+        # Update trade tracking
+        if trades:
+            self._total_trades += len(trades)
+            self._winning_trades += sum(1 for t in trades if t.get("pnl", 0) > 0)
             
-        return float(reward)
+        # Update last reward
+        self._last_reward = float(reward)
+        self._last_reason = "trade" if trades else "no-trade"
+        self._call_count += 1
 
     def shape_reward(
         self,
@@ -469,102 +292,169 @@ class RiskAdjustedReward(Module):
         actions: Optional[np.ndarray] = None,
     ) -> float:
         """
-        FIXED: Enhanced shape_reward with comprehensive logging and better calculation
-        This is the method your environment calls!
+        FIXED: Primary reward calculation method with unified logic
         """
-        # Calculate components
+        # Calculate base components
         realised_pnl = sum(t.get("pnl", 0.0) for t in trades)
         base_component = realised_pnl / (self.initial_balance + 1e-12)
-        drawdown_penalty = 0.5 * drawdown
-        consensus_factor = 0.5 + consensus
         
-        # FIXED: Add bonuses and penalties like in step() method
-        win_bonus = 0.0
-        activity_bonus = 0.0
-        no_trade_penalty = 0.0
-        consistency_bonus = 0.0
-        sharpe_bonus = 0.0
+        # Initialize reward with base PnL
+        reward = realised_pnl
         
-        if trades:
-            # Win bonus
-            win_ratio = sum(1 for t in trades if t.get("pnl", 0) > 0) / len(trades)
-            win_bonus = win_ratio * 0.5  # Reduced compared to step() method
-            
-            # Activity bonus (encourage some trading)
-            activity_bonus = min(len(trades) * 0.1, 0.3)
-            
-            # Update tracking
-            self._total_trades += len(trades)
-            self._winning_trades += sum(1 for t in trades if t.get("pnl", 0) > 0)
-        else:
-            # Light no-trade penalty
-            no_trade_penalty = 0.05
-            
-            # Reduce penalty if in drawdown (defensive trading is ok)
-            if drawdown > 0.1:
-                no_trade_penalty *= 0.5
-        
-        # Calculate bonuses
-        consistency_bonus = self._calculate_consistency_bonus()
-        sharpe_bonus = self._calculate_sharpe_bonus()
-        
-        # Combine components
-        raw_reward = (
-            base_component + win_bonus + activity_bonus + consistency_bonus + sharpe_bonus - 
-            drawdown_penalty - no_trade_penalty
-        ) * consensus_factor
-        
-        final_reward = float(np.clip(raw_reward, -10.0, 10.0))
-        
-        # FIXED: Add comprehensive logging
+        # Prepare detailed components for audit
         components = {
             "pnl": realised_pnl,
             "base_component": base_component,
-            "drawdown_penalty": drawdown_penalty,
-            "consensus_factor": consensus_factor,
-            "win_bonus": win_bonus,
-            "activity_bonus": activity_bonus,
-            "consistency_bonus": consistency_bonus,
-            "sharpe_bonus": sharpe_bonus,
-            "no_trade_penalty": no_trade_penalty,
+            "drawdown_penalty": 0.0,
+            "consensus_factor": 0.5 + consensus,
+            "win_bonus": 0.0,
+            "activity_bonus": 0.0,
+            "consistency_bonus": 0.0,
+            "sharpe_bonus": 0.0,
+            "no_trade_penalty": 0.0,
             "trades_count": len(trades),
             "balance": balance,
             "drawdown": drawdown,
             "consensus": consensus,
-            "final_reward": final_reward,
-            "method": "shape_reward"
         }
         
-        # Update history for consistency
-        self._reward_history.append(final_reward)
-        self._pnl_history.append(realised_pnl)
+        # ========== PENALTIES ==========
         
-        # FIXED: Always log every call (this was the missing piece!)
-        self.logger.info(
-            f"shape_reward: reward={final_reward:.4f}, "
-            f"pnl={realised_pnl:.4f}, trades={len(trades)}, "
-            f"drawdown={drawdown:.3f}, consensus={consensus:.3f}"
-        )
-        
-        # Detailed logging in debug mode
-        if self.debug:
-            self.logger.debug(f"Components: {components}")
+        # 1. Drawdown penalty (progressive)
+        if drawdown > 0.05:
+            dd_penalty = drawdown ** 2 * self.dd_pen_weight
+            reward -= dd_penalty
+            components["drawdown_penalty"] = dd_penalty
             
-            if self._total_trades > 0:
-                win_rate = self._winning_trades / self._total_trades
-                self.logger.debug(
-                    f"Performance: total_trades={self._total_trades}, "
-                    f"win_rate={win_rate:.3f}"
-                )
+        # 2. Risk penalty (minimal)
+        if actions is not None:
+            risk_penalty = min(np.linalg.norm(actions) * self.risk_pen_weight, 0.1)
+            reward -= risk_penalty
+            
+        # 3. Tail risk penalty
+        if trades:
+            losses = [t.get("pnl", 0) for t in trades if t.get("pnl", 0) < 0]
+            if losses:
+                tail_penalty = abs(np.mean(losses)) * self.tail_pen_weight * 0.1
+                reward -= tail_penalty
+                
+        # 4. Mistake memory penalty
+        if self.env and hasattr(self.env, "mistake_memory"):
+            try:
+                mm_score = float(self.env.mistake_memory.get_observation_components()[0])
+                mm_penalty = mm_score * self.mistake_pen_weight
+                reward -= mm_penalty
+            except:
+                pass
         
-        # Log significant rewards even in non-debug mode
-        if abs(final_reward) > 0.1:
-            self.logger.info(f"Significant reward calculated: {final_reward:.4f}")
+        # ========== BONUSES ==========
+        
+        if trades:
+            # Win bonus
+            win_ratio = sum(1 for t in trades if t.get("pnl", 0) > 0) / len(trades)
+            win_bonus = win_ratio * self.win_bonus_weight
+            reward += win_bonus
+            components["win_bonus"] = win_bonus
+            
+            # Activity bonus
+            activity_bonus = min(len(trades) * 0.1, 0.3)
+            reward += activity_bonus
+            components["activity_bonus"] = activity_bonus
+            
+        else:
+            # No-trade penalty (light)
+            no_trade_penalty = self.no_trade_penalty_weight
+            
+            # Reduce penalty in drawdown (defensive trading is ok)
+            if drawdown > 0.1:
+                no_trade_penalty *= 0.5
+                
+            reward -= no_trade_penalty
+            components["no_trade_penalty"] = no_trade_penalty
+        
+        # Calculate bonuses (these use historical data)
+        consistency_bonus = self._calculate_consistency_bonus()
+        sharpe_bonus = self._calculate_sharpe_bonus()
+        
+        reward += consistency_bonus + sharpe_bonus
+        components["consistency_bonus"] = consistency_bonus
+        components["sharpe_bonus"] = sharpe_bonus
+        
+        # Apply consensus factor
+        reward *= components["consensus_factor"]
+        
+        # FIXED: Bound reward to prevent training instability
+        final_reward = float(np.clip(reward, -5.0, 5.0))
+        components["final_reward"] = final_reward
+        components["method"] = "shape_reward"
+        
+        # FIXED: Update state only once
+        self._update_state_once(trades, realised_pnl, final_reward)
+        
+        # FIXED: Controlled logging frequency
+        if self._call_count % 10 == 1 or abs(final_reward) > 0.1:
+            self.logger.info(
+                f"shape_reward: reward={final_reward:.4f}, "
+                f"pnl={realised_pnl:.4f}, trades={len(trades)}, "
+                f"drawdown={drawdown:.3f}, consensus={consensus:.3f}"
+            )
+            
+            if self.debug:
+                self.logger.debug(f"Components: {components}")
+                
+                if self._total_trades > 0:
+                    win_rate = self._winning_trades / self._total_trades
+                    self.logger.debug(
+                        f"Performance: total_trades={self._total_trades}, "
+                        f"win_rate={win_rate:.3f}"
+                    )
         
         # Record audit trail
         self._record_audit(components)
         
         return final_reward
+
+    def step(
+        self,
+        balance: float,
+        trades: List[dict],
+        drawdown: float,
+        regime_onehot: np.ndarray,
+        actions: np.ndarray,
+        info: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ) -> float:
+        """
+        FIXED: RL step method that delegates to shape_reward to avoid duplication
+        """
+        # Handle legacy parameters
+        if 'current_balance' in kwargs:
+            balance = kwargs['current_balance']
+        if 'current_drawdown' in kwargs:
+            drawdown = kwargs['current_drawdown']
+            
+        # Calculate consensus from regime (simple heuristic)
+        consensus = float(np.dot(regime_onehot, self.regime_weights))
+        
+        # FIXED: Delegate to shape_reward to avoid duplicate logic
+        reward = self.shape_reward(
+            trades=trades,
+            balance=balance,
+            drawdown=drawdown,
+            consensus=consensus,
+            actions=actions
+        )
+        
+        # Populate info dict if provided
+        if info is not None:
+            info["shaped_reward"] = reward
+            info["reward_components"] = self.get_last_audit()
+            info["win_rate"] = (
+                self._winning_trades / self._total_trades 
+                if self._total_trades > 0 else 0.0
+            )
+        
+        return reward
 
     def get_observation_components(self) -> np.ndarray:
         """Return observation components for the agent"""
@@ -607,6 +497,7 @@ class RiskAdjustedReward(Module):
             "_last_reason": self._last_reason,
             "_total_trades": self._total_trades,
             "_winning_trades": self._winning_trades,
+            "_call_count": self._call_count,
             "weights": self.get_weights(),
         }
 
@@ -628,6 +519,7 @@ class RiskAdjustedReward(Module):
         self._last_reason = state.get("_last_reason", "")
         self._total_trades = state.get("_total_trades", 0)
         self._winning_trades = state.get("_winning_trades", 0)
+        self._call_count = state.get("_call_count", 0)
         
         # Restore weights
         weights = state.get("weights", {})
@@ -645,7 +537,7 @@ class RiskAdjustedReward(Module):
     def debug_reward_usage(self):
         """Debug utility to check reward calculation usage"""
         print("\n" + "="*50)
-        print("REWARD SYSTEM DEBUG")
+        print("REWARD SYSTEM DEBUG (FIXED)")
         print("="*50)
         
         print(f"Logger name: {self.logger.name}")
@@ -661,8 +553,10 @@ class RiskAdjustedReward(Module):
                     size = os.path.getsize(handler.baseFilename)
                     print(f"    File size: {size} bytes")
         
+        print(f"Total calls: {self._call_count}")
         print(f"Total trades recorded: {self._total_trades}")
         print(f"Winning trades: {self._winning_trades}")
+        print(f"Win rate: {self._winning_trades/max(self._total_trades,1):.3f}")
         print(f"Reward history length: {len(self._reward_history)}")
         print(f"Last reward: {self._last_reward}")
         print(f"Last reason: {self._last_reason}")
@@ -670,21 +564,20 @@ class RiskAdjustedReward(Module):
         
         # Test logging
         print("\nTesting logging...")
-        self.logger.info("TEST INFO MESSAGE FROM DEBUG")
-        self.logger.debug("TEST DEBUG MESSAGE FROM DEBUG")
-        self.logger.warning("TEST WARNING MESSAGE FROM DEBUG")
+        self.logger.info("TEST INFO MESSAGE FROM DEBUG (FIXED)")
+        self.logger.debug("TEST DEBUG MESSAGE FROM DEBUG (FIXED)")
         
         print("="*50)
 
     def test_reward_calculation(self):
         """Test reward calculation with logging"""
-        print("Testing reward calculation...")
+        print("Testing fixed reward calculation...")
         
         # Test with trades
         test_trades = [{"pnl": 10.0}, {"pnl": -5.0}]
         reward1 = self.shape_reward(
             trades=test_trades,
-            balance=3000.0,
+            balance=10000.0,
             drawdown=0.05,
             consensus=0.6
         )
@@ -693,10 +586,12 @@ class RiskAdjustedReward(Module):
         # Test without trades
         reward2 = self.shape_reward(
             trades=[],
-            balance=3000.0,
+            balance=10000.0,
             drawdown=0.05,
             consensus=0.6
         )
         print(f"Test reward without trades: {reward2:.4f}")
+        
+        print(f"State after tests - Total trades: {self._total_trades}, Calls: {self._call_count}")
         
         return reward1, reward2
