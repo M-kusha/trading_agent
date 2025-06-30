@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-AI Trading Dashboard Launcher
-Starts both backend and frontend services with proper coordination
+AI Trading System Dashboard Runner
+Replaces run.py - Launches the complete dashboard system with backend and frontend
+Production-ready launcher with comprehensive system checks and monitoring
 """
 
 import os
@@ -9,78 +10,124 @@ os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 import sys
 import time
 import signal
-import subprocess
-import threading
 import logging
-from pathlib import Path
-import psutil
+logging.getLogger("gymnasium.envs.registration").setLevel(logging.ERROR)
 import argparse
+import subprocess
+import webbrowser
+from pathlib import Path
+from typing import Optional, List
+import psutil
+import threading
+from datetime import datetime
 
-# Configure logging for Windows compatibility
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),  # Use stdout explicitly
-        logging.FileHandler('logs/dashboard_launcher.log', encoding='utf-8')
-    ]
-)
-logger = logging.getLogger("DashboardLauncher")
+# ═══════════════════════════════════════════════════════════════════
+# Configuration and Constants
+# ═══════════════════════════════════════════════════════════════════
 
-# Windows-compatible messages (no emojis)
+DEFAULT_BACKEND_PORT = 8000
+DEFAULT_FRONTEND_PORT = 3000
+BACKEND_STARTUP_TIMEOUT = 120
+BACKEND_MODULE = "backend.main:app"
+
 MESSAGES = {
-    'directory_created': '[OK] Directory structure created',
-    'starting_dashboard': '[STARTUP] Starting AI Trading Dashboard...',
-    'checking_deps': '[CHECK] Checking dependencies...',
-    'deps_available': '[OK] All dependencies available',
-    'checking_ports': '[CHECK] Checking port availability...',
-    'ports_available': '[OK] All ports available',
-    'starting_backend': '[STARTUP] Starting backend server...',
-    'backend_started': '[OK] Backend started on port {}',
-    'production_mode': '[INFO] Production mode - frontend served by backend',
-    'starting_tensorboard': '[STARTUP] Starting TensorBoard...',
-    'tensorboard_failed': '[WARNING] TensorBoard failed to start (may start later)',
-    'starting_monitor': '[MONITOR] Starting process monitor...',
-    'process_stopped': '[WARNING] Process {} stopped unexpectedly',
-    'restarting_process': '[RESTART] Restarting {}...',
-    'restart_failed': '[ERROR] Failed to restart {}',
-    'shutdown_signal': '[SIGNAL] Received signal {}, shutting down...',
-    'stopping_service': '[SHUTDOWN] Stopping {}...',
-    'force_killing': '[WARNING] Force killing {}...',
-    'shutdown_complete': '[OK] Dashboard shutdown complete'
+    'title': '🤖 AI Trading System Dashboard',
+    'subtitle': 'Production-ready PPO-Lagrangian Trading System',
+    'starting': 'Starting AI Trading Dashboard...',
+    'backend_starting': 'Starting backend server...',
+    'frontend_starting': 'Starting frontend development server...',
+    'system_ready': 'System ready! Dashboard available at:',
+    'backend_ready': 'Backend API available at:',
+    'opening_browser': 'Opening browser...',
+    'shutdown': 'Shutting down dashboard...',
+    'error': 'Error occurred:',
+    'checking_deps': 'Checking dependencies...',
+    'deps_available': 'All dependencies available',
+    'missing_deps': 'Missing dependencies. Run: pip install -r requirements.txt',
+    'port_in_use': 'Port {port} is already in use',
+    'checking_ports': 'Checking port availability...',
+    'ports_available': 'Ports available',
+    'backend_health': 'Backend health check: {status}',
+    'frontend_build_check': 'Checking frontend build...',
+    'frontend_build_missing': 'Frontend build not found. Building now...',
+    'frontend_build_complete': 'Frontend build complete',
+    'production_mode': 'Running in production mode (frontend served by backend)',
+    'dev_mode': 'Running in development mode (separate frontend server)',
 }
 
-class DashboardLauncher:
-    def __init__(self, dev_mode=False, port_backend=8000, port_frontend=3000):
-        self.dev_mode = dev_mode
-        self.port_backend = port_backend
-        self.port_frontend = port_frontend
-        self.processes = {}
-        self.running = True
-        
-        # Setup signal handlers
-        signal.signal(signal.SIGINT, self.signal_handler)
-        signal.signal(signal.SIGTERM, self.signal_handler)
-        
-        # Ensure required directories exist
-        self.setup_directories()
-        
-    def setup_directories(self):
-        """Create necessary directories"""
-        directories = [
-            'logs', 'logs/training', 'logs/risk', 'logs/simulation',
-            'logs/strategy', 'logs/position', 'logs/tensorboard',
-            'checkpoints', 'models', 'data'
-        ]
-        
-        for dir_path in directories:
-            Path(dir_path).mkdir(parents=True, exist_ok=True)
-            
-        logger.info(MESSAGES['directory_created'])
+# ═══════════════════════════════════════════════════════════════════
+# Logging Configuration
+# ═══════════════════════════════════════════════════════════════════
 
-    def check_dependencies(self):
-        """Check if all required dependencies are available"""
-        logger.info(MESSAGES['checking_deps'])
+def setup_logging(debug: bool = False) -> logging.Logger:
+    """Setup logging configuration"""
+    log_level = logging.DEBUG if debug else logging.INFO
+    
+    # Create logs directory
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    
+    # Configure logging
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(log_dir / 'dashboard.log', encoding='utf-8')
+        ]
+    )
+    
+    logger = logging.getLogger("DashboardRunner")
+    return logger
+
+# ═══════════════════════════════════════════════════════════════════
+# Dashboard Manager Class
+# ═══════════════════════════════════════════════════════════════════
+
+class DashboardManager:
+    """Manages the complete AI trading dashboard system"""
+    
+    def __init__(self, backend_port: int = DEFAULT_BACKEND_PORT, 
+                 frontend_port: int = DEFAULT_FRONTEND_PORT, 
+                 dev_mode: bool = False, debug: bool = False):
+        self.backend_port = backend_port
+        self.frontend_port = frontend_port
+        self.dev_mode = dev_mode
+        self.debug = debug
+        
+        self.logger = setup_logging(debug)
+        self.backend_process: Optional[subprocess.Popen] = None
+        self.frontend_process: Optional[subprocess.Popen] = None
+        self.is_running = False
+        
+        # Setup signal handlers for graceful shutdown
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        
+    def _signal_handler(self, signum, frame):
+        """Handle shutdown signals gracefully"""
+        self.logger.info("Received shutdown signal. Stopping dashboard...")
+        self.stop()
+        sys.exit(0)
+    
+    def display_header(self):
+        """Display professional header"""
+        width = 80
+        print("=" * width)
+        print(f"{MESSAGES['title']:^{width}}")
+        print(f"{MESSAGES['subtitle']:^{width}}")
+        print("=" * width)
+        print(f"⏰ Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"🔧 Mode: {'Development' if self.dev_mode else 'Production'}")
+        print(f"🌐 Backend Port: {self.backend_port}")
+        if self.dev_mode:
+            print(f"🖥️ Frontend Port: {self.frontend_port}")
+        print("=" * width)
+        print()
+    
+    def check_dependencies(self) -> bool:
+        """Check if required dependencies are available"""
+        self.logger.info(MESSAGES['checking_deps'])
         
         # Check Python packages
         required_packages = [
@@ -96,8 +143,8 @@ class DashboardLauncher:
                 missing_packages.append(package)
         
         if missing_packages:
-            logger.error(f"[ERROR] Missing Python packages: {missing_packages}")
-            logger.error("Run: pip install -r requirements.txt")
+            self.logger.error(f"Missing packages: {missing_packages}")
+            self.logger.error(MESSAGES['missing_deps'])
             return False
             
         # Check Node.js if in dev mode
@@ -106,319 +153,418 @@ class DashboardLauncher:
                 result = subprocess.run(['node', '--version'], 
                                       capture_output=True, text=True, timeout=5)
                 if result.returncode != 0:
-                    logger.error("[ERROR] Node.js not found")
+                    self.logger.error("Node.js not found")
                     return False
-                logger.info(f"[OK] Node.js version: {result.stdout.strip()}")
+                self.logger.info(f"Node.js version: {result.stdout.strip()}")
             except (subprocess.TimeoutExpired, FileNotFoundError):
-                logger.error("[ERROR] Node.js not found or not responding")
+                self.logger.error("Node.js not found or not responding")
                 return False
                 
             # Check if node_modules exists
-            if not Path('node_modules').exists():
-                logger.error("[ERROR] node_modules not found. Run: npm install")
+            if not Path('frontend/node_modules').exists():
+                self.logger.error("frontend/node_modules not found. Run: cd frontend && npm install")
                 return False
         
-        logger.info(MESSAGES['deps_available'])
+        self.logger.info(MESSAGES['deps_available'])
         return True
 
-    def check_ports(self):
+    def check_ports(self) -> bool:
         """Check if required ports are available"""
-        logger.info(MESSAGES['checking_ports'])
+        self.logger.info(MESSAGES['checking_ports'])
         
-        ports_to_check = [self.port_backend]
+        ports_to_check = [self.backend_port]
         if self.dev_mode:
-            ports_to_check.append(self.port_frontend)
+            ports_to_check.append(self.frontend_port)
             
         for port in ports_to_check:
             if self.is_port_in_use(port):
-                logger.error(f"[ERROR] Port {port} is already in use")
+                self.logger.error(MESSAGES['port_in_use'].format(port=port))
                 return False
                 
-        logger.info(MESSAGES['ports_available'])
+        self.logger.info(MESSAGES['ports_available'])
         return True
 
-    def is_port_in_use(self, port):
+    def is_port_in_use(self, port: int) -> bool:
         """Check if a port is currently in use"""
         for conn in psutil.net_connections():
             if conn.laddr.port == port:
                 return True
         return False
-
-    def start_backend(self):
-        """Start the FastAPI backend"""
-        logger.info(MESSAGES['starting_backend'])
+    
+    def check_frontend_build(self) -> bool:
+        """Check and build frontend if necessary"""
+        frontend_dist = Path("frontend/dist")
+        
+        if not self.dev_mode:
+            self.logger.info(MESSAGES['frontend_build_check'])
+            
+            if not frontend_dist.exists() or not any(frontend_dist.iterdir()):
+                self.logger.info(MESSAGES['frontend_build_missing'])
+                
+                # Build frontend
+                try:
+                    os.chdir("frontend")
+                    
+                    # Install dependencies if needed
+                    if not Path("node_modules").exists():
+                        self.logger.info("Installing frontend dependencies...")
+                        subprocess.run(["npm", "install"], check=True, timeout=300)
+                    
+                    # Build frontend
+                    subprocess.run(["npm", "run", "build"], check=True, timeout=180)
+                    os.chdir("..")
+                    
+                    self.logger.info(MESSAGES['frontend_build_complete'])
+                    return True
+                    
+                except Exception as e:
+                    self.logger.error(f"Frontend build failed: {e}")
+                    os.chdir("..")  # Ensure we're back in root directory
+                    return False
+            else:
+                self.logger.info("Frontend build found")
+                return True
+        
+        return True
+    
+    def start_backend(self) -> bool:
+        """Start the FastAPI backend server and wait for /health to respond."""
+        self.logger.info(MESSAGES['backend_starting'])
         
         try:
+            # Build Uvicorn command
             backend_cmd = [
                 sys.executable, "-m", "uvicorn",
-                "backend.main:app",
+                BACKEND_MODULE,
                 "--host", "0.0.0.0",
-                "--port", str(self.port_backend),
-                "--reload"
+                "--port", str(self.backend_port),
+                "--log-level", "debug" if self.debug else "info"
             ]
-
+            if self.debug:
+                # Insert --reload just after the port argument
+                backend_cmd.insert(6, "--reload")
             
-            # Set environment variables
+            # Inherit environment + custom vars
             env = os.environ.copy()
-            env['PYTHONPATH'] = os.getcwd()
-            env['PYTHONIOENCODING'] = 'utf-8'  # Force UTF-8 encoding
+            env.update({
+                "PYTHONPATH": ".",
+                "PYTHONUNBUFFERED": "1",
+                "TRADING_ENV": "development" if self.debug else "production"
+            })
             
-            self.processes['backend'] = subprocess.Popen(
+            # Launch the process
+            self.backend_process = subprocess.Popen(
                 backend_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
                 env=env,
-                cwd=os.getcwd()
+                stdout=(None if self.debug else subprocess.PIPE),
+                stderr=(None if self.debug else subprocess.PIPE),
+                universal_newlines=True
             )
             
-            # Give backend time to start
-            time.sleep(3)
-            
-            if self.processes['backend'].poll() is None:
-                logger.info(MESSAGES['backend_started'].format(self.port_backend))
-                return True
-            else:
-                stderr_output = self.processes['backend'].stderr.read().decode()
-                logger.error(f"[ERROR] Backend failed to start: {stderr_output}")
-                return False
+            # Poll /health once per second until it returns 200 or we timeout
+            for elapsed in range(BACKEND_STARTUP_TIMEOUT):
+                # If process died early, capture stderr and fail immediately
+                if self.backend_process.poll() is not None:
+                    error_output = (self.backend_process.stderr.read()
+                                    if self.backend_process.stderr else "Unknown error")
+                    self.logger.error(f"Backend failed to start: {error_output}")
+                    return False
                 
+                if self.check_backend_health():
+                    self.logger.info(
+                        f"Backend started successfully on port {self.backend_port} "
+                        f"(waited {elapsed+1}s)")
+                    return True
+                
+                time.sleep(1)
+            
+            # If we get here, we never saw a healthy response in time
+            self.logger.error(
+                f"Backend failed to start within {BACKEND_STARTUP_TIMEOUT}s timeout")
+            return False
+        
         except Exception as e:
-            logger.error(f"[ERROR] Failed to start backend: {e}")
+            self.logger.error(f"Failed to start backend: {e}")
             return False
 
-    def start_frontend(self):
-        """Start the frontend development server"""
+    
+    def start_frontend(self) -> bool:
+        """Start the frontend development server (dev mode only)"""
         if not self.dev_mode:
-            logger.info(MESSAGES['production_mode'])
             return True
             
-        logger.info("[STARTUP] Starting frontend development server...")
+        self.logger.info(MESSAGES['frontend_starting'])
         
         try:
-            frontend_cmd = ['npm', 'run', 'dev']
-            
-            self.processes['frontend'] = subprocess.Popen(
-                frontend_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=os.path.join(os.getcwd(), "frontend")  # <-- fixed path
-            )
-            
-            # Give frontend time to start
-            time.sleep(5)
-            
-            if self.processes['frontend'].poll() is None:
-                logger.info(f"[OK] Frontend started on port {self.port_frontend}")
-                return True
-            else:
-                stderr_output = self.processes['frontend'].stderr.read().decode()
-                logger.error(f"[ERROR] Frontend failed to start: {stderr_output}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"[ERROR] Failed to start frontend: {e}")
-            return False
-
-
-    def start_tensorboard(self):
-        """Start TensorBoard server"""
-        logger.info(MESSAGES['starting_tensorboard'])
-        
-        try:
-            # Ensure tensorboard directory exists
-            tb_dir = 'logs/tensorboard'
-            os.makedirs(tb_dir, exist_ok=True)
-            
-            # Create a dummy event file if none exist
-            import glob
-            event_files = glob.glob(os.path.join(tb_dir, "**/events.out.*"), recursive=True)
-            if not event_files:
-                # Create dummy event file to prevent TensorBoard from failing
-                dummy_dir = os.path.join(tb_dir, 'dummy')
-                os.makedirs(dummy_dir, exist_ok=True)
-                logger.info("[INFO] Created dummy TensorBoard directory")
-            
-            tensorboard_cmd = [
-                sys.executable, '-m', 'tensorboard',
-                '--logdir', tb_dir,
-                '--port', '6006',
-                '--host', '0.0.0.0',
-                '--reload_interval', '30'
+            frontend_cmd = [
+                "npm", "run", "dev",
+                "--", "--port", str(self.frontend_port), "--host", "0.0.0.0"
             ]
             
-            # Set environment for Windows compatibility
-            env = os.environ.copy()
-            env['PYTHONIOENCODING'] = 'utf-8'
-            
-            self.processes['tensorboard'] = subprocess.Popen(
-                tensorboard_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=env
+            self.frontend_process = subprocess.Popen(
+                frontend_cmd,
+                cwd="frontend",
+                stdout=subprocess.PIPE if not self.debug else None,
+                stderr=subprocess.PIPE if not self.debug else None,
+                universal_newlines=True
             )
             
-            # Give TensorBoard more time to start
-            time.sleep(5)
+            # Wait for frontend to start
+            for i in range(20):  # Wait up to 20 seconds
+                if self.frontend_process.poll() is not None:
+                    error_output = self.frontend_process.stderr.read() if self.frontend_process.stderr else "Unknown error"
+                    self.logger.error(f"Frontend failed to start: {error_output}")
+                    return False
+                
+                if self.is_port_in_use(self.frontend_port):
+                    self.logger.info(f"Frontend started successfully on port {self.frontend_port}")
+                    return True
+                
+                time.sleep(1)
             
-            if self.processes['tensorboard'].poll() is None:
-                logger.info("[OK] TensorBoard started on port 6006")
-                return True
-            else:
-                # Get error output for debugging
-                try:
-                    stdout, stderr = self.processes['tensorboard'].communicate(timeout=1)
-                    logger.warning(f"[WARNING] TensorBoard startup issue: {stderr.decode()}")
-                except:
-                    pass
-                logger.warning(MESSAGES['tensorboard_failed'])
-                return True  # Not critical for system operation
-                
+            self.logger.error("Frontend failed to start within timeout period")
+            return False
+            
         except Exception as e:
-            logger.warning(f"[WARNING] TensorBoard start failed: {e}")
-            return True  # Not critical
-
-    def monitor_processes(self):
-        """Monitor running processes and restart if needed"""
-        logger.info(MESSAGES['starting_monitor'])
+            self.logger.error(f"Failed to start frontend: {e}")
+            return False
+    
+    def check_backend_health(self) -> bool:
+        """Check if backend is responding"""
+        try:
+            import requests
+            response = requests.get(f"http://localhost:{self.backend_port}/health", timeout=5)
+            return response.status_code == 200
+        except:
+            return False
+    
+    def open_browser(self):
+        """Open the dashboard in the default browser"""
+        if self.dev_mode:
+            url = f"http://localhost:{self.frontend_port}"
+        else:
+            url = f"http://localhost:{self.backend_port}"
         
-        while self.running:
+        self.logger.info(MESSAGES['opening_browser'])
+        
+        def delayed_open():
+            time.sleep(2)  # Give servers time to fully start
             try:
-                for name, process in list(self.processes.items()):
-                    if process and process.poll() is not None:
-                        # Don't restart TensorBoard automatically to avoid spam
-                        if name == 'tensorboard':
-                            continue
-                            
-                        logger.warning(MESSAGES['process_stopped'].format(name))
-                        
-                        # Try to restart critical processes
-                        if name == 'backend':
-                            logger.info(MESSAGES['restarting_process'].format(name))
-                            if not self.start_backend():
-                                logger.error(MESSAGES['restart_failed'].format(name))
-                                self.running = False
-                                break
-                        elif name == 'frontend' and self.dev_mode:
-                            logger.info(MESSAGES['restarting_process'].format(name))
-                            if not self.start_frontend():
-                                logger.warning(MESSAGES['restart_failed'].format(name))
-                
-                time.sleep(10)  # Check every 10 seconds
-                
+                webbrowser.open(url)
             except Exception as e:
-                logger.error(f"[ERROR] Process monitor error: {e}")
-                time.sleep(5)
-
-    def signal_handler(self, signum, frame):
-        """Handle shutdown signals"""
-        logger.info(MESSAGES['shutdown_signal'].format(signum))
-        self.shutdown()
-
-    def shutdown(self):
-        """Gracefully shutdown all processes"""
-        logger.info("[SHUTDOWN] Shutting down dashboard...")
-        self.running = False
+                self.logger.warning(f"Could not open browser automatically: {e}")
         
-        for name, process in self.processes.items():
-            if process and process.poll() is None:
-                logger.info(MESSAGES['stopping_service'].format(name))
-                try:
-                    process.terminate()
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    logger.warning(MESSAGES['force_killing'].format(name))
-                    process.kill()
-                except Exception as e:
-                    logger.error(f"[ERROR] Error stopping {name}: {e}")
-        
-        logger.info(MESSAGES['shutdown_complete'])
-
-    def display_info(self):
-        """Display connection information"""
+        thread = threading.Thread(target=delayed_open, daemon=True)
+        thread.start()
+    
+    def display_ready_message(self):
+        """Display system ready message with URLs"""
         print("\n" + "="*60)
-        print("AI Trading Dashboard")
+        print(f"🎉 {MESSAGES['system_ready']}")
         print("="*60)
-        print(f"Backend API:     http://localhost:{self.port_backend}")
         
         if self.dev_mode:
-            print(f"Frontend:        http://localhost:{self.port_frontend}")
+            print(f"🖥️  Frontend Dashboard:  http://localhost:{self.frontend_port}")
+            print(f"🔧 Backend API:         http://localhost:{self.backend_port}")
+            print(f"📚 API Documentation:   http://localhost:{self.backend_port}/docs")
         else:
-            print(f"Frontend:        http://localhost:{self.port_backend}")
-            
-        print(f"TensorBoard:     http://localhost:6006")
-        print(f"API Docs:        http://localhost:{self.port_backend}/docs")
+            print(f"🖥️  Dashboard:           http://localhost:{self.backend_port}")
+            print(f"📚 API Documentation:   http://localhost:{self.backend_port}/docs")
+            print(f"❤️  Health Check:       http://localhost:{self.backend_port}/health")
+        
         print("="*60)
-        print("Tips:")
-        print("   - Use Ctrl+C to stop all services")
-        print("   - Check logs/ directory for detailed logs")
-        print("   - Visit /docs for API documentation")
+        print("🛑 Press Ctrl+C to stop the dashboard")
         print("="*60)
-
-    def run(self):
-        """Main run method"""
-        logger.info(MESSAGES['starting_dashboard'])
+    
+    def start(self) -> bool:
+        """Start the complete dashboard system"""
+        self.display_header()
         
         # Pre-flight checks
         if not self.check_dependencies():
-            sys.exit(1)
+            return False
             
         if not self.check_ports():
-            sys.exit(1)
+            return False
+            
+        if not self.check_frontend_build():
+            return False
         
-        # Start services
+        # Start backend
         if not self.start_backend():
-            sys.exit(1)
-            
+            self.stop()
+            return False
+        
+        # Start frontend (dev mode only)
         if not self.start_frontend():
-            sys.exit(1)
-            
-        self.start_tensorboard()  # Non-critical
+            self.stop()
+            return False
         
-        # Display connection info
-        self.display_info()
+        self.is_running = True
         
-        # Start monitoring in background thread
-        monitor_thread = threading.Thread(target=self.monitor_processes, daemon=True)
-        monitor_thread.start()
+        # Display ready message and open browser
+        self.display_ready_message()
+        self.open_browser()
         
-        # Keep main thread alive
+        return True
+    
+    def stop(self):
+        """Stop all dashboard processes"""
+        if not self.is_running:
+            return
+        
+        self.logger.info(MESSAGES['shutdown'])
+        self.is_running = False
+        
+        # Stop frontend process
+        if self.frontend_process:
+            try:
+                self.frontend_process.terminate()
+                self.frontend_process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.frontend_process.kill()
+            except Exception as e:
+                self.logger.error(f"Error stopping frontend: {e}")
+        
+        # Stop backend process
+        if self.backend_process:
+            try:
+                self.backend_process.terminate()
+                self.backend_process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.backend_process.kill()
+            except Exception as e:
+                self.logger.error(f"Error stopping backend: {e}")
+        
+        self.logger.info("Dashboard stopped successfully")
+    
+    def wait(self):
+        """Wait for processes to complete"""
         try:
-            while self.running:
+            while self.is_running:
+                # Check if processes are still running
+                if self.backend_process and self.backend_process.poll() is not None:
+                    self.logger.error("Backend process died unexpectedly")
+                    break
+                    
+                if self.frontend_process and self.frontend_process.poll() is not None:
+                    self.logger.error("Frontend process died unexpectedly")
+                    break
+                
                 time.sleep(1)
+                
         except KeyboardInterrupt:
-            pass
+            self.logger.info("Received interrupt signal")
         finally:
-            self.shutdown()
+            self.stop()
+
+# ═══════════════════════════════════════════════════════════════════
+# Command Line Interface
+# ═══════════════════════════════════════════════════════════════════
+
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description="AI Trading System Dashboard Runner",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s                          # Start in production mode
+  %(prog)s --dev                    # Start in development mode
+  %(prog)s --port 8080              # Use custom backend port
+  %(prog)s --dev --frontend-port 3001  # Custom frontend port
+  %(prog)s --debug                  # Enable debug mode
+        """
+    )
+    
+    parser.add_argument(
+        '--port', '--backend-port',
+        type=int,
+        default=DEFAULT_BACKEND_PORT,
+        help=f'Backend server port (default: {DEFAULT_BACKEND_PORT})'
+    )
+    
+    parser.add_argument(
+        '--frontend-port',
+        type=int,
+        default=DEFAULT_FRONTEND_PORT,
+        help=f'Frontend server port for dev mode (default: {DEFAULT_FRONTEND_PORT})'
+    )
+    
+    parser.add_argument(
+        '--dev', '--development',
+        action='store_true',
+        help='Run in development mode with separate frontend server'
+    )
+    
+    parser.add_argument(
+        '--debug',
+        action='store_true',
+        help='Enable debug mode with verbose logging'
+    )
+    
+    parser.add_argument(
+        '--no-browser',
+        action='store_true',
+        help='Do not open browser automatically'
+    )
+    
+    parser.add_argument(
+        '--check',
+        action='store_true',
+        help='Check system requirements and exit'
+    )
+    
+    return parser.parse_args()
 
 def main():
-    parser = argparse.ArgumentParser(description="AI Trading Dashboard Launcher")
-    parser.add_argument(
-        '--dev', 
-        action='store_true', 
-        help='Run in development mode (separate frontend server)'
-    )
-    parser.add_argument(
-        '--backend-port', 
-        type=int, 
-        default=8000, 
-        help='Backend port (default: 8000)'
-    )
-    parser.add_argument(
-        '--frontend-port', 
-        type=int, 
-        default=3000, 
-        help='Frontend port for dev mode (default: 3000)'
-    )
+    """Main entry point"""
+    args = parse_arguments()
     
-    args = parser.parse_args()
-    
-    launcher = DashboardLauncher(
+    # Create dashboard manager
+    dashboard = DashboardManager(
+        backend_port=args.port,
+        frontend_port=args.frontend_port,
         dev_mode=args.dev,
-        port_backend=args.backend_port,
-        port_frontend=args.frontend_port
+        debug=args.debug
     )
     
-    launcher.run()
+    # Check mode only
+    if args.check:
+        dashboard.display_header()
+        success = (
+            dashboard.check_dependencies() and
+            dashboard.check_ports() and
+            dashboard.check_frontend_build()
+        )
+        
+        if success:
+            print("\n✅ All system checks passed! Ready to run dashboard.")
+            return 0
+        else:
+            print("\n❌ System checks failed. Please fix the issues above.")
+            return 1
+    
+    # Disable browser opening if requested
+    if args.no_browser:
+        dashboard.open_browser = lambda: None
+    
+    # Start dashboard
+    try:
+        if dashboard.start():
+            dashboard.wait()
+            return 0
+        else:
+            print("\n❌ Failed to start dashboard. Check logs for details.")
+            return 1
+            
+    except KeyboardInterrupt:
+        print("\n🛑 Dashboard stopped by user")
+        return 0
+    except Exception as e:
+        print(f"\n💥 Unexpected error: {e}")
+        dashboard.stop()
+        return 1
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

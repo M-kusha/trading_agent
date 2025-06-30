@@ -293,29 +293,22 @@ def _initialize_arbiter(self):
 
 def _initialize_dependent_modules(self):
     """Initialize modules that depend on arbiter - FIXED"""
-    # FIXED: Create ExplanationGenerator with correct parameters
+    # Correctly instantiate ExplanationGenerator with required arguments
     try:
-        # Try the simple constructor first
-        self.explainer = ExplanationGenerator(debug=self.config.debug)
-        
-        # If it has a method to set the regime switcher and arbiter, use that
-        if hasattr(self.explainer, 'set_regime_switcher'):
-            self.explainer.set_regime_switcher(self.fractal_confirm)
-        if hasattr(self.explainer, 'set_strategy_arbiter'):
-            self.explainer.set_strategy_arbiter(self.arbiter)
-            
+        self.explainer = ExplanationGenerator(
+            fractal_regime=self.fractal_confirm,
+            strategy_arbiter=self.arbiter,
+            debug=self.config.debug
+        )
+        self.logger.info("ExplanationGenerator successfully initialized.")
     except Exception as e:
-        self.logger.warning(f"Failed to initialize ExplanationGenerator with regime_switcher: {e}")
-        # Fallback to basic initialization
-        try:
-            self.explainer = ExplanationGenerator(debug=self.config.debug)
-        except Exception as e2:
-            self.logger.error(f"Failed to initialize ExplanationGenerator at all: {e2}")
-            # Create a dummy explainer
-            self.explainer = DummyExplanationGenerator()
+        self.logger.error(f"Failed to initialize ExplanationGenerator: {e}")
+        # Create a dummy explainer as fallback
+        self.explainer = DummyExplanationGenerator()
     
     # Create module pipeline with all modules
     self._create_pipeline()
+
 
 
 def _create_pipeline(self):

@@ -16,6 +16,12 @@ from live.mt5_credentials import MT5Credentials
 
 logger = logging.getLogger(__name__)
 
+
+from stable_baselines3.common.callbacks import BaseCallback
+
+
+
+
 class LiveDataConnector:
     """
     Enhanced connector for MT5 live data with robust error handling.
@@ -515,3 +521,35 @@ class LiveDataConnector:
                 }
                 
         logger.debug(f"Synced {len(mt5_positions)} positions with environment")
+
+
+
+class LiveTradingCallback(BaseCallback):
+    """
+    SB3 callback to synchronize your env with MT5 during live‐mode training.
+    Connects at start, syncs positions on every step, and disconnects at end.
+    """
+    def __init__(self, connector: LiveDataConnector, verbose: int = 0):
+        super().__init__(verbose)
+        self.connector = connector
+
+    def _on_training_start(self) -> None:
+        # establish MT5 connection once at training start
+        self.connector.connect()
+
+    def _on_step(self) -> bool:
+        # sync any open positions back into the env’s position manager
+        # assumes a single‐env DummyVecEnv
+        env = self.training_env.envs[0]
+        self.connector.sync_positions_with_env(env)
+        return True
+
+    def _on_training_end(self) -> None:
+        # cleanly disconnect when training finishes
+        self.connector.disconnect()
+
+    def connect(self):
+        self.connector.connect()
+
+    def disconnect(self):
+        self.connector.disconnect()

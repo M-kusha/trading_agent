@@ -1,0 +1,127 @@
+# AI Trading System - PPO-Only Requirements
+# Production-ready dependencies for PPO-Lagrangian trading system
+
+# ═══════════════════════════════════════════════════════════════════
+# Core Framework Dependencies
+# ═══════════════════════════════════════════════════════════════════
+numpy>=1.24.0,<2.0.0
+pandas>=2.0.0,<3.0.0
+scipy>=1.10.0
+scikit-learn>=1.3.0
+
+# ═══════════════════════════════════════════════════════════════════
+# Machine Learning - PPO Only
+# ═══════════════════════════════════════════════════════════════════
+torch>=2.0.0,<3.0.0
+stable-baselines3>=2.0.0,<3.0.0
+gymnasium>=0.28.0,<1.0.0
+tensorboard>=2.12.0
+optuna>=3.5.0
+
+# ═══════════════════════════════════════════════════════════════════
+# Backend API Framework
+# ═══════════════════════════════════════════════════════════════════
+fastapi>=0.100.0,<1.0.0
+uvicorn[standard]>=0.20.0,<1.0.0
+pydantic>=2.0.0,<3.0.0
+python-multipart>=0.0.6
+websockets>=11.0.0
+
+# ═══════════════════════════════════════════════════════════════════
+# MetaTrader5 Integration
+# ═══════════════════════════════════════════════════════════════════
+MetaTrader5>=5.0.40
+
+# ═══════════════════════════════════════════════════════════════════
+# Data Visualization & Analysis
+# ═══════════════════════════════════════════════════════════════════
+plotly>=5.15.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# ═══════════════════════════════════════════════════════════════════
+# System Monitoring & Utilities
+# ═══════════════════════════════════════════════════════════════════
+psutil>=5.9.0
+aiofiles>=23.0.0
+python-dateutil>=2.8.0
+pytz>=2023.3
+requests>=2.31.0
+
+# ═══════════════════════════════════════════════════════════════════
+# Database & Storage (Optional)
+# ═══════════════════════════════════════════════════════════════════
+sqlite3  # Built-in Python module
+h5py>=3.8.0  # For HDF5 data storage
+
+# ═══════════════════════════════════════════════════════════════════
+# Development & Testing (Optional)
+# ═══════════════════════════════════════════════════════════════════
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.5.0
+
+# ═══════════════════════════════════════════════════════════════════
+# Performance Optimization
+# ═══════════════════════════════════════════════════════════════════
+numba>=0.57.0  # JIT compilation for numerical functions
+joblib>=1.3.0  # Parallel processing
+
+# ═══════════════════════════════════════════════════════════════════
+# Configuration & Environment
+# ═══════════════════════════════════════════════════════════════════
+python-dotenv>=1.0.0
+pyyaml>=6.0.0
+toml>=0.10.0
+
+# ═══════════════════════════════════════════════════════════════════
+# Network & Security
+# ═══════════════════════════════════════════════════════════════════
+httpx>=0.24.0  # Async HTTP client
+cryptography>=41.0.0  # Security utilities
+
+# ═══════════════════════════════════════════════════════════════════
+# Logging & Monitoring
+# ═══════════════════════════════════════════════════════════════════
+structlog>=23.0.0  # Structured logging
+rich>=13.0.0  # Beautiful terminal output
+
+# ═══════════════════════════════════════════════════════════════════
+# Time Series & Financial Analysis
+# ═══════════════════════════════════════════════════════════════════
+ta-lib>=0.4.26  # Technical analysis library
+yfinance>=0.2.18  # Yahoo Finance data (fallback)
+
+# ═══════════════════════════════════════════════════════════════════
+# Memory Management & Optimization
+# ═══════════════════════════════════════════════════════════════════
+memory_profiler>=0.61.0  # Memory usage monitoring
+pympler>=0.9  # Memory analysis
+
+# ═══════════════════════════════════════════════════════════════════
+# Version Compatibility Notes
+# ═══════════════════════════════════════════════════════════════════
+# Python >= 3.9 required
+# PyTorch with CUDA support: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# MetaTrader5 requires Windows or Wine on Linux/macOS
+# Some packages may require Microsoft Visual C++ Build Tools on Windows
+
+# ═══════════════════════════════════════════════════════════════════
+# Installation Commands
+# ═══════════════════════════════════════════════════════════════════
+# Standard installation:
+# pip install -r requirements.txt
+
+# Development installation with optional packages:
+# pip install -r requirements.txt
+# pip install ".[dev]"
+
+# CUDA PyTorch (if GPU available):
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+# TA-Lib installation (may require separate binary):
+# Windows: Download from https://www.lfd.uci.edu/~gohlke/pythonlibs/#ta-lib
+# Linux: sudo apt-get install ta-lib
+# macOS: brew install ta-lib
