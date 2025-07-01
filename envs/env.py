@@ -49,10 +49,12 @@ from .env_utils import (
     set_state, render, close
 )
 
-from modules.auditing.explanation_auditor import TradeExplanationAuditor
-from modules.strategy.strategy import MetaRLController
-from modules.strategy.voting import ConsensusDetector, CollusionAuditor, TimeHorizonAligner
-from modules.strategy.voting_wrappers import MetaRLExpert
+from modules.auditing.trade_explanation_auditor import TradeExplanationAuditor
+from modules.meta.metar_rl_controller import MetaRLController
+from modules.voting.collusion_auditor import CollusionAuditor
+from modules.voting.consensus_detector import ConsensusDetector
+from modules.voting.time_horizon_aligner import TimeHorizonAligner
+from modules.voting.voting_wrappers import MetaRLExpert
 
 # Suppress warnings for cleaner logs
 warnings.filterwarnings('ignore', category=RuntimeWarning)

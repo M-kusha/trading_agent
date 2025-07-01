@@ -9,26 +9,21 @@ import asyncio
 import json
 import logging
 import os
-import signal
 import subprocess
 import sys
-import threading
 import time
-import traceback
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
-import multiprocessing as mp
-from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List, Optional
 import glob
 
 import pandas as pd
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks, UploadFile, File, Query
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect,UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import MetaTrader5 as mt5
@@ -2030,7 +2025,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8000,
+        port=8080,
         reload=True,
         log_level="info",
         access_log=True

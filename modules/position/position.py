@@ -1,9 +1,4 @@
 # modules/position/position_manager.py
-"""
-Enhanced PositionManager with independent signal interpretation and hierarchical decision making.
-Removes circular dependencies and implements robust signal-to-action conversion.
-"""
-
 import numpy as np
 import copy
 import logging
@@ -64,14 +59,6 @@ class PositionDecisionResult:
 
 
 class PositionManager:
-    """
-    Advanced Position Manager with independent signal interpretation and hierarchical decision making.
-    
-    Decision Hierarchy:
-    1. Strategic Layer: Market regime assessment and portfolio-level decisions
-    2. Tactical Layer: Instrument-specific position sizing and timing
-    3. Execution Layer: Risk management and position lifecycle
-    """
 
     def __init__(
         self,

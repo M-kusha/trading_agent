@@ -1,3 +1,7 @@
+# ─────────────────────────────────────────────────────────────
+#  # modules/core/core.py
+# ─────────────────────────────────────────────────────────────
+
 from abc import ABC, abstractmethod
 import numpy as np
 from typing import Any, Dict, Optional, TYPE_CHECKING

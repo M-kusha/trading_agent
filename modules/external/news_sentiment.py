@@ -1,5 +1,6 @@
-# modules/external/news_sentiment.py
-
+# ─────────────────────────────────────────────────────────────
+# File: modules/external/news_sentiment.py
+# ─────────────────────────────────────────────────────────────
 import os
 import time
 import requests
@@ -8,15 +9,6 @@ from typing import Optional
 from ..core.core import Module
 
 class NewsSentimentModule(Module):
-    """
-    Production-grade News/Sentiment module.
-
-    When enabled=True, this module will query a financial-news API
-    (in this example, NewsAPI.org) for the latest headlines about a symbol,
-    compute a simple sentiment score in [-1.0, +1.0], cache it for a short period,
-    and expose it as part of the observation vector.  
-    If enabled=False, it returns a constant default_sentiment (0.0 by default).
-    """
 
     def __init__(
         self,
@@ -25,13 +17,6 @@ class NewsSentimentModule(Module):
         cache_ttl: int = 60,
         debug: bool = False,
     ):
-        """
-        Args:
-            enabled (bool): If False, always return default_sentiment=0.0.
-            default_sentiment (float): The fallback sentiment score (0.0) when disabled or on error.
-            cache_ttl (int): Number of seconds to cache a symbol’s sentiment before re-fetching.
-            debug (bool): If True, print debug information to stdout.
-        """
         self.enabled = enabled
         self.default_sentiment = float(default_sentiment)
         self.latest_sentiment = float(default_sentiment)
@@ -48,21 +33,10 @@ class NewsSentimentModule(Module):
             print("[NewsSentimentModule] WARNING: enabled=True but NEWS_API_KEY not set in environment.")
 
     def reset(self):
-        """
-        Called at the start of each episode. Reset the latest_sentiment
-        to the default value. Does not clear the persistent cache.
-        """
         self.latest_sentiment = self.default_sentiment
 
     def step(self, symbol: Optional[str] = None, **kwargs):
-        """
-        Called each environment step. If enabled=False, simply set latest_sentiment
-        to default_sentiment. If enabled=True and a symbol is provided, attempt to
-        return a cached sentiment or fetch a fresh one via the API.
 
-        Args:
-            symbol (Optional[str]): The FX symbol (e.g. "EUR/USD" or "XAU/USD") for which to fetch sentiment.
-        """
         if not self.enabled:
             # In training/backtest mode, or user explicitly disabled, always return default (0.0).
             self.latest_sentiment = self.default_sentiment
@@ -97,23 +71,7 @@ class NewsSentimentModule(Module):
             print(f"[NewsSentimentModule] Fetched for {symbol}: {self.latest_sentiment:.3f}")
 
     def _fetch_sentiment_from_api(self, symbol: str) -> float:
-        """
-        Internal helper that queries NewsAPI.org for recent headlines about `symbol`
-        and returns a naive sentiment score in [-1.0, +1.0].
 
-        Steps:
-          1. Construct a keyword-based query string based on symbol.
-          2. Call NewsAPI.org /v2/everything endpoint with pageSize=5 (top 5 articles).
-          3. Count occurrences of positive vs negative keywords in title+description.
-          4. Compute average score and normalize by dividing by 5 (max possible).
-          5. Return normalized score, or default_sentiment on error/no articles.
-
-        Requires:
-          - `requests` library
-          - A valid NEWS_API_KEY in environment
-
-        Replace this entire method with your preferred financial-sentiment API if desired.
-        """
         if not self.api_key:
             # No API key → cannot fetch → return default
             if self.debug:
@@ -176,8 +134,6 @@ class NewsSentimentModule(Module):
         if count == 0:
             return self.default_sentiment
 
-        # Average score per article, then normalize into [-1, +1].
-        # E.g., if average “raw” is +3.0 out of 5 articles, normalized = +3/5 = +0.6
         avg_raw = total_score / float(count)
         normalized = max(-1.0, min(1.0, avg_raw / 5.0))
         return normalized

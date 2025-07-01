@@ -1,65 +1,89 @@
 # envs/env_initialization.py
-"""
-Initialization methods for the trading environment
-"""
+
 import io
 import sys
 import os
-import copy
 import random
 import logging
-import warnings
 import torch
 import numpy as np
 import pandas as pd
-from collections import defaultdict
 from gymnasium import spaces
 
 from .shared_utils import DummyExplanationGenerator, TradingPipeline, UnifiedRiskManager
-from modules.auditing.explanation_auditor import TradeExplanationAuditor
-from modules.features.feature import AdvancedFeatureEngine, MultiScaleFeatureEngine
+# Auditing modules
+from modules.auditing.trade_explanation_auditor import TradeExplanationAuditor
+from modules.auditing.trade_thesis_tracker import TradeThesisTracker
+# feature extraction modules
+from modules.features.advanced_feature_engine import AdvancedFeatureEngine
+from modules.features.multiscale_feature_engine import MultiScaleFeatureEngine
+# Position management module
 from modules.position.position import PositionManager
-from modules.reward.reward import RiskAdjustedReward
-from modules.risk.risk_controller import DynamicRiskController
-from modules.market.market import (
-    MarketThemeDetector, FractalRegimeConfirmation,
-    TimeAwareRiskScaling, LiquidityHeatmapLayer,
-    RegimePerformanceMatrix,
-)
-from modules.memory.memory import (
-    MistakeMemory, MemoryCompressor,
-    HistoricalReplayAnalyzer, PlaybookMemory,
-    MemoryBudgetOptimizer,
-)
-from modules.strategy.playbook import PlaybookClusterer
-from modules.strategy.strategy import (
-    StrategyIntrospector, CurriculumPlannerPlus,
-    StrategyGenomePool, MetaAgent, MetaCognitivePlanner,
-    BiasAuditor, OpponentModeEnhancer,
-    ThesisEvolutionEngine, ExplanationGenerator, MetaRLController,
-)
-from modules.memory.architecture import NeuralMemoryArchitect
-from modules.simulation.opponent import OpponentSimulator
-from modules.simulation.simulation import ShadowSimulator, RoleCoach
-from modules.visualization.visualization import VisualizationInterface, TradeMapVisualizer
-from modules.auditing.tracker import TradeThesisTracker
+# Reward shaping module
+from modules.reward.risk_adjusted_reward import RiskAdjustedReward
+# Market analysis modules
+from modules.market.market_theme_detector import MarketThemeDetector
+from modules.market.fractal_regime_confirmation import FractalRegimeConfirmation
+from modules.market.liquidity_heatmap_layer import LiquidityHeatmapLayer
+from modules.market.time_aware_risk_scaling import TimeAwareRiskScaling
+from modules.market.regime_performance_matrix import RegimePerformanceMatrix
+# Memory modules
+from modules.memory.neural_memory_architect import NeuralMemoryArchitect
+from modules.memory.mistake_memory import MistakeMemory
+from modules.memory.memory_compressor import MemoryCompressor
+from modules.memory.historical_replay_analyzer import HistoricalReplayAnalyzer
+from modules.memory.playbook_memory import PlaybookMemory
+from modules.memory.memory_budget_optimizer import MemoryBudgetOptimizer
+# Strategy modules
+from modules.strategy.playbook_clusterer import PlaybookClusterer
+from modules.strategy.strategy_introspector import StrategyIntrospector
+from modules.strategy.curriculum_planner_plus import CurriculumPlannerPlus
+from modules.strategy.strategy_genome_pool import StrategyGenomePool
+from modules.strategy.bias_auditor import BiasAuditor
+from modules.strategy.opponent_mode_enhancer import OpponentModeEnhancer
+from modules.strategy.thesis_evolution_engine import ThesisEvolutionEngine
+from modules.strategy.explanation_generator import ExplanationGenerator
+# Meta-learning modules
+from modules.meta.meta_agent import MetaAgent
+from modules.meta.metacognitive_planner import MetaCognitivePlanner
+from modules.meta.metar_rl_controller import MetaRLController
+
+# Simulation modules
+from modules.simulation.opponent_simulator import OpponentSimulator
+from modules.simulation.role_coach import RoleCoach
+from modules.simulation.shadow_simulator import ShadowSimulator
+# Visualization modules
+from modules.visualization.visualization_interface import VisualizationInterface, TradeMapVisualizer
+# World model module
 from modules.models.world_model import RNNWorldModel
-from modules.risk.compliance import ComplianceModule
-from modules.risk.portfolio import PortfolioRiskSystem
-from modules.strategy.voting import (
-    ConsensusDetector, CollusionAuditor,
-    TimeHorizonAligner, AlternativeRealitySampler,
-    StrategyArbiter,
-)
-from modules.strategy.voting_wrappers import (
+# Voting modules
+from modules.voting.time_horizon_aligner import TimeHorizonAligner
+from modules.voting.alternative_reality_sampler import AlternativeRealitySampler
+from modules.voting.collusion_auditor import CollusionAuditor
+from modules.voting.consensus_detector import ConsensusDetector
+from modules.voting.strategy_arbiter import StrategyArbiter
+
+from modules.voting.voting_wrappers import (
     ThemeExpert, SeasonalityRiskExpert,
     MetaRLExpert, TradeMonitorVetoExpert, RegimeBiasExpert
 )
 from modules.trading_modes.trading_mode import TradingModeManager
-from modules.risk.risk_monitor import (
-    ActiveTradeMonitor, CorrelatedRiskController, DrawdownRescue,
-    ExecutionQualityMonitor, AnomalyDetector,
-)
+
+# Risk management modules
+from modules.risk.active_trade_monitor import ActiveTradeMonitor
+from modules.risk.correlated_risk_controller import CorrelatedRiskController
+from modules.risk.drawdown_rescue import DrawdownRescue
+from modules.risk.execution_quality_monitor import ExecutionQualityMonitor
+from modules.risk.anomaly_detector import AnomalyDetector
+from modules.risk.portofilio_risk_system import PortfolioRiskSystem
+from modules.risk.compliance import ComplianceModule
+from modules.risk.dynamic_risk_controller import DynamicRiskController
+
+
+class DummyModule:
+    def reset(self): pass
+    def step(self, **kwargs): pass
+    def get_observation_components(self): return np.zeros(6, dtype=np.float32)  # choose size to match expected
 
 
 def _setup_logging(self):
@@ -311,8 +335,9 @@ def _initialize_dependent_modules(self):
 
 
 
+
+
 def _create_pipeline(self):
-    """FIXED: Create the processing pipeline with all active modules"""
     core_modules = [
         self.feature_engine, self.compliance, self.risk_system,
         self.theme_detector, self.time_risk_scaler, self.liquidity_layer,
@@ -323,30 +348,29 @@ def _create_pipeline(self):
         self.dd_rescue, self.exec_monitor, self.anomaly_detector,
         self.position_manager, self.fractal_confirm,
         self.trade_auditor,
-        # FIXED: Added missing modules
         self.playbook_memory, self.meta_agent,
         self.mistake_memory, self.memory_compressor, self.replay_analyzer,
         self.playbook_clusterer, self.long_term_memory,
     ]
-    
+
+    # --- PATCH: Always append dummy modules in live mode to match training pipeline ---
+    if self.config.live_mode:
+        core_modules.append(DummyModule())  # Add as many as needed
+
+    else:
+        # Add actual modules in backtest
+        if self.shadow_sim: core_modules.append(self.shadow_sim)
+        if self.role_coach: core_modules.append(self.role_coach)
+        if self.opponent_sim: core_modules.append(self.opponent_sim)
+
     # Only add explainer if it's not a dummy
     if not isinstance(self.explainer, DummyExplanationGenerator):
         core_modules.append(self.explainer)
-    
-    # Add simulation modules if not in live mode
-    if not self.config.live_mode:
-        if self.shadow_sim:
-            core_modules.append(self.shadow_sim)
-        if self.role_coach:
-            core_modules.append(self.role_coach)
-        if self.opponent_sim:
-            core_modules.append(self.opponent_sim)
-        
-    # Filter out None modules
+
     active_modules = [m for m in core_modules if m is not None]
-    
     self.pipeline = TradingPipeline(active_modules)
     self.logger.info(f"Created pipeline with {len(active_modules)} active modules")
+
 
 
 def _get_stable_observation_space(self) -> spaces.Box:

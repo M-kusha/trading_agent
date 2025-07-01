@@ -319,7 +319,7 @@ class TradingSystemTester:
     def test_reward_shaping(self) -> bool:
         """Test 6: Reward shaper encourages trading"""
         from envs.env import EnhancedTradingEnv, TradingConfig
-        from modules.reward.reward import RiskAdjustedReward
+        from modules.reward.risk_adjusted_reward import RiskAdjustedReward
         
         # Test reward shaper directly
         shaper = RiskAdjustedReward(

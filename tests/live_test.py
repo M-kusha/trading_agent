@@ -183,9 +183,9 @@ def test_risk_systems():
     logger.info("\nTesting risk systems...")
     
     try:
-        from modules.risk.risk_controller import DynamicRiskController
-        from modules.risk.portfolio import PortfolioRiskSystem
-        from modules.risk.risk_monitor import ActiveTradeMonitor
+        from modules.risk.dynamic_risk_controller import DynamicRiskController
+        from modules.risk.portofilio_risk_system import PortfolioRiskSystem
+        from modules.risk.active_trade_monitor import ActiveTradeMonitor
         
         # Test DynamicRiskController
         risk_controller = DynamicRiskController(debug=False)
@@ -214,7 +214,7 @@ def test_committee_voting():
     logger.info("\nTesting committee voting...")
     
     try:
-        from modules.strategy.voting import StrategyArbiter
+        from modules.voting.strategy_arbiter import StrategyArbiter
         from modules.core.core import Module
         
         # Create dummy members

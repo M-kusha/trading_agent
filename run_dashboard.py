@@ -25,7 +25,7 @@ from datetime import datetime
 # Configuration and Constants
 # ═══════════════════════════════════════════════════════════════════
 
-DEFAULT_BACKEND_PORT = 8000
+DEFAULT_BACKEND_PORT = 8080
 DEFAULT_FRONTEND_PORT = 3000
 BACKEND_STARTUP_TIMEOUT = 120
 BACKEND_MODULE = "backend.main:app"

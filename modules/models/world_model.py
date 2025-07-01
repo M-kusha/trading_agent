@@ -1,17 +1,15 @@
+# ─────────────────────────────────────────────────────────────
+# modules/models/world_model.py
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from modules.core.core import Module
-import copy
 from typing import Dict, Any, Optional, Tuple
 
 class RNNWorldModel(nn.Module, Module):
-    """
-    Enhanced RNN World Model for market prediction and simulation.
-    Predicts next price movements based on historical patterns.
-    """
     def __init__(
         self,
         input_size: int = 2,  # Default for returns + volatility

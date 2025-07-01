@@ -1,4 +1,6 @@
-# modules/risk/compliance.py
+# ──────────────────────────────────────────────────────────────
+# File: modules/risk/compliance.py
+# ──────────────────────────────────────────────────────────────
 
 from __future__ import annotations
 from typing import Any, List, Dict, Optional, Set
@@ -8,23 +10,11 @@ import os
 import logging
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
-
 from modules.core.core import Module
 
 
 class ComplianceModule(Module):
-    """
-    FIXED: Practical compliance module that actually allows trading.
-    
-    Key improvements:
-    - Flexible symbol handling (both EUR/USD and EURUSD formats)
-    - More reasonable default limits
-    - Simple, clear validation logic
-    - Better integration with trading environment
-    - Support for live trading requirements
-    """
 
-    # More practical defaults
     DEFAULT_ALLOWED = {
         "EUR/USD", "EURUSD",
         "XAU/USD", "XAUUSD", 

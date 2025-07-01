@@ -12,7 +12,7 @@ def test_reward_logging():
     
     try:
         # Import the fixed reward class
-        from modules.reward.reward import RiskAdjustedReward
+        from modules.reward.risk_adjusted_reward import RiskAdjustedReward
         
         # Create instance
         reward_shaper = RiskAdjustedReward(

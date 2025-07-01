@@ -5,7 +5,6 @@ from typing import List, Dict, Any, Optional
 import numpy as np
 import logging
 import datetime
-
 from modules.core.core import Module
 
 class TradingModeManager(Module):

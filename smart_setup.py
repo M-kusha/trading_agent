@@ -599,7 +599,7 @@ class AdvancedSetupManager:
             
             print(f"\n🎯 {self.t['next_steps']}:")
             print(f"   1. {self.t['start_dashboard']}: python run_dashboard.py")
-            print(f"   2. {self.t['access_url']}: http://localhost:8000")
+            print(f"   2. {self.t['access_url']}: http://localhost:8080")
             print(f"   3. {self.t['documentation']}: README.md")
             print(f"   4. {self.t['support']}: GitHub Issues")
             

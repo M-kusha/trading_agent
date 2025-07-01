@@ -54,10 +54,15 @@ def test_memory_modules_individually():
     logger.info("Testing individual memory modules...")
     
     try:
-        from modules.memory.memory import (
-            MistakeMemory, MemoryCompressor, HistoricalReplayAnalyzer, 
-            PlaybookMemory, MemoryBudgetOptimizer
-        )
+        # from modules.memory.memory import (
+        #     MistakeMemory, MemoryCompressor, HistoricalReplayAnalyzer, 
+        #     PlaybookMemory, MemoryBudgetOptimizer
+        # )
+        from modules.memory.mistake_memory import MistakeMemory
+        from modules.memory.memory_compressor import MemoryCompressor
+        from modules.memory.historical_replay_analyzer import HistoricalReplayAnalyzer
+        from modules.memory.playbook_memory import PlaybookMemory
+        from modules.memory.memory_budget_optimizer import MemoryBudgetOptimizer
         
         # Test MistakeMemory
         logger.info("Testing MistakeMemory...")
