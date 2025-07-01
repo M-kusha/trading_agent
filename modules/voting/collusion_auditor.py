@@ -2,7 +2,8 @@
 # modules/voting/collusion_auditor.py
 from typing import List
 import numpy as np
-from torch import Module
+
+from modules.core.core import Module
 
 
 class CollusionAuditor(Module):
