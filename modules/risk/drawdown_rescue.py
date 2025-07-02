@@ -11,7 +11,7 @@ from collections import deque, defaultdict
 from modules.core.core import Module, ModuleConfig, audit_step
 from modules.core.mixins import RiskMixin, TradingMixin, StateManagementMixin
 from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
-from modules.utils.audit_utils import AuditTrailManager, format_operator_message
+from modules.utils.audit_utils import AuditTracker, format_operator_message
 
 
 class DrawdownRescue(Module, RiskMixin, TradingMixin, StateManagementMixin):
@@ -93,7 +93,7 @@ class DrawdownRescue(Module, RiskMixin, TradingMixin, StateManagementMixin):
         self._false_alarms = 0
         
         # Audit system
-        self.audit_manager = AuditTrailManager("DrawdownRescue")
+        self.audit_manager = AuditTracker("DrawdownRescue")
         self._last_significant_event = None
         
         self.log_operator_info(

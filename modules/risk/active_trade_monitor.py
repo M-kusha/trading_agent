@@ -10,8 +10,9 @@ from collections import deque, defaultdict
 
 from modules.core.core import Module, ModuleConfig, audit_step
 from modules.core.mixins import RiskMixin, TradingMixin, StateManagementMixin
+from modules.utils.audit_utils import AuditTracker
 from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
-from modules.utils.audit_utils import AuditTrailManager, format_operator_message
+
 
 
 class ActiveTradeMonitor(Module, RiskMixin, TradingMixin, StateManagementMixin):
@@ -75,7 +76,7 @@ class ActiveTradeMonitor(Module, RiskMixin, TradingMixin, StateManagementMixin):
         self._max_concurrent_positions = 0
         
         # Audit system
-        self.audit_manager = AuditTrailManager("ActiveTradeMonitor")
+        self.audit_manager = AuditTracker("ActiveTradeMonitor")
         
         self.log_operator_info(
             "🔍 Active Trade Monitor initialized",

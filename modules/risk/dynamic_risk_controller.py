@@ -12,7 +12,7 @@ from collections import deque, defaultdict
 from modules.core.core import Module, ModuleConfig, audit_step
 from modules.core.mixins import RiskMixin, AnalysisMixin, StateManagementMixin
 from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
-from modules.utils.audit_utils import AuditTrailManager, format_operator_message
+from modules.utils.audit_utils import AuditTracker, format_operator_message
 
 
 class DynamicRiskController(Module, RiskMixin, AnalysisMixin, StateManagementMixin):
@@ -121,7 +121,7 @@ class DynamicRiskController(Module, RiskMixin, AnalysisMixin, StateManagementMix
         self.external_signals = {}
         
         # Audit system
-        self.audit_manager = AuditTrailManager("DynamicRiskController")
+        self.audit_manager = AuditTracker("DynamicRiskController")
         
         self.log_operator_info(
             "⚙️ Enhanced Dynamic Risk Controller initialized",

@@ -11,7 +11,7 @@ import datetime
 from modules.core.core import Module, ModuleConfig, audit_step
 from modules.core.mixins import RiskMixin, AnalysisMixin, StateManagementMixin
 from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
-from modules.utils.audit_utils import AuditTrailManager, format_operator_message
+from modules.utils.audit_utils import AuditTracker, format_operator_message
 
 
 class AnomalyDetector(Module, RiskMixin, AnalysisMixin, StateManagementMixin):
@@ -91,7 +91,7 @@ class AnomalyDetector(Module, RiskMixin, AnalysisMixin, StateManagementMixin):
         self.session_baselines = defaultdict(lambda: defaultdict(list))
         
         # Audit and performance tracking
-        self.audit_manager = AuditTrailManager("AnomalyDetector")
+        self.audit_manager = AuditTracker("AnomalyDetector")
         self._last_significant_anomaly = None
         self._anomaly_frequency = deque(maxlen=100)
         

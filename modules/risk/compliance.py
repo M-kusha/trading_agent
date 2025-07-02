@@ -13,7 +13,7 @@ from collections import deque, defaultdict
 from modules.core.core import Module, ModuleConfig, audit_step
 from modules.core.mixins import RiskMixin, TradingMixin, StateManagementMixin
 from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
-from modules.utils.audit_utils import AuditTrailManager, format_operator_message
+from modules.utils.audit_utils import AuditTracker, format_operator_message
 
 
 class ComplianceModule(Module, RiskMixin, TradingMixin, StateManagementMixin):
@@ -105,7 +105,7 @@ class ComplianceModule(Module, RiskMixin, TradingMixin, StateManagementMixin):
         }
         
         # Audit system
-        self.audit_manager = AuditTrailManager("ComplianceModule")
+        self.audit_manager = AuditTracker("ComplianceModule")
         
         self.log_operator_info(
             "🛡️ Enhanced Compliance Module initialized",
