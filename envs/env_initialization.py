@@ -1,4 +1,8 @@
 # envs/env_initialization.py
+"""
+Enhanced environment initialization with InfoBus integration
+Maintains backward compatibility while adding InfoBus infrastructure
+"""
 
 import io
 import sys
@@ -9,24 +13,37 @@ import torch
 import numpy as np
 import pandas as pd
 from gymnasium import spaces
+from typing import Dict, Any, List, Optional
 
-from .shared_utils import DummyExplanationGenerator, TradingPipeline, UnifiedRiskManager
+# InfoBus infrastructure
+from modules.utils.info_bus import InfoBus, InfoBusBuilder, create_info_bus
+from modules.utils.audit_utils import RotatingLogger, AuditTracker
+from modules.core.core import ModuleConfig
+
+# Enhanced shared utilities with InfoBus
+from .shared_utils import TradingPipeline, UnifiedRiskManager
+
 # Auditing modules
 from modules.auditing.trade_explanation_auditor import TradeExplanationAuditor
 from modules.auditing.trade_thesis_tracker import TradeThesisTracker
-# feature extraction modules
+
+# Feature extraction modules
 from modules.features.advanced_feature_engine import AdvancedFeatureEngine
 from modules.features.multiscale_feature_engine import MultiScaleFeatureEngine
+
 # Position management module
 from modules.position.position import PositionManager
+
 # Reward shaping module
 from modules.reward.risk_adjusted_reward import RiskAdjustedReward
+
 # Market analysis modules
 from modules.market.market_theme_detector import MarketThemeDetector
 from modules.market.fractal_regime_confirmation import FractalRegimeConfirmation
 from modules.market.liquidity_heatmap_layer import LiquidityHeatmapLayer
 from modules.market.time_aware_risk_scaling import TimeAwareRiskScaling
 from modules.market.regime_performance_matrix import RegimePerformanceMatrix
+
 # Memory modules
 from modules.memory.neural_memory_architect import NeuralMemoryArchitect
 from modules.memory.mistake_memory import MistakeMemory
@@ -34,6 +51,7 @@ from modules.memory.memory_compressor import MemoryCompressor
 from modules.memory.historical_replay_analyzer import HistoricalReplayAnalyzer
 from modules.memory.playbook_memory import PlaybookMemory
 from modules.memory.memory_budget_optimizer import MemoryBudgetOptimizer
+
 # Strategy modules
 from modules.strategy.playbook_clusterer import PlaybookClusterer
 from modules.strategy.strategy_introspector import StrategyIntrospector
@@ -43,6 +61,7 @@ from modules.strategy.bias_auditor import BiasAuditor
 from modules.strategy.opponent_mode_enhancer import OpponentModeEnhancer
 from modules.strategy.thesis_evolution_engine import ThesisEvolutionEngine
 from modules.strategy.explanation_generator import ExplanationGenerator
+
 # Meta-learning modules
 from modules.meta.meta_agent import MetaAgent
 from modules.meta.metacognitive_planner import MetaCognitivePlanner
@@ -52,21 +71,26 @@ from modules.meta.metar_rl_controller import MetaRLController
 from modules.simulation.opponent_simulator import OpponentSimulator
 from modules.simulation.role_coach import RoleCoach
 from modules.simulation.shadow_simulator import ShadowSimulator
+
 # Visualization modules
-from modules.visualization.visualization_interface import VisualizationInterface, TradeMapVisualizer
+from modules.visualization.visualization_interface import VisualizationInterface
+from modules.visualization.trade_map_visualizer import TradeMapVisualizer
+
 # World model module
 from modules.models.world_model import RNNWorldModel
+
 # Voting modules
 from modules.voting.time_horizon_aligner import TimeHorizonAligner
 from modules.voting.alternative_reality_sampler import AlternativeRealitySampler
 from modules.voting.collusion_auditor import CollusionAuditor
 from modules.voting.consensus_detector import ConsensusDetector
 from modules.voting.strategy_arbiter import StrategyArbiter
-
 from modules.voting.voting_wrappers import (
     ThemeExpert, SeasonalityRiskExpert,
     MetaRLExpert, TradeMonitorVetoExpert, RegimeBiasExpert
 )
+
+# Trading modes
 from modules.trading_modes.trading_mode import TradingModeManager
 
 # Risk management modules
@@ -80,37 +104,58 @@ from modules.risk.compliance import ComplianceModule
 from modules.risk.dynamic_risk_controller import DynamicRiskController
 
 
+class DummyExplanationGenerator:
+    """Dummy explanation generator for fallback compatibility"""
+    
+    def __init__(self):
+        pass
+        
+    def reset(self):
+        pass
+        
+    def step(self, **kwargs):
+        pass
+        
+    def get_observation_components(self):
+        return np.zeros(0, dtype=np.float32)
+
+
 class DummyModule:
-    def reset(self): pass
-    def step(self, **kwargs): pass
-    def get_observation_components(self): return np.zeros(6, dtype=np.float32)  # choose size to match expected
+    """Dummy module for maintaining pipeline consistency"""
+    def reset(self): 
+        pass
+    def step(self, **kwargs): 
+        pass
+    def get_observation_components(self): 
+        return np.zeros(6, dtype=np.float32)
 
 
 def _setup_logging(self):
-    """Setup logging configuration with UTF-8 console support"""
+    """Enhanced logging setup with InfoBus integration and UTF-8 support"""
     os.makedirs(self.config.log_dir, exist_ok=True)
+    os.makedirs(self.config.operator_log_dir, exist_ok=True)
     
-    # Create logger
-    self.logger = logging.getLogger(f"EnhancedTradingEnv_{id(self)}")
-    self.logger.handlers.clear()
-    
-    # File handler (always UTF-8)
-    fh = logging.FileHandler(
-        os.path.join(self.config.log_dir, "trading_env.log"),
-        encoding="utf-8"
+    # Create enhanced logger with rotation
+    self.logger = RotatingLogger(
+        name=f"EnhancedTradingEnv_{id(self)}",
+        log_path=os.path.join(self.config.log_dir, "trading_env.log"),
+        max_lines=self.config.log_rotation_lines,
+        operator_mode=self.config.debug
     )
-    fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-    self.logger.addHandler(fh)
     
-    # UTF-8 console handler
-    # wrap stdout.buffer so we can force UTF-8
-    utf8_stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", line_buffering=True)
-    ch = logging.StreamHandler(utf8_stdout)
-    ch.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
-    self.logger.addHandler(ch)
+    # Audit system
+    self.audit_tracker = AuditTracker("TradingEnvironment")
     
-    self.logger.setLevel(getattr(logging, self.config.log_level))
-    self.logger.propagate = False
+    # InfoBus logging
+    if self.config.info_bus_enabled:
+        self.info_bus_logger = RotatingLogger(
+            name=f"InfoBus_{id(self)}",
+            log_path=os.path.join(self.config.info_bus_log_dir, "info_bus.log"),
+            max_lines=self.config.log_rotation_lines,
+            json_mode=True
+        )
+    
+    self.logger.info("Enhanced logging system initialized with InfoBus support")
 
 
 def _set_seeds(self, seed: int):
@@ -123,16 +168,14 @@ def _set_seeds(self, seed: int):
 
 
 def seed(self, seed=None):
-    """Set the seed for this env's random number generator(s).
-    Kept for backward compatibility with older gym versions."""
+    """Set the seed for this env's random number generator(s)."""
     self._set_seeds(seed if seed is not None else self.config.init_seed)
     return [seed]
 
 
 def _validate_data(self):
-    """Validate input data structure and fix column issues"""
-    # FIXED: Modified to handle 'real_volume' vs 'volume' mismatch
-    required_columns = {"open", "high", "low", "close"}  # Base required columns
+    """Enhanced data validation with InfoBus compatibility"""
+    required_columns = {"open", "high", "low", "close"}
     
     for inst in self.instruments:
         if inst not in self.data:
@@ -147,136 +190,138 @@ def _validate_data(self):
             if missing:
                 raise ValueError(f"Missing columns for {inst}/{tf}: {missing}")
             
-            # FIXED: Handle volume column specifically
+            # Handle volume column specifically
             if 'volume' not in df.columns:
-                # If real_volume exists, use it for volume
                 if 'real_volume' in df.columns:
                     self.logger.info(f"Creating 'volume' from 'real_volume' for {inst}/{tf}")
                     self.data[inst][tf]['volume'] = self.data[inst][tf]['real_volume']
                 else:
-                    # Create a dummy volume column with ones
                     self.logger.warning(f"No volume data for {inst}/{tf}, creating dummy volume")
                     self.data[inst][tf]['volume'] = 1.0
 
 
 def _initialize_modules(self):
-    """Initialize core trading modules (no dependencies on arbiter)"""
+    """Enhanced module initialization with InfoBus integration and module config"""
+    
+    # Create module configuration
+    module_config = ModuleConfig(
+        debug=self.config.debug,
+        max_history=100,
+        audit_enabled=True,
+        log_rotation_lines=self.config.log_rotation_lines,
+        health_check_interval=100,
+        info_bus_enabled=self.config.info_bus_enabled
+    )
+    
     # Core feature extraction
-    base_afe = AdvancedFeatureEngine(debug=self.config.debug)
-    self.feature_engine = MultiScaleFeatureEngine(base_afe, 32, self.config.debug)
+    base_afe = AdvancedFeatureEngine(config=module_config)
+    self.feature_engine = MultiScaleFeatureEngine(base_afe, 32, config=module_config)
     
     # Position management
     self.position_manager = PositionManager(
         initial_balance=self.config.initial_balance,
         instruments=self.instruments,
-        debug=self.config.debug
+        config=module_config
     )
     self.position_manager.set_env(self)
     
-    # Market analysis
+    # Market analysis modules
     self.theme_detector = MarketThemeDetector(
-        self.instruments, 4, 100, debug=self.config.debug
+        self.instruments, 4, 100, config=module_config
     )
-    self.fractal_confirm = FractalRegimeConfirmation(100, debug=self.config.debug)
+    self.fractal_confirm = FractalRegimeConfirmation(100, config=module_config)
+    
     action_dim = 2 * len(self.instruments)
     self.liquidity_layer = LiquidityHeatmapLayer(
         action_dim=action_dim,
-        debug=self.config.debug
+        config=module_config
     )
-    self.time_risk_scaler = TimeAwareRiskScaling(debug=self.config.debug)
-    self.regime_matrix = RegimePerformanceMatrix(debug=self.config.debug)
+    self.time_risk_scaler = TimeAwareRiskScaling(config=module_config)
+    self.regime_matrix = RegimePerformanceMatrix(config=module_config)
     
-    # Risk management
-    self.risk_controller = DynamicRiskController(
-        config={
-            "freeze_counter": 0,
-            "freeze_duration": 5,
-            "vol_history_len": 100,
-            "dd_threshold": 0.2,
-            "vol_ratio_threshold": 1.5,
-        },
-        debug=self.config.debug
-    )
-    self.risk_system = PortfolioRiskSystem(50, 0.2, debug=self.config.debug)
-    self.compliance = ComplianceModule()
+    # Enhanced risk management with InfoBus
+    risk_config = {
+        'dd_limit': self.config.max_drawdown,
+        'correlation_limit': self.config.max_correlation,
+        'var_limit': 0.1,
+        'max_positions': 10,
+        'alert_cooldown': self.config.risk_alert_cooldown,
+    }
+    self.risk_manager = UnifiedRiskManager(risk_config, logger=self.logger)
     
-    # FIXED: Centralized risk manager
-    self.risk_manager = UnifiedRiskManager(
-        {
-            'dd_limit': 0.3,
-            'correlation_limit': 0.8,
-            'var_limit': 0.1,
-            'max_positions': 10,
-        },
-        logger=self.logger
-    )
+    # Individual risk modules
+    self.risk_controller = DynamicRiskController(config=module_config)
+    self.risk_system = PortfolioRiskSystem(50, 0.2, config=module_config)
+    self.compliance = ComplianceModule(config=module_config)
     
     # Reward shaping
     self.reward_shaper = RiskAdjustedReward(
         self.config.initial_balance,
         env=self,
-        debug=self.config.debug
+        config=module_config
     )
     
-    # Memory systems
-    self.mistake_memory = MistakeMemory(interval=10, n_clusters=3, debug=self.config.debug)
-    self.memory_compressor = MemoryCompressor(10, 5, debug=self.config.debug)
-    self.replay_analyzer = HistoricalReplayAnalyzer(10, debug=self.config.debug)
-    self.playbook_memory = PlaybookMemory(debug=self.config.debug)
-    self.memory_budget = MemoryBudgetOptimizer(1000, 500, 300, debug=self.config.debug)
-    self.long_term_memory = NeuralMemoryArchitect(32, 4, 500, debug=self.config.debug)
+    # Memory systems with InfoBus integration
+    self.mistake_memory = MistakeMemory(config=module_config)
+    self.memory_compressor = MemoryCompressor(10, 5, config=module_config)
+    self.replay_analyzer = HistoricalReplayAnalyzer(10, config=module_config)
+    self.playbook_memory = PlaybookMemory(config=module_config)
+    self.memory_budget = MemoryBudgetOptimizer(1000, 500, 300, config=module_config)
+    self.long_term_memory = NeuralMemoryArchitect(32, 4, 500, config=module_config)
     
     # Strategy systems
-    self.strategy_intros = StrategyIntrospector(debug=self.config.debug)
-    self.curriculum_planner = CurriculumPlannerPlus(debug=self.config.debug)
-    self.playbook_clusterer = PlaybookClusterer(5, debug=self.config.debug)
-    self.strategy_pool = StrategyGenomePool(20, debug=self.config.debug)
+    self.strategy_intros = StrategyIntrospector(config=module_config)
+    self.curriculum_planner = CurriculumPlannerPlus(config=module_config)
+    self.playbook_clusterer = PlaybookClusterer(5, config=module_config)
+    self.strategy_pool = StrategyGenomePool(20, config=module_config)
     
     # Meta-learning systems
-    self.meta_agent = MetaAgent(debug=self.config.debug)
-    self.meta_planner = MetaCognitivePlanner(debug=self.config.debug)
-    self.bias_auditor = BiasAuditor(debug=self.config.debug)
-    self.thesis_engine = ThesisEvolutionEngine(debug=self.config.debug)
-    # NOTE: ExplanationGenerator will be created AFTER arbiter is initialized
+    self.meta_agent = MetaAgent(config=module_config)
+    self.meta_planner = MetaCognitivePlanner(config=module_config)
+    self.bias_auditor = BiasAuditor(config=module_config)
+    self.thesis_engine = ThesisEvolutionEngine(config=module_config)
     
     # Trading mode and monitoring
     self.mode_manager = TradingModeManager(initial_mode="safe", window=50)
-    self.active_monitor = ActiveTradeMonitor(max_duration=self.config.max_steps)
-    self.corr_controller = CorrelatedRiskController(max_corr=0.8)
-    self.dd_rescue = DrawdownRescue(dd_limit=0.3)
-    self.exec_monitor = ExecutionQualityMonitor()
-    self.anomaly_detector = AnomalyDetector()
+    self.active_monitor = ActiveTradeMonitor(config=module_config)
+    self.corr_controller = CorrelatedRiskController(config=module_config)
+    self.dd_rescue = DrawdownRescue(config=module_config)
+    self.exec_monitor = ExecutionQualityMonitor(config=module_config)
+    self.anomaly_detector = AnomalyDetector(config=module_config)
     
     # Visualization and tracking
-    self.visualizer = VisualizationInterface(debug=self.config.debug)
-    self.trade_map_vis = TradeMapVisualizer(debug=self.config.debug)
-    self.trade_thesis = TradeThesisTracker(debug=self.config.debug)
+    self.visualizer = VisualizationInterface(config=module_config)
+    self.trade_map_vis = TradeMapVisualizer(config=module_config)
+    self.trade_thesis = TradeThesisTracker(config=module_config)
     
     # Advanced modules
-    self.world_model = RNNWorldModel(2, debug=self.config.debug)
-    self.opp_enhancer = OpponentModeEnhancer(debug=self.config.debug)
+    self.world_model = RNNWorldModel(2, config=module_config)
+    self.opp_enhancer = OpponentModeEnhancer(config=module_config)
     
     # Simulation modules (only in backtest mode)
     if not self.config.live_mode:
-        self.shadow_sim = ShadowSimulator(debug=self.config.debug)
-        self.role_coach = RoleCoach(debug=self.config.debug)
-        self.opponent_sim = OpponentSimulator(debug=self.config.debug)
+        self.shadow_sim = ShadowSimulator(config=module_config)
+        self.role_coach = RoleCoach(config=module_config)
+        self.opponent_sim = OpponentSimulator(config=module_config)
     else:
         self.shadow_sim = None
         self.role_coach = None
         self.opponent_sim = None
+    
+    self.logger.info("Enhanced modules initialized with InfoBus integration")
 
 
 def _initialize_arbiter(self):
-    """FIXED: Initialize the strategy arbiter with ALL expert wrappers"""
+    """Enhanced strategy arbiter initialization with InfoBus integration"""
+    
     # Create expert wrappers first
     self.theme_expert = ThemeExpert(self.theme_detector, self)
     self.season_expert = SeasonalityRiskExpert(self.time_risk_scaler, self)
-    self.meta_rl_expert = MetaRLExpert(self.meta_rl, self)
+    self.meta_rl_expert = MetaRLExpert(self.meta_rl, self)  # Will be updated later
     self.veto_expert = TradeMonitorVetoExpert(self.active_monitor, self)
     self.regime_expert = RegimeBiasExpert(self.fractal_confirm, self)
     
-    # FIXED: Include ALL voting members
+    # Create arbiter members list
     arbiter_members = [
         self.liquidity_layer,      # Base module
         self.position_manager,     # Core decision maker
@@ -300,44 +345,56 @@ def _initialize_arbiter(self):
         0.05,  # risk_controller
     ]
     
+    # Enhanced strategy arbiter with InfoBus
+    module_config = ModuleConfig(
+        debug=self.config.debug,
+        log_rotation_lines=self.config.log_rotation_lines,
+        info_bus_enabled=self.config.info_bus_enabled
+    )
+    
     self.arbiter = StrategyArbiter(
         members=arbiter_members,
         init_weights=init_weights,
         action_dim=self.action_dim,
         consensus=self.consensus,
         horizon_aligner=self.haligner,
-        debug=self.config.debug,
+        config=module_config,
     )
     
-    # Also update committee reference
+    # Update committee reference
     self.committee = arbiter_members
     
-    self.logger.info(f"Initialized arbiter with {len(arbiter_members)} voting members")
+    self.logger.info(f"Enhanced arbiter initialized with {len(arbiter_members)} InfoBus-integrated members")
 
 
 def _initialize_dependent_modules(self):
-    """Initialize modules that depend on arbiter - FIXED"""
-    # Correctly instantiate ExplanationGenerator with required arguments
+    """Initialize modules that depend on arbiter with InfoBus integration"""
+    
+    module_config = ModuleConfig(
+        debug=self.config.debug,
+        log_rotation_lines=self.config.log_rotation_lines,
+        info_bus_enabled=self.config.info_bus_enabled
+    )
+    
+    # Initialize ExplanationGenerator with enhanced InfoBus support
     try:
         self.explainer = ExplanationGenerator(
             fractal_regime=self.fractal_confirm,
             strategy_arbiter=self.arbiter,
-            debug=self.config.debug
+            config=module_config
         )
-        self.logger.info("ExplanationGenerator successfully initialized.")
+        self.logger.info("Enhanced ExplanationGenerator successfully initialized with InfoBus")
     except Exception as e:
         self.logger.error(f"Failed to initialize ExplanationGenerator: {e}")
-        # Create a dummy explainer as fallback
         self.explainer = DummyExplanationGenerator()
     
-    # Create module pipeline with all modules
+    # Create enhanced pipeline with InfoBus
     self._create_pipeline()
 
 
-
-
-
 def _create_pipeline(self):
+    """Create enhanced trading pipeline with InfoBus integration"""
+    
     core_modules = [
         self.feature_engine, self.compliance, self.risk_system,
         self.theme_detector, self.time_risk_scaler, self.liquidity_layer,
@@ -353,30 +410,44 @@ def _create_pipeline(self):
         self.playbook_clusterer, self.long_term_memory,
     ]
 
-    # --- PATCH: Always append dummy modules in live mode to match training pipeline ---
+    # Add simulation modules based on mode
     if self.config.live_mode:
-        core_modules.append(DummyModule())  # Add as many as needed
-
+        # Add dummy modules in live mode to match training pipeline
+        core_modules.append(DummyModule())
     else:
         # Add actual modules in backtest
-        if self.shadow_sim: core_modules.append(self.shadow_sim)
-        if self.role_coach: core_modules.append(self.role_coach)
-        if self.opponent_sim: core_modules.append(self.opponent_sim)
+        if self.shadow_sim: 
+            core_modules.append(self.shadow_sim)
+        if self.role_coach: 
+            core_modules.append(self.role_coach)
+        if self.opponent_sim: 
+            core_modules.append(self.opponent_sim)
 
-    # Only add explainer if it's not a dummy
+    # Add explainer if it's not a dummy
     if not isinstance(self.explainer, DummyExplanationGenerator):
         core_modules.append(self.explainer)
 
+    # Filter out None modules
     active_modules = [m for m in core_modules if m is not None]
-    self.pipeline = TradingPipeline(active_modules)
-    self.logger.info(f"Created pipeline with {len(active_modules)} active modules")
-
+    
+    # Create enhanced pipeline with InfoBus support
+    pipeline_config = {
+        'info_bus_enabled': self.config.info_bus_enabled,
+        'debug': self.config.debug
+    }
+    self.pipeline = TradingPipeline(active_modules, config=pipeline_config)
+    
+    self.logger.info(f"Enhanced pipeline created with {len(active_modules)} InfoBus-integrated modules")
 
 
 def _get_stable_observation_space(self) -> spaces.Box:
-    """Get a stable observation space that won't change during training"""
-    # Create dummy observation to get initial size
-    dummy_obs = self._get_full_observation(self._create_dummy_input())
+    """Get stable observation space that works with InfoBus pipeline"""
+    
+    # Create dummy InfoBus for initial observation
+    dummy_info_bus = create_info_bus(self, step=0)
+    
+    # Get initial observation size
+    dummy_obs = self.pipeline.step(dummy_info_bus)
     
     # Add buffer for potential growth (10% extra)
     buffer_size = int(dummy_obs.shape[0] * 0.1)
@@ -393,19 +464,6 @@ def _get_stable_observation_space(self) -> spaces.Box:
     )
 
 
-def _create_dummy_input(self) -> dict:
-    """Create dummy input for initialization"""
-    return {
-        "env": self,
-        "price_h1": np.zeros(7, dtype=np.float32),
-        "price_h4": np.zeros(7, dtype=np.float32),
-        "price_d1": np.zeros(7, dtype=np.float32),
-        "actions": np.zeros(self.action_dim, dtype=np.float32),
-        "trades": [],
-        "open_positions": [],  # FIXED: Standardized naming
-        "drawdown": 0.0,
-        "memory": np.zeros(32, dtype=np.float32),
-        "pnl": 0.0,
-        "correlations": {},
-        "current_step": 0,  # FIXED: Added for monitor
-    }
+def _create_dummy_input(self) -> InfoBus:
+    """Create dummy InfoBus for initialization"""
+    return create_info_bus(self, step=0)

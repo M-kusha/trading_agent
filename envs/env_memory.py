@@ -1,194 +1,392 @@
 # envs/env_memory.py
 """
-Memory integration methods for the trading environment
+Enhanced memory integration with InfoBus support
+Maintains backward compatibility while adding InfoBus infrastructure  
 """
 from typing import List, Dict, Any
 import numpy as np
 
+from modules.utils.info_bus import InfoBus, create_info_bus, extract_standard_context
+from modules.utils.audit_utils import format_operator_message
 
-def _feed_memory_modules(self, trades: List[Dict], actions: np.ndarray, obs: np.ndarray):
-    """FIXED: Properly feed data to memory modules"""
+
+def _feed_memory_modules(self, info_bus: InfoBus):
+    """Enhanced memory module feeding with InfoBus integration"""
+    
     try:
-        # Extract features for memory modules
-        features = obs[:32] if len(obs) >= 32 else np.pad(obs, (0, max(0, 32 - len(obs))))
+        # Extract context and trades from InfoBus
+        context = extract_standard_context(info_bus)
+        recent_trades = info_bus.get('recent_trades', [])
         
-        # Get current market context
-        context = self._get_current_market_context()
+        if not recent_trades and self.config.debug:
+            self.logger.debug("No recent trades to feed memory modules")
+            return
         
-        # Feed MistakeMemory with individual trades
-        if hasattr(self.mistake_memory, 'step'):
-            for trade in trades:
-                try:
-                    self.mistake_memory.step(
-                        features=trade.get("features", features),
-                        pnl=trade.get("pnl", 0.0),
-                        info=context
-                    )
-                    
-                    # Update budget optimizer with memory usage
-                    if trade.get("pnl", 0) != 0:
-                        self.memory_budget.step(
-                            memory_used="mistakes",
-                            profit=trade.get("pnl", 0.0),
-                            source="mistakes"
-                        )
-                except Exception as e:
-                    self.logger.error(f"Error feeding MistakeMemory: {e}")
+        # Feed memory modules that handle InfoBus directly
+        self._feed_info_bus_memory_modules(info_bus, context)
         
-        # Feed PlaybookMemory with trade records
-        if hasattr(self.playbook_memory, 'record') and trades:
-            for trade in trades:
-                try:
-                    self.playbook_memory.record(
-                        features=trade.get("features", features),
-                        actions=actions,
-                        pnl=trade.get("pnl", 0.0),
-                        context=context
-                    )
-                    
-                    # Update budget optimizer
-                    if trade.get("pnl", 0) != 0:
-                        self.memory_budget.step(
-                            memory_used="trades",
-                            profit=trade.get("pnl", 0.0),
-                            source="trades"
-                        )
-                except Exception as e:
-                    self.logger.error(f"Error feeding PlaybookMemory: {e}")
+        # Feed legacy memory modules with extracted data
+        self._feed_legacy_memory_modules(recent_trades, context, info_bus)
         
-        # FIXED: DON'T feed MemoryCompressor here - it gets episode data separately
-        # MemoryCompressor accumulates over episodes and compresses at intervals
-        self._feed_memory_compressor_step_by_step(trades)
+        # Update memory performance tracking
+        self._update_memory_performance_tracking(info_bus, len(recent_trades))
         
-        # Feed HistoricalReplayAnalyzer with action sequence
-        if hasattr(self.replay_analyzer, 'step'):
-            try:
-                self.replay_analyzer.step(
-                    action=actions,
-                    features=features,
-                    timestamp=self.market_state.current_step
-                )
-            except Exception as e:
-                self.logger.error(f"Error feeding HistoricalReplayAnalyzer: {e}")
-                
-        self.logger.debug(f"Fed {len(trades)} trades to memory modules")
+        self.logger.debug(
+            format_operator_message(
+                "🧠", "MEMORY_MODULES_FED",
+                details=f"Fed {len(recent_trades)} trades to memory systems",
+                context="memory_processing"
+            )
+        )
         
     except Exception as e:
-        self.logger.error(f"Error in _feed_memory_modules: {e}")
+        self.logger.error(
+            format_operator_message(
+                "💥", "MEMORY_FEED_ERROR",
+                details=f"Memory module feeding failed: {e}",
+                context="memory_processing"
+            )
+        )
 
 
-def _feed_memory_compressor_step_by_step(self, trades: List[Dict]):
-    """Feed MemoryCompressor with individual trades as they happen"""
-    try:
-        if hasattr(self.memory_compressor, 'step') and trades:
-            for trade in trades:
-                # Create enhanced trade data for compression
-                enhanced_trade = {
-                    "features": trade.get("features", np.array([
-                        trade.get("entry_price", 0.0),
-                        trade.get("exit_price", 0.0), 
-                        trade.get("size", 0.0),
-                        trade.get("pnl", 0.0),
-                        self._get_current_volatility(),
-                        self.market_state.current_drawdown,
-                        self.market_state.balance / 10000.0,
-                        float(self.market_state.current_step)
-                    ], dtype=np.float32)),
-                    "pnl": trade.get("pnl", 0.0)
-                }
-                
-                # Feed individual trade to memory compressor
-                # This will build up its internal memory between episodes
-                self.memory_compressor.compress(
-                    episode=self.episode_count, 
-                    trades=[enhanced_trade]
-                )
-                
-            self.logger.debug(f"MemoryCompressor: Fed {len(trades)} individual trades")
+def _feed_info_bus_memory_modules(self, info_bus: InfoBus, context: Dict[str, Any]):
+    """Feed memory modules that support InfoBus directly"""
+    
+    # These modules use _step_impl with InfoBus
+    info_bus_modules = [
+        ('PlaybookMemory', self.playbook_memory),
+        ('MemoryCompressor', self.memory_compressor),
+        ('HistoricalReplayAnalyzer', self.replay_analyzer),
+    ]
+    
+    for module_name, module in info_bus_modules:
+        try:
+            if hasattr(module, '_step_impl'):
+                module._step_impl(info_bus=info_bus)
+            elif hasattr(module, 'step'):
+                module.step(info_bus=info_bus)
             
+        except Exception as e:
+            self.logger.error(
+                format_operator_message(
+                    "💥", "MODULE_FEED_ERROR",
+                    instrument=module_name,
+                    details=str(e),
+                    context="memory_processing"
+                )
+            )
+
+
+def _feed_legacy_memory_modules(self, trades: List[Dict], context: Dict[str, Any], info_bus: InfoBus):
+    """Feed memory modules that still need legacy interface"""
+    
+    if not trades:
+        return
+    
+    # Extract features for legacy modules
+    features = self._extract_memory_features(info_bus, context)
+    
+    # Feed MistakeMemory with individual trades
+    try:
+        for trade in trades:
+            trade_features = trade.get("features", features)
+            pnl = trade.get("pnl", 0.0)
+            
+            # Use InfoBus step if available, otherwise legacy
+            if hasattr(self.mistake_memory, '_step_impl'):
+                trade_info_bus = info_bus.copy()
+                trade_info_bus['current_trade'] = trade
+                self.mistake_memory._step_impl(info_bus=trade_info_bus)
+            else:
+                self.mistake_memory.step(
+                    features=trade_features,
+                    pnl=pnl,
+                    info=context
+                )
+            
+            # Update budget optimizer
+            if pnl != 0:
+                self.memory_budget.step(
+                    memory_used="mistakes",
+                    profit=pnl,
+                    source="mistakes"
+                )
+                
     except Exception as e:
-        self.logger.error(f"Error feeding MemoryCompressor step-by-step: {e}")
+        self.logger.error(f"Error feeding MistakeMemory: {e}")
+    
+    # Feed MemoryBudgetOptimizer
+    try:
+        if hasattr(self.memory_budget, '_step_impl'):
+            self.memory_budget._step_impl(info_bus=info_bus)
+        else:
+            # Legacy interface
+            total_profit = sum(t.get("pnl", 0.0) for t in trades)
+            if total_profit != 0:
+                self.memory_budget.step(
+                    memory_used="general",
+                    profit=total_profit,
+                    source="trading"
+                )
+    except Exception as e:
+        self.logger.error(f"Error feeding MemoryBudgetOptimizer: {e}")
+
+
+def _extract_memory_features(self, info_bus: InfoBus, context: Dict[str, Any]) -> np.ndarray:
+    """Extract features for memory modules from InfoBus"""
+    
+    try:
+        features = []
+        
+        # Market context features
+        features.extend([
+            context.get('volatility_level', 0.5),  # Normalized volatility
+            context.get('drawdown_pct', 0.0),
+            context.get('exposure_pct', 0.0),
+            float(context.get('position_count', 0)),
+            context.get('risk_score', 0.5),
+        ])
+        
+        # Price features if available
+        prices = info_bus.get('prices', {})
+        if prices and self.instruments:
+            primary_price = prices.get(self.instruments[0], 0.0)
+            features.append(primary_price / 10000.0)  # Normalized price
+        else:
+            features.append(0.0)
+        
+        # Session and regime features
+        session_map = {'london': 0.2, 'new_york': 0.5, 'tokyo': 0.8, 'sydney': 0.1, 'unknown': 0.0}
+        features.append(session_map.get(context.get('session', 'unknown'), 0.0))
+        
+        regime_map = {'trending': 0.8, 'volatile': 0.5, 'ranging': 0.2, 'unknown': 0.0}
+        features.append(regime_map.get(context.get('regime', 'unknown'), 0.0))
+        
+        return np.array(features, dtype=np.float32)
+        
+    except Exception as e:
+        self.logger.warning(f"Feature extraction failed: {e}")
+        return np.zeros(8, dtype=np.float32)  # Safe fallback
 
 
 def _get_current_market_context(self) -> Dict[str, Any]:
-    """Get current market context for memory modules"""
+    """Enhanced market context extraction with InfoBus support"""
+    
     try:
-        # Get volatility and regime info
-        vol = self._get_current_volatility()
+        # Create InfoBus for current state
+        info_bus = create_info_bus(self, step=self.market_state.current_step)
         
-        # Get current hour (for session detection)
-        import datetime
-        current_hour = datetime.datetime.now().hour
+        # Extract standard context
+        context = extract_standard_context(info_bus)
         
-        # Determine regime (simplified)
-        regime = "trending"  # Could be enhanced with actual regime detection
-        if vol > 0.03:
-            regime = "volatile"
-        elif vol < 0.01:
-            regime = "noise"
-            
-        return {
-            "volatility": vol,
-            "regime": regime,
-            "hour": current_hour,
-            "step": self.market_state.current_step,
-            "balance": self.market_state.balance,
-            "drawdown": self.market_state.current_drawdown
-        }
+        # Add environment-specific context
+        context.update({
+            'balance': self.market_state.balance,
+            'peak_balance': self.market_state.peak_balance,
+            'session_pnl': getattr(self.market_state, 'session_pnl', 0.0),
+            'trades_today': getattr(self.market_state, 'session_trades', 0),
+            'step': self.market_state.current_step,
+        })
+        
+        return context
+        
     except Exception as e:
         self.logger.error(f"Error getting market context: {e}")
-        return {}
+        
+        # Fallback context
+        return {
+            'volatility': self._get_current_volatility(),
+            'regime': 'unknown',
+            'hour': 12,  # Default to midday
+            'step': self.market_state.current_step,
+            'balance': self.market_state.balance,
+            'drawdown': self.market_state.current_drawdown,
+            'session': 'unknown',
+            'volatility_level': 'medium',
+            'risk_score': 0.5,
+        }
 
 
 def _update_memory_compressor(self, episode_trades: List[Dict]):
-    """FIXED: Force compression for testing (remove after verification)"""
+    """Enhanced memory compressor update with InfoBus integration"""
+    
     try:
-        if hasattr(self.memory_compressor, 'compress') and episode_trades:
-            # Add features to trades if missing
-            enhanced_trades = []
-            for trade in episode_trades:
-                if "features" not in trade:
-                    # Create features from trade data
-                    trade_features = np.array([
-                        trade.get("entry_price", 0.0),
-                        trade.get("exit_price", 0.0),
-                        trade.get("size", 0.0),
-                        trade.get("duration", 0.0),
-                        trade.get("pnl", 0.0),
-                        self._get_current_volatility(),
-                        self.market_state.current_drawdown,
-                        self.market_state.balance / 10000.0
-                    ], dtype=np.float32)
-                    trade["features"] = trade_features
-                enhanced_trades.append(trade)
-                
-            # FORCE compression every episode for testing
+        if not episode_trades:
+            self.logger.debug("No episode trades for memory compressor")
+            return
+        
+        # Create InfoBus for compression
+        info_bus = create_info_bus(self, step=self.market_state.current_step)
+        info_bus['episode_trades'] = episode_trades
+        info_bus['episode_number'] = self.episode_count
+        
+        # Add enhanced trade features
+        enhanced_trades = []
+        for trade in episode_trades:
+            enhanced_trade = self._enhance_trade_for_compression(trade, info_bus)
+            enhanced_trades.append(enhanced_trade)
+        
+        # Use InfoBus compression if available
+        if hasattr(self.memory_compressor, '_step_impl'):
+            info_bus['trades_for_compression'] = enhanced_trades
+            self.memory_compressor._step_impl(info_bus=info_bus)
+        else:
+            # Legacy compression
             self.memory_compressor.compress(
                 episode=self.episode_count,
                 trades=enhanced_trades
             )
-            self.logger.info(f"MemoryCompressor: FORCED compression of {len(enhanced_trades)} trades for episode {self.episode_count}")
-        else:
-            self.logger.debug(f"MemoryCompressor: No trades to compress for episode {self.episode_count}")
+        
+        self.logger.info(
+            format_operator_message(
+                "🧠", "MEMORY_COMPRESSED",
+                details=f"Compressed {len(enhanced_trades)} trades for episode {self.episode_count}",
+                context="memory_management"
+            )
+        )
+        
     except Exception as e:
-        self.logger.error(f"Error updating memory compressor: {e}")
+        self.logger.error(
+            format_operator_message(
+                "💥", "COMPRESSION_ERROR", 
+                details=f"Memory compression failed: {e}",
+                context="memory_management"
+            )
+        )
+
+
+def _enhance_trade_for_compression(self, trade: Dict[str, Any], info_bus: InfoBus) -> Dict[str, Any]:
+    """Enhance trade data for memory compression"""
+    
+    enhanced_trade = trade.copy()
+    
+    # Ensure features exist
+    if "features" not in enhanced_trade:
+        enhanced_trade["features"] = np.array([
+            trade.get("entry_price", 0.0),
+            trade.get("exit_price", 0.0), 
+            trade.get("size", 0.0),
+            trade.get("pnl", 0.0),
+            self._get_current_volatility(),
+            self.market_state.current_drawdown,
+            self.market_state.balance / 10000.0,
+            float(self.market_state.current_step)
+        ], dtype=np.float32)
+    
+    # Add market context
+    context = extract_standard_context(info_bus)
+    enhanced_trade["market_context"] = context
+    
+    # Add timing information
+    enhanced_trade["episode"] = self.episode_count
+    enhanced_trade["step"] = self.market_state.current_step
+    
+    return enhanced_trade
 
 
 def _record_episode_in_replay_analyzer(self):
-    """FIXED: Record episode results in replay analyzer"""
+    """Enhanced episode recording with InfoBus integration"""
+    
     try:
-        if hasattr(self.replay_analyzer, 'record_episode'):
-            total_pnl = sum(self.episode_metrics.pnls)
-            
-            # Only record if we have meaningful data
+        total_pnl = sum(self.episode_metrics.pnls) if self.episode_metrics.pnls else 0.0
+        
+        # Create InfoBus for episode recording
+        info_bus = create_info_bus(self, step=self.market_state.current_step)
+        info_bus['episode_summary'] = {
+            'episode_number': self.episode_count,
+            'total_pnl': total_pnl,
+            'trade_count': len(self.episode_metrics.trades),
+            'max_drawdown': max(self.episode_metrics.drawdowns) if self.episode_metrics.drawdowns else 0.0,
+            'final_balance': self.market_state.balance,
+        }
+        
+        # Use InfoBus recording if available
+        if hasattr(self.replay_analyzer, '_step_impl'):
+            self.replay_analyzer._step_impl(info_bus=info_bus)
+        else:
+            # Legacy recording
             if len(self.episode_metrics.pnls) > 0:
+                actions = getattr(self, '_last_actions', np.array([0, 0]))
                 self.replay_analyzer.record_episode(
                     data={"episode": self.episode_count},
-                    actions=np.array(self._last_actions if hasattr(self, '_last_actions') else [0, 0]),
+                    actions=actions,
                     pnl=total_pnl
                 )
-                self.logger.info(f"HistoricalReplayAnalyzer: Recorded episode {self.episode_count}, PnL=€{total_pnl:.2f}")
-            else:
-                self.logger.debug(f"HistoricalReplayAnalyzer: No PnL data for episode {self.episode_count}")
+        
+        self.logger.info(
+            format_operator_message(
+                "📊", "EPISODE_RECORDED",
+                details=f"Episode {self.episode_count} recorded: PnL={total_pnl:+.2f}",
+                context="episode_tracking"
+            )
+        )
+        
     except Exception as e:
-        self.logger.error(f"Error recording episode in replay analyzer: {e}")
+        self.logger.error(
+            format_operator_message(
+                "💥", "EPISODE_RECORDING_ERROR",
+                details=f"Failed to record episode: {e}",
+                context="episode_tracking"
+            )
+        )
+
+
+def _update_memory_performance_tracking(self, info_bus: InfoBus, trade_count: int):
+    """Track memory module performance"""
+    
+    try:
+        # Update InfoBus with memory performance data
+        memory_performance = {
+            'trade_count': trade_count,
+            'step': self.market_state.current_step,
+            'episode': self.episode_count,
+            'memory_usage': self._get_memory_usage_stats(),
+        }
+        
+        from modules.utils.info_bus import InfoBusUpdater
+        InfoBusUpdater.add_module_data(info_bus, 'MemorySystem', memory_performance)
+        
+    except Exception as e:
+        self.logger.warning(f"Memory performance tracking failed: {e}")
+
+
+def _get_memory_usage_stats(self) -> Dict[str, Any]:
+    """Get memory usage statistics from all memory modules"""
+    
+    stats = {}
+    
+    try:
+        # PlaybookMemory stats
+        if hasattr(self.playbook_memory, 'memory_records'):
+            stats['playbook_entries'] = len(self.playbook_memory.memory_records)
+        
+        # MistakeMemory stats  
+        if hasattr(self.mistake_memory, '_loss_buf'):
+            stats['mistake_entries'] = len(self.mistake_memory._loss_buf)
+        
+        # MemoryCompressor stats
+        if hasattr(self.memory_compressor, 'profit_memory'):
+            stats['compressed_entries'] = len(self.memory_compressor.profit_memory)
+        
+        # ReplayAnalyzer stats
+        if hasattr(self.replay_analyzer, 'episode_buffer'):
+            stats['replay_episodes'] = len(self.replay_analyzer.episode_buffer)
+            
+    except Exception as e:
+        self.logger.warning(f"Memory stats collection failed: {e}")
+    
+    return stats
+
+
+# Backward compatibility methods
+def feed_memory_modules_legacy(self, trades: List[Dict], actions: np.ndarray, obs: np.ndarray):
+    """Legacy method for feeding memory modules - converts to InfoBus"""
+    
+    # Create InfoBus from legacy parameters
+    info_bus = create_info_bus(self, step=self.market_state.current_step)
+    info_bus['recent_trades'] = trades
+    info_bus['raw_actions'] = actions
+    info_bus['observation'] = obs
+    
+    # Use enhanced method
+    self._feed_memory_modules(info_bus)
