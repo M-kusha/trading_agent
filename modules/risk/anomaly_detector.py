@@ -1,548 +1,1134 @@
-# ──────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # File: modules/risk/anomaly_detector.py
-# ──────────────────────────────────────────────────────────────
+# Enhanced with InfoBus integration & intelligent training mode
+# ─────────────────────────────────────────────────────────────
 
 import numpy as np
-import logging
-import json
-import os
-from collections import deque
-from typing import Dict, Any, List, Optional
-from modules.core.core import Module
-from utils.get_dir import utcnow
+from collections import deque, defaultdict
+from typing import Dict, Any, List, Optional, Tuple
+import datetime
 
-class AnomalyDetector(Module):
+from modules.core.core import Module, ModuleConfig, audit_step
+from modules.core.mixins import RiskMixin, AnalysisMixin, StateManagementMixin
+from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
+from modules.utils.audit_utils import AuditTrailManager, format_operator_message
 
-    AUDIT_PATH = "logs/risk/anomaly_detector_audit.jsonl"
-    LOG_PATH   = "logs/risk/anomaly_detector.log"
+
+class AnomalyDetector(Module, RiskMixin, AnalysisMixin, StateManagementMixin):
+    """
+    Enhanced anomaly detection system with InfoBus integration.
+    Intelligently detects trading anomalies with context-aware thresholds.
+    """
 
     def __init__(
         self,
-        pnl_limit: float = 1000.0,  # FIXED: Realistic threshold for training
+        pnl_limit: float = 1000.0,
         volume_zscore: float = 3.0,
         price_zscore: float = 3.0,
+        observation_zscore: float = 4.0,
         enabled: bool = True,
-        audit_log_size: int = 100,
         history_size: int = 100,
-        training_mode: bool = True,  # NEW: Separate training vs live behavior
-        debug: bool = True
+        training_mode: bool = True,
+        adaptive_thresholds: bool = True,
+        debug: bool = True,
+        **kwargs
     ):
-        super().__init__()
+        # Initialize with enhanced config
+        config = ModuleConfig(
+            debug=debug,
+            max_history=max(history_size, 50),
+            audit_enabled=kwargs.get('audit_enabled', True),
+            **kwargs
+        )
+        super().__init__(config)
+        
+        # Initialize mixins
+        self._initialize_risk_state()
+        self._initialize_analysis_state()
+        
+        # Core configuration
         self.enabled = enabled
-        self.pnl_limit = pnl_limit
-        self.volume_zscore = volume_zscore
-        self.price_zscore = price_zscore
         self.training_mode = training_mode
-        self.debug = debug
+        self.adaptive_thresholds = adaptive_thresholds
         
-        # Ensure directories exist
-        os.makedirs(os.path.dirname(self.LOG_PATH), exist_ok=True)
-        os.makedirs(os.path.dirname(self.AUDIT_PATH), exist_ok=True)
+        # Detection thresholds
+        self.base_thresholds = {
+            'pnl_limit': float(pnl_limit),
+            'volume_zscore': float(volume_zscore),
+            'price_zscore': float(price_zscore),
+            'observation_zscore': float(observation_zscore)
+        }
         
-        # History tracking
+        # Adaptive threshold system
+        self.current_thresholds = self.base_thresholds.copy()
+        self.threshold_history = deque(maxlen=50)
+        
+        # Data history with intelligent sizing
         self.pnl_history = deque(maxlen=history_size)
         self.volume_history = deque(maxlen=history_size)
         self.price_history = deque(maxlen=history_size)
-        self.observation_history = deque(maxlen=20)
+        self.observation_history = deque(maxlen=min(history_size, 50))  # Smaller for observations
         
-        # State
+        # Enhanced anomaly tracking
         self.anomalies: Dict[str, List[Dict[str, Any]]] = {
             "pnl": [],
             "volume": [],
             "price": [],
             "observation": [],
-            "pattern": []
+            "pattern": [],
+            "correlation": [],
+            "volatility": []
         }
+        
+        # State tracking
         self.anomaly_score = 0.0
         self.step_count = 0
-        self.adaptive_thresholds = {
-            "pnl": self.pnl_limit,
-            "volume": 0.0,
-            "price": 0.0
-        }
+        self.detection_stats = defaultdict(int)
+        self.false_positive_tracker = deque(maxlen=100)
         
-        # Audit
-        self._audit: List[Dict[str, Any]] = []
-        self._max_audit = audit_log_size
-
-        # Logger setup - Fixed
-        self.logger = logging.getLogger("AnomalyDetector")
-        if not self.logger.handlers:
-            self.logger.handlers.clear()
-            self.logger.setLevel(logging.DEBUG if debug else logging.INFO)
-            self.logger.propagate = False
-            
-            fh = logging.FileHandler(self.LOG_PATH, mode='a')
-            fh.setLevel(logging.DEBUG)
-            formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
-            fh.setFormatter(formatter)
-            self.logger.addHandler(fh)
-            
-            if debug:
-                ch = logging.StreamHandler()
-                ch.setLevel(logging.INFO)
-                ch.setFormatter(formatter)
-                self.logger.addHandler(ch)
+        # Context-aware detection
+        self.regime_baselines = defaultdict(lambda: defaultdict(list))
+        self.session_baselines = defaultdict(lambda: defaultdict(list))
         
-        self.logger.info(f"AnomalyDetector initialized - pnl_limit={pnl_limit}, training_mode={training_mode}")
+        # Audit and performance tracking
+        self.audit_manager = AuditTrailManager("AnomalyDetector")
+        self._last_significant_anomaly = None
+        self._anomaly_frequency = deque(maxlen=100)
+        
+        self.log_operator_info(
+            "🔍 Enhanced Anomaly Detector initialized",
+            pnl_limit=f"€{pnl_limit:,.0f}",
+            training_mode=training_mode,
+            adaptive_thresholds=adaptive_thresholds,
+            history_size=history_size
+        )
 
-    def reset(self):
-        """Reset detector state"""
+    def reset(self) -> None:
+        """Enhanced reset with comprehensive state cleanup"""
+        super().reset()
+        self._reset_risk_state()
+        self._reset_analysis_state()
+        
+        # Clear detection state
+        for anomaly_type in self.anomalies:
+            self.anomalies[anomaly_type].clear()
+        
+        self.anomaly_score = 0.0
+        self.step_count = 0
+        self.detection_stats.clear()
+        self.false_positive_tracker.clear()
+        
+        # Clear history (but keep thresholds for continuity)
         self.pnl_history.clear()
         self.volume_history.clear()
         self.price_history.clear()
         self.observation_history.clear()
-        for key in self.anomalies:
-            self.anomalies[key].clear()
-        self.anomaly_score = 0.0
-        self.step_count = 0
-        self._audit.clear()
-        self.logger.info("AnomalyDetector reset")
-
-    def step(
-        self,
-        pnl: Optional[float] = None,
-        obs: Optional[np.ndarray] = None,
-        volume: Optional[float] = None,
-        price: Optional[float] = None,
-        trades: Optional[List[Dict[str, Any]]] = None,
-        balance: Optional[float] = None,
-        equity: Optional[float] = None,
-        **kwargs
-    ) -> bool:
-        """
-        FIXED: Detect anomalies with proper training vs live mode handling.
-        """
-        self.step_count += 1
+        self._anomaly_frequency.clear()
         
-        # Reduced logging frequency
-        if self.debug and self.step_count % 50 == 0:
-            self.logger.debug(f"Step {self.step_count} - enabled={self.enabled}, pnl={pnl}, training={self.training_mode}")
+        # Reset baselines but keep structure
+        self.regime_baselines.clear()
+        self.session_baselines.clear()
+        
+        self.log_operator_info("🔄 Anomaly Detector reset - detection state cleared")
+
+    @audit_step
+    def _step_impl(self, info_bus: Optional[InfoBus] = None, **kwargs) -> None:
+        """Enhanced step with InfoBus integration"""
+        
+        if not info_bus:
+            self.log_operator_warning("No InfoBus provided - detector inactive")
+            return
         
         if not self.enabled:
             self.anomaly_score = 0.0
-            return False
-            
-        # Extract data from different sources
-        pnl = self._extract_pnl(pnl, balance, equity, kwargs)
-        volume = self._extract_volume(volume, trades, kwargs)
-        price = self._extract_price(price, kwargs)
-        obs = self._extract_observation(obs, kwargs)
+            return
+        
+        self.step_count += 1
         
         # Clear previous anomalies
-        for key in self.anomalies:
-            self.anomalies[key].clear()
-            
+        for anomaly_type in self.anomalies:
+            self.anomalies[anomaly_type].clear()
+        
+        # Extract context for intelligent detection
+        context = extract_standard_context(info_bus)
+        
+        # Perform comprehensive anomaly detection
+        critical_found = self._detect_comprehensive_anomalies(info_bus, context)
+        
+        # Update adaptive thresholds
+        if self.adaptive_thresholds:
+            self._update_adaptive_thresholds(context)
+        
+        # Calculate risk score
+        self._calculate_anomaly_score(context)
+        
+        # Update InfoBus with results
+        self._update_info_bus(info_bus, critical_found)
+        
+        # Record audit trail for significant events
+        if critical_found or self.anomaly_score > 0.3:
+            self._record_comprehensive_audit(info_bus, context)
+        
+        # Update performance metrics
+        self._update_detection_metrics()
+
+    def _detect_comprehensive_anomalies(self, info_bus: InfoBus, 
+                                      context: Dict[str, Any]) -> bool:
+        """Comprehensive anomaly detection across all data types"""
+        
         critical_found = False
         
         try:
-            # Check PnL anomaly with training-appropriate thresholds
-            if pnl is not None:
-                self.pnl_history.append(pnl)
-                if self._check_pnl_anomaly(pnl):
-                    critical_found = True
-            elif self.training_mode:
-                # FIXED: Only generate synthetic data in training mode when needed
-                synthetic_pnl = np.random.normal(0, 100)  # More realistic for training
-                self.pnl_history.append(synthetic_pnl)
-                if self.debug and self.step_count % 100 == 0:
-                    self.logger.debug(f"Generated synthetic PnL: {synthetic_pnl:.2f}")
-                    
-            # Check observation anomaly
-            if obs is not None:
-                if self._check_observation_anomaly(obs):
-                    critical_found = True
-                    
-            # Check volume anomaly  
-            if volume is not None:
-                self.volume_history.append(volume)
-                self._check_volume_anomaly(volume)
-            elif self.training_mode and len(self.volume_history) < 10:
-                # Generate synthetic volume only when bootstrapping in training
-                synthetic_volume = abs(np.random.normal(10000, 3000))
-                self.volume_history.append(synthetic_volume)
-                if self.debug and self.step_count % 100 == 0:
-                    self.logger.debug(f"Generated synthetic volume: {synthetic_volume:.0f}")
-                
-            # Check price anomaly
-            if price is not None:
-                self.price_history.append(price)
-                self._check_price_anomaly(price)
-            elif self.training_mode and len(self.price_history) < 10:
-                # Generate synthetic price only when bootstrapping in training
-                if self.price_history:
-                    last_price = self.price_history[-1]
-                    synthetic_price = last_price * (1 + np.random.normal(0, 0.001))
-                else:
-                    synthetic_price = 100.0 + np.random.normal(0, 1)
-                self.price_history.append(synthetic_price)
-                if self.debug and self.step_count % 100 == 0:
-                    self.logger.debug(f"Generated synthetic price: {synthetic_price:.2f}")
-                
-            # Check pattern anomalies
-            if trades:
-                self._check_pattern_anomalies(trades)
-                
-            # Update adaptive thresholds
-            self._update_adaptive_thresholds()
+            # 1. PnL anomaly detection
+            if self._detect_pnl_anomalies(info_bus, context):
+                critical_found = True
             
-            # Calculate anomaly score
-            self._calculate_anomaly_score()
+            # 2. Volume anomaly detection
+            self._detect_volume_anomalies(info_bus, context)
             
-            # Log summary less frequently
-            total_anomalies = sum(len(anomalies) for anomalies in self.anomalies.values())
-            if total_anomalies > 0 or self.step_count % 200 == 0:
-                self.logger.info(f"Step {self.step_count} summary: anomaly_score={self.anomaly_score:.3f}, total_anomalies={total_anomalies}, critical={critical_found}")
+            # 3. Price anomaly detection
+            self._detect_price_anomalies(info_bus, context)
             
-            # Record audit if anomalies found
-            if total_anomalies > 0:
-                self._record_audit()
-                
+            # 4. Observation anomaly detection
+            if self._detect_observation_anomalies(info_bus, context):
+                critical_found = True
+            
+            # 5. Pattern anomaly detection
+            self._detect_pattern_anomalies(info_bus, context)
+            
+            # 6. Correlation anomaly detection
+            self._detect_correlation_anomalies(info_bus, context)
+            
+            # 7. Volatility anomaly detection
+            self._detect_volatility_anomalies(info_bus, context)
+            
         except Exception as e:
-            self.logger.error(f"Error in anomaly detection: {e}")
+            self.log_operator_error(f"Anomaly detection failed: {e}")
             
         return critical_found
 
-    def _extract_pnl(self, pnl: Optional[float], balance: Optional[float], equity: Optional[float], kwargs: Dict[str, Any]) -> Optional[float]:
-        """Extract PnL from various sources"""
-        if pnl is not None:
-            return float(pnl)
-            
-        # Try balance change
-        if balance is not None:
-            if hasattr(self, '_last_balance') and self._last_balance is not None:
-                pnl = balance - self._last_balance
-                self._last_balance = balance
-                return pnl
-            else:
-                self._last_balance = balance
-                
-        # Try equity change
-        if equity is not None:
-            if hasattr(self, '_last_equity') and self._last_equity is not None:
-                pnl = equity - self._last_equity
-                self._last_equity = equity
-                return pnl
-            else:
-                self._last_equity = equity
-                
-        # Try from kwargs
-        for key in ['profit', 'profit_loss', 'realized_pnl', 'unrealized_pnl']:
-            if key in kwargs and kwargs[key] is not None:
-                return float(kwargs[key])
-                
-        return None
-
-    def _extract_volume(self, volume: Optional[float], trades: Optional[List[Dict[str, Any]]], kwargs: Dict[str, Any]) -> Optional[float]:
-        """Extract volume from various sources"""
-        if volume is not None:
-            return float(volume)
-            
-        # Calculate from trades
-        if trades:
-            total_volume = sum(abs(trade.get("size", trade.get("volume", 0))) for trade in trades)
-            if total_volume > 0:
-                return total_volume
-                
-        # Try from kwargs
-        for key in ['trade_volume', 'total_volume', 'size', 'tick_volume']:
-            if key in kwargs and kwargs[key] is not None:
-                return float(kwargs[key])
-                
-        return None
-
-    def _extract_price(self, price: Optional[float], kwargs: Dict[str, Any]) -> Optional[float]:
-        """Extract price from various sources"""
-        if price is not None:
-            return float(price)
-            
-        # Try from kwargs - handle CSV column names
-        for key in ['current_price', 'last_price', 'close_price', 'close', 'bid', 'ask']:
-            if key in kwargs and kwargs[key] is not None:
-                return float(kwargs[key])
-                
-        return None
-
-    def _extract_observation(self, obs: Optional[np.ndarray], kwargs: Dict[str, Any]) -> Optional[np.ndarray]:
-        """Extract observation array from various sources"""
-        if obs is not None:
-            return obs
-            
-        # Try from kwargs
-        for key in ['observation', 'state', 'features']:
-            if key in kwargs and kwargs[key] is not None:
-                try:
-                    return np.array(kwargs[key])
-                except:
-                    continue
-                    
-        return None
-
-    def _check_pnl_anomaly(self, pnl: float) -> bool:
-        """Check for PnL anomalies with training-appropriate thresholds"""
-        # FIXED: Use adaptive threshold that makes sense for training
-        current_threshold = self.adaptive_thresholds["pnl"]
+    def _detect_pnl_anomalies(self, info_bus: InfoBus, context: Dict[str, Any]) -> bool:
+        """Enhanced PnL anomaly detection with context awareness"""
         
-        if abs(pnl) > current_threshold:
+        # Extract PnL from multiple sources
+        pnl = self._extract_pnl_from_info_bus(info_bus)
+        
+        if pnl is None:
+            # Generate synthetic PnL only in training mode when needed for bootstrapping
+            if self.training_mode and len(self.pnl_history) < 10:
+                pnl = self._generate_synthetic_pnl(context)
+            else:
+                return False
+        
+        self.pnl_history.append(pnl)
+        critical_found = False
+        
+        # 1. Absolute threshold check with context adjustment
+        adjusted_limit = self._get_context_adjusted_limit('pnl_limit', context)
+        
+        if abs(pnl) > adjusted_limit:
             self.anomalies["pnl"].append({
-                "type": "absolute",
+                "type": "absolute_limit",
                 "value": pnl,
-                "threshold": current_threshold,
+                "threshold": adjusted_limit,
+                "base_threshold": self.current_thresholds['pnl_limit'],
+                "context": context.copy(),
                 "severity": "critical"
             })
-            self.logger.error(f"Critical PnL anomaly: {pnl:.2f} > {current_threshold:.2f}")
-            return True
             
-        # Statistical check if enough history
+            self.log_operator_error(
+                f"🚨 CRITICAL PnL anomaly: €{pnl:,.2f}",
+                limit=f"€{adjusted_limit:,.0f}",
+                regime=context.get('regime', 'unknown'),
+                session=context.get('session', 'unknown')
+            )
+            critical_found = True
+        
+        # 2. Statistical anomaly detection (if sufficient history)
         if len(self.pnl_history) >= 20:
-            pnl_array = np.array(self.pnl_history)
-            mean = np.mean(pnl_array)
-            std = np.std(pnl_array)
-            if std > 0:
-                z_score = abs((pnl - mean) / std)
-                if z_score > 4:  # More lenient for training
-                    self.anomalies["pnl"].append({
-                        "type": "statistical",
-                        "value": pnl,
-                        "z_score": z_score,
-                        "severity": "warning"
-                    })
-                    if self.debug:
-                        self.logger.warning(f"Statistical PnL anomaly: z-score={z_score:.2f}")
-                    
-        return False
-
-    def _check_observation_anomaly(self, obs: np.ndarray) -> bool:
-        """Check for anomalies in observation vector"""
-        try:
-            # Check for NaN/Inf
-            if np.isnan(obs).any() or np.isinf(obs).any():
-                self.anomalies["observation"].append({
-                    "type": "invalid_values",
-                    "nan_count": int(np.isnan(obs).sum()),
-                    "inf_count": int(np.isinf(obs).sum()),
-                    "severity": "critical"
+            z_score = self._calculate_robust_zscore(pnl, list(self.pnl_history))
+            
+            if z_score > 4.0:  # Conservative threshold
+                self.anomalies["pnl"].append({
+                    "type": "statistical",
+                    "value": pnl,
+                    "z_score": float(z_score),
+                    "context": context.copy(),
+                    "severity": "critical" if z_score > 6.0 else "warning"
                 })
-                self.logger.error("Critical: Observation contains NaN/Inf")
-                return True
                 
-            # Check for extreme values
+                if z_score > 6.0:
+                    self.log_operator_error(f"🚨 Statistical PnL anomaly: z-score {z_score:.2f}")
+                    critical_found = True
+                else:
+                    self.log_operator_warning(f"⚠️ Statistical PnL outlier: z-score {z_score:.2f}")
+        
+        # 3. Regime-specific detection
+        self._update_regime_baseline('pnl', context, pnl)
+        
+        return critical_found
+
+    def _detect_observation_anomalies(self, info_bus: InfoBus, 
+                                    context: Dict[str, Any]) -> bool:
+        """Enhanced observation anomaly detection"""
+        
+        # Extract observation from InfoBus
+        obs = self._extract_observation_from_info_bus(info_bus)
+        
+        if obs is None:
+            return False
+        
+        try:
+            obs = np.array(obs, dtype=np.float32)
+        except (ValueError, TypeError):
+            self.log_operator_warning("Invalid observation format detected")
+            return False
+        
+        critical_found = False
+        
+        # 1. Check for invalid values (critical)
+        if np.isnan(obs).any() or np.isinf(obs).any():
+            nan_count = int(np.isnan(obs).sum())
+            inf_count = int(np.isinf(obs).sum())
+            
+            self.anomalies["observation"].append({
+                "type": "invalid_values",
+                "nan_count": nan_count,
+                "inf_count": inf_count,
+                "obs_shape": obs.shape,
+                "severity": "critical"
+            })
+            
+            self.log_operator_error(
+                f"🚨 CRITICAL: Invalid observation values",
+                nan_count=nan_count,
+                inf_count=inf_count,
+                shape=str(obs.shape)
+            )
+            critical_found = True
+        
+        # 2. Store valid observations for statistical analysis
+        if not critical_found:
             self.observation_history.append(obs)
-            if len(self.observation_history) >= 5:
-                all_obs = np.vstack(self.observation_history)
-                mean = np.mean(all_obs, axis=0)
-                std = np.std(all_obs, axis=0)
+            
+            # Statistical analysis (if sufficient history)
+            if len(self.observation_history) >= 10:
+                z_scores = self._calculate_observation_zscores(obs)
+                extreme_threshold = self.current_thresholds['observation_zscore']
                 
-                # Calculate z-scores for current observation
-                z_scores = np.abs((obs - mean) / (std + 1e-8))
-                extreme_indices = np.where(z_scores > 5)[0]  # More lenient for training
+                extreme_indices = np.where(z_scores > extreme_threshold)[0]
                 
                 if len(extreme_indices) > 0:
+                    severity = "critical" if np.max(z_scores) > extreme_threshold * 1.5 else "warning"
+                    
                     self.anomalies["observation"].append({
                         "type": "extreme_values",
                         "indices": extreme_indices.tolist(),
                         "z_scores": z_scores[extreme_indices].tolist(),
-                        "severity": "warning"
+                        "max_z_score": float(np.max(z_scores)),
+                        "threshold": extreme_threshold,
+                        "severity": severity
                     })
-                    if self.debug:
-                        self.logger.warning(f"Extreme observation values at indices: {extreme_indices.tolist()}")
                     
-        except Exception as e:
-            self.logger.error(f"Error checking observation anomaly: {e}")
+                    if severity == "critical":
+                        self.log_operator_error(
+                            f"🚨 CRITICAL: Extreme observation values",
+                            max_z_score=f"{np.max(z_scores):.2f}",
+                            indices_count=len(extreme_indices)
+                        )
+                        critical_found = True
+                    else:
+                        self.log_operator_warning(f"⚠️ Observation outliers detected")
+        
+        return critical_found
+
+    def _detect_volume_anomalies(self, info_bus: InfoBus, context: Dict[str, Any]) -> None:
+        """Enhanced volume anomaly detection"""
+        
+        volume = self._extract_volume_from_info_bus(info_bus)
+        
+        if volume is None:
+            if self.training_mode and len(self.volume_history) < 10:
+                volume = self._generate_synthetic_volume(context)
+            else:
+                return
+        
+        self.volume_history.append(volume)
+        
+        # Statistical analysis
+        if len(self.volume_history) >= 20:
+            z_score = self._calculate_robust_zscore(volume, list(self.volume_history))
+            threshold = self.current_thresholds['volume_zscore']
             
-        return False
-
-    def _check_volume_anomaly(self, volume: float):
-        """Check for volume anomalies"""
-        if len(self.volume_history) >= 10:
-            volume_array = np.array(self.volume_history)
-            mean = np.mean(volume_array)
-            std = np.std(volume_array)
-            if std > 0:
-                z_score = abs((volume - mean) / std)
-                if z_score > self.volume_zscore:
-                    self.anomalies["volume"].append({
-                        "type": "statistical",
-                        "value": volume,
-                        "z_score": z_score,
-                        "severity": "warning"
-                    })
-                    if self.debug:
-                        self.logger.warning(f"Volume anomaly: z-score={z_score:.2f}")
-
-    def _check_price_anomaly(self, price: float):
-        """Check for price anomalies"""
-        if len(self.price_history) >= 2:
-            # Check for price jumps
-            prev_price = self.price_history[-2]
-            if prev_price > 0:
-                price_change = abs((price - prev_price) / prev_price)
-                if price_change > 0.1:  # 10% jump - more realistic for training
-                    self.anomalies["price"].append({
-                        "type": "price_jump",
-                        "change": price_change,
-                        "prev_price": prev_price,
-                        "current_price": price,
-                        "severity": "warning"
-                    })
-                    if self.debug:
-                        self.logger.warning(f"Price jump anomaly: {price_change:.3%} change from {prev_price:.2f} to {price:.2f}")
-                        
-        # Statistical check
-        if len(self.price_history) >= 10:
-            price_array = np.array(self.price_history)
-            mean = np.mean(price_array)
-            std = np.std(price_array)
-            if std > 0:
-                z_score = abs((price - mean) / std)
-                if z_score > self.price_zscore:
-                    self.anomalies["price"].append({
-                        "type": "statistical",
-                        "value": price,
-                        "z_score": z_score,
-                        "severity": "info"
-                    })
-
-    def _check_pattern_anomalies(self, trades: List[Dict[str, Any]]):
-        """Check for anomalous trading patterns"""
-        if not trades:
-            return
-            
-        try:
-            # Check for suspicious patterns
-            directions = []
-            sizes = []
-            for trade in trades:
-                size = trade.get("size", trade.get("volume", 0))
-                if size != 0:
-                    directions.append(np.sign(size))
-                    sizes.append(abs(size))
-                    
-            if directions and len(set(directions)) == 1 and len(trades) > 5:  # More lenient
-                self.anomalies["pattern"].append({
-                    "type": "unidirectional",
-                    "count": len(trades),
-                    "direction": directions[0],
-                    "severity": "info"
-                })
-                
-            # Rapid fire trades - more lenient for training
-            if len(trades) > 20:
-                self.anomalies["pattern"].append({
-                    "type": "high_frequency",
-                    "count": len(trades),
+            if z_score > threshold:
+                self.anomalies["volume"].append({
+                    "type": "statistical",
+                    "value": volume,
+                    "z_score": float(z_score),
+                    "threshold": threshold,
+                    "context": context.copy(),
                     "severity": "warning"
                 })
                 
-        except Exception as e:
-            self.logger.error(f"Error checking pattern anomalies: {e}")
+                self.log_operator_warning(
+                    f"⚠️ Volume anomaly: {volume:,.0f}",
+                    z_score=f"{z_score:.2f}",
+                    regime=context.get('regime', 'unknown')
+                )
 
-    def _update_adaptive_thresholds(self):
-        """Update thresholds based on recent history"""
+    def _detect_price_anomalies(self, info_bus: InfoBus, context: Dict[str, Any]) -> None:
+        """Enhanced price anomaly detection"""
+        
+        price = self._extract_price_from_info_bus(info_bus)
+        
+        if price is None:
+            if self.training_mode and len(self.price_history) < 10:
+                price = self._generate_synthetic_price(context)
+            else:
+                return
+        
+        self.price_history.append(price)
+        
+        # Price jump detection
+        if len(self.price_history) >= 2:
+            prev_price = self.price_history[-2]
+            
+            if prev_price > 0:
+                price_change = abs((price - prev_price) / prev_price)
+                
+                # Context-adjusted threshold
+                volatility_level = context.get('volatility_level', 'medium')
+                jump_threshold = {
+                    'low': 0.05,      # 5%
+                    'medium': 0.08,   # 8%
+                    'high': 0.12,     # 12%
+                    'extreme': 0.20   # 20%
+                }.get(volatility_level, 0.08)
+                
+                if price_change > jump_threshold:
+                    self.anomalies["price"].append({
+                        "type": "price_jump",
+                        "change_pct": float(price_change),
+                        "prev_price": prev_price,
+                        "current_price": price,
+                        "threshold": jump_threshold,
+                        "context": context.copy(),
+                        "severity": "warning"
+                    })
+                    
+                    self.log_operator_warning(
+                        f"⚠️ Price jump: {price_change:.1%}",
+                        from_price=f"{prev_price:.5f}",
+                        to_price=f"{price:.5f}",
+                        volatility=volatility_level
+                    )
+
+    def _detect_pattern_anomalies(self, info_bus: InfoBus, context: Dict[str, Any]) -> None:
+        """Enhanced pattern anomaly detection"""
+        
+        trades = InfoBusExtractor.get_recent_trades(info_bus)
+        
+        if not trades:
+            return
+        
+        # Analyze trading patterns
+        directions = []
+        sizes = []
+        
+        for trade in trades:
+            size = trade.get("size", trade.get("volume", 0))
+            if size != 0:
+                directions.append(np.sign(size))
+                sizes.append(abs(size))
+        
+        if not directions:
+            return
+        
+        # 1. Unidirectional trading detection
+        if len(set(directions)) == 1 and len(trades) > 8:  # Increased threshold
+            self.anomalies["pattern"].append({
+                "type": "unidirectional",
+                "trade_count": len(trades),
+                "direction": directions[0],
+                "context": context.copy(),
+                "severity": "info"
+            })
+            
+            direction_text = "BUY" if directions[0] > 0 else "SELL"
+            self.log_operator_info(
+                f"📊 Unidirectional pattern: {len(trades)} {direction_text} trades",
+                regime=context.get('regime', 'unknown')
+            )
+        
+        # 2. High frequency trading detection
+        if len(trades) > 25:  # Increased threshold for training
+            self.anomalies["pattern"].append({
+                "type": "high_frequency",
+                "trade_count": len(trades),
+                "context": context.copy(),
+                "severity": "warning"
+            })
+            
+            self.log_operator_warning(f"⚠️ High frequency trading: {len(trades)} trades")
+        
+        # 3. Size anomaly detection
+        if sizes:
+            size_z_scores = [abs((s - np.mean(sizes)) / max(np.std(sizes), 0.01)) for s in sizes]
+            extreme_sizes = [i for i, z in enumerate(size_z_scores) if z > 3.0]
+            
+            if extreme_sizes:
+                self.anomalies["pattern"].append({
+                    "type": "extreme_trade_sizes",
+                    "extreme_indices": extreme_sizes,
+                    "z_scores": [size_z_scores[i] for i in extreme_sizes],
+                    "context": context.copy(),
+                    "severity": "info"
+                })
+
+    def _detect_correlation_anomalies(self, info_bus: InfoBus, context: Dict[str, Any]) -> None:
+        """Detect correlation anomalies between instruments"""
+        
+        prices = info_bus.get('prices', {})
+        
+        if len(prices) < 2:
+            return
+        
+        # Check for unusual correlation patterns
+        instruments = list(prices.keys())
+        
+        # Store price data for correlation analysis
+        for inst in instruments:
+            if inst not in self.regime_baselines[context.get('regime', 'unknown')]:
+                self.regime_baselines[context.get('regime', 'unknown')][inst] = deque(maxlen=50)
+            
+            self.regime_baselines[context.get('regime', 'unknown')][inst].append(prices[inst])
+        
+        # Analyze correlations if sufficient data
+        regime = context.get('regime', 'unknown')
+        if all(len(self.regime_baselines[regime].get(inst, [])) >= 10 for inst in instruments):
+            correlations = self._calculate_cross_correlations(instruments, regime)
+            
+            # Detect unusual correlations
+            for (inst1, inst2), corr in correlations.items():
+                if abs(corr) > 0.95 and inst1 != inst2:  # Very high correlation
+                    self.anomalies["correlation"].append({
+                        "type": "high_correlation",
+                        "instruments": [inst1, inst2],
+                        "correlation": float(corr),
+                        "context": context.copy(),
+                        "severity": "info"
+                    })
+
+    def _detect_volatility_anomalies(self, info_bus: InfoBus, context: Dict[str, Any]) -> None:
+        """Detect volatility anomalies"""
+        
+        # Calculate current volatility from recent price history
+        if len(self.price_history) >= 10:
+            prices = np.array(list(self.price_history)[-10:])
+            returns = np.diff(np.log(prices + 1e-8))  # Log returns
+            current_vol = np.std(returns) * np.sqrt(252)  # Annualized
+            
+            # Store volatility in history
+            if not hasattr(self, '_volatility_history'):
+                self._volatility_history = deque(maxlen=50)
+            
+            self._volatility_history.append(current_vol)
+            
+            # Detect volatility spikes
+            if len(self._volatility_history) >= 10:
+                vol_z_score = self._calculate_robust_zscore(current_vol, list(self._volatility_history))
+                
+                if vol_z_score > 3.0:
+                    self.anomalies["volatility"].append({
+                        "type": "volatility_spike",
+                        "current_vol": float(current_vol),
+                        "z_score": float(vol_z_score),
+                        "context": context.copy(),
+                        "severity": "warning" if vol_z_score > 4.0 else "info"
+                    })
+                    
+                    if vol_z_score > 4.0:
+                        self.log_operator_warning(
+                            f"⚠️ Volatility spike: {current_vol:.1%} annualized",
+                            z_score=f"{vol_z_score:.2f}"
+                        )
+
+    def _extract_pnl_from_info_bus(self, info_bus: InfoBus) -> Optional[float]:
+        """Extract PnL from InfoBus with multiple fallback methods"""
+        
+        # Method 1: Direct PnL from trades
+        trades = InfoBusExtractor.get_recent_trades(info_bus)
+        if trades:
+            total_pnl = sum(trade.get('pnl', 0) for trade in trades)
+            if total_pnl != 0:
+                return float(total_pnl)
+        
+        # Method 2: Balance change
+        risk_data = info_bus.get('risk', {})
+        current_balance = risk_data.get('balance', risk_data.get('equity', None))
+        
+        if current_balance is not None:
+            if hasattr(self, '_last_balance') and self._last_balance is not None:
+                pnl = current_balance - self._last_balance
+                self._last_balance = current_balance
+                return float(pnl)
+            else:
+                self._last_balance = current_balance
+        
+        # Method 3: From position unrealized PnL
+        positions = InfoBusExtractor.get_positions(info_bus)
+        if positions:
+            unrealized_pnl = sum(pos.get('unrealised_pnl', 0) for pos in positions)
+            if unrealized_pnl != 0:
+                return float(unrealized_pnl)
+        
+        return None
+
+    def _extract_volume_from_info_bus(self, info_bus: InfoBus) -> Optional[float]:
+        """Extract volume from InfoBus"""
+        
+        # From recent trades
+        trades = InfoBusExtractor.get_recent_trades(info_bus)
+        if trades:
+            total_volume = sum(abs(trade.get("size", trade.get("volume", 0))) for trade in trades)
+            if total_volume > 0:
+                return float(total_volume)
+        
+        # From market data
+        market_data = info_bus.get('market_data', {})
+        if 'volume' in market_data:
+            return float(market_data['volume'])
+        
+        return None
+
+    def _extract_price_from_info_bus(self, info_bus: InfoBus) -> Optional[float]:
+        """Extract representative price from InfoBus"""
+        
+        prices = info_bus.get('prices', {})
+        if prices:
+            # Use first available price as representative
+            return float(list(prices.values())[0])
+        
+        return None
+
+    def _extract_observation_from_info_bus(self, info_bus: InfoBus) -> Optional[np.ndarray]:
+        """Extract observation array from InfoBus"""
+        
+        # Try to get from module data
+        module_data = info_bus.get('module_data', {})
+        
+        for module_name in ['features', 'feature_engine', 'observation']:
+            if module_name in module_data:
+                obs_data = module_data[module_name]
+                if isinstance(obs_data, dict) and 'observation' in obs_data:
+                    return obs_data['observation']
+                elif isinstance(obs_data, (list, np.ndarray)):
+                    return obs_data
+        
+        # Try direct observation field
+        if 'observation' in info_bus:
+            return info_bus['observation']
+        
+        return None
+
+    def _generate_synthetic_pnl(self, context: Dict[str, Any]) -> float:
+        """Generate realistic synthetic PnL for training mode"""
+        
+        # Base synthetic PnL
+        base_pnl = np.random.normal(0, 50)
+        
+        # Adjust for market regime
+        regime = context.get('regime', 'unknown')
+        if regime == 'volatile':
+            base_pnl *= 2.0  # Higher volatility
+        elif regime == 'trending':
+            base_pnl *= 1.5  # Moderate increase
+        
+        # Add occasional spikes for anomaly detection training
+        if np.random.rand() < 0.05:  # 5% chance
+            spike_pnl = np.random.choice([-1, 1]) * np.random.uniform(200, 800)
+            base_pnl += spike_pnl
+        
+        return float(base_pnl)
+
+    def _generate_synthetic_volume(self, context: Dict[str, Any]) -> float:
+        """Generate realistic synthetic volume for training mode"""
+        
+        base_volume = abs(np.random.normal(5000, 2000))
+        
+        # Adjust for session
+        session = context.get('session', 'unknown')
+        if session == 'european':
+            base_volume *= 1.5  # Higher European session volume
+        elif session == 'american':
+            base_volume *= 1.3  # Moderate increase
+        
+        return float(max(base_volume, 100))  # Minimum volume
+
+    def _generate_synthetic_price(self, context: Dict[str, Any]) -> float:
+        """Generate realistic synthetic price for training mode"""
+        
+        if self.price_history:
+            last_price = self.price_history[-1]
+            # Random walk with regime adjustment
+            change_pct = np.random.normal(0, 0.002)  # 0.2% std dev
+            
+            regime = context.get('regime', 'unknown')
+            if regime == 'volatile':
+                change_pct *= 3.0  # More volatile
+            elif regime == 'trending':
+                change_pct += np.random.choice([-1, 1]) * 0.001  # Slight trend bias
+            
+            return float(last_price * (1 + change_pct))
+        else:
+            # Starting price around typical forex levels
+            return float(np.random.uniform(1.0, 2.0))
+
+    def _calculate_robust_zscore(self, value: float, history: List[float]) -> float:
+        """Calculate robust z-score using median and MAD"""
+        
+        if len(history) < 3:
+            return 0.0
+        
+        history_array = np.array(history)
+        median = np.median(history_array)
+        mad = np.median(np.abs(history_array - median))
+        
+        # Use MAD-based standard deviation estimate
+        mad_std = mad * 1.4826  # Conversion factor for normal distribution
+        
+        if mad_std < 1e-8:  # Avoid division by zero
+            return 0.0
+        
+        return abs((value - median) / mad_std)
+
+    def _calculate_observation_zscores(self, obs: np.ndarray) -> np.ndarray:
+        """Calculate z-scores for observation vector"""
+        
+        if len(self.observation_history) < 2:
+            return np.zeros(len(obs))
+        
+        # Stack historical observations
+        obs_stack = np.vstack(self.observation_history)
+        
+        # Calculate robust statistics
+        medians = np.median(obs_stack, axis=0)
+        mads = np.median(np.abs(obs_stack - medians), axis=0)
+        
+        # Convert to z-scores
+        mad_stds = mads * 1.4826
+        mad_stds[mad_stds < 1e-8] = 1.0  # Avoid division by zero
+        
+        z_scores = np.abs((obs - medians) / mad_stds)
+        
+        return z_scores
+
+    def _calculate_cross_correlations(self, instruments: List[str], 
+                                    regime: str) -> Dict[Tuple[str, str], float]:
+        """Calculate cross-correlations between instruments"""
+        
+        correlations = {}
+        
+        for i, inst1 in enumerate(instruments):
+            for j, inst2 in enumerate(instruments):
+                if i <= j:  # Avoid duplicate calculations
+                    data1 = list(self.regime_baselines[regime].get(inst1, []))
+                    data2 = list(self.regime_baselines[regime].get(inst2, []))
+                    
+                    if len(data1) >= 10 and len(data2) >= 10:
+                        corr = np.corrcoef(data1, data2)[0, 1]
+                        if not np.isnan(corr):
+                            correlations[(inst1, inst2)] = corr
+        
+        return correlations
+
+    def _get_context_adjusted_limit(self, limit_name: str, context: Dict[str, Any]) -> float:
+        """Get context-adjusted threshold"""
+        
+        base_limit = self.current_thresholds[limit_name]
+        
+        # Adjust for market regime
+        regime = context.get('regime', 'unknown')
+        volatility_level = context.get('volatility_level', 'medium')
+        
+        multiplier = 1.0
+        
+        if limit_name == 'pnl_limit':
+            # More lenient in volatile markets
+            if volatility_level == 'extreme':
+                multiplier = 2.0
+            elif volatility_level == 'high':
+                multiplier = 1.5
+            elif regime == 'volatile':
+                multiplier = 1.3
+        
+        return base_limit * multiplier
+
+    def _update_adaptive_thresholds(self, context: Dict[str, Any]) -> None:
+        """Update thresholds based on recent performance"""
+        
+        if not self.adaptive_thresholds or self.step_count < 100:
+            return
+        
         try:
-            # FIXED: More intelligent adaptive PnL threshold for training
+            # Adapt PnL threshold based on recent data
             if len(self.pnl_history) >= 50:
                 recent_pnls = list(self.pnl_history)[-50:]
                 pnl_array = np.array(recent_pnls)
-                mean = abs(np.mean(pnl_array))
-                std = np.std(pnl_array)
                 
-                # Set threshold to 3 standard deviations above mean, but with reasonable bounds
-                new_threshold = max(self.pnl_limit, mean + 3 * std)
-                new_threshold = min(new_threshold, self.pnl_limit * 5)  # Cap at 5x original
+                # Calculate adaptive threshold
+                pnl_std = np.std(pnl_array)
+                pnl_95th = np.percentile(np.abs(pnl_array), 95)
                 
-                if abs(new_threshold - self.adaptive_thresholds["pnl"]) > self.pnl_limit * 0.1:
-                    if self.debug:
-                        self.logger.debug(f"Updating PnL threshold: {self.adaptive_thresholds['pnl']:.0f} -> {new_threshold:.0f}")
-                    self.adaptive_thresholds["pnl"] = new_threshold
-                    
+                # New threshold: higher of 95th percentile or 3 std devs
+                adaptive_threshold = max(pnl_95th, 3 * pnl_std)
+                adaptive_threshold = max(adaptive_threshold, self.base_thresholds['pnl_limit'] * 0.5)
+                adaptive_threshold = min(adaptive_threshold, self.base_thresholds['pnl_limit'] * 3.0)
+                
+                # Smooth threshold changes
+                old_threshold = self.current_thresholds['pnl_limit']
+                self.current_thresholds['pnl_limit'] = (
+                    0.8 * old_threshold + 0.2 * adaptive_threshold
+                )
+            
+            # Store threshold history
+            self.threshold_history.append({
+                'timestamp': datetime.datetime.now().isoformat(),
+                'thresholds': self.current_thresholds.copy(),
+                'context': context.copy()
+            })
+            
         except Exception as e:
-            self.logger.error(f"Error updating adaptive thresholds: {e}")
+            self.log_operator_warning(f"Threshold adaptation failed: {e}")
 
-    def _calculate_anomaly_score(self):
-        """Calculate overall anomaly score"""
-        score = 0.0
-        weights = {
-            "critical": 0.5,
-            "warning": 0.3,
+    def _update_regime_baseline(self, data_type: str, context: Dict[str, Any], value: float) -> None:
+        """Update regime-specific baselines"""
+        
+        regime = context.get('regime', 'unknown')
+        session = context.get('session', 'unknown')
+        
+        # Store in regime baselines
+        if data_type not in self.regime_baselines[regime]:
+            self.regime_baselines[regime][data_type] = deque(maxlen=100)
+        
+        self.regime_baselines[regime][data_type].append(value)
+        
+        # Store in session baselines
+        if data_type not in self.session_baselines[session]:
+            self.session_baselines[session][data_type] = deque(maxlen=100)
+        
+        self.session_baselines[session][data_type].append(value)
+
+    def _calculate_anomaly_score(self, context: Dict[str, Any]) -> None:
+        """Calculate comprehensive anomaly score"""
+        
+        # Severity weights
+        severity_weights = {
+            "critical": 1.0,
+            "warning": 0.5,
             "info": 0.1
         }
         
-        for anomaly_type, anomalies in self.anomalies.items():
-            for anomaly in anomalies:
-                severity = anomaly.get("severity", "info")
-                score += weights.get(severity, 0.1)
-                
-        self.anomaly_score = min(score, 1.0)
-
-    def _record_audit(self):
-        """Record audit entry for anomalies"""
-        entry = {
-            "timestamp": utcnow(),
-            "step": self.step_count,
-            "anomaly_score": self.anomaly_score,
-            "anomalies": {
-                k: len(v) for k, v in self.anomalies.items() if v
-            },
-            "details": {
-                k: v for k, v in self.anomalies.items() if v
-            },
-            "thresholds": self.adaptive_thresholds.copy(),
-            "history_sizes": {
-                "pnl": len(self.pnl_history),
-                "volume": len(self.volume_history),
-                "price": len(self.price_history),
-                "observation": len(self.observation_history)
-            }
+        total_score = 0.0
+        total_anomalies = 0
+        
+        # Weight different anomaly types
+        type_weights = {
+            "pnl": 0.4,
+            "observation": 0.3,
+            "volume": 0.1,
+            "price": 0.1,
+            "pattern": 0.05,
+            "correlation": 0.025,
+            "volatility": 0.025
         }
         
-        self._audit.append(entry)
-        if len(self._audit) > self._max_audit:
-            self._audit.pop(0)
+        for anomaly_type, anomalies in self.anomalies.items():
+            if not anomalies:
+                continue
             
-        try:
-            with open(self.AUDIT_PATH, "a") as f:
-                f.write(json.dumps(entry) + "\n")
-        except Exception as e:
-            if self.debug:
-                self.logger.error(f"Failed to write audit: {e}")
+            type_weight = type_weights.get(anomaly_type, 0.1)
+            
+            for anomaly in anomalies:
+                severity = anomaly.get("severity", "info")
+                severity_weight = severity_weights.get(severity, 0.1)
+                
+                total_score += type_weight * severity_weight
+                total_anomalies += 1
+        
+        # Normalize and apply context adjustments
+        if total_anomalies > 0:
+            base_score = min(total_score, 1.0)
+            
+            # Adjust for market context
+            regime = context.get('regime', 'unknown')
+            if regime == 'volatile':
+                base_score *= 0.8  # More tolerance in volatile markets
+            
+            self.anomaly_score = base_score
+        else:
+            self.anomaly_score = 0.0
+        
+        # Track frequency
+        self._anomaly_frequency.append(self.anomaly_score)
+
+    def _update_info_bus(self, info_bus: InfoBus, critical_found: bool) -> None:
+        """Update InfoBus with detection results"""
+        
+        # Add module data
+        InfoBusUpdater.add_module_data(info_bus, 'anomaly_detector', {
+            'anomaly_score': self.anomaly_score,
+            'anomalies': {k: len(v) for k, v in self.anomalies.items() if v},
+            'critical_found': critical_found,
+            'thresholds': self.current_thresholds.copy(),
+            'detection_stats': dict(self.detection_stats),
+            'data_sufficiency': {
+                'pnl_history': len(self.pnl_history),
+                'volume_history': len(self.volume_history),
+                'price_history': len(self.price_history),
+                'observation_history': len(self.observation_history)
+            }
+        })
+        
+        # Add risk data
+        InfoBusUpdater.update_risk_snapshot(info_bus, {
+            'anomaly_risk_score': self.anomaly_score,
+            'anomalies_detected': sum(len(v) for v in self.anomalies.values()),
+            'critical_anomalies': critical_found
+        })
+        
+        # Add alerts for critical situations
+        if critical_found:
+            InfoBusUpdater.add_alert(
+                info_bus,
+                "Critical anomalies detected - review system behavior",
+                severity="critical",
+                module="AnomalyDetector"
+            )
+        elif self.anomaly_score > 0.5:
+            InfoBusUpdater.add_alert(
+                info_bus,
+                f"Elevated anomaly score: {self.anomaly_score:.1%}",
+                severity="warning",
+                module="AnomalyDetector"
+            )
+
+    def _record_comprehensive_audit(self, info_bus: InfoBus, context: Dict[str, Any]) -> None:
+        """Record comprehensive audit trail"""
+        
+        audit_data = {
+            'anomaly_score': self.anomaly_score,
+            'context': context,
+            'anomalies': {
+                anomaly_type: anomalies
+                for anomaly_type, anomalies in self.anomalies.items()
+                if anomalies
+            },
+            'thresholds': self.current_thresholds.copy(),
+            'data_status': {
+                'pnl_history_size': len(self.pnl_history),
+                'volume_history_size': len(self.volume_history),
+                'price_history_size': len(self.price_history),
+                'observation_history_size': len(self.observation_history)
+            },
+            'step_count': self.step_count,
+            'training_mode': self.training_mode
+        }
+        
+        self.audit_manager.record_event(
+            event_type="anomaly_detection",
+            module="AnomalyDetector",
+            details=audit_data,
+            severity="critical" if any(
+                a.get("severity") == "critical"
+                for anomalies in self.anomalies.values()
+                for a in anomalies
+            ) else "warning" if self.anomaly_score > 0.3 else "info"
+        )
+
+    def _update_detection_metrics(self) -> None:
+        """Update performance and detection metrics"""
+        
+        # Update detection statistics
+        total_anomalies = sum(len(v) for v in self.anomalies.values())
+        self.detection_stats['total_anomalies'] += total_anomalies
+        
+        for anomaly_type, anomalies in self.anomalies.items():
+            self.detection_stats[f'{anomaly_type}_count'] += len(anomalies)
+        
+        # Update performance metrics
+        self._update_performance_metric('anomaly_score', self.anomaly_score)
+        self._update_performance_metric('total_anomalies', total_anomalies)
+        
+        # Data sufficiency metrics
+        self._update_performance_metric('pnl_data_sufficiency', 
+                                      min(len(self.pnl_history) / 50.0, 1.0))
+        self._update_performance_metric('volume_data_sufficiency',
+                                      min(len(self.volume_history) / 20.0, 1.0))
 
     def get_observation_components(self) -> np.ndarray:
-        """Return anomaly metrics as observation"""
+        """Enhanced observation components for model integration"""
+        
         try:
+            # Core anomaly metrics
+            anomaly_score = float(self.anomaly_score)
+            
+            # Critical anomaly indicator
             has_critical = float(any(
                 a.get("severity") == "critical"
                 for anomalies in self.anomalies.values()
                 for a in anomalies
             ))
             
+            # Anomaly frequency
             total_anomalies = sum(len(v) for v in self.anomalies.values())
+            anomaly_frequency = min(float(total_anomalies) / 10.0, 1.0)
             
-            # Data sufficiency metrics
+            # Data sufficiency indicators
             pnl_sufficiency = min(len(self.pnl_history) / 50.0, 1.0)
-            volume_sufficiency = min(len(self.volume_history) / 20.0, 1.0)
+            volume_sufficiency = min(len(self.volume_history) / 30.0, 1.0)
+            observation_sufficiency = min(len(self.observation_history) / 20.0, 1.0)
+            
+            # Trend indicators
+            if len(self._anomaly_frequency) >= 10:
+                recent_trend = np.mean(list(self._anomaly_frequency)[-10:])
+                earlier_trend = np.mean(list(self._anomaly_frequency)[-20:-10]) if len(self._anomaly_frequency) >= 20 else recent_trend
+                trend_direction = float(np.sign(recent_trend - earlier_trend))
+            else:
+                trend_direction = 0.0
+            
+            # Adaptive threshold status
+            threshold_adaptation = float(
+                self.current_thresholds['pnl_limit'] / self.base_thresholds['pnl_limit']
+            ) if self.adaptive_thresholds else 1.0
             
             return np.array([
-                float(self.anomaly_score),
-                has_critical,
-                min(float(total_anomalies) / 10.0, 1.0),
-                pnl_sufficiency,
-                volume_sufficiency
+                anomaly_score,              # Current anomaly score
+                has_critical,               # Critical anomaly indicator
+                anomaly_frequency,          # Anomaly frequency
+                pnl_sufficiency,           # PnL data sufficiency
+                volume_sufficiency,        # Volume data sufficiency
+                observation_sufficiency,   # Observation data sufficiency
+                trend_direction,           # Anomaly trend direction
+                threshold_adaptation       # Threshold adaptation ratio
             ], dtype=np.float32)
-        except Exception:
-            return np.array([0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+            
+        except Exception as e:
+            self.log_operator_error(f"Observation generation failed: {e}")
+            return np.zeros(8, dtype=np.float32)
 
-    def get_state(self) -> Dict[str, Any]:
-        return {
-            "limits": {
-                "pnl_limit": self.pnl_limit,
-                "volume_zscore": self.volume_zscore,
-                "price_zscore": self.price_zscore
-            },
-            "enabled": self.enabled,
-            "step_count": self.step_count,
-            "anomaly_score": self.anomaly_score,
-            "adaptive_thresholds": self.adaptive_thresholds.copy(),
-            "training_mode": self.training_mode,
+    def get_detection_report(self) -> str:
+        """Generate operator-friendly detection report"""
+        
+        total_anomalies = sum(len(v) for v in self.anomalies.values())
+        
+        # Status indicators
+        if self.anomaly_score > 0.7:
+            anomaly_status = "🚨 Critical"
+        elif self.anomaly_score > 0.3:
+            anomaly_status = "⚠️ Elevated"
+        else:
+            anomaly_status = "✅ Normal"
+        
+        # Training mode status
+        mode_status = "🎓 Training" if self.training_mode else "🚀 Live"
+        
+        # Data sufficiency status
+        pnl_sufficiency = len(self.pnl_history) / (self.pnl_history.maxlen or 1)
+        if pnl_sufficiency > 0.8:
+            data_status = "✅ Sufficient"
+        elif pnl_sufficiency > 0.5:
+            data_status = "⚡ Partial"
+        else:
+            data_status = "❌ Limited"
+        
+        # Current anomalies breakdown
+        anomaly_lines = []
+        for anomaly_type, anomalies in self.anomalies.items():
+            if anomalies:
+                critical_count = sum(1 for a in anomalies if a.get('severity') == 'critical')
+                warning_count = sum(1 for a in anomalies if a.get('severity') == 'warning')
+                emoji = "🚨" if critical_count > 0 else "⚠️" if warning_count > 0 else "ℹ️"
+                anomaly_lines.append(f"  {emoji} {anomaly_type.title()}: {len(anomalies)} ({critical_count} critical)")
+        
+        # Recent performance
+        if len(self._anomaly_frequency) >= 10:
+            recent_avg = np.mean(list(self._anomaly_frequency)[-10:])
+            recent_trend = "📈 Rising" if recent_avg > self.anomaly_score else "📉 Falling"
+        else:
+            recent_trend = "📊 Stable"
+        
+        return f"""
+🔍 ENHANCED ANOMALY DETECTOR
+═══════════════════════════════════════
+🎯 Anomaly Status: {anomaly_status} ({self.anomaly_score:.1%})
+🔧 Detection Mode: {mode_status}
+📊 Data Status: {data_status} ({pnl_sufficiency:.1%})
+🔄 Detector Enabled: {'✅ Yes' if self.enabled else '❌ No'}
+
+⚖️ DETECTION THRESHOLDS
+• PnL Limit: €{self.current_thresholds['pnl_limit']:,.0f}
+• Volume Z-Score: {self.current_thresholds['volume_zscore']:.1f}
+• Price Z-Score: {self.current_thresholds['price_zscore']:.1f}
+• Observation Z-Score: {self.current_thresholds['observation_zscore']:.1f}
+• Adaptive Thresholds: {'✅ Enabled' if self.adaptive_thresholds else '❌ Disabled'}
+
+📊 DATA COLLECTION STATUS
+• PnL History: {len(self.pnl_history)}/{self.pnl_history.maxlen}
+• Volume History: {len(self.volume_history)}/{self.volume_history.maxlen}
+• Price History: {len(self.price_history)}/{self.price_history.maxlen}
+• Observation History: {len(self.observation_history)}/{self.observation_history.maxlen}
+
+🚨 CURRENT ANOMALIES ({total_anomalies} total)
+{chr(10).join(anomaly_lines) if anomaly_lines else "  ✅ No anomalies detected"}
+
+📈 DETECTION STATISTICS
+• Total Detections: {self.detection_stats.get('total_anomalies', 0)}
+• PnL Anomalies: {self.detection_stats.get('pnl_count', 0)}
+• Volume Anomalies: {self.detection_stats.get('volume_count', 0)}
+• Price Anomalies: {self.detection_stats.get('price_count', 0)}
+• Observation Anomalies: {self.detection_stats.get('observation_count', 0)}
+
+📊 PERFORMANCE TRENDS
+• Recent Trend: {recent_trend}
+• Detection Frequency: {(len([f for f in self._anomaly_frequency if f > 0.1]) / max(len(self._anomaly_frequency), 1)):.1%}
+• Step Count: {self.step_count:,}
+
+🔧 THRESHOLD ADAPTATION
+• Current vs Base PnL: {(self.current_thresholds['pnl_limit'] / self.base_thresholds['pnl_limit']):.2f}x
+• Threshold Updates: {len(self.threshold_history)}
+        """
+
+    # ================== LEGACY COMPATIBILITY ==================
+
+    def step(self, pnl: Optional[float] = None, obs: Optional[np.ndarray] = None,
+            volume: Optional[float] = None, price: Optional[float] = None,
+            trades: Optional[List[Dict[str, Any]]] = None, **kwargs) -> bool:
+        """Legacy compatibility method"""
+        
+        # Create mock InfoBus from legacy parameters
+        mock_info_bus = {
+            'step_idx': self.step_count,
+            'timestamp': datetime.datetime.now().isoformat(),
+            'recent_trades': trades or [],
+            'prices': {'default': price} if price is not None else {},
+            'market_data': {'volume': volume} if volume is not None else {},
+            'observation': obs
         }
-
+        
+        # Add PnL info
+        if pnl is not None:
+            mock_info_bus['risk'] = {'balance': getattr(self, '_last_balance', 0) + pnl}
+        
+        # Extract context (will be mostly defaults)
+        context = {
+            'regime': kwargs.get('regime', 'unknown'),
+            'session': kwargs.get('session', 'unknown'),
+            'volatility_level': kwargs.get('volatility_level', 'medium')
+        }
+        
+        # Use enhanced detection
+        critical_found = self._detect_comprehensive_anomalies(mock_info_bus, context)
+        self._calculate_anomaly_score(context)
+        
+        return critical_found
