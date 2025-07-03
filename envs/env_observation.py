@@ -52,21 +52,23 @@ def _get_full_observation(self, info_bus: InfoBus) -> np.ndarray:
     if cache_key in self._obs_cache:
         return self._obs_cache[cache_key]
 
-    # Validate InfoBus quality
+    # Validate InfoBus quality - FIXED VERSION
     if self.config.info_bus_validation:
-        quality = validate_info_bus(info_bus)
-        if not quality.is_valid:
+        from modules.utils.info_bus import safe_quality_check
+        quality_check = safe_quality_check(info_bus)
+        
+        if not quality_check['is_valid']:
             self.logger.warning(
                 format_operator_message(
-                    "⚠️", "INFUBUS_QUALITY_ISSUE",
-                    details=f"Quality issues: {quality.issues}",
+                    "⚠️", "INFOBUS_QUALITY_ISSUES",
+                    details=f"Issues: {quality_check['issue_count']}, Score: {quality_check['score']:.1f}%",
                     context="data_validation"
                 )
             )
 
     try:
         # Process through enhanced pipeline
-        obs = self.pipeline.step(info_bus)
+        obs = self.pipeline_processor.step(info_bus)
         
         # Sanity check right after pipeline
         if not np.all(np.isfinite(obs)):
@@ -123,7 +125,7 @@ def _get_full_observation(self, info_bus: InfoBus) -> np.ndarray:
         )
         
         # Return safe fallback observation
-        fallback_size = getattr(self, 'observation_space', spaces.Box(low=0, high=1, shape=(100,))).shape[0]
+        fallback_size = getattr(self, 'observation_space', spaces.Box(low=0, high=1, shape=(366,))).shape[0]
         return np.zeros(fallback_size, dtype=np.float32)
 
 

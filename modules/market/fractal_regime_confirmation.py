@@ -442,6 +442,45 @@ class FractalRegimeConfirmation(Module, AnalysisMixin, VotingMixin):
         self._update_regime_stability()
         
         return self.label, strength
+    
+    def _update_regime_metrics(self, regime: str, strength: float):
+        """Update regime metrics for performance tracking"""
+        try:
+            # Store current metrics for InfoBus integration
+            current_metrics = {
+                'regime': regime,
+                'strength': float(strength),
+                'trend_direction': float(self._trend_direction),
+                'stability_score': float(self._regime_stability_score),
+                'buffer_size': len(self._buf),
+                'transitions': len(self._regime_history)
+            }
+            
+            # Update performance metrics using mixin
+            self._update_performance_metric('regime_strength', strength)
+            self._update_performance_metric('regime_transitions', len(self._regime_history))
+            self._update_performance_metric('stability_score', self._regime_stability_score)
+            
+            # Add to InfoBus if available
+            if hasattr(self, 'last_info_bus') and self.last_info_bus:
+                from modules.utils.info_bus import InfoBusUpdater
+                InfoBusUpdater.add_module_data(self.last_info_bus, 'fractal_regime', current_metrics)
+            
+            # Log significant metrics changes
+            if hasattr(self, '_last_metrics'):
+                strength_change = abs(strength - self._last_metrics.get('strength', 0))
+                if strength_change > 0.2:  # Significant change
+                    self.log_operator_info(
+                        f"Regime metrics updated",
+                        regime=regime,
+                        strength_change=f"{strength_change:+.3f}",
+                        stability=f"{self._regime_stability_score:.1f}%"
+                    )
+            
+            self._last_metrics = current_metrics
+            
+        except Exception as e:
+            self.log_operator_error(f"Failed to update regime metrics: {e}")
 
     def _determine_regime_with_hysteresis(self, old_label: str, strength: float) -> str:
         """Enhanced regime determination with stability checks"""

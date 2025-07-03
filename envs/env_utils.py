@@ -3,6 +3,7 @@
 Enhanced utility methods with InfoBus integration
 Maintains backward compatibility while adding InfoBus infrastructure
 """
+from datetime import datetime
 import random
 import os
 import pickle
@@ -510,42 +511,49 @@ def _create_reset_info(self) -> Dict[str, Any]:
     return info
 
 
-def _create_step_info(
-    self,
-    trades: List[Dict],
-    pnl: float,
-    consensus: float,
-    info_bus: Optional[InfoBus] = None
-) -> Dict[str, Any]:
-    """Enhanced step info with InfoBus data"""
-    
-    info = {
-        "balance": self.market_state.balance,
-        "pnl": pnl,
-        "drawdown": self.market_state.current_drawdown,
-        "trades": len(trades),
-        "consensus": consensus,
-        "mode": self.mode_manager.get_mode(),
-        "step": self.market_state.current_step,
-        "positions": len(self.position_manager.open_positions),
-    }
-    
-    # Add InfoBus quality data
-    if info_bus and self.config.info_bus_enabled:
-        from modules.utils.info_bus import validate_info_bus
-        quality = validate_info_bus(info_bus)
-        info["info_bus_quality"] = {
-            "is_valid": quality.is_valid,
-            "completeness": quality.completeness,
-            "issue_count": len(quality.issues)
+def _create_step_info(self, trades: List[Dict], step_pnl: float, consensus: float, info_bus: InfoBus) -> Dict[str, Any]:
+    """Create step info with robust error handling"""
+    try:
+        # Validate InfoBus safely - FIXED VERSION
+        from modules.utils.info_bus import safe_quality_check
+        quality_metrics = safe_quality_check(info_bus)
+        
+        # Create safe step info
+        step_info = {
+            "step": self.market_state.current_step,
+            "balance": float(self.market_state.balance),
+            "trades": len(trades),
+            "pnl": float(step_pnl),
+            "consensus": float(consensus),
+            "regime": info_bus.get('market_context', {}).get('regime', 'unknown'),
+            "volatility": info_bus.get('market_context', {}).get('volatility', {}),
+            "info_bus": quality_metrics,  # Use the safe quality check
+            "timestamp": datetime.now().isoformat()
         }
-    
-    # Add performance data if available
-    if hasattr(self, 'pipeline') and hasattr(self.pipeline, 'module_performance'):
-        info["module_performance"] = dict(self.pipeline.module_performance)
-    
-    return info
-
+        
+        # Add position info safely
+        positions = info_bus.get('positions', [])
+        step_info["positions"] = len(positions)
+        
+        # Add alert info safely  
+        alerts = info_bus.get('alerts', [])
+        step_info["alerts"] = len(alerts)
+        
+        return step_info
+        
+    except Exception as e:
+        self.logger.error(f"Failed to create step info: {e}")
+        # Return minimal safe info
+        return {
+            "step": getattr(self.market_state, 'current_step', 0),
+            "balance": getattr(self.market_state, 'balance', 3000.0),
+            "trades": 0,
+            "pnl": 0.0,
+            "consensus": 0.0,
+            "regime": "unknown",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
 
 def _update_mode_manager(
     self,

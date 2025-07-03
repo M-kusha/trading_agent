@@ -133,6 +133,49 @@ class InfoBusQuality:
     is_valid: bool
     completeness: float = 100.0
 
+# Add these utility functions after the InfoBusQuality class
+def get_quality_issue_count(quality: InfoBusQuality) -> int:
+    """Get total issue count from InfoBusQuality object"""
+    return len(quality.missing_fields) + len(quality.invalid_values)
+
+def get_quality_summary(quality: InfoBusQuality) -> str:
+    """Get human-readable quality summary"""
+    issues = get_quality_issue_count(quality)
+    warnings = len(quality.warnings)
+    
+    if not quality.is_valid:
+        return f"Invalid: {issues} issues, {warnings} warnings (Score: {quality.score:.1f}%)"
+    elif warnings > 0:
+        return f"Valid with {warnings} warnings (Score: {quality.score:.1f}%)"
+    else:
+        return f"Healthy (Score: {quality.score:.1f}%)"
+
+def safe_quality_check(info_bus: InfoBus) -> Dict[str, Any]:
+    """Safe quality check that returns consistent format"""
+    try:
+        quality = validate_info_bus(info_bus)
+        return {
+            'score': quality.score,
+            'is_valid': quality.is_valid,
+            'completeness': quality.completeness,
+            'missing_fields': len(quality.missing_fields),
+            'invalid_values': len(quality.invalid_values),
+            'warnings': len(quality.warnings),
+            'issue_count': get_quality_issue_count(quality),
+            'summary': get_quality_summary(quality)
+        }
+    except Exception as e:
+        return {
+            'score': 0.0,
+            'is_valid': False,
+            'completeness': 0.0,
+            'missing_fields': 0,
+            'invalid_values': 0,
+            'warnings': 0,
+            'issue_count': 1,
+            'summary': f"Quality check failed: {e}"
+        }
+
 class InfoBusValidator:
     """Centralized InfoBus validation and quality checking"""
     
