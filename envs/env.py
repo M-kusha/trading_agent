@@ -57,6 +57,11 @@ from .env_utils import (
     set_state, render, close
 )
 
+from .env_trading import (
+    _extract_current_market_data, _update_regime_modules, _create_voting_context,
+    _get_legacy_observation_for_voting, _blend_timeframe_actions
+)
+
 # Core modules for voting
 from modules.auditing.trade_explanation_auditor import TradeExplanationAuditor
 from modules.meta.metar_rl_controller import MetaRLController
@@ -280,6 +285,12 @@ class EnhancedTradingEnv(gym.Env):
     _round_lot_size = _round_lot_size
     _create_no_trade_step = _create_no_trade_step
     step = step
+
+    _extract_current_market_data = _extract_current_market_data
+    _update_regime_modules = _update_regime_modules
+    _create_voting_context = _create_voting_context
+    _get_legacy_observation_for_voting = _get_legacy_observation_for_voting
+    _blend_timeframe_actions = _blend_timeframe_actions
     
     # Enhanced observation methods with InfoBus
     _sanitize_observation = _sanitize_observation

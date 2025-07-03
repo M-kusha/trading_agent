@@ -791,23 +791,27 @@ class ConsensusDetector(Module, AnalysisMixin, StateManagementMixin):
 • Member Contributions: {len(self.member_contributions)} tracked
         """
 
-    def get_observation_components(self) -> np.ndarray:
-        """Return consensus features for observation"""
-        
-        try:
-            features = [
-                float(self.last_consensus),
-                float(self.consensus_quality),
-                float(self.directional_consensus),
-                float(self.magnitude_consensus),
-                float(self.confidence_consensus)
-            ]
-            
-            return np.array(features, dtype=np.float32)
-            
-        except Exception as e:
-            self.log_operator_error(f"Observation generation failed: {e}")
-            return np.array([0.5, 0.5, 0.5, 0.5, 0.5], dtype=np.float32)
+    def _get_observation_impl(self) -> np.ndarray:
+            """
+            Provides the consensus-based components for the RL agent's observation.
+            This is the required implementation for the Module abstract base class.
+            """
+            try:
+                # This logic is copied directly from your get_observation_components method
+                features = [
+                    float(self.last_consensus),
+                    float(self.consensus_quality),
+                    float(self.directional_consensus),
+                    float(self.magnitude_consensus),
+                    float(self.confidence_consensus)
+                ]
+                
+                return np.array(features, dtype=np.float32)
+                
+            except Exception as e:
+                self.log_operator_error(f"Observation generation failed: {e}")
+                # Return a zero vector of the correct shape on failure
+                return np.zeros(5, dtype=np.float32)
 
     # ================== STATE MANAGEMENT ==================
 

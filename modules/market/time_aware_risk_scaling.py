@@ -5,7 +5,7 @@
 
 import numpy as np
 import pandas as pd
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union, Tuple
 from collections import deque
 import datetime
 
@@ -15,30 +15,23 @@ from modules.utils.info_bus import InfoBus, InfoBusExtractor
 
 
 class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
-    """
-    Enhanced time-aware risk scaling with infrastructure integration.
-    Dynamically adjusts risk based on market sessions and time patterns.
-    """
-    
     def __init__(self, debug: bool = True, genome: Optional[Dict[str, Any]] = None, **kwargs):
-        # Initialize with enhanced infrastructure
+        # 1) establish genome‐based attributes (including self.vol_window)
+        self._initialize_genome_parameters(genome)
+
+        # 2) now call base ctor, which will run _initialize_module_state()
         config = ModuleConfig(
             debug=debug,
             max_history=500,
             **kwargs
         )
         super().__init__(config)
-        
-        # Initialize genome parameters
-        self._initialize_genome_parameters(genome)
-        
-        # Enhanced state initialization
-        self._initialize_module_state()
-        
+
+        # 3) any further setup/logging
         self.log_operator_info(
             "Time-aware risk scaling initialized",
             asian_end=f"{self.asian_end}:00",
-            euro_end=f"{self.euro_end}:00", 
+            euro_end=f"{self.euro_end}:00",
             decay_factor=f"{self.decay:.3f}",
             base_factor=f"{self.base_factor:.3f}"
         )
@@ -69,6 +62,10 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
             "vol_window": self.vol_window,
             "session_memory": self.session_memory
         }
+        
+        # ✅ THESE ARE THE ONLY ADDITIONS NEEDED:
+        self._risk_alerts = deque(maxlen=100)
+        self._risk_score_history = deque(maxlen=100)
 
     def _initialize_module_state(self):
         """Initialize module-specific state using mixins"""
@@ -143,98 +140,145 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
         self._update_risk_assessments(time_data)
 
     def _extract_time_data(self, info_bus: Optional[InfoBus], kwargs: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract time and market data from InfoBus or kwargs"""
+        """Extract time and market data with enhanced type safety"""
         
         # Try InfoBus first
         if info_bus:
+            # Safe timestamp extraction
             timestamp = info_bus.get('timestamp')
             if timestamp:
-                ts = pd.Timestamp(timestamp)
+                try:
+                    if isinstance(timestamp, str):
+                        ts = pd.Timestamp(timestamp)
+                    elif hasattr(timestamp, 'hour'):
+                        ts = pd.Timestamp(timestamp)
+                    else:
+                        ts = pd.Timestamp.now()
+                except Exception:
+                    ts = pd.Timestamp.now()
             else:
                 ts = pd.Timestamp.now()
             
-            # Extract market context
-            market_context = info_bus.get('market_context', {})
-            risk_data = info_bus.get('risk', {})
+            # Safe hour extraction with validation
+            try:
+                hour = int(ts.hour) % 24
+            except (ValueError, AttributeError):
+                hour = 12  # Default to noon
             
-            # Get volatility from context or calculate
-            volatility = self._extract_volatility_from_info_bus(info_bus, market_context)
+            # Safe volatility extraction
+            volatility = self._extract_volatility_safe(info_bus)
             
             return {
                 'timestamp': ts,
-                'hour': ts.hour % 24,
+                'hour': hour,
                 'volatility': volatility,
-                'market_context': market_context,
-                'risk_data': risk_data,
+                'market_context': info_bus.get('market_context', {}),
+                'risk_data': info_bus.get('risk', {}),
                 'session': InfoBusExtractor.get_session(info_bus),
                 'volatility_level': InfoBusExtractor.get_volatility_level(info_bus),
                 'source': 'info_bus'
             }
         
-        # Try kwargs (backward compatibility)
+        # Kwargs fallback with safety
         if "data_dict" in kwargs:
             data_dict = kwargs["data_dict"]
-            ts = pd.Timestamp(data_dict.get("timestamp", pd.Timestamp.now()))
+            try:
+                ts_raw = data_dict.get("timestamp", pd.Timestamp.now())
+                ts = pd.Timestamp(ts_raw) if not isinstance(ts_raw, pd.Timestamp) else ts_raw
+                hour = int(ts.hour) % 24
+            except Exception:
+                ts = pd.Timestamp.now()
+                hour = 12
             
-            # Extract returns for volatility calculation
-            returns = np.asarray(data_dict.get("returns", []), np.float32)
-            if len(returns) == 0:
-                returns = np.random.normal(0, 0.01, 100)
+            # Safe returns extraction
+            returns = np.asarray(data_dict.get("returns", []), dtype=np.float32)
+            if len(returns) == 0 or not np.all(np.isfinite(returns)):
+                returns = np.random.normal(0, 0.01, 100).astype(np.float32)
             
             volatility = float(np.nanstd(returns[-self.vol_window:]))
+            if not np.isfinite(volatility) or volatility <= 0:
+                volatility = 0.01
             
             return {
                 'timestamp': ts,
-                'hour': ts.hour % 24,
+                'hour': hour,
                 'volatility': volatility,
                 'returns': returns,
                 'source': 'kwargs'
             }
         
-        # Fallback to simulation
+        # Safe fallback
         ts = pd.Timestamp.now()
         return {
             'timestamp': ts,
-            'hour': ts.hour % 24,
-            'volatility': np.random.normal(0.01, 0.002),
+            'hour': int(ts.hour) % 24,
+            'volatility': 0.01,
             'source': 'simulation'
         }
 
-    def _extract_volatility_from_info_bus(self, info_bus: InfoBus, market_context: Dict) -> float:
-        """Extract or calculate volatility from InfoBus"""
-        
-        # Try market context volatility
-        if 'volatility' in market_context:
-            vol_data = market_context['volatility']
-            if isinstance(vol_data, dict):
-                # Multiple instruments - use average
-                vol_values = [float(v) for v in vol_data.values() if isinstance(v, (int, float))]
-                return np.mean(vol_values) if vol_values else 0.01
-            elif isinstance(vol_data, (int, float)):
-                return float(vol_data)
-        
-        # Try volatility level conversion
-        vol_level = InfoBusExtractor.get_volatility_level(info_bus)
-        vol_mapping = {'low': 0.005, 'medium': 0.015, 'high': 0.03, 'extreme': 0.06}
-        return vol_mapping.get(vol_level, 0.015)
+    def _extract_volatility_safe(self, info_bus: InfoBus) -> float:
+        """Safely extract volatility with multiple fallbacks"""
+        try:
+            # Try market context first
+            market_context = info_bus.get('market_context', {})
+            if 'volatility' in market_context:
+                vol_data = market_context['volatility']
+                
+                if isinstance(vol_data, dict) and vol_data:
+                    vol_values = []
+                    for v in vol_data.values():
+                        try:
+                            val = float(v)
+                            if np.isfinite(val) and val > 0:
+                                vol_values.append(val)
+                        except (ValueError, TypeError):
+                            continue
+                    
+                    if vol_values:
+                        return float(np.mean(vol_values))
+                
+                elif isinstance(vol_data, (int, float)):
+                    val = float(vol_data)
+                    if np.isfinite(val) and val > 0:
+                        return val
+            
+            # Try volatility level mapping
+            vol_level = InfoBusExtractor.get_volatility_level(info_bus)
+            vol_mapping = {'low': 0.005, 'medium': 0.015, 'high': 0.03, 'extreme': 0.06}
+            if vol_level in vol_mapping:
+                return vol_mapping[vol_level]
+            
+            # Final fallback
+            return 0.015
+            
+        except Exception:
+            return 0.015
 
     def _process_risk_scaling(self, time_data: Dict[str, Any]):
         """Process risk scaling with enhanced session analytics"""
         
         try:
-            hour = time_data['hour']
-            volatility = time_data['volatility']
+            # 🔧 FIX: Extract and validate data types
+            hour = int(time_data['hour'])
+            volatility = float(time_data['volatility'])
+            
+            # 🔧 FIX: Ensure volatility is finite and positive
+            if not np.isfinite(volatility) or volatility < 0:
+                volatility = 0.01
             
             # Update volatility profile with decay
-            self.vol_profile = self.vol_profile * self.decay
-            self.vol_profile[hour] = volatility
+            self.vol_profile = self.vol_profile * float(self.decay)
+            self.vol_profile[hour] = float(volatility)
             
             # Store volatility history
-            self._volatility_history.append(volatility)
+            self._volatility_history.append(float(volatility))
             
-            # Calculate dynamic base factor
-            max_vol = self.vol_profile.max() + 1e-8
-            dynamic_factor = self.base_factor - (volatility / max_vol)
+            # Calculate dynamic base factor - 🔧 FIX: Safe division
+            max_vol = float(self.vol_profile.max())
+            if max_vol <= 0:
+                max_vol = 0.01  # Avoid division by zero
+                
+            dynamic_factor = float(self.base_factor) - (float(volatility) / max_vol)
             dynamic_factor = float(np.clip(dynamic_factor, 0.0, 2.0))
             
             # Determine current session
@@ -286,7 +330,7 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
 
     def _get_session(self, hour: int) -> str:
         """Enhanced session determination with validation"""
-        hour = hour % 24  # Ensure valid hour
+        hour = int(hour % 24)  # Ensure valid hour
         
         if 0 <= hour < self.asian_end:
             return "asian"
@@ -306,7 +350,7 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
         transition = {
             'from': old_session,
             'to': new_session,
-            'hour': hour,
+            'hour': int(hour),
             'timestamp': datetime.datetime.now().isoformat()
         }
         self._session_transitions.append(transition)
@@ -327,6 +371,10 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
     def _calculate_session_factor(self, session: str, dynamic_factor: float, volatility: float) -> float:
         """Calculate session-specific scaling factor"""
         
+        # 🔧 FIX: Ensure all inputs are floats
+        dynamic_factor = float(dynamic_factor)
+        volatility = float(volatility)
+        
         # Base session mapping with historical adjustments
         base_multipliers = {
             "asian": 1.0 + 0.3 * dynamic_factor,
@@ -335,13 +383,13 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
             "closed": 0.5 * dynamic_factor
         }
         
-        base_factor = base_multipliers.get(session, dynamic_factor)
+        base_factor = float(base_multipliers.get(session, dynamic_factor))
         
         # Apply learned session risk multiplier
-        session_multiplier = self._session_risk_multipliers.get(session, 1.0)
+        session_multiplier = float(self._session_risk_multipliers.get(session, 1.0))
         
-        # Volatility adjustment
-        vol_adjustment = 1.0 - min(0.3, volatility * 20)  # Reduce factor for high volatility
+        # Volatility adjustment - 🔧 FIX: Safe volatility calculation
+        vol_adjustment = 1.0 - min(0.3, float(volatility) * 20)  # Reduce factor for high volatility
         
         final_factor = base_factor * session_multiplier * vol_adjustment
         
@@ -350,17 +398,18 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
     def _apply_risk_adjustments(self, session_factor: float, time_data: Dict[str, Any]) -> float:
         """Apply additional risk adjustments based on market conditions"""
         
-        adjusted_factor = session_factor
+        # 🔧 FIX: Ensure session_factor is float
+        adjusted_factor = float(session_factor)
         
         # Apply risk context from InfoBus
         if 'risk_data' in time_data:
             risk_data = time_data['risk_data']
             
-            # Drawdown adjustment
-            drawdown = risk_data.get('current_drawdown', 0.0)
+            # Drawdown adjustment - 🔧 FIX: Safe extraction and conversion
+            drawdown = float(risk_data.get('current_drawdown', 0.0))
             if drawdown > 0.1:  # 10% drawdown
                 drawdown_penalty = 1.0 - min(0.5, drawdown * 2)
-                adjusted_factor *= drawdown_penalty
+                adjusted_factor *= float(drawdown_penalty)
                 
                 if drawdown > 0.15:  # Significant drawdown
                     self._risk_alerts.append({
@@ -370,14 +419,17 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
                         'timestamp': time_data.get('timestamp', pd.Timestamp.now()).isoformat()
                     })
             
-            # Exposure adjustment
-            margin_used = risk_data.get('margin_used', 0.0)
-            equity = risk_data.get('equity', 1.0)
-            exposure_pct = (margin_used / max(equity, 1)) * 100
+            # Exposure adjustment - 🔧 FIX: Safe calculation
+            margin_used = float(risk_data.get('margin_used', 0.0))
+            equity = float(risk_data.get('equity', 1.0))
+            if equity <= 0:
+                equity = 1.0  # Avoid division by zero
+                
+            exposure_pct = (margin_used / equity) * 100
             
             if exposure_pct > 70:  # High exposure
                 exposure_penalty = 1.0 - min(0.3, (exposure_pct - 70) / 100)
-                adjusted_factor *= exposure_penalty
+                adjusted_factor *= float(exposure_penalty)
         
         # Volatility level adjustment
         vol_level = time_data.get('volatility_level', 'medium')
@@ -387,13 +439,17 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
             'high': 0.8,     # Reduce factor for high vol
             'extreme': 0.5   # Significantly reduce for extreme vol
         }
-        vol_mult = vol_adjustments.get(vol_level, 1.0)
+        vol_mult = float(vol_adjustments.get(vol_level, 1.0))
         adjusted_factor *= vol_mult
         
         return float(np.clip(adjusted_factor, 0.05, 2.5))
 
     def _update_session_performance(self, session: str, factor: float, volatility: float):
         """Update session performance tracking"""
+        
+        # 🔧 FIX: Ensure numeric types
+        factor = float(factor)
+        volatility = float(volatility)
         
         perf = self._session_performance[session]
         perf['count'] += 1
@@ -415,12 +471,12 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
                 # Adjust multiplier based on performance
                 if avg_factor > 1.2 and risk_event_ratio < 0.1:
                     # Good performance, increase multiplier
-                    self._session_risk_multipliers[session] = min(1.3, 
-                        self._session_risk_multipliers[session] * 1.05)
+                    self._session_risk_multipliers[session] = float(min(1.3, 
+                        self._session_risk_multipliers[session] * 1.05))
                 elif avg_factor < 0.5 or risk_event_ratio > 0.3:
                     # Poor performance, decrease multiplier
-                    self._session_risk_multipliers[session] = max(0.5,
-                        self._session_risk_multipliers[session] * 0.95)
+                    self._session_risk_multipliers[session] = float(max(0.5,
+                        self._session_risk_multipliers[session] * 0.95))
 
     def _update_risk_assessments(self, time_data: Dict[str, Any]):
         """Update comprehensive risk assessments"""
@@ -433,7 +489,7 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
         
         # Update risk history
         if len(self._risk_score_history) == 0 or abs(risk_level - self._risk_score_history[-1]) > 0.1:
-            self._risk_score_history.append(risk_level)
+            self._risk_score_history.append(float(risk_level))
             
             # Log significant risk changes
             if risk_level > 0.7:
@@ -448,17 +504,62 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
         """Extract risk context from time data"""
         
         risk_context = {
-            'volatility': time_data.get('volatility', 0.01),
+            'volatility': float(time_data.get('volatility', 0.01)),
             'session': self._current_session,
-            'hour': time_data.get('hour', 12),
-            'factor': self.seasonality_factor
+            'hour': int(time_data.get('hour', 12)),
+            'factor': float(self.seasonality_factor)
         }
         
         # Add risk data if available
         if 'risk_data' in time_data:
-            risk_context.update(time_data['risk_data'])
+            risk_data = time_data['risk_data']
+            # 🔧 FIX: Safely convert risk data values
+            for key, value in risk_data.items():
+                try:
+                    if isinstance(value, (int, float)):
+                        risk_context[key] = float(value)
+                    else:
+                        risk_context[key] = value
+                except (ValueError, TypeError):
+                    risk_context[key] = value
         
         return risk_context
+
+    def _assess_risk_level(self, risk_context: Dict[str, Any]) -> float:
+        """Assess overall risk level based on context"""
+        
+        risk_score = 0.0
+        
+        # Volatility risk
+        volatility = risk_context.get('volatility', 0.01)
+        if volatility > 0.05:
+            risk_score += 0.3
+        elif volatility > 0.03:
+            risk_score += 0.2
+        elif volatility > 0.02:
+            risk_score += 0.1
+            
+        # Factor risk
+        factor = risk_context.get('factor', 1.0)
+        if factor < 0.3:
+            risk_score += 0.4
+        elif factor < 0.5:
+            risk_score += 0.2
+            
+        # Session risk
+        session = risk_context.get('session', 'unknown')
+        if session in ['closed', 'unknown']:
+            risk_score += 0.1
+            
+        # Additional risk data
+        if 'current_drawdown' in risk_context:
+            drawdown = risk_context['current_drawdown']
+            if drawdown > 0.15:
+                risk_score += 0.3
+            elif drawdown > 0.1:
+                risk_score += 0.2
+                
+        return float(np.clip(risk_score, 0.0, 1.0))
 
     # ═══════════════════════════════════════════════════════════════════
     # ENHANCED OBSERVATION AND ACTION METHODS
@@ -475,7 +576,7 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
         session_encoding = self._encode_session(self._current_session)
         
         # Risk indicators
-        avg_volatility = np.mean(list(self._volatility_history)) if self._volatility_history else 0.01
+        avg_volatility = float(np.mean(list(self._volatility_history))) if self._volatility_history else 0.01
         factor_trend = self._calculate_factor_trend()
         risk_score = float(self._risk_score_history[-1]) if self._risk_score_history else 0.5
         
@@ -484,7 +585,7 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
         
         enhanced_obs = np.concatenate([
             base_obs,
-            [current_hour / 24.0],  # Normalized hour
+            [float(current_hour) / 24.0],  # Normalized hour
             session_encoding,
             [avg_volatility, factor_trend, risk_score, session_performance]
         ])
@@ -505,6 +606,9 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
             return 0.0
             
         recent = list(self._factor_history)[-5:]
+        if abs(recent[0]) < 1e-10:  # Avoid division by very small numbers
+            return 0.0
+            
         trend = (recent[-1] - recent[0]) / max(abs(recent[0]), 0.1)
         return float(np.clip(trend, -1.0, 1.0))
 
@@ -536,7 +640,7 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
             action_dim = 2
             
         # Apply seasonality factor as action scaling
-        scaling_factor = self.seasonality_factor
+        scaling_factor = float(self.seasonality_factor)
         
         # Risk-based position size recommendations
         risk_level = float(self._risk_score_history[-1]) if self._risk_score_history else 0.5
@@ -562,7 +666,7 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
             
         # Reduce confidence for high volatility periods
         if self._volatility_history:
-            recent_vol = np.mean(list(self._volatility_history)[-10:])
+            recent_vol = float(np.mean(list(self._volatility_history)[-10:]))
             if recent_vol > 0.03:  # High volatility
                 base_confidence -= 0.2
         
@@ -676,7 +780,7 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
             'session_info': {
                 'current_session': self._current_session,
                 'session_changes': self._session_changes,
-                'seasonality_factor': self.seasonality_factor,
+                'seasonality_factor': float(self.seasonality_factor),
                 'session_performance': {k: v for k, v in self._session_performance.items() if v['count'] > 0}
             },
             'volatility_info': {
@@ -688,7 +792,7 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
             'risk_info': {
                 'risk_alerts': len(self._risk_alerts),
                 'risk_score': float(self._risk_score_history[-1]) if self._risk_score_history else 0.5,
-                'risk_multipliers': self._session_risk_multipliers.copy()
+                'risk_multipliers': {k: float(v) for k, v in self._session_risk_multipliers.items()}
             },
             'genome_config': self.genome.copy()
         }
@@ -712,7 +816,7 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
             "session_transitions": list(self._session_transitions)[-20:],
             "session_performance": self._session_performance.copy(),
             "risk_profile_by_hour": self._risk_profile_by_hour.tolist(),
-            "session_risk_multipliers": self._session_risk_multipliers.copy()
+            "session_risk_multipliers": {k: float(v) for k, v in self._session_risk_multipliers.items()}
         }
         
     def _set_module_state(self, module_state: Dict[str, Any]):
@@ -727,9 +831,12 @@ class TimeAwareRiskScaling(Module, RiskMixin, AnalysisMixin):
         self._session_transitions = deque(module_state.get("session_transitions", []), maxlen=50)
         self._session_performance = module_state.get("session_performance", {})
         self._risk_profile_by_hour = np.array(module_state.get("risk_profile_by_hour", [1.0]*24), dtype=np.float32)
-        self._session_risk_multipliers = module_state.get("session_risk_multipliers", {
+        
+        # Safely restore session risk multipliers
+        risk_multipliers = module_state.get("session_risk_multipliers", {
             "asian": 1.0, "european": 1.0, "us": 1.0, "closed": 0.5
         })
+        self._session_risk_multipliers = {k: float(v) for k, v in risk_multipliers.items()}
 
     def get_risk_scaling_report(self) -> str:
         """Generate operator-friendly risk scaling report"""

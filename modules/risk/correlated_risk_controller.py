@@ -471,6 +471,8 @@ class CorrelatedRiskController(Module, RiskMixin, AnalysisMixin, StateManagement
             except (ValueError, TypeError) as e:
                 self.log_operator_warning(f"Invalid correlation data for {inst1}/{inst2}: {e}")
                 continue
+
+    
         
         # Calculate portfolio-level metrics
         self._calculate_portfolio_correlation_metrics(correlation_stats, context)
@@ -482,6 +484,34 @@ class CorrelatedRiskController(Module, RiskMixin, AnalysisMixin, StateManagement
         self._store_correlation_snapshot(correlations, context, info_bus)
         
         return critical_found
+    
+
+    def _update_risk_metrics(self, additional_metrics: Optional[Dict[str, float]] = None) -> None:
+        """Update risk metrics tracking"""
+        
+        try:
+            # Update core risk metrics
+            self._update_performance_metric('correlation_risk_score', self.risk_score)
+            self._update_performance_metric('correlation_count', len(self.current_correlations))
+            self._update_performance_metric('high_correlation_pairs', len(self._high_correlation_pairs))
+            self._update_performance_metric('concentration_risk', self._correlation_concentration)
+            self._update_performance_metric('diversification_score', self._diversification_score)
+            
+            # Update additional metrics if provided
+            if additional_metrics:
+                for metric_name, value in additional_metrics.items():
+                    if isinstance(value, (int, float)) and np.isfinite(value):
+                        self._update_performance_metric(f'corr_{metric_name}', float(value))
+            
+            # Update alert metrics
+            total_alerts = sum(len(alerts) for alerts in self.alerts.values())
+            critical_alerts = len(self.alerts.get('critical', []))
+            
+            self._update_performance_metric('total_correlation_alerts', total_alerts)
+            self._update_performance_metric('critical_correlation_alerts', critical_alerts)
+            
+        except Exception as e:
+            self.log_operator_warning(f"Risk metrics update failed: {e}")
 
     def _get_correlation_severity_enhanced(self, abs_corr: float, context: Dict[str, Any]) -> str:
         """Enhanced severity assessment with context awareness"""

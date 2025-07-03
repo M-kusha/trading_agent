@@ -17,32 +17,29 @@ from modules.utils.info_bus import InfoBus, InfoBusExtractor
 
 
 class FractalRegimeConfirmation(Module, AnalysisMixin, VotingMixin):
-    """
-    Enhanced fractal regime confirmation with infrastructure integration.
-    Class name unchanged - just enhanced capabilities!
-    """
-    
     def __init__(self, window: int = 100, debug: bool = True, genome: Dict[str, Any] = None, **kwargs):
-        # Initialize with enhanced infrastructure
+        # 1) establish all genome‐based attributes (including self.window) up front
+        self._initialize_genome_parameters(genome, window)
+
+        # 2) now call the base Module ctor, which will in turn run _initialize_module_state()
         config = ModuleConfig(
             debug=debug,
             max_history=200,
             **kwargs
         )
         super().__init__(config)
-        
-        # Initialize genome parameters
-        self._initialize_genome_parameters(genome, window)
-        
-        # Enhanced state initialization
-        self._initialize_module_state()
-        
+
+        # 3) any further initialization (logging, etc.)
         self.log_operator_info(
             "Fractal regime confirmation initialized",
             window=self.window,
-            regime_thresholds=f"noise→volatile: {self._noise_to_volatile}, volatile→trending: {self._volatile_to_trending}",
+            regime_thresholds=(
+                f"noise→volatile: {self._noise_to_volatile}, "
+                f"volatile→trending: {self._volatile_to_trending}"
+            ),
             coefficients=f"H:{self.coeff_h}, VR:{self.coeff_vr}, WE:{self.coeff_we}"
         )
+
 
     def _initialize_genome_parameters(self, genome: Optional[Dict[str, Any]], window: int):
         """Initialize genome-based parameters"""

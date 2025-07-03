@@ -19,11 +19,6 @@ from modules.utils.info_bus import InfoBus, InfoBusExtractor
 
 
 class MarketThemeDetector(Module, AnalysisMixin, VotingMixin):
-    """
-    Enhanced market theme detector with infrastructure integration.
-    Detects market themes and patterns using ML clustering.
-    """
-    
     def __init__(
         self,
         instruments: List[str],
@@ -33,25 +28,22 @@ class MarketThemeDetector(Module, AnalysisMixin, VotingMixin):
         genome: Optional[Dict[str, Any]] = None,
         **kwargs
     ):
-        # Initialize with enhanced infrastructure
+        # ─── PREPARE ALL ATTRIBUTES NEEDED BY _initialize_module_state ───
+        # this defines n_themes, window, batch_size, feature_lookback and genome
+        self._initialize_genome_parameters(genome, n_themes, window)
+
+        # ─── NOW INITIALIZE THE BASE MODULE (which will call _initialize_module_state) ───
         config = ModuleConfig(
             debug=debug,
             max_history=500,
             **kwargs
         )
         super().__init__(config)
-        
-        # Initialize genome parameters
-        self._initialize_genome_parameters(genome, n_themes, window)
-        
-        # Enhanced state initialization
-        self._initialize_module_state()
-        
-        # Initialize ML components
+
+        # ─── THEN SET UP ML COMPONENTS, INSTRUMENTS, LOGGING ─────────────────────────
         self._initialize_ml_components()
-        
         self.instruments = instruments
-        
+
         self.log_operator_info(
             "Market theme detector initialized",
             instruments=len(self.instruments),
@@ -59,6 +51,7 @@ class MarketThemeDetector(Module, AnalysisMixin, VotingMixin):
             window=self.window,
             architecture="MiniBatchKMeans + StandardScaler"
         )
+
 
     def _initialize_genome_parameters(self, genome: Optional[Dict], n_themes: int, window: int):
         """Initialize genome-based parameters"""

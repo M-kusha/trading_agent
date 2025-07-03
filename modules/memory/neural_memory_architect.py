@@ -17,31 +17,36 @@ from modules.utils.info_bus import InfoBus, InfoBusExtractor
 
 
 class NeuralMemoryArchitect(Module, AnalysisMixin, TradingMixin):
-    """
-    Enhanced neural memory architect with infrastructure integration.
-    Uses attention-based neural networks for intelligent memory storage and retrieval.
-    """
-    
-    def __init__(self, embed_dim: int = 32, num_heads: int = 4, max_len: int = 500,
-                 memory_decay: float = 0.95, debug: bool = True,
-                 genome: Optional[Dict[str, Any]] = None, **kwargs):
-        # Initialize with enhanced infrastructure
+    def __init__(self,
+                 embed_dim: int = 32,
+                 num_heads: int = 4,
+                 max_len: int = 500,
+                 memory_decay: float = 0.95,
+                 debug: bool = True,
+                 genome: Optional[Dict[str, Any]] = None,
+                 **kwargs):
+        # --- ensure these attributes exist before Module.__init__ triggers _initialize_module_state()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.max_len = max_len
+        self.memory_decay = memory_decay
+
         config = ModuleConfig(
             debug=debug,
             max_history=400,
             **kwargs
         )
         super().__init__(config)
-        
-        # Initialize genome parameters
+
+        # now override from genome if provided
         self._initialize_genome_parameters(genome, embed_dim, num_heads, max_len, memory_decay)
-        
-        # Enhanced state initialization
-        self._initialize_module_state()
-        
-        # Initialize neural components
+
+        # Module.__init__ already called _initialize_module_state(), so
+        # no need to call it again here
+
+        # initialize neural nets
         self._initialize_neural_components()
-        
+
         self.log_operator_info(
             "Neural memory architect initialized",
             embedding_dim=self.embed_dim,

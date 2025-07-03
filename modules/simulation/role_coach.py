@@ -6,7 +6,7 @@
 import numpy as np
 import datetime
 import copy
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Union
 from collections import deque, defaultdict
 
 from modules.core.core import Module, ModuleConfig, audit_step
@@ -46,40 +46,49 @@ class RoleCoach(Module, AnalysisMixin, StateManagementMixin):
 
     def __init__(
         self,
-        config: Optional[Dict[str, Any]] = None,
+        config: Optional[Union[Dict[str, Any], ModuleConfig]] = None,
         max_trades: int = 2,
         penalty_multiplier: float = 1.0,
         coaching_mode: str = "adaptive",
         debug: bool = False,
         **kwargs
     ):
-        # Initialize with enhanced config
-        enhanced_config = ModuleConfig(
-            debug=debug,
-            max_history=kwargs.get('max_history', 100),
-            audit_enabled=kwargs.get('audit_enabled', True),
-            **kwargs
-        )
-        super().__init__(enhanced_config)
-        
-        # Initialize mixins
+        # --- split the ModuleConfig (from env) vs. override dict ---
+        if isinstance(config, ModuleConfig):
+            module_cfg   = config
+            override_cfg = None
+        else:
+            module_cfg   = ModuleConfig(
+                debug=debug,
+                max_history=kwargs.get("max_history", 100),
+                audit_enabled=kwargs.get("audit_enabled", True),
+                **kwargs
+            )
+            override_cfg = config
+
+        # initialize base Module
+        super().__init__(module_cfg)
         self._initialize_analysis_state()
-        
-        # Merge configuration with enhanced defaults
+
+        # build your coach_config from defaults, then only update if override_cfg is a dict
         self.coach_config = copy.deepcopy(self.ENHANCED_DEFAULTS)
-        if config:
-            self.coach_config.update(config)
-        
-        # Core parameters
-        self.max_trades = int(max_trades)
-        self.penalty_multiplier = float(penalty_multiplier)
-        self.coaching_mode = coaching_mode if coaching_mode in self.COACHING_MODES else "adaptive"
-        self.regime_sensitivity = float(self.coach_config["regime_sensitivity"])
-        self.performance_adjustment = bool(self.coach_config["performance_adjustment"])
-        self.session_aware = bool(self.coach_config["session_aware"])
-        self.volatility_scaling = bool(self.coach_config["volatility_scaling"])
-        self.learning_rate = float(self.coach_config["learning_rate"])
-        self.penalty_decay = float(self.coach_config["penalty_decay"])
+        if isinstance(override_cfg, dict):
+            self.coach_config.update(override_cfg)
+
+        # now pull everything out of coach_config as before
+        self.max_trades          = int(max_trades)
+        self.penalty_multiplier  = float(penalty_multiplier)
+        self.coaching_mode       = (
+            coaching_mode
+            if coaching_mode in self.COACHING_MODES
+            else "adaptive"
+        )
+        self.regime_sensitivity      = float(self.coach_config["regime_sensitivity"])
+        self.performance_adjustment  = bool(self.coach_config["performance_adjustment"])
+        self.session_aware           = bool(self.coach_config["session_aware"])
+        self.volatility_scaling      = bool(self.coach_config["volatility_scaling"])
+        self.learning_rate           = float(self.coach_config["learning_rate"])
+        self.penalty_decay           = float(self.coach_config["penalty_decay"])
         
         # Enhanced state tracking
         self.discipline_history = deque(maxlen=100)

@@ -27,7 +27,7 @@ class RiskAdjustedReward(Module, TradingMixin, AnalysisMixin):
     def __init__(self, initial_balance: float, env=None, debug: bool = True,
                  history: int = 50, min_trade_bonus: float = 0.5,
                  genome: Optional[Dict[str, Any]] = None, **kwargs):
-        
+        self.history_size = history
         # Initialize with enhanced infrastructure
         config = ModuleConfig(
             debug=debug,

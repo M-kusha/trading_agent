@@ -6,7 +6,7 @@
 import numpy as np
 import datetime
 import copy
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Union
 from collections import deque, defaultdict
 
 from modules.core.core import Module, ModuleConfig, audit_step
@@ -48,41 +48,46 @@ class OpponentSimulator(Module, AnalysisMixin, StateManagementMixin):
 
     def __init__(
         self,
-        config: Optional[Dict[str, Any]] = None,
+        config: Optional[Union[Dict[str, Any], ModuleConfig]] = None,
         mode: str = "random",
         intensity: float = 1.0,
         debug: bool = False,
         seed: Optional[int] = None,
         **kwargs
     ):
-        # Initialize with enhanced config
-        enhanced_config = ModuleConfig(
-            debug=debug,
-            max_history=kwargs.get('max_history', 100),
-            audit_enabled=kwargs.get('audit_enabled', True),
-            **kwargs
-        )
-        super().__init__(enhanced_config)
-        
-        # Initialize mixins
+        # If the environment passed in a ModuleConfig, use it directly;
+        # otherwise build one from our kwargs and treat config as an override dict.
+        if isinstance(config, ModuleConfig):
+            module_cfg   = config
+            override_cfg = None
+        else:
+            module_cfg = ModuleConfig(
+                debug=debug,
+                max_history=kwargs.get('max_history', 100),
+                audit_enabled=kwargs.get('audit_enabled', True),
+                **kwargs
+            )
+            override_cfg = config
+
+        super().__init__(module_cfg)
         self._initialize_analysis_state()
-        
-        # Merge configuration with enhanced defaults
+
+        # Merge defaults + any user-supplied dict
         self.sim_config = copy.deepcopy(self.ENHANCED_DEFAULTS)
-        if config:
-            self.sim_config.update(config)
-        
+        if isinstance(override_cfg, dict):
+            self.sim_config.update(override_cfg)
+
         # Core parameters
-        self.mode = mode if mode in self.SIMULATION_MODES else "random"
-        self.intensity = float(intensity)
-        self.adaptation_rate = float(self.sim_config["adaptation_rate"])
+        self.mode              = mode if mode in self.SIMULATION_MODES else "random"
+        self.intensity         = float(intensity)
+        self.adaptation_rate   = float(self.sim_config["adaptation_rate"])
         self.context_sensitivity = float(self.sim_config["context_sensitivity"])
         self.regime_multiplier = float(self.sim_config["regime_multiplier"])
         self.volatility_scaling = bool(self.sim_config["volatility_scaling"])
-        self.session_aware = bool(self.sim_config["session_aware"])
-        self.max_perturbation = float(self.sim_config["max_perturbation"])
-        self.noise_decay = float(self.sim_config["noise_decay"])
-        
+        self.session_aware     = bool(self.sim_config["session_aware"])
+        self.max_perturbation  = float(self.sim_config["max_perturbation"])
+        self.noise_decay       = float(self.sim_config["noise_decay"])
+
         # Reproducible RNG
         self.rng = np.random.RandomState(seed)
         

@@ -14,27 +14,24 @@ from modules.utils.info_bus import InfoBus, InfoBusExtractor
 
 
 class RegimePerformanceMatrix(Module, AnalysisMixin, RiskMixin):
-    """
-    Enhanced regime performance matrix with infrastructure integration.
-    Tracks performance across different market regimes and volatility levels.
-    """
-    
-    def __init__(self, n_regimes: int = 3, decay: float = 0.95, debug: bool = True, 
-                 genome: Optional[Dict[str, Any]] = None, **kwargs):
-        # Initialize with enhanced infrastructure
+    def __init__(self,
+                 n_regimes: int = 3,
+                 decay: float = 0.95,
+                 debug: bool = True,
+                 genome: Optional[Dict[str, Any]] = None,
+                 **kwargs):
+        # 1) initialize genome‐based attrs first (so n_regimes exists)
+        self._initialize_genome_parameters(genome, n_regimes, decay)
+
+        # 2) now call base ctor (it will invoke _initialize_module_state)
         config = ModuleConfig(
             debug=debug,
             max_history=1000,
             **kwargs
         )
         super().__init__(config)
-        
-        # Initialize genome parameters
-        self._initialize_genome_parameters(genome, n_regimes, decay)
-        
-        # Enhanced state initialization
-        self._initialize_module_state()
-        
+
+        # 3) any further logging or setup
         self.log_operator_info(
             "Regime performance matrix initialized",
             regimes=self.n_regimes,
@@ -42,6 +39,7 @@ class RegimePerformanceMatrix(Module, AnalysisMixin, RiskMixin):
             matrix_size=f"{self.n_regimes}x{self.n_regimes}",
             stress_scenarios=len(self._stress_scenarios)
         )
+
 
     def _initialize_genome_parameters(self, genome: Optional[Dict], n_regimes: int, decay: float):
         """Initialize genome-based parameters"""

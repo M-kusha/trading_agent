@@ -15,28 +15,30 @@ from modules.utils.info_bus import InfoBus, InfoBusExtractor
 class AdvancedFeatureEngine(Module, AnalysisMixin):
 
     def __init__(self, window_sizes: List[int] = [7, 14, 28], debug: bool = True, **kwargs):
-        # Initialize with enhanced infrastructure
+        # ─── Module-specific configuration ──────────────────────────────
+        self.windows = sorted(window_sizes)
+        self.out_dim = len(self.windows) * 4 + 4
+        self.max_buffer_size = max(self.windows) + 10
+
+        # ─── Initialize base-class (which will call _initialize_module_state) ───
         config = ModuleConfig(
             debug=debug,
             max_history=200,
             **kwargs
         )
         super().__init__(config)
-        
-        # Module-specific configuration
-        self.windows = sorted(window_sizes)
-        self.out_dim = len(self.windows) * 4 + 4
-        self.max_buffer_size = max(self.windows) + 10
-        
-        # Enhanced state initialization
+
+        # ─── (Optional) Explicit re-initialization ────────────────────────
+        # If you prefer to be explicit, you can re-call your state initializer here:
         self._initialize_module_state()
-        
+
         self.log_operator_info(
             "Advanced feature engine initialized",
             windows=self.windows,
             output_dim=self.out_dim,
             buffer_size=self.max_buffer_size
         )
+
 
     def _initialize_module_state(self):
         """Initialize module-specific state using mixins"""

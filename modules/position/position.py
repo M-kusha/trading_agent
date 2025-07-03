@@ -74,64 +74,86 @@ class PositionDecisionResult:
 
 
 class PositionManager(Module, TradingMixin, RiskMixin, AnalysisMixin):
-    """
-    Enhanced position manager with infrastructure integration.
-    Implements hierarchical decision making with InfoBus integration.
-    """
-    
-    def __init__(self, initial_balance: float, instruments: List[str],
-                 max_pct: float = 0.10, max_consecutive_losses: int = 5,
-                 loss_reduction: float = 0.2, max_instrument_concentration: float = 0.25,
-                 min_volatility: float = 0.015, hard_loss_eur: float = 30.0,
-                 trail_pct: float = 0.10, trail_abs_eur: float = 10.0,
-                 pips_tolerance: int = 20, min_size_pct: float = 0.01,
-                 min_signal_threshold: float = 0.15, position_scale_threshold: float = 0.30,
-                 emergency_close_threshold: float = 0.85, confidence_decay: float = 0.95,
-                 debug: bool = True, genome: Optional[Dict[str, Any]] = None, **kwargs):
-        
-        # Initialize with enhanced infrastructure
+
+    def __init__(
+        self,
+        initial_balance: float,
+        instruments: List[str],
+        max_pct: float = 0.10,
+        max_consecutive_losses: int = 5,
+        loss_reduction: float = 0.2,
+        max_instrument_concentration: float = 0.25,
+        min_volatility: float = 0.015,
+        hard_loss_eur: float = 30.0,
+        trail_pct: float = 0.10,
+        trail_abs_eur: float = 10.0,
+        pips_tolerance: int = 20,
+        min_size_pct: float = 0.01,
+        min_signal_threshold: float = 0.15,
+        position_scale_threshold: float = 0.30,
+        emergency_close_threshold: float = 0.85,
+        confidence_decay: float = 0.95,
+        debug: bool = True,
+        genome: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ):
+        # ─── PREPARE ALL ATTRIBUTES NEEDED BY _initialize_module_state ───
+        self.instruments = instruments
+        self.initial_balance = float(initial_balance)
+        self.max_pct = float(max_pct)
+        self.default_max_pct = self.max_pct
+        self.max_consecutive_losses = int(max_consecutive_losses)
+        self.loss_reduction = float(loss_reduction)
+        self.max_instrument_concentration = float(max_instrument_concentration)
+        self.min_volatility = float(min_volatility)
+        self.hard_loss_eur = float(hard_loss_eur)
+        self.trail_pct = float(trail_pct)
+        self.trail_abs_eur = float(trail_abs_eur)
+        self.pips_tolerance = int(pips_tolerance)
+        self.min_size_pct = float(min_size_pct)
+        self.min_signal_threshold = float(min_signal_threshold)
+        self.position_scale_threshold = float(position_scale_threshold)
+        self.emergency_close_threshold = float(emergency_close_threshold)
+        self.confidence_decay = float(confidence_decay)
+        # Store genome for later evolution (optional)
+        self.genome = genome or {}
+
+        # ─── NOW INITIALIZE THE BASE MODULE (which calls your _initialize_module_state) ───
         config = ModuleConfig(
             debug=debug,
             max_history=200,
             **kwargs
         )
         super().__init__(config)
-        
-        # Initialize genome parameters
-        self._initialize_genome_parameters(
-            genome, initial_balance, max_pct, max_consecutive_losses,
-            loss_reduction, max_instrument_concentration, min_volatility,
-            hard_loss_eur, trail_pct, trail_abs_eur, min_signal_threshold,
-            position_scale_threshold, emergency_close_threshold, confidence_decay
-        )
-        
-        # Initialize instruments and basic parameters
-        self.instruments = instruments
-        self.pips_tolerance = int(pips_tolerance)
-        self.min_size_pct = float(min_size_pct)
-        
-        # Enhanced state initialization
-        self._initialize_module_state()
-        
-        # Initialize trading mode manager
+
+        # ─── FOLLOW-UP SETUP ───────────────────────────────────────────────
+        # (You can re-run your genome‐based override here if desired)
+        if genome:
+            self._initialize_genome_parameters(
+                genome, self.initial_balance, self.max_pct,
+                self.max_consecutive_losses, self.loss_reduction,
+                self.max_instrument_concentration, self.min_volatility,
+                self.hard_loss_eur, self.trail_pct, self.trail_abs_eur,
+                self.min_signal_threshold, self.position_scale_threshold,
+                self.emergency_close_threshold, self.confidence_decay
+            )
+
+        # Trading‐mode manager and position tracking
         self.mode_manager = TradingModeManager(initial_mode="safe", window=50)
-        
-        # Initialize position tracking
         self._initialize_position_tracking()
-        
-        # Set environment reference
-        self.env: Optional[Any] = None
-        
+        self.env = None
+
         self.log_operator_info(
             "Enhanced position manager initialized",
-            instruments_count=len(instruments),
-            initial_balance=f"€{initial_balance:,.0f}",
-            max_position_pct=f"{max_pct:.1%}",
-            min_signal_threshold=f"{min_signal_threshold:.2f}",
-            max_consecutive_losses=max_consecutive_losses,
-            hard_loss_limit=f"€{hard_loss_eur:.0f}",
-            trail_stop_pct=f"{trail_pct:.1%}"
+            instruments_count=len(self.instruments),
+            initial_balance=f"€{self.initial_balance:,.0f}",
+            max_position_pct=f"{self.max_pct:.1%}",
+            min_signal_threshold=f"{self.min_signal_threshold:.2f}",
+            max_consecutive_losses=self.max_consecutive_losses,
+            hard_loss_limit=f"€{self.hard_loss_eur:.0f}",
+            trail_stop_pct=f"{self.trail_pct:.1%}"
         )
+
 
     def _initialize_genome_parameters(self, genome: Optional[Dict], initial_balance: float,
                                     max_pct: float, max_consecutive_losses: int,

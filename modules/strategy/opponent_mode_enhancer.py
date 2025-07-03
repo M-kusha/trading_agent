@@ -781,6 +781,33 @@ class OpponentModeEnhancer(Module, AnalysisMixin, StateManagementMixin, TradingM
         except Exception as e:
             self.log_operator_warning(f"InfoBus mode update failed: {e}")
 
+    def log_operator_debug(self, message: str, **kwargs):
+        """Log debug message with proper formatting"""
+        if hasattr(self, 'debug') and self.debug and hasattr(self, 'logger'):
+            # Convert kwargs to details string
+            details = ""
+            if kwargs:
+                detail_parts = []
+                for key, value in kwargs.items():
+                    if isinstance(value, float):
+                        if 'pct' in key or 'rate' in key or '%' in str(value):
+                            detail_parts.append(f"{key}={value:.1%}")
+                        else:
+                            detail_parts.append(f"{key}={value:.3f}")
+                    else:
+                        detail_parts.append(f"{key}={value}")
+                details = " | ".join(detail_parts)
+            
+            # Only log if we have a logger configured for debug
+            if hasattr(self.logger, 'debug'):
+                from modules.utils.audit_utils import format_operator_message
+                formatted_message = format_operator_message(
+                    emoji="🔧",
+                    action=message,
+                    details=details
+                )
+                self.logger.debug(formatted_message)
+
     def get_mode_report(self) -> str:
         """Generate operator-friendly mode analysis report"""
         

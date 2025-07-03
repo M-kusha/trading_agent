@@ -6,7 +6,7 @@
 import numpy as np
 import datetime
 import copy
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Union
 from collections import deque, defaultdict
 
 from modules.core.core import Module, ModuleConfig, audit_step
@@ -38,46 +38,55 @@ class PortfolioRiskSystem(Module, RiskMixin, AnalysisMixin, StateManagementMixin
         "risk_budget_daily": 0.02
     }
 
-    def __init__(
-        self,
-        config: Optional[Dict[str, Any]] = None,
-        instruments: Optional[List[str]] = None,
-        debug: bool = False,
-        **kwargs
-    ):
-        # Initialize with enhanced config
-        enhanced_config = ModuleConfig(
-            debug=debug,
-            max_history=kwargs.get('max_history', 100),
-            audit_enabled=kwargs.get('audit_enabled', True),
-            **kwargs
-        )
-        super().__init__(enhanced_config)
-        
-        # Initialize mixins
+    def __init__(self, *args,
+                 config: Union[Dict[str, Any], ModuleConfig] = None,
+                 instruments: Optional[List[str]] = None,
+                 debug: bool = False,
+                 **kwargs):
+        # ─── Distinguish module‐level config vs. risk‐params dict ─────────────
+        if isinstance(config, ModuleConfig):
+            module_cfg = config
+            risk_params = {}
+        else:
+            # build the ModuleConfig for the base Module
+            module_cfg = ModuleConfig(
+                debug=debug,
+                max_history=kwargs.get('max_history', 100),
+                audit_enabled=kwargs.get('audit_enabled', True),
+                **kwargs
+            )
+            risk_params = config.copy() if config else {}
+
+        # ─── Legacy positional API support ────────────────────────────────────
+        # older calls: PortfolioRiskSystem(var_window, dd_limit, config=...)
+        if len(args) >= 2:
+            risk_params.setdefault("var_window", args[0])
+            risk_params.setdefault("dd_limit", args[1])
+
+        # ─── Initialize base Module ───────────────────────────────────────────
+        super().__init__(module_cfg)
         self._initialize_risk_state()
         self._initialize_analysis_state()
-        
-        # Merge configuration with enhanced defaults
+
+        # ─── Merge risk params into enhanced defaults ─────────────────────────
         self.portfolio_config = copy.deepcopy(self.ENHANCED_DEFAULTS)
-        if config:
-            self.portfolio_config.update(config)
-        
-        # Core parameters
-        self.var_window = int(self.portfolio_config["var_window"])
-        self.dd_limit = float(self.portfolio_config["dd_limit"])
-        self.risk_mult = float(self.portfolio_config["risk_mult"])
-        self.min_position_pct = float(self.portfolio_config["min_position_pct"])
-        self.max_position_pct = float(self.portfolio_config["max_position_pct"])
-        self.correlation_window = int(self.portfolio_config["correlation_window"])
-        self.bootstrap_trades = int(self.portfolio_config["bootstrap_trades"])
-        self.var_confidence = float(self.portfolio_config["var_confidence"])
-        self.max_portfolio_exposure = float(self.portfolio_config["max_portfolio_exposure"])
+        self.portfolio_config.update(risk_params)
+
+        # ─── Read out core parameters ─────────────────────────────────────────
+        self.var_window            = int(self.portfolio_config["var_window"])
+        self.dd_limit              = float(self.portfolio_config["dd_limit"])
+        self.risk_mult             = float(self.portfolio_config["risk_mult"])
+        self.min_position_pct      = float(self.portfolio_config["min_position_pct"])
+        self.max_position_pct      = float(self.portfolio_config["max_position_pct"])
+        self.correlation_window    = int(self.portfolio_config["correlation_window"])
+        self.bootstrap_trades      = int(self.portfolio_config["bootstrap_trades"])
+        self.var_confidence        = float(self.portfolio_config["var_confidence"])
+        self.max_portfolio_exposure= float(self.portfolio_config["max_portfolio_exposure"])
         self.correlation_threshold = float(self.portfolio_config["correlation_threshold"])
-        self.volatility_lookback = int(self.portfolio_config["volatility_lookback"])
-        self.risk_budget_daily = float(self.portfolio_config["risk_budget_daily"])
-        
-        # Instruments
+        self.volatility_lookback   = int(self.portfolio_config["volatility_lookback"])
+        self.risk_budget_daily     = float(self.portfolio_config["risk_budget_daily"])
+
+        # ─── Instruments ──────────────────────────────────────────────────────
         self.instruments = instruments or ["EUR/USD", "XAU/USD"]
         
         # Enhanced state tracking
@@ -947,6 +956,100 @@ class PortfolioRiskSystem(Module, RiskMixin, AnalysisMixin, StateManagementMixin
         except Exception as e:
             self.log_operator_error(f"Risk observation generation failed: {e}")
             return np.array([0.0] * 10, dtype=np.float32)
+        
+    def prime_returns_with_history(self, price_history: Dict[str, np.ndarray]) -> None:
+        """Prime the risk system with historical price data"""
+        
+        try:
+            self.log_operator_info("🔧 Priming risk system with historical data")
+            
+            # Calculate returns for each instrument
+            for instrument, prices in price_history.items():
+                if len(prices) > 1:
+                    returns = np.diff(prices) / prices[:-1]
+                    
+                    # Store in returns history
+                    if instrument not in self.returns_history:
+                        self.returns_history[instrument] = deque(maxlen=self.var_window)
+                    
+                    # Add returns to history
+                    for ret in returns[-self.var_window:]:
+                        if np.isfinite(ret):
+                            self.returns_history[instrument].append(float(ret))
+                    
+                    # Store last price for future calculations
+                    setattr(self, f'_last_price_{instrument}', float(prices[-1]))
+            
+            # Initialize portfolio returns if we have data
+            if self.returns_history:
+                # Calculate initial portfolio volatility estimate
+                all_returns = []
+                for returns_deque in self.returns_history.values():
+                    all_returns.extend(list(returns_deque))
+                
+                if len(all_returns) > 10:
+                    self.performance_metrics["volatility"] = float(np.std(all_returns))
+                    self.current_var = abs(np.percentile(all_returns, 5))  # 95% VaR
+            
+            self.log_operator_info(f"✅ Risk system primed with {len(price_history)} instruments")
+            
+        except Exception as e:
+            self.log_operator_error(f"Risk system priming failed: {e}")
+            # Fall back to random priming
+            self.prime_returns_with_random()
+
+    def prime_returns_with_random(self) -> None:
+        """Prime the risk system with synthetic random data when historical data unavailable"""
+        
+        try:
+            self.log_operator_warning("🎲 Priming risk system with synthetic data")
+            
+            # Generate synthetic returns for each instrument
+            for instrument in self.instruments:
+                if instrument not in self.returns_history:
+                    self.returns_history[instrument] = deque(maxlen=self.var_window)
+                
+                # Generate realistic returns (normal distribution with fat tails)
+                n_samples = min(self.var_window, 50)
+                
+                # Base volatility estimates by instrument type
+                if 'USD' in instrument:  # FX pairs
+                    base_vol = 0.008  # ~0.8% daily vol
+                elif 'XAU' in instrument or 'Gold' in instrument:  # Gold
+                    base_vol = 0.012  # ~1.2% daily vol
+                else:
+                    base_vol = 0.010  # Default
+                
+                # Generate returns with occasional larger moves (fat tails)
+                returns = np.random.normal(0, base_vol, n_samples)
+                
+                # Add some fat tail events (5% chance of 3x larger move)
+                fat_tail_indices = np.random.choice(n_samples, size=max(1, n_samples // 20), replace=False)
+                returns[fat_tail_indices] *= 3
+                
+                # Store returns
+                for ret in returns:
+                    self.returns_history[instrument].append(float(ret))
+                
+                # Set synthetic starting price
+                setattr(self, f'_last_price_{instrument}', 1.0)
+            
+            # Set initial risk metrics
+            all_returns = []
+            for returns_deque in self.returns_history.values():
+                all_returns.extend(list(returns_deque))
+            
+            if all_returns:
+                self.performance_metrics["volatility"] = float(np.std(all_returns))
+                self.current_var = abs(np.percentile(all_returns, 5))  # 95% VaR
+            
+            self.log_operator_info(f"✅ Risk system primed with synthetic data for {len(self.instruments)} instruments")
+            
+        except Exception as e:
+            self.log_operator_error(f"Synthetic risk priming failed: {e}")
+            # Set safe defaults
+            self.performance_metrics["volatility"] = 0.01
+            self.current_var = 0.02
 
     def get_portfolio_risk_report(self) -> str:
         """Generate operator-friendly portfolio risk report"""

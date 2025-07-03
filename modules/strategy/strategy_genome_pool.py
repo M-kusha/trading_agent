@@ -7,7 +7,7 @@ import hashlib
 import numpy as np
 import datetime
 import random
-from typing import Dict, Any, List, Optional, Tuple, Callable
+from typing import Dict, Any, List, Optional, Tuple, Callable, Union
 from collections import deque, defaultdict
 
 from modules.core.core import Module, ModuleConfig, audit_step
@@ -127,6 +127,35 @@ class StrategyGenomePool(Module, AnalysisMixin, StateManagementMixin, TradingMix
             profit_target=f"€{self.profit_target}",
             mutation_rate=f"{self.mut_rate:.1%}"
         )
+
+    def log_operator_debug(self, message: str, **kwargs):
+        """Log debug message with proper formatting"""
+        if self.debug and hasattr(self, 'logger'):
+            details = " | ".join(f"{k}: {v}" for k, v in kwargs.items()) if kwargs else ""
+            formatted_message = format_operator_message("🔧", message, details=details)
+            if hasattr(self.logger, 'debug'):
+                self.logger.debug(formatted_message)
+
+    def log_operator_info(self, message: str, **kwargs):
+        """Log info message with proper formatting"""
+        if hasattr(self, 'logger'):
+            details = " | ".join(f"{k}: {v}" for k, v in kwargs.items()) if kwargs else ""
+            formatted_message = format_operator_message("📊", message, details=details)
+            self.logger.info(formatted_message)
+
+    def log_operator_warning(self, message: str, **kwargs):
+        """Log warning message with proper formatting"""
+        if hasattr(self, 'logger'):
+            details = " | ".join(f"{k}: {v}" for k, v in kwargs.items()) if kwargs else ""
+            formatted_message = format_operator_message("⚠️", message, details=details)
+            self.logger.warning(formatted_message)
+
+    def log_operator_error(self, message: str, **kwargs):
+        """Log error message with proper formatting"""
+        if hasattr(self, 'logger'):
+            details = " | ".join(f"{k}: {v}" for k, v in kwargs.items()) if kwargs else ""
+            formatted_message = format_operator_message("❌", message, details=details)
+            self.logger.error(formatted_message)
 
     def _initialize_population(self) -> np.ndarray:
         """Initialize population with enhanced seeding strategies"""
@@ -909,15 +938,22 @@ class StrategyGenomePool(Module, AnalysisMixin, StateManagementMixin, TradingMix
             f"cx_rate={adaptive_params['crossover_rate']:.3f}"
         )
 
-    def select_genome(self, mode: str = "smart", k: int = 3, custom_selector: Optional[Callable] = None) -> np.ndarray:
-        """Enhanced genome selection with comprehensive strategies"""
+    def select_genome(self, mode: str = "smart", k: int = 3, custom_selector: Optional[Callable] = None) -> Union[np.ndarray, Dict[str, Any]]:
+        """Enhanced genome selection with comprehensive strategies and format handling"""
         
         try:
+            # Ensure population is properly initialized
+            if len(self.population) == 0 or len(self.fitness) == 0:
+                self.log_operator_warning("Empty population detected, reinitializing")
+                self.population = self._initialize_population()
+                self.fitness = np.zeros(self.pop_size, dtype=np.float32)
+            
             assert len(self.population) == len(self.fitness), "Population/fitness size mismatch"
             N = len(self.population)
             
             self.log_operator_debug(f"Selecting genome with mode={mode}, k={k}")
             
+            # Genome selection logic
             if mode == "smart":
                 idx = self._smart_selection()
             elif mode == "random":
@@ -925,7 +961,7 @@ class StrategyGenomePool(Module, AnalysisMixin, StateManagementMixin, TradingMix
             elif mode == "best":
                 idx = int(np.argmax(self.fitness))
             elif mode == "tournament":
-                candidates = np.random.choice(N, k, replace=False)
+                candidates = np.random.choice(N, min(k, N), replace=False)
                 idx = candidates[np.argmax(self.fitness[candidates])]
             elif mode == "roulette":
                 shifted_fitness = self.fitness - np.min(self.fitness) + 1e-8
@@ -937,36 +973,42 @@ class StrategyGenomePool(Module, AnalysisMixin, StateManagementMixin, TradingMix
                 assert custom_selector is not None, "Provide custom_selector callable!"
                 idx = custom_selector(self.population, self.fitness)
             else:
-                raise ValueError(f"Unknown selection mode: {mode}")
+                self.log_operator_warning(f"Unknown selection mode: {mode}, using best")
+                idx = int(np.argmax(self.fitness))
             
             # Validate selection
             if not (0 <= idx < N):
                 self.log_operator_warning(f"Invalid genome index {idx}, using best")
                 idx = int(np.argmax(self.fitness))
             
-            self.active_genome = self.population[idx].copy()
-            self.active_genome_idx = idx
+            # Get the selected genome
+            selected_genome = self.population[idx].copy()
             
             # Validate selected genome
-            if np.any(~np.isfinite(self.active_genome)):
-                self.log_operator_warning(f"Selected genome contains invalid values: {self.active_genome}")
-                self.active_genome = self._repair_genome(self.active_genome)
+            if np.any(~np.isfinite(selected_genome)):
+                self.log_operator_warning(f"Selected genome contains invalid values: {selected_genome}")
+                selected_genome = self._repair_genome(selected_genome)
+            
+            # Store as active genome
+            self.active_genome = selected_genome
+            self.active_genome_idx = idx
             
             # Update usage statistics
-            self.genome_usage_stats[self.genome_hash(self.active_genome)] += 1
+            self.genome_usage_stats[self.genome_hash(selected_genome)] += 1
             
             # Log selection
             fit_val = self.fitness[idx]
-            genome_str = ", ".join(f"{x:.3f}" for x in self.active_genome)
+            genome_str = ", ".join(f"{x:.3f}" for x in selected_genome)
             self.log_operator_info(
-                f"🎯 Genome selected",
+                f"Genome selected",
                 index=idx,
                 fitness=f"€{fit_val:.2f}",
                 genome=f"[{genome_str}]",
                 mode=mode
             )
             
-            return self.active_genome
+            # Return the genome (numpy array format)
+            return selected_genome
             
         except Exception as e:
             self.log_operator_error(f"Genome selection failed: {e}")
@@ -979,35 +1021,59 @@ class StrategyGenomePool(Module, AnalysisMixin, StateManagementMixin, TradingMix
     def _smart_selection(self) -> int:
         """Smart selection based on current evolution state"""
         
-        if self.generations_without_improvement < 5:
-            # Exploit best when improving
-            return int(np.argmax(self.fitness))
-        elif self.evolution_analytics['population_health'] == 'poor':
-            # Explore when population health is poor
-            top_k = min(5, self.pop_size // 2)
-            top_indices = np.argsort(self.fitness)[-top_k:]
-            return np.random.choice(top_indices)
-        else:
-            # Balanced tournament selection
-            candidates = np.random.choice(self.pop_size, self.tournament_k, replace=False)
-            return candidates[np.argmax(self.fitness[candidates])]
+        try:
+            if self.generations_without_improvement < 5:
+                # Exploit best when improving
+                return int(np.argmax(self.fitness))
+            elif self.evolution_analytics.get('population_health', 'fair') == 'poor':
+                # Explore when population health is poor
+                top_k = min(5, max(1, self.pop_size // 2))
+                top_indices = np.argsort(self.fitness)[-top_k:]
+                return np.random.choice(top_indices)
+            else:
+                # Balanced tournament selection
+                tournament_size = min(self.tournament_k, len(self.population))
+                candidates = np.random.choice(self.pop_size, tournament_size, replace=False)
+                return candidates[np.argmax(self.fitness[candidates])]
+        except Exception as e:
+            self.log_operator_warning(f"Smart selection failed: {e}")
+            return 0
 
     def _diversity_aware_selection(self) -> int:
         """Selection that considers both fitness and diversity"""
         
-        # Calculate diversity contribution of each genome
-        diversity_scores = np.zeros(len(self.population))
-        
-        for i, genome in enumerate(self.population):
-            distances = [np.linalg.norm(genome - other) for j, other in enumerate(self.population) if i != j]
-            diversity_scores[i] = np.mean(distances) if distances else 0
-        
-        # Combine fitness and diversity (weighted)
-        normalized_fitness = (self.fitness - np.min(self.fitness)) / (np.max(self.fitness) - np.min(self.fitness) + 1e-6)
-        normalized_diversity = (diversity_scores - np.min(diversity_scores)) / (np.max(diversity_scores) - np.min(diversity_scores) + 1e-6)
-        
-        combined_score = 0.7 * normalized_fitness + 0.3 * normalized_diversity
-        return int(np.argmax(combined_score))
+        try:
+            # Calculate diversity contribution of each genome
+            diversity_scores = np.zeros(len(self.population))
+            
+            for i, genome in enumerate(self.population):
+                distances = [
+                    np.linalg.norm(genome - other) 
+                    for j, other in enumerate(self.population) 
+                    if i != j
+                ]
+                diversity_scores[i] = np.mean(distances) if distances else 0
+            
+            # Combine fitness and diversity (weighted)
+            fitness_range = np.max(self.fitness) - np.min(self.fitness)
+            diversity_range = np.max(diversity_scores) - np.min(diversity_scores)
+            
+            if fitness_range > 0:
+                normalized_fitness = (self.fitness - np.min(self.fitness)) / fitness_range
+            else:
+                normalized_fitness = np.ones(len(self.fitness)) * 0.5
+            
+            if diversity_range > 0:
+                normalized_diversity = (diversity_scores - np.min(diversity_scores)) / diversity_range
+            else:
+                normalized_diversity = np.ones(len(diversity_scores)) * 0.5
+            
+            combined_score = 0.7 * normalized_fitness + 0.3 * normalized_diversity
+            return int(np.argmax(combined_score))
+            
+        except Exception as e:
+            self.log_operator_warning(f"Diversity selection failed: {e}")
+            return 0
 
     def get_observation_components(self) -> np.ndarray:
         """Enhanced observation with comprehensive evolution metrics"""
@@ -1065,6 +1131,8 @@ class StrategyGenomePool(Module, AnalysisMixin, StateManagementMixin, TradingMix
         except Exception as e:
             self.log_operator_error(f"Genome observation generation failed: {e}")
             return np.full(10, 0.5, dtype=np.float32)
+
+
 
     def _update_info_bus_with_genome_data(self, info_bus: InfoBus) -> None:
         """Update InfoBus with genome pool status and analytics"""

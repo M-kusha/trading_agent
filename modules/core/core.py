@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/core/core.py
-# Enhanced base module eliminating 80% of boilerplate across all modules
+# Windows-Compatible Enhanced base module with ASCII logging
 # ─────────────────────────────────────────────────────────────
 
 from abc import ABC, abstractmethod
@@ -9,6 +9,8 @@ import numpy as np
 import datetime
 import json
 import os
+import sys
+import platform
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 from collections import deque
@@ -35,13 +37,13 @@ class ModuleConfig:
 
 
 class ModuleLogger:
-    """Standardized rotating logger for all modules"""
+    """Standardized rotating logger for all modules with Windows compatibility"""
     
     _loggers: Dict[str, logging.Logger] = {}
     
     @classmethod
     def get_logger(cls, module_name: str, config: ModuleConfig) -> logging.Logger:
-        """Get or create standardized logger with rotation"""
+        """Get or create standardized logger with rotation and Windows compatibility"""
         
         if module_name in cls._loggers:
             return cls._loggers[module_name]
@@ -56,14 +58,14 @@ class ModuleLogger:
         log_dir = Path("logs") / module_name.lower().replace("_", "/")
         log_dir.mkdir(parents=True, exist_ok=True)
         
-        # Create rotating file handler
+        # Create rotating file handler with UTF-8 encoding
         log_path = log_dir / f"{module_name.lower()}.log"
-        handler = RotatingFileHandler(
+        handler = WindowsCompatibleRotatingHandler(
             str(log_path), 
             maxLines=config.log_rotation_lines
         )
         
-        # Format for operator readability
+        # Windows-compatible format (no emojis)
         if config.debug:
             formatter = logging.Formatter(
                 '%(asctime)s [%(levelname)s] %(name)s: %(message)s',
@@ -78,20 +80,47 @@ class ModuleLogger:
         handler.setFormatter(formatter)
         logger.addHandler(handler)
         
+        # Add console handler with proper encoding for Windows
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(formatter)
+        
+        # Set proper encoding for Windows console
+        if platform.system() == "Windows":
+            if hasattr(console_handler.stream, 'reconfigure'):
+                try:
+                    console_handler.stream.reconfigure(encoding='utf-8')
+                except:
+                    pass  # Fallback to default encoding
+        
+        logger.addHandler(console_handler)
+        
         cls._loggers[module_name] = logger
         return logger
 
 
-class RotatingFileHandler(logging.FileHandler):
-    """File handler that enforces line limits"""
+class WindowsCompatibleRotatingHandler(logging.FileHandler):
+    """File handler that enforces line limits with Windows compatibility"""
     
     def __init__(self, filename, maxLines=2000, **kwargs):
         self.maxLines = maxLines
+        # Force UTF-8 encoding for consistency
+        kwargs['encoding'] = 'utf-8'
         super().__init__(filename, **kwargs)
         
     def emit(self, record):
-        super().emit(record)
-        self._rotate_if_needed()
+        try:
+            super().emit(record)
+            self._rotate_if_needed()
+        except UnicodeEncodeError:
+            # Fallback: strip non-ASCII characters and retry
+            if hasattr(record, 'msg'):
+                record.msg = self._strip_non_ascii(str(record.msg))
+            super().emit(record)
+            self._rotate_if_needed()
+        
+    def _strip_non_ascii(self, text):
+        """Strip non-ASCII characters for Windows compatibility"""
+        return ''.join(char if ord(char) < 128 else '?' for char in text)
         
     def _rotate_if_needed(self):
         """Enforce line limit by deleting oldest entries"""
@@ -168,7 +197,7 @@ def validate_observation(func):
             
         # Check for non-finite values
         if not np.all(np.isfinite(obs)):
-            self.logger.error(f"🛑 Non-finite observation: {obs}")
+            self.logger.error(f"[ERROR] Non-finite observation: {obs}")
             # Replace with safe default
             obs = np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
             
@@ -180,8 +209,32 @@ def validate_observation(func):
     return wrapper
 
 
+def format_operator_message_windows(prefix: str, action: str, instrument: str = "", 
+                                   details: str = "", result: str = "", context: str = "") -> str:
+    """
+    Format operator-centric messages for Windows compatibility (no emojis).
+    
+    Example: "[TRADE] BUY EUR/USD 1.25 @ 1.0850 | P&L: $125.50 | Regime: trending"
+    """
+    parts = [f"[{prefix}]", action]
+    
+    if instrument:
+        parts.append(instrument)
+        
+    if details:
+        parts.append(details)
+        
+    if result:
+        parts.append(f"| {result}")
+        
+    if context:
+        parts.append(f"| {context}")
+        
+    return " ".join(parts)
+
+
 class Module(ABC):
-    """Enhanced base module eliminating common boilerplate"""
+    """Enhanced base module with Windows compatibility"""
     
     def __init__(self, config: Optional[Union[Dict, ModuleConfig]] = None, **kwargs):
         # Handle config
@@ -204,7 +257,7 @@ class Module(ABC):
         self._health_history = deque(maxlen=50)
         self._performance_metrics = {}
         
-        # Setup logger
+        # Setup logger with Windows compatibility
         self.logger = ModuleLogger.get_logger(
             self.__class__.__name__, 
             self.config
@@ -213,7 +266,8 @@ class Module(ABC):
         # Initialize module-specific state
         self._initialize_module_state()
         
-        self.logger.info(f"✅ {self.__class__.__name__} initialized")
+        # Windows-compatible success message
+        self.logger.info(f"[SUCCESS] {self.__class__.__name__} initialized")
 
     def _initialize_module_state(self):
         """Override this to initialize module-specific state"""
@@ -247,13 +301,36 @@ class Module(ABC):
 
     @validate_observation
     def get_observation_components(self) -> np.ndarray:
-        """Get observation with automatic validation"""
-        return self._get_observation_impl()
+        """
+        Universal getter for observation features.
+        1. If subclass overrides this, use the override.
+        2. Else, call _get_observation_impl (modern standard).
+        3. If neither, raise an explicit error—NO fallback data.
+        """
+        # If the subclass provides its own get_observation_components, Python will call that.
+        # If not, call _get_observation_impl.
+        # If not implemented, raise.
+        base_method = Module.get_observation_components
+        sub_method = self.__class__.__dict__.get('get_observation_components', None)
+        if sub_method and sub_method is not base_method:
+            return sub_method(self)
+        # fallback to _get_observation_impl (modern style)
+        method = getattr(self, '_get_observation_impl', None)
+        if callable(method):
+            return method()
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement either get_observation_components() or _get_observation_impl()."
+        )
 
-    @abstractmethod  
+
+    
     def _get_observation_impl(self) -> np.ndarray:
-        """Implement this to return raw observation components"""
-        pass
+        """
+        Must be implemented by subclass if get_observation_components is not overridden.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement _get_observation_impl() or get_observation_components()."
+        )
 
     def _update_health_status(self, status: str, error: Optional[str] = None):
         """Update health status with automatic history"""
@@ -270,7 +347,7 @@ class Module(ABC):
         self._health_history.append(health_record)
         
         if status != "OK":
-            self.logger.warning(f"⚠️ Health status: {status} - {error}")
+            self.logger.warning(f"[WARNING] Health status: {status} - {error}")
 
     def _perform_health_check(self):
         """Automatic health check - override for custom checks"""
@@ -399,7 +476,7 @@ class Module(ABC):
         if 'module_state' in state:
             self._set_module_state(state['module_state'])
             
-        self.logger.info(f"✅ State restored at step {self._step_count}")
+        self.logger.info(f"[SUCCESS] State restored at step {self._step_count}")
 
     def _set_module_state(self, module_state: Dict[str, Any]) -> None:
         """Override to restore module-specific state"""
@@ -448,25 +525,25 @@ class Module(ABC):
         else:
             return "stable"
 
-    # Operator-friendly logging helpers
+    # Windows-compatible logging helpers
     def log_operator_info(self, message: str, **context):
-        """Log operator-friendly info message"""
-        formatted_msg = self._format_operator_message("ℹ️", message, **context)
+        """Log operator-friendly info message (Windows-compatible)"""
+        formatted_msg = self._format_operator_message_windows("INFO", message, **context)
         self.logger.info(formatted_msg)
 
     def log_operator_warning(self, message: str, **context):
-        """Log operator-friendly warning message"""
-        formatted_msg = self._format_operator_message("⚠️", message, **context)
+        """Log operator-friendly warning message (Windows-compatible)"""
+        formatted_msg = self._format_operator_message_windows("WARNING", message, **context)
         self.logger.warning(formatted_msg)
 
     def log_operator_error(self, message: str, **context):
-        """Log operator-friendly error message"""
-        formatted_msg = self._format_operator_message("❌", message, **context)
+        """Log operator-friendly error message (Windows-compatible)"""
+        formatted_msg = self._format_operator_message_windows("ERROR", message, **context)
         self.logger.error(formatted_msg)
 
-    def _format_operator_message(self, emoji: str, message: str, **context) -> str:
-        """Format message for operator readability"""
-        parts = [emoji, message]
+    def _format_operator_message_windows(self, level: str, message: str, **context) -> str:
+        """Format message for operator readability (Windows-compatible)"""
+        parts = [f"[{level}]", message]
         
         if context:
             context_str = " | ".join(f"{k}: {v}" for k, v in context.items())

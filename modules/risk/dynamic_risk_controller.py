@@ -61,7 +61,10 @@ class DynamicRiskController(Module, RiskMixin, AnalysisMixin, StateManagementMix
         # Merge configuration with enhanced defaults
         self.risk_config = copy.deepcopy(self.ENHANCED_DEFAULTS)
         if config:
-            self.risk_config.update(config)
+            if isinstance(config, ModuleConfig):
+                self.risk_config.update(vars(config))
+            else:
+                self.risk_config.update(config)
         
         # Core parameters
         self.base_risk_scale = float(self.risk_config["base_risk_scale"])

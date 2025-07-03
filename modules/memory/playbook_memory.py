@@ -18,14 +18,15 @@ from modules.utils.info_bus import InfoBus, InfoBusExtractor, extract_standard_c
 
 
 class PlaybookMemory(Module, AnalysisMixin, TradingMixin):
-    """
-    Enhanced playbook memory with infrastructure integration.
-    Uses context-aware k-nearest neighbors for intelligent trade recall.
-    """
-    
     def __init__(self, max_entries: int = 500, k: int = 5,
                  profit_weight: float = 2.0, context_weight: float = 1.5,
                  debug: bool = True, genome: Optional[Dict[str, Any]] = None, **kwargs):
+        # Ensure these exist before the base-class state initializer runs
+        self.k = k
+        self.max_entries = max_entries
+        self.profit_weight = profit_weight
+        self.context_weight = context_weight
+
         # Initialize with enhanced infrastructure
         config = ModuleConfig(
             debug=debug,
@@ -33,16 +34,16 @@ class PlaybookMemory(Module, AnalysisMixin, TradingMixin):
             **kwargs
         )
         super().__init__(config)
-        
+
         # Initialize genome parameters
         self._initialize_genome_parameters(genome, max_entries, k, profit_weight, context_weight)
-        
+
         # Enhanced state initialization
         self._initialize_module_state()
-        
+
         # Initialize playbook components
         self._initialize_playbook_components()
-        
+
         self.log_operator_info(
             "Playbook memory initialized",
             max_entries=self.max_entries,

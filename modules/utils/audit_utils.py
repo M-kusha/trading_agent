@@ -44,6 +44,9 @@ class RotatingLogger:
         
     def _setup_handler(self):
         """Setup handler with custom formatter"""
+        # Clear any existing handlers to prevent duplicates
+        self.logger.handlers.clear()
+        
         handler = logging.StreamHandler()
         
         if self.operator_mode:
@@ -60,6 +63,10 @@ class RotatingLogger:
             
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
+        
+        # Set debug level if operator mode is enabled
+        if self.operator_mode:
+            self.logger.setLevel(logging.DEBUG)
         
     def _rotate_if_needed(self):
         """Enforce line limit by deleting oldest entries"""
@@ -100,6 +107,20 @@ class RotatingLogger:
             
         # Rotate if needed
         self._rotate_if_needed()
+
+    def debug(self, message: str):
+        """Log debug message"""
+        self.logger.debug(message)
+        self._write_to_file(message, "DEBUG")
+
+    def exception(self, message: str):
+        """Log exception message"""
+        self.logger.exception(message)
+        self._write_to_file(message, "EXCEPTION")
+
+    def fatal(self, message: str):
+        """Log fatal message (alias for critical)"""
+        self.critical(message)
         
     def info(self, message: str):
         """Log info message"""

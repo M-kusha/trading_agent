@@ -131,6 +131,7 @@ class InfoBusQuality:
     invalid_values: List[str]
     warnings: List[str]
     is_valid: bool
+    completeness: float = 100.0
 
 class InfoBusValidator:
     """Centralized InfoBus validation and quality checking"""
@@ -145,6 +146,11 @@ class InfoBusValidator:
         missing_fields = []
         invalid_values = []
         warnings = []
+        
+        # Calculate completeness
+        expected_fields = cls.REQUIRED_FIELDS + cls.NUMERIC_FIELDS + ['prices', 'positions', 'votes']
+        present_fields = len([f for f in expected_fields if f in info_bus])
+        completeness = (present_fields / len(expected_fields)) * 100.0 if expected_fields else 100.0
         
         # Check required fields
         for field in cls.REQUIRED_FIELDS:
@@ -163,6 +169,9 @@ class InfoBusValidator:
                     elif field == 'consensus' and not (0 <= value <= 1):
                         invalid_values.append(f"{field}: out of range [0,1]")
                         score -= 5
+            else:
+                # Numeric field is missing but not required
+                score -= 2
         
         # Check data consistency
         if 'recent_trades' in info_bus and 'trade_count' in info_bus:
@@ -178,15 +187,62 @@ class InfoBusValidator:
                 if not isinstance(pos.get('size', 0), (int, float)):
                     invalid_values.append(f"positions[{i}].size: non-numeric")
                     score -= 3
-                    
-        is_valid = score >= 70  # 70% threshold for validity
+        
+        # Check prices data quality
+        if 'prices' in info_bus:
+            prices = info_bus['prices']
+            if isinstance(prices, dict):
+                for symbol, price in prices.items():
+                    if not isinstance(price, (int, float)) or not np.isfinite(price):
+                        invalid_values.append(f"prices[{symbol}]: invalid price value")
+                        score -= 2
+                    elif price <= 0:
+                        warnings.append(f"prices[{symbol}]: non-positive price")
+                        score -= 1
+            else:
+                invalid_values.append("prices: not a dictionary")
+                score -= 10
+        
+        # Check votes data quality
+        if 'votes' in info_bus:
+            votes = info_bus['votes']
+            if isinstance(votes, list):
+                for i, vote in enumerate(votes):
+                    if not isinstance(vote, dict):
+                        invalid_values.append(f"votes[{i}]: not a dictionary")
+                        score -= 2
+                    else:
+                        # Check vote structure
+                        required_vote_fields = ['module', 'confidence']
+                        for vfield in required_vote_fields:
+                            if vfield not in vote:
+                                warnings.append(f"votes[{i}]: missing {vfield}")
+                                score -= 1
+            else:
+                invalid_values.append("votes: not a list")
+                score -= 5
+        
+        # Adjust score based on completeness
+        if completeness < 50:
+            score -= 20
+            warnings.append(f"Low data completeness: {completeness:.1f}%")
+        elif completeness < 80:
+            score -= 10
+            warnings.append(f"Moderate data completeness: {completeness:.1f}%")
+        
+        # Ensure score doesn't go below 0
+        score = max(0.0, score)
+        
+        # Determine validity
+        is_valid = score >= 70 and completeness >= 60  # Both score and completeness thresholds
         
         return InfoBusQuality(
             score=score,
             missing_fields=missing_fields,
             invalid_values=invalid_values,
             warnings=warnings,
-            is_valid=is_valid
+            is_valid=is_valid,
+            completeness=completeness
         )
 
 
@@ -267,6 +323,124 @@ class InfoBusExtractor:
         return dd_score + exposure_score
     
     @staticmethod
+    def get_positions(info_bus: InfoBus) -> List[Dict[str, Any]]:
+        """Extract positions from InfoBus with safe fallback"""
+        positions = info_bus.get('positions', [])
+        
+        # Ensure each position has required fields
+        standardized_positions = []
+        for pos in positions:
+            if isinstance(pos, dict):
+                standardized_positions.append({
+                    'symbol': pos.get('symbol', 'UNKNOWN'),
+                    'size': float(pos.get('size', 0)),
+                    'entry_price': float(pos.get('entry_price', pos.get('current_price', 1.0))),
+                    'current_price': float(pos.get('current_price', pos.get('entry_price', 1.0))),
+                    'pnl': float(pos.get('pnl', pos.get('unrealised_pnl', 0))),
+                    'timestamp': pos.get('timestamp', ''),
+                    'type': pos.get('type', 'spot'),
+                    'side': pos.get('side', 'long'),
+                    'duration': int(pos.get('duration', 0))
+                })
+        
+        return standardized_positions
+
+    @staticmethod
+    def get_recent_trades(info_bus: InfoBus) -> List[Dict[str, Any]]:
+        """Extract recent trades from InfoBus with safe fallback"""
+        trades = info_bus.get('recent_trades', [])
+        
+        # Ensure each trade has required fields
+        standardized_trades = []
+        for trade in trades:
+            if isinstance(trade, dict):
+                standardized_trades.append({
+                    'symbol': trade.get('symbol', 'UNKNOWN'),
+                    'side': trade.get('side', 'buy'),
+                    'size': float(trade.get('size', 0)),
+                    'entry_price': float(trade.get('entry_price', trade.get('price', 1.0))),
+                    'exit_price': float(trade.get('exit_price', trade.get('price', trade.get('entry_price', 1.0)))),
+                    'pnl': float(trade.get('pnl', 0)),
+                    'duration': trade.get('duration', 0),
+                    'timestamp': trade.get('timestamp', ''),
+                    'reason': trade.get('reason', 'unknown'),
+                    'confidence': float(trade.get('confidence', 0.5))
+                })
+        
+        return standardized_trades
+
+    @staticmethod
+    def get_portfolio_balance(info_bus: InfoBus) -> float:
+        """Get current portfolio balance"""
+        risk_data = info_bus.get('risk', {})
+        return float(risk_data.get('balance', risk_data.get('equity', 10000.0)))
+
+    @staticmethod
+    def get_current_equity(info_bus: InfoBus) -> float:
+        """Get current equity value"""
+        risk_data = info_bus.get('risk', {})
+        return float(risk_data.get('equity', risk_data.get('balance', 10000.0)))
+
+    @staticmethod
+    def get_margin_used(info_bus: InfoBus) -> float:
+        """Get currently used margin"""
+        risk_data = info_bus.get('risk', {})
+        return float(risk_data.get('margin_used', 0.0))
+
+    @staticmethod
+    def get_free_margin(info_bus: InfoBus) -> float:
+        """Calculate free margin"""
+        risk_data = info_bus.get('risk', {})
+        equity = float(risk_data.get('equity', 10000.0))
+        margin_used = float(risk_data.get('margin_used', 0.0))
+        return max(0.0, equity - margin_used)
+
+    @staticmethod
+    def has_open_positions(info_bus: InfoBus) -> bool:
+        """Check if there are any open positions"""
+        return len(info_bus.get('positions', [])) > 0
+
+    @staticmethod
+    def get_largest_position_size(info_bus: InfoBus) -> float:
+        """Get the size of the largest position"""
+        positions = InfoBusExtractor.get_positions(info_bus)
+        if not positions:
+            return 0.0
+        
+        sizes = [abs(pos.get('size', 0)) for pos in positions]
+        return max(sizes) if sizes else 0.0
+
+    @staticmethod
+    def get_total_exposure(info_bus: InfoBus) -> float:
+        """Get total portfolio exposure"""
+        positions = InfoBusExtractor.get_positions(info_bus)
+        total = 0.0
+        
+        for pos in positions:
+            size = abs(pos.get('size', 0))
+            price = pos.get('current_price', pos.get('entry_price', 1.0))
+            total += size * price
+        
+        return total
+
+    @staticmethod
+    def get_unrealized_pnl(info_bus: InfoBus) -> float:
+        """Get total unrealized P&L from open positions"""
+        positions = InfoBusExtractor.get_positions(info_bus)
+        return sum(pos.get('pnl', 0) for pos in positions)
+
+    @staticmethod
+    def get_session_pnl(info_bus: InfoBus) -> float:
+        """Get P&L for current trading session"""
+        return float(info_bus.get('session_pnl', info_bus.get('pnl_today', 0.0)))
+
+    @staticmethod
+    def is_market_open(info_bus: InfoBus) -> bool:
+        """Check if market is currently open"""
+        market_status = info_bus.get('market_status', {})
+        return bool(market_status.get('is_open', True))  # Default to open
+    
+    @staticmethod
     def get_votes_summary(info_bus: InfoBus) -> Dict[str, Any]:
         """Extract and summarize voting data"""
         votes = info_bus.get('votes', [])
@@ -316,7 +490,25 @@ class InfoBusExtractor:
         }
     
     @staticmethod
-    def _calculate_agreement_score(votes: List[Dict]) -> float:
+    def extract_risk_context(info_bus: InfoBus) -> Dict[str, Any]:
+        """Extract comprehensive risk context from InfoBus"""
+        return {
+            'balance': InfoBusExtractor.get_portfolio_balance(info_bus),
+            'equity': InfoBusExtractor.get_current_equity(info_bus),
+            'margin_used': InfoBusExtractor.get_margin_used(info_bus),
+            'free_margin': InfoBusExtractor.get_free_margin(info_bus),
+            'exposure_pct': InfoBusExtractor.get_exposure_pct(info_bus),
+            'drawdown_pct': InfoBusExtractor.get_drawdown_pct(info_bus),
+            'position_count': InfoBusExtractor.get_position_count(info_bus),
+            'risk_score': InfoBusExtractor.get_risk_score(info_bus),
+            'has_positions': InfoBusExtractor.has_open_positions(info_bus),
+            'largest_position': InfoBusExtractor.get_largest_position_size(info_bus),
+            'total_exposure': InfoBusExtractor.get_total_exposure(info_bus),
+            'unrealized_pnl': InfoBusExtractor.get_unrealized_pnl(info_bus)
+        }
+        
+    @staticmethod
+    def _calculate_agreement_score(votes: List[Vote]) -> float:
         """Calculate voting agreement (0-1 score)"""
         if len(votes) < 2:
             return 1.0
@@ -325,9 +517,18 @@ class InfoBusExtractor:
         for vote in votes:
             action = vote.get('action', 0)
             if isinstance(action, (list, np.ndarray)) and len(action) > 0:
-                actions.append(action[0])
+                actions.append(float(action[0]))
             else:
-                actions.append(float(action) if action else 0)
+                # Handle various action types safely
+                try:
+                    if isinstance(action, (int, float)):
+                        actions.append(float(action))
+                    elif action is None:
+                        actions.append(0.0)
+                    else:
+                        actions.append(0.0)  # fallback
+                except (ValueError, TypeError):
+                    actions.append(0.0)
         
         if not actions:
             return 0.0
@@ -348,21 +549,37 @@ class InfoBusUpdater:
             info_bus['module_data'] = {}
         info_bus['module_data'][module_name] = data
     
+  # Replace the add_alert method in InfoBusUpdater class with this version:
+
+
     @staticmethod
-    def add_alert(info_bus: InfoBus, message: str, severity: str = "info", 
-                  module: str = "system"):
-        """Add alert to InfoBus"""
+    def add_alert(info_bus: InfoBus, message: str, alert_type: str = "system", 
+                severity: str = "info", module: str = "", **kwargs):
+        """Add alert to InfoBus with consistent signature"""
         if 'alerts' not in info_bus:
             info_bus['alerts'] = []
-            
+        
+        # Handle legacy calls
+        context = kwargs.get('context', module)
+        if not context and 'module' in kwargs:
+            context = kwargs['module']
+        
         alert = {
-            'timestamp': now_utc(),
-            'message': message,
+            'type': alert_type,
+            'message': str(message),
             'severity': severity,
-            'module': module
+            'timestamp': datetime.now().isoformat(),
+            'context': context,
+            'module': module or context,
+            'step': kwargs.get('step', 0)
         }
+        
         info_bus['alerts'].append(alert)
-    
+        
+        # Keep only recent alerts (performance)
+        if len(info_bus['alerts']) > 50:
+            info_bus['alerts'] = info_bus['alerts'][-50:]
+
     @staticmethod
     def add_compliance_flag(info_bus: InfoBus, flag: str):
         """Add compliance flag to InfoBus"""
@@ -383,7 +600,8 @@ class InfoBusUpdater:
         """Update risk snapshot in InfoBus"""
         if 'risk' not in info_bus:
             info_bus['risk'] = {}
-        info_bus['risk'].update(risk_data)
+        # Use type: ignore to bypass strict TypedDict update restrictions
+        info_bus['risk'].update(risk_data)  # type: ignore
 
 
 class InfoBusBuilder:

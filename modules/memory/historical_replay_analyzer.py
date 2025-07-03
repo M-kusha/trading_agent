@@ -22,6 +22,8 @@ class HistoricalReplayAnalyzer(Module, TradingMixin, AnalysisMixin):
     
     def __init__(self, interval: int = 10, bonus: float = 0.1, sequence_len: int = 5, 
                  debug: bool = True, genome: Optional[Dict[str, Any]] = None, **kwargs):
+        
+        self.profit_threshold = float(genome.get("profit_threshold", 10.0)) if genome else 10.0
         # Initialize with enhanced infrastructure
         config = ModuleConfig(
             debug=debug,

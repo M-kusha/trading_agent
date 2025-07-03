@@ -50,40 +50,45 @@ class ShadowSimulator(Module, AnalysisMixin, StateManagementMixin):
 
     def __init__(
         self,
-        config: Optional[Dict[str, Any]] = None,
+        config: Optional[Union[Dict[str, Any], ModuleConfig]] = None,
         horizon: int = 5,
         strategy: str = "adaptive",
         debug: bool = False,
         **kwargs
     ):
-        # Initialize with enhanced config
-        enhanced_config = ModuleConfig(
-            debug=debug,
-            max_history=kwargs.get('max_history', 100),
-            audit_enabled=kwargs.get('audit_enabled', True),
-            **kwargs
-        )
-        super().__init__(enhanced_config)
-        
-        # Initialize mixins
+        # --- distinguish the ModuleConfig (from the env) vs. a plain dict of overrides ---
+        if isinstance(config, ModuleConfig):
+            module_cfg   = config
+            override_cfg = None
+        else:
+            module_cfg   = ModuleConfig(
+                debug=debug,
+                max_history=kwargs.get("max_history", 100),
+                audit_enabled=kwargs.get("audit_enabled", True),
+                **kwargs
+            )
+            override_cfg = config
+
+        # --- initialize base Module with the real ModuleConfig ---
+        super().__init__(module_cfg)
         self._initialize_analysis_state()
-        
-        # Merge configuration with enhanced defaults
+
+        # --- build your sim_config from defaults, then update only if an actual dict was passed ---
         self.sim_config = copy.deepcopy(self.ENHANCED_DEFAULTS)
-        if config:
-            self.sim_config.update(config)
-        
-        # Core parameters
-        self.horizon = int(horizon)
-        self.strategy = strategy if strategy in self.SIMULATION_STRATEGIES else "adaptive"
-        self.confidence_threshold = float(self.sim_config["confidence_threshold"])
-        self.risk_scaling = bool(self.sim_config["risk_scaling"])
-        self.regime_awareness = bool(self.sim_config["regime_awareness"])
+        if isinstance(override_cfg, dict):
+            self.sim_config.update(override_cfg)
+
+        # --- now pull everything out of self.sim_config as before ---
+        self.horizon               = int(horizon)
+        self.strategy              = strategy if strategy in self.SIMULATION_STRATEGIES else "adaptive"
+        self.confidence_threshold  = float(self.sim_config["confidence_threshold"])
+        self.risk_scaling          = bool(self.sim_config["risk_scaling"])
+        self.regime_awareness      = bool(self.sim_config["regime_awareness"])
         self.volatility_adjustment = bool(self.sim_config["volatility_adjustment"])
-        self.session_sensitivity = float(self.sim_config["session_sensitivity"])
-        self.learning_rate = float(self.sim_config["learning_rate"])
-        self.simulation_depth = int(self.sim_config["simulation_depth"])
-        self.scenario_count = int(self.sim_config["scenario_count"])
+        self.session_sensitivity   = float(self.sim_config["session_sensitivity"])
+        self.learning_rate         = float(self.sim_config["learning_rate"])
+        self.simulation_depth      = int(self.sim_config["simulation_depth"])
+        self.scenario_count        = int(self.sim_config["scenario_count"])
         
         # Enhanced state tracking
         self.simulation_history = deque(maxlen=100)

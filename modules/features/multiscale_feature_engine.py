@@ -15,39 +15,41 @@ from modules.utils.info_bus import InfoBus, InfoBusExtractor
 from modules.features.advanced_feature_engine import AdvancedFeatureEngine
 
 
+
 class MultiScaleFeatureEngine(Module, AnalysisMixin):
     """
     Enhanced multiscale feature engine with infrastructure integration.
     Class name unchanged - just enhanced capabilities!
     """
 
-    def __init__(self, afe: AdvancedFeatureEngine, embed_dim: int = 32, debug: bool = False, **kwargs):
-        # Initialize with enhanced infrastructure
+    def __init__(self,
+                 afe: AdvancedFeatureEngine,
+                 embed_dim: int = 32,
+                 debug: bool = False,
+                 **kwargs):
+        # ─── Module-specific configuration ─────────────────────────────
+        self.afe = afe
+        self.embed_dim = embed_dim
+        self.in_dim = afe.out_dim   # must exist before base-class init
+        self.out_dim = embed_dim    # must exist before base-class init
+
+        # ─── Initialize the Module base (this will call _initialize_module_state) ─
         config = ModuleConfig(
             debug=debug,
             max_history=100,
             **kwargs
         )
         super().__init__(config)
-        
-        # Store AFE reference and configuration
-        self.afe = afe
-        self.embed_dim = embed_dim
-        self.in_dim = afe.out_dim
-        self.out_dim = embed_dim
-        
-        # Enhanced state initialization
-        self._initialize_module_state()
-        
-        # Initialize neural network components
+
+        # ─── Neural network setup ────────────────────────────────────────
         self._initialize_neural_networks()
-        
+
         self.log_operator_info(
             "Multiscale feature engine initialized",
             input_dim=self.in_dim,
             output_dim=self.out_dim,
             device=str(self.device),
-            afe_windows=afe.windows
+            afe_windows=self.afe.windows
         )
 
     def _initialize_module_state(self):

@@ -24,6 +24,8 @@ class MemoryCompressor(Module, TradingMixin, AnalysisMixin):
     def __init__(self, compress_interval: int = 10, n_components: int = 8, 
                  profit_threshold: float = 10.0, debug: bool = True,
                  genome: Optional[Dict[str, Any]] = None, **kwargs):
+        
+        self.n_components = n_components
         # Initialize with enhanced infrastructure
         config = ModuleConfig(
             debug=debug,

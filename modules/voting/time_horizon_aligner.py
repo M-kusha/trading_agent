@@ -658,6 +658,13 @@ class TimeHorizonAligner(Module, AnalysisMixin, StateManagementMixin):
         except Exception as e:
             self.log_operator_error(f"Observation generation failed: {e}")
             return np.array([0.0, 0.0, 1.0, 1.0, 0.0], dtype=np.float32)
+        
+    def get_observation_components (self, *args, **kwargs):
+            """
+            Adapter for RL infrastructure. Returns horizon alignment features.
+            """
+            return self.get_observation_components()
+
 
     # ================== LEGACY COMPATIBILITY ==================
 

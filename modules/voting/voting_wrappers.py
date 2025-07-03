@@ -346,19 +346,76 @@ class ThemeExpert:
             self._performance_history.append(entry)
 
     def log_operator_info(self, message: str, **kwargs):
-        """Log operator message"""
+        """Log operator message with proper formatting"""
         if self.debug and hasattr(self, 'logger'):
-            self.logger.info(format_operator_message(message, **kwargs))
+            # Convert kwargs to details string
+            details = ""
+            if kwargs:
+                detail_parts = []
+                for key, value in kwargs.items():
+                    if isinstance(value, float):
+                        if 'pct' in key or 'rate' in key or '%' in str(value):
+                            detail_parts.append(f"{key}={value:.1%}")
+                        else:
+                            detail_parts.append(f"{key}={value:.3f}")
+                    else:
+                        detail_parts.append(f"{key}={value}")
+                details = " | ".join(detail_parts)
+            
+            formatted_message = format_operator_message(
+                emoji="ℹ️",
+                action=message,
+                details=details
+            )
+            self.logger.info(formatted_message)
 
     def log_operator_warning(self, message: str, **kwargs):
-        """Log operator warning"""
+        """Log operator warning with proper formatting"""
         if hasattr(self, 'logger'):
-            self.logger.warning(format_operator_message(message, **kwargs))
+            # Convert kwargs to details string
+            details = ""
+            if kwargs:
+                detail_parts = []
+                for key, value in kwargs.items():
+                    if isinstance(value, float):
+                        if 'pct' in key or 'rate' in key or '%' in str(value):
+                            detail_parts.append(f"{key}={value:.1%}")
+                        else:
+                            detail_parts.append(f"{key}={value:.3f}")
+                    else:
+                        detail_parts.append(f"{key}={value}")
+                details = " | ".join(detail_parts)
+            
+            formatted_message = format_operator_message(
+                emoji="⚠️",
+                action=message,
+                details=details
+            )
+            self.logger.warning(formatted_message)
 
     def log_operator_error(self, message: str, **kwargs):
-        """Log operator error"""
+        """Log operator error with proper formatting"""
         if hasattr(self, 'logger'):
-            self.logger.error(format_operator_message(message, **kwargs))
+            # Convert kwargs to details string
+            details = ""
+            if kwargs:
+                detail_parts = []
+                for key, value in kwargs.items():
+                    if isinstance(value, float):
+                        if 'pct' in key or 'rate' in key or '%' in str(value):
+                            detail_parts.append(f"{key}={value:.1%}")
+                        else:
+                            detail_parts.append(f"{key}={value:.3f}")
+                    else:
+                        detail_parts.append(f"{key}={value}")
+                details = " | ".join(detail_parts)
+            
+            formatted_message = format_operator_message(
+                emoji="❌",
+                action=message,
+                details=details
+            )
+            self.logger.error(formatted_message)
 
 
 class SeasonalityRiskExpert:
@@ -533,19 +590,76 @@ class SeasonalityRiskExpert:
             return 0.5
 
     def log_operator_info(self, message: str, **kwargs):
-        """Log operator message"""
+        """Log operator message with proper formatting"""
         if self.debug and hasattr(self, 'logger'):
-            self.logger.info(format_operator_message(message, **kwargs))
+            # Convert kwargs to details string
+            details = ""
+            if kwargs:
+                detail_parts = []
+                for key, value in kwargs.items():
+                    if isinstance(value, float):
+                        if 'pct' in key or 'rate' in key or '%' in str(value):
+                            detail_parts.append(f"{key}={value:.1%}")
+                        else:
+                            detail_parts.append(f"{key}={value:.3f}")
+                    else:
+                        detail_parts.append(f"{key}={value}")
+                details = " | ".join(detail_parts)
+            
+            formatted_message = format_operator_message(
+                emoji="ℹ️",
+                action=message,
+                details=details
+            )
+            self.logger.info(formatted_message)
 
     def log_operator_warning(self, message: str, **kwargs):
-        """Log operator warning"""
+        """Log operator warning with proper formatting"""
         if hasattr(self, 'logger'):
-            self.logger.warning(format_operator_message(message, **kwargs))
+            # Convert kwargs to details string
+            details = ""
+            if kwargs:
+                detail_parts = []
+                for key, value in kwargs.items():
+                    if isinstance(value, float):
+                        if 'pct' in key or 'rate' in key or '%' in str(value):
+                            detail_parts.append(f"{key}={value:.1%}")
+                        else:
+                            detail_parts.append(f"{key}={value:.3f}")
+                    else:
+                        detail_parts.append(f"{key}={value}")
+                details = " | ".join(detail_parts)
+            
+            formatted_message = format_operator_message(
+                emoji="⚠️",
+                action=message,
+                details=details
+            )
+            self.logger.warning(formatted_message)
 
     def log_operator_error(self, message: str, **kwargs):
-        """Log operator error"""
+        """Log operator error with proper formatting"""
         if hasattr(self, 'logger'):
-            self.logger.error(format_operator_message(message, **kwargs))
+            # Convert kwargs to details string
+            details = ""
+            if kwargs:
+                detail_parts = []
+                for key, value in kwargs.items():
+                    if isinstance(value, float):
+                        if 'pct' in key or 'rate' in key or '%' in str(value):
+                            detail_parts.append(f"{key}={value:.1%}")
+                        else:
+                            detail_parts.append(f"{key}={value:.3f}")
+                    else:
+                        detail_parts.append(f"{key}={value}")
+                details = " | ".join(detail_parts)
+            
+            formatted_message = format_operator_message(
+                emoji="❌",
+                action=message,
+                details=details
+            )
+            self.logger.error(formatted_message)
 
 
 class MetaRLExpert:
@@ -732,19 +846,76 @@ class MetaRLExpert:
             return 0.5
 
     def log_operator_info(self, message: str, **kwargs):
-        """Log operator message"""
+        """Log operator message with proper formatting"""
         if self.debug and hasattr(self, 'logger'):
-            self.logger.info(format_operator_message(message, **kwargs))
+            # Convert kwargs to details string
+            details = ""
+            if kwargs:
+                detail_parts = []
+                for key, value in kwargs.items():
+                    if isinstance(value, float):
+                        if 'pct' in key or 'rate' in key or '%' in str(value):
+                            detail_parts.append(f"{key}={value:.1%}")
+                        else:
+                            detail_parts.append(f"{key}={value:.3f}")
+                    else:
+                        detail_parts.append(f"{key}={value}")
+                details = " | ".join(detail_parts)
+            
+            formatted_message = format_operator_message(
+                emoji="ℹ️",
+                action=message,
+                details=details
+            )
+            self.logger.info(formatted_message)
 
     def log_operator_warning(self, message: str, **kwargs):
-        """Log operator warning"""
+        """Log operator warning with proper formatting"""
         if hasattr(self, 'logger'):
-            self.logger.warning(format_operator_message(message, **kwargs))
+            # Convert kwargs to details string
+            details = ""
+            if kwargs:
+                detail_parts = []
+                for key, value in kwargs.items():
+                    if isinstance(value, float):
+                        if 'pct' in key or 'rate' in key or '%' in str(value):
+                            detail_parts.append(f"{key}={value:.1%}")
+                        else:
+                            detail_parts.append(f"{key}={value:.3f}")
+                    else:
+                        detail_parts.append(f"{key}={value}")
+                details = " | ".join(detail_parts)
+            
+            formatted_message = format_operator_message(
+                emoji="⚠️",
+                action=message,
+                details=details
+            )
+            self.logger.warning(formatted_message)
 
     def log_operator_error(self, message: str, **kwargs):
-        """Log operator error"""
+        """Log operator error with proper formatting"""
         if hasattr(self, 'logger'):
-            self.logger.error(format_operator_message(message, **kwargs))
+            # Convert kwargs to details string
+            details = ""
+            if kwargs:
+                detail_parts = []
+                for key, value in kwargs.items():
+                    if isinstance(value, float):
+                        if 'pct' in key or 'rate' in key or '%' in str(value):
+                            detail_parts.append(f"{key}={value:.1%}")
+                        else:
+                            detail_parts.append(f"{key}={value:.3f}")
+                    else:
+                        detail_parts.append(f"{key}={value}")
+                details = " | ".join(detail_parts)
+            
+            formatted_message = format_operator_message(
+                emoji="❌",
+                action=message,
+                details=details
+            )
+            self.logger.error(formatted_message)
 
 
 class TradeMonitorVetoExpert:
@@ -934,19 +1105,76 @@ class TradeMonitorVetoExpert:
             return 0.5
 
     def log_operator_info(self, message: str, **kwargs):
-        """Log operator message"""
+        """Log operator message with proper formatting"""
         if self.debug and hasattr(self, 'logger'):
-            self.logger.info(format_operator_message(message, **kwargs))
+            # Convert kwargs to details string
+            details = ""
+            if kwargs:
+                detail_parts = []
+                for key, value in kwargs.items():
+                    if isinstance(value, float):
+                        if 'pct' in key or 'rate' in key or '%' in str(value):
+                            detail_parts.append(f"{key}={value:.1%}")
+                        else:
+                            detail_parts.append(f"{key}={value:.3f}")
+                    else:
+                        detail_parts.append(f"{key}={value}")
+                details = " | ".join(detail_parts)
+            
+            formatted_message = format_operator_message(
+                emoji="ℹ️",
+                action=message,
+                details=details
+            )
+            self.logger.info(formatted_message)
 
     def log_operator_warning(self, message: str, **kwargs):
-        """Log operator warning"""
+        """Log operator warning with proper formatting"""
         if hasattr(self, 'logger'):
-            self.logger.warning(format_operator_message(message, **kwargs))
+            # Convert kwargs to details string
+            details = ""
+            if kwargs:
+                detail_parts = []
+                for key, value in kwargs.items():
+                    if isinstance(value, float):
+                        if 'pct' in key or 'rate' in key or '%' in str(value):
+                            detail_parts.append(f"{key}={value:.1%}")
+                        else:
+                            detail_parts.append(f"{key}={value:.3f}")
+                    else:
+                        detail_parts.append(f"{key}={value}")
+                details = " | ".join(detail_parts)
+            
+            formatted_message = format_operator_message(
+                emoji="⚠️",
+                action=message,
+                details=details
+            )
+            self.logger.warning(formatted_message)
 
     def log_operator_error(self, message: str, **kwargs):
-        """Log operator error"""
+        """Log operator error with proper formatting"""
         if hasattr(self, 'logger'):
-            self.logger.error(format_operator_message(message, **kwargs))
+            # Convert kwargs to details string
+            details = ""
+            if kwargs:
+                detail_parts = []
+                for key, value in kwargs.items():
+                    if isinstance(value, float):
+                        if 'pct' in key or 'rate' in key or '%' in str(value):
+                            detail_parts.append(f"{key}={value:.1%}")
+                        else:
+                            detail_parts.append(f"{key}={value:.3f}")
+                    else:
+                        detail_parts.append(f"{key}={value}")
+                details = " | ".join(detail_parts)
+            
+            formatted_message = format_operator_message(
+                emoji="❌",
+                action=message,
+                details=details
+            )
+            self.logger.error(formatted_message)
 
 
 class RegimeBiasExpert:
@@ -1147,19 +1375,76 @@ class RegimeBiasExpert:
             return 0.5
 
     def log_operator_info(self, message: str, **kwargs):
-        """Log operator message"""
+        """Log operator message with proper formatting"""
         if self.debug and hasattr(self, 'logger'):
-            self.logger.info(format_operator_message(message, **kwargs))
+            # Convert kwargs to details string
+            details = ""
+            if kwargs:
+                detail_parts = []
+                for key, value in kwargs.items():
+                    if isinstance(value, float):
+                        if 'pct' in key or 'rate' in key or '%' in str(value):
+                            detail_parts.append(f"{key}={value:.1%}")
+                        else:
+                            detail_parts.append(f"{key}={value:.3f}")
+                    else:
+                        detail_parts.append(f"{key}={value}")
+                details = " | ".join(detail_parts)
+            
+            formatted_message = format_operator_message(
+                emoji="ℹ️",
+                action=message,
+                details=details
+            )
+            self.logger.info(formatted_message)
 
     def log_operator_warning(self, message: str, **kwargs):
-        """Log operator warning"""
+        """Log operator warning with proper formatting"""
         if hasattr(self, 'logger'):
-            self.logger.warning(format_operator_message(message, **kwargs))
+            # Convert kwargs to details string
+            details = ""
+            if kwargs:
+                detail_parts = []
+                for key, value in kwargs.items():
+                    if isinstance(value, float):
+                        if 'pct' in key or 'rate' in key or '%' in str(value):
+                            detail_parts.append(f"{key}={value:.1%}")
+                        else:
+                            detail_parts.append(f"{key}={value:.3f}")
+                    else:
+                        detail_parts.append(f"{key}={value}")
+                details = " | ".join(detail_parts)
+            
+            formatted_message = format_operator_message(
+                emoji="⚠️",
+                action=message,
+                details=details
+            )
+            self.logger.warning(formatted_message)
 
     def log_operator_error(self, message: str, **kwargs):
-        """Log operator error"""
+        """Log operator error with proper formatting"""
         if hasattr(self, 'logger'):
-            self.logger.error(format_operator_message(message, **kwargs))
+            # Convert kwargs to details string
+            details = ""
+            if kwargs:
+                detail_parts = []
+                for key, value in kwargs.items():
+                    if isinstance(value, float):
+                        if 'pct' in key or 'rate' in key or '%' in str(value):
+                            detail_parts.append(f"{key}={value:.1%}")
+                        else:
+                            detail_parts.append(f"{key}={value:.3f}")
+                    else:
+                        detail_parts.append(f"{key}={value}")
+                details = " | ".join(detail_parts)
+            
+            formatted_message = format_operator_message(
+                emoji="❌",
+                action=message,
+                details=details
+            )
+            self.logger.error(formatted_message)
 
 
 def create_all_experts(env, modules_dict: Dict[str, Any]) -> List[Any]:

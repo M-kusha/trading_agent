@@ -22,7 +22,9 @@ class ExecutionQualityMonitor(Module, RiskMixin, AnalysisMixin, StateManagementM
     with intelligent context-aware analysis.
     """
 
+    # ────────────────────────────────────────────────────────────────────────────────
     # Enhanced default configuration
+    # ────────────────────────────────────────────────────────────────────────────────
     ENHANCED_DEFAULTS = {
         "slip_limit": 0.002,
         "latency_limit": 1000,
@@ -38,12 +40,12 @@ class ExecutionQualityMonitor(Module, RiskMixin, AnalysisMixin, StateManagementM
 
     def __init__(
         self,
-        config: Optional[Dict[str, Any]] = None,
+        config: Optional[Any] = None,         # now accepts dict, ModuleConfig, etc.
         training_mode: bool = True,
         debug: bool = False,
         **kwargs
     ):
-        # Initialize with enhanced config
+        # 1) build & call super with your ModuleConfig for core mixins...
         enhanced_config = ModuleConfig(
             debug=debug,
             max_history=kwargs.get('max_history', 100),
@@ -51,37 +53,52 @@ class ExecutionQualityMonitor(Module, RiskMixin, AnalysisMixin, StateManagementM
             **kwargs
         )
         super().__init__(enhanced_config)
-        
-        # Initialize mixins
+
+        # init our mixins
         self._initialize_risk_state()
         self._initialize_analysis_state()
-        
-        # Merge configuration with enhanced defaults
-        self.execution_config = copy.deepcopy(self.ENHANCED_DEFAULTS)
+
+        # ────────────────────────────────────────────────────────────────────────────
+        # 2) merge passed-in config over our class-level defaults
+        # ────────────────────────────────────────────────────────────────────────────
+        self.execution_config = copy.deepcopy(self.__class__.ENHANCED_DEFAULTS)
+
         if config:
-            self.execution_config.update(config)
-        
-        # Core parameters
-        self.slip_limit = float(self.execution_config["slip_limit"])
-        self.latency_limit = int(self.execution_config["latency_limit"])
-        self.min_fill_rate = float(self.execution_config["min_fill_rate"])
-        self.stats_window = int(self.execution_config["stats_window"])
+            # pull out a dict no matter what form it came in
+            if isinstance(config, dict):
+                cfg_dict = config
+            elif isinstance(config, ModuleConfig):
+                cfg_dict = config.__dict__
+            else:
+                try:
+                    cfg_dict = dict(config)
+                except Exception:
+                    cfg_dict = {}
+            self.execution_config.update(cfg_dict)
+
+        # ────────────────────────────────────────────────────────────────────────────
+        # 3) now assign everything from execution_config
+        # ────────────────────────────────────────────────────────────────────────────
+        self.slip_limit          = float(self.execution_config["slip_limit"])
+        self.latency_limit       = int(self.execution_config["latency_limit"])
+        self.min_fill_rate       = float(self.execution_config["min_fill_rate"])
+        self.stats_window        = int(self.execution_config["stats_window"])
         self.slippage_percentile = int(self.execution_config["slippage_percentile"])
-        self.latency_percentile = int(self.execution_config["latency_percentile"])
-        self.spread_threshold = float(self.execution_config["spread_threshold"])
-        self.execution_timeout = int(self.execution_config["execution_timeout"])
-        self.quality_threshold = float(self.execution_config["quality_threshold"])
+        self.latency_percentile  = int(self.execution_config["latency_percentile"])
+        self.spread_threshold    = float(self.execution_config["spread_threshold"])
+        self.execution_timeout   = int(self.execution_config["execution_timeout"])
+        self.quality_threshold   = float(self.execution_config["quality_threshold"])
         self.degradation_threshold = float(self.execution_config["degradation_threshold"])
-        
-        # Execution mode
+
+        # execution mode
         self.training_mode = training_mode
-        
-        # Enhanced statistics tracking
+
+        # enhanced histories
         self.slippage_history = deque(maxlen=self.stats_window)
-        self.latency_history = deque(maxlen=self.stats_window)
-        self.fill_history = deque(maxlen=self.stats_window)
-        self.spread_history = deque(maxlen=self.stats_window)
-        self.quality_history = deque(maxlen=self.stats_window)
+        self.latency_history  = deque(maxlen=self.stats_window)
+        self.fill_history     = deque(maxlen=self.stats_window)
+        self.spread_history   = deque(maxlen=self.stats_window)
+        self.quality_history  = deque(maxlen=self.stats_window)
         
         # Instrument-specific tracking
         self.instrument_metrics: Dict[str, Dict[str, deque]] = defaultdict(

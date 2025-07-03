@@ -15,28 +15,31 @@ from modules.utils.info_bus import InfoBus, InfoBusExtractor
 
 
 class MemoryBudgetOptimizer(Module, AnalysisMixin, RiskMixin):
-    """
-    Enhanced memory budget optimizer with infrastructure integration.
-    Dynamically allocates memory resources based on performance and efficiency metrics.
-    """
-    
-    def __init__(self, max_trades: int = 500, max_mistakes: int = 100, 
-                 max_plays: int = 200, min_size: int = 50, debug: bool = True,
-                 genome: Optional[Dict[str, Any]] = None, **kwargs):
-        # Initialize with enhanced infrastructure
+    def __init__(self,
+                 max_trades: int = 500,
+                 max_mistakes: int = 100,
+                 max_plays: int = 200,
+                 min_size: int = 50,
+                 debug: bool = True,
+                 genome: Optional[Dict[str, Any]] = None,
+                 **kwargs):
+        # ensure these exist before Module.__init__ calls _initialize_module_state
+        self.max_trades = max_trades
+        self.max_mistakes = max_mistakes
+        self.max_plays = max_plays
+        self.min_size = min_size
+
         config = ModuleConfig(
             debug=debug,
             max_history=300,
             **kwargs
         )
         super().__init__(config)
-        
-        # Initialize genome parameters
+
+        # now safe to initialize genome and state
         self._initialize_genome_parameters(genome, max_trades, max_mistakes, max_plays, min_size)
-        
-        # Enhanced state initialization
         self._initialize_module_state()
-        
+
         self.log_operator_info(
             "Memory budget optimizer initialized",
             total_budget=self.max_trades + self.max_mistakes + self.max_plays,

@@ -18,32 +18,48 @@ from modules.core.mixins import AnalysisMixin, TradingMixin
 from modules.utils.info_bus import InfoBus, InfoBusExtractor, extract_standard_context
 
 
-class EnhancedWorldModel(Module, AnalysisMixin, TradingMixin):
-    """
-    Enhanced world model with infrastructure integration.
-    Uses LSTM networks for market state prediction and scenario simulation.
-    """
     
-    def __init__(self, input_size: int = 16, hidden_size: int = 64, num_layers: int = 2,
-                 dropout: float = 0.1, lr: float = 1e-3, device: str = "cpu",
-                 debug: bool = True, genome: Optional[Dict[str, Any]] = None, **kwargs):
-        # Initialize with enhanced infrastructure
-        config = ModuleConfig(
-            debug=debug,
-            max_history=300,
-            **kwargs
-        )
+class EnhancedWorldModel(Module, AnalysisMixin, TradingMixin):
+    def __init__(
+        self,
+        input_size: int = 16,
+        hidden_size: int = 64,
+        num_layers: int = 2,
+        dropout: float = 0.1,
+        lr: float = 1e-3,
+        device: str = "cpu",
+        debug: bool = True,
+        genome: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ):
+        # 1) Pull sequence_length out of genome so mixins see it early
+        if genome and isinstance(genome, dict):
+            self.sequence_length = int(genome.get("sequence_length", 50))
+        else:
+            self.sequence_length = 50
+
+        # 2) Initialize Module (and mixins) with that sequence_length in place
+        config = ModuleConfig(debug=debug, max_history=300, **kwargs)
         super().__init__(config)
-        
-        # Initialize genome parameters
-        self._initialize_genome_parameters(genome, input_size, hidden_size, num_layers, dropout, lr)
-        
-        # Enhanced state initialization
+
+        # 3) Load genome parameters (including other hyper-parameters)
+        self._initialize_genome_parameters(
+            genome,
+            input_size,
+            hidden_size,
+            num_layers,
+            dropout,
+            lr
+        )
+
+        # 4) Set up internal state (uses self.sequence_length)
         self._initialize_module_state()
-        
-        # Initialize neural components
-        self._initialize_neural_components(device)
-        
+
+        # 5) Build neural components and move them to the right device
+        self.device = torch.device(device if torch.cuda.is_available() and device != "cpu" else "cpu")
+        self._initialize_neural_components(self.device)
+
+        # 6) Log initialization
         self.log_operator_info(
             "Enhanced world model initialized",
             input_features=self.input_size,
@@ -53,6 +69,7 @@ class EnhancedWorldModel(Module, AnalysisMixin, TradingMixin):
             learning_rate=f"{self.learning_rate:.1e}",
             device=str(self.device)
         )
+
 
     def _initialize_genome_parameters(self, genome: Optional[Dict], input_size: int,
                                     hidden_size: int, num_layers: int, dropout: float, lr: float):
@@ -184,10 +201,12 @@ class EnhancedWorldModel(Module, AnalysisMixin, TradingMixin):
                 dropout=0.1,
                 batch_first=True
             )
+
+            for module in [self.lstm, self.price_head, self.volatility_head, self.regime_head, self.context_encoder, self.attention]:
+                module.to(self.device)
             
             # Move to device
-            self.to(self.device)
-            
+            pass
             # Initialize optimizer
             self.optimizer = optim.AdamW(
                 self.parameters(),
@@ -262,15 +281,19 @@ class EnhancedWorldModel(Module, AnalysisMixin, TradingMixin):
     def _step_impl(self, info_bus: Optional[InfoBus] = None, **kwargs) -> None:
         """Enhanced step with InfoBus integration"""
         
+        # Validate InfoBus connection
+        if info_bus is None:
+            self.log_operator_warning("No InfoBus connection - using fallback mode")
+            return
+        
         # Extract and process market data
-        if info_bus:
-            market_features = self._extract_market_features(info_bus)
-            self._update_market_history(market_features, info_bus)
-            
-            # Make predictions if model is trained
-            if self._is_trained and len(self._market_history) >= self.sequence_length:
-                predictions = self._generate_predictions(info_bus)
-                self._track_prediction_performance(predictions, info_bus)
+        market_features = self._extract_market_features(info_bus)
+        self._update_market_history(market_features, info_bus)
+        
+        # Make predictions if model is trained
+        if self._is_trained and len(self._market_history) >= self.sequence_length:
+            predictions = self._generate_predictions(info_bus)
+            self._track_prediction_performance(predictions, info_bus)
         
         # Process manual training data from kwargs
         if 'training_data' in kwargs:

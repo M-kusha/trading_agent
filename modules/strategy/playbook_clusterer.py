@@ -52,6 +52,7 @@ class PlaybookClusterer(Module, AnalysisMixin, StateManagementMixin, TradingMixi
             **kwargs
         )
         super().__init__(enhanced_config)
+        self._use_simple_clustering = not SKLEARN_AVAILABLE
         
         # Initialize mixins
         self._initialize_analysis_state()
