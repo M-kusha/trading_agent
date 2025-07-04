@@ -17,7 +17,7 @@ from typing import Dict, Any, List, Optional
 
 # InfoBus infrastructure
 from modules.utils.info_bus import InfoBus, InfoBusBuilder, create_info_bus
-from modules.utils.audit_utils import RotatingLogger, AuditTracker
+from modules.utils.audit_utils import RotatingLogger, AuditTracker, format_operator_message
 from modules.core.core import ModuleConfig
 
 # Enhanced shared utilities with InfoBus
@@ -281,6 +281,22 @@ def _initialize_modules(self):
     self.bias_auditor = BiasAuditor(config=module_config)
     self.thesis_engine = ThesisEvolutionEngine(config=module_config)
     
+    # FIXED: Initialize MetaRL controller early (was missing)
+    # Using correct parameter names from actual constructor
+    self.meta_rl = MetaRLController(
+        obs_size=100,  # Will be updated after pipeline creation
+        act_size=action_dim,
+        method="ppo-lag",
+        device="cpu",
+        debug=self.config.debug,
+        profit_target=150.0,
+        training_episodes=1000,
+        validation_episodes=100
+    )
+    
+    # FIXED: Initialize trade auditor (was referenced but not created)
+    self.trade_auditor = TradeExplanationAuditor(config=module_config)
+    
     # Trading mode and monitoring
     self.mode_manager = TradingModeManager(initial_mode="safe", window=50)
     self.active_monitor = ActiveTradeMonitor(config=module_config)
@@ -308,20 +324,53 @@ def _initialize_modules(self):
         self.role_coach = None
         self.opponent_sim = None
     
-    self.logger.info("Enhanced modules initialized with InfoBus integration")
+    # FIXED: Initialize voting system components with CORRECT sizes
+    # These must match your actual committee size (8 members)
+    
+    committee_size = 8  # Your actual committee size
+    horizons = [1, 4, 8, 16, 24, 48, 96, 168]  # 8 horizons for 8 committee members
+    
+    # Initialize consensus detector with proper committee size
+    self.consensus = ConsensusDetector(committee_size)
+    
+    # FIXED: Initialize TimeHorizonAligner with 8 horizons to match 8 committee members
+    # This fixes the dimension mismatch error: "8 vs 4"
+    self.haligner = TimeHorizonAligner(
+        horizons=horizons,
+        adaptive_scaling=True,
+        regime_awareness=True,
+        performance_feedback=True,
+        debug=self.config.debug
+    )
+    
+    # Initialize collusion auditor with CORRECT parameters
+    self.collusion = CollusionAuditor(
+        n_members=committee_size,
+        window=3,
+        threshold=0.9,
+        debug=self.config.debug
+    )
+    
+    self.logger.info(
+        format_operator_message(
+            "✅", "MODULES_INITIALIZED",
+            details=f"All modules with Committee: {committee_size}, Horizons: {len(horizons)}",
+            context="system_startup"
+        )
+    )
 
 
 def _initialize_arbiter(self):
-    """Enhanced strategy arbiter initialization with InfoBus integration"""
+    """Enhanced strategy arbiter initialization with InfoBus integration - FIXED"""
     
     # Create expert wrappers first
     self.theme_expert = ThemeExpert(self.theme_detector, self)
     self.season_expert = SeasonalityRiskExpert(self.time_risk_scaler, self)
-    self.meta_rl_expert = MetaRLExpert(self.meta_rl, self)  # Will be updated later
+    self.meta_rl_expert = MetaRLExpert(self.meta_rl, self)  # Now properly initialized
     self.veto_expert = TradeMonitorVetoExpert(self.active_monitor, self)
     self.regime_expert = RegimeBiasExpert(self.fractal_confirm, self)
     
-    # Create arbiter members list
+    # Create arbiter members list (YOUR ACTUAL 8 MEMBERS)
     arbiter_members = [
         self.liquidity_layer,      # Base module
         self.position_manager,     # Core decision maker
@@ -333,7 +382,7 @@ def _initialize_arbiter(self):
         self.risk_controller,      # Risk management
     ]
     
-    # Balanced initial weights
+    # Balanced initial weights (YOUR ACTUAL WEIGHTS)
     init_weights = [
         0.15,  # liquidity_layer
         0.20,  # position_manager (higher weight)
@@ -344,6 +393,13 @@ def _initialize_arbiter(self):
         0.10,  # regime_expert
         0.05,  # risk_controller
     ]
+    
+    # Verify alignment (CRITICAL FIX)
+    if len(init_weights) != len(arbiter_members):
+        raise ValueError(f"Weight count {len(init_weights)} != member count {len(arbiter_members)}")
+    
+    if len(arbiter_members) != len(self.haligner.horizons):
+        raise ValueError(f"Committee size {len(arbiter_members)} != horizon count {len(self.haligner.horizons)}")
     
     # Enhanced strategy arbiter with InfoBus
     module_config = ModuleConfig(
@@ -364,7 +420,14 @@ def _initialize_arbiter(self):
     # Update committee reference
     self.committee = arbiter_members
     
-    self.logger.info(f"Enhanced arbiter initialized with {len(arbiter_members)} InfoBus-integrated members")
+    self.logger.info(
+        format_operator_message(
+            "✅", "ARBITER_INITIALIZED",
+            details=f"{len(arbiter_members)} members with {len(self.haligner.horizons)} horizons",
+            result="Dimension alignment verified",
+            context="system_startup"
+        )
+    )
 
 
 def _initialize_dependent_modules(self):
@@ -393,51 +456,89 @@ def _initialize_dependent_modules(self):
 
 
 def _create_pipeline(self):
-    """Create enhanced trading pipeline with InfoBus integration"""
+    """Create enhanced trading pipeline with InfoBus integration - FIXED"""
     
-    core_modules = [
-        self.feature_engine, self.compliance, self.risk_system,
-        self.theme_detector, self.time_risk_scaler, self.liquidity_layer,
-        self.strategy_intros, self.curriculum_planner, self.memory_budget,
-        self.bias_auditor, self.opp_enhancer, self.thesis_engine,
-        self.regime_matrix, self.trade_thesis,
-        self.mode_manager, self.active_monitor, self.corr_controller,
-        self.dd_rescue, self.exec_monitor, self.anomaly_detector,
-        self.position_manager, self.fractal_confirm,
-        self.trade_auditor,
-        self.playbook_memory, self.meta_agent,
-        self.mistake_memory, self.memory_compressor, self.replay_analyzer,
-        self.playbook_clusterer, self.long_term_memory,
-    ]
+    try:
+        core_modules = [
+            self.feature_engine, self.compliance, self.risk_system,
+            self.theme_detector, self.time_risk_scaler, self.liquidity_layer,
+            self.strategy_intros, self.curriculum_planner, self.memory_budget,
+            self.bias_auditor, self.opp_enhancer, self.thesis_engine,
+            self.regime_matrix, self.trade_thesis,
+            self.mode_manager, self.active_monitor, self.corr_controller,
+            self.dd_rescue, self.exec_monitor, self.anomaly_detector,
+            self.position_manager, self.fractal_confirm,
+            self.trade_auditor,  # Now properly initialized
+            self.playbook_memory, self.meta_agent,
+            self.mistake_memory, self.memory_compressor, self.replay_analyzer,
+            self.playbook_clusterer, self.long_term_memory,
+        ]
 
-    # Add simulation modules based on mode
-    if self.config.live_mode:
-        # Add dummy modules in live mode to match training pipeline
-        core_modules.append(DummyModule())
-    else:
-        # Add actual modules in backtest
-        if self.shadow_sim: 
-            core_modules.append(self.shadow_sim)
-        if self.role_coach: 
-            core_modules.append(self.role_coach)
-        if self.opponent_sim: 
-            core_modules.append(self.opponent_sim)
+        # Add simulation modules based on mode
+        if self.config.live_mode:
+            # Add dummy modules in live mode to match training pipeline
+            core_modules.append(DummyModule())
+        else:
+            # Add actual modules in backtest
+            if self.shadow_sim: 
+                core_modules.append(self.shadow_sim)
+            if self.role_coach: 
+                core_modules.append(self.role_coach)
+            if self.opponent_sim: 
+                core_modules.append(self.opponent_sim)
 
-    # Add explainer if it's not a dummy
-    if not isinstance(self.explainer, DummyExplanationGenerator):
-        core_modules.append(self.explainer)
+        # Add explainer if it's not a dummy
+        if not isinstance(self.explainer, DummyExplanationGenerator):
+            core_modules.append(self.explainer)
 
-    # Filter out None modules
-    active_modules = [m for m in core_modules if m is not None]
-    
-    # Create enhanced pipeline with InfoBus support
-    pipeline_config = {
-        'info_bus_enabled': self.config.info_bus_enabled,
-        'debug': self.config.debug
-    }
-    self.pipeline = TradingPipeline(active_modules, config=pipeline_config)
-    
-    self.logger.info(f"Enhanced pipeline created with {len(active_modules)} InfoBus-integrated modules")
+        # Filter out None modules
+        active_modules = [m for m in core_modules if m is not None]
+        
+        if len(active_modules) == 0:
+            raise ValueError("No active modules found for pipeline")
+        
+        # Create enhanced pipeline with InfoBus support
+        pipeline_config = {
+            'info_bus_enabled': self.config.info_bus_enabled,
+            'debug': self.config.debug
+        }
+        
+        self.pipeline = TradingPipeline(active_modules, config=pipeline_config)
+        
+        # Verify pipeline was created successfully
+        if self.pipeline is None:
+            raise ValueError("Pipeline creation failed")
+        
+        # Test pipeline with dummy data
+        dummy_info_bus = create_info_bus(self, step=0)
+        test_obs = self.pipeline.step(dummy_info_bus)
+        
+        if not isinstance(test_obs, np.ndarray):
+            raise ValueError(f"Pipeline test failed: returned {type(test_obs)}")
+        
+        # FIXED: Update MetaRL controller with correct observation dimension
+        if hasattr(self, 'meta_rl') and test_obs.size > 0:
+            self.meta_rl.obs_size = test_obs.size
+            self.logger.info(f"Updated MetaRL obs_size to {test_obs.size}")
+        
+        self.logger.info(
+            format_operator_message(
+                "✅", "PIPELINE_CREATED",
+                details=f"{len(active_modules)} modules integrated",
+                result=f"Test observation: {test_obs.shape}",
+                context="system_startup"
+            )
+        )
+        
+    except Exception as e:
+        self.logger.error(
+            format_operator_message(
+                "💥", "PIPELINE_CREATION_FAILED",
+                details=str(e),
+                context="system_startup"
+            )
+        )
+        raise
 
 
 def _get_stable_observation_space(self) -> spaces.Box:
@@ -467,3 +568,56 @@ def _get_stable_observation_space(self) -> spaces.Box:
 def _create_dummy_input(self) -> InfoBus:
     """Create dummy InfoBus for initialization"""
     return create_info_bus(self, step=0)
+
+
+def validate_architecture_alignment(self):
+    """ADDED: Validate that all components are properly aligned"""
+    
+    issues = []
+    
+    # Check committee size
+    committee_size = len(self.committee) if hasattr(self, 'committee') else 0
+    
+    # Check consensus detector size
+    consensus_size = getattr(self.consensus, 'size', 0) if hasattr(self, 'consensus') else 0
+    
+    # Check horizon aligner size  
+    horizon_count = len(self.haligner.horizons) if hasattr(self, 'haligner') else 0
+    
+    # Validate alignment
+    if committee_size != consensus_size:
+        issues.append(f"Committee size ({committee_size}) != Consensus size ({consensus_size})")
+    
+    if committee_size != horizon_count:
+        issues.append(f"Committee size ({committee_size}) != Horizon count ({horizon_count})")
+    
+    # Check required components exist
+    required_components = [
+        'theme_expert', 'season_expert', 'meta_rl_expert', 
+        'veto_expert', 'regime_expert', 'meta_rl', 'trade_auditor'
+    ]
+    
+    missing_components = [comp for comp in required_components if not hasattr(self, comp)]
+    if missing_components:
+        issues.append(f"Missing components: {missing_components}")
+    
+    # Log validation results
+    if issues:
+        for issue in issues:
+            self.logger.error(
+                format_operator_message(
+                    "⚠️", "ARCHITECTURE_MISMATCH",
+                    details=issue,
+                    context="validation"
+                )
+            )
+        return False
+    else:
+        self.logger.info(
+            format_operator_message(
+                "✅", "ARCHITECTURE_VALIDATED",
+                details=f"Committee: {committee_size}, Consensus: {consensus_size}, Horizons: {horizon_count}",
+                context="validation"
+            )
+        )
+        return True

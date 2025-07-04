@@ -41,9 +41,8 @@ def _sanitize_observation(self, obs: np.ndarray) -> np.ndarray:
     return obs
 
 
-@profile_method
 def _get_full_observation(self, info_bus: InfoBus) -> np.ndarray:
-    """Enhanced observation building with InfoBus pipeline integration"""
+    """Enhanced observation building with InfoBus pipeline integration - FIXED"""
     
     # Create cache key based on step and InfoBus content signature
     step = info_bus.get('step_idx', self.market_state.current_step)
@@ -52,25 +51,38 @@ def _get_full_observation(self, info_bus: InfoBus) -> np.ndarray:
     if cache_key in self._obs_cache:
         return self._obs_cache[cache_key]
 
-    # Validate InfoBus quality - FIXED VERSION
+    # Validate InfoBus quality
     if self.config.info_bus_validation:
-        from modules.utils.info_bus import safe_quality_check
-        quality_check = safe_quality_check(info_bus)
-        
-        if not quality_check['is_valid']:
+        quality = validate_info_bus(info_bus)
+        if not quality.is_valid:
             self.logger.warning(
                 format_operator_message(
                     "⚠️", "INFOBUS_QUALITY_ISSUES",
-                    details=f"Issues: {quality_check['issue_count']}, Score: {quality_check['score']:.1f}%",
+                    details=f"Issues: {len(quality.issues)}, Score: {quality.quality_score:.1%}",
                     context="data_validation"
                 )
             )
 
     try:
-        # Process through enhanced pipeline
-        obs = self.pipeline_processor.step(info_bus)
+        # FIX: Ensure pipeline exists and call the correct method
+        if not hasattr(self, 'pipeline') or self.pipeline is None:
+            self.logger.error(
+                format_operator_message(
+                    "💥", "PIPELINE_MISSING",
+                    details="Pipeline not initialized, creating fallback",
+                    context="error_recovery"
+                )
+            )
+            return self._get_fallback_observation()
+        
+        # FIX: Call pipeline.step() not pipeline_processor
+        obs = self.pipeline.step(info_bus)
         
         # Sanity check right after pipeline
+        if not isinstance(obs, np.ndarray):
+            self.logger.error(f"Pipeline returned {type(obs)}, expected ndarray")
+            return self._get_fallback_observation()
+            
         if not np.all(np.isfinite(obs)):
             self.logger.error(
                 format_operator_message(
@@ -79,9 +91,6 @@ def _get_full_observation(self, info_bus: InfoBus) -> np.ndarray:
                     context="data_integrity"
                 )
             )
-            # Log InfoBus keys for debugging
-            self.logger.error(f"InfoBus keys: {list(info_bus.keys())}")
-            
             # Emergency handling - replace with zeros
             obs = np.zeros_like(obs)
         
@@ -125,8 +134,7 @@ def _get_full_observation(self, info_bus: InfoBus) -> np.ndarray:
         )
         
         # Return safe fallback observation
-        fallback_size = getattr(self, 'observation_space', spaces.Box(low=0, high=1, shape=(366,))).shape[0]
-        return np.zeros(fallback_size, dtype=np.float32)
+        return self._get_fallback_observation()
 
 
 def _get_next_observation(

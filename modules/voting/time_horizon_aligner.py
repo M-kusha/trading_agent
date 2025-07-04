@@ -421,7 +421,7 @@ class TimeHorizonAligner(Module, AnalysisMixin, StateManagementMixin):
 
     def apply(self, weights: np.ndarray) -> np.ndarray:
         """
-        Enhanced time-based scaling to weights with comprehensive adjustments.
+        Enhanced time-based scaling to weights with comprehensive adjustments - FIXED
         
         Args:
             weights: Current voting weights to adjust
@@ -436,11 +436,43 @@ class TimeHorizonAligner(Module, AnalysisMixin, StateManagementMixin):
             # Validate inputs
             weights = np.asarray(weights, dtype=np.float32)
             
+            # FIX: Handle dimension mismatch gracefully
             if len(weights) != len(self.horizons):
                 self.log_operator_warning(
-                    f"Weight/horizon dimension mismatch: {len(weights)} vs {len(self.horizons)}"
+                    f"Weight/horizon dimension mismatch: {len(weights)} vs {len(self.horizons)} - Auto-adjusting"
                 )
-                return weights
+                
+                # Strategy 1: If we have more weights than horizons, truncate weights
+                if len(weights) > len(self.horizons):
+                    # Take the first N weights that match our horizons
+                    weights = weights[:len(self.horizons)]
+                    self.log_operator_info(f"Truncated weights to {len(weights)} to match horizons")
+                    
+                # Strategy 2: If we have fewer weights than horizons, pad with defaults
+                elif len(weights) < len(self.horizons):
+                    # Pad with equal weights for missing horizons
+                    missing_count = len(self.horizons) - len(weights)
+                    default_weight = 1.0 / len(self.horizons)
+                    padding = np.full(missing_count, default_weight, dtype=np.float32)
+                    weights = np.concatenate([weights, padding])
+                    self.log_operator_info(f"Padded weights to {len(weights)} to match horizons")
+                    
+                # Strategy 3: If still mismatched, resize horizons (last resort)
+                if len(weights) != len(self.horizons):
+                    self.log_operator_warning(f"Resizing horizons to match weights: {len(weights)}")
+                    # Keep the most important horizons (first N)
+                    if len(weights) < len(self.horizons):
+                        self.horizons = self.horizons[:len(weights)]
+                    else:
+                        # Extend horizons with reasonable values
+                        additional_horizons = []
+                        last_horizon = self.horizons[-1] if len(self.horizons) > 0 else 24
+                        for i in range(len(weights) - len(self.horizons)):
+                            additional_horizons.append(last_horizon * (i + 2))
+                        self.horizons = np.concatenate([self.horizons, additional_horizons])
+                    
+                    # Update all related arrays to match new horizon count
+                    self._resize_internal_arrays()
             
             # Calculate base distance scaling
             self._calculate_base_distances()
@@ -490,7 +522,25 @@ class TimeHorizonAligner(Module, AnalysisMixin, StateManagementMixin):
             
         except Exception as e:
             self.log_operator_error(f"Horizon alignment failed: {e}")
-            return weights
+            # Return original weights as safe fallback
+            return np.asarray(weights, dtype=np.float32)
+        
+    def _resize_internal_arrays(self):
+        """Resize internal arrays to match new horizon count"""
+        horizon_count = len(self.horizons)
+        
+        # Resize all multiplier arrays
+        self.base_distances = np.ones(horizon_count, dtype=np.float32)
+        self.adaptive_multipliers = np.ones(horizon_count, dtype=np.float32)
+        self.performance_multipliers = np.ones(horizon_count, dtype=np.float32)
+        self.cyclical_adjustments = np.ones(horizon_count, dtype=np.float32)
+        
+        # Resize regime multipliers
+        for regime in self.regime_multipliers:
+            self.regime_multipliers[regime] = np.ones(horizon_count, dtype=np.float32)
+        
+        self.log_operator_info(f"Resized internal arrays for {horizon_count} horizons")
+
 
     def _calculate_base_distances(self) -> None:
         """Calculate base distance scaling from time horizons"""
