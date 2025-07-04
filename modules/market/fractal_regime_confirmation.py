@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
-# File: modules/market/fractal_regime_confirmation.py (FIXED VERSION)
-# 🔧 CRITICAL FIX: Market data access and regime detection
+# File: modules/market/fractal_regime_confirmation.py (COMPLETE FIXED)
+# 🔧 CRITICAL FIX: All missing methods added, full integration
 # ─────────────────────────────────────────────────────────────
 
 import numpy as np
@@ -28,7 +28,7 @@ class FractalRegimeConfirmation(Module, AnalysisMixin, VotingMixin):
         super().__init__(config)
 
         self.log_operator_info(
-            "FIXED Fractal regime confirmation initialized",
+            "COMPLETE Fractal regime confirmation initialized",
             window=self.window,
             regime_thresholds=(
                 f"noise→volatile: {self._noise_to_volatile}, "
@@ -82,6 +82,18 @@ class FractalRegimeConfirmation(Module, AnalysisMixin, VotingMixin):
         self._data_access_attempts = 0
         self._successful_data_extractions = 0
         
+        # 🔧 NEW: Add regime metrics tracking
+        self._regime_metrics = {
+            'transitions': 0,
+            'avg_strength': 0.0,
+            'stability_trend': deque(maxlen=20),
+            'performance_by_regime': {
+                'noise': {'count': 0, 'avg_strength': 0.0},
+                'volatile': {'count': 0, 'avg_strength': 0.0},
+                'trending': {'count': 0, 'avg_strength': 0.0}
+            }
+        }
+        
         self._forced_label: Optional[str] = None
         self._forced_strength: Optional[float] = None
 
@@ -106,6 +118,18 @@ class FractalRegimeConfirmation(Module, AnalysisMixin, VotingMixin):
         self._last_known_prices.clear()
         self._data_access_attempts = 0
         self._successful_data_extractions = 0
+        
+        # 🔧 NEW: Reset regime metrics
+        self._regime_metrics = {
+            'transitions': 0,
+            'avg_strength': 0.0,
+            'stability_trend': deque(maxlen=20),
+            'performance_by_regime': {
+                'noise': {'count': 0, 'avg_strength': 0.0},
+                'volatile': {'count': 0, 'avg_strength': 0.0},
+                'trending': {'count': 0, 'avg_strength': 0.0}
+            }
+        }
 
     def _step_impl(self, info_bus: Optional[InfoBus] = None, **kwargs) -> None:
         """🔧 FIXED: Enhanced step with comprehensive data extraction"""
@@ -133,6 +157,67 @@ class FractalRegimeConfirmation(Module, AnalysisMixin, VotingMixin):
                 self._update_regime_metrics(regime, strength)
             else:
                 self.log_operator_warning("No market data available for regime detection - all methods failed")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # 🔧 CRITICAL FIX: ADD MISSING _update_regime_metrics METHOD
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _update_regime_metrics(self, regime: str, strength: float):
+        """🔧 FIXED: Update regime tracking metrics - MISSING METHOD ADDED"""
+        
+        try:
+            # Track regime transitions
+            if hasattr(self, 'label') and self.label != regime:
+                self._regime_metrics['transitions'] += 1
+                
+                self.log_operator_info(
+                    f"FIXED Regime transition tracked: {self.label} → {regime}",
+                    transitions=self._regime_metrics['transitions'],
+                    new_strength=f"{strength:.3f}"
+                )
+            
+            # Update current state
+            self.label = regime
+            self.regime_strength = strength
+            
+            # Update regime-specific metrics
+            if regime in self._regime_metrics['performance_by_regime']:
+                regime_data = self._regime_metrics['performance_by_regime'][regime]
+                regime_data['count'] += 1
+                
+                # Update average strength
+                old_avg = regime_data['avg_strength']
+                count = regime_data['count']
+                regime_data['avg_strength'] = (old_avg * (count - 1) + strength) / count
+            
+            # Update overall average strength
+            if len(self._regime_history) > 0:
+                strengths = [r[1] for r in self._regime_history] + [strength]
+                self._regime_metrics['avg_strength'] = np.mean(strengths[-20:])  # Last 20 readings
+            else:
+                self._regime_metrics['avg_strength'] = strength
+            
+            # Update stability trend
+            self._regime_metrics['stability_trend'].append(self._regime_stability_score)
+            
+            # Update performance metrics
+            self._update_performance_metric('current_regime', regime)
+            self._update_performance_metric('regime_strength', strength)
+            self._update_performance_metric('regime_transitions', self._regime_metrics['transitions'])
+            self._update_performance_metric('avg_regime_strength', self._regime_metrics['avg_strength'])
+            
+            # Log comprehensive update
+            self.log_operator_info(
+                f"FIXED Regime metrics updated",
+                regime=regime,
+                strength=f"{strength:.3f}",
+                total_transitions=self._regime_metrics['transitions'],
+                avg_strength=f"{self._regime_metrics['avg_strength']:.3f}",
+                stability=f"{self._regime_stability_score:.1f}%"
+            )
+            
+        except Exception as e:
+            self.log_operator_error(f"FIXED Regime metrics update failed: {e}")
 
     def _extract_market_data_comprehensive(self, info_bus: Optional[InfoBus], kwargs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """🔧 FIXED: Comprehensive market data extraction with multiple fallbacks"""
@@ -590,7 +675,7 @@ class FractalRegimeConfirmation(Module, AnalysisMixin, VotingMixin):
                 
             return float(hurst) if np.isfinite(hurst) else 0.5
             
-        except Exception:
+        except:
             return 0.5
 
     @staticmethod
@@ -631,7 +716,7 @@ class FractalRegimeConfirmation(Module, AnalysisMixin, VotingMixin):
             
             return float(ratio) if np.isfinite(ratio) else 1.0
             
-        except Exception:
+        except:
             return 1.0
 
     @staticmethod
@@ -673,7 +758,7 @@ class FractalRegimeConfirmation(Module, AnalysisMixin, VotingMixin):
             
             return float(energy_ratio) if np.isfinite(energy_ratio) else 0.0
             
-        except Exception:
+        except:
             return 0.0
 
     def _integrate_theme_detector(self, theme_detector, data_dict: Dict, current_step: int) -> float:
@@ -736,7 +821,6 @@ class FractalRegimeConfirmation(Module, AnalysisMixin, VotingMixin):
         
         # Validate strength
         strength = np.clip(strength, 0.0, 2.0)  # Allow some headroom
-        self.regime_strength = strength
         
         # Enhanced state machine with hysteresis
         old_label = self.label
@@ -745,13 +829,12 @@ class FractalRegimeConfirmation(Module, AnalysisMixin, VotingMixin):
         # Log regime changes
         if new_label != old_label:
             self._log_regime_change(old_label, new_label, strength)
-            self.label = new_label
         
         # Track regime history and stability
-        self._regime_history.append((self.label, strength, self._trend_direction))
+        self._regime_history.append((new_label, strength, self._trend_direction))
         self._update_regime_stability()
         
-        return self.label, strength
+        return new_label, strength
 
     def _determine_regime_with_hysteresis(self, old_label: str, strength: float) -> str:
         """Enhanced regime determination with stability checks"""
@@ -820,7 +903,9 @@ class FractalRegimeConfirmation(Module, AnalysisMixin, VotingMixin):
             data_success_rate=f"{success_rate:.1%}"
         )
 
-    # ... (rest of the methods remain the same as in the original code) ...
+    # ═══════════════════════════════════════════════════════════════════
+    # BACKWARD COMPATIBILITY AND EXISTING METHODS
+    # ═══════════════════════════════════════════════════════════════════
     
     def step(self, data_dict=None, current_step=None, theme_detector=None, **kwargs) -> Tuple[str, float]:
         """Backward compatibility wrapper"""
@@ -835,52 +920,13 @@ class FractalRegimeConfirmation(Module, AnalysisMixin, VotingMixin):
         self._step_impl(None, **kwargs)
         return self.label, self.regime_strength
 
-    def get_regime_analysis_report(self) -> str:
-        """Generate enhanced operator-friendly regime analysis report"""
-        
-        regime_distribution = {}
-        if len(self._regime_history) >= 10:
-            recent_regimes = [r[0] for r in list(self._regime_history)[-10:]]
-            for regime in ["noise", "volatile", "trending"]:
-                regime_distribution[regime] = recent_regimes.count(regime) / len(recent_regimes)
-        
-        success_rate = self._successful_data_extractions / max(self._data_access_attempts, 1)
-        
-        return f"""
-📈 FIXED FRACTAL REGIME ANALYSIS
-═══════════════════════════════════════
-🎯 Current Regime: {self.label.upper()} (Strength: {self.regime_strength:.3f})
-📊 Trend Direction: {self._trend_direction:.3f} ({'📈' if self._trend_direction > 0.1 else '📉' if self._trend_direction < -0.1 else '➡️'})
-⚖️ Stability Score: {self._regime_stability_score:.1f}/100
-
-🔍 FRACTAL METRICS
-• Hurst Coefficient: {self.coeff_h:.2f}
-• Variance Ratio Coeff: {self.coeff_vr:.2f}  
-• Wavelet Energy Coeff: {self.coeff_we:.2f}
-• Buffer Size: {len(self._buf)}/{int(self.window * 0.75)}
-
-📊 RECENT REGIME DISTRIBUTION (Last 10 steps)
-• Noise: {regime_distribution.get('noise', 0):.1%}
-• Volatile: {regime_distribution.get('volatile', 0):.1%}  
-• Trending: {regime_distribution.get('trending', 0):.1%}
-
-🎭 THEME INTEGRATION
-• Theme Confidence: {self._theme_integration_score:.3f}
-• Regime Transitions: {len(self._regime_history)}
-• Metrics History: {len(self._fractal_metrics_history)} snapshots
-
-🔧 DATA ACCESS STATUS (FIXED)
-• Extraction Attempts: {self._data_access_attempts}
-• Successful Extractions: {self._successful_data_extractions}
-• Success Rate: {success_rate:.1%}
-• Last Known Prices: {len(self._last_known_prices)} instruments
-        """
-
-    # Keep all existing methods for compatibility...
     def set_action_dim(self, dim: int):
+        """Set action dimension for proposal"""
         self._action_dim = int(dim)
 
     def propose_action(self, obs: Any = None, info_bus: Optional[InfoBus] = None) -> np.ndarray:
+        """Enhanced action generation based on regime characteristics"""
+        
         if not hasattr(self, "_action_dim"):
             self._action_dim = 2
             
@@ -907,6 +953,8 @@ class FractalRegimeConfirmation(Module, AnalysisMixin, VotingMixin):
         return action
 
     def confidence(self, obs: Any = None, info_bus: Optional[InfoBus] = None) -> float:
+        """Enhanced confidence calculation with regime performance tracking"""
+        
         base_conf = float(self.regime_strength)
         
         if self.label == "trending":
@@ -925,4 +973,48 @@ class FractalRegimeConfirmation(Module, AnalysisMixin, VotingMixin):
         
         return float(np.clip(final_conf, 0.0, 1.0))
 
-    # ... (rest of methods stay the same) ...
+    def get_regime_analysis_report(self) -> str:
+        """Generate enhanced operator-friendly regime analysis report"""
+        
+        regime_distribution = {}
+        if len(self._regime_history) >= 10:
+            recent_regimes = [r[0] for r in list(self._regime_history)[-10:]]
+            for regime in ["noise", "volatile", "trending"]:
+                regime_distribution[regime] = recent_regimes.count(regime) / len(recent_regimes)
+        
+        success_rate = self._successful_data_extractions / max(self._data_access_attempts, 1)
+        
+        return f"""
+📈 COMPLETE FRACTAL REGIME ANALYSIS (FIXED)
+═══════════════════════════════════════════════════════════════
+🎯 Current Regime: {self.label.upper()} (Strength: {self.regime_strength:.3f})
+📊 Trend Direction: {self._trend_direction:.3f} ({'📈' if self._trend_direction > 0.1 else '📉' if self._trend_direction < -0.1 else '➡️'})
+⚖️ Stability Score: {self._regime_stability_score:.1f}/100
+
+🔍 FRACTAL METRICS
+• Hurst Coefficient: {self.coeff_h:.2f}
+• Variance Ratio Coeff: {self.coeff_vr:.2f}  
+• Wavelet Energy Coeff: {self.coeff_we:.2f}
+• Buffer Size: {len(self._buf)}/{int(self.window * 0.75)}
+
+📊 RECENT REGIME DISTRIBUTION (Last 10 steps)
+• Noise: {regime_distribution.get('noise', 0):.1%}
+• Volatile: {regime_distribution.get('volatile', 0):.1%}  
+• Trending: {regime_distribution.get('trending', 0):.1%}
+
+🎭 THEME INTEGRATION
+• Theme Confidence: {self._theme_integration_score:.3f}
+• Regime Transitions: {self._regime_metrics['transitions']}
+• Metrics History: {len(self._fractal_metrics_history)} snapshots
+
+🔧 DATA ACCESS STATUS (FIXED)
+• Extraction Attempts: {self._data_access_attempts}
+• Successful Extractions: {self._successful_data_extractions}
+• Success Rate: {success_rate:.1%}
+• Last Known Prices: {len(self._last_known_prices)} instruments
+
+🧠 REGIME METRICS (NEW)
+• Total Transitions: {self._regime_metrics['transitions']}
+• Average Strength: {self._regime_metrics['avg_strength']:.3f}
+• Stability Trend: {len(self._regime_metrics['stability_trend'])} readings
+        """

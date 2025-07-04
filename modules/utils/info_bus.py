@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
-# File: modules/utils/info_bus.py
-# COMPLETE FIXED InfoBus with ALL utilities and fixes applied
+# File: modules/utils/info_bus.py (LEGACY COMPATIBILITY FIXED)
+# 🔧 CRITICAL FIX: Added legacy quality_score attribute support
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import logging
 
 # ═══════════════════════════════════════════════════════════════════
-# CORE TYPE DEFINITIONS
+# CORE TYPE DEFINITIONS (unchanged)
 # ═══════════════════════════════════════════════════════════════════
 
 class PositionInfo(TypedDict):
@@ -118,12 +118,12 @@ class InfoBus(TypedDict, total=False):
     module_data: Dict[str, Any]
 
 # ═══════════════════════════════════════════════════════════════════
-# 🔧 FIXED InfoBus Quality System
+# 🔧 FIXED InfoBus Quality System with Legacy Support
 # ═══════════════════════════════════════════════════════════════════
 
 @dataclass
 class InfoBusQuality:
-    """FIXED InfoBus data quality assessment"""
+    """FIXED InfoBus data quality assessment with legacy support"""
     score: float  # 0-100
     missing_fields: List[str]
     invalid_values: List[str]
@@ -146,6 +146,17 @@ class InfoBusQuality:
     def total_issues(self) -> int:
         """Total issues including warnings"""
         return len(self.issues)
+    
+    # 🔧 CRITICAL FIX: Add legacy quality_score attribute
+    @property
+    def quality_score(self) -> float:
+        """Legacy compatibility - maps to score attribute"""
+        return self.score
+    
+    @quality_score.setter
+    def quality_score(self, value: float):
+        """Legacy compatibility - maps to score attribute"""
+        self.score = float(value)
 
 def get_quality_issue_count(quality: InfoBusQuality) -> int:
     """Get total issue count from InfoBusQuality object"""
@@ -169,6 +180,7 @@ def safe_quality_check(info_bus: InfoBus) -> Dict[str, Any]:
         quality = validate_info_bus(info_bus)
         return {
             'score': quality.score,
+            'quality_score': quality.quality_score,  # Legacy support
             'is_valid': quality.is_valid,
             'completeness': quality.completeness,
             'missing_fields': len(quality.missing_fields),
@@ -176,12 +188,13 @@ def safe_quality_check(info_bus: InfoBus) -> Dict[str, Any]:
             'warnings': len(quality.warnings),
             'issue_count': quality.issue_count,
             'total_issues': quality.total_issues,
-            'issues': quality.issues,  # 🔧 FIX: Include issues list
+            'issues': quality.issues,
             'summary': get_quality_summary(quality)
         }
     except Exception as e:
         return {
             'score': 0.0,
+            'quality_score': 0.0,  # Legacy support
             'is_valid': False,
             'completeness': 0.0,
             'missing_fields': 0,
@@ -304,7 +317,7 @@ class InfoBusValidator:
         )
 
 # ═══════════════════════════════════════════════════════════════════
-# 🔧 FIXED InfoBus Extractor with Risk Score Fix
+# InfoBus Extractor with Fixed Risk Score (0-1 range)
 # ═══════════════════════════════════════════════════════════════════
 
 class InfoBusExtractor:
@@ -830,35 +843,58 @@ def apply_info_bus_middleware(info_bus: InfoBus,
     return info_bus
 
 # ═══════════════════════════════════════════════════════════════════
+# 🔧 LEGACY COMPATIBILITY FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════
+
+def create_legacy_quality_object(score: float = 100.0, issues: List[str] = None) -> InfoBusQuality:
+    """Create InfoBusQuality object with legacy compatibility"""
+    if issues is None:
+        issues = []
+    
+    # Split issues into categories for better validation
+    missing_fields = [i for i in issues if 'missing' in i.lower()]
+    invalid_values = [i for i in issues if 'invalid' in i.lower() and 'missing' not in i.lower()]
+    warnings = [i for i in issues if i not in missing_fields and i not in invalid_values]
+    
+    return InfoBusQuality(
+        score=score,
+        missing_fields=missing_fields,
+        invalid_values=invalid_values,
+        warnings=warnings,
+        is_valid=score >= 70 and len(missing_fields) == 0,
+        completeness=max(0, 100 - len(issues) * 10)
+    )
+
+# ═══════════════════════════════════════════════════════════════════
 # 🔧 CRITICAL FIXES SUMMARY
 # ═══════════════════════════════════════════════════════════════════
 
 """
 🚨 CRITICAL FIXES APPLIED:
 
-1. ✅ FIXED InfoBusQuality missing 'issues' property
+1. ✅ FIXED InfoBusQuality missing 'quality_score' property (LEGACY SUPPORT)
+   - Added @property quality_score() -> float
+   - Added @quality_score.setter for backwards compatibility
+   - Updated safe_quality_check() to include legacy field
+
+2. ✅ FIXED InfoBusQuality missing 'issues' property
    - Added @property issues() -> List[str]
    - Added issue_count and total_issues properties
    - Fixed all quality check functions
 
-2. ✅ FIXED Risk Score calculation (0-1 range)
+3. ✅ FIXED Risk Score calculation (0-1 range)
    - Changed get_risk_score() to return 0-1 instead of 0-100
    - Updated risk context extraction
    - Maintains backward compatibility
 
-3. ✅ COMPLETE Implementation restored
+4. ✅ COMPLETE Implementation maintained
    - All InfoBusExtractor methods
    - All InfoBusUpdater methods  
    - Complete InfoBusBuilder
    - All utility functions
    - Processing patterns
 
-4. ✅ Enhanced Error Handling
-   - Safe numeric extraction
-   - Graceful fallbacks
-   - Comprehensive validation
-
-🎯 INTEGRATION STATUS: COMPLETE
+🎯 INTEGRATION STATUS: COMPLETE WITH LEGACY SUPPORT
+Legacy code calling info_bus_quality.quality_score will now work properly.
 All modules can now use InfoBus without attribute errors or validation issues.
-Risk scores are properly calculated in 0-1 range as expected by risk management.
 """
