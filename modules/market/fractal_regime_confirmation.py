@@ -13,7 +13,7 @@ import random
 
 from modules.core.core import Module, ModuleConfig
 from modules.core.mixins import AnalysisMixin, VotingMixin
-from modules.utils.info_bus import InfoBus, InfoBusExtractor
+from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater
 
 
 class FractalRegimeConfirmation(Module, AnalysisMixin, VotingMixin):
@@ -157,6 +157,14 @@ class FractalRegimeConfirmation(Module, AnalysisMixin, VotingMixin):
                 self._update_regime_metrics(regime, strength)
             else:
                 self.log_operator_warning("No market data available for regime detection - all methods failed")
+        if info_bus:
+            InfoBusUpdater.add_module_data(info_bus, 'fractal_regime_confirmation', {
+                'regime': self.label,
+                'strength': self.regime_strength,
+                'trend_direction': self._trend_direction,
+                'transitions': self._regime_metrics.get('transitions', 0),
+                'stability': self._regime_stability_score
+            })
 
     # ═══════════════════════════════════════════════════════════════════
     # 🔧 CRITICAL FIX: ADD MISSING _update_regime_metrics METHOD

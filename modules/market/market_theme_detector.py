@@ -16,7 +16,7 @@ import datetime
 
 from modules.core.core import Module, ModuleConfig
 from modules.core.mixins import AnalysisMixin, VotingMixin
-from modules.utils.info_bus import InfoBus, InfoBusExtractor
+from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater
 
 
 class MarketThemeDetector(Module, AnalysisMixin, VotingMixin):
@@ -193,6 +193,15 @@ class MarketThemeDetector(Module, AnalysisMixin, VotingMixin):
         market_data = self._extract_market_data_comprehensive(info_bus, kwargs)
         self._process_theme_detection(market_data)
         self._update_macro_context(info_bus)
+        if info_bus:
+            theme_strength = float(self._theme_vec.max()) if len(self._theme_vec) > 0 else 0.3
+            InfoBusUpdater.add_module_data(info_bus, 'market_theme_detector', {
+                'current_theme': self._current_theme,
+                'theme_strength': theme_strength,
+                'theme_vector': self._theme_vec.tolist(),
+                'transitions': self._theme_transitions,
+                'prediction_confidence': self._prediction_confidence
+            })
 
     def _extract_market_data_comprehensive(self, info_bus: Optional[InfoBus], kwargs: Dict[str, Any]) -> Dict[str, Any]:
         """🔧 FIXED: Comprehensive market data extraction with proper priority"""
