@@ -91,6 +91,8 @@ class DrawdownRescue(Module, RiskMixin, TradingMixin, StateManagementMixin):
         self._rescue_interventions = 0
         self._successful_recoveries = 0
         self._false_alarms = 0
+        self._analysis_history = deque(maxlen=200)
+        self._risk_metrics_history = deque(maxlen=100)
         
         # Audit system
         self.audit_manager = AuditTracker("DrawdownRescue")
@@ -105,6 +107,28 @@ class DrawdownRescue(Module, RiskMixin, TradingMixin, StateManagementMixin):
             adaptive_rescue=adaptive_rescue,
             enabled=enabled
         )
+
+
+    def _update_risk_metrics(self, metrics: Dict[str, Any]) -> None:
+        """Update risk metrics tracking"""
+        try:
+            if not hasattr(self, '_risk_metrics_history'):
+                self._risk_metrics_history = deque(maxlen=100)
+            
+            # Add timestamp
+            metrics['timestamp'] = datetime.datetime.now().isoformat()
+            metrics['step'] = self.step_count
+            
+            self._risk_metrics_history.append(metrics)
+            
+            # Update current metrics for external access
+            for key, value in metrics.items():
+                if hasattr(self, f'_current_{key}'):
+                    setattr(self, f'_current_{key}', value)
+                    
+        except Exception as e:
+            self.log_operator_warning(f"Risk metrics update failed: {e}")
+
 
     def reset(self) -> None:
         """Enhanced reset with comprehensive state cleanup"""
@@ -734,6 +758,43 @@ class DrawdownRescue(Module, RiskMixin, TradingMixin, StateManagementMixin):
         if self._rescue_interventions > 0:
             effectiveness = self._successful_recoveries / self._rescue_interventions
             self._update_performance_metric('rescue_effectiveness', effectiveness)
+
+    def _determine_current_session(self, info_bus: Optional[InfoBus] = None) -> str:
+                """Determine current trading session with enhanced detection"""
+                
+                try:
+                    # Method 1: Try InfoBus session data
+                    if info_bus:
+                        session = info_bus.get('session')
+                        if session and session != 'unknown':
+                            return session
+                        
+                        # Method 2: Try market context
+                        market_context = info_bus.get('market_context', {})
+                        session = market_context.get('session')
+                        if session and session != 'unknown':
+                            return session
+                    
+                    # Method 3: Determine from current time (UTC)
+                    import datetime
+                    import pytz
+                    
+                    now_utc = datetime.datetime.now(pytz.UTC)
+                    hour_utc = now_utc.hour
+                    
+                    # Trading session detection based on UTC hours
+                    if 22 <= hour_utc or hour_utc < 6:  # 22:00-06:00 UTC
+                        return 'asian'
+                    elif 6 <= hour_utc < 14:  # 06:00-14:00 UTC  
+                        return 'european'
+                    elif 14 <= hour_utc < 22:  # 14:00-22:00 UTC
+                        return 'american'
+                    else:
+                        return 'rollover'
+                        
+                except Exception as e:
+                    self.log_operator_warning(f"Session detection failed: {e}")
+                    return 'unknown'
 
     def get_observation_components(self) -> np.ndarray:
         """Enhanced observation components for model integration"""

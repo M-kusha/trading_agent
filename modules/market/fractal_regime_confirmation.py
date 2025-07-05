@@ -533,6 +533,37 @@ class FractalRegimeConfirmation(Module, AnalysisMixin, VotingMixin):
             self.log_operator_warning("Could not process market data format, using current state")
             return self.label, self.regime_strength
 
+    def _get_observation_impl(self) -> np.ndarray:
+        """Implementation of observation extraction for module system compatibility"""
+        return self.get_observation_components()
+
+        
+    def get_observation_components(self) -> np.ndarray:
+        """
+        Returns the observation vector for this module.
+        Should always return a 1D np.ndarray of floats, even if just zeros as fallback.
+        """
+        try:
+            # Example: encode regime as one-hot, plus regime strength and trend direction
+            regime_encoding = {
+                "noise": [1, 0, 0],
+                "volatile": [0, 1, 0],
+                "trending": [0, 0, 1],
+            }
+            label_vec = regime_encoding.get(self.label, [0, 0, 0])
+            strength = float(self.regime_strength)
+            trend = float(self._trend_direction)
+            stability = float(self._regime_stability_score) / 100.0
+            # Add more metrics as you wish
+            obs = np.array(label_vec + [strength, trend, stability], dtype=np.float32)
+            if not np.all(np.isfinite(obs)):
+                obs = np.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
+            return obs
+        except Exception as e:
+            self.log_operator_error(f"get_observation_components failed: {e}")
+            # Return safe fallback
+            return np.zeros(6, dtype=np.float32)
+
     def _calculate_trend_direction(self, ts: np.ndarray) -> float:
         """Enhanced trend direction calculation with validation"""
         
