@@ -1,0 +1,252 @@
+# ─────────────────────────────────────────────────────────────
+# File: config/risk_policy.yaml
+# 🚀 SmartInfoBus Risk Management Policy Configuration
+# ─────────────────────────────────────────────────────────────
+
+system:
+  name: "SmartInfoBus Risk Management"
+  version: "4.0.0"
+  description: "Comprehensive risk controls with plain English explanations"
+  
+risk_limits:
+  # Account-level limits
+  account:
+    max_drawdown_percent: 20.0      # Maximum allowed drawdown
+    daily_loss_limit_percent: 5.0   # Daily loss limit
+    max_leverage: 10.0              # Maximum leverage allowed
+    margin_call_level: 0.5          # Margin level for warning
+    stop_out_level: 0.2             # Automatic position closure
+    
+  # Position-level limits
+  position:
+    max_position_size_percent: 10.0  # Max % of account per position
+    max_positions_per_instrument: 3  # Concurrent positions per instrument
+    max_total_positions: 10          # Total open positions
+    min_position_size_lots: 0.01     # Minimum position size
+    max_position_size_lots: 10.0     # Maximum position size
+    
+  # Instrument-specific limits
+  instruments:
+    "XAU/USD":
+      max_position_lots: 5.0
+      max_daily_trades: 20
+      min_stop_distance_pips: 50
+      max_spread_pips: 5
+      volatility_multiplier: 1.5
+      
+    "EUR/USD":
+      max_position_lots: 10.0
+      max_daily_trades: 30
+      min_stop_distance_pips: 20
+      max_spread_pips: 3
+      volatility_multiplier: 1.0
+      
+  # Correlation limits
+  correlation:
+    max_correlated_exposure: 0.7     # Max exposure to correlated assets
+    correlation_threshold: 0.7       # Threshold for considering correlation
+    lookback_period_days: 30         # Period for correlation calculation
+    
+risk_checks:
+  # Pre-trade checks
+  pre_trade:
+    - check: "margin_available"
+      threshold: 0.2                 # Need 20% free margin
+      action: "reject"
+      message: "Insufficient margin for new position"
+      
+    - check: "drawdown_limit"
+      threshold: 0.15                # Warning at 15% drawdown
+      action: "warn"
+      message: "Approaching maximum drawdown limit"
+      
+    - check: "daily_loss"
+      threshold: 0.04                # Warning at 4% daily loss
+      action: "warn"
+      message: "Approaching daily loss limit"
+      
+    - check: "position_correlation"
+      threshold: 0.8
+      action: "warn"
+      message: "High correlation with existing positions"
+      
+    - check: "volatility_spike"
+      threshold: 3.0                 # 3x normal volatility
+      action: "reduce_size"
+      message: "High volatility - reducing position size"
+      
+  # During-trade monitoring
+  during_trade:
+    - check: "stop_loss_distance"
+      min_pips: 10
+      action: "adjust"
+      message: "Stop loss too close - adjusting"
+      
+    - check: "profit_protection"
+      trigger_profit_pips: 50
+      protection_percent: 50
+      action: "move_stop"
+      message: "Moving stop to protect profits"
+      
+    - check: "time_based_exit"
+      max_duration_hours: 72
+      action: "close"
+      message: "Position held too long - closing"
+      
+  # Post-trade analysis
+  post_trade:
+    - check: "loss_streak"
+      threshold: 5                   # 5 consecutive losses
+      action: "pause_trading"
+      duration_minutes: 60
+      message: "Loss streak detected - pausing trading"
+      
+    - check: "win_rate_drop"
+      threshold: 0.3                 # Win rate below 30%
+      lookback_trades: 20
+      action: "reduce_risk"
+      message: "Low win rate - reducing risk"
+      
+emergency_procedures:
+  # Circuit breakers
+  circuit_breakers:
+    - name: "flash_crash"
+      trigger: "price_move_percent"
+      threshold: 5.0                 # 5% move in 1 minute
+      action: "halt_all_trading"
+      duration_minutes: 30
+      
+    - name: "system_overload"
+      trigger: "latency_ms"
+      threshold: 1000               # 1 second latency
+      action: "reduce_complexity"
+      
+    - name: "cascade_failure"
+      trigger: "module_failures"
+      threshold: 3
+      action: "emergency_close_all"
+      
+  # Recovery procedures
+  recovery:
+    after_circuit_break:
+      - "verify_system_health"
+      - "check_market_conditions"
+      - "validate_data_integrity"
+      - "gradual_restart"
+      
+    after_emergency_close:
+      - "generate_incident_report"
+      - "analyze_root_cause"
+      - "implement_fixes"
+      - "supervised_restart"
+      
+risk_scoring:
+  # Risk score calculation weights
+  weights:
+    drawdown: 0.25
+    volatility: 0.20
+    correlation: 0.15
+    leverage: 0.15
+    win_rate: 0.15
+    time_of_day: 0.10
+    
+  # Risk levels
+  levels:
+    low:
+      range: [0.0, 0.3]
+      color: "green"
+      max_position_multiplier: 1.0
+      
+    medium:
+      range: [0.3, 0.6]
+      color: "yellow"
+      max_position_multiplier: 0.7
+      
+    high:
+      range: [0.6, 0.8]
+      color: "orange"
+      max_position_multiplier: 0.5
+      
+    critical:
+      range: [0.8, 1.0]
+      color: "red"
+      max_position_multiplier: 0.0
+      action: "no_new_trades"
+      
+reporting:
+  # Risk reporting configuration
+  real_time_metrics:
+    - "current_drawdown"
+    - "open_positions"
+    - "total_exposure"
+    - "margin_level"
+    - "daily_pnl"
+    - "risk_score"
+    
+  alerts:
+    channels:
+      - type: "console"
+        min_severity: "info"
+      - type: "log_file"
+        min_severity: "warning"
+      - type: "email"
+        min_severity: "critical"
+        recipients: ["risk@trading.com"]
+      - type: "sms"
+        min_severity: "emergency"
+        recipients: ["+1234567890"]
+        
+  reports:
+    daily_risk_report:
+      schedule: "17:00"
+      include:
+        - "daily_summary"
+        - "largest_positions"
+        - "risk_violations"
+        - "performance_metrics"
+        
+    weekly_risk_analysis:
+      schedule: "friday_16:00"
+      include:
+        - "weekly_performance"
+        - "risk_attribution"
+        - "correlation_analysis"
+        - "improvement_suggestions"
+        
+plain_english_messages:
+  # Templates for risk communications
+  position_rejected: |
+    Cannot open {instrument} position:
+    - Requested size: {requested_size} lots
+    - Current risk score: {risk_score}%
+    - Reason: {rejection_reason}
+    
+    Suggestion: {suggestion}
+    
+  risk_warning: |
+    ⚠️ RISK WARNING
+    
+    Current Situation:
+    - Risk Level: {risk_level}
+    - Main Concern: {primary_risk}
+    - Account Impact: {potential_impact}
+    
+    Recommended Action:
+    {recommended_action}
+    
+  emergency_action: |
+    🚨 EMERGENCY ACTION TAKEN
+    
+    What Happened:
+    {event_description}
+    
+    Action Taken:
+    {action_taken}
+    
+    Current Status:
+    - Trading: {trading_status}
+    - Open Positions: {position_count}
+    - Estimated Impact: ${estimated_impact}
+    
+    Next Steps:
+    {next_steps}

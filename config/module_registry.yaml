@@ -1,0 +1,368 @@
+# ─────────────────────────────────────────────────────────────
+# File: config/module_registry.yaml
+# 🚀 SmartInfoBus Module Registry and Configuration
+# ─────────────────────────────────────────────────────────────
+
+registry:
+  version: "4.0.0"
+  auto_discovery: true
+  validation_strict: true
+  
+# Module definitions with metadata
+modules:
+  # ═══════════════════════════════════════════════════════════
+  # MARKET ANALYSIS MODULES
+  # ═══════════════════════════════════════════════════════════
+  
+  MarketThemeDetector:
+    path: "modules.market.market_theme_detector"
+    category: "market"
+    provides:
+      - "market_themes"
+      - "theme_strength"
+      - "theme_transitions"
+    requires:
+      - "prices"
+      - "volumes"
+      - "market_sentiment"
+    configuration:
+      lookback_periods: [24, 96, 480]
+      min_theme_strength: 0.6
+      transition_smoothing: 0.3
+    hot_reload: true
+    explainable: true
+    timeout_ms: 120
+    
+  FractalRegimeConfirmation:
+    path: "modules.market.fractal_regime_confirmation"
+    category: "market"
+    provides:
+      - "regime_state"
+      - "regime_confidence"
+      - "fractal_patterns"
+    requires:
+      - "prices"
+      - "market_themes"
+    configuration:
+      fractal_dimensions: [4, 8, 16, 32]
+      min_confidence: 0.7
+    hot_reload: true
+    explainable: true
+    timeout_ms: 150
+    
+  LiquidityHeatmapLayer:
+    path: "modules.market.liquidity_heatmap_layer"
+    category: "market"
+    provides:
+      - "liquidity_map"
+      - "liquidity_zones"
+      - "execution_costs"
+    requires:
+      - "order_book"
+      - "spreads"
+      - "volumes"
+    configuration:
+      heatmap_resolution: 50
+      zone_threshold: 0.1
+    hot_reload: false
+    explainable: true
+    timeout_ms: 100
+    
+  # ═══════════════════════════════════════════════════════════
+  # STRATEGY MODULES
+  # ═══════════════════════════════════════════════════════════
+  
+  StrategyGenomePool:
+    path: "modules.strategy.strategy_genome_pool"
+    category: "strategy"
+    provides:
+      - "selected_genome"
+      - "genome_fitness"
+      - "strategy_parameters"
+    requires:
+      - "performance_metrics"
+      - "market_regime"
+      - "risk_score"
+    configuration:
+      pool_size: 100
+      mutation_rate: 0.1
+      crossover_rate: 0.3
+      elite_count: 10
+    hot_reload: true
+    explainable: true
+    timeout_ms: 200
+    priority: 10
+    
+  BiasAuditor:
+    path: "modules.strategy.bias_auditor"
+    category: "strategy"
+    provides:
+      - "bias_report"
+      - "bias_corrections"
+      - "fairness_metrics"
+    requires:
+      - "trading_history"
+      - "decision_log"
+      - "market_conditions"
+    configuration:
+      bias_types: ["confirmation", "recency", "anchoring", "overconfidence"]
+      detection_window: 100
+      correction_strength: 0.5
+    hot_reload: true
+    explainable: true
+    timeout_ms: 150
+    
+  ExplanationGenerator:
+    path: "modules.strategy.explanation_generator"
+    category: "strategy"
+    provides:
+      - "decision_explanation"
+      - "confidence_breakdown"
+      - "alternative_actions"
+    requires:
+      - "raw_decision"
+      - "market_context"
+      - "risk_assessment"
+    configuration:
+      explanation_depth: "detailed"
+      include_alternatives: true
+      max_alternatives: 3
+    hot_reload: true
+    explainable: true  # Meta!
+    timeout_ms: 100
+    
+  # ═══════════════════════════════════════════════════════════
+  # MEMORY MODULES
+  # ═══════════════════════════════════════════════════════════
+  
+  NeuralMemoryArchitect:
+    path: "modules.memory.neural_memory_architect"
+    category: "memory"
+    provides:
+      - "memory_embeddings"
+      - "pattern_recall"
+      - "context_similarity"
+    requires:
+      - "market_features"
+      - "trade_outcomes"
+      - "regime_history"
+    configuration:
+      embedding_dim: 128
+      memory_capacity: 10000
+      recall_threshold: 0.7
+      compression_rate: 0.1
+    hot_reload: false  # Neural weights
+    explainable: true
+    timeout_ms: 150
+    
+  PlaybookMemory:
+    path: "modules.memory.playbook_memory"
+    category: "memory"
+    provides:
+      - "relevant_playbooks"
+      - "playbook_confidence"
+      - "adaptation_suggestions"
+    requires:
+      - "market_situation"
+      - "strategy_request"
+      - "risk_constraints"
+    configuration:
+      max_playbooks: 1000
+      similarity_threshold: 0.8
+      adaptation_rate: 0.2
+    hot_reload: true
+    explainable: true
+    timeout_ms: 100
+    
+  # ═══════════════════════════════════════════════════════════
+  # RISK MODULES
+  # ═══════════════════════════════════════════════════════════
+  
+  ActiveTradeMonitor:
+    path: "modules.risk.active_trade_monitor"
+    category: "risk"
+    provides:
+      - "position_health"
+      - "exit_signals"
+      - "risk_adjustments"
+    requires:
+      - "open_positions"
+      - "market_prices"
+      - "volatility"
+    configuration:
+      check_frequency_ms: 1000
+      health_thresholds:
+        healthy: 0.8
+        warning: 0.5
+        critical: 0.2
+    hot_reload: false  # Critical
+    explainable: true
+    timeout_ms: 50
+    priority: 20
+    
+  DrawdownRescue:
+    path: "modules.risk.drawdown_rescue"
+    category: "risk"
+    provides:
+      - "rescue_actions"
+      - "recovery_plan"
+      - "position_adjustments"
+    requires:
+      - "current_drawdown"
+      - "position_details"
+      - "market_conditions"
+    configuration:
+      activation_threshold: 0.1  # 10% drawdown
+      max_rescue_attempts: 3
+      recovery_targets: [0.5, 0.7, 0.9]
+    hot_reload: false  # Critical
+    explainable: true
+    timeout_ms: 100
+    priority: 30
+    
+  # ═══════════════════════════════════════════════════════════
+  # VOTING MODULES
+  # ═══════════════════════════════════════════════════════════
+  
+  TimeHorizonAligner:
+    path: "modules.voting.time_horizon_aligner"
+    category: "voting"
+    provides:
+      - "aligned_signals"
+      - "timeframe_consensus"
+      - "horizon_confidence"
+    requires:
+      - "multi_timeframe_signals"
+      - "market_volatility"
+    configuration:
+      timeframes: [1, 4, 24, 96]  # Hours
+      alignment_method: "weighted_average"
+      min_agreement: 0.6
+    is_voting_member: true
+    hot_reload: true
+    explainable: true
+    timeout_ms: 100
+    
+  ConsensusDetector:
+    path: "modules.voting.consensus_detector"
+    category: "voting"
+    provides:
+      - "consensus_strength"
+      - "dissent_analysis"
+      - "confidence_distribution"
+    requires:
+      - "member_votes"
+      - "member_confidence"
+      - "historical_accuracy"
+    configuration:
+      min_consensus: 0.6
+      weight_by_performance: true
+      dissent_threshold: 0.3
+    is_voting_member: false  # Meta-voter
+    hot_reload: true
+    explainable: true
+    timeout_ms: 80
+    
+  # ═══════════════════════════════════════════════════════════
+  # META MODULES
+  # ═══════════════════════════════════════════════════════════
+  
+  MetaAgent:
+    path: "modules.meta.meta_agent"
+    category: "meta"
+    provides:
+      - "meta_strategy"
+      - "module_weights"
+      - "adaptation_signals"
+    requires:
+      - "module_performance"
+      - "market_regime"
+      - "system_health"
+    configuration:
+      adaptation_rate: 0.1
+      performance_window: 100
+      weight_bounds: [0.0, 2.0]
+    hot_reload: true
+    explainable: true
+    timeout_ms: 150
+    priority: 5
+    
+# Module categories and their characteristics
+categories:
+  market:
+    description: "Market analysis and feature extraction"
+    critical: false
+    can_disable: true
+    default_timeout_ms: 100
+    
+  strategy:
+    description: "Strategy selection and optimization"
+    critical: false
+    can_disable: false
+    default_timeout_ms: 150
+    
+  memory:
+    description: "Pattern recognition and historical learning"
+    critical: false
+    can_disable: true
+    default_timeout_ms: 120
+    
+  risk:
+    description: "Risk management and position monitoring"
+    critical: true
+    can_disable: false
+    default_timeout_ms: 80
+    
+  voting:
+    description: "Democratic decision making"
+    critical: false
+    can_disable: false
+    default_timeout_ms: 100
+    
+  meta:
+    description: "System optimization and adaptation"
+    critical: false
+    can_disable: true
+    default_timeout_ms: 150
+    
+# Dependency validation rules
+dependency_rules:
+  # Required providers for consumers
+  required_providers:
+    market_regime:
+      providers: ["FractalRegimeConfirmation", "MarketThemeDetector"]
+      min_providers: 1
+      
+    risk_assessment:
+      providers: ["ActiveTradeMonitor", "DrawdownRescue"]
+      min_providers: 2
+      
+  # Circular dependency prevention
+  forbidden_cycles:
+    - ["MetaAgent", "StrategyGenomePool", "MetaAgent"]
+    - ["*", "risk", "*", "risk"]  # No risk module cycles
+    
+  # Module compatibility
+  incompatible_pairs:
+    - ["AggressiveTrader", "ConservativeRiskManager"]
+    - ["HighFrequencyScalper", "LongTermTrendFollower"]
+    
+# Performance benchmarks
+benchmarks:
+  latency:
+    excellent: 50   # ms
+    good: 100
+    acceptable: 150
+    poor: 200
+    
+  accuracy:
+    excellent: 0.65  # win rate
+    good: 0.55
+    acceptable: 0.50
+    poor: 0.45
+    
+  risk_adjusted_returns:
+    excellent: 2.0   # Sharpe ratio
+    good: 1.5
+    acceptable: 1.0
+    poor: 0.5

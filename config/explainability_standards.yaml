@@ -1,0 +1,235 @@
+# ─────────────────────────────────────────────────────────────
+# File: config/explainability_standards.yaml
+# 🚀 Standards for Plain English Explanations and Theses
+# ─────────────────────────────────────────────────────────────
+
+thesis_requirements:
+  # Mandatory sections for all decision theses
+  mandatory_sections:
+    - decision_summary     # What was decided
+    - reasoning_chain      # Why it was decided
+    - confidence_factors   # How confident we are
+    - risk_assessment     # What could go wrong
+    
+  # Optional but recommended sections
+  optional_sections:
+    - market_context      # Current market conditions
+    - historical_basis    # Past similar situations
+    - alternative_considered  # Other options evaluated
+    - expected_outcome    # What we expect to happen
+    
+  quality_metrics:
+    min_length_words: 50
+    max_length_words: 500
+    readability_grade: 8  # 8th grade reading level
+    required_clarity: 0.8  # Clarity score 0-1
+    
+  formatting_rules:
+    use_headers: true
+    use_bullet_points: true
+    avoid_jargon: true
+    include_numbers: true
+    highlight_risks: true
+    
+templates:
+  # Trade decision template
+  trade_decision: |
+    TRADE DECISION: {action} {size} {instrument}
+    ============================================
+    Confidence: {confidence}%
+    Timestamp: {timestamp}
+    
+    REASONING:
+    {reasoning_points}
+    
+    MARKET CONTEXT:
+    - Regime: {market_regime}
+    - Volatility: {volatility_level}
+    - Trend: {trend_direction}
+    
+    RISK ASSESSMENT:
+    - Risk Score: {risk_score}%
+    - Key Risks: {risk_factors}
+    - Stop Loss: {stop_loss}
+    - Position Size: {position_size}% of capital
+    
+    EXPECTED OUTCOME:
+    {expected_outcome}
+    
+  # Risk alert template
+  risk_alert: |
+    ⚠️ RISK ALERT: {alert_type}
+    ===========================
+    Severity: {severity}
+    Time: {timestamp}
+    
+    WHAT HAPPENED:
+    {details}
+    
+    CURRENT IMPACT:
+    - Portfolio Risk: {portfolio_risk}%
+    - Affected Positions: {affected_positions}
+    - Potential Loss: ${potential_loss}
+    
+    RECOMMENDED ACTION:
+    {recommended_action}
+    
+    RATIONALE:
+    {action_rationale}
+    
+  # Strategy selection template
+  strategy_selection: |
+    STRATEGY SELECTION
+    ==================
+    Selected: {strategy_name} (v{version})
+    Confidence: {confidence}%
+    
+    WHY THIS STRATEGY:
+    {selection_reasoning}
+    
+    STRATEGY CHARACTERISTICS:
+    - Type: {strategy_type}
+    - Risk Profile: {risk_profile}
+    - Best Market: {best_market_conditions}
+    - Win Rate: {historical_win_rate}%
+    
+    CURRENT FIT:
+    - Market Match: {market_match_score}%
+    - Risk Alignment: {risk_alignment}
+    - Expected Performance: {expected_performance}
+    
+  # Module decision template
+  module_decision: |
+    {module_name} DECISION
+    ======================
+    Action: {action}
+    Confidence: {confidence}%
+    
+    ANALYSIS:
+    {analysis_points}
+    
+    SUPPORTING DATA:
+    {data_points}
+    
+    CONCLUSION:
+    {conclusion}
+    
+vocabulary_guidelines:
+  # Terms to avoid (jargon)
+  avoid_terms:
+    - "alpha"          # Use "excess returns"
+    - "beta"           # Use "market sensitivity"
+    - "drawdown"       # Use "loss from peak"
+    - "sharpe ratio"   # Use "risk-adjusted returns"
+    - "backtest"       # Use "historical test"
+    
+  # Preferred plain English alternatives
+  preferred_terms:
+    volatility: "price swings"
+    correlation: "how similarly assets move"
+    liquidity: "ease of trading"
+    spread: "difference between buy/sell price"
+    leverage: "borrowed money multiplier"
+    
+  # Technical terms that need explanation
+  explain_when_used:
+    - stop_loss: "automatic sell order to limit losses"
+    - position_sizing: "how much money to invest"
+    - risk_reward: "potential loss vs potential gain"
+    - market_regime: "overall market behavior pattern"
+    
+explanation_patterns:
+  # Patterns for clear explanations
+  cause_and_effect: |
+    Because {cause}, we expect {effect}.
+    This is based on {evidence}.
+    
+  comparison: |
+    Compared to {baseline}, this is {comparison}.
+    The difference is due to {factors}.
+    
+  risk_explanation: |
+    The main risk is {risk_description}.
+    This could result in {potential_impact}.
+    We can mitigate this by {mitigation_strategy}.
+    
+  confidence_explanation: |
+    We are {confidence}% confident because:
+    - {factor_1} ({weight_1}% weight)
+    - {factor_2} ({weight_2}% weight)
+    - {factor_3} ({weight_3}% weight)
+    
+scoring_rubric:
+  # How to score explanation quality
+  clarity:
+    excellent: 
+      - "Uses simple language"
+      - "Clear structure"
+      - "No ambiguity"
+      score: 1.0
+    good:
+      - "Mostly clear"
+      - "Minor jargon"
+      - "Well organized"
+      score: 0.8
+    needs_improvement:
+      - "Too technical"
+      - "Unclear structure"
+      - "Ambiguous statements"
+      score: 0.5
+      
+  completeness:
+    excellent:
+      - "All sections present"
+      - "Thorough reasoning"
+      - "Addresses risks"
+      score: 1.0
+    good:
+      - "Most sections present"
+      - "Good reasoning"
+      - "Some risk discussion"
+      score: 0.8
+    needs_improvement:
+      - "Missing sections"
+      - "Shallow reasoning"
+      - "No risk discussion"
+      score: 0.5
+      
+  actionability:
+    excellent:
+      - "Clear next steps"
+      - "Specific recommendations"
+      - "Measurable outcomes"
+      score: 1.0
+    good:
+      - "General direction"
+      - "Some specifics"
+      - "Expected outcomes"
+      score: 0.8
+    needs_improvement:
+      - "Vague recommendations"
+      - "No specifics"
+      - "Unclear outcomes"
+      score: 0.5
+      
+operator_personas:
+  # Different explanation styles for different audiences
+  trader:
+    focus: ["entry/exit points", "risk/reward", "position sizing"]
+    detail_level: "medium"
+    include_technicals: true
+    
+  risk_manager:
+    focus: ["risk metrics", "exposure", "correlations", "worst-case"]
+    detail_level: "high"
+    include_technicals: true
+    
+  executive:
+    focus: ["summary", "key decisions", "performance", "major risks"]
+    detail_level: "low"
+    include_technicals: false
+    
+  regulator:
+    focus: ["compliance", "risk controls", "decision process", "audit trail"]
+    detail_level: "high"
+    include_technicals: true

@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/core/core.py
-# 🚀 ENHANCED InfoBus-only base module (NO legacy interfaces)
+# 🚀 ENHANCED SmartInfoBus base module with @module decorator
 # ─────────────────────────────────────────────────────────────
 
 from abc import ABC, abstractmethod
@@ -10,12 +10,15 @@ import datetime
 import json
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Callable
 from collections import deque
 from functools import wraps
+from dataclasses import dataclass
+import importlib
+import inspect
 
 from modules.utils.info_bus import (
-    InfoBus, InfoBusManager, InfoBusExtractor, InfoBusUpdater,
+    SmartInfoBus, InfoBus, InfoBusManager, InfoBusExtractor, InfoBusUpdater,
     require_info_bus, cache_computation, validate_info_bus
 )
 from modules.utils.audit_utils import (
@@ -23,9 +26,74 @@ from modules.utils.audit_utils import (
     format_operator_message, system_audit
 )
 
+# ═══════════════════════════════════════════════════════════════════
+# MODULE METADATA & DECORATOR SYSTEM
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class ModuleMetadata:
+    """Metadata for self-registering modules"""
+    name: str
+    provides: List[str]
+    requires: List[str]
+    version: str = "1.0.0"
+    category: str = "general"
+    is_voting_member: bool = False
+    hot_reload: bool = True
+    explainable: bool = True
+    timeout_ms: int = 100
+    priority: int = 0
+
+def module(**kwargs):
+    """
+    Decorator for self-registering SmartInfoBus modules.
+    Automatically registers with orchestrator on import.
+    """
+    def decorator(cls):
+        # Extract metadata
+        cls.__module_metadata__ = ModuleMetadata(
+            name=cls.__name__,
+            **kwargs
+        )
+        
+        # Auto-register with orchestrator on import
+        try:
+            from modules.core.module_orchestrator import ModuleOrchestrator
+            ModuleOrchestrator.register_class(cls)
+        except ImportError:
+            # Orchestrator not yet available - will be picked up during discovery
+            pass
+        
+        # Add required methods if not present
+        if not hasattr(cls, 'get_state'):
+            def get_state(self) -> Dict[str, Any]:
+                """Default state getter"""
+                return {
+                    'class_name': self.__class__.__name__,
+                    'step_count': getattr(self, '_step_count', 0)
+                }
+            cls.get_state = get_state
+            
+        if not hasattr(cls, 'set_state'):
+            def set_state(self, state: Dict[str, Any]):
+                """Default state setter"""
+                self._step_count = state.get('step_count', 0)
+            cls.set_state = set_state
+        
+        # Register with SmartInfoBus
+        smart_bus = InfoBusManager.get_instance()
+        smart_bus.register_provider(cls.__name__, kwargs.get('provides', []))
+        smart_bus.register_consumer(cls.__name__, kwargs.get('requires', []))
+        
+        return cls
+    return decorator
+
+# ═══════════════════════════════════════════════════════════════════
+# ENHANCED MODULE CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════
 
 class ModuleConfig:
-    """Standard configuration for all InfoBus modules"""
+    """Enhanced configuration for SmartInfoBus modules"""
     def __init__(self, **kwargs):
         # Standard defaults
         self.debug = kwargs.get('debug', True)
@@ -35,84 +103,70 @@ class ModuleConfig:
         self.health_check_interval = kwargs.get('health_check_interval', 100)
         self.performance_tracking = kwargs.get('performance_tracking', True)
         self.cache_enabled = kwargs.get('cache_enabled', True)
+        self.explainable = kwargs.get('explainable', True)
+        self.hot_reload = kwargs.get('hot_reload', True)
         
         # Allow custom config
         for key, value in kwargs.items():
             if not hasattr(self, key):
                 setattr(self, key, value)
 
+# ═══════════════════════════════════════════════════════════════════
+# SMARTINFOBUS DECORATORS
+# ═══════════════════════════════════════════════════════════════════
 
-def info_bus_step(func):
-    """Decorator for InfoBus-based step methods"""
+def smart_info_bus_step(func):
+    """Decorator for SmartInfoBus-based step methods with timing"""
     @wraps(func)
-    @require_info_bus
-    @audit_module_call()
-    def wrapper(self, info_bus: InfoBus, **kwargs):
-        # Pre-step validation
-        if self.config.debug:
-            quality = validate_info_bus(info_bus)
-            if not quality.is_valid:
-                self.logger.warning(
-                    f"Step called with invalid InfoBus: {quality.score:.1f}%"
-                )
+    def wrapper(self, info_bus: Union[InfoBus, SmartInfoBus], **kwargs):
+        # Get SmartInfoBus reference
+        if isinstance(info_bus, dict) and '_smart_bus' in info_bus:
+            smart_bus = info_bus['_smart_bus']
+        else:
+            smart_bus = InfoBusManager.get_instance()
         
-        # Check data freshness
-        if not InfoBusExtractor.has_fresh_data(info_bus, max_age_seconds=2.0):
-            self.logger.warning("InfoBus data is stale")
+        # Check if module is enabled (circuit breaker)
+        if not smart_bus.is_module_enabled(self.__class__.__name__):
+            self.logger.warning(f"Module {self.__class__.__name__} is disabled")
+            return None
         
-        # Execute step
+        # Execute with timing
         start_time = time.perf_counter()
-        result = func(self, info_bus, **kwargs)
-        duration_ms = (time.perf_counter() - start_time) * 1000
+        error = None
         
-        # Update performance metrics
-        InfoBusUpdater.add_performance_timing(
-            info_bus, self.__class__.__name__, duration_ms
-        )
-        
-        # Post-step health check
-        self._step_count += 1
-        if self._step_count % self.config.health_check_interval == 0:
-            self._perform_health_check(info_bus)
-        
-        return result
+        try:
+            result = func(self, info_bus, **kwargs)
+            return result
+            
+        except Exception as e:
+            error = str(e)
+            smart_bus.record_module_failure(self.__class__.__name__, error)
+            raise
+            
+        finally:
+            # Record timing
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            smart_bus.record_module_timing(self.__class__.__name__, duration_ms)
+            
+            # Update performance metrics
+            if hasattr(self, '_update_performance_metric'):
+                self._update_performance_metric('avg_duration_ms', duration_ms)
+            
+            # Health check
+            self._step_count += 1
+            if self._step_count % self.config.health_check_interval == 0:
+                self._perform_health_check(info_bus)
     
     return wrapper
 
+# ═══════════════════════════════════════════════════════════════════
+# BASE MODULE CLASS
+# ═══════════════════════════════════════════════════════════════════
 
-def validate_observation(func):
-    """Decorator to validate observation components"""
-    @wraps(func)
-    def wrapper(self, info_bus: InfoBus):
-        obs = func(self, info_bus)
-        
-        # Ensure numpy array
-        if not isinstance(obs, np.ndarray):
-            obs = np.array(obs, dtype=np.float32)
-        
-        # Validate
-        if not np.all(np.isfinite(obs)):
-            non_finite = np.sum(~np.isfinite(obs))
-            self.logger.warning(
-                format_operator_message(
-                    "🧹", "SANITIZING OBSERVATION",
-                    instrument=self.__class__.__name__,
-                    details=f"{non_finite} non-finite values",
-                    context="data_quality"
-                )
-            )
-            obs = np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
-        
-        return obs.astype(np.float32)
-    
-    return wrapper
-
-
-class Module(ABC):
+class BaseModule(ABC):
     """
-    🚀 ENHANCED InfoBus-only base module.
-    ALL modules MUST use InfoBus for data exchange.
-    NO direct module-to-module communication allowed.
+    🚀 Enhanced SmartInfoBus base module.
+    ALL modules MUST inherit from this and use @module decorator.
     """
     
     def __init__(self, config: Optional[Union[Dict, ModuleConfig]] = None, **kwargs):
@@ -124,11 +178,27 @@ class Module(ABC):
         else:
             self.config = ModuleConfig(**kwargs)
         
+        # Get metadata if decorated
+        if hasattr(self.__class__, '__module_metadata__'):
+            self.metadata = self.__class__.__module_metadata__
+        else:
+            # Create default metadata
+            self.metadata = ModuleMetadata(
+                name=self.__class__.__name__,
+                provides=[],
+                requires=[]
+            )
+        
         # Core state
         self._initialized = True
         self._health_status = "OK"
         self._last_error = None
         self._step_count = 0
+        self._last_thesis = ""
+        
+        # Performance tracking
+        self.version = self.metadata.version
+        self.execution_time = 0
         
         # Collections with size limits
         self._health_history = deque(maxlen=50)
@@ -154,9 +224,124 @@ class Module(ABC):
             format_operator_message(
                 "✅", "MODULE INITIALIZED",
                 instrument=self.__class__.__name__,
+                details=f"v{self.version}",
                 context="startup"
             )
         )
+    
+    # ─────────────────────────────────────────────────────────────
+    # SmartInfoBus Process Method (replaces step)
+    # ─────────────────────────────────────────────────────────────
+    
+    async def process(self, **inputs) -> Dict[str, Any]:
+        """
+        Main processing method for SmartInfoBus modules.
+        Extract inputs, process, return outputs with thesis.
+        """
+        # Default implementation delegates to step for compatibility
+        info_bus = inputs.get('info_bus') or InfoBusManager.get_current()
+        if info_bus:
+            self.step(info_bus)
+        
+        # Return empty dict by default
+        return {}
+    
+    def explain_decision(self, decision: Any, context: Dict) -> str:
+        """Generate human-readable explanation"""
+        return f"Decision: {decision} based on {len(context)} factors"
+    
+    def validate_inputs(self, inputs: Dict) -> bool:
+        """Validate all required inputs are present"""
+        for req in self.metadata.requires:
+            if req not in inputs or inputs[req] is None:
+                raise ValueError(f"Missing required input: {req}")
+        return True
+    
+    # ─────────────────────────────────────────────────────────────
+    # Legacy Step Method (for backward compatibility)
+    # ─────────────────────────────────────────────────────────────
+    
+    @smart_info_bus_step
+    def step(self, info_bus: InfoBus) -> None:
+        """
+        Legacy step method - wraps to SmartInfoBus process.
+        """
+        # Get SmartInfoBus
+        smart_bus = InfoBusManager.get_instance()
+        
+        # Collect inputs based on requirements
+        inputs = {'info_bus': info_bus}
+        for req in self.metadata.requires:
+            value = smart_bus.get(req, self.__class__.__name__)
+            if value is not None:
+                inputs[req] = value
+        
+        # Call module implementation
+        self._step_impl(info_bus)
+        
+        # Record any outputs
+        for output in self.metadata.provides:
+            # Module should have set these in SmartInfoBus during _step_impl
+            pass
+    
+    @abstractmethod
+    def _step_impl(self, info_bus: InfoBus) -> None:
+        """Legacy step implementation"""
+        pass
+    
+    # ─────────────────────────────────────────────────────────────
+    # State Management for Hot-Reload
+    # ─────────────────────────────────────────────────────────────
+    
+    def get_state(self) -> Dict[str, Any]:
+        """Get module state for hot-reload persistence"""
+        base_state = {
+            'class_name': self.__class__.__name__,
+            'version': self.metadata.version,
+            'config': self.config.__dict__,
+            'step_count': self._step_count,
+            'health_status': self._health_status,
+            'last_error': self._last_error,
+            'last_thesis': self._last_thesis
+        }
+        
+        # Add module-specific state
+        module_state = self._get_module_state()
+        if module_state:
+            base_state['module_state'] = module_state
+            
+        return base_state
+    
+    def set_state(self, state: Dict[str, Any]) -> None:
+        """Restore module state after hot-reload"""
+        self._step_count = state.get('step_count', 0)
+        self._health_status = state.get('health_status', 'OK')
+        self._last_error = state.get('last_error')
+        self._last_thesis = state.get('last_thesis', '')
+        
+        if 'module_state' in state:
+            self._set_module_state(state['module_state'])
+            
+        self.logger.info(
+            format_operator_message(
+                "📥", "STATE RESTORED",
+                instrument=self.__class__.__name__,
+                details=f"Step {self._step_count}",
+                context="hot_reload"
+            )
+        )
+    
+    def _get_module_state(self) -> Optional[Dict[str, Any]]:
+        """Override to provide module-specific state"""
+        return None
+    
+    def _set_module_state(self, module_state: Dict[str, Any]) -> None:
+        """Override to restore module-specific state"""
+        pass
+    
+    # ─────────────────────────────────────────────────────────────
+    # Other methods remain the same for compatibility
+    # ─────────────────────────────────────────────────────────────
     
     def _initialize_module_state(self):
         """Override to initialize module-specific state"""
@@ -178,44 +363,18 @@ class Module(ABC):
             )
         )
     
-    @info_bus_step
-    def step(self, info_bus: InfoBus) -> None:
-        """
-        InfoBus-only step method.
-        ALL data MUST come from and go to InfoBus.
-        """
-        self._step_impl(info_bus)
-    
     @abstractmethod
-    def _step_impl(self, info_bus: InfoBus) -> None:
-        """
-        Implement module logic here.
-        Extract data from InfoBus, process, write results back.
-        """
-        pass
-    
-    @validate_observation
     def get_observation_components(self, info_bus: InfoBus) -> np.ndarray:
-        """
-        Get observation from InfoBus data.
-        ALL modules MUST implement this.
-        """
+        """Get observation from InfoBus data"""
         return self._get_observation_impl(info_bus)
     
     @abstractmethod
     def _get_observation_impl(self, info_bus: InfoBus) -> np.ndarray:
-        """
-        Extract observation features from InfoBus.
-        NO external data access allowed.
-        """
+        """Extract observation features from InfoBus"""
         pass
     
-    # ─────────────────────────────────────────────────────────────
-    # Health & Performance Management
-    # ─────────────────────────────────────────────────────────────
-    
+    # Health and performance methods remain the same
     def _update_health_status(self, status: str, error: Optional[str] = None):
-        """Update module health status"""
         self._health_status = status
         self._last_error = error
         
@@ -239,7 +398,6 @@ class Module(ABC):
             )
     
     def _perform_health_check(self, info_bus: InfoBus):
-        """Perform module health check"""
         try:
             checks = {
                 'data_quality': self._check_data_quality(info_bus),
@@ -258,142 +416,26 @@ class Module(ABC):
             self._update_health_status("ERROR", str(e))
     
     def _check_data_quality(self, info_bus: InfoBus) -> bool:
-        """Check InfoBus data quality"""
         quality = validate_info_bus(info_bus)
         return quality.score >= 70
     
     def _check_performance(self) -> bool:
-        """Check module performance"""
         if self.config.performance_tracking and self._audit_tracker:
             perf = self._audit_tracker.get_module_performance()
             module_perf = perf.get(self.__class__.__name__, {})
-            
-            # Check if average time is reasonable
             avg_time = module_perf.get('avg_time_ms', 0)
-            return avg_time < 100  # 100ms threshold
-        
+            return avg_time < self.metadata.timeout_ms
         return True
     
     def _check_state_integrity(self) -> bool:
-        """Override for module-specific state checks"""
         return True
     
-    # ─────────────────────────────────────────────────────────────
-    # InfoBus Data Access Helpers
-    # ─────────────────────────────────────────────────────────────
-    
-    def _get_market_data(self, info_bus: InfoBus, instrument: str, 
-                        timeframe: str = 'D1') -> Optional[Dict[str, np.ndarray]]:
-        """Get market data from InfoBus"""
-        return InfoBusExtractor.get_market_data(info_bus, instrument, timeframe)
-    
-    def _get_cached_feature(self, info_bus: InfoBus, feature_name: str) -> Optional[np.ndarray]:
-        """Get cached feature from InfoBus"""
-        cached = InfoBusExtractor.get_cached_features(info_bus, feature_name)
-        
-        if cached is not None:
-            self.logger.debug(f"Using cached feature: {feature_name}")
-        
-        return cached
-    
-    def _update_feature(self, info_bus: InfoBus, feature_name: str, 
-                       feature_data: np.ndarray):
-        """Update feature in InfoBus with caching"""
-        InfoBusUpdater.update_feature(
-            info_bus, feature_name, feature_data, 
-            module=self.__class__.__name__
-        )
-    
-    def _add_module_data(self, info_bus: InfoBus, data: Dict[str, Any]):
-        """Add module-specific data to InfoBus"""
-        InfoBusUpdater.add_module_data(
-            info_bus, self.__class__.__name__, data
-        )
-    
-    # ─────────────────────────────────────────────────────────────
-    # State Management
-    # ─────────────────────────────────────────────────────────────
-    
-    def get_state(self) -> Dict[str, Any]:
-        """Get module state for persistence"""
-        base_state = {
-            'class_name': self.__class__.__name__,
-            'config': self.config.__dict__,
-            'step_count': self._step_count,
-            'health_status': self._health_status,
-            'last_error': self._last_error
-        }
-        
-        # Add module-specific state
-        module_state = self._get_module_state()
-        if module_state:
-            base_state['module_state'] = module_state
-            
-        return base_state
-    
-    def _get_module_state(self) -> Optional[Dict[str, Any]]:
-        """Override to provide module-specific state"""
-        return None
-    
-    def set_state(self, state: Dict[str, Any]) -> None:
-        """Restore module state"""
-        self._step_count = state.get('step_count', 0)
-        self._health_status = state.get('health_status', 'OK')
-        self._last_error = state.get('last_error')
-        
-        if 'module_state' in state:
-            self._set_module_state(state['module_state'])
-            
-        self.logger.info(
-            format_operator_message(
-                "📥", "STATE RESTORED",
-                instrument=self.__class__.__name__,
-                details=f"Step {self._step_count}",
-                context="state_management"
-            )
-        )
-    
-    def _set_module_state(self, module_state: Dict[str, Any]) -> None:
-        """Override to restore module-specific state"""
-        pass
-    
-    # ─────────────────────────────────────────────────────────────
-    # Committee Voting Interface (if module participates)
-    # ─────────────────────────────────────────────────────────────
-    
-    def propose_action(self, info_bus: InfoBus) -> np.ndarray:
-        """
-        Propose action based on InfoBus data.
-        Override for voting modules.
-        """
-        action_dim = len(info_bus.get('raw_actions', [0, 0]))
-        return np.zeros(action_dim, dtype=np.float32)
-    
-    def confidence(self, info_bus: InfoBus) -> float:
-        """
-        Return confidence in proposed action.
-        Override for voting modules.
-        """
-        return 0.5
-    
-    # ─────────────────────────────────────────────────────────────
-    # Performance Helpers
-    # ─────────────────────────────────────────────────────────────
-    
     def _update_performance_metric(self, name: str, value: float):
-        """Update a performance metric"""
         if name not in self._performance_metrics:
             self._performance_metrics[name] = deque(maxlen=100)
         self._performance_metrics[name].append(value)
     
-    def _get_performance_metric(self, name: str, default: float = 0.0) -> float:
-        """Get latest performance metric"""
-        if name in self._performance_metrics and self._performance_metrics[name]:
-            return self._performance_metrics[name][-1]
-        return default
-    
     def get_health_status(self) -> Dict[str, Any]:
-        """Get comprehensive health status"""
         recent_errors = [
             h for h in self._health_history 
             if h['status'] != 'OK'
@@ -407,8 +449,17 @@ class Module(ABC):
         return {
             "status": self._health_status,
             "module": self.__class__.__name__,
+            "version": self.metadata.version,
             "step_count": self._step_count,
             "recent_errors": len(recent_errors),
             "last_error": self._last_error,
             "performance": performance_summary
         }
+
+# ═══════════════════════════════════════════════════════════════════
+# LEGACY MODULE CLASS (for backward compatibility)
+# ═══════════════════════════════════════════════════════════════════
+
+class Module(BaseModule):
+    """Legacy Module class - redirects to BaseModule"""
+    pass

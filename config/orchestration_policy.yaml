@@ -1,0 +1,167 @@
+# ─────────────────────────────────────────────────────────────
+# File: config/orchestration_policy.yaml
+# 🚀 SmartInfoBus Orchestration Policy Configuration
+# ─────────────────────────────────────────────────────────────
+
+system:
+  name: "SmartInfoBus Trading Platform"
+  version: "4.0.0"
+  description: "Zero-wiring AI trading system with explainable decisions"
+  
+execution:
+  # Parallel execution stages with module categories
+  parallel_stages:
+    - name: "data_preparation"
+      modules: 
+        - "category:features"
+        - "category:external"
+        - "AdvancedFeatureEngine"
+        - "MarketThemeDetector"
+      max_parallel: 5
+      timeout_override_ms: 150
+      
+    - name: "analysis"
+      modules: 
+        - "category:market"
+        - "category:strategy"
+        - "category:memory"
+      max_parallel: 10
+      timeout_override_ms: 200
+      
+    - name: "voting"
+      modules: 
+        - "all:voting_members"
+      max_parallel: 8
+      timeout_override_ms: 150
+      
+    - name: "risk_check"
+      modules: 
+        - "category:risk"
+        - "category:compliance"
+      max_parallel: 5
+      timeout_override_ms: 100
+      critical: true  # Must complete before trading
+      
+  # Timeout configuration
+  timeouts:
+    default_ms: 100
+    by_module:
+      MetaRLController: 200
+      NeuralMemoryArchitect: 150
+      StrategyGenomePool: 150
+      PlaybookMemory: 120
+      MarketThemeDetector: 120
+      
+  # Circuit breaker configuration
+  circuit_breakers:
+    failure_threshold: 3  # Failures before disabling
+    recovery_time_s: 60   # Time before retry
+    failure_window_s: 300 # Window for counting failures
+    
+monitoring:
+  performance_tracking: true
+  latency_alerts_ms: 150
+  stale_data_warning_s: 2
+  
+  # Performance thresholds by module category
+  category_thresholds:
+    features:
+      warning_ms: 50
+      critical_ms: 100
+    market:
+      warning_ms: 75
+      critical_ms: 150
+    voting:
+      warning_ms: 100
+      critical_ms: 200
+    risk:
+      warning_ms: 50
+      critical_ms: 100
+      
+hot_reload:
+  enabled: true
+  preserve_state: true
+  auto_backup: true
+  
+  # Modules allowed for hot-reload
+  modules:
+    - StrategyGenomePool
+    - PlaybookMemory
+    - MetaAgent
+    - MarketThemeDetector
+    - BiasAuditor
+    - ExplanationGenerator
+    
+  # Modules that require restart (critical infrastructure)
+  restricted_modules:
+    - ModuleOrchestrator
+    - SmartInfoBus
+    - RiskController
+    
+dependency_rules:
+  # Enforce certain dependency patterns
+  required_dependencies:
+    voting_members:
+      requires: ["market_regime", "risk_score"]
+    risk_modules:
+      requires: ["positions", "market_data"]
+      
+  # Prevent circular dependencies
+  forbidden_patterns:
+    - pattern: "A → B → A"
+      description: "Direct circular dependency"
+    - pattern: "voting → risk → voting"
+      description: "Voting-risk cycle"
+      
+event_handling:
+  # Events that trigger special handling
+  critical_events:
+    - event: "risk_limit_breach"
+      action: "halt_trading"
+      notify: ["operator", "risk_manager"]
+      
+    - event: "module_cascade_failure"
+      threshold: 3  # modules
+      action: "emergency_shutdown"
+      
+    - event: "performance_degradation"
+      threshold_ms: 1000
+      action: "reduce_complexity"
+      
+logging:
+  # Logging configuration
+  default_level: "INFO"
+  module_levels:
+    ModuleOrchestrator: "DEBUG"
+    SmartInfoBus: "DEBUG"
+    RiskController: "INFO"
+    
+  # Operator alerts
+  operator_alerts:
+    - level: "ERROR"
+      channels: ["console", "file", "alert"]
+    - level: "CRITICAL"
+      channels: ["console", "file", "alert", "sms"]
+      
+data_quality:
+  # Data quality requirements
+  required_fields:
+    market_data:
+      - prices
+      - volumes
+      - spreads
+    risk_data:
+      - positions
+      - exposure
+      - margin
+      
+  # Validation rules
+  validation:
+    price_change_limit: 0.1  # 10% max price change
+    volume_outlier_std: 3    # 3 standard deviations
+    
+  # Missing data handling
+  missing_data_policy:
+    prices: "use_previous"
+    volumes: "use_average"
+    indicators: "skip_module"
