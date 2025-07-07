@@ -1,34 +1,39 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/core/state_manager.py
-# 🚀 State Manager for hot-reload and persistence
+# 🚀 State management for hot-reload support in SmartInfoBus
 # ─────────────────────────────────────────────────────────────
 
+from __future__ import annotations
 import pickle
 import importlib
 import json
-import inspect
-from typing import Dict, Any, List, Optional, Tuple, Type
 from pathlib import Path
-import logging
-import datetime
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
+from datetime import datetime
 import traceback
 
-from modules.utils.audit_utils import format_operator_message, RotatingLogger
-from modules.core.core import BaseModule
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+
+if TYPE_CHECKING:
+    from modules.core.module_orchestrator import ModuleOrchestrator
+    from modules.core.core import BaseModule
 
 
 class StateManager:
     """
-    Manages module state for hot-reload, persistence, and recovery.
-    Enables zero-downtime module updates.
+    Manages module state for hot-reload functionality.
+    Preserves state across module reloads and system restarts.
     """
     
-    def __init__(self, state_dir: str = "states"):
+    def __init__(self, state_dir: str = "state/modules"):
         self.state_dir = Path(state_dir)
-        self.state_dir.mkdir(exist_ok=True)
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        
+        # In-memory state cache
+        self.state_cache: Dict[str, Any] = {}
         
         # State versioning
-        self.state_versions = {}
+        self.state_versions: Dict[str, int] = {}
         
         # Setup logging
         self.logger = RotatingLogger(
@@ -38,11 +43,20 @@ class StateManager:
             operator_mode=True
         )
     
-    @staticmethod
-    def save_module_state(module: BaseModule) -> bytes:
-        """Serialize module state for persistence"""
+    def save_module_state(self, module: BaseModule) -> bytes:
+        """
+        Save module state to bytes for hot-reload.
+        
+        Args:
+            module: Module instance to save state from
+            
+        Returns:
+            Serialized state as bytes
+        """
+        module_name = module.__class__.__name__
+        
         try:
-            # Use module's get_state method if available
+            # Get state from module
             if hasattr(module, 'get_state'):
                 state = module.get_state()
             else:
@@ -53,65 +67,93 @@ class StateManager:
                 }
             
             # Add metadata
-            state_with_meta = {
-                'module_class': module.__class__.__name__,
-                'module_path': module.__class__.__module__,
-                'timestamp': datetime.datetime.now().isoformat(),
-                'version': getattr(module, 'version', '1.0.0'),
+            state_with_metadata = {
+                'module_name': module_name,
+                'timestamp': datetime.now().isoformat(),
+                'version': self.state_versions.get(module_name, 0) + 1,
                 'state': state
             }
             
-            return pickle.dumps(state_with_meta)
+            # Update version
+            self.state_versions[module_name] = state_with_metadata['version']
+            
+            # Cache in memory
+            self.state_cache[module_name] = state_with_metadata
+            
+            # Serialize
+            serialized = pickle.dumps(state_with_metadata)
+            
+            # Also save to disk for persistence
+            self._save_to_disk(module_name, state_with_metadata)
+            
+            self.logger.info(
+                format_operator_message(
+                    "💾", "STATE SAVED",
+                    instrument=module_name,
+                    details=f"Version {state_with_metadata['version']}",
+                    context="state_management"
+                )
+            )
+            
+            return serialized
             
         except Exception as e:
-            logging.error(f"Failed to save state for {module.__class__.__name__}: {e}")
+            self.logger.error(f"Failed to save state for {module_name}: {e}")
             raise
     
-    @staticmethod
-    def reload_module(module_name: str, orchestrator: Any) -> bool:
-        """Hot-reload a module preserving state"""
-        logger = logging.getLogger("StateManager")
+    def reload_module(self, module_name: str, 
+                     orchestrator: ModuleOrchestrator) -> bool:
+        """
+        Hot-reload a module preserving its state.
         
+        Args:
+            module_name: Name of module to reload
+            orchestrator: Orchestrator instance managing modules
+            
+        Returns:
+            True if successful, False otherwise
+        """
         try:
             # Get current module
             current_module = orchestrator.modules.get(module_name)
             if not current_module:
-                logger.error(f"Module {module_name} not found")
+                self.logger.error(f"Module {module_name} not found")
                 return False
             
             # Save current state
-            state_data = StateManager.save_module_state(current_module)
-            state_dict = pickle.loads(state_data)
+            state_bytes = self.save_module_state(current_module)
             
             # Get module path
-            module_path = current_module.__class__.__module__
+            module_path = current_module.__module__
             
             # Reload module code
+            self.logger.info(f"Reloading module code for {module_name}")
             module_ref = importlib.import_module(module_path)
             importlib.reload(module_ref)
             
             # Get new class
-            new_class = getattr(module_ref, module_name)
+            new_class = getattr(module_ref, module_name, None)
+            if not new_class:
+                self.logger.error(f"Class {module_name} not found after reload")
+                return False
             
-            # Verify it has required metadata
+            # Verify it has module metadata
             if not hasattr(new_class, '__module_metadata__'):
-                logger.error(f"Reloaded {module_name} missing @module decorator")
+                self.logger.error(f"Reloaded class missing @module decorator")
                 return False
             
             # Create new instance
             new_instance = new_class()
             
             # Restore state
+            state_data = pickle.loads(state_bytes)
             if hasattr(new_instance, 'set_state'):
-                new_instance.set_state(state_dict['state'])
+                new_instance.set_state(state_data['state'])
             else:
-                # Manual restoration
-                for key, value in state_dict['state'].items():
+                # Manually restore attributes
+                for key, value in state_data['state'].items():
                     if hasattr(new_instance, key):
-                        try:
-                            setattr(new_instance, key, value)
-                        except:
-                            pass
+                        setattr(new_instance, key, value)
             
             # Replace in orchestrator
             orchestrator.modules[module_name] = new_instance
@@ -119,11 +161,11 @@ class StateManager:
             # Update metadata if changed
             orchestrator.metadata[module_name] = new_class.__module_metadata__
             
-            logger.info(
+            self.logger.info(
                 format_operator_message(
-                    "🔄", "HOT-RELOAD SUCCESS",
+                    "✅", "MODULE RELOADED",
                     instrument=module_name,
-                    details=f"State preserved",
+                    details=f"State restored from v{state_data['version']}",
                     context="hot_reload"
                 )
             )
@@ -131,243 +173,281 @@ class StateManager:
             return True
             
         except Exception as e:
-            logger.error(
-                format_operator_message(
-                    "❌", "HOT-RELOAD FAILED",
-                    instrument=module_name,
-                    details=str(e),
-                    context="hot_reload"
-                )
+            self.logger.error(
+                f"Failed to reload {module_name}: {e}\n"
+                f"{traceback.format_exc()}"
             )
-            logger.error(traceback.format_exc())
             return False
     
-    def save_all_states(self, orchestrator: Any, checkpoint_name: str = "latest"):
-        """Save all module states to disk"""
-        checkpoint_dir = self.state_dir / checkpoint_name
-        checkpoint_dir.mkdir(exist_ok=True)
+    def _save_to_disk(self, module_name: str, state_data: Dict[str, Any]):
+        """Save state to disk for persistence"""
+        try:
+            # Use JSON for readability (with pickle fallback for complex objects)
+            file_path = self.state_dir / f"{module_name}_state.json"
+            
+            # Try JSON first
+            try:
+                with open(file_path, 'w') as f:
+                    json.dump(state_data, f, indent=2, default=str)
+            except (TypeError, ValueError):
+                # Fall back to pickle for complex objects
+                file_path = self.state_dir / f"{module_name}_state.pkl"
+                with open(file_path, 'wb') as f:
+                    pickle.dump(state_data, f)
+                    
+        except Exception as e:
+            self.logger.error(f"Failed to save state to disk: {e}")
+    
+    def load_from_disk(self, module_name: str) -> Optional[Dict[str, Any]]:
+        """Load state from disk"""
+        # Try JSON first
+        json_path = self.state_dir / f"{module_name}_state.json"
+        if json_path.exists():
+            try:
+                with open(json_path, 'r') as f:
+                    return json.load(f)
+            except:
+                pass
         
-        saved_count = 0
-        failed_modules = []
+        # Try pickle
+        pkl_path = self.state_dir / f"{module_name}_state.pkl"
+        if pkl_path.exists():
+            try:
+                with open(pkl_path, 'rb') as f:
+                    return pickle.load(f)
+            except:
+                pass
+        
+        return None
+    
+    def restore_all_states(self, orchestrator: ModuleOrchestrator) -> Dict[str, bool]:
+        """
+        Restore states for all modules from disk.
+        Called on system startup.
+        
+        Returns:
+            Dict mapping module names to success status
+        """
+        results = {}
+        
+        # Find all state files
+        state_files = list(self.state_dir.glob("*_state.json")) + \
+                     list(self.state_dir.glob("*_state.pkl"))
+        
+        for state_file in state_files:
+            # Extract module name
+            module_name = state_file.stem.replace('_state', '')
+            
+            # Skip if module not in orchestrator
+            if module_name not in orchestrator.modules:
+                continue
+            
+            # Load state
+            state_data = self.load_from_disk(module_name)
+            if not state_data:
+                results[module_name] = False
+                continue
+            
+            # Restore state
+            try:
+                module = orchestrator.modules[module_name]
+                if hasattr(module, 'set_state'):
+                    module.set_state(state_data['state'])
+                    results[module_name] = True
+                    
+                    self.logger.info(
+                        f"Restored state for {module_name} "
+                        f"(v{state_data.get('version', 0)})"
+                    )
+                else:
+                    results[module_name] = False
+                    
+            except Exception as e:
+                self.logger.error(f"Failed to restore {module_name}: {e}")
+                results[module_name] = False
+        
+        # Summary
+        success_count = sum(1 for v in results.values() if v)
+        self.logger.info(
+            format_operator_message(
+                "📂", "STATE RESTORATION",
+                details=f"Restored {success_count}/{len(results)} modules",
+                context="startup"
+            )
+        )
+        
+        return results
+    
+    def create_checkpoint(self, orchestrator: ModuleOrchestrator, 
+                         checkpoint_name: str = "manual") -> bool:
+        """
+        Create a checkpoint of all module states.
+        
+        Args:
+            orchestrator: Orchestrator with modules
+            checkpoint_name: Name for the checkpoint
+            
+        Returns:
+            True if successful
+        """
+        checkpoint_dir = self.state_dir / "checkpoints" / checkpoint_name
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        
+        checkpoint_data = {
+            'name': checkpoint_name,
+            'timestamp': datetime.now().isoformat(),
+            'modules': {}
+        }
+        
+        success_count = 0
         
         for module_name, module in orchestrator.modules.items():
             try:
-                # Save state
-                state_data = self.save_module_state(module)
-                
-                # Write to file
-                state_file = checkpoint_dir / f"{module_name}.state"
-                with open(state_file, 'wb') as f:
-                    f.write(state_data)
-                
-                saved_count += 1
-                
+                # Save module state
+                if hasattr(module, 'get_state'):
+                    state = module.get_state()
+                    checkpoint_data['modules'][module_name] = state
+                    
+                    # Save individual file
+                    module_file = checkpoint_dir / f"{module_name}.json"
+                    with open(module_file, 'w') as f:
+                        json.dump(state, f, indent=2, default=str)
+                    
+                    success_count += 1
+                    
             except Exception as e:
-                self.logger.error(f"Failed to save {module_name}: {e}")
-                failed_modules.append(module_name)
+                self.logger.error(f"Failed to checkpoint {module_name}: {e}")
         
         # Save checkpoint metadata
-        metadata = {
-            'timestamp': datetime.datetime.now().isoformat(),
-            'saved_modules': saved_count,
-            'failed_modules': failed_modules,
-            'orchestrator_state': {
-                'execution_order': orchestrator.execution_order,
-                'voting_members': orchestrator.voting_members
-            }
-        }
-        
-        with open(checkpoint_dir / 'checkpoint.json', 'w') as f:
-            json.dump(metadata, f, indent=2)
+        metadata_file = checkpoint_dir / "checkpoint.json"
+        with open(metadata_file, 'w') as f:
+            json.dump({
+                'name': checkpoint_name,
+                'timestamp': checkpoint_data['timestamp'],
+                'module_count': len(checkpoint_data['modules']),
+                'modules': list(checkpoint_data['modules'].keys())
+            }, f, indent=2)
         
         self.logger.info(
             format_operator_message(
-                "💾", "CHECKPOINT SAVED",
-                details=f"{saved_count} modules",
-                result=f"Failed: {len(failed_modules)}",
-                context="persistence"
+                "📸", "CHECKPOINT CREATED",
+                instrument=checkpoint_name,
+                details=f"Saved {success_count} modules",
+                context="state_management"
             )
         )
+        
+        return success_count > 0
     
-    def load_all_states(self, orchestrator: Any, checkpoint_name: str = "latest"):
-        """Load all module states from disk"""
-        checkpoint_dir = self.state_dir / checkpoint_name
+    def restore_checkpoint(self, orchestrator: ModuleOrchestrator,
+                          checkpoint_name: str) -> bool:
+        """
+        Restore all modules from a checkpoint.
+        
+        Args:
+            orchestrator: Orchestrator with modules
+            checkpoint_name: Name of checkpoint to restore
+            
+        Returns:
+            True if successful
+        """
+        checkpoint_dir = self.state_dir / "checkpoints" / checkpoint_name
         
         if not checkpoint_dir.exists():
             self.logger.error(f"Checkpoint {checkpoint_name} not found")
-            return
+            return False
         
-        # Load metadata
-        with open(checkpoint_dir / 'checkpoint.json', 'r') as f:
+        # Load checkpoint metadata
+        metadata_file = checkpoint_dir / "checkpoint.json"
+        if not metadata_file.exists():
+            self.logger.error("Checkpoint metadata not found")
+            return False
+        
+        with open(metadata_file, 'r') as f:
             metadata = json.load(f)
         
-        loaded_count = 0
-        failed_modules = []
+        self.logger.info(
+            f"Restoring checkpoint '{checkpoint_name}' "
+            f"from {metadata['timestamp']}"
+        )
         
-        # Load each module state
-        for state_file in checkpoint_dir.glob("*.state"):
-            module_name = state_file.stem
+        success_count = 0
+        
+        # Restore each module
+        for module_name in metadata['modules']:
+            module_file = checkpoint_dir / f"{module_name}.json"
+            
+            if not module_file.exists():
+                continue
+            
+            if module_name not in orchestrator.modules:
+                continue
             
             try:
-                # Read state
-                with open(state_file, 'rb') as f:
-                    state_data = f.read()
+                with open(module_file, 'r') as f:
+                    state = json.load(f)
                 
-                state_dict = pickle.loads(state_data)
-                
-                # Find module in orchestrator
-                if module_name in orchestrator.modules:
-                    module = orchestrator.modules[module_name]
-                    
-                    # Restore state
-                    if hasattr(module, 'set_state'):
-                        module.set_state(state_dict['state'])
-                        loaded_count += 1
-                    else:
-                        self.logger.warning(
-                            f"Module {module_name} doesn't support set_state"
-                        )
-                else:
-                    self.logger.warning(f"Module {module_name} not found in orchestrator")
+                module = orchestrator.modules[module_name]
+                if hasattr(module, 'set_state'):
+                    module.set_state(state)
+                    success_count += 1
                     
             except Exception as e:
-                self.logger.error(f"Failed to load {module_name}: {e}")
-                failed_modules.append(module_name)
+                self.logger.error(f"Failed to restore {module_name}: {e}")
         
         self.logger.info(
             format_operator_message(
-                "📥", "CHECKPOINT LOADED",
-                details=f"{loaded_count} modules",
-                result=f"Failed: {len(failed_modules)}",
-                context="persistence"
+                "✅", "CHECKPOINT RESTORED",
+                instrument=checkpoint_name,
+                details=f"Restored {success_count}/{len(metadata['modules'])} modules",
+                context="state_management"
             )
         )
+        
+        return success_count > 0
     
-    def create_module_snapshot(self, module: BaseModule) -> Dict[str, Any]:
-        """Create a snapshot of module state for debugging"""
-        snapshot = {
-            'timestamp': datetime.datetime.now().isoformat(),
-            'module_info': {
-                'class': module.__class__.__name__,
-                'version': getattr(module, 'version', 'unknown'),
-                'health_status': getattr(module, '_health_status', 'unknown'),
-                'step_count': getattr(module, '_step_count', 0)
-            }
-        }
+    def list_checkpoints(self) -> List[Dict[str, Any]]:
+        """List available checkpoints"""
+        checkpoints_dir = self.state_dir / "checkpoints"
+        if not checkpoints_dir.exists():
+            return []
         
-        # Get state if available
-        if hasattr(module, 'get_state'):
-            try:
-                snapshot['state'] = module.get_state()
-            except:
-                snapshot['state'] = {'error': 'Failed to get state'}
+        checkpoints = []
         
-        # Get performance metrics
-        if hasattr(module, 'get_health_status'):
-            try:
-                snapshot['health'] = module.get_health_status()
-            except:
-                snapshot['health'] = {'error': 'Failed to get health status'}
+        for checkpoint_dir in checkpoints_dir.iterdir():
+            if checkpoint_dir.is_dir():
+                metadata_file = checkpoint_dir / "checkpoint.json"
+                if metadata_file.exists():
+                    try:
+                        with open(metadata_file, 'r') as f:
+                            metadata = json.load(f)
+                            checkpoints.append(metadata)
+                    except:
+                        pass
         
-        return snapshot
+        # Sort by timestamp
+        checkpoints.sort(key=lambda x: x['timestamp'], reverse=True)
+        
+        return checkpoints
     
-    def diff_module_states(self, module_name: str, state1: Dict[str, Any], 
-                          state2: Dict[str, Any]) -> Dict[str, Any]:
-        """Compare two module states to identify changes"""
-        diff = {
-            'module': module_name,
-            'changes': {},
-            'added_keys': [],
-            'removed_keys': [],
-            'modified_values': {}
-        }
+    def cleanup_old_states(self, days_to_keep: int = 7):
+        """Clean up old state files"""
+        import time
         
-        state1_data = state1.get('state', {})
-        state2_data = state2.get('state', {})
+        current_time = time.time()
+        cutoff_time = current_time - (days_to_keep * 24 * 3600)
         
-        # Find added/removed keys
-        keys1 = set(state1_data.keys())
-        keys2 = set(state2_data.keys())
+        cleaned_count = 0
         
-        diff['added_keys'] = list(keys2 - keys1)
-        diff['removed_keys'] = list(keys1 - keys2)
-        
-        # Find modified values
-        for key in keys1.intersection(keys2):
-            val1 = state1_data[key]
-            val2 = state2_data[key]
-            
-            # Simple comparison (could be enhanced)
-            try:
-                if val1 != val2:
-                    diff['modified_values'][key] = {
-                        'old': str(val1)[:100],  # Truncate for display
-                        'new': str(val2)[:100]
-                    }
-            except:
-                # Some values might not be comparable
-                diff['modified_values'][key] = {
-                    'old': f"<{type(val1).__name__}>",
-                    'new': f"<{type(val2).__name__}>"
-                }
-        
-        return diff
-    
-    def validate_state_compatibility(self, module_class: Type[BaseModule], 
-                                    state_data: Dict[str, Any]) -> Tuple[bool, List[str]]:
-        """Validate if a saved state is compatible with current module version"""
-        issues = []
-        
-        # Check version compatibility
-        saved_version = state_data.get('version', '0.0.0')
-        current_version = getattr(module_class, '__module_metadata__', {}).get('version', '1.0.0')
-        
-        if saved_version != current_version:
-            issues.append(f"Version mismatch: saved={saved_version}, current={current_version}")
-        
-        # Check required state fields
-        if hasattr(module_class, 'REQUIRED_STATE_FIELDS'):
-            required = module_class.REQUIRED_STATE_FIELDS
-            saved_keys = set(state_data.get('state', {}).keys())
-            
-            missing = set(required) - saved_keys
-            if missing:
-                issues.append(f"Missing required fields: {missing}")
-        
-        # Check state structure
-        if hasattr(module_class, 'validate_state'):
-            try:
-                validation_result = module_class.validate_state(state_data['state'])
-                if not validation_result:
-                    issues.append("State validation failed")
-            except Exception as e:
-                issues.append(f"State validation error: {e}")
-        
-        is_compatible = len(issues) == 0
-        return is_compatible, issues
-    
-    def create_state_backup(self, orchestrator: Any):
-        """Create automatic backup before major operations"""
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_name = f"backup_{timestamp}"
-        
-        self.save_all_states(orchestrator, backup_name)
-        
-        # Keep only last 10 backups
-        self._cleanup_old_backups(keep_last=10)
-    
-    def _cleanup_old_backups(self, keep_last: int = 10):
-        """Remove old backup directories"""
-        backup_dirs = sorted([
-            d for d in self.state_dir.iterdir() 
-            if d.is_dir() and d.name.startswith("backup_")
-        ])
-        
-        if len(backup_dirs) > keep_last:
-            for old_dir in backup_dirs[:-keep_last]:
+        for state_file in self.state_dir.glob("*_state.*"):
+            if state_file.stat().st_mtime < cutoff_time:
                 try:
-                    import shutil
-                    shutil.rmtree(old_dir)
-                    self.logger.debug(f"Removed old backup: {old_dir.name}")
-                except Exception as e:
-                    self.logger.error(f"Failed to remove {old_dir}: {e}")
+                    state_file.unlink()
+                    cleaned_count += 1
+                except:
+                    pass
+        
+        if cleaned_count > 0:
+            self.logger.info(
+                f"Cleaned up {cleaned_count} old state files"
+            )

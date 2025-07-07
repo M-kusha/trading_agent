@@ -1,577 +1,898 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/core/module_orchestrator.py
-# 🚀 Module Orchestrator - Zero-wiring automatic discovery & execution
+# 🚀 SmartInfoBus Module Orchestrator - Zero-wiring execution engine
 # ─────────────────────────────────────────────────────────────
 
+from __future__ import annotations
 import asyncio
 import importlib
 import inspect
 from pathlib import Path
-from typing import Dict, List, Set, Type, Optional, Any, Tuple
-import traceback
-import yaml
+from typing import Dict, List, Set, Type, Optional, Any, Callable
 from collections import defaultdict, deque
-import numpy as np
+import traceback
 import time
-import logging
+import yaml
+import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+import numpy as np
 
-from modules.utils.info_bus import SmartInfoBus, InfoBus, InfoBusManager
-from modules.utils.audit_utils import format_operator_message, RotatingLogger
-from modules.core.core import BaseModule, ModuleMetadata
+from modules.utils.info_bus import SmartInfoBus, InfoBusManager
+from modules.utils.english_explainer import EnglishExplainer
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.core.module_base import BaseModule, ModuleMetadata
+from modules.core.state_manager import StateManager
+from modules.core.error_pinpointer import ErrorPinpointer
 
 
 class ModuleOrchestrator:
     """
-    🎯 Central orchestrator for zero-wiring module management.
-    Automatically discovers, manages, and executes all decorated modules.
+    Central orchestrator for SmartInfoBus modules.
+    Handles:
+    - Automatic module discovery
+    - Dependency resolution
+    - Parallel execution stages
+    - Error handling and circuit breakers
+    - Hot-reload support
+    - Performance monitoring
     """
     
     _instance = None
     _registered_classes: Dict[str, Type[BaseModule]] = {}
     
-    def __init__(self, info_bus: SmartInfoBus):
-        self.info_bus = info_bus
+    def __init__(self, smart_bus: Optional[SmartInfoBus] = None):
+        """Initialize orchestrator with SmartInfoBus"""
+        self.smart_bus = smart_bus or InfoBusManager.get_instance()
+        self.explainer = EnglishExplainer()
+        
+        # Module registry
         self.modules: Dict[str, BaseModule] = {}
         self.metadata: Dict[str, ModuleMetadata] = {}
-        self.execution_order: List[str] = []
-        self.voting_members: List[str] = []
+        self.module_classes: Dict[str, Type[BaseModule]] = {}
         
-        # Execution stages for parallel processing
+        # Execution planning
+        self.execution_order: List[str] = []
         self.execution_stages: List[List[str]] = []
+        self.voting_members: List[str] = []
+        self.module_dependencies: Dict[str, Set[str]] = defaultdict(set)
         
         # Performance tracking
-        self.stage_timings = defaultdict(list)
-        self.module_dependencies = defaultdict(set)
+        self.execution_history: deque = deque(maxlen=1000)
+        self.stage_timings: Dict[str, List[float]] = defaultdict(list)
         
-        # Policy configuration
-        self.policy = self._load_orchestration_policy()
+        # Configuration
+        self.config = self._load_configuration()
+        
+        # Error handling
+        self.error_pinpointer = ErrorPinpointer(self)
+        
+        # Threading
+        self.executor = ThreadPoolExecutor(
+            max_workers=self.config.get('max_parallel_modules', 10)
+        )
         
         # Setup logging
         self.logger = RotatingLogger(
             name="ModuleOrchestrator",
             log_path="logs/orchestrator/orchestrator.log",
-            max_lines=2000,
+            max_lines=5000,
             operator_mode=True,
             plain_english=True
         )
         
-        # Auto-discover on init
-        self.discover_all_modules()
+        # State manager for hot-reload
+        self.state_manager = StateManager()
         
+        # Initialize
+        ModuleOrchestrator._instance = self
+        self._initialized = False
+    
+    @classmethod
+    def get_instance(cls) -> ModuleOrchestrator:
+        """Get orchestrator singleton"""
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+    
     @classmethod
     def register_class(cls, module_class: Type[BaseModule]):
         """Called by @module decorator to register classes"""
-        cls._registered_classes[module_class.__name__] = module_class
+        class_name = module_class.__name__
+        cls._registered_classes[class_name] = module_class
         
-    def _load_orchestration_policy(self) -> Dict[str, Any]:
-        """Load orchestration policy from config"""
-        policy_path = Path("config/orchestration_policy.yaml")
-        
-        if policy_path.exists():
-            with open(policy_path, 'r') as f:
-                return yaml.safe_load(f)
-        else:
-            # Default policy
-            return {
-                'execution': {
-                    'parallel_stages': [
-                        {'name': 'data_preparation', 'max_parallel': 5},
-                        {'name': 'analysis', 'max_parallel': 10},
-                        {'name': 'voting', 'max_parallel': 8},
-                        {'name': 'risk_check', 'max_parallel': 5}
-                    ],
-                    'timeouts': {'default_ms': 100},
-                    'circuit_breakers': {
-                        'failure_threshold': 3,
-                        'recovery_time_s': 60
-                    }
-                },
-                'monitoring': {
-                    'performance_tracking': True,
-                    'latency_alerts_ms': 150,
-                    'stale_data_warning_s': 2
-                },
-                'hot_reload': {
-                    'enabled': True,
-                    'preserve_state': True
-                }
-            }
+        # If orchestrator exists, register immediately
+        if cls._instance:
+            cls._instance.register_module(class_name, module_class)
     
-    def discover_all_modules(self):
-        """Auto-discover all decorated modules in the project"""
+    def initialize(self):
+        """Initialize orchestrator and discover modules"""
+        if self._initialized:
+            return
+        
         self.logger.info(
             format_operator_message(
-                "🔍", "MODULE DISCOVERY",
-                details="Scanning for @module decorated classes",
-                context="initialization"
+                "🚀", "INITIALIZING ORCHESTRATOR",
+                details="Starting SmartInfoBus module discovery",
+                context="startup"
             )
         )
         
-        # Module directories to scan
-        module_dirs = [
-            'modules/auditing', 'modules/market', 'modules/memory',
-            'modules/strategy', 'modules/risk', 'modules/voting',
-            'modules/features', 'modules/position', 'modules/reward',
-            'modules/simulation', 'modules/meta', 'modules/trading_modes'
-        ]
+        # Load configuration
+        self._load_policies()
         
-        discovered_count = 0
+        # Discover all modules
+        self.discover_all_modules()
+        
+        # Build execution plan
+        self.build_execution_plan()
+        
+        # Validate system
+        self._validate_system_integrity()
+        
+        self._initialized = True
+        
+        self.logger.info(
+            format_operator_message(
+                "✅", "ORCHESTRATOR READY",
+                details=f"{len(self.modules)} modules loaded",
+                context="startup"
+            )
+        )
+    
+    def discover_all_modules(self):
+        """Auto-discover all decorated modules"""
+        # First, register any classes that were decorated before orchestrator init
+        for name, cls in self._registered_classes.items():
+            if name not in self.modules:
+                self.register_module(name, cls)
+        
+        # Then scan module directories for any we missed
+        module_dirs = self.config.get('module_paths', [
+            'modules/auditing',
+            'modules/market',
+            'modules/memory', 
+            'modules/strategy',
+            'modules/risk',
+            'modules/voting',
+            'modules/monitoring',
+            'modules/example'
+        ])
         
         for dir_path in module_dirs:
             path = Path(dir_path)
             if not path.exists():
                 continue
-                
+            
             for py_file in path.glob("*.py"):
                 if py_file.name.startswith("_"):
                     continue
-                    
+                
                 try:
                     # Import to trigger decorators
                     module_name = f"{dir_path.replace('/', '.')}.{py_file.stem}"
                     importlib.import_module(module_name)
-                    discovered_count += 1
                 except Exception as e:
-                    self.logger.warning(f"Failed to import {module_name}: {e}")
+                    self.logger.error(f"Failed to import {module_name}: {e}")
         
-        # Register discovered modules
+        # Register any new classes discovered
         for name, cls in self._registered_classes.items():
-            self.register_module(name, cls)
-            
-        # Build execution order
-        self.build_execution_order()
-        
-        # Build execution stages
-        self.build_execution_stages()
-        
-        self.logger.info(
-            format_operator_message(
-                "✅", "DISCOVERY COMPLETE",
-                details=f"Found {len(self.modules)} modules",
-                result=f"{len(self.voting_members)} voting members",
-                context="initialization"
-            )
-        )
+            if name not in self.modules:
+                self.register_module(name, cls)
     
     def register_module(self, name: str, module_class: Type[BaseModule]):
         """Register a module with the orchestrator"""
         try:
             # Get metadata
+            if not hasattr(module_class, '__module_metadata__'):
+                self.logger.warning(f"Module {name} missing metadata, skipping")
+                return
+            
             metadata = module_class.__module_metadata__
             
             # Create instance
             instance = module_class()
+            
+            # Store
             self.modules[name] = instance
             self.metadata[name] = metadata
+            self.module_classes[name] = module_class
             
-            # Register with InfoBus
-            self.info_bus.register_provider(name, metadata.provides)
-            self.info_bus.register_consumer(name, metadata.requires)
-            
-            # Track dependencies
-            for req in metadata.requires:
-                providers = self._find_providers(req)
-                for provider in providers:
-                    self.module_dependencies[name].add(provider)
+            # Register with SmartInfoBus
+            self.smart_bus.register_provider(name, metadata.provides)
+            self.smart_bus.register_consumer(name, metadata.requires)
             
             # Track voting members
             if metadata.is_voting_member:
                 self.voting_members.append(name)
-                
-            self.logger.debug(
-                f"✅ Registered: {name} ({metadata.category}) "
-                f"v{metadata.version}"
+            
+            # Build dependencies
+            self._build_module_dependencies(name, metadata)
+            
+            self.logger.info(
+                format_operator_message(
+                    "📦", "MODULE REGISTERED",
+                    instrument=name,
+                    details=f"v{metadata.version} ({metadata.category})",
+                    context="discovery"
+                )
             )
             
         except Exception as e:
             self.logger.error(f"Failed to register {name}: {e}")
+            self.error_pinpointer.analyze_exception(e, name, "register_module")
     
-    def _find_providers(self, requirement: str) -> List[str]:
-        """Find modules that provide a requirement"""
-        providers = []
-        for name, metadata in self.metadata.items():
-            if requirement in metadata.provides:
-                providers.append(name)
-        return providers
+    def _build_module_dependencies(self, module_name: str, metadata: ModuleMetadata):
+        """Build dependency graph for a module"""
+        # Find which modules provide required data
+        for required_key in metadata.requires:
+            providers = self.smart_bus.get_providers(required_key)
+            for provider in providers:
+                if provider != module_name and provider in self.modules:
+                    self.module_dependencies[module_name].add(provider)
     
-    def build_execution_order(self):
-        """Build topological execution order based on dependencies"""
-        # Build dependency graph
+    def build_execution_plan(self):
+        """Build optimized execution plan with parallel stages"""
+        # Get dependency graph
+        dependency_graph = self._build_full_dependency_graph()
+        
+        # Topological sort for base order
+        self.execution_order = self._topological_sort(dependency_graph)
+        
+        # Build parallel execution stages
+        self.execution_stages = self._build_parallel_stages(dependency_graph)
+        
+        # Log execution plan
+        self._log_execution_plan()
+    
+    def _build_full_dependency_graph(self) -> Dict[str, Set[str]]:
+        """Build complete dependency graph"""
         graph = defaultdict(set)
-        in_degree = defaultdict(int)
-        all_modules = set(self.modules.keys())
         
-        # Add edges based on dependencies
+        # Add module dependencies
         for module, deps in self.module_dependencies.items():
-            for dep in deps:
-                if dep in self.modules:
-                    graph[dep].add(module)
-                    in_degree[module] += 1
+            graph[module].update(deps)
         
-        # Add nodes with no dependencies
-        for module in all_modules:
-            if module not in in_degree:
-                in_degree[module] = 0
+        # Add data dependencies
+        for module_name, metadata in self.metadata.items():
+            for required_key in metadata.requires:
+                providers = self.smart_bus.get_providers(required_key)
+                for provider in providers:
+                    if provider != module_name and provider in self.modules:
+                        graph[module_name].add(provider)
         
-        # Topological sort using Kahn's algorithm
-        queue = deque([m for m in all_modules if in_degree[m] == 0])
-        order = []
+        return dict(graph)
+    
+    def _topological_sort(self, graph: Dict[str, Set[str]]) -> List[str]:
+        """Topological sort for dependency order"""
+        # Kahn's algorithm
+        in_degree = defaultdict(int)
+        
+        # Calculate in-degrees
+        for node in graph:
+            for dep in graph[node]:
+                in_degree[dep] += 1
+        
+        # Find nodes with no incoming edges
+        queue = deque([
+            node for node in self.modules 
+            if in_degree[node] == 0
+        ])
+        
+        result = []
         
         while queue:
-            # Sort by priority for deterministic order
-            current_batch = sorted(queue, key=lambda m: self.metadata[m].priority, reverse=True)
-            queue.clear()
+            node = queue.popleft()
+            result.append(node)
             
-            for module in current_batch:
-                order.append(module)
-                
-                # Reduce in-degree for dependent modules
-                for dependent in graph[module]:
-                    in_degree[dependent] -= 1
-                    if in_degree[dependent] == 0:
-                        queue.append(dependent)
+            # Remove edges from this node
+            for neighbor in graph.get(node, []):
+                in_degree[neighbor] -= 1
+                if in_degree[neighbor] == 0:
+                    queue.append(neighbor)
         
         # Check for cycles
-        if len(order) != len(all_modules):
-            missing = all_modules - set(order)
-            self.logger.error(f"Circular dependency detected! Missing: {missing}")
-            # Add remaining modules anyway
-            order.extend(missing)
-        
-        self.execution_order = order
-        
-        self.logger.info(
-            format_operator_message(
-                "📋", "EXECUTION ORDER",
-                details=f"{len(order)} modules",
-                result=f"First 5: {' → '.join(order[:5])}...",
-                context="dependency_analysis"
+        if len(result) != len(self.modules):
+            # Handle circular dependencies
+            remaining = set(self.modules) - set(result)
+            self.logger.warning(
+                f"Circular dependencies detected involving: {remaining}"
             )
-        )
+            # Add remaining modules in priority order
+            result.extend(sorted(
+                remaining,
+                key=lambda m: self.metadata[m].priority,
+                reverse=True
+            ))
+        
+        return result
     
-    def build_execution_stages(self):
-        """Build parallel execution stages based on policy"""
-        stages_config = self.policy['execution']['parallel_stages']
-        self.execution_stages = []
+    def _build_parallel_stages(self, graph: Dict[str, Set[str]]) -> List[List[str]]:
+        """Build stages of modules that can run in parallel"""
+        stages = []
+        remaining = set(self.modules.keys())
+        completed = set()
         
-        remaining_modules = set(self.execution_order)
-        
-        for stage_config in stages_config:
-            stage_name = stage_config['name']
-            stage_modules = []
+        while remaining:
+            # Find modules whose dependencies are satisfied
+            stage = []
+            for module in remaining:
+                deps = graph.get(module, set())
+                if deps.issubset(completed):
+                    stage.append(module)
             
-            # Find modules matching this stage
-            for module in list(remaining_modules):
+            if not stage:
+                # Circular dependency - take modules with highest priority
+                stage = sorted(
+                    list(remaining),
+                    key=lambda m: self.metadata[m].priority,
+                    reverse=True
+                )[:5]
+                self.logger.warning(
+                    f"Forcing stage with potential circular deps: {stage}"
+                )
+            
+            stages.append(stage)
+            completed.update(stage)
+            remaining -= set(stage)
+        
+        return stages
+    
+    def _log_execution_plan(self):
+        """Log the execution plan in plain English"""
+        plan_description = "EXECUTION PLAN:\n"
+        plan_description += "=" * 50 + "\n\n"
+        
+        for i, stage in enumerate(self.execution_stages, 1):
+            plan_description += f"Stage {i} (parallel execution):\n"
+            for module in stage:
                 metadata = self.metadata[module]
-                
-                # Match by category or explicit list
-                if stage_name == 'voting' and metadata.is_voting_member:
-                    stage_modules.append(module)
-                    remaining_modules.remove(module)
-                elif f"category:{metadata.category}" in stage_config.get('modules', []):
-                    stage_modules.append(module)
-                    remaining_modules.remove(module)
-                elif module in stage_config.get('modules', []):
-                    stage_modules.append(module)
-                    remaining_modules.remove(module)
-                elif metadata.category == stage_name:
-                    stage_modules.append(module)
-                    remaining_modules.remove(module)
-            
-            if stage_modules:
-                self.execution_stages.append(stage_modules)
-                self.logger.debug(f"Stage '{stage_name}': {len(stage_modules)} modules")
+                plan_description += f"  • {module} ({metadata.category})"
+                if metadata.is_voting_member:
+                    plan_description += " [VOTER]"
+                plan_description += "\n"
+            plan_description += "\n"
         
-        # Add remaining modules as final stage
-        if remaining_modules:
-            self.execution_stages.append(list(remaining_modules))
-            self.logger.debug(f"Final stage: {len(remaining_modules)} modules")
+        self.logger.info(plan_description)
     
     async def execute_step(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute all modules in optimized stages"""
-        step_start = time.perf_counter()
+        """
+        Execute all modules in dependency order with parallel stages.
+        This is the main orchestration method.
+        """
+        start_time = time.time()
         results = {}
+        stage_results = []
         
-        # Store market data in InfoBus
-        for key, value in market_data.items():
-            self.info_bus.set(key, value, "Environment")
+        # Store market data in SmartInfoBus
+        self._store_market_data(market_data)
         
-        # Execute stages
+        # Execute each stage
         for stage_idx, stage_modules in enumerate(self.execution_stages):
-            stage_start = time.perf_counter()
+            stage_start = time.time()
             
-            # Execute stage in parallel
-            stage_results = await self._execute_stage_parallel(
-                stage_modules, 
-                stage_idx
+            # Execute modules in parallel within stage
+            stage_result = await self._execute_stage(
+                stage_modules,
+                stage_idx,
+                results
             )
             
-            results.update(stage_results)
+            results.update(stage_result)
+            stage_results.append(stage_result)
             
-            # Track stage timing
-            stage_time = (time.perf_counter() - stage_start) * 1000
-            self.stage_timings[f"stage_{stage_idx}"].append(stage_time)
+            # Record stage timing
+            stage_duration = (time.time() - stage_start) * 1000
+            self.stage_timings[f"stage_{stage_idx}"].append(stage_duration)
             
-            if stage_time > 200:  # 200ms warning threshold
-                self.logger.warning(
-                    format_operator_message(
-                        "⚠️", "SLOW STAGE",
-                        details=f"Stage {stage_idx} took {stage_time:.0f}ms",
-                        context="performance"
-                    )
+            # Check for stage failures
+            if self._check_stage_failures(stage_result):
+                self.logger.error(
+                    f"Stage {stage_idx} had critical failures, stopping execution"
                 )
-        
-        # Record total execution time
-        total_time = (time.perf_counter() - step_start) * 1000
-        self.info_bus.record_module_timing("Orchestrator", total_time)
-        
-        # Generate execution report
-        if total_time > 500:  # 500ms threshold for detailed report
-            report = self._generate_execution_report(results, total_time)
-            self.logger.info(report)
-        
-        return results
-    
-    async def _execute_stage_parallel(self, modules: List[str], 
-                                    stage_idx: int) -> Dict[str, Any]:
-        """Execute modules in a stage with parallel support"""
-        # Get max parallel from policy
-        max_parallel = 10  # Default
-        for stage_config in self.policy['execution']['parallel_stages']:
-            if stage_config.get('index') == stage_idx:
-                max_parallel = stage_config.get('max_parallel', 10)
                 break
         
-        # Create tasks for parallel execution
-        tasks = []
-        for module_name in modules:
-            if not self.info_bus.is_module_enabled(module_name):
-                continue
-                
-            task = asyncio.create_task(
-                self._execute_module_async(module_name)
+        # Aggregate results
+        aggregated = self._aggregate_results(results)
+        
+        # Record execution
+        execution_time = (time.time() - start_time) * 1000
+        self._record_execution(execution_time, results, aggregated)
+        
+        # Generate execution summary
+        summary = self._generate_execution_summary(
+            execution_time,
+            stage_results,
+            aggregated
+        )
+        
+        self.logger.info(summary)
+        
+        return aggregated
+    
+    def _store_market_data(self, market_data: Dict[str, Any]):
+        """Store market data in SmartInfoBus"""
+        for key, value in market_data.items():
+            self.smart_bus.set(
+                key,
+                value,
+                module="Orchestrator",
+                thesis="Market data from environment"
             )
+    
+    async def _execute_stage(self, module_names: List[str], 
+                           stage_idx: int,
+                           previous_results: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a stage of modules in parallel"""
+        tasks = []
+        results = {}
+        
+        for module_name in module_names:
+            if not self.smart_bus.is_module_enabled(module_name):
+                self.logger.warning(f"Skipping disabled module: {module_name}")
+                continue
+            
+            module = self.modules[module_name]
+            metadata = self.metadata[module_name]
+            
+            # Prepare inputs
+            inputs = self._prepare_module_inputs(module_name, metadata)
+            
+            # Create task
+            task = asyncio.create_task(
+                self._execute_module_with_timeout(
+                    module,
+                    module_name,
+                    inputs,
+                    metadata.timeout_ms / 1000.0
+                )
+            )
+            
             tasks.append((module_name, task))
         
-        # Execute with concurrency limit
-        results = {}
-        for i in range(0, len(tasks), max_parallel):
-            batch = tasks[i:i + max_parallel]
-            
-            # Wait for batch to complete
-            for module_name, task in batch:
-                try:
-                    result = await task
-                    if result:
-                        results[module_name] = result
-                except Exception as e:
-                    self.handle_module_failure(module_name, e)
+        # Wait for all tasks with individual handling
+        for module_name, task in tasks:
+            try:
+                result = await task
+                if result:
+                    results[module_name] = result
+            except Exception as e:
+                self.logger.error(f"Module {module_name} failed: {e}")
+                self.error_pinpointer.analyze_exception(e, module_name, "execute")
+                results[module_name] = {'error': str(e)}
         
         return results
     
-    async def _execute_module_async(self, module_name: str) -> Optional[Dict[str, Any]]:
-        """Execute a single module asynchronously"""
-        module = self.modules[module_name]
-        metadata = self.metadata[module_name]
-        
-        # Collect inputs based on requirements
+    def _prepare_module_inputs(self, module_name: str, 
+                             metadata: ModuleMetadata) -> Dict[str, Any]:
+        """Prepare inputs for a module from SmartInfoBus"""
         inputs = {}
-        for req in metadata.requires:
-            value = self.info_bus.get(req, module_name)
-            if value is not None:
-                inputs[req] = value
         
-        # Add info_bus reference
-        inputs['info_bus'] = InfoBusManager.get_current()
+        for required_key in metadata.requires:
+            # Get data with metadata
+            data = self.smart_bus.get_with_metadata(required_key, module_name)
+            
+            if data:
+                # Check freshness if needed
+                if data.age_seconds() > 60:  # 1 minute default
+                    self.logger.warning(
+                        f"Stale data for {module_name}: "
+                        f"{required_key} is {data.age_seconds():.1f}s old"
+                    )
+                
+                inputs[required_key] = data.value
+            else:
+                # Request data if not available
+                self.smart_bus.request_data(required_key, module_name)
+                inputs[required_key] = None
         
-        # Validate inputs
+        return inputs
+    
+    async def _execute_module_with_timeout(self, module: BaseModule,
+                                         module_name: str,
+                                         inputs: Dict[str, Any],
+                                         timeout: float) -> Optional[Dict[str, Any]]:
+        """Execute module with timeout and error handling"""
         try:
-            module.validate_inputs(inputs)
-        except ValueError as e:
-            self.logger.warning(
-                f"Module {module_name} missing inputs: {e}"
-            )
-            return None
-        
-        # Execute with timeout
-        timeout = metadata.timeout_ms / 1000.0  # Convert to seconds
-        
-        try:
-            # Call process method if available, otherwise fall back to step
-            if hasattr(module, 'process') and inspect.iscoroutinefunction(module.process):
+            # Start timing
+            start_time = time.perf_counter()
+            
+            # Execute module
+            if hasattr(module, 'process'):
+                # Async process method
                 result = await asyncio.wait_for(
                     module.process(**inputs),
                     timeout=timeout
                 )
             else:
-                # Synchronous fallback
+                # Legacy step method - run in executor
                 result = await asyncio.wait_for(
                     asyncio.get_event_loop().run_in_executor(
-                        None,
-                        self._execute_module_sync,
-                        module_name,
+                        self.executor,
+                        self._execute_legacy_module,
+                        module,
                         inputs
                     ),
                     timeout=timeout
                 )
             
-            # Store outputs in InfoBus
-            if isinstance(result, dict):
-                for key, value in result.items():
-                    if key in metadata.provides:
-                        thesis = result.get(f'{key}_thesis', '')
-                        self.info_bus.set(
-                            key, value, module_name,
-                            thesis=thesis,
-                            confidence=result.get('confidence', 0.8)
-                        )
+            # Record timing
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            self.smart_bus.record_module_timing(module_name, duration_ms)
+            
+            # Validate output
+            if result and isinstance(result, dict):
+                self._validate_module_output(module_name, result)
             
             return result
             
         except asyncio.TimeoutError:
-            self.logger.error(
-                format_operator_message(
-                    "⏱️", "MODULE TIMEOUT",
-                    instrument=module_name,
-                    details=f"Exceeded {timeout*1000:.0f}ms",
-                    context="execution"
-                )
-            )
-            self.info_bus.record_module_failure(module_name, "Timeout")
-            return None
+            duration_ms = timeout * 1000
+            error_msg = f"Timeout after {duration_ms:.0f}ms"
+            self.smart_bus.record_module_failure(module_name, error_msg)
+            raise
             
         except Exception as e:
-            self.handle_module_failure(module_name, e)
-            return None
+            self.smart_bus.record_module_failure(module_name, str(e))
+            raise
     
-    def _execute_module_sync(self, module_name: str, 
-                           inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute module synchronously (for legacy modules)"""
-        module = self.modules[module_name]
+    def _execute_legacy_module(self, module: BaseModule, 
+                             inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute legacy module with step method"""
+        # Create info_bus structure
+        from modules.utils.info_bus import InfoBusManager
+        info_bus = InfoBusManager.create_info_bus(None, 0)
         
-        # Legacy modules use step method
-        if 'info_bus' in inputs and hasattr(module, 'step'):
-            module.step(inputs['info_bus'])
-            return {}
+        # Add inputs to info_bus
+        for key, value in inputs.items():
+            info_bus[key] = value
         
-        return {}
+        # Execute step
+        module.step(info_bus)
+        
+        # Extract outputs based on metadata
+        outputs = {}
+        metadata = module.__class__.__module_metadata__
+        
+        for output_key in metadata.provides:
+            # Check SmartInfoBus for output
+            value = self.smart_bus.get(output_key, module.__class__.__name__)
+            if value is not None:
+                outputs[output_key] = value
+        
+        return outputs
     
-    def handle_module_failure(self, module_name: str, error: Exception):
-        """Handle module execution failure"""
-        error_msg = str(error)
-        tb = traceback.format_exc()
+    def _validate_module_output(self, module_name: str, output: Dict[str, Any]):
+        """Validate module output meets requirements"""
+        metadata = self.metadata[module_name]
         
-        self.logger.error(
-            format_operator_message(
-                "💥", "MODULE FAILURE",
-                instrument=module_name,
-                details=error_msg,
-                context="execution"
+        # Check all promised outputs are present
+        missing = []
+        for output_key in metadata.provides:
+            if output_key not in output:
+                # Check if it was set directly in SmartInfoBus
+                if not self.smart_bus.get(output_key, module_name):
+                    missing.append(output_key)
+        
+        if missing:
+            self.logger.warning(
+                f"Module {module_name} missing outputs: {missing}"
             )
+        
+        # Check for thesis if explainable
+        if metadata.explainable and '_thesis' not in output:
+            # Check SmartInfoBus for thesis
+            thesis_key = f'thesis_{module_name}'
+            if not self.smart_bus.get(thesis_key, module_name):
+                self.logger.warning(
+                    f"Explainable module {module_name} did not provide thesis"
+                )
+    
+    def _check_stage_failures(self, stage_result: Dict[str, Any]) -> bool:
+        """Check if stage had critical failures"""
+        failures = sum(
+            1 for result in stage_result.values()
+            if isinstance(result, dict) and 'error' in result
         )
         
-        # Record in InfoBus
-        self.info_bus.record_module_failure(module_name, error_msg)
+        total = len(stage_result)
+        failure_rate = failures / max(total, 1)
         
-        # Store error details for debugging
-        self.info_bus.set(
-            f'error_{module_name}',
-            {
-                'error': error_msg,
-                'traceback': tb,
-                'timestamp': time.time()
-            },
+        # Critical if more than 50% failed
+        return failure_rate > 0.5
+    
+    def _aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Aggregate results from all modules"""
+        aggregated = {
+            'timestamp': time.time(),
+            'module_count': len(results),
+            'successful_modules': sum(
+                1 for r in results.values()
+                if isinstance(r, dict) and 'error' not in r
+            ),
+            'errors': [],
+            'votes': {},
+            'signals': {},
+            'analysis': {}
+        }
+        
+        # Extract specific result types
+        for module_name, result in results.items():
+            if isinstance(result, dict):
+                if 'error' in result:
+                    aggregated['errors'].append({
+                        'module': module_name,
+                        'error': result['error']
+                    })
+                
+                # Extract votes
+                if 'vote' in result:
+                    aggregated['votes'][module_name] = result['vote']
+                
+                # Extract trading signals
+                if 'trading_signal' in result:
+                    aggregated['signals'][module_name] = result['trading_signal']
+                
+                # General analysis
+                for key, value in result.items():
+                    if key not in ['error', 'vote', 'trading_signal', '_thesis']:
+                        if key not in aggregated['analysis']:
+                            aggregated['analysis'][key] = {}
+                        aggregated['analysis'][key][module_name] = value
+        
+        return aggregated
+    
+    def _record_execution(self, execution_time: float, 
+                        results: Dict[str, Any],
+                        aggregated: Dict[str, Any]):
+        """Record execution for analysis"""
+        record = {
+            'timestamp': time.time(),
+            'execution_time_ms': execution_time,
+            'module_count': len(results),
+            'success_count': aggregated['successful_modules'],
+            'error_count': len(aggregated['errors']),
+            'stage_count': len(self.execution_stages)
+        }
+        
+        self.execution_history.append(record)
+        
+        # Update SmartInfoBus
+        self.smart_bus.set(
+            'orchestrator_metrics',
+            record,
             module='Orchestrator',
-            thesis=f"Module {module_name} failed during execution"
+            thesis=f"Executed {len(results)} modules in {execution_time:.0f}ms"
         )
     
-    def _generate_execution_report(self, results: Dict[str, Any], 
-                                 total_time: float) -> str:
-        """Generate execution performance report"""
-        lines = [
-            "=" * 60,
-            "ORCHESTRATOR EXECUTION REPORT",
-            "=" * 60,
-            f"Total execution time: {total_time:.1f}ms",
-            f"Modules executed: {len(results)}",
-            ""
+    def _generate_execution_summary(self, execution_time: float,
+                                  stage_results: List[Dict],
+                                  aggregated: Dict[str, Any]) -> str:
+        """Generate plain English execution summary"""
+        summary = f"""
+EXECUTION SUMMARY
+================
+Total Time: {execution_time:.0f}ms
+Modules Executed: {aggregated['module_count']}
+Successful: {aggregated['successful_modules']}
+Failed: {len(aggregated['errors'])}
+
+STAGE BREAKDOWN:
+"""
+        
+        for i, stage_result in enumerate(stage_results):
+            stage_time = self.stage_timings[f"stage_{i}"][-1] if f"stage_{i}" in self.stage_timings else 0
+            summary += f"  Stage {i+1}: {len(stage_result)} modules in {stage_time:.0f}ms\n"
+        
+        if aggregated['errors']:
+            summary += "\nERRORS:\n"
+            for error in aggregated['errors'][:5]:
+                summary += f"  • {error['module']}: {error['error']}\n"
+        
+        if aggregated['votes']:
+            summary += f"\nVOTES COLLECTED: {len(aggregated['votes'])}\n"
+        
+        if aggregated['signals']:
+            summary += f"\nTRADING SIGNALS: {len(aggregated['signals'])}\n"
+        
+        return summary
+    
+    def _load_configuration(self) -> Dict[str, Any]:
+        """Load orchestrator configuration"""
+        default_config = {
+            'max_parallel_modules': 10,
+            'default_timeout_ms': 100,
+            'circuit_breaker_threshold': 3,
+            'module_paths': [
+                'modules/auditing',
+                'modules/market',
+                'modules/memory',
+                'modules/strategy',
+                'modules/risk',
+                'modules/voting',
+                'modules/monitoring',
+                'modules/example'
+            ]
+        }
+        
+        # Try to load from file
+        config_path = Path('config/orchestration_policy.yaml')
+        if config_path.exists():
+            try:
+                with open(config_path, 'r') as f:
+                    loaded_config = yaml.safe_load(f)
+                    default_config.update(loaded_config.get('execution', {}))
+            except Exception as e:
+                self.logger.error(f"Failed to load config: {e}")
+        
+        return default_config
+    
+    def _load_policies(self):
+        """Load additional policy configurations"""
+        # Load module-specific policies
+        policy_files = [
+            'config/risk_policy.yaml',
+            'config/explainability_standards.yaml',
+            'config/module_registry.yaml'
         ]
         
-        # Stage timings
-        lines.append("Stage Timings:")
-        for stage_idx, timings in enumerate(self.stage_timings.items()):
-            stage_name, times = timings
-            if times:
-                avg_time = np.mean(times[-10:])  # Last 10 executions
-                lines.append(f"  {stage_name}: {avg_time:.1f}ms avg")
-        
-        # Slow modules
-        slow_modules = []
-        for module_name in self.modules:
-            timings = list(self.info_bus._latency_history.get(module_name, []))
-            if timings and np.mean(timings[-10:]) > 100:
-                slow_modules.append(f"{module_name} ({np.mean(timings[-10:]):.0f}ms)")
-        
-        if slow_modules:
-            lines.extend([
-                "",
-                "⚠️ Slow Modules:",
-                *[f"  - {m}" for m in slow_modules]
-            ])
-        
-        # Failed modules
-        if self.info_bus._module_disabled:
-            lines.extend([
-                "",
-                "❌ Disabled Modules:",
-                *[f"  - {m}" for m in self.info_bus._module_disabled]
-            ])
-        
-        lines.append("=" * 60)
-        
-        return "\n".join(lines)
+        for policy_file in policy_files:
+            path = Path(policy_file)
+            if path.exists():
+                try:
+                    with open(path, 'r') as f:
+                        policy = yaml.safe_load(f)
+                        # Apply policies as needed
+                        self._apply_policy(policy_file, policy)
+                except Exception as e:
+                    self.logger.error(f"Failed to load {policy_file}: {e}")
     
-    def get_dependency_graph(self) -> Dict[str, List[str]]:
-        """Get module dependency graph for visualization"""
-        graph = {}
+    def _apply_policy(self, policy_name: str, policy: Dict[str, Any]):
+        """Apply a specific policy configuration"""
+        # Implementation depends on policy type
+        if 'risk_policy' in policy_name:
+            # Apply risk thresholds
+            pass
+        elif 'explainability_standards' in policy_name:
+            # Apply thesis requirements
+            pass
+        elif 'module_registry' in policy_name:
+            # Validate registered modules
+            pass
+    
+    def _validate_system_integrity(self):
+        """Validate system configuration and dependencies"""
+        issues = []
         
-        for module, deps in self.module_dependencies.items():
-            graph[module] = list(deps)
+        # Check for missing dependencies
+        for module_name, metadata in self.metadata.items():
+            for required in metadata.requires:
+                providers = self.smart_bus.get_providers(required)
+                if not providers:
+                    issues.append(
+                        f"Module {module_name} requires '{required}' "
+                        f"but no provider found"
+                    )
         
-        return graph
+        # Check for circular dependencies
+        circular = self.smart_bus.find_circular_dependencies()
+        if circular:
+            issues.append(f"Found {len(circular)} circular dependencies")
+        
+        # Check voting members
+        if not self.voting_members:
+            issues.append("No voting members registered")
+        
+        # Log issues
+        if issues:
+            self.logger.warning(
+                "SYSTEM INTEGRITY ISSUES:\n" + "\n".join(issues)
+            )
+    
+    # ─────────────────────────────────────────────────────────────
+    # Hot Reload Support
+    # ─────────────────────────────────────────────────────────────
+    
+    def reload_module(self, module_name: str) -> bool:
+        """Hot-reload a module preserving state"""
+        if module_name not in self.modules:
+            self.logger.error(f"Module {module_name} not found")
+            return False
+        
+        try:
+            # Save state
+            state = self.state_manager.save_module_state(self.modules[module_name])
+            
+            # Reload
+            success = self.state_manager.reload_module(module_name, self)
+            
+            if success:
+                self.logger.info(
+                    format_operator_message(
+                        "🔄", "MODULE RELOADED",
+                        instrument=module_name,
+                        context="hot_reload"
+                    )
+                )
+            
+            return success
+            
+        except Exception as e:
+            self.logger.error(f"Failed to reload {module_name}: {e}")
+            return False
+    
+    # ─────────────────────────────────────────────────────────────
+    # Analysis and Monitoring
+    # ─────────────────────────────────────────────────────────────
     
     def get_module_by_name(self, name: str) -> Optional[BaseModule]:
         """Get module instance by name"""
         return self.modules.get(name)
     
-    def get_voting_modules(self) -> List[BaseModule]:
-        """Get all voting member modules"""
-        return [self.modules[name] for name in self.voting_members 
-                if name in self.modules]
-    
-    def enable_module(self, module_name: str):
-        """Enable a previously disabled module"""
-        if module_name in self.modules:
-            self.info_bus.reset_module_failures(module_name)
-            self.logger.info(f"Module {module_name} enabled")
-    
-    def disable_module(self, module_name: str):
-        """Manually disable a module"""
-        if module_name in self.modules:
-            self.info_bus._module_disabled.add(module_name)
-            self.logger.warning(f"Module {module_name} manually disabled")
-    
-    def get_execution_summary(self) -> Dict[str, Any]:
-        """Get execution summary for monitoring"""
+    def get_execution_metrics(self) -> Dict[str, Any]:
+        """Get execution performance metrics"""
+        if not self.execution_history:
+            return {}
+        
+        recent = list(self.execution_history)[-100:]
+        
         return {
-            'total_modules': len(self.modules),
-            'active_modules': len([m for m in self.modules 
-                                  if self.info_bus.is_module_enabled(m)]),
-            'disabled_modules': list(self.info_bus._module_disabled),
-            'voting_members': len(self.voting_members),
-            'execution_stages': len(self.execution_stages),
-            'average_stage_times': {
-                stage: np.mean(times[-10:]) if times else 0
-                for stage, times in self.stage_timings.items()
+            'avg_execution_time_ms': np.mean([r['execution_time_ms'] for r in recent]),
+            'max_execution_time_ms': max(r['execution_time_ms'] for r in recent),
+            'avg_success_rate': np.mean([
+                r['success_count'] / max(r['module_count'], 1) 
+                for r in recent
+            ]),
+            'total_executions': len(self.execution_history),
+            'stage_performance': {
+                stage: {
+                    'avg_ms': np.mean(timings) if timings else 0,
+                    'max_ms': max(timings) if timings else 0
+                }
+                for stage, timings in self.stage_timings.items()
             }
         }
+    
+    def get_module_status_report(self) -> str:
+        """Get plain English status report"""
+        metrics = self.get_execution_metrics()
+        
+        report = f"""
+ORCHESTRATOR STATUS REPORT
+=========================
+Active Modules: {len(self.modules)}
+Voting Members: {len(self.voting_members)}
+Execution Stages: {len(self.execution_stages)}
+
+PERFORMANCE:
+Average Execution: {metrics.get('avg_execution_time_ms', 0):.0f}ms
+Success Rate: {metrics.get('avg_success_rate', 0):.1%}
+Total Executions: {metrics.get('total_executions', 0)}
+
+MODULE HEALTH:
+"""
+        
+        # Add module health
+        for module_name in sorted(self.modules.keys()):
+            health = self.smart_bus.get_module_health(module_name)
+            status = "✅" if health['enabled'] else "❌"
+            report += f"  {status} {module_name}"
+            if health['failures'] > 0:
+                report += f" ({health['failures']} failures)"
+            report += "\n"
+        
+        return report
+    
+    def shutdown(self):
+        """Graceful shutdown"""
+        self.logger.info("Shutting down orchestrator")
+        
+        # Save state
+        for module_name, module in self.modules.items():
+            if hasattr(module, 'get_state'):
+                state = module.get_state()
+                # Could persist to disk here
+        
+        # Shutdown executor
+        self.executor.shutdown(wait=True)
+        
+        self.logger.info("Orchestrator shutdown complete")
