@@ -1,87 +1,151 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/memory/mistake_memory.py
-# Enhanced with new infrastructure - InfoBus integration & mixins!
+# 🚀 PRODUCTION-READY Mistake Memory System
+# Advanced loss avoidance with clustering and SmartInfoBus integration
 # ─────────────────────────────────────────────────────────────
 
+import asyncio
+import time
+import threading
 import numpy as np
-from typing import List, Tuple, Dict, Any, Optional
-from collections import deque
+from typing import Dict, Any, List, Optional, Tuple
+from collections import deque, defaultdict
+from dataclasses import dataclass, field
+from datetime import datetime
 from sklearn.cluster import KMeans
-import datetime
-import random
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import silhouette_score
 
-from modules.core.core import Module, ModuleConfig
-from modules.core.mixins import TradingMixin, RiskMixin
-from modules.utils.info_bus import InfoBus, InfoBusExtractor
+from modules.core.module_base import BaseModule, module
+from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.monitoring.health_monitor import HealthMonitor
+from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-class MistakeMemory(Module, TradingMixin, RiskMixin):
+@dataclass
+class MistakeConfig:
+    """Configuration for Mistake Memory"""
+    max_mistakes: int = 100
+    n_clusters: int = 5
+    profit_threshold: float = 10.0
+    cluster_update_threshold: int = 10
+    avoidance_sensitivity: float = 1.0
+    pattern_memory_size: int = 50
+    danger_zone_weight: float = 2.0
+    
+    # Performance thresholds
+    max_processing_time_ms: float = 250
+    circuit_breaker_threshold: int = 3
+    min_cluster_quality: float = 0.3
+    
+    # Learning parameters
+    learning_rate: float = 0.1
+    false_positive_threshold: float = 0.2
+    min_samples_for_clustering: int = 10
+
+
+@module(
+    name="MistakeMemory",
+    version="3.0.0",
+    category="memory",
+    provides=["mistake_avoidance", "danger_zones", "pattern_recognition", "loss_prevention"],
+    requires=["trades", "features", "market_context", "risk_data"],
+    description="Advanced mistake memory with clustering for loss avoidance and pattern recognition",
+    thesis_required=True,
+    health_monitoring=True,
+    performance_tracking=True,
+    error_handling=True
+)
+class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
-    Enhanced mistake memory with infrastructure integration.
+    Advanced mistake memory with SmartInfoBus integration.
     Learns from both losses and wins using clustering to identify danger and profit zones.
     """
-    
-    def __init__(self, max_mistakes: int = 100, n_clusters: int = 5, 
-                 profit_threshold: float = 10.0, debug: bool = True,
-                 genome: Optional[Dict[str, Any]] = None, **kwargs):
-        # Initialize with enhanced infrastructure
-        config = ModuleConfig(
-            debug=debug,
-            max_history=300,
-            **kwargs
-        )
-        super().__init__(config)
+
+    def __init__(self, 
+                 config: Optional[MistakeConfig] = None,
+                 genome: Optional[Dict[str, Any]] = None,
+                 **kwargs):
+        
+        self.config = config or MistakeConfig()
+        super().__init__()
+        
+        # Initialize advanced systems
+        self._initialize_advanced_systems()
         
         # Initialize genome parameters
-        self._initialize_genome_parameters(genome, max_mistakes, n_clusters, profit_threshold)
+        self._initialize_genome_parameters(genome)
         
-        # Enhanced state initialization
-        self._initialize_module_state()
+        # Initialize mistake memory state
+        self._initialize_mistake_state()
         
-        self.log_operator_info(
-            "Mistake memory initialized",
-            max_mistakes=self.max_mistakes,
-            n_clusters=self.n_clusters,
-            profit_threshold=f"€{self.profit_threshold:.2f}",
-            avoidance_learning="enabled"
+        self.logger.info(
+            format_operator_message(
+                "🧠", "MISTAKE_MEMORY_INITIALIZED",
+                details=f"Max mistakes: {self.config.max_mistakes}, Clusters: {self.config.n_clusters}",
+                result="Loss avoidance system ready",
+                context="mistake_learning"
+            )
         )
+    
+    def _initialize_advanced_systems(self):
+        """Initialize advanced systems for mistake memory"""
+        self.smart_bus = InfoBusManager.get_instance()
+        self.logger = RotatingLogger(
+            name="MistakeMemory", 
+            log_path="logs/mistake_memory.log", 
+            max_lines=3000, 
+            operator_mode=True,
+            plain_english=True
+        )
+        self.error_pinpointer = ErrorPinpointer()
+        self.error_handler = create_error_handler("MistakeMemory", self.error_pinpointer)
+        self.english_explainer = EnglishExplainer()
+        self.system_utilities = SystemUtilities()
+        self.performance_tracker = PerformanceTracker()
+        
+        # Circuit breaker for clustering operations
+        self.circuit_breaker = {
+            'failures': 0,
+            'last_failure': 0,
+            'state': 'CLOSED',
+            'threshold': self.config.circuit_breaker_threshold
+        }
+        
+        # Health monitoring
+        self._health_status = 'healthy'
+        self._last_health_check = time.time()
+        self._start_monitoring()
 
-    def _initialize_genome_parameters(self, genome: Optional[Dict], max_mistakes: int, 
-                                    n_clusters: int, profit_threshold: float):
+    def _initialize_genome_parameters(self, genome: Optional[Dict[str, Any]]):
         """Initialize genome-based parameters"""
         if genome:
-            self.max_mistakes = int(genome.get("max_mistakes", max_mistakes))
-            self.n_clusters = int(genome.get("n_clusters", n_clusters))
-            self.profit_threshold = float(genome.get("profit_threshold", profit_threshold))
-            self.cluster_update_threshold = int(genome.get("cluster_update_threshold", 10))
-            self.avoidance_sensitivity = float(genome.get("avoidance_sensitivity", 1.0))
-            self.pattern_memory_size = int(genome.get("pattern_memory_size", 50))
-            self.danger_zone_weight = float(genome.get("danger_zone_weight", 2.0))
+            self.genome = {
+                "max_mistakes": int(genome.get("max_mistakes", self.config.max_mistakes)),
+                "n_clusters": int(genome.get("n_clusters", self.config.n_clusters)),
+                "profit_threshold": float(genome.get("profit_threshold", self.config.profit_threshold)),
+                "cluster_update_threshold": int(genome.get("cluster_update_threshold", self.config.cluster_update_threshold)),
+                "avoidance_sensitivity": float(genome.get("avoidance_sensitivity", self.config.avoidance_sensitivity)),
+                "pattern_memory_size": int(genome.get("pattern_memory_size", self.config.pattern_memory_size)),
+                "danger_zone_weight": float(genome.get("danger_zone_weight", self.config.danger_zone_weight))
+            }
         else:
-            self.max_mistakes = max_mistakes
-            self.n_clusters = n_clusters
-            self.profit_threshold = profit_threshold
-            self.cluster_update_threshold = 10
-            self.avoidance_sensitivity = 1.0
-            self.pattern_memory_size = 50
-            self.danger_zone_weight = 2.0
+            self.genome = {
+                "max_mistakes": self.config.max_mistakes,
+                "n_clusters": self.config.n_clusters,
+                "profit_threshold": self.config.profit_threshold,
+                "cluster_update_threshold": self.config.cluster_update_threshold,
+                "avoidance_sensitivity": self.config.avoidance_sensitivity,
+                "pattern_memory_size": self.config.pattern_memory_size,
+                "danger_zone_weight": self.config.danger_zone_weight
+            }
 
-        # Store genome for evolution
-        self.genome = {
-            "max_mistakes": self.max_mistakes,
-            "n_clusters": self.n_clusters,
-            "profit_threshold": self.profit_threshold,
-            "cluster_update_threshold": self.cluster_update_threshold,
-            "avoidance_sensitivity": self.avoidance_sensitivity,
-            "pattern_memory_size": self.pattern_memory_size,
-            "danger_zone_weight": self.danger_zone_weight
-        }
-
-    def _initialize_module_state(self):
-        """Initialize module-specific state using mixins"""
-        self._initialize_trading_state()
-        self._initialize_risk_state()
-        
+    def _initialize_mistake_state(self):
+        """Initialize mistake memory state"""
         # Memory buffers for wins and losses
         self._loss_buf: List[Tuple[np.ndarray, float, Dict]] = []
         self._win_buf: List[Tuple[np.ndarray, float, Dict]] = []
@@ -89,6 +153,7 @@ class MistakeMemory(Module, TradingMixin, RiskMixin):
         # Clustering models
         self._km_loss: Optional[KMeans] = None
         self._km_win: Optional[KMeans] = None
+        self._scaler = StandardScaler()
         
         # Cluster analysis
         self._mean_dist = 0.0
@@ -113,1073 +178,851 @@ class MistakeMemory(Module, TradingMixin, RiskMixin):
         self._prediction_accuracy = 0.0
         self._false_positive_rate = 0.0
         self._true_positive_rate = 0.0
+        
+        # Performance metrics
+        self._mistake_performance = {
+            'total_losses_learned': 0,
+            'total_wins_learned': 0,
+            'avoidance_effectiveness': 0.0,
+            'cluster_updates': 0,
+            'pattern_discoveries': 0
+        }
 
-    def reset(self) -> None:
-        """Enhanced reset with automatic cleanup"""
-        super().reset()
-        self._reset_trading_state()
-        self._reset_risk_state()
+    def _start_monitoring(self):
+        """Start background monitoring"""
+        def monitoring_loop():
+            while getattr(self, '_monitoring_active', True):
+                try:
+                    self._update_mistake_health()
+                    self._analyze_avoidance_effectiveness()
+                    time.sleep(30)
+                except Exception as e:
+                    self.logger.error(f"Monitoring error: {e}")
         
-        # Clear memory buffers
-        self._loss_buf.clear()
-        self._win_buf.clear()
-        
-        # Reset clustering
-        self._km_loss = None
-        self._km_win = None
-        self._mean_dist = 0.0
-        self._last_dist = 0.0
-        self._danger_zones.clear()
-        self._profit_zones.clear()
-        
-        # Reset patterns and signals
-        self._consecutive_losses = 0
-        self._loss_patterns.clear()
-        self._win_patterns.clear()
-        self._avoidance_signal = 0.0
-        
-        # Reset analytics
-        self._pattern_evolution.clear()
-        self._danger_zone_violations.clear()
-        self._learning_effectiveness.clear()
-        self._market_context_correlations.clear()
-        self._cluster_quality_scores.clear()
-        self._prediction_accuracy = 0.0
-        self._false_positive_rate = 0.0
-        self._true_positive_rate = 0.0
+        self._monitoring_active = True
+        monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
+        monitor_thread.start()
 
-    def _step_impl(self, info_bus: Optional[InfoBus] = None, **kwargs) -> None:
-        """Enhanced step with InfoBus integration"""
-        
-        # Extract trading data for learning
-        trading_data = self._extract_trading_data(info_bus, kwargs)
-        
-        # Process learning from trades
-        if trading_data.get('source') != 'insufficient_data':
-            self._process_learning_data(trading_data)
-        
-        # Update avoidance signals
-        self._update_avoidance_signals()
-
-    def _extract_trading_data(self, info_bus: Optional[InfoBus], kwargs: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract trading data from InfoBus or kwargs"""
-        
-        # Try InfoBus first
-        if info_bus:
-            # Extract recent trades for learning
-            recent_trades = info_bus.get('recent_trades', [])
-            market_context = info_bus.get('market_context', {})
-            
-            # Extract features from current market state
-            current_features = self._extract_features_from_info_bus(info_bus)
-            
-            return {
-                'recent_trades': recent_trades,
-                'current_features': current_features,
-                'market_context': market_context,
-                'step_idx': info_bus.get('step_idx', 0),
-                'regime': InfoBusExtractor.get_market_regime(info_bus),
-                'volatility_level': InfoBusExtractor.get_volatility_level(info_bus),
-                'session': InfoBusExtractor.get_session(info_bus),
-                'source': 'info_bus'
+    async def _initialize(self):
+        """Initialize module"""
+        try:
+            # Set initial mistake memory status in SmartInfoBus
+            initial_status = {
+                "danger_zones": [],
+                "profit_zones": [],
+                "avoidance_signal": 0.0,
+                "consecutive_losses": 0,
+                "pattern_count": 0
             }
-        
-        # Try kwargs (backward compatibility)
-        extracted_data = {}
-        
-        if "trades" in kwargs:
-            extracted_data['trades'] = kwargs["trades"]
             
-        if "features" in kwargs and "pnl" in kwargs:
-            extracted_data.update({
-                'features': kwargs["features"],
-                'pnl': kwargs["pnl"],
-                'info': kwargs.get("info", {})
-            })
-            
-        if extracted_data:
-            extracted_data['source'] = 'kwargs'
-            return extracted_data
-        
-        # Return insufficient data marker
-        return {'source': 'insufficient_data'}
-
-    def _extract_features_from_info_bus(self, info_bus: InfoBus) -> np.ndarray:
-        """Extract features from InfoBus for mistake learning"""
-        
-        features = []
-        
-        # Market regime features
-        regime = InfoBusExtractor.get_market_regime(info_bus)
-        regime_encoding = {'trending': 1.0, 'volatile': 0.5, 'ranging': 0.0, 'unknown': 0.25}.get(regime, 0.25)
-        features.append(regime_encoding)
-        
-        # Volatility features
-        vol_level = InfoBusExtractor.get_volatility_level(info_bus)
-        vol_encoding = {'low': 0.2, 'medium': 0.5, 'high': 0.8, 'extreme': 1.0}.get(vol_level, 0.5)
-        features.append(vol_encoding)
-        
-        # Risk features
-        drawdown = InfoBusExtractor.get_drawdown_pct(info_bus) / 100.0
-        exposure = InfoBusExtractor.get_exposure_pct(info_bus) / 100.0
-        features.extend([drawdown, exposure])
-        
-        # Session features
-        session = InfoBusExtractor.get_session(info_bus)
-        session_encoding = {'asian': 0.2, 'european': 0.5, 'american': 0.8, 'closed': 0.0}.get(session, 0.5)
-        features.append(session_encoding)
-        
-        # Position and market stress features
-        position_count = InfoBusExtractor.get_position_count(info_bus)
-        features.append(min(1.0, position_count / 5.0))  # Normalize to 0-1
-        
-        # Add price momentum if available
-        market_context = info_bus.get('market_context', {})
-        if 'volatility' in market_context:
-            vol_data = market_context['volatility']
-            if isinstance(vol_data, dict):
-                avg_vol = np.mean(list(vol_data.values()))
-                features.append(min(1.0, avg_vol * 50))  # Normalize
-            else:
-                features.append(min(1.0, float(vol_data) * 50))
-        else:
-            features.append(0.5)
-        
-        # Extend to minimum feature size
-        while len(features) < 10:
-            features.append(0.0)
-        
-        return np.array(features[:20], dtype=np.float32)  # Cap at 20 features
-
-    def _process_learning_data(self, trading_data: Dict[str, Any]):
-        """Process trading data for mistake learning"""
-        
-        try:
-            # Process batch trades if available
-            if 'trades' in trading_data:
-                trades = trading_data['trades']
-                self.log_operator_info(f"Processing batch of {len(trades)} trades for learning")
-                
-                processed_count = 0
-                for trade in trades:
-                    if self._process_individual_trade(trade, trading_data.get('market_context', {})):
-                        processed_count += 1
-                
-                self.log_operator_info(f"Batch learning completed: {processed_count}/{len(trades)} trades processed")
-                
-            # Process individual trade data
-            elif 'features' in trading_data and 'pnl' in trading_data:
-                features = trading_data['features']
-                pnl = trading_data['pnl']
-                info = trading_data.get('info', {})
-                
-                # Enhance info with market context
-                enhanced_info = info.copy()
-                enhanced_info.update(trading_data.get('market_context', {}))
-                
-                self._process_individual_trade({
-                    'features': features,
-                    'pnl': pnl,
-                    'info': enhanced_info
-                }, trading_data.get('market_context', {}))
-                
-            # Process recent trades from InfoBus
-            elif 'recent_trades' in trading_data:
-                recent_trades = trading_data['recent_trades']
-                market_context = trading_data.get('market_context', {})
-                
-                for trade in recent_trades:
-                    # Use InfoBus features for trade analysis
-                    current_features = trading_data.get('current_features', np.zeros(10))
-                    
-                    enhanced_trade = {
-                        'features': current_features,
-                        'pnl': trade.get('pnl', 0),
-                        'info': {**trade, **market_context}
-                    }
-                    
-                    self._process_individual_trade(enhanced_trade, market_context)
-            
-        except Exception as e:
-            self.log_operator_error(f"Learning data processing failed: {e}")
-
-    def _process_individual_trade(self, trade_data: Dict, market_context: Dict) -> bool:
-        """Process individual trade for mistake learning"""
-        
-        try:
-            features = np.asarray(trade_data.get('features', []), dtype=np.float32)
-            pnl = float(trade_data.get('pnl', 0))
-            info = trade_data.get('info', {})
-            
-            if features.size == 0:
-                return False
-            
-            # Ensure minimum feature size
-            if features.size < 10:
-                padding = np.zeros(10 - features.size, dtype=np.float32)
-                features = np.concatenate([features, padding])
-            
-            # Create enhanced info with market context
-            enhanced_info = {**info, **market_context}
-            enhanced_info['timestamp'] = datetime.datetime.now().isoformat()
-            
-            entry = (features, pnl, enhanced_info)
-            
-            # Categorize and store trade
-            if pnl < 0:
-                self._process_loss_trade(entry)
-            elif pnl > self.profit_threshold:
-                self._process_win_trade(entry)
-            
-            # Update trading metrics
-            self._update_trading_metrics({'pnl': pnl})
-            
-            # Refit clusters if enough data
-            self._refit_clusters_if_needed()
+            self.smart_bus.set(
+                'mistake_avoidance',
+                initial_status,
+                module='MistakeMemory',
+                thesis="Initial mistake memory and avoidance status"
+            )
             
             return True
-            
         except Exception as e:
-            self.log_operator_warning(f"Individual trade processing failed: {e}")
+            self.logger.error(f"Initialization failed: {e}")
             return False
 
-    def _process_loss_trade(self, entry: Tuple[np.ndarray, float, Dict]):
-        """Process a losing trade for learning"""
-        
-        features, pnl, info = entry
-        
-        # Add to loss buffer
-        self._loss_buf.append(entry)
-        if len(self._loss_buf) > self.max_mistakes:
-            removed = self._loss_buf.pop(0)
-            
-        self._consecutive_losses += 1
-        
-        # Extract and track loss pattern
-        pattern = self._extract_pattern(features, info)
-        current_time = datetime.datetime.now().isoformat()
-        
-        if pattern in self._loss_patterns:
-            count, severity, _ = self._loss_patterns[pattern]
-            new_severity = (severity * count + abs(pnl)) / (count + 1)
-            self._loss_patterns[pattern] = (count + 1, new_severity, current_time)
-        else:
-            self._loss_patterns[pattern] = (1, abs(pnl), current_time)
-        
-        # Log significant losses
-        if abs(pnl) > 20:  # Significant loss
-            self.log_operator_warning(
-                f"Significant loss recorded",
-                pnl=f"€{pnl:.2f}",
-                pattern=pattern,
-                consecutive_losses=self._consecutive_losses,
-                total_losses=len(self._loss_buf)
-            )
-        else:
-            self.log_operator_info(
-                f"Loss recorded",
-                pnl=f"€{pnl:.2f}",
-                pattern=pattern,
-                consecutive_losses=self._consecutive_losses
-            )
-        
-        # Update risk alerts
-        if self._consecutive_losses >= 5:
-            self._risk_alerts.append({
-                'type': 'consecutive_losses',
-                'count': self._consecutive_losses,
-                'pattern': pattern,
-                'timestamp': current_time
-            })
-
-    def _process_win_trade(self, entry: Tuple[np.ndarray, float, Dict]):
-        """Process a winning trade for learning"""
-        
-        features, pnl, info = entry
-        
-        # Add to win buffer
-        self._win_buf.append(entry)
-        if len(self._win_buf) > self.max_mistakes // 2:
-            removed = self._win_buf.pop(0)
-        
-        # Reset consecutive losses
-        self._consecutive_losses = 0
-        
-        # Extract and track win pattern
-        pattern = self._extract_pattern(features, info)
-        current_time = datetime.datetime.now().isoformat()
-        
-        if pattern in self._win_patterns:
-            count, profitability, _ = self._win_patterns[pattern]
-            new_profitability = (profitability * count + pnl) / (count + 1)
-            self._win_patterns[pattern] = (count + 1, new_profitability, current_time)
-        else:
-            self._win_patterns[pattern] = (1, pnl, current_time)
-        
-        self.log_operator_info(
-            f"Profitable trade recorded",
-            pnl=f"€{pnl:.2f}",
-            pattern=pattern,
-            total_wins=len(self._win_buf)
-        )
-
-    def _extract_pattern(self, features: np.ndarray, info: Dict) -> str:
-        """Enhanced pattern extraction from features and context"""
+    async def process(self, **inputs) -> Dict[str, Any]:
+        """Process mistake memory and learning"""
+        start_time = time.time()
         
         try:
-            # Extract context information
-            volatility = info.get("volatility", 0)
-            regime = info.get("regime", "unknown")
-            hour = info.get("hour", -1)
-            session = info.get("session", "unknown")
-            drawdown = info.get("drawdown_pct", 0)
+            # Extract mistake learning data
+            learning_data = await self._extract_learning_data(**inputs)
             
-            # Categorize volatility
-            if isinstance(volatility, (int, float)):
-                vol_level = "high" if volatility > 0.02 else "medium" if volatility > 0.01 else "low"
-            else:
-                vol_level = "unknown"
+            if not learning_data:
+                return await self._handle_no_data_fallback()
             
-            # Categorize time session
-            if hour >= 0:
-                if 0 <= hour < 8:
-                    time_session = "asian"
-                elif 8 <= hour < 16:
-                    time_session = "european"
-                else:
-                    time_session = "us"
-            else:
-                time_session = session if session != "unknown" else "unknown"
+            # Process learning from trades
+            learning_result = await self._process_learning_data(learning_data)
             
-            # Risk level
-            risk_level = "high" if drawdown > 5 else "medium" if drawdown > 2 else "low"
+            # Update clustering if needed
+            clustering_result = await self._update_clustering()
+            learning_result.update(clustering_result)
             
-            # Feature-based pattern
-            feature_pattern = ""
-            if len(features) >= 3:
-                # Simple feature binning
-                f1_bin = "H" if features[0] > 0.6 else "M" if features[0] > 0.3 else "L"
-                f2_bin = "H" if features[1] > 0.6 else "M" if features[1] > 0.3 else "L"
-                f3_bin = "H" if features[2] > 0.6 else "M" if features[2] > 0.3 else "L"
-                feature_pattern = f"{f1_bin}{f2_bin}{f3_bin}"
+            # Calculate avoidance signals
+            avoidance_result = await self._calculate_avoidance_signals(learning_data)
+            learning_result.update(avoidance_result)
             
-            # Combined pattern
-            pattern = f"{regime}_{vol_level}_{time_session}_{risk_level}_{feature_pattern}"
+            # Generate thesis
+            thesis = await self._generate_mistake_thesis(learning_data, learning_result)
             
-            return pattern[:50]  # Limit length
+            # Update SmartInfoBus
+            await self._update_mistake_smart_bus(learning_result, thesis)
+            
+            # Record success
+            processing_time = (time.time() - start_time) * 1000
+            self._record_success(processing_time)
+            
+            return learning_result
             
         except Exception as e:
-            self.log_operator_warning(f"Pattern extraction failed: {e}")
-            return "unknown"
+            return await self._handle_mistake_error(e, start_time)
 
-    def _refit_clusters_if_needed(self):
-        """Refit clusters when sufficient new data is available"""
-        
-        if len(self._loss_buf) >= self.cluster_update_threshold:
-            if len(self._loss_buf) % self.cluster_update_threshold == 0:
-                self._fit_clusters()
-
-    def _fit_clusters(self):
-        """Enhanced cluster fitting with quality assessment"""
-        
+    async def _extract_learning_data(self, **inputs) -> Optional[Dict[str, Any]]:
+        """Extract learning data from SmartInfoBus"""
         try:
-            cluster_results = {}
+            # Get trades data
+            trades = self.smart_bus.get('trades', 'MistakeMemory') or []
             
-            # Fit loss clusters
-            if len(self._loss_buf) >= self.n_clusters:
-                loss_results = self._fit_loss_clusters()
-                cluster_results['loss'] = loss_results
+            # Get features
+            features = self.smart_bus.get('features', 'MistakeMemory')
             
-            # Fit win clusters
-            if len(self._win_buf) >= 3:
-                win_results = self._fit_win_clusters()
-                cluster_results['win'] = win_results
+            # Get market context
+            market_context = self.smart_bus.get('market_context', 'MistakeMemory') or {}
             
-            # Update avoidance effectiveness
-            self._update_avoidance_effectiveness(cluster_results)
+            # Get risk data
+            risk_data = self.smart_bus.get('risk_data', 'MistakeMemory') or {}
             
-        except Exception as e:
-            self.log_operator_error(f"Cluster fitting failed: {e}")
-
-    def _fit_loss_clusters(self) -> Dict[str, Any]:
-        """Fit clusters for loss patterns"""
-        
-        try:
-            X_loss = np.stack([f for f, _, _ in self._loss_buf])
-            
-            # Fit clustering model
-            self._km_loss = KMeans(
-                n_clusters=min(self.n_clusters, len(X_loss)),
-                n_init=10,
-                random_state=42,
-                max_iter=300
-            )
-            self._km_loss.fit(X_loss)
-            
-            # Store danger zones
-            self._danger_zones = self._km_loss.cluster_centers_.copy()
-            
-            # Calculate distance metrics
-            distances = self._km_loss.transform(X_loss)
-            min_distances = distances.min(axis=1)
-            
-            self._mean_dist = float(min_distances.mean())
-            self._last_dist = float(distances[-1].min()) if len(distances) > 0 else 0.0
-            
-            # Calculate clustering quality
-            inertia = self._km_loss.inertia_
-            silhouette_approx = 1.0 / (1.0 + inertia / len(X_loss))  # Approximation
-            self._cluster_quality_scores.append(silhouette_approx)
-            
-            self.log_operator_info(
-                f"Loss clusters fitted",
-                n_clusters=len(self._danger_zones),
-                samples=len(X_loss),
-                mean_distance=f"{self._mean_dist:.3f}",
-                quality_score=f"{silhouette_approx:.3f}"
-            )
+            # Get current features if provided
+            current_features = inputs.get('features', features)
             
             return {
-                'clusters': len(self._danger_zones),
-                'samples': len(X_loss),
-                'mean_distance': self._mean_dist,
-                'quality': silhouette_approx
+                'trades': trades,
+                'features': features,
+                'current_features': current_features,
+                'market_context': market_context,
+                'risk_data': risk_data,
+                'timestamp': datetime.now().isoformat()
             }
             
         except Exception as e:
-            self.log_operator_error(f"Loss cluster fitting failed: {e}")
-            return {}
+            self.logger.error(f"Failed to extract learning data: {e}")
+            return None
 
-    def _fit_win_clusters(self) -> Dict[str, Any]:
-        """Fit clusters for win patterns"""
-        
+    async def _process_learning_data(self, learning_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Process learning data from trades"""
         try:
-            X_win = np.stack([f for f, _, _ in self._win_buf])
+            trades = learning_data.get('trades', [])
+            market_context = learning_data.get('market_context', {})
             
-            # Determine number of clusters
-            n_win_clusters = min(3, len(X_win))
+            if not trades:
+                return {'learning_processed': False, 'reason': 'no_trades'}
             
-            # Fit clustering model
-            self._km_win = KMeans(
-                n_clusters=n_win_clusters,
-                n_init=10,
-                random_state=42,
-                max_iter=300
-            )
-            self._km_win.fit(X_win)
+            # Process recent trades
+            losses_learned = 0
+            wins_learned = 0
             
-            # Store profit zones
-            self._profit_zones = self._km_win.cluster_centers_.copy()
-            
-            self.log_operator_info(
-                f"Win clusters fitted",
-                n_clusters=n_win_clusters,
-                samples=len(X_win),
-                avg_profit=f"€{np.mean([pnl for _, pnl, _ in self._win_buf]):.2f}"
-            )
-            
-            return {
-                'clusters': n_win_clusters,
-                'samples': len(X_win),
-                'avg_profit': np.mean([pnl for _, pnl, _ in self._win_buf])
-            }
-            
-        except Exception as e:
-            self.log_operator_error(f"Win cluster fitting failed: {e}")
-            return {}
-
-    def _update_avoidance_signals(self):
-        """Update comprehensive avoidance signals"""
-        
-        try:
-            # Base signal from consecutive losses
-            base_signal = min(self._consecutive_losses * 0.1, 0.5)
-            
-            # Pattern frequency signal
-            pattern_signal = 0.0
-            if self._loss_patterns:
-                max_pattern_count = max(count for count, _, _ in self._loss_patterns.values())
-                pattern_signal = min(max_pattern_count * 0.05, 0.3)
-            
-            # Risk alert signal
-            risk_signal = 0.0
-            if len(self._risk_alerts) > 0:
-                recent_alerts = [alert for alert in self._risk_alerts 
-                               if 'consecutive_losses' in alert.get('type', '')]
-                risk_signal = min(len(recent_alerts) * 0.1, 0.2)
-            
-            # Combined avoidance signal
-            old_signal = self._avoidance_signal
-            self._avoidance_signal = min(base_signal + pattern_signal + risk_signal, 0.8)
-            
-            # Log significant changes
-            if abs(self._avoidance_signal - old_signal) > 0.1:
-                self.log_operator_info(
-                    f"Avoidance signal updated",
-                    old_signal=f"{old_signal:.3f}",
-                    new_signal=f"{self._avoidance_signal:.3f}",
-                    consecutive_losses=self._consecutive_losses,
-                    pattern_count=len(self._loss_patterns)
-                )
+            for trade in trades[-20:]:  # Process last 20 trades
+                if not isinstance(trade, dict) or 'pnl' not in trade:
+                    continue
+                
+                # Extract features for this trade
+                trade_features = self._extract_trade_features(trade, market_context)
+                if trade_features is None:
+                    continue
+                
+                # Process based on outcome
+                if trade['pnl'] < -self.genome["profit_threshold"] / 2:
+                    # Significant loss
+                    self._process_loss_trade(trade_features, abs(trade['pnl']), trade)
+                    losses_learned += 1
+                elif trade['pnl'] > self.genome["profit_threshold"]:
+                    # Significant win
+                    self._process_win_trade(trade_features, trade['pnl'], trade)
+                    wins_learned += 1
             
             # Update performance metrics
-            self._update_performance_metric('avoidance_signal', self._avoidance_signal)
-            self._update_performance_metric('consecutive_losses', self._consecutive_losses)
+            self._mistake_performance['total_losses_learned'] += losses_learned
+            self._mistake_performance['total_wins_learned'] += wins_learned
+            
+            return {
+                'learning_processed': True,
+                'losses_learned': losses_learned,
+                'wins_learned': wins_learned,
+                'total_loss_memories': len(self._loss_buf),
+                'total_win_memories': len(self._win_buf)
+            }
             
         except Exception as e:
-            self.log_operator_warning(f"Avoidance signal update failed: {e}")
+            self.logger.error(f"Learning data processing failed: {e}")
+            return {'learning_processed': False, 'error': str(e)}
 
-    def _update_avoidance_effectiveness(self, cluster_results: Dict[str, Any]):
-        """Update learning effectiveness tracking"""
-        
+    def _extract_trade_features(self, trade: Dict[str, Any], market_context: Dict[str, Any]) -> Optional[np.ndarray]:
+        """Extract features from trade data"""
         try:
-            effectiveness_data = {
-                'timestamp': datetime.datetime.now().isoformat(),
-                'step': self._step_count,
-                'cluster_results': cluster_results,
-                'loss_count': len(self._loss_buf),
-                'win_count': len(self._win_buf),
-                'avoidance_signal': self._avoidance_signal,
+            # Start with basic trade features
+            features = []
+            
+            # Trade characteristics
+            if 'confidence' in trade:
+                features.append(trade['confidence'])
+            if 'volume' in trade:
+                features.append(trade.get('volume', 1.0))
+            if 'duration' in trade:
+                features.append(trade.get('duration', 1.0))
+            
+            # Market context features
+            if 'volatility' in market_context:
+                vol = market_context['volatility']
+                if isinstance(vol, dict):
+                    features.extend(list(vol.values())[:3])
+                else:
+                    features.append(float(vol))
+            
+            # Session and regime features
+            if 'session' in market_context:
+                session_map = {'asian': 0.0, 'european': 0.5, 'us': 1.0}
+                features.append(session_map.get(market_context['session'], 0.25))
+            
+            if 'regime' in market_context:
+                regime_map = {'trending': 1.0, 'ranging': 0.0, 'volatile': 0.5}
+                features.append(regime_map.get(market_context['regime'], 0.25))
+            
+            # Ensure minimum feature length
+            while len(features) < 8:
+                features.append(0.0)
+            
+            return np.array(features[:20])  # Limit to 20 features
+            
+        except Exception as e:
+            self.logger.error(f"Feature extraction failed: {e}")
+            return None
+
+    def _process_loss_trade(self, features: np.ndarray, loss_amount: float, trade_info: Dict[str, Any]):
+        """Process a loss trade for learning"""
+        try:
+            # Create loss entry
+            loss_entry = (features, loss_amount, trade_info)
+            
+            # Add to loss buffer
+            self._loss_buf.append(loss_entry)
+            
+            # Limit buffer size
+            if len(self._loss_buf) > self.genome["max_mistakes"]:
+                self._loss_buf.pop(0)
+            
+            # Update consecutive losses
+            self._consecutive_losses += 1
+            
+            # Extract and record pattern
+            pattern = self._extract_pattern(features, trade_info)
+            if pattern:
+                self._record_loss_pattern(pattern, loss_amount)
+            
+            # Log significant loss
+            if loss_amount > self.genome["profit_threshold"]:
+                self.logger.warning(
+                    format_operator_message(
+                        "💸", "SIGNIFICANT_LOSS_LEARNED",
+                        loss_amount=f"{loss_amount:.2f}",
+                        consecutive_losses=self._consecutive_losses,
+                        pattern=pattern[:10] if pattern else "unknown",
+                        context="loss_learning"
+                    )
+                )
+            
+        except Exception as e:
+            self.logger.error(f"Loss trade processing failed: {e}")
+
+    def _process_win_trade(self, features: np.ndarray, profit_amount: float, trade_info: Dict[str, Any]):
+        """Process a win trade for learning"""
+        try:
+            # Create win entry
+            win_entry = (features, profit_amount, trade_info)
+            
+            # Add to win buffer
+            self._win_buf.append(win_entry)
+            
+            # Limit buffer size
+            if len(self._win_buf) > self.genome["max_mistakes"]:
+                self._win_buf.pop(0)
+            
+            # Reset consecutive losses
+            self._consecutive_losses = 0
+            
+            # Extract and record pattern
+            pattern = self._extract_pattern(features, trade_info)
+            if pattern:
+                self._record_win_pattern(pattern, profit_amount)
+            
+        except Exception as e:
+            self.logger.error(f"Win trade processing failed: {e}")
+
+    def _extract_pattern(self, features: np.ndarray, trade_info: Dict[str, Any]) -> Optional[str]:
+        """Extract pattern signature from trade"""
+        try:
+            # Simple pattern extraction based on feature discretization
+            pattern_elements = []
+            
+            # Discretize first few features
+            for i, feature in enumerate(features[:5]):
+                if feature > 0.7:
+                    pattern_elements.append(f"H{i}")  # High
+                elif feature < 0.3:
+                    pattern_elements.append(f"L{i}")  # Low
+                else:
+                    pattern_elements.append(f"M{i}")  # Medium
+            
+            # Add trade info if available
+            if 'action' in trade_info:
+                action = trade_info['action']
+                if isinstance(action, (list, np.ndarray)) and len(action) > 0:
+                    if action[0] > 0.5:
+                        pattern_elements.append("BUY")
+                    elif action[0] < -0.5:
+                        pattern_elements.append("SELL")
+                    else:
+                        pattern_elements.append("HOLD")
+            
+            return "_".join(pattern_elements) if pattern_elements else None
+            
+        except Exception as e:
+            self.logger.error(f"Pattern extraction failed: {e}")
+            return None
+
+    def _record_loss_pattern(self, pattern: str, loss_amount: float):
+        """Record loss pattern for analysis"""
+        if pattern not in self._loss_patterns:
+            self._loss_patterns[pattern] = {'count': 0, 'total_severity': 0.0, 'last_seen': time.time()}
+        
+        self._loss_patterns[pattern]['count'] += 1
+        self._loss_patterns[pattern]['total_severity'] += loss_amount
+        self._loss_patterns[pattern]['last_seen'] = time.time()
+
+    def _record_win_pattern(self, pattern: str, profit_amount: float):
+        """Record win pattern for analysis"""
+        if pattern not in self._win_patterns:
+            self._win_patterns[pattern] = {'count': 0, 'total_profitability': 0.0, 'last_seen': time.time()}
+        
+        self._win_patterns[pattern]['count'] += 1
+        self._win_patterns[pattern]['total_profitability'] += profit_amount
+        self._win_patterns[pattern]['last_seen'] = time.time()
+
+    async def _update_clustering(self) -> Dict[str, Any]:
+        """Update clustering models if needed"""
+        try:
+            clustering_updated = False
+            
+            # Check if we need to update clustering
+            total_samples = len(self._loss_buf) + len(self._win_buf)
+            if total_samples % self.genome["cluster_update_threshold"] == 0 and total_samples > 0:
+                clustering_result = await self._perform_clustering()
+                clustering_updated = True
+                self._mistake_performance['cluster_updates'] += 1
+                return {
+                    'clustering_updated': clustering_updated,
+                    'clustering_result': clustering_result
+                }
+            
+            return {'clustering_updated': False}
+            
+        except Exception as e:
+            self.logger.error(f"Clustering update failed: {e}")
+            return {'clustering_updated': False, 'error': str(e)}
+
+    async def _perform_clustering(self) -> Dict[str, Any]:
+        """Perform clustering on loss and win data"""
+        try:
+            results = {}
+            
+            # Cluster loss data
+            if len(self._loss_buf) >= self.config.min_samples_for_clustering:
+                loss_result = await self._cluster_loss_data()
+                results['loss_clustering'] = loss_result
+            
+            # Cluster win data
+            if len(self._win_buf) >= self.config.min_samples_for_clustering:
+                win_result = await self._cluster_win_data()
+                results['win_clustering'] = win_result
+            
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"Clustering failed: {e}")
+            return {'error': str(e)}
+
+    async def _cluster_loss_data(self) -> Dict[str, Any]:
+        """Cluster loss data to identify danger zones"""
+        try:
+            # Extract features and weights
+            features = np.array([entry[0] for entry in self._loss_buf])
+            losses = np.array([entry[1] for entry in self._loss_buf])
+            
+            # Standardize features
+            features_scaled = self._scaler.fit_transform(features)
+            
+            # Perform clustering
+            n_clusters = min(self.genome["n_clusters"], len(features))
+            self._km_loss = KMeans(n_clusters=n_clusters, random_state=42)
+            cluster_labels = self._km_loss.fit_predict(features_scaled)
+            
+            # Calculate cluster quality
+            if len(np.unique(cluster_labels)) > 1:
+                quality_score = silhouette_score(features_scaled, cluster_labels)
+                self._cluster_quality_scores.append(quality_score)
+            else:
+                quality_score = 0.0
+            
+            # Identify danger zones (cluster centers)
+            self._danger_zones = self._km_loss.cluster_centers_.tolist()
+            
+            # Calculate cluster severities
+            cluster_severities = {}
+            for i in range(n_clusters):
+                cluster_mask = cluster_labels == i
+                cluster_severities[i] = np.mean(losses[cluster_mask])
+            
+            return {
+                'n_clusters': n_clusters,
+                'quality_score': quality_score,
+                'cluster_severities': cluster_severities,
+                'danger_zones_count': len(self._danger_zones)
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Loss clustering failed: {e}")
+            return {'error': str(e)}
+
+    async def _cluster_win_data(self) -> Dict[str, Any]:
+        """Cluster win data to identify profit zones"""
+        try:
+            # Extract features and weights
+            features = np.array([entry[0] for entry in self._win_buf])
+            profits = np.array([entry[1] for entry in self._win_buf])
+            
+            # Standardize features
+            features_scaled = self._scaler.transform(features)
+            
+            # Perform clustering
+            n_clusters = min(self.genome["n_clusters"], len(features))
+            self._km_win = KMeans(n_clusters=n_clusters, random_state=42)
+            cluster_labels = self._km_win.fit_predict(features_scaled)
+            
+            # Calculate cluster quality
+            if len(np.unique(cluster_labels)) > 1:
+                quality_score = silhouette_score(features_scaled, cluster_labels)
+            else:
+                quality_score = 0.0
+            
+            # Identify profit zones (cluster centers)
+            self._profit_zones = self._km_win.cluster_centers_.tolist()
+            
+            # Calculate cluster profitabilities
+            cluster_profitabilities = {}
+            for i in range(n_clusters):
+                cluster_mask = cluster_labels == i
+                cluster_profitabilities[i] = np.mean(profits[cluster_mask])
+            
+            return {
+                'n_clusters': n_clusters,
+                'quality_score': quality_score,
+                'cluster_profitabilities': cluster_profitabilities,
+                'profit_zones_count': len(self._profit_zones)
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Win clustering failed: {e}")
+            return {'error': str(e)}
+
+    async def _calculate_avoidance_signals(self, learning_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Calculate avoidance signals based on current features"""
+        try:
+            current_features = learning_data.get('current_features')
+            if current_features is None:
+                return {'avoidance_signal': 0.0, 'danger_similarity': 0.0}
+            
+            # Calculate similarity to danger zones
+            danger_similarity = self._calculate_danger_similarity(current_features)
+            
+            # Calculate similarity to profit zones
+            profit_similarity = self._calculate_profit_similarity(current_features)
+            
+            # Calculate avoidance signal
+            avoidance_signal = danger_similarity * self.genome["avoidance_sensitivity"]
+            
+            # Adjust for profit zones
+            if profit_similarity > danger_similarity:
+                avoidance_signal *= 0.5  # Reduce avoidance if in profit zone
+            
+            # Apply consecutive loss penalty
+            if self._consecutive_losses > 2:
+                avoidance_signal *= (1.0 + self._consecutive_losses * 0.1)
+            
+            self._avoidance_signal = avoidance_signal
+            
+            return {
+                'avoidance_signal': avoidance_signal,
+                'danger_similarity': danger_similarity,
+                'profit_similarity': profit_similarity,
                 'consecutive_losses': self._consecutive_losses
             }
             
-            self._learning_effectiveness.append(effectiveness_data)
-            
         except Exception as e:
-            self.log_operator_warning(f"Effectiveness tracking update failed: {e}")
+            self.logger.error(f"Avoidance signal calculation failed: {e}")
+            return {'avoidance_signal': 0.0, 'error': str(e)}
 
-    def check_similarity_to_mistakes(self, features: np.ndarray, info_bus: Optional[InfoBus] = None) -> float:
-        """Enhanced similarity check with market context"""
+    def _calculate_danger_similarity(self, features: np.ndarray) -> float:
+        """Calculate similarity to danger zones"""
+        if not self._danger_zones or self._km_loss is None:
+            return 0.0
         
         try:
-            if self._km_loss is None or len(self._danger_zones) == 0:
-                return 0.0
+            # Standardize features
+            features_scaled = self._scaler.transform(features.reshape(1, -1))
             
-            # Prepare features
-            if features.size < 10:
-                padding = np.zeros(10 - features.size, dtype=np.float32)
-                features = np.concatenate([features, padding])
+            # Calculate distances to danger zone centers
+            distances = []
+            for center in self._danger_zones:
+                distance = np.linalg.norm(features_scaled[0] - center)
+                distances.append(distance)
             
-            features_2d = features.reshape(1, -1)
-            
-            # Distance to nearest danger zone
-            if len(self._danger_zones) > 0:
-                distances = np.linalg.norm(self._danger_zones - features_2d, axis=1)
-                min_danger_dist = distances.min()
-            else:
-                min_danger_dist = float('inf')
-            
-            # Distance to nearest profit zone
-            min_profit_dist = float('inf')
-            if len(self._profit_zones) > 0:
-                profit_distances = np.linalg.norm(self._profit_zones - features_2d, axis=1)
-                min_profit_dist = profit_distances.min()
-            
-            # Calculate danger score
-            danger_score = np.exp(-min_danger_dist * self.danger_zone_weight)
-            
-            # Increase danger if closer to losses than profits
-            if min_profit_dist != float('inf') and min_danger_dist < min_profit_dist:
-                danger_score *= 1.3
-            
-            # Apply avoidance sensitivity
-            danger_score *= self.avoidance_sensitivity
-            
-            # Market context adjustment
-            if info_bus:
-                context_multiplier = self._get_context_danger_multiplier(info_bus)
-                danger_score *= context_multiplier
-            
-            # Clip and track
-            danger_score = float(np.clip(danger_score, 0, 1))
-            
-            # Track danger zone violations
-            if danger_score > 0.6:
-                self._danger_zone_violations.append({
-                    'timestamp': datetime.datetime.now().isoformat(),
-                    'danger_score': danger_score,
-                    'min_danger_dist': min_danger_dist,
-                    'consecutive_losses': self._consecutive_losses
-                })
-                
-                self.log_operator_warning(
-                    f"High danger zone proximity",
-                    danger_score=f"{danger_score:.3f}",
-                    min_distance=f"{min_danger_dist:.3f}",
-                    consecutive_losses=self._consecutive_losses
-                )
-            
-            return danger_score
+            # Return inverse of minimum distance (higher = more similar)
+            min_distance = min(distances)
+            return 1.0 / (1.0 + min_distance)
             
         except Exception as e:
-            self.log_operator_error(f"Similarity check failed: {e}")
+            self.logger.error(f"Danger similarity calculation failed: {e}")
             return 0.0
 
-    def _get_context_danger_multiplier(self, info_bus: InfoBus) -> float:
-        """Get danger multiplier based on market context"""
-        
-        multiplier = 1.0
-        
-        # High volatility increases danger
-        vol_level = InfoBusExtractor.get_volatility_level(info_bus)
-        if vol_level in ['high', 'extreme']:
-            multiplier *= 1.2
-        
-        # High drawdown increases danger
-        drawdown = InfoBusExtractor.get_drawdown_pct(info_bus)
-        if drawdown > 10:
-            multiplier *= 1.3
-        elif drawdown > 5:
-            multiplier *= 1.1
-        
-        # High exposure increases danger
-        exposure = InfoBusExtractor.get_exposure_pct(info_bus)
-        if exposure > 80:
-            multiplier *= 1.2
-        
-        return multiplier
-
-    # ═══════════════════════════════════════════════════════════════════
-    # ENHANCED OBSERVATION AND ACTION METHODS
-    # ═══════════════════════════════════════════════════════════════════
-
-    def get_observation_components(self) -> np.ndarray:
-        """Enhanced observation components with comprehensive metrics"""
+    def _calculate_profit_similarity(self, features: np.ndarray) -> float:
+        """Calculate similarity to profit zones"""
+        if not self._profit_zones or self._km_win is None:
+            return 0.0
         
         try:
-            # Cluster information
-            n_loss_clusters = float(len(self._danger_zones))
-            n_win_clusters = float(len(self._profit_zones))
+            # Standardize features
+            features_scaled = self._scaler.transform(features.reshape(1, -1))
             
-            # Distance metrics
-            mean_dist = self._mean_dist
-            last_dist = self._last_dist
+            # Calculate distances to profit zone centers
+            distances = []
+            for center in self._profit_zones:
+                distance = np.linalg.norm(features_scaled[0] - center)
+                distances.append(distance)
             
-            # Pattern analysis
-            loss_pattern_diversity = float(len(self._loss_patterns))
-            win_pattern_diversity = float(len(self._win_patterns))
-            
-            # Performance ratios
-            total_trades = len(self._loss_buf) + len(self._win_buf)
-            win_loss_ratio = len(self._win_buf) / max(1, len(self._loss_buf))
-            memory_utilization = total_trades / max(1, self.max_mistakes)
-            
-            # Avoidance effectiveness
-            avg_cluster_quality = (np.mean(list(self._cluster_quality_scores)) 
-                                 if self._cluster_quality_scores else 0.0)
-            
-            # Risk indicators
-            danger_violations = len(self._danger_zone_violations)
-            
-            # Combine all components
-            observation = np.array([
-                n_loss_clusters,
-                mean_dist,
-                last_dist,
-                self._avoidance_signal,
-                n_win_clusters,
-                win_loss_ratio,
-                loss_pattern_diversity,
-                win_pattern_diversity,
-                memory_utilization,
-                avg_cluster_quality,
-                float(self._consecutive_losses),
-                float(danger_violations)
-            ], dtype=np.float32)
-            
-            return observation
+            # Return inverse of minimum distance (higher = more similar)
+            min_distance = min(distances)
+            return 1.0 / (1.0 + min_distance)
             
         except Exception as e:
-            self.log_operator_error(f"Observation generation failed: {e}")
-            return np.zeros(12, dtype=np.float32)
+            self.logger.error(f"Profit similarity calculation failed: {e}")
+            return 0.0
 
-    def propose_action(self, obs: Any = None, info_bus: Optional[InfoBus] = None) -> np.ndarray:
-        """Propose actions based on mistake avoidance"""
-        
-        # Determine action dimension
-        action_dim = 2
-        if hasattr(obs, 'shape') and len(obs.shape) > 0:
-            action_dim = obs.shape[0]
-        
-        # Base action on avoidance signal
-        avoidance_strength = self._avoidance_signal
-        
-        # Check current market similarity to mistakes
-        current_features = np.zeros(10)
-        if info_bus:
-            current_features = self._extract_features_from_info_bus(info_bus)
-        
-        danger_score = self.check_similarity_to_mistakes(current_features, info_bus)
-        
-        # Combined avoidance signal
-        total_avoidance = min(1.0, avoidance_strength + danger_score)
-        
-        # Generate conservative action when high avoidance
-        if total_avoidance > 0.5:
-            # Strong avoidance - recommend position reduction
-            action = np.full(action_dim, -total_avoidance * 0.5, dtype=np.float32)
-        elif total_avoidance > 0.3:
-            # Moderate avoidance - reduce position sizes
-            action = np.full(action_dim, -total_avoidance * 0.3, dtype=np.float32)
-        else:
-            # Low risk - neutral recommendation
-            action = np.zeros(action_dim, dtype=np.float32)
-        
-        return action
-
-    def confidence(self, obs: Any = None, info_bus: Optional[InfoBus] = None) -> float:
-        """Return confidence in mistake avoidance recommendations"""
-        
-        base_confidence = 0.5
-        
-        # Confidence from cluster quality
-        if self._cluster_quality_scores:
-            avg_quality = np.mean(list(self._cluster_quality_scores))
-            base_confidence += avg_quality * 0.3
-        
-        # Confidence from data volume
-        total_data = len(self._loss_buf) + len(self._win_buf)
-        data_confidence = min(0.2, total_data / 100.0)
-        base_confidence += data_confidence
-        
-        # Confidence from pattern diversity
-        pattern_confidence = min(0.2, len(self._loss_patterns) / 20.0)
-        base_confidence += pattern_confidence
-        
-        # Reduce confidence during high consecutive losses
-        if self._consecutive_losses > 3:
-            base_confidence *= 0.8
-        
-        return float(np.clip(base_confidence, 0.1, 1.0))
-
-    # ═══════════════════════════════════════════════════════════════════
-    # EVOLUTIONARY METHODS
-    # ═══════════════════════════════════════════════════════════════════
-
-    def get_genome(self) -> Dict[str, Any]:
-        """Get evolutionary genome"""
-        return self.genome.copy()
-        
-    def set_genome(self, genome: Dict[str, Any]):
-        """Set evolutionary genome with validation"""
-        self.max_mistakes = int(np.clip(genome.get("max_mistakes", self.max_mistakes), 50, 500))
-        self.n_clusters = int(np.clip(genome.get("n_clusters", self.n_clusters), 3, 15))
-        self.profit_threshold = float(np.clip(genome.get("profit_threshold", self.profit_threshold), 1.0, 50.0))
-        self.cluster_update_threshold = int(np.clip(genome.get("cluster_update_threshold", self.cluster_update_threshold), 5, 50))
-        self.avoidance_sensitivity = float(np.clip(genome.get("avoidance_sensitivity", self.avoidance_sensitivity), 0.1, 3.0))
-        self.pattern_memory_size = int(np.clip(genome.get("pattern_memory_size", self.pattern_memory_size), 20, 200))
-        self.danger_zone_weight = float(np.clip(genome.get("danger_zone_weight", self.danger_zone_weight), 0.5, 5.0))
-        
-        self.genome = {
-            "max_mistakes": self.max_mistakes,
-            "n_clusters": self.n_clusters,
-            "profit_threshold": self.profit_threshold,
-            "cluster_update_threshold": self.cluster_update_threshold,
-            "avoidance_sensitivity": self.avoidance_sensitivity,
-            "pattern_memory_size": self.pattern_memory_size,
-            "danger_zone_weight": self.danger_zone_weight
-        }
-        
-    def mutate(self, mutation_rate: float = 0.2):
-        """Enhanced mutation with performance-based adaptation"""
-        g = self.genome.copy()
-        mutations = []
-        
-        if np.random.rand() < mutation_rate:
-            old_val = g["n_clusters"]
-            g["n_clusters"] = int(np.clip(old_val + np.random.randint(-1, 2), 3, 15))
-            mutations.append(f"n_clusters: {old_val} → {g['n_clusters']}")
-            
-        if np.random.rand() < mutation_rate:
-            old_val = g["avoidance_sensitivity"]
-            g["avoidance_sensitivity"] = float(np.clip(old_val + np.random.uniform(-0.2, 0.2), 0.1, 3.0))
-            mutations.append(f"avoidance: {old_val:.2f} → {g['avoidance_sensitivity']:.2f}")
-            
-        if np.random.rand() < mutation_rate:
-            old_val = g["danger_zone_weight"]
-            g["danger_zone_weight"] = float(np.clip(old_val + np.random.uniform(-0.3, 0.3), 0.5, 5.0))
-            mutations.append(f"danger_weight: {old_val:.2f} → {g['danger_zone_weight']:.2f}")
-            
-        if np.random.rand() < mutation_rate:
-            old_val = g["cluster_update_threshold"]
-            g["cluster_update_threshold"] = int(np.clip(old_val + np.random.randint(-3, 4), 5, 50))
-            mutations.append(f"update_threshold: {old_val} → {g['cluster_update_threshold']}")
-        
-        if mutations:
-            self.log_operator_info(f"Mistake memory mutation applied", changes=", ".join(mutations))
-            
-        # Also mutate cluster centers if they exist
-        if np.random.rand() < mutation_rate * 0.3:
-            noise_std = 0.05
-            if self._km_loss is not None:
-                noise = np.random.normal(0, noise_std, self._km_loss.cluster_centers_.shape)
-                self._km_loss.cluster_centers_ += noise.astype(np.float32)
-                self._danger_zones = self._km_loss.cluster_centers_.copy()
-                
-            if self._km_win is not None:
-                noise = np.random.normal(0, noise_std, self._km_win.cluster_centers_.shape)
-                self._km_win.cluster_centers_ += noise.astype(np.float32)
-                self._profit_zones = self._km_win.cluster_centers_.copy()
-        
-        self.set_genome(g)
-        
-    def crossover(self, other: "MistakeMemory") -> "MistakeMemory":
-        """Enhanced crossover with effectiveness-based selection"""
-        if not isinstance(other, MistakeMemory):
-            self.log_operator_warning("Crossover with incompatible type")
-            return self
-        
-        # Performance-based crossover
-        self_effectiveness = len(self._win_buf) / max(len(self._loss_buf), 1)
-        other_effectiveness = len(other._win_buf) / max(len(other._loss_buf), 1)
-        
-        # Favor more effective parent
-        if self_effectiveness > other_effectiveness:
-            bias = 0.7  # Favor self
-        else:
-            bias = 0.3  # Favor other
-        
-        new_g = {k: (self.genome[k] if np.random.rand() < bias else other.genome[k]) for k in self.genome}
-        
-        child = MistakeMemory(genome=new_g, debug=self.config.debug)
-        
-        # Inherit cluster centers from better parent
-        if self_effectiveness > other_effectiveness:
-            if self._km_loss is not None:
-                child._km_loss = self._km_loss
-                child._danger_zones = self._danger_zones.copy()
-            if self._km_win is not None:
-                child._km_win = self._km_win
-                child._profit_zones = self._profit_zones.copy()
-        else:
-            if other._km_loss is not None:
-                child._km_loss = other._km_loss
-                child._danger_zones = other._danger_zones.copy()
-            if other._km_win is not None:
-                child._km_win = other._km_win
-                child._profit_zones = other._profit_zones.copy()
-        
-        return child
-
-    # ═══════════════════════════════════════════════════════════════════
-    # ENHANCED STATE MANAGEMENT
-    # ═══════════════════════════════════════════════════════════════════
-
-    def _check_state_integrity(self) -> bool:
-        """Enhanced health check"""
+    async def _generate_mistake_thesis(self, learning_data: Dict[str, Any], 
+                                     learning_result: Dict[str, Any]) -> str:
+        """Generate comprehensive mistake memory thesis"""
         try:
-            # Check buffer sizes
-            if len(self._loss_buf) > self.max_mistakes * 1.1:
-                return False
-            if len(self._win_buf) > (self.max_mistakes // 2) * 1.1:
-                return False
-                
-            # Check clustering consistency
-            if self._km_loss is not None and len(self._danger_zones) != self._km_loss.n_clusters:
-                return False
-            if self._km_win is not None and len(self._profit_zones) != self._km_win.n_clusters:
-                return False
+            # Memory statistics
+            total_losses = len(self._loss_buf)
+            total_wins = len(self._win_buf)
+            consecutive_losses = self._consecutive_losses
             
-            # Check pattern tracking
-            if self._consecutive_losses < 0:
-                return False
-            if not (0.0 <= self._avoidance_signal <= 1.0):
-                return False
-                
-            # Check distance metrics
-            if not np.isfinite(self._mean_dist) or not np.isfinite(self._last_dist):
-                return False
-                
-            return True
+            # Avoidance metrics
+            avoidance_signal = learning_result.get('avoidance_signal', 0.0)
+            danger_similarity = learning_result.get('danger_similarity', 0.0)
             
-        except Exception:
-            return False
+            # Pattern analysis
+            loss_patterns = len(self._loss_patterns)
+            win_patterns = len(self._win_patterns)
+            
+            thesis_parts = [
+                f"Mistake Memory Analysis: {total_losses} losses and {total_wins} wins stored for pattern recognition",
+                f"Avoidance system: {avoidance_signal:.3f} signal strength with {consecutive_losses} consecutive losses",
+                f"Pattern recognition: {loss_patterns} loss patterns and {win_patterns} win patterns identified"
+            ]
+            
+            # Clustering status
+            clustering_updated = learning_result.get('clustering_updated', False)
+            if clustering_updated:
+                clustering_result = learning_result.get('clustering_result', {})
+                danger_zones = clustering_result.get('loss_clustering', {}).get('danger_zones_count', 0)
+                profit_zones = clustering_result.get('win_clustering', {}).get('profit_zones_count', 0)
+                thesis_parts.append(f"Clustering updated: {danger_zones} danger zones and {profit_zones} profit zones identified")
+            
+            # Danger assessment
+            if danger_similarity > 0.5:
+                thesis_parts.append(f"HIGH DANGER: Current situation similar to loss patterns (similarity: {danger_similarity:.2f})")
+            elif danger_similarity > 0.3:
+                thesis_parts.append(f"MODERATE RISK: Some similarity to loss patterns detected")
+            else:
+                thesis_parts.append("LOW RISK: Current situation differs from known loss patterns")
+            
+            # Learning effectiveness
+            if self._cluster_quality_scores:
+                avg_quality = np.mean(list(self._cluster_quality_scores)[-3:])
+                thesis_parts.append(f"Learning quality: {avg_quality:.2f} clustering effectiveness")
+            
+            # Consecutive loss warning
+            if consecutive_losses > 3:
+                thesis_parts.append(f"WARNING: {consecutive_losses} consecutive losses - elevated avoidance measures active")
+            
+            return " | ".join(thesis_parts)
+            
+        except Exception as e:
+            return f"Mistake thesis generation failed: {str(e)} - Loss avoidance system maintaining basic functionality"
 
-    def _get_health_details(self) -> Dict[str, Any]:
-        """Enhanced health details"""
-        base_details = super()._get_health_details()
-        
-        mistake_details = {
-            'memory_info': {
-                'loss_memories': len(self._loss_buf),
-                'win_memories': len(self._win_buf),
-                'max_capacity': self.max_mistakes,
+    async def _update_mistake_smart_bus(self, learning_result: Dict[str, Any], thesis: str):
+        """Update SmartInfoBus with mistake memory results"""
+        try:
+            # Mistake avoidance data
+            avoidance_data = {
+                'avoidance_signal': self._avoidance_signal,
                 'consecutive_losses': self._consecutive_losses,
-                'avoidance_signal': self._avoidance_signal
-            },
-            'clustering_info': {
-                'danger_zones': len(self._danger_zones),
-                'profit_zones': len(self._profit_zones),
-                'mean_distance': self._mean_dist,
-                'last_distance': self._last_dist,
-                'cluster_quality': (np.mean(list(self._cluster_quality_scores)) 
-                                  if self._cluster_quality_scores else 0.0)
-            },
-            'pattern_info': {
-                'loss_patterns': len(self._loss_patterns),
-                'win_patterns': len(self._win_patterns),
-                'danger_violations': len(self._danger_zone_violations),
-                'learning_records': len(self._learning_effectiveness)
-            },
-            'genome_config': self.genome.copy()
-        }
-        
-        if base_details:
-            base_details.update(mistake_details)
-            return base_details
-        
-        return mistake_details
+                'danger_zones_count': len(self._danger_zones),
+                'profit_zones_count': len(self._profit_zones),
+                'total_loss_memories': len(self._loss_buf),
+                'total_win_memories': len(self._win_buf)
+            }
+            
+            self.smart_bus.set(
+                'mistake_avoidance',
+                avoidance_data,
+                module='MistakeMemory',
+                thesis=thesis
+            )
+            
+            # Danger zones
+            danger_zones_data = {
+                'zones': self._danger_zones,
+                'zone_count': len(self._danger_zones),
+                'avoidance_sensitivity': self.genome["avoidance_sensitivity"],
+                'last_updated': time.time()
+            }
+            
+            self.smart_bus.set(
+                'danger_zones',
+                danger_zones_data,
+                module='MistakeMemory',
+                thesis=f"Identified {len(self._danger_zones)} danger zones from clustering analysis"
+            )
+            
+            # Pattern recognition
+            pattern_data = {
+                'loss_patterns': dict(list(self._loss_patterns.items())[:10]),  # Top 10 patterns
+                'win_patterns': dict(list(self._win_patterns.items())[:10]),
+                'total_loss_patterns': len(self._loss_patterns),
+                'total_win_patterns': len(self._win_patterns),
+                'pattern_memory_size': self.genome["pattern_memory_size"]
+            }
+            
+            self.smart_bus.set(
+                'pattern_recognition',
+                pattern_data,
+                module='MistakeMemory',
+                thesis="Pattern recognition from trading outcomes for loss avoidance"
+            )
+            
+            # Loss prevention metrics
+            prevention_data = {
+                'avoidance_effectiveness': self._mistake_performance['avoidance_effectiveness'],
+                'false_positive_rate': self._false_positive_rate,
+                'true_positive_rate': self._true_positive_rate,
+                'cluster_quality': np.mean(list(self._cluster_quality_scores)) if self._cluster_quality_scores else 0.0,
+                'learning_samples': len(self._loss_buf) + len(self._win_buf)
+            }
+            
+            self.smart_bus.set(
+                'loss_prevention',
+                prevention_data,
+                module='MistakeMemory',
+                thesis="Loss prevention effectiveness and learning metrics"
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Failed to update SmartInfoBus: {e}")
 
-    def _get_module_state(self) -> Dict[str, Any]:
-        """Enhanced state management"""
-        
-        # Convert buffers to serializable format
-        loss_buf_serializable = [(f.tolist(), pnl, info) for f, pnl, info in self._loss_buf[-50:]]  # Keep recent
-        win_buf_serializable = [(f.tolist(), pnl, info) for f, pnl, info in self._win_buf[-25:]]
-        
-        # Prepare clustering state
-        km_loss_state = {}
-        if self._km_loss is not None:
-            km_loss_state = {
-                "cluster_centers": self._km_loss.cluster_centers_.tolist(),
-                "n_clusters": self._km_loss.n_clusters
-            }
-        
-        km_win_state = {}
-        if self._km_win is not None:
-            km_win_state = {
-                "cluster_centers": self._km_win.cluster_centers_.tolist(),
-                "n_clusters": self._km_win.n_clusters
-            }
+    async def _handle_no_data_fallback(self) -> Dict[str, Any]:
+        """Handle case when no learning data is available"""
+        self.logger.warning("No learning data available - using cached mistake memory")
         
         return {
-            "loss_buf": loss_buf_serializable,
-            "win_buf": win_buf_serializable,
-            "km_loss": km_loss_state,
-            "km_win": km_win_state,
-            "mean_dist": self._mean_dist,
-            "last_dist": self._last_dist,
-            "consecutive_losses": self._consecutive_losses,
-            "loss_patterns": dict(self._loss_patterns),
-            "win_patterns": dict(self._win_patterns),
-            "avoidance_signal": self._avoidance_signal,
-            "genome": self.genome.copy(),
-            "cluster_quality_scores": list(self._cluster_quality_scores)[-10:],  # Keep recent
-            "danger_zone_violations": list(self._danger_zone_violations)[-20:],
-            "learning_effectiveness": list(self._learning_effectiveness)[-30:]
+            'avoidance_signal': self._avoidance_signal,
+            'total_loss_memories': len(self._loss_buf),
+            'total_win_memories': len(self._win_buf),
+            'consecutive_losses': self._consecutive_losses,
+            'fallback_reason': 'no_learning_data'
         }
 
-    def _set_module_state(self, module_state: Dict[str, Any]):
-        """Enhanced state restoration"""
+    async def _handle_mistake_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
+        """Handle mistake memory errors"""
+        processing_time = (time.time() - start_time) * 1000
         
-        # Restore memory buffers
-        loss_buf_data = module_state.get("loss_buf", [])
-        self._loss_buf = [(np.asarray(f, np.float32), pnl, info) for f, pnl, info in loss_buf_data]
+        # Update circuit breaker
+        self.circuit_breaker['failures'] += 1
+        self.circuit_breaker['last_failure'] = time.time()
         
-        win_buf_data = module_state.get("win_buf", [])
-        self._win_buf = [(np.asarray(f, np.float32), pnl, info) for f, pnl, info in win_buf_data]
+        if self.circuit_breaker['failures'] >= self.circuit_breaker['threshold']:
+            self.circuit_breaker['state'] = 'OPEN'
         
-        # Restore clustering models
-        km_loss_data = module_state.get("km_loss", {})
-        if "cluster_centers" in km_loss_data:
-            self._km_loss = KMeans(
-                n_clusters=km_loss_data["n_clusters"],
-                n_init=10,
-                random_state=42
+        # Log error with context
+        error_context = self.error_pinpointer.analyze_error(error, "MistakeMemory")
+        explanation = self.english_explainer.explain_error(
+            "MistakeMemory", str(error), "mistake learning"
+        )
+        
+        self.logger.error(
+            format_operator_message(
+                "💥", "MISTAKE_MEMORY_ERROR",
+                error=str(error),
+                details=explanation,
+                processing_time_ms=processing_time,
+                context="mistake_learning"
             )
-            self._km_loss.cluster_centers_ = np.asarray(km_loss_data["cluster_centers"], np.float32)
-            self._danger_zones = self._km_loss.cluster_centers_.copy()
+        )
         
-        km_win_data = module_state.get("km_win", {})
-        if "cluster_centers" in km_win_data:
-            self._km_win = KMeans(
-                n_clusters=km_win_data["n_clusters"],
-                n_init=10,
-                random_state=42
-            )
-            self._km_win.cluster_centers_ = np.asarray(km_win_data["cluster_centers"], np.float32)
-            self._profit_zones = self._km_win.cluster_centers_.copy()
+        # Record failure
+        self._record_failure(error)
         
-        # Restore other state
-        self._mean_dist = module_state.get("mean_dist", 0.0)
-        self._last_dist = module_state.get("last_dist", 0.0)
-        self._consecutive_losses = module_state.get("consecutive_losses", 0)
-        self._loss_patterns = module_state.get("loss_patterns", {})
-        self._win_patterns = module_state.get("win_patterns", {})
-        self._avoidance_signal = module_state.get("avoidance_signal", 0.0)
-        self.set_genome(module_state.get("genome", self.genome))
-        self._cluster_quality_scores = deque(module_state.get("cluster_quality_scores", []), maxlen=20)
-        self._danger_zone_violations = deque(module_state.get("danger_zone_violations", []), maxlen=50)
-        self._learning_effectiveness = deque(module_state.get("learning_effectiveness", []), maxlen=200)
+        return self._create_fallback_response(f"error: {str(error)}")
 
-    def get_mistake_analysis_report(self) -> str:
-        """Generate operator-friendly mistake analysis report"""
+    def _create_fallback_response(self, reason: str) -> Dict[str, Any]:
+        """Create fallback response for error cases"""
+        return {
+            'avoidance_signal': self._avoidance_signal,
+            'total_loss_memories': len(self._loss_buf),
+            'total_win_memories': len(self._win_buf),
+            'consecutive_losses': self._consecutive_losses,
+            'circuit_breaker_state': self.circuit_breaker['state'],
+            'fallback_reason': reason
+        }
+
+    def _update_mistake_health(self):
+        """Update mistake memory health metrics"""
+        try:
+            # Check clustering quality
+            if self._cluster_quality_scores:
+                avg_quality = np.mean(list(self._cluster_quality_scores)[-3:])
+                if avg_quality < self.config.min_cluster_quality:
+                    self._health_status = 'warning'
+                else:
+                    self._health_status = 'healthy'
+            
+            # Check consecutive losses
+            if self._consecutive_losses > 5:
+                self._health_status = 'warning'
+            
+            self._last_health_check = time.time()
+            
+        except Exception as e:
+            self.logger.error(f"Health check failed: {e}")
+            self._health_status = 'warning'
+
+    def _analyze_avoidance_effectiveness(self):
+        """Analyze avoidance effectiveness"""
+        try:
+            if len(self._learning_effectiveness) >= 10:
+                # Calculate effectiveness metrics
+                recent_effectiveness = list(self._learning_effectiveness)[-10:]
+                avg_effectiveness = np.mean(recent_effectiveness)
+                
+                self._mistake_performance['avoidance_effectiveness'] = avg_effectiveness
+                
+                if avg_effectiveness > 0.7:
+                    self.logger.info(
+                        format_operator_message(
+                            "🛡️", "HIGH_AVOIDANCE_EFFECTIVENESS",
+                            effectiveness=f"{avg_effectiveness:.2f}",
+                            danger_zones=len(self._danger_zones),
+                            context="avoidance_analysis"
+                        )
+                    )
+            
+        except Exception as e:
+            self.logger.error(f"Avoidance effectiveness analysis failed: {e}")
+
+    def _record_success(self, processing_time: float):
+        """Record successful processing"""
+        self.performance_tracker.record_metric(
+            'MistakeMemory', 'learning_cycle', processing_time, True
+        )
         
-        # Current status
-        total_memories = len(self._loss_buf) + len(self._win_buf)
-        win_rate = len(self._win_buf) / max(total_memories, 1)
+        # Reset circuit breaker on success
+        if self.circuit_breaker['state'] == 'OPEN':
+            self.circuit_breaker['failures'] = 0
+            self.circuit_breaker['state'] = 'CLOSED'
+
+    def _record_failure(self, error: Exception):
+        """Record processing failure"""
+        self.performance_tracker.record_metric(
+            'MistakeMemory', 'learning_cycle', 0, False
+        )
+
+    def get_state(self) -> Dict[str, Any]:
+        """Get module state for persistence"""
+        return {
+            'loss_buffer': [(entry[0].tolist(), entry[1], entry[2]) for entry in self._loss_buf[-50:]],
+            'win_buffer': [(entry[0].tolist(), entry[1], entry[2]) for entry in self._win_buf[-50:]],
+            'loss_patterns': self._loss_patterns.copy(),
+            'win_patterns': self._win_patterns.copy(),
+            'danger_zones': self._danger_zones,
+            'profit_zones': self._profit_zones,
+            'genome': self.genome.copy(),
+            'consecutive_losses': self._consecutive_losses,
+            'avoidance_signal': self._avoidance_signal,
+            'mistake_performance': self._mistake_performance.copy(),
+            'circuit_breaker': self.circuit_breaker.copy(),
+            'health_status': self._health_status
+        }
+
+    def set_state(self, state: Dict[str, Any]):
+        """Set module state from persistence"""
+        if 'loss_buffer' in state:
+            self._loss_buf = [(np.array(entry[0]), entry[1], entry[2]) for entry in state['loss_buffer']]
         
-        # Pattern analysis
-        top_loss_pattern = "None"
-        if self._loss_patterns:
-            top_pattern = max(self._loss_patterns.items(), key=lambda x: x[1][0])
-            pattern_name, (count, severity, _) = top_pattern
-            top_loss_pattern = f"{pattern_name} ({count}x, €{severity:.2f})"
+        if 'win_buffer' in state:
+            self._win_buf = [(np.array(entry[0]), entry[1], entry[2]) for entry in state['win_buffer']]
         
-        # Avoidance effectiveness
-        if self._avoidance_signal > 0.6:
-            avoidance_status = "🚨 High Alert"
-        elif self._avoidance_signal > 0.3:
-            avoidance_status = "⚠️ Moderate Caution"
-        else:
-            avoidance_status = "✅ Low Risk"
+        if 'loss_patterns' in state:
+            self._loss_patterns = state['loss_patterns']
         
-        # Clustering quality
-        cluster_quality = (np.mean(list(self._cluster_quality_scores)) 
-                         if self._cluster_quality_scores else 0.0)
+        if 'win_patterns' in state:
+            self._win_patterns = state['win_patterns']
         
-        return f"""
-🧠 MISTAKE MEMORY ANALYSIS
-═══════════════════════════════════════
-📊 Memory Status: {total_memories}/{self.max_mistakes} used
-🎯 Win Rate: {win_rate:.1%}
-🚨 Avoidance Status: {avoidance_status} ({self._avoidance_signal:.3f})
-🔥 Consecutive Losses: {self._consecutive_losses}
+        if 'danger_zones' in state:
+            self._danger_zones = state['danger_zones']
+        
+        if 'profit_zones' in state:
+            self._profit_zones = state['profit_zones']
+        
+        if 'genome' in state:
+            self.genome.update(state['genome'])
+        
+        if 'consecutive_losses' in state:
+            self._consecutive_losses = state['consecutive_losses']
+        
+        if 'avoidance_signal' in state:
+            self._avoidance_signal = state['avoidance_signal']
+        
+        if 'mistake_performance' in state:
+            self._mistake_performance.update(state['mistake_performance'])
+        
+        if 'circuit_breaker' in state:
+            self.circuit_breaker.update(state['circuit_breaker'])
+        
+        if 'health_status' in state:
+            self._health_status = state['health_status']
 
-🎯 CLUSTERING ANALYSIS
-• Danger Zones: {len(self._danger_zones)} clusters
-• Profit Zones: {len(self._profit_zones)} clusters  
-• Cluster Quality: {cluster_quality:.3f}
-• Mean Distance: {self._mean_dist:.3f}
+    def get_health_status(self) -> Dict[str, Any]:
+        """Get health status"""
+        return {
+            'status': self._health_status,
+            'last_check': self._last_health_check,
+            'circuit_breaker': self.circuit_breaker['state'],
+            'total_memories': len(self._loss_buf) + len(self._win_buf),
+            'consecutive_losses': self._consecutive_losses,
+            'avoidance_signal': self._avoidance_signal
+        }
 
-📈 PATTERN RECOGNITION
-• Loss Patterns: {len(self._loss_patterns)}
-• Win Patterns: {len(self._win_patterns)}
-• Top Loss Pattern: {top_loss_pattern}
-• Danger Violations: {len(self._danger_zone_violations)}
+    def stop_monitoring(self):
+        """Stop background monitoring"""
+        self._monitoring_active = False
 
-🔧 CONFIGURATION
-• Max Mistakes: {self.max_mistakes}
-• Clusters: {self.n_clusters}
-• Profit Threshold: €{self.profit_threshold:.2f}
-• Avoidance Sensitivity: {self.avoidance_sensitivity:.2f}
-• Danger Zone Weight: {self.danger_zone_weight:.2f}
-
-💡 LEARNING EFFECTIVENESS
-• Memory Records: {len(self._loss_buf)} losses, {len(self._win_buf)} wins
-• Pattern Diversity: {len(self._loss_patterns) + len(self._win_patterns)} unique patterns
-• Learning History: {len(self._learning_effectiveness)} effectiveness records
-        """
-
-    # Maintain backward compatibility
-    def step(self, **kwargs):
-        """Backward compatibility step method"""
-        self._step_impl(None, **kwargs)
-
-    def get_state(self):
-        """Backward compatibility state method"""
-        return super().get_state()
-
-    def set_state(self, state):
-        """Backward compatibility state method"""
-        super().set_state(state)
+    # Legacy compatibility methods
+    def check_similarity_to_mistakes(self, features: np.ndarray) -> float:
+        """Legacy compatibility for mistake similarity check"""
+        return self._calculate_danger_similarity(features)
+    
+    def propose_action(self, obs: Any = None, **kwargs) -> np.ndarray:
+        """Legacy compatibility for action proposal"""
+        # Return avoidance signal as action modification
+        return np.array([-self._avoidance_signal, 0.0])
+    
+    def confidence(self, obs: Any = None, **kwargs) -> float:
+        """Legacy compatibility for confidence"""
+        # Return inverse of avoidance signal as confidence
+        return max(0.0, 1.0 - self._avoidance_signal)

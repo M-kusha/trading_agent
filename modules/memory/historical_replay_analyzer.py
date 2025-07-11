@@ -1,87 +1,149 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/memory/historical_replay_analyzer.py
-# Enhanced with new infrastructure - InfoBus integration & mixins!
+# 🚀 PRODUCTION-READY Historical Replay Analysis System
+# Advanced sequence analysis with SmartInfoBus integration
 # ─────────────────────────────────────────────────────────────
 
+import asyncio
+import time
+import threading
 import numpy as np
-from typing import List, Optional, Dict, Any
-from collections import deque
-import datetime
-import random
+from typing import Dict, Any, List, Optional, Tuple
+from collections import deque, defaultdict
+from dataclasses import dataclass, field
+from datetime import datetime
 
-from modules.core.core import Module, ModuleConfig
-from modules.core.mixins import TradingMixin, AnalysisMixin
-from modules.utils.info_bus import InfoBus, InfoBusExtractor
+from modules.core.module_base import BaseModule, module
+from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.monitoring.health_monitor import HealthMonitor
+from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-class HistoricalReplayAnalyzer(Module, TradingMixin, AnalysisMixin):
-    """
-    Enhanced historical replay analyzer with infrastructure integration.
-    Identifies and analyzes profitable trading sequences for learning and replay.
-    """
+@dataclass
+class ReplayConfig:
+    """Configuration for Historical Replay Analyzer"""
+    interval: int = 10
+    bonus: float = 0.1
+    sequence_len: int = 5
+    profit_threshold: float = 10.0
+    pattern_sensitivity: float = 1.0
+    replay_decay: float = 0.9
     
-    def __init__(self, interval: int = 10, bonus: float = 0.1, sequence_len: int = 5, 
-                 debug: bool = True, genome: Optional[Dict[str, Any]] = None, **kwargs):
+    # Performance thresholds
+    max_processing_time_ms: float = 200
+    circuit_breaker_threshold: int = 3
+    min_sequence_quality: float = 0.6
+    
+    # Analysis parameters
+    max_sequences: int = 100
+    lookback_episodes: int = 50
+    pattern_confidence_threshold: float = 0.7
+
+
+@module(
+    name="HistoricalReplayAnalyzer",
+    version="3.0.0",
+    category="memory",
+    provides=["replay_sequences", "pattern_analysis", "sequence_quality", "learning_progress"],
+    requires=["trades", "actions", "market_data", "episode_data"],
+    description="Advanced historical sequence analysis with pattern recognition and replay optimization",
+    thesis_required=True,
+    health_monitoring=True,
+    performance_tracking=True,
+    error_handling=True
+)
+class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
+    """
+    Advanced historical replay analyzer with SmartInfoBus integration.
+    Identifies profitable trading sequences and patterns for learning optimization.
+    """
+
+    def __init__(self, 
+                 config: Optional[ReplayConfig] = None,
+                 genome: Optional[Dict[str, Any]] = None,
+                 **kwargs):
         
-        self.profit_threshold = float(genome.get("profit_threshold", 10.0)) if genome else 10.0
-        # Initialize with enhanced infrastructure
-        config = ModuleConfig(
-            debug=debug,
-            max_history=200,
-            **kwargs
-        )
-        super().__init__(config)
+        self.config = config or ReplayConfig()
+        super().__init__()
+        
+        # Initialize advanced systems
+        self._initialize_advanced_systems()
         
         # Initialize genome parameters
-        self._initialize_genome_parameters(genome, interval, bonus, sequence_len)
+        self._initialize_genome_parameters(genome)
         
-        # Enhanced state initialization
-        self._initialize_module_state()
+        # Initialize replay analysis state
+        self._initialize_replay_state()
         
-        self.log_operator_info(
-            "Historical replay analyzer initialized",
-            replay_interval=self.interval,
-            base_bonus=f"{self.bonus:.3f}",
-            sequence_length=self.sequence_len,
-            pattern_tracking="enabled"
+        self.logger.info(
+            format_operator_message(
+                "🎭", "HISTORICAL_REPLAY_ANALYZER_INITIALIZED",
+                details=f"Sequence length: {self.config.sequence_len}, Profit threshold: {self.config.profit_threshold}",
+                result="Historical pattern analysis ready",
+                context="memory_analysis"
+            )
         )
+    
+    def _initialize_advanced_systems(self):
+        """Initialize advanced systems for replay analysis"""
+        self.smart_bus = InfoBusManager.get_instance()
+        self.logger = RotatingLogger(
+            name="HistoricalReplayAnalyzer", 
+            log_path="logs/replay_analysis.log", 
+            max_lines=3000, 
+            operator_mode=True,
+            plain_english=True
+        )
+        self.error_pinpointer = ErrorPinpointer()
+        self.error_handler = create_error_handler("HistoricalReplayAnalyzer", self.error_pinpointer)
+        self.english_explainer = EnglishExplainer()
+        self.system_utilities = SystemUtilities()
+        self.performance_tracker = PerformanceTracker()
+        
+        # Circuit breaker for analysis operations
+        self.circuit_breaker = {
+            'failures': 0,
+            'last_failure': 0,
+            'state': 'CLOSED',
+            'threshold': self.config.circuit_breaker_threshold
+        }
+        
+        # Health monitoring
+        self._health_status = 'healthy'
+        self._last_health_check = time.time()
+        self._start_monitoring()
 
-    def _initialize_genome_parameters(self, genome: Optional[Dict], interval: int, bonus: float, sequence_len: int):
+    def _initialize_genome_parameters(self, genome: Optional[Dict[str, Any]]):
         """Initialize genome-based parameters"""
         if genome:
-            self.interval = int(genome.get("interval", interval))
-            self.bonus = float(genome.get("bonus", bonus))
-            self.sequence_len = int(genome.get("sequence_len", sequence_len))
-            self.profit_threshold = float(genome.get("profit_threshold", 10.0))
-            self.pattern_sensitivity = float(genome.get("pattern_sensitivity", 1.0))
-            self.replay_decay = float(genome.get("replay_decay", 0.9))
+            self.genome = {
+                "interval": int(genome.get("interval", self.config.interval)),
+                "bonus": float(genome.get("bonus", self.config.bonus)),
+                "sequence_len": int(genome.get("sequence_len", self.config.sequence_len)),
+                "profit_threshold": float(genome.get("profit_threshold", self.config.profit_threshold)),
+                "pattern_sensitivity": float(genome.get("pattern_sensitivity", self.config.pattern_sensitivity)),
+                "replay_decay": float(genome.get("replay_decay", self.config.replay_decay))
+            }
         else:
-            self.interval = interval
-            self.bonus = bonus
-            self.sequence_len = sequence_len
-            self.profit_threshold = 10.0
-            self.pattern_sensitivity = 1.0
-            self.replay_decay = 0.9
+            self.genome = {
+                "interval": self.config.interval,
+                "bonus": self.config.bonus,
+                "sequence_len": self.config.sequence_len,
+                "profit_threshold": self.config.profit_threshold,
+                "pattern_sensitivity": self.config.pattern_sensitivity,
+                "replay_decay": self.config.replay_decay
+            }
 
-        # Store genome for evolution
-        self.genome = {
-            "interval": self.interval,
-            "bonus": self.bonus,
-            "sequence_len": self.sequence_len,
-            "profit_threshold": self.profit_threshold,
-            "pattern_sensitivity": self.pattern_sensitivity,
-            "replay_decay": self.replay_decay
-        }
-
-    def _initialize_module_state(self):
-        """Initialize module-specific state using mixins"""
-        self._initialize_trading_state()
-        self._initialize_analysis_state()
-        
-        # Replay analysis specific state
-        self.episode_buffer = deque(maxlen=100)
+    def _initialize_replay_state(self):
+        """Initialize replay analysis state"""
+        # Core replay data
+        self.episode_buffer = deque(maxlen=self.config.lookback_episodes)
         self.profitable_sequences = []
-        self.sequence_patterns = {}  # pattern -> (count, avg_pnl, last_seen)
+        self.sequence_patterns = {}  # pattern -> (count, avg_pnl, last_seen, confidence)
         self.current_sequence = []
         self.replay_bonus = 0.0
         self.best_sequence_pnl = 0.0
@@ -97,887 +159,708 @@ class HistoricalReplayAnalyzer(Module, TradingMixin, AnalysisMixin):
         self._pattern_success_rates = {}
         self._pattern_market_conditions = {}
         self._adaptive_thresholds = {
-            'min_profit': self.profit_threshold,
+            'min_profit': self.genome["profit_threshold"],
             'min_sequence_len': 3,
-            'pattern_confidence': 0.6
+            'pattern_confidence': self.config.pattern_confidence_threshold
+        }
+        
+        # Performance analytics
+        self._analysis_performance = {
+            'sequences_analyzed': 0,
+            'patterns_identified': 0,
+            'successful_replays': 0,
+            'total_replay_bonus': 0.0
         }
 
-    def reset(self) -> None:
-        """Enhanced reset with automatic cleanup"""
-        super().reset()
-        self._reset_trading_state()
-        self._reset_analysis_state()
+    def _start_monitoring(self):
+        """Start background monitoring"""
+        def monitoring_loop():
+            while getattr(self, '_monitoring_active', True):
+                try:
+                    self._update_replay_health()
+                    self._analyze_pattern_effectiveness()
+                    time.sleep(30)
+                except Exception as e:
+                    self.logger.error(f"Monitoring error: {e}")
         
-        # Module-specific reset
-        self.episode_buffer.clear()
-        self.profitable_sequences.clear()
-        self.sequence_patterns.clear()
-        self.current_sequence.clear()
-        self.replay_bonus = 0.0
-        self.best_sequence_pnl = 0.0
-        self._episode_count = 0
-        self._pattern_evolution.clear()
-        self._sequence_quality_scores.clear()
-        self._replay_effectiveness.clear()
-        self._learning_curve.clear()
-        self._pattern_success_rates.clear()
-        self._pattern_market_conditions.clear()
-        
-        # Reset adaptive thresholds
-        self._adaptive_thresholds = {
-            'min_profit': self.profit_threshold,
-            'min_sequence_len': 3,
-            'pattern_confidence': 0.6
-        }
+        self._monitoring_active = True
+        monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
+        monitor_thread.start()
 
-    def _step_impl(self, info_bus: Optional[InfoBus] = None, **kwargs) -> None:
-        """Enhanced step with InfoBus integration"""
-        
-        # Extract trading sequence data
-        sequence_data = self._extract_sequence_data(info_bus, kwargs)
-        
-        # Process current trading sequence
-        self._process_trading_sequence(sequence_data)
-        
-        # Update learning metrics
-        self._update_learning_metrics(sequence_data)
-
-    def _extract_sequence_data(self, info_bus: Optional[InfoBus], kwargs: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract sequence tracking data from InfoBus or kwargs"""
-        
-        # Try InfoBus first
-        if info_bus:
-            # Extract recent trades for sequence analysis
-            recent_trades = info_bus.get('recent_trades', [])
-            market_context = info_bus.get('market_context', {})
-            step_idx = info_bus.get('step_idx', 0)
-            
-            # Get current action if available
-            current_action = kwargs.get('action', np.zeros(2))
-            
-            # Extract features from InfoBus
-            features = self._extract_features_from_info_bus(info_bus)
-            
-            return {
-                'recent_trades': recent_trades,
-                'current_action': current_action,
-                'features': features,
-                'market_context': market_context,
-                'step_idx': step_idx,
-                'regime': InfoBusExtractor.get_market_regime(info_bus),
-                'volatility_level': InfoBusExtractor.get_volatility_level(info_bus),
-                'session': InfoBusExtractor.get_session(info_bus),
-                'source': 'info_bus'
-            }
-        
-        # Try kwargs (backward compatibility)
-        if "action" in kwargs and "features" in kwargs:
-            return {
-                'current_action': kwargs["action"],
-                'features': kwargs["features"],
-                'timestamp': kwargs.get("timestamp", self._step_count),
-                'source': 'kwargs'
-            }
-        
-        # Return minimal data if insufficient input
-        return {'source': 'insufficient_data'}
-
-    def _extract_features_from_info_bus(self, info_bus: InfoBus) -> np.ndarray:
-        """Extract trading features from InfoBus"""
-        
-        # Combine various InfoBus data into feature vector
-        features = []
-        
-        # Market context features
-        market_context = info_bus.get('market_context', {})
-        if 'volatility' in market_context:
-            vol_data = market_context['volatility']
-            if isinstance(vol_data, dict):
-                features.extend(list(vol_data.values())[:3])  # First 3 instruments
-            else:
-                features.append(float(vol_data))
-        else:
-            features.extend([0.01, 0.01, 0.01])  # Default volatility
-        
-        # Risk features
-        risk_data = info_bus.get('risk', {})
-        features.extend([
-            risk_data.get('current_drawdown', 0.0),
-            risk_data.get('margin_used', 0.0) / max(risk_data.get('equity', 1.0), 1.0),
-            len(info_bus.get('positions', []))
-        ])
-        
-        # Price momentum features
-        prices = info_bus.get('prices', {})
-        if prices:
-            price_values = list(prices.values())[:2]  # First 2 instruments
-            features.extend(price_values)
-        else:
-            features.extend([1.0, 1.0])
-        
-        # Session and regime encoding
-        session = InfoBusExtractor.get_session(info_bus)
-        session_encoding = {'asian': 1, 'european': 2, 'american': 3, 'closed': 0}.get(session, 0)
-        features.append(session_encoding)
-        
-        regime = InfoBusExtractor.get_market_regime(info_bus)
-        regime_encoding = {'trending': 1, 'volatile': 2, 'ranging': 3, 'unknown': 0}.get(regime, 0)
-        features.append(regime_encoding)
-        
-        return np.array(features, dtype=np.float32)
-
-    def _process_trading_sequence(self, sequence_data: Dict[str, Any]):
-        """Process current trading sequence with enhanced analytics"""
-        
-        if sequence_data.get('source') == 'insufficient_data':
-            return
-        
+    async def _initialize(self):
+        """Initialize module"""
         try:
-            # Build step data
-            step_data = {
-                "action": sequence_data.get('current_action', np.zeros(2)),
-                "features": sequence_data.get('features', np.zeros(10)),
-                "timestamp": sequence_data.get('step_idx', self._step_count),
-                "market_context": sequence_data.get('market_context', {}),
-                "regime": sequence_data.get('regime', 'unknown'),
-                "volatility_level": sequence_data.get('volatility_level', 'medium')
+            # Set initial replay status in SmartInfoBus
+            initial_status = {
+                "sequences_stored": 0,
+                "patterns_identified": 0,
+                "best_sequence_pnl": 0.0,
+                "replay_bonus": 0.0
             }
             
-            # Add to current sequence
-            self.current_sequence.append(step_data)
-            
-            # Maintain sequence length
-            if len(self.current_sequence) > self.sequence_len:
-                removed = self.current_sequence.pop(0)
-                
-            # Calculate sequence quality
-            quality_score = self._calculate_sequence_quality(self.current_sequence)
-            self._sequence_quality_scores.append(quality_score)
-            
-            # Update performance metrics
-            self._update_performance_metric('sequence_length', len(self.current_sequence))
-            self._update_performance_metric('sequence_quality', quality_score)
-            
-        except Exception as e:
-            self.log_operator_error(f"Sequence processing failed: {e}")
-            self._update_health_status("DEGRADED", f"Sequence processing failed: {e}")
-
-    def _calculate_sequence_quality(self, sequence: List[Dict]) -> float:
-        """Calculate quality score for current sequence"""
-        
-        if not sequence:
-            return 0.0
-        
-        try:
-            # Action consistency score
-            actions = [step.get('action', np.zeros(2)) for step in sequence]
-            if len(actions) >= 2:
-                action_vars = [np.var([a[i] if len(a) > i else 0 for a in actions]) for i in range(2)]
-                consistency = 1.0 / (1.0 + np.mean(action_vars))
-            else:
-                consistency = 0.5
-            
-            # Market condition stability
-            regimes = [step.get('regime', 'unknown') for step in sequence]
-            regime_stability = len(set(regimes)) / max(len(regimes), 1)
-            regime_stability = 1.0 - regime_stability  # Higher is better
-            
-            # Feature diversity (good for learning)
-            features = [step.get('features', np.zeros(10)) for step in sequence]
-            if len(features) >= 2:
-                feature_matrix = np.vstack(features)
-                feature_diversity = np.mean(np.std(feature_matrix, axis=0))
-                feature_diversity = min(1.0, feature_diversity)
-            else:
-                feature_diversity = 0.0
-            
-            # Combined quality score
-            quality = (0.4 * consistency + 0.3 * regime_stability + 0.3 * feature_diversity)
-            
-            return float(np.clip(quality, 0.0, 1.0))
-            
-        except Exception as e:
-            self.log_operator_warning(f"Quality calculation failed: {e}")
-            return 0.5
-
-    def _update_learning_metrics(self, sequence_data: Dict[str, Any]):
-        """Update learning curve and effectiveness metrics"""
-        
-        # Track learning progression
-        if len(self._sequence_quality_scores) > 0:
-            avg_quality = np.mean(list(self._sequence_quality_scores)[-10:])
-            self._learning_curve.append({
-                'episode': self._episode_count,
-                'avg_quality': avg_quality,
-                'patterns_found': len(self.sequence_patterns),
-                'best_pnl': self.best_sequence_pnl
-            })
-
-    def record_episode(self, data: Dict, actions: np.ndarray, pnl: float, info_bus: Optional[InfoBus] = None):
-        """Enhanced episode recording with InfoBus integration"""
-        
-        try:
-            self._episode_count += 1
-            
-            # Extract market context for episode analysis
-            market_context = {}
-            if info_bus:
-                market_context = {
-                    'regime': InfoBusExtractor.get_market_regime(info_bus),
-                    'volatility_level': InfoBusExtractor.get_volatility_level(info_bus),
-                    'session': InfoBusExtractor.get_session(info_bus),
-                    'drawdown': InfoBusExtractor.get_drawdown_pct(info_bus),
-                    'exposure': InfoBusExtractor.get_exposure_pct(info_bus)
-                }
-            
-            # Create comprehensive episode record
-            episode_data = {
-                "data": data,
-                "actions": actions,
-                "pnl": pnl,
-                "sequence": list(self.current_sequence),
-                "episode": self._episode_count,
-                "market_context": market_context,
-                "timestamp": datetime.datetime.now().isoformat()
-            }
-            self.episode_buffer.append(episode_data)
-            
-            # Process trading results
-            self._process_trading_results(pnl)
-            
-            # Analyze profitable sequences
-            if pnl > self._adaptive_thresholds['min_profit']:
-                self._analyze_profitable_sequence(episode_data)
-            
-            # Update adaptive thresholds
-            self._update_adaptive_thresholds(pnl)
-            
-            # Log episode summary
-            self.log_operator_info(
-                f"Episode {self._episode_count} recorded",
-                pnl=f"€{pnl:+.2f}",
-                sequence_length=len(self.current_sequence),
-                patterns_tracked=len(self.sequence_patterns),
-                quality_score=f"{self._sequence_quality_scores[-1]:.3f}" if self._sequence_quality_scores else "N/A"
+            self.smart_bus.set(
+                'replay_sequences',
+                initial_status,
+                module='HistoricalReplayAnalyzer',
+                thesis="Initial historical replay analysis status"
             )
             
-            # Reset sequence for next episode
-            self.current_sequence.clear()
-            
-        except Exception as e:
-            self.log_operator_error(f"Episode recording failed: {e}")
-            self._update_health_status("DEGRADED", f"Episode recording failed: {e}")
-
-    def _analyze_profitable_sequence(self, episode_data: Dict):
-        """Analyze profitable trading sequences for patterns"""
-        
-        try:
-            sequence = episode_data['sequence']
-            pnl = episode_data['pnl']
-            
-            if len(sequence) >= self._adaptive_thresholds['min_sequence_len']:
-                # Extract sequence pattern
-                pattern = self._extract_sequence_pattern(sequence)
-                
-                # Update pattern statistics
-                current_time = datetime.datetime.now().isoformat()
-                if pattern in self.sequence_patterns:
-                    count, avg_pnl, _ = self.sequence_patterns[pattern]
-                    new_avg = (avg_pnl * count + pnl) / (count + 1)
-                    self.sequence_patterns[pattern] = (count + 1, new_avg, current_time)
-                    
-                    self.log_operator_info(
-                        f"Pattern '{pattern}' updated",
-                        count=count + 1,
-                        avg_pnl=f"€{new_avg:.2f}",
-                        latest_pnl=f"€{pnl:.2f}"
-                    )
-                else:
-                    self.sequence_patterns[pattern] = (1, pnl, current_time)
-                    self.log_operator_info(
-                        f"New profitable pattern discovered",
-                        pattern=pattern,
-                        pnl=f"€{pnl:.2f}",
-                        episode=self._episode_count
-                    )
-                
-                # Store market conditions for this pattern
-                if pattern not in self._pattern_market_conditions:
-                    self._pattern_market_conditions[pattern] = []
-                self._pattern_market_conditions[pattern].append(episode_data.get('market_context', {}))
-                
-                # Update pattern success rate
-                self._update_pattern_success_rate(pattern, True)
-                
-                # Store exceptional sequences
-                if pnl > self.best_sequence_pnl:
-                    old_best = self.best_sequence_pnl
-                    self.best_sequence_pnl = pnl
-                    
-                    profitable_record = {
-                        "sequence": list(sequence),
-                        "pnl": pnl,
-                        "pattern": pattern,
-                        "episode": self._episode_count,
-                        "market_context": episode_data.get('market_context', {}),
-                        "timestamp": current_time
-                    }
-                    self.profitable_sequences.append(profitable_record)
-                    
-                    # Keep only top 10 sequences
-                    self.profitable_sequences.sort(key=lambda x: x["pnl"], reverse=True)
-                    self.profitable_sequences = self.profitable_sequences[:10]
-                    
-                    self.log_operator_info(
-                        f"New best sequence recorded",
-                        new_best=f"€{pnl:.2f}",
-                        previous_best=f"€{old_best:.2f}",
-                        pattern=pattern
-                    )
-            else:
-                self.log_operator_warning(
-                    f"Profitable episode but sequence too short",
-                    length=len(sequence),
-                    required=self._adaptive_thresholds['min_sequence_len']
-                )
-                
-        except Exception as e:
-            self.log_operator_error(f"Profitable sequence analysis failed: {e}")
-
-    def _extract_sequence_pattern(self, sequence: List[Dict]) -> str:
-        """Extract actionable pattern from trading sequence"""
-        
-        try:
-            if not sequence:
-                return "empty"
-            
-            # Enhanced pattern extraction
-            action_pattern = []
-            regime_pattern = []
-            volatility_pattern = []
-            
-            for step in sequence[-self.sequence_len:]:  # Recent steps
-                # Action pattern
-                action = step.get("action", np.array([0, 0]))
-                if isinstance(action, np.ndarray) and len(action) >= 2:
-                    direction = "B" if action[0] > 0.1 else "S" if action[0] < -0.1 else "H"
-                    duration = "L" if len(action) > 1 and action[1] > 0.5 else "S"
-                    action_pattern.append(f"{direction}{duration}")
-                else:
-                    action_pattern.append("H")
-                
-                # Market context pattern
-                regime = step.get("regime", "unknown")
-                regime_short = {"trending": "T", "volatile": "V", "ranging": "R"}.get(regime, "U")
-                regime_pattern.append(regime_short)
-                
-                volatility = step.get("volatility_level", "medium")
-                vol_short = {"low": "L", "medium": "M", "high": "H", "extreme": "X"}.get(volatility, "M")
-                volatility_pattern.append(vol_short)
-            
-            # Combine patterns
-            pattern = f"{'_'.join(action_pattern)}|{''.join(regime_pattern)}|{''.join(volatility_pattern)}"
-            
-            return pattern
-            
-        except Exception as e:
-            self.log_operator_warning(f"Pattern extraction failed: {e}")
-            return "error"
-
-    def _update_pattern_success_rate(self, pattern: str, success: bool):
-        """Update pattern success tracking"""
-        
-        if pattern not in self._pattern_success_rates:
-            self._pattern_success_rates[pattern] = {'successes': 0, 'attempts': 0}
-        
-        self._pattern_success_rates[pattern]['attempts'] += 1
-        if success:
-            self._pattern_success_rates[pattern]['successes'] += 1
-
-    def _update_adaptive_thresholds(self, pnl: float):
-        """Update adaptive learning thresholds based on performance"""
-        
-        try:
-            # Update minimum profit threshold based on recent performance
-            if len(self._learning_curve) >= 10:
-                recent_pnls = [pnl]  # Current episode
-                recent_avg = np.mean(recent_pnls)
-                
-                # Adapt threshold to be slightly below average profitable episodes
-                if recent_avg > 0:
-                    new_threshold = max(5.0, recent_avg * 0.7)
-                    if abs(new_threshold - self._adaptive_thresholds['min_profit']) > 2.0:
-                        old_threshold = self._adaptive_thresholds['min_profit']
-                        self._adaptive_thresholds['min_profit'] = new_threshold
-                        
-                        self.log_operator_info(
-                            f"Adaptive threshold updated",
-                            metric="min_profit",
-                            old_value=f"€{old_threshold:.2f}",
-                            new_value=f"€{new_threshold:.2f}"
-                        )
-            
-            # Update pattern confidence threshold
-            if len(self.sequence_patterns) > 5:
-                pattern_performances = [avg_pnl for _, avg_pnl, _ in self.sequence_patterns.values()]
-                if pattern_performances:
-                    performance_std = np.std(pattern_performances)
-                    new_confidence = min(0.8, 0.5 + performance_std / 50.0)
-                    self._adaptive_thresholds['pattern_confidence'] = new_confidence
-                    
-        except Exception as e:
-            self.log_operator_warning(f"Adaptive threshold update failed: {e}")
-
-    def maybe_replay(self, episode: int) -> float:
-        """Enhanced replay bonus calculation with market context awareness"""
-        
-        try:
-            # Base interval replay
-            base_bonus = self.bonus if episode % self.interval == 0 else 0.0
-            
-            # Pattern-based bonus enhancement
-            pattern_bonus = 0.0
-            if self.sequence_patterns:
-                # Find most profitable and recent patterns
-                recent_patterns = {
-                    pattern: (count, avg_pnl) 
-                    for pattern, (count, avg_pnl, last_seen) in self.sequence_patterns.items()
-                    if count >= 2  # Minimum pattern frequency
-                }
-                
-                if recent_patterns:
-                    best_pattern = max(recent_patterns.items(), key=lambda x: x[1][1])
-                    pattern_name, (count, avg_pnl) = best_pattern
-                    
-                    # Calculate pattern bonus
-                    pattern_bonus = min(0.3, avg_pnl / 100.0) * self.pattern_sensitivity
-                    
-                    # Success rate adjustment
-                    if pattern_name in self._pattern_success_rates:
-                        success_rate = (self._pattern_success_rates[pattern_name]['successes'] / 
-                                      max(self._pattern_success_rates[pattern_name]['attempts'], 1))
-                        pattern_bonus *= success_rate
-                    
-                    self.log_operator_info(
-                        f"Pattern-enhanced replay bonus",
-                        episode=episode,
-                        best_pattern=pattern_name,
-                        pattern_pnl=f"€{avg_pnl:.2f}",
-                        pattern_count=count,
-                        base_bonus=f"{base_bonus:.3f}",
-                        pattern_bonus=f"{pattern_bonus:.3f}"
-                    )
-            
-            # Learning curve bonus
-            learning_bonus = 0.0
-            if len(self._learning_curve) >= 5:
-                recent_learning = [lc['avg_quality'] for lc in list(self._learning_curve)[-5:]]
-                learning_trend = np.polyfit(range(len(recent_learning)), recent_learning, 1)[0]
-                if learning_trend > 0:  # Improving
-                    learning_bonus = min(0.1, learning_trend * 2.0)
-            
-            # Combined replay bonus
-            self.replay_bonus = base_bonus + pattern_bonus + learning_bonus
-            
-            # Apply decay to historical bonus
-            self.replay_bonus *= (self.replay_decay ** (episode % 100))
-            
-            # Track replay effectiveness
-            self._replay_effectiveness[episode] = {
-                'base_bonus': base_bonus,
-                'pattern_bonus': pattern_bonus,
-                'learning_bonus': learning_bonus,
-                'total_bonus': self.replay_bonus
-            }
-            
-            # Update performance metrics
-            self._update_performance_metric('replay_bonus', self.replay_bonus)
-            self._update_performance_metric('pattern_bonus', pattern_bonus)
-            
-            return self.replay_bonus
-            
-        except Exception as e:
-            self.log_operator_error(f"Replay bonus calculation failed: {e}")
-            return 0.0
-
-    def get_best_sequence_for_replay(self) -> Optional[List[Dict]]:
-        """Get the most profitable sequence with market context"""
-        
-        try:
-            if not self.profitable_sequences:
-                return None
-            
-            # Select best sequence considering recency and profitability
-            scored_sequences = []
-            
-            for seq_data in self.profitable_sequences:
-                pnl = seq_data['pnl']
-                episode = seq_data['episode']
-                
-                # Recency score (more recent = better)
-                recency = 1.0 - ((self._episode_count - episode) / max(self._episode_count, 1))
-                
-                # Combined score
-                total_score = 0.7 * (pnl / 100.0) + 0.3 * recency
-                scored_sequences.append((total_score, seq_data))
-            
-            # Get best sequence
-            best_score, best_seq_data = max(scored_sequences, key=lambda x: x[0])
-            best_sequence = best_seq_data["sequence"]
-            
-            self.log_operator_info(
-                f"Best sequence selected for replay",
-                pnl=f"€{best_seq_data['pnl']:.2f}",
-                episode=best_seq_data['episode'],
-                length=len(best_sequence),
-                score=f"{best_score:.3f}",
-                pattern=best_seq_data.get('pattern', 'unknown')
-            )
-            
-            return best_sequence
-            
-        except Exception as e:
-            self.log_operator_error(f"Best sequence selection failed: {e}")
-            return None
-
-    # ═══════════════════════════════════════════════════════════════════
-    # ENHANCED OBSERVATION AND ACTION METHODS
-    # ═══════════════════════════════════════════════════════════════════
-
-    def get_observation_components(self) -> np.ndarray:
-        """Enhanced observation components with comprehensive metrics"""
-        
-        try:
-            # Base replay metrics
-            n_patterns = float(len(self.sequence_patterns))
-            avg_pattern_pnl = 0.0
-            pattern_diversity = 0.0
-            
-            if self.sequence_patterns:
-                pattern_pnls = [avg_pnl for _, avg_pnl, _ in self.sequence_patterns.values()]
-                avg_pattern_pnl = np.mean(pattern_pnls)
-                pattern_diversity = np.std(pattern_pnls) if len(pattern_pnls) > 1 else 0.0
-            
-            # Learning metrics
-            learning_trend = 0.0
-            if len(self._learning_curve) >= 3:
-                qualities = [lc['avg_quality'] for lc in list(self._learning_curve)[-3:]]
-                learning_trend = np.polyfit(range(len(qualities)), qualities, 1)[0]
-            
-            # Pattern success rate
-            avg_success_rate = 0.0
-            if self._pattern_success_rates:
-                success_rates = [
-                    stats['successes'] / max(stats['attempts'], 1) 
-                    for stats in self._pattern_success_rates.values()
-                ]
-                avg_success_rate = np.mean(success_rates)
-            
-            # Sequence quality
-            current_quality = float(self._sequence_quality_scores[-1]) if self._sequence_quality_scores else 0.0
-            
-            # Enhanced observation vector
-            observation = np.array([
-                self.replay_bonus,
-                n_patterns,
-                avg_pattern_pnl / 100.0,  # Normalized
-                self.best_sequence_pnl / 100.0,  # Normalized
-                pattern_diversity / 100.0,  # Normalized
-                learning_trend,
-                avg_success_rate,
-                current_quality,
-                float(len(self.current_sequence)) / self.sequence_len,  # Normalized
-                float(self._episode_count) / 1000.0  # Normalized episode count
-            ], dtype=np.float32)
-            
-            return observation
-            
-        except Exception as e:
-            self.log_operator_error(f"Observation generation failed: {e}")
-            return np.zeros(10, dtype=np.float32)
-
-    def propose_action(self, obs: Any = None, info_bus: Optional[InfoBus] = None) -> np.ndarray:
-        """Propose replay-informed actions"""
-        
-        # This module provides learning insights rather than direct trading actions
-        action_dim = 2
-        if hasattr(obs, 'shape') and len(obs.shape) > 0:
-            action_dim = obs.shape[0]
-        
-        # Return influence based on pattern confidence
-        if self.sequence_patterns:
-            # Use most successful pattern to influence action
-            best_pattern = max(self.sequence_patterns.items(), key=lambda x: x[1][1])
-            pattern_confidence = best_pattern[1][1] / 100.0  # Normalize
-            
-            # Extract direction from pattern name
-            pattern_name = best_pattern[0]
-            if 'B' in pattern_name:  # Buy patterns
-                influence = np.full(action_dim, pattern_confidence * 0.3)
-            elif 'S' in pattern_name:  # Sell patterns  
-                influence = np.full(action_dim, -pattern_confidence * 0.3)
-            else:
-                influence = np.zeros(action_dim)
-                
-            return influence.astype(np.float32)
-        
-        return np.zeros(action_dim, dtype=np.float32)
-
-    def confidence(self, obs: Any = None, info_bus: Optional[InfoBus] = None) -> float:
-        """Return confidence in replay recommendations"""
-        
-        base_confidence = 0.5
-        
-        # Confidence from pattern count and success
-        if len(self.sequence_patterns) > 0:
-            pattern_confidence = min(0.3, len(self.sequence_patterns) / 10.0)
-            base_confidence += pattern_confidence
-        
-        # Confidence from success rates
-        if self._pattern_success_rates:
-            avg_success_rate = np.mean([
-                stats['successes'] / max(stats['attempts'], 1)
-                for stats in self._pattern_success_rates.values()
-            ])
-            base_confidence += avg_success_rate * 0.2
-        
-        # Confidence from learning trend
-        if len(self._learning_curve) >= 3:
-            qualities = [lc['avg_quality'] for lc in list(self._learning_curve)[-3:]]
-            if qualities:
-                trend = np.polyfit(range(len(qualities)), qualities, 1)[0]
-                if trend > 0:
-                    base_confidence += min(0.1, trend)
-        
-        return float(np.clip(base_confidence, 0.1, 1.0))
-
-    # ═══════════════════════════════════════════════════════════════════
-    # EVOLUTIONARY METHODS
-    # ═══════════════════════════════════════════════════════════════════
-
-    def get_genome(self) -> Dict[str, Any]:
-        """Get evolutionary genome"""
-        return self.genome.copy()
-        
-    def set_genome(self, genome: Dict[str, Any]):
-        """Set evolutionary genome with validation"""
-        self.interval = int(np.clip(genome.get("interval", self.interval), 5, 50))
-        self.bonus = float(np.clip(genome.get("bonus", self.bonus), 0.0, 0.5))
-        self.sequence_len = int(np.clip(genome.get("sequence_len", self.sequence_len), 3, 15))
-        self.profit_threshold = float(np.clip(genome.get("profit_threshold", self.profit_threshold), 1.0, 50.0))
-        self.pattern_sensitivity = float(np.clip(genome.get("pattern_sensitivity", self.pattern_sensitivity), 0.1, 2.0))
-        self.replay_decay = float(np.clip(genome.get("replay_decay", self.replay_decay), 0.8, 1.0))
-        
-        self.genome = {
-            "interval": self.interval,
-            "bonus": self.bonus,
-            "sequence_len": self.sequence_len,
-            "profit_threshold": self.profit_threshold,
-            "pattern_sensitivity": self.pattern_sensitivity,
-            "replay_decay": self.replay_decay
-        }
-        
-    def mutate(self, mutation_rate: float = 0.2):
-        """Enhanced mutation with performance tracking"""
-        g = self.genome.copy()
-        mutations = []
-        
-        if np.random.rand() < mutation_rate:
-            old_val = g["interval"]
-            g["interval"] = int(np.clip(self.interval + np.random.randint(-3, 4), 5, 50))
-            mutations.append(f"interval: {old_val} → {g['interval']}")
-            
-        if np.random.rand() < mutation_rate:
-            old_val = g["bonus"]
-            g["bonus"] = float(np.clip(self.bonus + np.random.uniform(-0.05, 0.05), 0.0, 0.5))
-            mutations.append(f"bonus: {old_val:.3f} → {g['bonus']:.3f}")
-            
-        if np.random.rand() < mutation_rate:
-            old_val = g["sequence_len"]
-            g["sequence_len"] = int(np.clip(self.sequence_len + np.random.randint(-1, 2), 3, 15))
-            mutations.append(f"sequence_len: {old_val} → {g['sequence_len']}")
-            
-        if np.random.rand() < mutation_rate:
-            old_val = g["pattern_sensitivity"]
-            g["pattern_sensitivity"] = float(np.clip(self.pattern_sensitivity + np.random.uniform(-0.1, 0.1), 0.1, 2.0))
-            mutations.append(f"sensitivity: {old_val:.2f} → {g['pattern_sensitivity']:.2f}")
-        
-        if mutations:
-            self.log_operator_info(f"Replay analyzer mutation applied", changes=", ".join(mutations))
-            
-        self.set_genome(g)
-        
-    def crossover(self, other: "HistoricalReplayAnalyzer") -> "HistoricalReplayAnalyzer":
-        """Enhanced crossover with compatibility checking"""
-        if not isinstance(other, HistoricalReplayAnalyzer):
-            self.log_operator_warning("Crossover with incompatible type")
-            return self
-            
-        new_g = {k: random.choice([self.genome[k], other.genome[k]]) for k in self.genome}
-        return HistoricalReplayAnalyzer(genome=new_g, debug=self.config.debug)
-
-    # ═══════════════════════════════════════════════════════════════════
-    # ENHANCED STATE MANAGEMENT
-    # ═══════════════════════════════════════════════════════════════════
-
-    def _check_state_integrity(self) -> bool:
-        """Enhanced health check"""
-        try:
-            # Check sequence bounds
-            if len(self.current_sequence) > self.sequence_len + 5:
-                return False
-                
-            # Check pattern data validity
-            for pattern, (count, avg_pnl, _) in self.sequence_patterns.items():
-                if count <= 0 or not np.isfinite(avg_pnl):
-                    return False
-            
-            # Check profitable sequences
-            if self.profitable_sequences:
-                for seq_data in self.profitable_sequences:
-                    if not isinstance(seq_data.get('pnl'), (int, float)):
-                        return False
-                        
-            # Check episode count consistency
-            if self._episode_count < 0:
-                return False
-                
             return True
-            
-        except Exception:
+        except Exception as e:
+            self.logger.error(f"Initialization failed: {e}")
             return False
 
-    def _get_health_details(self) -> Dict[str, Any]:
-        """Enhanced health details"""
-        base_details = super()._get_health_details()
+    async def process(self, **inputs) -> Dict[str, Any]:
+        """Process historical replay analysis"""
+        start_time = time.time()
         
-        replay_details = {
-            'replay_info': {
-                'episodes_processed': self._episode_count,
-                'patterns_discovered': len(self.sequence_patterns),
-                'profitable_sequences': len(self.profitable_sequences),
-                'best_sequence_pnl': self.best_sequence_pnl,
-                'current_replay_bonus': self.replay_bonus
-            },
-            'learning_info': {
+        try:
+            # Extract sequence data
+            sequence_data = await self._extract_sequence_data(**inputs)
+            
+            if not sequence_data:
+                return await self._handle_no_data_fallback()
+            
+            # Process current trading sequence
+            sequence_result = await self._process_trading_sequence(sequence_data)
+            
+            # Analyze patterns if episode completed
+            if sequence_data.get('episode_completed', False):
+                pattern_result = await self._analyze_episode_patterns(sequence_data)
+                sequence_result.update(pattern_result)
+            
+            # Generate replay recommendations
+            replay_result = await self._generate_replay_recommendations()
+            sequence_result.update(replay_result)
+            
+            # Generate thesis
+            thesis = await self._generate_replay_thesis(sequence_data, sequence_result)
+            
+            # Update SmartInfoBus
+            await self._update_replay_smart_bus(sequence_result, thesis)
+            
+            # Record success
+            processing_time = (time.time() - start_time) * 1000
+            self._record_success(processing_time)
+            
+            return sequence_result
+            
+        except Exception as e:
+            return await self._handle_replay_error(e, start_time)
+
+    async def _extract_sequence_data(self, **inputs) -> Optional[Dict[str, Any]]:
+        """Extract sequence data from SmartInfoBus"""
+        try:
+            # Get recent trades
+            trades = self.smart_bus.get('trades', 'HistoricalReplayAnalyzer') or []
+            
+            # Get actions
+            actions = self.smart_bus.get('actions', 'HistoricalReplayAnalyzer') or []
+            
+            # Get market data
+            market_data = self.smart_bus.get('market_data', 'HistoricalReplayAnalyzer') or {}
+            
+            # Get episode data
+            episode_data = self.smart_bus.get('episode_data', 'HistoricalReplayAnalyzer') or {}
+            
+            # Get current action if provided
+            current_action = inputs.get('action', np.zeros(2))
+            
+            return {
+                'trades': trades,
+                'actions': actions,
+                'market_data': market_data,
+                'episode_data': episode_data,
+                'current_action': current_action,
+                'timestamp': datetime.now().isoformat(),
+                'episode_completed': inputs.get('episode_completed', False)
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to extract sequence data: {e}")
+            return None
+
+    async def _process_trading_sequence(self, sequence_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Process current trading sequence"""
+        try:
+            # Add current step to sequence
+            if sequence_data.get('current_action') is not None:
+                current_step = {
+                    'action': sequence_data['current_action'],
+                    'timestamp': time.time(),
+                    'market_context': sequence_data.get('market_data', {})
+                }
+                self.current_sequence.append(current_step)
+            
+            # Limit sequence length
+            if len(self.current_sequence) > self.genome["sequence_len"]:
+                self.current_sequence = self.current_sequence[-self.genome["sequence_len"]:]
+            
+            # Calculate sequence quality
+            sequence_quality = self._calculate_sequence_quality(self.current_sequence)
+            self._sequence_quality_scores.append(sequence_quality)
+            
+            # Update analysis performance
+            self._analysis_performance['sequences_analyzed'] += 1
+            
+            return {
                 'current_sequence_length': len(self.current_sequence),
-                'sequence_quality': float(self._sequence_quality_scores[-1]) if self._sequence_quality_scores else 0.0,
-                'learning_curve_points': len(self._learning_curve),
-                'pattern_success_rates': len(self._pattern_success_rates)
-            },
-            'performance_info': {
-                'adaptive_profit_threshold': self._adaptive_thresholds['min_profit'],
-                'pattern_confidence_threshold': self._adaptive_thresholds['pattern_confidence'],
-                'replay_effectiveness_tracked': len(self._replay_effectiveness)
-            },
-            'genome_config': self.genome.copy()
-        }
-        
-        if base_details:
-            base_details.update(replay_details)
-            return base_details
-        
-        return replay_details
+                'sequence_quality': sequence_quality,
+                'sequences_processed': self._analysis_performance['sequences_analyzed']
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Sequence processing failed: {e}")
+            return self._create_fallback_response("sequence processing failed")
 
-    def _get_module_state(self) -> Dict[str, Any]:
-        """Enhanced state management"""
-        return {
-            "episode_buffer": list(self.episode_buffer)[-20:],  # Keep recent only
-            "profitable_sequences": self.profitable_sequences.copy(),
-            "sequence_patterns": dict(self.sequence_patterns),
-            "current_sequence": list(self.current_sequence),
-            "replay_bonus": self.replay_bonus,
-            "best_sequence_pnl": self.best_sequence_pnl,
-            "genome": self.genome.copy(),
-            "episode_count": self._episode_count,
-            "pattern_success_rates": dict(self._pattern_success_rates),
-            "adaptive_thresholds": self._adaptive_thresholds.copy(),
-            "learning_curve": list(self._learning_curve)[-50:],  # Keep recent only
-            "sequence_quality_scores": list(self._sequence_quality_scores)[-50:],
-            "replay_effectiveness": dict(list(self._replay_effectiveness.items())[-20:])  # Keep recent only
-        }
-
-    def _set_module_state(self, module_state: Dict[str, Any]):
-        """Enhanced state restoration"""
-        self.episode_buffer = deque(module_state.get("episode_buffer", []), maxlen=100)
-        self.profitable_sequences = module_state.get("profitable_sequences", [])
-        self.sequence_patterns = module_state.get("sequence_patterns", {})
-        self.current_sequence = module_state.get("current_sequence", [])
-        self.replay_bonus = module_state.get("replay_bonus", 0.0)
-        self.best_sequence_pnl = module_state.get("best_sequence_pnl", 0.0)
-        self.set_genome(module_state.get("genome", self.genome))
-        self._episode_count = module_state.get("episode_count", 0)
-        self._pattern_success_rates = module_state.get("pattern_success_rates", {})
-        self._adaptive_thresholds = module_state.get("adaptive_thresholds", {
-            'min_profit': self.profit_threshold,
-            'min_sequence_len': 3,
-            'pattern_confidence': 0.6
-        })
-        self._learning_curve = deque(module_state.get("learning_curve", []), maxlen=200)
-        self._sequence_quality_scores = deque(module_state.get("sequence_quality_scores", []), maxlen=100)
-        self._replay_effectiveness = module_state.get("replay_effectiveness", {})
-
-    def get_replay_analysis_report(self) -> str:
-        """Generate operator-friendly replay analysis report"""
+    def _calculate_sequence_quality(self, sequence: List[Dict[str, Any]]) -> float:
+        """Calculate quality score of a trading sequence"""
+        if not sequence or len(sequence) < 2:
+            return 0.0
         
-        # Best pattern info
-        best_pattern_info = "None"
-        if self.sequence_patterns:
-            best_pattern = max(self.sequence_patterns.items(), key=lambda x: x[1][1])
-            pattern_name, (count, avg_pnl, _) = best_pattern
-            best_pattern_info = f"{pattern_name} (€{avg_pnl:.2f}, {count}x)"
+        try:
+            # Check action consistency
+            actions = [step.get('action', np.zeros(2)) for step in sequence]
+            
+            # Calculate action variance (lower is more consistent)
+            action_variance = np.var([np.linalg.norm(action) for action in actions])
+            consistency_score = max(0, 1.0 - action_variance)
+            
+            # Check temporal spacing
+            timestamps = [step.get('timestamp', 0) for step in sequence]
+            time_diffs = np.diff(timestamps)
+            temporal_score = 1.0 if len(time_diffs) == 0 else max(0, 1.0 - np.std(time_diffs) / 100)
+            
+            # Market context consistency
+            context_score = 0.8  # Default if no market context
+            
+            # Combined quality score
+            quality = (consistency_score * 0.4 + temporal_score * 0.3 + context_score * 0.3)
+            
+            return float(max(0.0, min(1.0, quality)))
+            
+        except Exception as e:
+            self.logger.error(f"Quality calculation failed: {e}")
+            return 0.5
+
+    async def _analyze_episode_patterns(self, sequence_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze patterns in completed episode"""
+        try:
+            episode_data = sequence_data.get('episode_data', {})
+            episode_pnl = episode_data.get('pnl', 0.0)
+            
+            # Store episode in buffer
+            episode_record = {
+                'sequence': self.current_sequence.copy(),
+                'pnl': episode_pnl,
+                'timestamp': time.time(),
+                'market_conditions': sequence_data.get('market_data', {})
+            }
+            
+            self.episode_buffer.append(episode_record)
+            self._episode_count += 1
+            
+            # Analyze if profitable
+            if episode_pnl > self.genome["profit_threshold"]:
+                await self._analyze_profitable_sequence(episode_record)
+            
+            # Extract and update patterns
+            pattern = self._extract_sequence_pattern(self.current_sequence)
+            if pattern:
+                self._update_pattern_data(pattern, episode_pnl)
+            
+            # Reset current sequence for next episode
+            self.current_sequence = []
+            
+            return {
+                'episode_analyzed': True,
+                'episode_pnl': episode_pnl,
+                'pattern_extracted': pattern is not None,
+                'profitable_sequence': episode_pnl > self.genome["profit_threshold"]
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Episode pattern analysis failed: {e}")
+            return {'episode_analyzed': False, 'error': str(e)}
+
+    async def _analyze_profitable_sequence(self, episode_record: Dict[str, Any]):
+        """Analyze profitable sequence for learning"""
+        try:
+            sequence = episode_record['sequence']
+            pnl = episode_record['pnl']
+            
+            # Add to profitable sequences
+            sequence_entry = {
+                'sequence': sequence,
+                'pnl': pnl,
+                'timestamp': episode_record['timestamp'],
+                'market_conditions': episode_record['market_conditions'],
+                'quality_score': self._calculate_sequence_quality(sequence)
+            }
+            
+            self.profitable_sequences.append(sequence_entry)
+            
+            # Keep only best sequences
+            if len(self.profitable_sequences) > self.config.max_sequences:
+                self.profitable_sequences.sort(key=lambda x: x['pnl'], reverse=True)
+                self.profitable_sequences = self.profitable_sequences[:self.config.max_sequences]
+            
+            # Update best sequence
+            if pnl > self.best_sequence_pnl:
+                self.best_sequence_pnl = pnl
+                
+            self.logger.info(
+                format_operator_message(
+                    "💰", "PROFITABLE_SEQUENCE_IDENTIFIED",
+                    pnl=f"{pnl:.2f}",
+                    sequence_length=len(sequence),
+                    quality_score=f"{sequence_entry['quality_score']:.3f}",
+                    context="pattern_learning"
+                )
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Profitable sequence analysis failed: {e}")
+
+    def _extract_sequence_pattern(self, sequence: List[Dict[str, Any]]) -> Optional[str]:
+        """Extract pattern signature from sequence"""
+        if not sequence or len(sequence) < 3:
+            return None
         
-        # Learning trend
-        learning_status = "📊 Analyzing"
-        if len(self._learning_curve) >= 5:
-            recent_qualities = [lc['avg_quality'] for lc in list(self._learning_curve)[-5:]]
-            trend = np.polyfit(range(len(recent_qualities)), recent_qualities, 1)[0]
-            if trend > 0.01:
-                learning_status = "📈 Improving"
-            elif trend < -0.01:
-                learning_status = "📉 Declining"
+        try:
+            # Extract action directions
+            directions = []
+            for step in sequence:
+                action = step.get('action', np.zeros(2))
+                if len(action) >= 2:
+                    # Discretize actions
+                    direction = 'H'  # Hold
+                    if action[0] > 0.1:
+                        direction = 'L'  # Long
+                    elif action[0] < -0.1:
+                        direction = 'S'  # Short
+                    directions.append(direction)
+            
+            if len(directions) >= 3:
+                return ''.join(directions)
+            
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Pattern extraction failed: {e}")
+            return None
+
+    def _update_pattern_data(self, pattern: str, pnl: float):
+        """Update pattern tracking data"""
+        try:
+            if pattern not in self.sequence_patterns:
+                self.sequence_patterns[pattern] = {
+                    'count': 0,
+                    'total_pnl': 0.0,
+                    'avg_pnl': 0.0,
+                    'last_seen': time.time(),
+                    'confidence': 0.0
+                }
+            
+            pattern_data = self.sequence_patterns[pattern]
+            pattern_data['count'] += 1
+            pattern_data['total_pnl'] += pnl
+            pattern_data['avg_pnl'] = pattern_data['total_pnl'] / pattern_data['count']
+            pattern_data['last_seen'] = time.time()
+            
+            # Calculate confidence based on sample size and consistency
+            confidence = min(1.0, pattern_data['count'] / 10)  # Max confidence at 10 samples
+            if pattern_data['count'] > 1:
+                # Adjust for consistency
+                consistency = 1.0 - abs(pnl - pattern_data['avg_pnl']) / max(abs(pattern_data['avg_pnl']), 1.0)
+                confidence *= consistency
+            
+            pattern_data['confidence'] = confidence
+            
+            # Track pattern evolution
+            self._pattern_evolution.append({
+                'pattern': pattern,
+                'pnl': pnl,
+                'avg_pnl': pattern_data['avg_pnl'],
+                'confidence': confidence,
+                'timestamp': time.time()
+            })
+            
+        except Exception as e:
+            self.logger.error(f"Pattern data update failed: {e}")
+
+    async def _generate_replay_recommendations(self) -> Dict[str, Any]:
+        """Generate replay recommendations based on patterns"""
+        try:
+            # Check if replay should be triggered
+            should_replay = (self._episode_count % self.genome["interval"]) == 0
+            
+            if not should_replay or not self.profitable_sequences:
+                return {
+                    'replay_recommended': False,
+                    'replay_bonus': 0.0,
+                    'best_pattern': None
+                }
+            
+            # Find best sequence for replay
+            best_sequence = max(self.profitable_sequences, key=lambda x: x['pnl'])
+            
+            # Calculate replay bonus
+            replay_bonus = self.genome["bonus"] * (best_sequence['pnl'] / 100.0)
+            replay_bonus *= self.genome["replay_decay"] ** (time.time() - best_sequence['timestamp']) / 3600
+            
+            self.replay_bonus = replay_bonus
+            
+            # Find best pattern
+            best_pattern = None
+            if self.sequence_patterns:
+                best_pattern = max(
+                    self.sequence_patterns.items(),
+                    key=lambda x: x[1]['avg_pnl'] * x[1]['confidence']
+                )[0]
+            
+            return {
+                'replay_recommended': True,
+                'replay_bonus': replay_bonus,
+                'best_sequence_pnl': best_sequence['pnl'],
+                'best_pattern': best_pattern,
+                'total_patterns': len(self.sequence_patterns)
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Replay recommendation generation failed: {e}")
+            return {
+                'replay_recommended': False,
+                'replay_bonus': 0.0,
+                'error': str(e)
+            }
+
+    async def _generate_replay_thesis(self, sequence_data: Dict[str, Any], 
+                                    replay_result: Dict[str, Any]) -> str:
+        """Generate comprehensive replay analysis thesis"""
+        try:
+            # Performance metrics
+            sequences_analyzed = self._analysis_performance['sequences_analyzed']
+            patterns_identified = len(self.sequence_patterns)
+            best_pnl = self.best_sequence_pnl
+            
+            # Pattern analysis
+            total_patterns = len(self.sequence_patterns)
+            profitable_patterns = sum(1 for p in self.sequence_patterns.values() if p['avg_pnl'] > 0)
+            
+            # Replay status
+            replay_recommended = replay_result.get('replay_recommended', False)
+            replay_bonus = replay_result.get('replay_bonus', 0.0)
+            
+            thesis_parts = [
+                f"Historical Replay Analysis: Processed {sequences_analyzed} trading sequences across {self._episode_count} episodes",
+                f"Pattern Recognition: Identified {total_patterns} unique patterns, {profitable_patterns} profitable",
+                f"Best sequence performance: {best_pnl:.2f} PnL with quality-weighted selection",
+                f"Learning optimization: {len(self.profitable_sequences)} profitable sequences stored for replay"
+            ]
+            
+            if replay_recommended:
+                thesis_parts.append(f"Replay triggered with bonus: {replay_bonus:.4f} based on historical performance")
+                best_pattern = replay_result.get('best_pattern')
+                if best_pattern:
+                    pattern_data = self.sequence_patterns[best_pattern]
+                    thesis_parts.append(f"Best pattern '{best_pattern}': {pattern_data['avg_pnl']:.2f} avg PnL, {pattern_data['confidence']:.2f} confidence")
             else:
-                learning_status = "➡️ Stable"
+                thesis_parts.append("No replay recommended this cycle - continuing pattern accumulation")
+            
+            # Sequence quality analysis
+            if self._sequence_quality_scores:
+                avg_quality = np.mean(list(self._sequence_quality_scores)[-20:])
+                thesis_parts.append(f"Recent sequence quality: {avg_quality:.2f} (target: {self.config.min_sequence_quality}+)")
+            
+            # Learning curve assessment
+            if len(self.profitable_sequences) > 5:
+                recent_performance = np.mean([s['pnl'] for s in self.profitable_sequences[-5:]])
+                thesis_parts.append(f"Learning trend: Recent avg PnL {recent_performance:.2f} showing pattern effectiveness")
+            
+            return " | ".join(thesis_parts)
+            
+        except Exception as e:
+            return f"Replay thesis generation failed: {str(e)} - Pattern analysis continuing with basic metrics"
+
+    async def _update_replay_smart_bus(self, replay_result: Dict[str, Any], thesis: str):
+        """Update SmartInfoBus with replay analysis results"""
+        try:
+            # Replay sequences data
+            replay_data = {
+                'total_sequences': len(self.profitable_sequences),
+                'best_sequence_pnl': self.best_sequence_pnl,
+                'replay_bonus': self.replay_bonus,
+                'sequences_analyzed': self._analysis_performance['sequences_analyzed']
+            }
+            
+            self.smart_bus.set(
+                'replay_sequences',
+                replay_data,
+                module='HistoricalReplayAnalyzer',
+                thesis=thesis
+            )
+            
+            # Pattern analysis
+            pattern_summary = {
+                'total_patterns': len(self.sequence_patterns),
+                'profitable_patterns': sum(1 for p in self.sequence_patterns.values() if p['avg_pnl'] > 0),
+                'best_pattern': max(self.sequence_patterns.items(), 
+                                  key=lambda x: x[1]['avg_pnl']) if self.sequence_patterns else None,
+                'pattern_confidence_avg': np.mean([p['confidence'] for p in self.sequence_patterns.values()]) if self.sequence_patterns else 0.0
+            }
+            
+            self.smart_bus.set(
+                'pattern_analysis',
+                pattern_summary,
+                module='HistoricalReplayAnalyzer',
+                thesis=f"Pattern analysis: {pattern_summary['total_patterns']} patterns identified"
+            )
+            
+            # Sequence quality metrics
+            quality_metrics = {
+                'current_quality': replay_result.get('sequence_quality', 0.0),
+                'average_quality': np.mean(list(self._sequence_quality_scores)) if self._sequence_quality_scores else 0.0,
+                'quality_trend': self._calculate_quality_trend(),
+                'episodes_processed': self._episode_count
+            }
+            
+            self.smart_bus.set(
+                'sequence_quality',
+                quality_metrics,
+                module='HistoricalReplayAnalyzer',
+                thesis="Sequence quality assessment and learning progress tracking"
+            )
+            
+            # Learning progress
+            learning_metrics = {
+                'profitable_sequences_count': len(self.profitable_sequences),
+                'total_episodes': self._episode_count,
+                'success_rate': len(self.profitable_sequences) / max(self._episode_count, 1),
+                'learning_acceleration': self._calculate_learning_acceleration()
+            }
+            
+            self.smart_bus.set(
+                'learning_progress',
+                learning_metrics,
+                module='HistoricalReplayAnalyzer',
+                thesis="Learning progress and pattern discovery effectiveness"
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Failed to update SmartInfoBus: {e}")
+
+    def _calculate_quality_trend(self) -> str:
+        """Calculate sequence quality trend"""
+        if len(self._sequence_quality_scores) < 10:
+            return "insufficient_data"
         
-        return f"""
-🔄 HISTORICAL REPLAY ANALYZER
-═══════════════════════════════════════
-📊 Episodes Processed: {self._episode_count}
-🎯 Patterns Discovered: {len(self.sequence_patterns)}
-💰 Best Sequence: €{self.best_sequence_pnl:.2f}
-🔄 Current Replay Bonus: {self.replay_bonus:.3f}
+        recent_quality = np.mean(list(self._sequence_quality_scores)[-5:])
+        older_quality = np.mean(list(self._sequence_quality_scores)[-10:-5])
+        
+        if recent_quality > older_quality * 1.1:
+            return "improving"
+        elif recent_quality < older_quality * 0.9:
+            return "declining"
+        else:
+            return "stable"
 
-🧠 LEARNING STATUS
-• Learning Trend: {learning_status}
-• Current Sequence Quality: {float(self._sequence_quality_scores[-1]):.3f if self._sequence_quality_scores else 0:.3f}
-• Sequence Length: {len(self.current_sequence)}/{self.sequence_len}
+    def _calculate_learning_acceleration(self) -> float:
+        """Calculate learning acceleration metric"""
+        if self._episode_count < 20:
+            return 0.0
+        
+        # Compare recent vs early profitable sequence discovery rate
+        recent_episodes = max(10, self._episode_count // 4)
+        recent_profitable = sum(1 for s in self.profitable_sequences 
+                              if time.time() - s['timestamp'] < recent_episodes * 60)
+        
+        recent_rate = recent_profitable / recent_episodes
+        overall_rate = len(self.profitable_sequences) / self._episode_count
+        
+        return (recent_rate - overall_rate) / max(overall_rate, 0.01)
 
-🎯 PATTERN ANALYSIS
-• Best Pattern: {best_pattern_info}
-• Pattern Success Rate: {np.mean([s['successes']/max(s['attempts'],1) for s in self._pattern_success_rates.values()]):.1%if self._pattern_success_rates else 0:.1%}
-• Profitable Sequences: {len(self.profitable_sequences)}/10
+    async def _handle_no_data_fallback(self) -> Dict[str, Any]:
+        """Handle case when no sequence data is available"""
+        self.logger.warning("No sequence data available - using cached analysis")
+        
+        return {
+            'sequences_processed': self._analysis_performance['sequences_analyzed'],
+            'total_patterns': len(self.sequence_patterns),
+            'best_sequence_pnl': self.best_sequence_pnl,
+            'fallback_reason': 'no_sequence_data'
+        }
 
-🔧 ADAPTIVE PARAMETERS
-• Profit Threshold: €{self._adaptive_thresholds['min_profit']:.2f}
-• Pattern Confidence: {self._adaptive_thresholds['pattern_confidence']:.3f}
-• Replay Interval: {self.interval} episodes
-• Pattern Sensitivity: {self.pattern_sensitivity:.2f}
+    async def _handle_replay_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
+        """Handle replay analysis errors"""
+        processing_time = (time.time() - start_time) * 1000
+        
+        # Update circuit breaker
+        self.circuit_breaker['failures'] += 1
+        self.circuit_breaker['last_failure'] = time.time()
+        
+        if self.circuit_breaker['failures'] >= self.circuit_breaker['threshold']:
+            self.circuit_breaker['state'] = 'OPEN'
+        
+        # Log error with context
+        error_context = self.error_pinpointer.analyze_error(error, "HistoricalReplayAnalyzer")
+        explanation = self.english_explainer.explain_error(
+            "HistoricalReplayAnalyzer", str(error), "replay analysis"
+        )
+        
+        self.logger.error(
+            format_operator_message(
+                "💥", "REPLAY_ANALYSIS_ERROR",
+                error=str(error),
+                details=explanation,
+                processing_time_ms=processing_time,
+                context="replay_analysis"
+            )
+        )
+        
+        # Record failure
+        self._record_failure(error)
+        
+        return self._create_fallback_response(f"error: {str(error)}")
 
-📈 PERFORMANCE METRICS
-• Replay Effectiveness: {len(self._replay_effectiveness)} episodes tracked
-• Learning Curve Points: {len(self._learning_curve)}
-• Quality Score History: {len(self._sequence_quality_scores)} points
-        """
+    def _create_fallback_response(self, reason: str) -> Dict[str, Any]:
+        """Create fallback response for error cases"""
+        return {
+            'sequences_processed': self._analysis_performance['sequences_analyzed'],
+            'total_patterns': len(self.sequence_patterns),
+            'best_sequence_pnl': self.best_sequence_pnl,
+            'replay_bonus': 0.0,
+            'fallback_reason': reason,
+            'circuit_breaker_state': self.circuit_breaker['state']
+        }
 
-    # Maintain backward compatibility
-    def step(self, **kwargs):
-        """Backward compatibility step method"""
-        self._step_impl(None, **kwargs)
+    def _update_replay_health(self):
+        """Update replay analysis health metrics"""
+        try:
+            # Check pattern discovery rate
+            if self._episode_count > 0:
+                pattern_rate = len(self.sequence_patterns) / self._episode_count
+                if pattern_rate < 0.1:  # Less than 10% pattern discovery
+                    self._health_status = 'warning'
+                elif pattern_rate > 0.3:  # Good pattern discovery
+                    self._health_status = 'healthy'
+            
+            # Check sequence quality
+            if self._sequence_quality_scores:
+                avg_quality = np.mean(list(self._sequence_quality_scores)[-10:])
+                if avg_quality < self.config.min_sequence_quality:
+                    self._health_status = 'warning'
+            
+            self._last_health_check = time.time()
+            
+        except Exception as e:
+            self.logger.error(f"Health check failed: {e}")
+            self._health_status = 'warning'
 
-    def get_state(self):
-        """Backward compatibility state method"""
-        return super().get_state()
+    def _analyze_pattern_effectiveness(self):
+        """Analyze effectiveness of identified patterns"""
+        try:
+            for pattern, data in self.sequence_patterns.items():
+                if data['count'] >= 5:  # Sufficient sample size
+                    effectiveness = data['avg_pnl'] * data['confidence']
+                    
+                    if effectiveness > 10.0:  # Highly effective pattern
+                        self.logger.info(
+                            format_operator_message(
+                                "🎯", "EFFECTIVE_PATTERN_IDENTIFIED",
+                                pattern=pattern,
+                                avg_pnl=f"{data['avg_pnl']:.2f}",
+                                confidence=f"{data['confidence']:.2f}",
+                                count=data['count'],
+                                context="pattern_effectiveness"
+                            )
+                        )
+            
+        except Exception as e:
+            self.logger.error(f"Pattern effectiveness analysis failed: {e}")
 
-    def set_state(self, state):
-        """Backward compatibility state method"""
-        super().set_state(state)
+    def _record_success(self, processing_time: float):
+        """Record successful processing"""
+        self.performance_tracker.record_metric(
+            'HistoricalReplayAnalyzer', 'analysis_cycle', processing_time, True
+        )
+        
+        # Reset circuit breaker on success
+        if self.circuit_breaker['state'] == 'OPEN':
+            self.circuit_breaker['failures'] = 0
+            self.circuit_breaker['state'] = 'CLOSED'
+
+    def _record_failure(self, error: Exception):
+        """Record processing failure"""
+        self.performance_tracker.record_metric(
+            'HistoricalReplayAnalyzer', 'analysis_cycle', 0, False
+        )
+
+    def get_state(self) -> Dict[str, Any]:
+        """Get module state for persistence"""
+        return {
+            'profitable_sequences': self.profitable_sequences.copy(),
+            'sequence_patterns': self.sequence_patterns.copy(),
+            'genome': self.genome.copy(),
+            'episode_count': self._episode_count,
+            'best_sequence_pnl': self.best_sequence_pnl,
+            'replay_bonus': self.replay_bonus,
+            'analysis_performance': self._analysis_performance.copy(),
+            'circuit_breaker': self.circuit_breaker.copy(),
+            'health_status': self._health_status
+        }
+
+    def set_state(self, state: Dict[str, Any]):
+        """Set module state from persistence"""
+        if 'profitable_sequences' in state:
+            self.profitable_sequences = state['profitable_sequences']
+        
+        if 'sequence_patterns' in state:
+            self.sequence_patterns = state['sequence_patterns']
+        
+        if 'genome' in state:
+            self.genome.update(state['genome'])
+        
+        if 'episode_count' in state:
+            self._episode_count = state['episode_count']
+        
+        if 'best_sequence_pnl' in state:
+            self.best_sequence_pnl = state['best_sequence_pnl']
+        
+        if 'replay_bonus' in state:
+            self.replay_bonus = state['replay_bonus']
+        
+        if 'analysis_performance' in state:
+            self._analysis_performance.update(state['analysis_performance'])
+        
+        if 'circuit_breaker' in state:
+            self.circuit_breaker.update(state['circuit_breaker'])
+        
+        if 'health_status' in state:
+            self._health_status = state['health_status']
+
+    def get_health_status(self) -> Dict[str, Any]:
+        """Get health status"""
+        return {
+            'status': self._health_status,
+            'last_check': self._last_health_check,
+            'circuit_breaker': self.circuit_breaker['state'],
+            'total_patterns': len(self.sequence_patterns),
+            'profitable_sequences': len(self.profitable_sequences),
+            'episodes_processed': self._episode_count
+        }
+
+    def stop_monitoring(self):
+        """Stop background monitoring"""
+        self._monitoring_active = False
+
+    # Legacy compatibility methods
+    def propose_action(self, obs: Any = None, **kwargs) -> np.ndarray:
+        """Legacy compatibility for action proposal"""
+        return np.array([0.0, 0.0])
+    
+    def confidence(self, obs: Any = None, **kwargs) -> float:
+        """Legacy compatibility for confidence"""
+        if self._sequence_quality_scores:
+            return float(np.mean(list(self._sequence_quality_scores)[-5:]))
+        return 0.5

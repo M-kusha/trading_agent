@@ -15,7 +15,7 @@ import json
 
 from modules.utils.info_bus import SmartInfoBus, InfoBusManager
 from modules.utils.audit_utils import format_operator_message, RotatingLogger
-from modules.core.module_orchestrator import ModuleOrchestrator
+from modules.core.module_system import ModuleOrchestrator
 
 
 @dataclass
@@ -147,7 +147,7 @@ class HealthMonitor:
         for module_name, module in self.orchestrator.modules.items():
             health_info = {
                 'enabled': self.smart_bus.is_module_enabled(module_name),
-                'failures': self.smart_bus._module_failures.get(module_name, 0),
+                'failures': self.smart_bus._circuit_breakers[module_name].failure_count if module_name in self.smart_bus._circuit_breakers else 0,
                 'status': 'unknown'
             }
             
@@ -231,7 +231,7 @@ class HealthMonitor:
                 recent_latencies.extend(latencies[-10:])
             
             # Errors
-            failures = self.smart_bus._module_failures.get(module_name, 0)
+            failures = self.smart_bus._circuit_breakers[module_name].failure_count if module_name in self.smart_bus._circuit_breakers else 0
             recent_errors += failures
         
         total_executions = len(recent_latencies)

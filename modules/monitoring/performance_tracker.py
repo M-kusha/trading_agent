@@ -9,15 +9,15 @@ import numpy as np
 from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import json
 
-from modules.utils.info_bus import SmartInfoBus, InfoBusManager
+from modules.utils.info_bus import  InfoBusManager
 from modules.utils.audit_utils import format_operator_message, RotatingLogger
-from modules.utils.english_explainer import EnglishExplainer
+from modules.utils.system_utilities import EnglishExplainer
 
 if TYPE_CHECKING:
-    from modules.core.module_orchestrator import ModuleOrchestrator
+    from modules.core.module_system import ModuleOrchestrator
 
 
 @dataclass
@@ -72,8 +72,8 @@ class PerformanceTracker:
         self.module_metrics: Dict[str, deque] = defaultdict(lambda: deque(maxlen=1000))
         
         # Aggregated statistics
-        self.hourly_stats: Dict[str, Dict[str, float]] = defaultdict(dict)
-        self.daily_stats: Dict[str, Dict[str, float]] = defaultdict(dict)
+        self.hourly_stats: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
+        self.daily_stats: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
         
         # Performance thresholds
         self.thresholds = {
@@ -140,7 +140,7 @@ class PerformanceTracker:
         self._update_aggregated_stats(metric)
     
     def get_module_performance(self, module: str, 
-                              window_minutes: int = 60) -> Dict[str, float]:
+                              window_minutes: int = 60) -> Dict[str, Any]:
         """Get performance metrics for a specific module"""
         cutoff = time.time() - (window_minutes * 60)
         module_metrics = [m for m in self.module_metrics[module] 
@@ -299,7 +299,7 @@ class PerformanceTracker:
             return False
         
         z_score = abs((duration_ms - mean) / std)
-        return z_score > self.anomaly_threshold
+        return bool(z_score > self.anomaly_threshold)
     
     def _update_aggregated_stats(self, metric: PerformanceMetric):
         """Update hourly and daily aggregated statistics"""

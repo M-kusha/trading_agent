@@ -1,252 +1,498 @@
 # ─────────────────────────────────────────────────────────────
 # File: config/risk_policy.yaml
-# 🚀 SmartInfoBus Risk Management Policy Configuration
+# 🚀 RISK MANAGEMENT POLICY CONFIGURATION
+# NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # ─────────────────────────────────────────────────────────────
 
-system:
-  name: "SmartInfoBus Risk Management"
-  version: "4.0.0"
-  description: "Comprehensive risk controls with plain English explanations"
+# ═══════════════════════════════════════════════════════════════════
+# POLICY METADATA
+# ═══════════════════════════════════════════════════════════════════
+policy:
+  name: "SmartInfoBus Risk Management Policy"
+  version: "2.1.0"
+  effective_date: "2024-01-15"
+  review_date: "2024-07-15"
+  approval_authority: "Chief Risk Officer"
   
-risk_limits:
-  # Account-level limits
-  account:
-    max_drawdown_percent: 20.0      # Maximum allowed drawdown
-    daily_loss_limit_percent: 5.0   # Daily loss limit
-    max_leverage: 10.0              # Maximum leverage allowed
-    margin_call_level: 0.5          # Margin level for warning
-    stop_out_level: 0.2             # Automatic position closure
+  # Regulatory Framework
+  regulatory_compliance:
+    - "Basel III"
+    - "MiFID II"
+    - "CFTC Regulation 4.22"
+    - "SEC Rule 15c3-1"
+    - "ISDA Guidelines"
+  
+  # Policy Scope
+  scope:
+    - "Automated Trading Systems"
+    - "Portfolio Risk Management"
+    - "Operational Risk Controls"
+    - "Market Risk Limits"
+    - "Liquidity Risk Management"
+
+# ═══════════════════════════════════════════════════════════════════
+# PORTFOLIO RISK LIMITS
+# ═══════════════════════════════════════════════════════════════════
+portfolio_limits:
+  
+  # Overall Portfolio Constraints
+  portfolio_level:
+    max_portfolio_var_daily: 0.02      # 2% daily VaR
+    max_portfolio_var_weekly: 0.05     # 5% weekly VaR
+    max_expected_shortfall: 0.03       # 3% Expected Shortfall (95% confidence)
+    max_drawdown_limit: 0.15           # 15% maximum drawdown
+    max_concentration_single_asset: 0.20  # 20% max in single asset
+    max_leverage: 3.0                  # 3:1 maximum leverage
     
-  # Position-level limits
-  position:
-    max_position_size_percent: 10.0  # Max % of account per position
-    max_positions_per_instrument: 3  # Concurrent positions per instrument
-    max_total_positions: 10          # Total open positions
-    min_position_size_lots: 0.01     # Minimum position size
-    max_position_size_lots: 10.0     # Maximum position size
+    # Stress Test Limits
+    stress_test_limits:
+      financial_crisis_scenario: 0.25   # 25% max loss in crisis scenario
+      interest_rate_shock_100bp: 0.10   # 10% max loss on 100bp rate shock
+      equity_crash_30pct: 0.18         # 18% max loss on 30% equity crash
+      currency_shock_15pct: 0.12       # 12% max loss on 15% FX shock
+  
+  # Position-Level Limits
+  position_level:
+    max_position_size_pct: 0.10        # 10% max position size
+    max_position_var: 0.005            # 0.5% max position VaR
+    max_sector_exposure: 0.30          # 30% max sector exposure
+    max_currency_exposure: 0.25        # 25% max currency exposure
+    max_duration_years: 5.0            # 5 years max duration exposure
     
-  # Instrument-specific limits
-  instruments:
-    "XAU/USD":
-      max_position_lots: 5.0
-      max_daily_trades: 20
-      min_stop_distance_pips: 50
-      max_spread_pips: 5
-      volatility_multiplier: 1.5
-      
-    "EUR/USD":
-      max_position_lots: 10.0
-      max_daily_trades: 30
-      min_stop_distance_pips: 20
-      max_spread_pips: 3
-      volatility_multiplier: 1.0
-      
-  # Correlation limits
-  correlation:
-    max_correlated_exposure: 0.7     # Max exposure to correlated assets
-    correlation_threshold: 0.7       # Threshold for considering correlation
-    lookback_period_days: 30         # Period for correlation calculation
+    # Asset Class Specific Limits
+    asset_class_limits:
+      equities:
+        max_exposure_pct: 0.70         # 70% max equity exposure
+        max_single_stock_pct: 0.05     # 5% max single stock
+        max_sector_pct: 0.15           # 15% max sector
+        
+      fixed_income:
+        max_exposure_pct: 0.50         # 50% max fixed income
+        max_duration_years: 7.0        # 7 years max duration
+        max_credit_risk_pct: 0.20      # 20% max credit risk
+        
+      currencies:
+        max_exposure_pct: 0.30         # 30% max FX exposure
+        max_single_currency_pct: 0.15  # 15% max single currency
+        
+      commodities:
+        max_exposure_pct: 0.25         # 25% max commodity exposure
+        max_single_commodity_pct: 0.08 # 8% max single commodity
+        
+      derivatives:
+        max_notional_pct: 2.0          # 200% max notional (with netting)
+        max_options_exposure_pct: 0.40 # 40% max options exposure
+
+# ═══════════════════════════════════════════════════════════════════
+# RISK MEASUREMENT & MONITORING
+# ═══════════════════════════════════════════════════════════════════
+risk_measurement:
+  
+  # VaR Configuration
+  value_at_risk:
+    confidence_level: 0.95             # 95% confidence level
+    holding_period_days: 1             # 1-day holding period
+    lookback_period_days: 252          # 1 year lookback
+    calculation_method: "monte_carlo"   # monte_carlo, historical, parametric
     
-risk_checks:
-  # Pre-trade checks
-  pre_trade:
-    - check: "margin_available"
-      threshold: 0.2                 # Need 20% free margin
-      action: "reject"
-      message: "Insufficient margin for new position"
+    # Monte Carlo Parameters
+    monte_carlo:
+      num_simulations: 100000
+      random_seed: 42
+      correlation_decay: 0.94          # RiskMetrics decay factor
       
-    - check: "drawdown_limit"
-      threshold: 0.15                # Warning at 15% drawdown
-      action: "warn"
-      message: "Approaching maximum drawdown limit"
+    # Backtesting
+    backtesting:
+      enabled: true
+      frequency: "daily"
+      exception_threshold: 10          # 10 exceptions per 250 days max
       
-    - check: "daily_loss"
-      threshold: 0.04                # Warning at 4% daily loss
-      action: "warn"
-      message: "Approaching daily loss limit"
+  # Expected Shortfall (Conditional VaR)
+  expected_shortfall:
+    confidence_level: 0.95
+    calculation_method: "monte_carlo"
+    coherent_risk_measure: true
+    
+  # Stress Testing
+  stress_testing:
+    frequency: "weekly"
+    scenarios:
+      - name: "2008_financial_crisis"
+        description: "Replication of 2008 financial crisis conditions"
+        equity_shock: -0.45
+        credit_spread_shock: 0.006
+        volatility_multiplier: 2.5
+        
+      - name: "covid_crash"
+        description: "March 2020 COVID market crash"
+        equity_shock: -0.35
+        volatility_multiplier: 3.0
+        correlation_breakdown: true
+        
+      - name: "interest_rate_shock"
+        description: "Rapid interest rate normalization"
+        rate_shock_bp: 200
+        curve_steepening: 50
+        credit_spread_widening: 0.002
+        
+      - name: "currency_crisis"
+        description: "Major currency devaluation"
+        usd_strength: 0.20
+        em_currency_shock: -0.30
+        volatility_spike: 2.0
+  
+  # Model Validation
+  model_validation:
+    frequency: "quarterly"
+    backtesting_required: true
+    model_approval_process: true
+    documentation_required: true
+    
+    # Model Performance Metrics
+    performance_metrics:
+      - "hit_rate"
+      - "average_loss_given_exception"
+      - "maximum_loss"
+      - "profit_loss_distribution"
+      - "sharpe_ratio"
+      - "maximum_drawdown"
+
+# ═══════════════════════════════════════════════════════════════════
+# OPERATIONAL RISK CONTROLS
+# ═══════════════════════════════════════════════════════════════════
+operational_risk:
+  
+  # System Risk Controls
+  system_controls:
+    max_orders_per_second: 10          # Order rate limiting
+    max_daily_volume_multiple: 20      # Max 20x average daily volume
+    kill_switch_enabled: true          # Emergency stop capability
+    
+    # Circuit Breakers
+    circuit_breakers:
+      daily_loss_limit: 0.05           # 5% daily loss limit
+      position_size_limit: 0.10        # 10% position size limit
+      order_size_limit: 0.02           # 2% order size limit
       
-    - check: "position_correlation"
-      threshold: 0.8
-      action: "warn"
-      message: "High correlation with existing positions"
+    # System Monitoring
+    monitoring:
+      latency_threshold_ms: 100        # System latency alerts
+      error_rate_threshold: 0.01       # 1% error rate threshold
+      memory_usage_threshold: 0.80     # 80% memory usage alert
       
-    - check: "volatility_spike"
-      threshold: 3.0                 # 3x normal volatility
-      action: "reduce_size"
-      message: "High volatility - reducing position size"
+  # Data Quality Controls
+  data_quality:
+    price_validation:
+      max_price_move_pct: 0.10         # 10% max price move validation
+      stale_data_threshold_s: 30       # 30 second stale data alert
+      outlier_detection_enabled: true
       
-  # During-trade monitoring
-  during_trade:
-    - check: "stop_loss_distance"
-      min_pips: 10
-      action: "adjust"
-      message: "Stop loss too close - adjusting"
+    volume_validation:
+      min_volume_threshold: 1000       # Minimum volume for trading
+      max_volume_multiple: 50          # Max 50x average volume
       
-    - check: "profit_protection"
-      trigger_profit_pips: 50
-      protection_percent: 50
-      action: "move_stop"
-      message: "Moving stop to protect profits"
+  # Model Risk Controls
+  model_risk:
+    model_approval_required: true
+    backtesting_mandatory: true
+    performance_monitoring: true
+    
+    # Model Limits
+    model_limits:
+      max_model_allocation: 0.30       # 30% max allocation per model
+      min_track_record_days: 90        # 90 day minimum track record
+      max_drawdown_model: 0.10         # 10% max model drawdown
       
-    - check: "time_based_exit"
-      max_duration_hours: 72
-      action: "close"
-      message: "Position held too long - closing"
+    # Champion/Challenger Framework
+    model_competition:
+      enabled: true
+      challenger_allocation: 0.10      # 10% allocation to challenger models
+      evaluation_period_days: 60       # 60 day evaluation period
+
+# ═══════════════════════════════════════════════════════════════════
+# LIQUIDITY RISK MANAGEMENT
+# ═══════════════════════════════════════════════════════════════════
+liquidity_risk:
+  
+  # Liquidity Metrics
+  liquidity_metrics:
+    min_market_cap_usd: 1000000000     # $1B minimum market cap
+    min_avg_daily_volume_usd: 10000000 # $10M minimum daily volume
+    max_position_vs_volume: 0.05       # Max 5% of daily volume
+    
+    # Liquidity Stress Testing
+    stress_scenarios:
+      market_stress:
+        volume_reduction_factor: 0.50   # 50% volume reduction
+        spread_widening_factor: 3.0     # 3x spread widening
+        
+      idiosyncratic_stress:
+        volume_reduction_factor: 0.25   # 75% volume reduction
+        spread_widening_factor: 5.0     # 5x spread widening
+  
+  # Funding Liquidity
+  funding_liquidity:
+    min_cash_buffer_pct: 0.05          # 5% minimum cash buffer
+    max_leverage_ratio: 3.0            # 3:1 maximum leverage
+    margin_buffer_pct: 0.20            # 20% margin buffer
+    
+    # Liquidity Sources
+    liquidity_sources:
+      - name: "prime_brokerage"
+        credit_limit_usd: 100000000     # $100M credit line
+        currency: "USD"
+        
+      - name: "repo_facility"
+        credit_limit_usd: 50000000      # $50M repo facility
+        collateral_haircut: 0.02        # 2% haircut
+        
+  # Concentration Limits
+  concentration_limits:
+    max_illiquid_allocation: 0.20      # 20% max illiquid assets
+    max_single_counterparty: 0.15      # 15% max single counterparty
+    max_single_exchange: 0.30          # 30% max single exchange
+
+# ═══════════════════════════════════════════════════════════════════
+# COUNTERPARTY RISK MANAGEMENT
+# ═══════════════════════════════════════════════════════════════════
+counterparty_risk:
+  
+  # Credit Limits
+  credit_limits:
+    default_counterparty_limit: 0.05   # 5% default limit
+    
+    # Rating-Based Limits
+    rating_limits:
+      AAA: 0.15                        # 15% for AAA rated
+      AA: 0.12                         # 12% for AA rated
+      A: 0.10                          # 10% for A rated
+      BBB: 0.05                        # 5% for BBB rated
+      below_investment_grade: 0.02     # 2% for below IG
       
-  # Post-trade analysis
-  post_trade:
-    - check: "loss_streak"
-      threshold: 5                   # 5 consecutive losses
-      action: "pause_trading"
-      duration_minutes: 60
-      message: "Loss streak detected - pausing trading"
+  # Netting Agreements
+  netting:
+    isda_master_required: true
+    csa_required: true                 # Credit Support Annex
+    daily_margin_calls: true
+    
+  # Collateral Management
+  collateral:
+    initial_margin_pct: 0.10           # 10% initial margin
+    variation_margin_frequency: "daily"
+    acceptable_collateral:
+      - "government_bonds"
+      - "investment_grade_corporate"
+      - "cash"
+      - "equity_etfs"
+    
+    # Collateral Haircuts
+    haircuts:
+      government_bonds: 0.02           # 2% haircut
+      corporate_bonds: 0.05            # 5% haircut
+      equities: 0.15                   # 15% haircut
+      cash: 0.00                       # No haircut
+
+# ═══════════════════════════════════════════════════════════════════
+# MARKET RISK LIMITS
+# ═══════════════════════════════════════════════════════════════════
+market_risk:
+  
+  # Greeks Limits (for derivatives)
+  greeks_limits:
+    max_delta_exposure: 0.20           # 20% max delta exposure
+    max_gamma_exposure: 0.10           # 10% max gamma exposure
+    max_vega_exposure: 0.15            # 15% max vega exposure
+    max_theta_decay_daily: 0.001       # 0.1% max daily theta decay
+    
+  # Volatility Limits
+  volatility_limits:
+    max_vol_exposure_pct: 0.25         # 25% max volatility exposure
+    max_vol_carry: 0.10                # 10% max volatility carry
+    max_vol_skew_exposure: 0.05        # 5% max skew exposure
+    
+  # Correlation Limits
+  correlation_limits:
+    max_correlation_bet: 0.15          # 15% max correlation bet
+    min_diversification_ratio: 0.30    # 30% minimum diversification
+    
+  # Regime-Based Limits
+  regime_limits:
+    high_volatility:
+      max_exposure_reduction: 0.50     # 50% exposure reduction in high vol
+      max_leverage_reduction: 0.30     # 30% leverage reduction
       
-    - check: "win_rate_drop"
-      threshold: 0.3                 # Win rate below 30%
-      lookback_trades: 20
-      action: "reduce_risk"
-      message: "Low win rate - reducing risk"
+    low_liquidity:
+      max_position_reduction: 0.40     # 40% position reduction
+      max_turnover_reduction: 0.60     # 60% turnover reduction
+
+# ═══════════════════════════════════════════════════════════════════
+# RISK REPORTING & GOVERNANCE
+# ═══════════════════════════════════════════════════════════════════
+risk_reporting:
+  
+  # Reporting Frequency
+  reporting_schedule:
+    real_time: ["portfolio_var", "position_limits", "circuit_breakers"]
+    daily: ["risk_attribution", "stress_tests", "model_performance"]
+    weekly: ["backtesting_results", "liquidity_analysis"]
+    monthly: ["model_validation", "policy_compliance", "limit_utilization"]
+    quarterly: ["stress_testing_comprehensive", "policy_review"]
+    
+  # Risk Committees
+  governance:
+    risk_committee:
+      frequency: "weekly"
+      attendees: ["cro", "cio", "head_of_trading", "head_of_risk"]
       
+    model_committee:
+      frequency: "monthly"
+      attendees: ["cro", "head_of_quant", "model_validators"]
+      
+  # Escalation Procedures
+  escalation:
+    level_1: # 75% of limit
+      notification: ["portfolio_manager", "risk_manager"]
+      action: "monitor_closely"
+      
+    level_2: # 90% of limit
+      notification: ["head_of_risk", "cio"]
+      action: "reduce_exposure"
+      
+    level_3: # 100% of limit
+      notification: ["cro", "ceo"]
+      action: "immediate_reduction"
+      escalation_time_minutes: 15
+
+# ═══════════════════════════════════════════════════════════════════
+# EMERGENCY PROCEDURES
+# ═══════════════════════════════════════════════════════════════════
 emergency_procedures:
-  # Circuit breakers
-  circuit_breakers:
-    - name: "flash_crash"
-      trigger: "price_move_percent"
-      threshold: 5.0                 # 5% move in 1 minute
-      action: "halt_all_trading"
-      duration_minutes: 30
+  
+  # Kill Switch Triggers
+  kill_switch:
+    automatic_triggers:
+      - portfolio_loss_exceeds: 0.10   # 10% portfolio loss
+      - system_latency_exceeds_ms: 1000
+      - error_rate_exceeds: 0.05       # 5% error rate
+      - margin_call_received: true
       
-    - name: "system_overload"
-      trigger: "latency_ms"
-      threshold: 1000               # 1 second latency
-      action: "reduce_complexity"
+    manual_triggers:
+      authorized_personnel: ["cro", "cio", "head_of_trading"]
+      confirmation_required: false     # Emergency mode
       
-    - name: "cascade_failure"
-      trigger: "module_failures"
-      threshold: 3
-      action: "emergency_close_all"
-      
-  # Recovery procedures
-  recovery:
-    after_circuit_break:
-      - "verify_system_health"
-      - "check_market_conditions"
-      - "validate_data_integrity"
-      - "gradual_restart"
-      
-    after_emergency_close:
-      - "generate_incident_report"
-      - "analyze_root_cause"
-      - "implement_fixes"
-      - "supervised_restart"
-      
-risk_scoring:
-  # Risk score calculation weights
-  weights:
-    drawdown: 0.25
-    volatility: 0.20
-    correlation: 0.15
-    leverage: 0.15
-    win_rate: 0.15
-    time_of_day: 0.10
-    
-  # Risk levels
-  levels:
-    low:
-      range: [0.0, 0.3]
-      color: "green"
-      max_position_multiplier: 1.0
-      
-    medium:
-      range: [0.3, 0.6]
-      color: "yellow"
-      max_position_multiplier: 0.7
-      
-    high:
-      range: [0.6, 0.8]
-      color: "orange"
-      max_position_multiplier: 0.5
-      
-    critical:
-      range: [0.8, 1.0]
-      color: "red"
-      max_position_multiplier: 0.0
-      action: "no_new_trades"
-      
-reporting:
-  # Risk reporting configuration
-  real_time_metrics:
-    - "current_drawdown"
-    - "open_positions"
-    - "total_exposure"
-    - "margin_level"
-    - "daily_pnl"
-    - "risk_score"
-    
-  alerts:
-    channels:
-      - type: "console"
-        min_severity: "info"
-      - type: "log_file"
-        min_severity: "warning"
-      - type: "email"
-        min_severity: "critical"
-        recipients: ["risk@trading.com"]
-      - type: "sms"
-        min_severity: "emergency"
-        recipients: ["+1234567890"]
+  # Crisis Management
+  crisis_management:
+    emergency_contacts:
+      - role: "Chief Risk Officer"
+        phone: "+1-xxx-xxx-xxxx"
+        backup: "+1-xxx-xxx-xxxx"
         
-  reports:
-    daily_risk_report:
-      schedule: "17:00"
-      include:
-        - "daily_summary"
-        - "largest_positions"
-        - "risk_violations"
-        - "performance_metrics"
+      - role: "Chief Investment Officer"
+        phone: "+1-xxx-xxx-xxxx"
+        backup: "+1-xxx-xxx-xxxx"
         
-    weekly_risk_analysis:
-      schedule: "friday_16:00"
-      include:
-        - "weekly_performance"
-        - "risk_attribution"
-        - "correlation_analysis"
-        - "improvement_suggestions"
+    emergency_procedures:
+      - step: 1
+        action: "Activate kill switch if applicable"
+        responsible: "Risk Manager"
         
-plain_english_messages:
-  # Templates for risk communications
-  position_rejected: |
-    Cannot open {instrument} position:
-    - Requested size: {requested_size} lots
-    - Current risk score: {risk_score}%
-    - Reason: {rejection_reason}
+      - step: 2
+        action: "Assess portfolio exposure and risk"
+        responsible: "Risk Committee"
+        
+      - step: 3
+        action: "Implement de-risking strategy"
+        responsible: "Portfolio Management"
+        
+      - step: 4
+        action: "Communicate with stakeholders"
+        responsible: "Senior Management"
+
+# ═══════════════════════════════════════════════════════════════════
+# SMARTINFOBUS INTEGRATION
+# ═══════════════════════════════════════════════════════════════════
+smartinfobus_integration:
+  
+  # Risk Module Requirements
+  risk_modules:
+    mandatory_checks:
+      - "portfolio_var_check"
+      - "position_limit_check"
+      - "concentration_check"
+      - "liquidity_check"
+      - "leverage_check"
+      
+    explainability:
+      risk_decisions_explainable: true
+      thesis_required: true
+      confidence_scoring: true
+      
+  # Real-time Monitoring
+  real_time_limits:
+    check_frequency_ms: 100           # Check limits every 100ms
+    alert_threshold_pct: 0.90         # Alert at 90% of limit
+    auto_reduce_threshold_pct: 1.00   # Auto-reduce at 100% of limit
     
-    Suggestion: {suggestion}
+  # Risk Data Flow
+  data_requirements:
+    market_data_latency_ms: 50        # Max 50ms market data latency
+    portfolio_update_frequency_ms: 100 # Update portfolio every 100ms
+    risk_calculation_frequency_ms: 500 # Calculate risk every 500ms
     
-  risk_warning: |
-    ⚠️ RISK WARNING
+  # Integration Testing
+  testing_requirements:
+    stress_test_frequency: "daily"
+    limit_breach_simulation: "weekly"
+    kill_switch_test: "monthly"
+    disaster_recovery_test: "quarterly"
+
+# ═══════════════════════════════════════════════════════════════════
+# COMPLIANCE & AUDIT
+# ═══════════════════════════════════════════════════════════════════
+compliance:
+  
+  # Regulatory Reporting
+  regulatory_reporting:
+    cftc_reporting: true
+    sec_reporting: true
+    mifid_reporting: true
     
-    Current Situation:
-    - Risk Level: {risk_level}
-    - Main Concern: {primary_risk}
-    - Account Impact: {potential_impact}
+  # Documentation Requirements
+  documentation:
+    policy_updates: "version_controlled"
+    limit_changes: "approval_required"
+    model_changes: "validation_required"
+    exception_handling: "documented"
     
-    Recommended Action:
-    {recommended_action}
+  # Audit Trail
+  audit_trail:
+    all_decisions_logged: true
+    risk_limit_breaches_tracked: true
+    model_outputs_stored: true
+    emergency_actions_documented: true
+    retention_period_years: 7
+
+# ═══════════════════════════════════════════════════════════════════
+# POLICY REVIEW & UPDATES
+# ═══════════════════════════════════════════════════════════════════
+policy_management:
+  
+  # Review Schedule
+  review_schedule:
+    risk_limits: "quarterly"
+    stress_scenarios: "semi_annually"
+    model_parameters: "annually"
+    emergency_procedures: "annually"
     
-  emergency_action: |
-    🚨 EMERGENCY ACTION TAKEN
+  # Approval Process
+  approval_process:
+    minor_changes: ["head_of_risk"]
+    major_changes: ["risk_committee", "cro"]
+    emergency_changes: ["cro", "cio"]
     
-    What Happened:
-    {event_description}
-    
-    Action Taken:
-    {action_taken}
-    
-    Current Status:
-    - Trading: {trading_status}
-    - Open Positions: {position_count}
-    - Estimated Impact: ${estimated_impact}
-    
-    Next Steps:
-    {next_steps}
+  # Version Control
+  version_control:
+    change_tracking: true
+    approval_documentation: true
+    implementation_date_tracking: true
+    rollback_procedures: true

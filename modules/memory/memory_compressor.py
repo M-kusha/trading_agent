@@ -1,100 +1,167 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/memory/memory_compressor.py
-# Enhanced with new infrastructure - InfoBus integration & mixins!
+# 🚀 PRODUCTION-READY Memory Compression System
+# Advanced experience compression with SmartInfoBus integration
 # ─────────────────────────────────────────────────────────────
 
+import asyncio
+import time
+import threading
 import numpy as np
-from typing import List, Tuple, Dict, Any, Optional
-from collections import deque
+from typing import Dict, Any, List, Optional, Tuple
+from collections import deque, defaultdict
+from dataclasses import dataclass, field
+from datetime import datetime
 from sklearn.decomposition import PCA
-import datetime
-import random
+from sklearn.preprocessing import StandardScaler
 
-from modules.core.core import Module, ModuleConfig
-from modules.core.mixins import TradingMixin, AnalysisMixin
-from modules.utils.info_bus import InfoBus, InfoBusExtractor
+from modules.core.module_base import BaseModule, module
+from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.monitoring.health_monitor import HealthMonitor
+from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-class MemoryCompressor(Module, TradingMixin, AnalysisMixin):
+@dataclass
+class CompressorConfig:
+    """Configuration for Memory Compressor"""
+    compress_interval: int = 10
+    n_components: int = 8
+    profit_threshold: float = 10.0
+    max_memory_size: int = 1000
+    compression_ratio: float = 0.7
+    learning_rate: float = 0.1
+    
+    # Weighting parameters
+    profit_weight: float = 2.0
+    loss_avoidance_weight: float = 1.5
+    
+    # Performance thresholds
+    max_processing_time_ms: float = 300
+    circuit_breaker_threshold: int = 3
+    min_compression_quality: float = 0.3
+    
+    # Feature parameters
+    feature_stability_threshold: float = 0.8
+    pattern_confidence_threshold: float = 0.6
+
+
+@module(
+    name="MemoryCompressor",
+    version="3.0.0",
+    category="memory",
+    provides=["intuition_vector", "compressed_patterns", "memory_compression", "feature_importance"],
+    requires=["trades", "features", "market_context", "episode_data"],
+    description="Advanced memory compression with PCA and pattern analysis for trading intuition",
+    thesis_required=True,
+    health_monitoring=True,
+    performance_tracking=True,
+    error_handling=True
+)
+class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
-    Enhanced memory compressor with infrastructure integration.
+    Advanced memory compressor with SmartInfoBus integration.
     Compresses trading experiences into actionable intuition vectors using PCA and pattern analysis.
     """
-    
-    def __init__(self, compress_interval: int = 10, n_components: int = 8, 
-                 profit_threshold: float = 10.0, debug: bool = True,
-                 genome: Optional[Dict[str, Any]] = None, **kwargs):
+
+    def __init__(self, 
+                 config: Optional[CompressorConfig] = None,
+                 genome: Optional[Dict[str, Any]] = None,
+                 **kwargs):
         
-        self.n_components = n_components
-        # Initialize with enhanced infrastructure
-        config = ModuleConfig(
-            debug=debug,
-            max_history=500,
-            **kwargs
-        )
-        super().__init__(config)
+        self.config = config or CompressorConfig()
+        super().__init__()
+        
+        # Initialize advanced systems
+        self._initialize_advanced_systems()
         
         # Initialize genome parameters
-        self._initialize_genome_parameters(genome, compress_interval, n_components, profit_threshold)
+        self._initialize_genome_parameters(genome)
         
-        # Enhanced state initialization
-        self._initialize_module_state()
+        # Initialize compression state
+        self._initialize_compression_state()
         
-        self.log_operator_info(
-            "Memory compressor initialized",
-            compression_interval=self.compress_interval,
-            n_components=self.n_components,
-            profit_threshold=f"€{self.profit_threshold:.2f}",
-            max_memory_size=self.max_memory_size
+        self.logger.info(
+            format_operator_message(
+                "🗜️", "MEMORY_COMPRESSOR_INITIALIZED",
+                details=f"Components: {self.config.n_components}, Interval: {self.config.compress_interval}",
+                result="Memory compression system ready",
+                context="memory_compression"
+            )
         )
+    
+    def _initialize_advanced_systems(self):
+        """Initialize advanced systems for memory compression"""
+        self.smart_bus = InfoBusManager.get_instance()
+        self.logger = RotatingLogger(
+            name="MemoryCompressor", 
+            log_path="logs/memory_compression.log", 
+            max_lines=3000, 
+            operator_mode=True,
+            plain_english=True
+        )
+        self.error_pinpointer = ErrorPinpointer()
+        self.error_handler = create_error_handler("MemoryCompressor", self.error_pinpointer)
+        self.english_explainer = EnglishExplainer()
+        self.system_utilities = SystemUtilities()
+        self.performance_tracker = PerformanceTracker()
+        
+        # Circuit breaker for compression operations
+        self.circuit_breaker = {
+            'failures': 0,
+            'last_failure': 0,
+            'state': 'CLOSED',
+            'threshold': self.config.circuit_breaker_threshold
+        }
+        
+        # Health monitoring
+        self._health_status = 'healthy'
+        self._last_health_check = time.time()
+        self._start_monitoring()
 
-    def _initialize_genome_parameters(self, genome: Optional[Dict], compress_interval: int, 
-                                    n_components: int, profit_threshold: float):
+    def _initialize_genome_parameters(self, genome: Optional[Dict[str, Any]]):
         """Initialize genome-based parameters"""
         if genome:
-            self.compress_interval = int(genome.get("compress_interval", compress_interval))
-            self.n_components = int(genome.get("n_components", n_components))
-            self.profit_threshold = float(genome.get("profit_threshold", profit_threshold))
-            self.max_memory_size = int(genome.get("max_memory_size", 1000))
-            self.compression_ratio = float(genome.get("compression_ratio", 0.7))
-            self.learning_rate = float(genome.get("learning_rate", 0.1))
-            self.profit_weight = float(genome.get("profit_weight", 2.0))
-            self.loss_avoidance_weight = float(genome.get("loss_avoidance_weight", 1.5))
+            self.genome = {
+                "compress_interval": int(genome.get("compress_interval", self.config.compress_interval)),
+                "n_components": int(genome.get("n_components", self.config.n_components)),
+                "profit_threshold": float(genome.get("profit_threshold", self.config.profit_threshold)),
+                "max_memory_size": int(genome.get("max_memory_size", self.config.max_memory_size)),
+                "compression_ratio": float(genome.get("compression_ratio", self.config.compression_ratio)),
+                "learning_rate": float(genome.get("learning_rate", self.config.learning_rate)),
+                "profit_weight": float(genome.get("profit_weight", self.config.profit_weight)),
+                "loss_avoidance_weight": float(genome.get("loss_avoidance_weight", self.config.loss_avoidance_weight))
+            }
         else:
-            self.compress_interval = compress_interval
-            self.n_components = n_components
-            self.profit_threshold = profit_threshold
-            self.max_memory_size = 1000
-            self.compression_ratio = 0.7
-            self.learning_rate = 0.1
-            self.profit_weight = 2.0
-            self.loss_avoidance_weight = 1.5
+            self.genome = {
+                "compress_interval": self.config.compress_interval,
+                "n_components": self.config.n_components,
+                "profit_threshold": self.config.profit_threshold,
+                "max_memory_size": self.config.max_memory_size,
+                "compression_ratio": self.config.compression_ratio,
+                "learning_rate": self.config.learning_rate,
+                "profit_weight": self.config.profit_weight,
+                "loss_avoidance_weight": self.config.loss_avoidance_weight
+            }
 
-        # Store genome for evolution
-        self.genome = {
-            "compress_interval": self.compress_interval,
-            "n_components": self.n_components,
-            "profit_threshold": self.profit_threshold,
-            "max_memory_size": self.max_memory_size,
-            "compression_ratio": self.compression_ratio,
-            "learning_rate": self.learning_rate,
-            "profit_weight": self.profit_weight,
-            "loss_avoidance_weight": self.loss_avoidance_weight
-        }
-
-    def _initialize_module_state(self):
-        """Initialize module-specific state using mixins"""
-        self._initialize_trading_state()
-        self._initialize_analysis_state()
-        
+    def _initialize_compression_state(self):
+        """Initialize memory compression state"""
         # Memory storage
         self.profit_memory: List[Tuple[np.ndarray, float]] = []
         self.loss_memory: List[Tuple[np.ndarray, float]] = []
         
         # Compressed representations
-        self.intuition_vector = np.zeros(self.n_components, np.float32)
-        self.profit_direction = np.zeros(self.n_components, np.float32)
-        self.loss_direction = np.zeros(self.n_components, np.float32)
+        self.intuition_vector = np.zeros(self.genome["n_components"], np.float32)
+        self.profit_direction = np.zeros(self.genome["n_components"], np.float32)
+        self.loss_direction = np.zeros(self.genome["n_components"], np.float32)
+        
+        # PCA components
+        self.profit_pca = PCA(n_components=self.genome["n_components"])
+        self.loss_pca = PCA(n_components=self.genome["n_components"])
+        self.scaler = StandardScaler()
         
         # Enhanced tracking
         self._compression_count = 0
@@ -112,903 +179,773 @@ class MemoryCompressor(Module, TradingMixin, AnalysisMixin):
         self._market_context_memory = deque(maxlen=200)
         self._context_profit_correlations = {}
         
-        # Adaptive parameters
-        self._adaptive_thresholds = {
-            'min_compression_quality': 0.3,
-            'feature_stability_threshold': 0.8,
-            'pattern_confidence_threshold': 0.6
+        # Performance metrics
+        self._compression_performance = {
+            'episodes_processed': 0,
+            'total_compressions': 0,
+            'avg_compression_time': 0.0,
+            'memory_utilization': 0.0
         }
 
-    def reset(self) -> None:
-        """Enhanced reset with automatic cleanup"""
-        super().reset()
-        self._reset_trading_state()
-        self._reset_analysis_state()
+    def _start_monitoring(self):
+        """Start background monitoring"""
+        def monitoring_loop():
+            while getattr(self, '_monitoring_active', True):
+                try:
+                    self._update_compression_health()
+                    self._analyze_compression_efficiency()
+                    time.sleep(30)
+                except Exception as e:
+                    self.logger.error(f"Monitoring error: {e}")
         
-        # Clear memory storage
-        self.profit_memory.clear()
-        self.loss_memory.clear()
-        
-        # Reset compressed representations
-        self.intuition_vector.fill(0.0)
-        self.profit_direction.fill(0.0)
-        self.loss_direction.fill(0.0)
-        
-        # Reset tracking
-        self._compression_count = 0
-        self._compression_history.clear()
-        self._intuition_evolution.clear()
-        self._pattern_strength_history.clear()
-        self._compression_quality_scores.clear()
-        self._explained_variance_history.clear()
-        self._feature_importance_tracking.clear()
-        self._compression_efficiency = 0.0
-        self._market_context_memory.clear()
-        self._context_profit_correlations.clear()
+        self._monitoring_active = True
+        monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
+        monitor_thread.start()
 
-    def _step_impl(self, info_bus: Optional[InfoBus] = None, **kwargs) -> None:
-        """Enhanced step with InfoBus integration"""
-        
-        # Return current intuition vector (main functionality)
-        current_intuition = self._get_current_intuition()
-        
-        # Track intuition evolution
-        self._track_intuition_evolution(current_intuition)
-        
-        # Update pattern strength
-        self._update_pattern_strength()
-
-    def _get_current_intuition(self) -> np.ndarray:
-        """Get current intuition vector with enhanced blending"""
-        
+    async def _initialize(self):
+        """Initialize module"""
         try:
-            # Base intuition from profit patterns
-            base_intuition = self.intuition_vector.copy()
+            # Set initial compression status in SmartInfoBus
+            initial_status = {
+                "compression_count": 0,
+                "intuition_vector": self.intuition_vector.tolist(),
+                "memory_size": {"profit": 0, "loss": 0},
+                "compression_efficiency": 0.0
+            }
             
-            # Blend with profit direction if available
-            if np.linalg.norm(self.profit_direction) > 0:
-                profit_strength = np.linalg.norm(self.profit_direction)
-                alpha = min(0.8, profit_strength)  # Weight towards profit
-                
-                combined = alpha * self.profit_direction + (1 - alpha) * base_intuition
-                
-                # Normalize to prevent explosion
-                norm = np.linalg.norm(combined)
-                if norm > 1e-8:
-                    combined = combined / norm
-                else:
-                    combined = base_intuition
-                
-                return combined.astype(np.float32)
-            
-            return base_intuition
-            
-        except Exception as e:
-            self.log_operator_warning(f"Intuition calculation failed: {e}")
-            return self.intuition_vector.copy()
-
-    def _track_intuition_evolution(self, current_intuition: np.ndarray):
-        """Track how intuition evolves over time"""
-        
-        # Store evolution
-        self._intuition_evolution.append({
-            'timestamp': datetime.datetime.now().isoformat(),
-            'step': self._step_count,
-            'intuition': current_intuition.copy(),
-            'profit_strength': np.linalg.norm(self.profit_direction),
-            'loss_strength': np.linalg.norm(self.loss_direction)
-        })
-        
-        # Calculate evolution metrics
-        if len(self._intuition_evolution) >= 2:
-            prev_intuition = self._intuition_evolution[-2]['intuition']
-            change = np.linalg.norm(current_intuition - prev_intuition)
-            
-            # Log significant changes
-            if change > 0.1:
-                self.log_operator_info(
-                    f"Significant intuition evolution",
-                    change=f"{change:.3f}",
-                    profit_strength=f"{np.linalg.norm(self.profit_direction):.3f}",
-                    loss_strength=f"{np.linalg.norm(self.loss_direction):.3f}"
-                )
-
-    def _update_pattern_strength(self):
-        """Update pattern strength metrics"""
-        
-        try:
-            # Calculate current pattern strength
-            profit_strength = np.linalg.norm(self.profit_direction)
-            loss_strength = np.linalg.norm(self.loss_direction)
-            
-            # Pattern clarity (difference between profit and loss directions)
-            if profit_strength > 0 and loss_strength > 0:
-                pattern_clarity = profit_strength / (loss_strength + 1e-8)
-            else:
-                pattern_clarity = 1.0
-            
-            # Combined pattern strength
-            pattern_strength = profit_strength * pattern_clarity
-            
-            self._pattern_strength_history.append({
-                'timestamp': datetime.datetime.now().isoformat(),
-                'profit_strength': profit_strength,
-                'loss_strength': loss_strength,
-                'pattern_clarity': pattern_clarity,
-                'combined_strength': pattern_strength
-            })
-            
-            # Update performance metrics
-            self._update_performance_metric('pattern_strength', pattern_strength)
-            self._update_performance_metric('pattern_clarity', pattern_clarity)
-            
-        except Exception as e:
-            self.log_operator_warning(f"Pattern strength update failed: {e}")
-
-    def compress(self, episode: int, trades: List[Dict], info_bus: Optional[InfoBus] = None):
-        """Enhanced compression with InfoBus context integration"""
-        
-        try:
-            self.log_operator_info(
-                f"Starting compression for episode {episode}",
-                trades_count=len(trades),
-                compression_number=self._compression_count + 1
+            self.smart_bus.set(
+                'memory_compression',
+                initial_status,
+                module='MemoryCompressor',
+                thesis="Initial memory compression status"
             )
             
-            # Extract market context if available
-            market_context = self._extract_market_context(info_bus)
+            return True
+        except Exception as e:
+            self.logger.error(f"Initialization failed: {e}")
+            return False
+
+    async def process(self, **inputs) -> Dict[str, Any]:
+        """Process memory compression"""
+        start_time = time.time()
+        
+        try:
+            # Extract compression data
+            compression_data = await self._extract_compression_data(**inputs)
+            
+            if not compression_data:
+                return await self._handle_no_data_fallback()
+            
+            # Process memory updates
+            memory_result = await self._process_memory_updates(compression_data)
+            
+            # Check if compression should be performed
+            episode = compression_data.get('episode', 0)
+            if self._should_compress(episode):
+                compression_result = await self._perform_compression(compression_data)
+                memory_result.update(compression_result)
+            
+            # Update intuition vector
+            intuition_result = await self._update_intuition_vector()
+            memory_result.update(intuition_result)
+            
+            # Generate thesis
+            thesis = await self._generate_compression_thesis(compression_data, memory_result)
+            
+            # Update SmartInfoBus
+            await self._update_compression_smart_bus(memory_result, thesis)
+            
+            # Record success
+            processing_time = (time.time() - start_time) * 1000
+            self._record_success(processing_time)
+            
+            return memory_result
+            
+        except Exception as e:
+            return await self._handle_compression_error(e, start_time)
+
+    async def _extract_compression_data(self, **inputs) -> Optional[Dict[str, Any]]:
+        """Extract compression data from SmartInfoBus"""
+        try:
+            # Get trades data
+            trades = self.smart_bus.get('trades', 'MemoryCompressor') or []
+            
+            # Get features
+            features = self.smart_bus.get('features', 'MemoryCompressor')
+            
+            # Get market context
+            market_context = self.smart_bus.get('market_context', 'MemoryCompressor') or {}
+            
+            # Get episode data
+            episode_data = self.smart_bus.get('episode_data', 'MemoryCompressor') or {}
+            
+            # Get current episode number
+            episode = inputs.get('episode', episode_data.get('episode', 0))
+            
+            return {
+                'trades': trades,
+                'features': features,
+                'market_context': market_context,
+                'episode_data': episode_data,
+                'episode': episode,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to extract compression data: {e}")
+            return None
+
+    async def _process_memory_updates(self, compression_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Process memory updates with new trading data"""
+        try:
+            trades = compression_data.get('trades', [])
+            features = compression_data.get('features')
+            market_context = compression_data.get('market_context', {})
             
             # Process trades into memory
-            profit_added, loss_added = self._process_trades_into_memory(trades, market_context)
+            if trades and features is not None:
+                profit_count, loss_count = self._process_trades_into_memory(trades, features, market_context)
+            else:
+                profit_count, loss_count = 0, 0
             
-            # Perform compression if at interval
-            if episode % self.compress_interval == 0:
-                self._perform_compression(episode, market_context)
+            # Update memory utilization
+            total_memory = len(self.profit_memory) + len(self.loss_memory)
+            memory_utilization = total_memory / self.genome["max_memory_size"]
+            self._compression_performance['memory_utilization'] = memory_utilization
             
-            self.log_operator_info(
-                f"Episode {episode} compression completed",
-                profit_trades_added=profit_added,
-                loss_trades_added=loss_added,
-                total_profit_memories=len(self.profit_memory),
-                total_loss_memories=len(self.loss_memory)
-            )
+            # Trim memory if needed
+            if total_memory > self.genome["max_memory_size"]:
+                self._trim_memory_buffers()
+            
+            return {
+                'memory_updates': {
+                    'profit_added': profit_count,
+                    'loss_added': loss_count,
+                    'total_profit_memories': len(self.profit_memory),
+                    'total_loss_memories': len(self.loss_memory),
+                    'memory_utilization': memory_utilization
+                }
+            }
             
         except Exception as e:
-            self.log_operator_error(f"Compression failed: {e}")
-            self._update_health_status("DEGRADED", f"Compression failed: {e}")
+            self.logger.error(f"Memory update processing failed: {e}")
+            return {'memory_updates': {'error': str(e)}}
 
-    def _extract_market_context(self, info_bus: Optional[InfoBus]) -> Dict[str, Any]:
-        """Extract market context for compression"""
+    def _process_trades_into_memory(self, trades: List[Dict[str, Any]], 
+                                  features: np.ndarray, market_context: Dict[str, Any]) -> Tuple[int, int]:
+        """Process trades into profit/loss memory with feature enhancement"""
+        profit_count = 0
+        loss_count = 0
         
-        if not info_bus:
-            return {}
-        
-        return {
-            'regime': InfoBusExtractor.get_market_regime(info_bus),
-            'volatility_level': InfoBusExtractor.get_volatility_level(info_bus),
-            'session': InfoBusExtractor.get_session(info_bus),
-            'drawdown_pct': InfoBusExtractor.get_drawdown_pct(info_bus),
-            'exposure_pct': InfoBusExtractor.get_exposure_pct(info_bus),
-            'timestamp': info_bus.get('timestamp', datetime.datetime.now().isoformat())
-        }
-
-    def _process_trades_into_memory(self, trades: List[Dict], market_context: Dict[str, Any]) -> Tuple[int, int]:
-        """Process trades into profit and loss memories"""
-        
-        profit_added = 0
-        loss_added = 0
-        
-        for trade in trades:
-            if "features" not in trade or "pnl" not in trade:
-                continue
+        try:
+            # Enhance features with market context
+            enhanced_features = self._enhance_features_with_context(features, market_context)
             
-            try:
-                # Extract and validate features
-                features = np.asarray(trade["features"], dtype=np.float32)
-                if features.size == 0:
+            for trade in trades[-20:]:  # Process last 20 trades
+                if not isinstance(trade, dict) or 'pnl' not in trade:
                     continue
                 
-                # Resize features to match n_components
-                if features.size != self.n_components:
-                    if features.size > self.n_components:
-                        features = features[:self.n_components]
-                    else:
-                        padding = np.zeros(self.n_components - features.size, dtype=np.float32)
-                        features = np.concatenate([features, padding])
+                pnl = trade['pnl']
                 
-                pnl = float(trade["pnl"])
+                # Create feature vector for this trade
+                trade_features = enhanced_features.copy()
                 
-                # Add market context to features if available
-                enhanced_features = self._enhance_features_with_context(features, market_context)
+                # Add trade-specific features
+                if 'confidence' in trade:
+                    trade_features = np.append(trade_features, trade['confidence'])
+                if 'volume' in trade:
+                    trade_features = np.append(trade_features, trade.get('volume', 1.0))
                 
-                # Categorize and store
-                if pnl > self.profit_threshold:
-                    self.profit_memory.append((enhanced_features, pnl))
-                    profit_added += 1
-                    
-                    # Update trading metrics
-                    self._update_trading_metrics({'pnl': pnl})
-                    
-                elif pnl < -1.0:  # Significant loss
-                    self.loss_memory.append((enhanced_features, abs(pnl)))
-                    loss_added += 1
-                    
-                    # Update trading metrics
-                    self._update_trading_metrics({'pnl': pnl})
-                
-            except Exception as e:
-                self.log_operator_warning(f"Trade processing failed: {e}")
-                continue
-        
-        # Trim memory if needed
-        self._trim_memory_buffers()
-        
-        # Store market context
-        if market_context:
-            self._market_context_memory.append({
-                'context': market_context,
-                'profit_trades': profit_added,
-                'loss_trades': loss_added
-            })
-        
-        return profit_added, loss_added
-
-    def _enhance_features_with_context(self, features: np.ndarray, market_context: Dict[str, Any]) -> np.ndarray:
-        """Enhance features with market context information"""
-        
-        if not market_context:
-            return features
-        
-        try:
-            # Create context encoding
-            context_features = []
+                # Store in appropriate memory
+                if pnl > self.genome["profit_threshold"]:
+                    self.profit_memory.append((trade_features, pnl))
+                    profit_count += 1
+                elif pnl < -self.genome["profit_threshold"] / 2:  # Store significant losses
+                    self.loss_memory.append((trade_features, abs(pnl)))
+                    loss_count += 1
             
-            # Regime encoding
-            regime = market_context.get('regime', 'unknown')
-            regime_encoding = {'trending': 1.0, 'volatile': 0.5, 'ranging': 0.0, 'unknown': 0.25}.get(regime, 0.25)
-            context_features.append(regime_encoding)
-            
-            # Volatility encoding
-            vol_level = market_context.get('volatility_level', 'medium')
-            vol_encoding = {'low': 0.2, 'medium': 0.5, 'high': 0.8, 'extreme': 1.0}.get(vol_level, 0.5)
-            context_features.append(vol_encoding)
-            
-            # Risk encoding
-            drawdown = market_context.get('drawdown_pct', 0) / 100.0  # Normalize
-            exposure = market_context.get('exposure_pct', 0) / 100.0   # Normalize
-            context_features.extend([drawdown, exposure])
-            
-            # Blend context with features (small influence)
-            context_array = np.array(context_features, dtype=np.float32)
-            context_influence = 0.1  # 10% influence
-            
-            # Apply context influence to first few components
-            enhanced_features = features.copy()
-            for i, ctx_val in enumerate(context_array):
-                if i < len(enhanced_features):
-                    enhanced_features[i] = ((1 - context_influence) * enhanced_features[i] + 
-                                          context_influence * ctx_val)
-            
-            return enhanced_features
+            return profit_count, loss_count
             
         except Exception as e:
-            self.log_operator_warning(f"Feature enhancement failed: {e}")
-            return features
+            self.logger.error(f"Trade processing failed: {e}")
+            return 0, 0
 
-    def _trim_memory_buffers(self):
-        """Trim memory buffers to prevent overflow"""
-        
-        # Trim profit memory
-        if len(self.profit_memory) > self.max_memory_size:
-            removed = len(self.profit_memory) - self.max_memory_size
-            self.profit_memory = self.profit_memory[-self.max_memory_size:]
-            
-        # Trim loss memory
-        if len(self.loss_memory) > self.max_memory_size:
-            removed = len(self.loss_memory) - self.max_memory_size
-            self.loss_memory = self.loss_memory[-self.max_memory_size:]
-
-    def _perform_compression(self, episode: int, market_context: Dict[str, Any]):
-        """Perform PCA compression with enhanced analytics"""
-        
-        self._compression_count += 1
-        
+    def _enhance_features_with_context(self, features: np.ndarray, market_context: Dict[str, Any]) -> np.ndarray:
+        """Enhance features with market context"""
         try:
-            self.log_operator_info(
-                f"Performing compression #{self._compression_count}",
-                episode=episode,
-                profit_memories=len(self.profit_memory),
-                loss_memories=len(self.loss_memory)
-            )
+            enhanced = features.copy() if features is not None else np.zeros(10)
             
+            # Add market context features
+            context_features = []
+            
+            # Volatility context
+            if 'volatility' in market_context:
+                vol = market_context['volatility']
+                if isinstance(vol, dict):
+                    context_features.extend(list(vol.values())[:3])
+                else:
+                    context_features.append(float(vol))
+            
+            # Session context
+            if 'session' in market_context:
+                session_map = {'asian': 0.0, 'european': 0.5, 'us': 1.0}
+                context_features.append(session_map.get(market_context['session'], 0.25))
+            
+            # Trend context
+            if 'trend' in market_context:
+                trend = market_context['trend']
+                if isinstance(trend, (int, float)):
+                    context_features.append(float(trend))
+                elif isinstance(trend, str):
+                    trend_map = {'up': 1.0, 'down': -1.0, 'sideways': 0.0}
+                    context_features.append(trend_map.get(trend, 0.0))
+            
+            # Combine features
+            if context_features:
+                enhanced = np.concatenate([enhanced, np.array(context_features)])
+            
+            return enhanced
+            
+        except Exception as e:
+            self.logger.error(f"Feature enhancement failed: {e}")
+            return features if features is not None else np.zeros(10)
+
+    def _should_compress(self, episode: int) -> bool:
+        """Check if compression should be performed"""
+        return (episode % self.genome["compress_interval"]) == 0 and episode > 0
+
+    async def _perform_compression(self, compression_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Perform memory compression using PCA"""
+        try:
             compression_results = {}
             
             # Compress profit patterns
-            if len(self.profit_memory) >= 5:
-                compression_results['profit'] = self._compress_profit_patterns()
+            if len(self.profit_memory) >= self.genome["n_components"]:
+                profit_result = self._compress_profit_patterns()
+                compression_results.update(profit_result)
             
             # Compress loss patterns
-            if len(self.loss_memory) >= 5:
-                compression_results['loss'] = self._compress_loss_patterns()
-            
-            # Update main intuition vector
-            if compression_results:
-                self._update_intuition_vector(compression_results)
+            if len(self.loss_memory) >= self.genome["n_components"]:
+                loss_result = self._compress_loss_patterns()
+                compression_results.update(loss_result)
             
             # Record compression
-            self._record_compression(episode, compression_results, market_context)
+            self._record_compression(compression_data, compression_results)
             
-        except Exception as e:
-            self.log_operator_error(f"Compression execution failed: {e}")
-
-    def _compress_profit_patterns(self) -> Dict[str, Any]:
-        """Compress profit patterns using weighted PCA"""
-        
-        try:
-            # Prepare data
-            profit_vectors = []
-            weights = []
-            
-            # Use recent profitable memories
-            recent_memories = self.profit_memory[-min(200, len(self.profit_memory)):]
-            
-            for features, pnl in recent_memories:
-                profit_vectors.append(features)
-                # Weight by profit amount and recency
-                weight = pnl * self.profit_weight
-                weights.append(weight)
-            
-            if not profit_vectors:
-                return {}
-            
-            X_profit = np.vstack(profit_vectors)
-            weights = np.array(weights)
-            weights = weights / weights.sum()  # Normalize
-            
-            # Weighted average for profit direction
-            old_direction = self.profit_direction.copy()
-            self.profit_direction = np.average(X_profit, axis=0, weights=weights)
-            
-            # PCA for main components
-            compression_quality = 0.0
-            explained_variance = 0.0
-            
-            if X_profit.shape[0] > max(3, self.n_components):
-                try:
-                    n_comp = min(self.n_components, X_profit.shape[0] - 1)
-                    pca = PCA(n_components=n_comp)
-                    pca.fit(X_profit)
-                    
-                    # Update intuition with first principal component
-                    if hasattr(pca, 'components_') and len(pca.components_) > 0:
-                        # Blend old intuition with new
-                        new_component = pca.components_[0]
-                        if len(new_component) == len(self.intuition_vector):
-                            self.intuition_vector = (
-                                (1 - self.learning_rate) * self.intuition_vector + 
-                                self.learning_rate * new_component
-                            )
-                        
-                        explained_variance = pca.explained_variance_ratio_[0]
-                        compression_quality = explained_variance
-                        
-                        self.log_operator_info(
-                            f"Profit PCA completed",
-                            n_components=n_comp,
-                            explained_variance=f"{explained_variance:.3f}",
-                            samples=len(X_profit)
-                        )
-                
-                except Exception as e:
-                    self.log_operator_warning(f"Profit PCA failed: {e}")
-            
-            # Calculate direction change
-            direction_change = np.linalg.norm(self.profit_direction - old_direction)
+            self._compression_count += 1
+            self._compression_performance['total_compressions'] += 1
             
             return {
-                'direction_change': direction_change,
-                'compression_quality': compression_quality,
-                'explained_variance': explained_variance,
-                'samples_processed': len(X_profit),
-                'avg_profit': np.mean([pnl for _, pnl in recent_memories])
+                'compression_performed': True,
+                'compression_results': compression_results,
+                'compression_count': self._compression_count
             }
             
         except Exception as e:
-            self.log_operator_error(f"Profit pattern compression failed: {e}")
-            return {}
+            self.logger.error(f"Compression failed: {e}")
+            return {'compression_performed': False, 'error': str(e)}
+
+    def _compress_profit_patterns(self) -> Dict[str, Any]:
+        """Compress profitable patterns using PCA"""
+        try:
+            if len(self.profit_memory) < self.genome["n_components"]:
+                return {'profit_compression': 'insufficient_data'}
+            
+            # Extract features and weights
+            features = np.array([mem[0] for mem in self.profit_memory])
+            profits = np.array([mem[1] for mem in self.profit_memory])
+            
+            # Weight by profit magnitude
+            weights = profits / np.max(profits) if np.max(profits) > 0 else np.ones_like(profits)
+            weighted_features = features * weights.reshape(-1, 1)
+            
+            # Standardize features
+            if not hasattr(self, '_profit_scaler_fitted'):
+                self.scaler.fit(weighted_features)
+                self._profit_scaler_fitted = True
+            
+            standardized_features = self.scaler.transform(weighted_features)
+            
+            # Apply PCA
+            self.profit_pca.fit(standardized_features)
+            compressed = self.profit_pca.transform(standardized_features)
+            
+            # Update profit direction with weighted average
+            profit_weights = weights / np.sum(weights)
+            self.profit_direction = np.average(compressed, axis=0, weights=profit_weights).astype(np.float32)
+            
+            # Calculate compression quality
+            explained_variance = np.sum(self.profit_pca.explained_variance_ratio_)
+            self._explained_variance_history.append(explained_variance)
+            
+            return {
+                'profit_compression': {
+                    'samples_compressed': len(features),
+                    'explained_variance': explained_variance,
+                    'profit_direction_strength': np.linalg.norm(self.profit_direction),
+                    'avg_profit': np.mean(profits)
+                }
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Profit pattern compression failed: {e}")
+            return {'profit_compression': f'error: {str(e)}'}
 
     def _compress_loss_patterns(self) -> Dict[str, Any]:
         """Compress loss patterns for avoidance"""
-        
         try:
-            # Prepare loss data
-            loss_vectors = [features for features, _ in self.loss_memory[-min(200, len(self.loss_memory)):]]
+            if len(self.loss_memory) < self.genome["n_components"]:
+                return {'loss_compression': 'insufficient_data'}
             
-            if not loss_vectors:
-                return {}
+            # Extract features and weights
+            features = np.array([mem[0] for mem in self.loss_memory])
+            losses = np.array([mem[1] for mem in self.loss_memory])
             
-            X_loss = np.vstack(loss_vectors)
+            # Weight by loss magnitude
+            weights = losses / np.max(losses) if np.max(losses) > 0 else np.ones_like(losses)
+            weighted_features = features * weights.reshape(-1, 1)
             
-            # Update loss direction (patterns to avoid)
-            old_loss_direction = self.loss_direction.copy()
-            self.loss_direction = np.mean(X_loss, axis=0)
+            # Standardize and compress
+            standardized_features = self.scaler.transform(weighted_features)
+            self.loss_pca.fit(standardized_features)
+            compressed = self.loss_pca.transform(standardized_features)
             
-            # Calculate avoidance strength
-            loss_change = np.linalg.norm(self.loss_direction - old_loss_direction)
+            # Update loss direction with weighted average
+            loss_weights = weights / np.sum(weights)
+            self.loss_direction = np.average(compressed, axis=0, weights=loss_weights).astype(np.float32)
             
-            self.log_operator_info(
-                f"Loss pattern compression completed",
-                direction_change=f"{loss_change:.3f}",
-                samples=len(X_loss),
-                avg_loss=f"{np.mean([loss for _, loss in self.loss_memory[-min(50, len(self.loss_memory)):]]):.2f}"
-            )
+            # Calculate compression quality
+            explained_variance = np.sum(self.loss_pca.explained_variance_ratio_)
             
             return {
-                'direction_change': loss_change,
-                'samples_processed': len(X_loss),
-                'avg_loss': np.mean([loss for _, loss in self.loss_memory[-min(50, len(self.loss_memory)):]])
+                'loss_compression': {
+                    'samples_compressed': len(features),
+                    'explained_variance': explained_variance,
+                    'loss_direction_strength': np.linalg.norm(self.loss_direction),
+                    'avg_loss': np.mean(losses)
+                }
             }
             
         except Exception as e:
-            self.log_operator_error(f"Loss pattern compression failed: {e}")
-            return {}
+            self.logger.error(f"Loss pattern compression failed: {e}")
+            return {'loss_compression': f'error: {str(e)}'}
 
-    def _update_intuition_vector(self, compression_results: Dict[str, Any]):
-        """Update main intuition vector based on compression results"""
-        
+    async def _update_intuition_vector(self) -> Dict[str, Any]:
+        """Update intuition vector based on compressed patterns"""
         try:
-            # Calculate intuition quality
-            intuition_quality = 0.0
-            
-            if 'profit' in compression_results:
-                profit_quality = compression_results['profit'].get('compression_quality', 0.0)
-                intuition_quality += profit_quality * 0.8
-            
-            if 'loss' in compression_results:
-                # Loss patterns add to quality through avoidance
-                loss_samples = compression_results['loss'].get('samples_processed', 0)
-                loss_quality = min(0.2, loss_samples / 100.0)
-                intuition_quality += loss_quality * 0.2
-            
-            # Store quality score
-            self._compression_quality_scores.append(intuition_quality)
-            
-            # Update compression efficiency
-            if len(self.profit_memory) + len(self.loss_memory) > 0:
-                compression_ratio = self.n_components / (len(self.profit_memory) + len(self.loss_memory))
-                self._compression_efficiency = min(1.0, compression_ratio * intuition_quality)
-            
-            # Update performance metrics
-            self._update_performance_metric('intuition_quality', intuition_quality)
-            self._update_performance_metric('compression_efficiency', self._compression_efficiency)
-            
-        except Exception as e:
-            self.log_operator_warning(f"Intuition vector update failed: {e}")
-
-    def _record_compression(self, episode: int, compression_results: Dict[str, Any], 
-                          market_context: Dict[str, Any]):
-        """Record compression for analysis"""
-        
-        compression_record = {
-            'episode': episode,
-            'compression_count': self._compression_count,
-            'timestamp': datetime.datetime.now().isoformat(),
-            'results': compression_results.copy(),
-            'market_context': market_context.copy(),
-            'memory_sizes': {
-                'profit': len(self.profit_memory),
-                'loss': len(self.loss_memory)
-            },
-            'intuition_norm': np.linalg.norm(self.intuition_vector),
-            'profit_direction_norm': np.linalg.norm(self.profit_direction),
-            'loss_direction_norm': np.linalg.norm(self.loss_direction)
-        }
-        
-        self._compression_history.append(compression_record)
-
-    # ═══════════════════════════════════════════════════════════════════
-    # ENHANCED OBSERVATION AND ACTION METHODS
-    # ═══════════════════════════════════════════════════════════════════
-
-    def get_observation_components(self) -> np.ndarray:
-        """Enhanced observation components with comprehensive metrics"""
-        
-        try:
-            # Base intuition vector
-            base_observation = self.intuition_vector.copy()
-            
-            # Compression metrics
+            # Blend profit and loss directions
             profit_strength = np.linalg.norm(self.profit_direction)
             loss_strength = np.linalg.norm(self.loss_direction)
             
-            # Pattern clarity
             if profit_strength > 0 and loss_strength > 0:
-                pattern_clarity = profit_strength / (loss_strength + 1e-8)
-            else:
-                pattern_clarity = 1.0
+                # Create intuition by moving towards profit and away from loss
+                profit_component = self.profit_direction * self.genome["profit_weight"]
+                loss_component = -self.loss_direction * self.genome["loss_avoidance_weight"]
+                
+                combined = profit_component + loss_component
+                
+                # Apply learning rate
+                self.intuition_vector = (
+                    (1 - self.genome["learning_rate"]) * self.intuition_vector +
+                    self.genome["learning_rate"] * combined
+                ).astype(np.float32)
+                
+                # Normalize to prevent explosion
+                norm = np.linalg.norm(self.intuition_vector)
+                if norm > 1e-8:
+                    self.intuition_vector = self.intuition_vector / norm
             
-            # Memory utilization
-            memory_utilization = (len(self.profit_memory) + len(self.loss_memory)) / (2 * self.max_memory_size)
+            elif profit_strength > 0:
+                # Only profit direction available
+                self.intuition_vector = (
+                    (1 - self.genome["learning_rate"]) * self.intuition_vector +
+                    self.genome["learning_rate"] * self.profit_direction
+                ).astype(np.float32)
             
-            # Compression quality
-            avg_compression_quality = (np.mean(list(self._compression_quality_scores)) 
-                                     if self._compression_quality_scores else 0.0)
+            # Track intuition evolution
+            self._intuition_evolution.append({
+                'timestamp': time.time(),
+                'intuition': self.intuition_vector.copy(),
+                'profit_strength': profit_strength,
+                'loss_strength': loss_strength
+            })
             
-            # Learning progress
-            learning_progress = min(1.0, self._compression_count / 20.0)  # Normalize
-            
-            # Enhanced metrics
-            meta_metrics = np.array([
-                profit_strength,
-                loss_strength,
-                pattern_clarity,
-                memory_utilization,
-                avg_compression_quality,
-                learning_progress,
-                self._compression_efficiency
-            ], dtype=np.float32)
-            
-            # Combine all components
-            observation = np.concatenate([base_observation, meta_metrics])
-            
-            return observation.astype(np.float32)
+            return {
+                'intuition_update': {
+                    'intuition_strength': np.linalg.norm(self.intuition_vector),
+                    'profit_strength': profit_strength,
+                    'loss_strength': loss_strength,
+                    'learning_rate': self.genome["learning_rate"]
+                }
+            }
             
         except Exception as e:
-            self.log_operator_error(f"Observation generation failed: {e}")
-            return np.zeros(self.n_components + 7, dtype=np.float32)
+            self.logger.error(f"Intuition vector update failed: {e}")
+            return {'intuition_update': f'error: {str(e)}'}
 
-    def propose_action(self, obs: Any = None, info_bus: Optional[InfoBus] = None) -> np.ndarray:
-        """Propose actions based on compressed intuition"""
-        
-        # Determine action dimension
-        action_dim = 2
-        if hasattr(obs, 'shape') and len(obs.shape) > 0:
-            action_dim = obs.shape[0]
-        
-        # Get current intuition
-        current_intuition = self._get_current_intuition()
-        
-        # Scale intuition to action space
-        if len(current_intuition) > 0:
-            # Use first components for action direction
-            action_influence = current_intuition[:min(action_dim, len(current_intuition))]
-            
-            # Extend or truncate to match action_dim
-            if len(action_influence) < action_dim:
-                padding = np.zeros(action_dim - len(action_influence), dtype=np.float32)
-                action_influence = np.concatenate([action_influence, padding])
-            else:
-                action_influence = action_influence[:action_dim]
-            
-            # Scale to reasonable action range
-            action_influence = np.tanh(action_influence) * 0.3  # Limit to ±0.3
-            
-            return action_influence.astype(np.float32)
-        
-        return np.zeros(action_dim, dtype=np.float32)
-
-    def confidence(self, obs: Any = None, info_bus: Optional[InfoBus] = None) -> float:
-        """Return confidence in compressed patterns"""
-        
-        base_confidence = 0.5
-        
-        # Confidence from compression quality
-        if self._compression_quality_scores:
-            avg_quality = np.mean(list(self._compression_quality_scores))
-            base_confidence += avg_quality * 0.3
-        
-        # Confidence from pattern strength
-        profit_strength = np.linalg.norm(self.profit_direction)
-        if profit_strength > 0.1:
-            base_confidence += min(0.2, profit_strength)
-        
-        # Confidence from compression count (experience)
-        experience_bonus = min(0.2, self._compression_count / 50.0)
-        base_confidence += experience_bonus
-        
-        # Confidence from memory size
-        if len(self.profit_memory) > 20:
-            base_confidence += 0.1
-        
-        return float(np.clip(base_confidence, 0.1, 1.0))
-
-    # ═══════════════════════════════════════════════════════════════════
-    # EVOLUTIONARY METHODS
-    # ═══════════════════════════════════════════════════════════════════
-
-    def get_genome(self) -> Dict[str, Any]:
-        """Get evolutionary genome"""
-        return self.genome.copy()
-        
-    def set_genome(self, genome: Dict[str, Any]):
-        """Set evolutionary genome with validation"""
-        self.compress_interval = int(np.clip(genome.get("compress_interval", self.compress_interval), 5, 50))
-        self.n_components = int(np.clip(genome.get("n_components", self.n_components), 3, 20))
-        self.profit_threshold = float(np.clip(genome.get("profit_threshold", self.profit_threshold), 1.0, 50.0))
-        self.max_memory_size = int(np.clip(genome.get("max_memory_size", self.max_memory_size), 100, 2000))
-        self.compression_ratio = float(np.clip(genome.get("compression_ratio", self.compression_ratio), 0.1, 1.0))
-        self.learning_rate = float(np.clip(genome.get("learning_rate", self.learning_rate), 0.01, 0.5))
-        self.profit_weight = float(np.clip(genome.get("profit_weight", self.profit_weight), 0.5, 5.0))
-        self.loss_avoidance_weight = float(np.clip(genome.get("loss_avoidance_weight", self.loss_avoidance_weight), 0.5, 3.0))
-        
-        # Update genome
-        self.genome = {
-            "compress_interval": self.compress_interval,
-            "n_components": self.n_components,
-            "profit_threshold": self.profit_threshold,
-            "max_memory_size": self.max_memory_size,
-            "compression_ratio": self.compression_ratio,
-            "learning_rate": self.learning_rate,
-            "profit_weight": self.profit_weight,
-            "loss_avoidance_weight": self.loss_avoidance_weight
-        }
-        
-        # Resize vectors if n_components changed
-        if len(self.intuition_vector) != self.n_components:
-            old_intuition = self.intuition_vector.copy()
-            old_profit = self.profit_direction.copy()
-            old_loss = self.loss_direction.copy()
-            
-            self.intuition_vector = np.zeros(self.n_components, np.float32)
-            self.profit_direction = np.zeros(self.n_components, np.float32)
-            self.loss_direction = np.zeros(self.n_components, np.float32)
-            
-            # Copy over compatible components
-            min_size = min(len(old_intuition), self.n_components)
-            self.intuition_vector[:min_size] = old_intuition[:min_size]
-            self.profit_direction[:min_size] = old_profit[:min_size]
-            self.loss_direction[:min_size] = old_loss[:min_size]
-        
-    def mutate(self, mutation_rate: float = 0.2):
-        """Enhanced mutation with performance-based adaptation"""
-        g = self.genome.copy()
-        mutations = []
-        
-        if np.random.rand() < mutation_rate:
-            old_val = g["compress_interval"]
-            g["compress_interval"] = int(np.clip(old_val + np.random.randint(-3, 4), 5, 50))
-            mutations.append(f"interval: {old_val} → {g['compress_interval']}")
-            
-        if np.random.rand() < mutation_rate:
-            old_val = g["n_components"]
-            g["n_components"] = int(np.clip(old_val + np.random.randint(-1, 2), 3, 20))
-            mutations.append(f"components: {old_val} → {g['n_components']}")
-            
-        if np.random.rand() < mutation_rate:
-            old_val = g["profit_threshold"]
-            g["profit_threshold"] = float(np.clip(old_val + np.random.uniform(-2, 2), 1.0, 50.0))
-            mutations.append(f"threshold: {old_val:.1f} → {g['profit_threshold']:.1f}")
-            
-        if np.random.rand() < mutation_rate:
-            old_val = g["learning_rate"]
-            g["learning_rate"] = float(np.clip(old_val + np.random.uniform(-0.02, 0.02), 0.01, 0.5))
-            mutations.append(f"lr: {old_val:.3f} → {g['learning_rate']:.3f}")
-            
-        if np.random.rand() < mutation_rate:
-            old_val = g["profit_weight"]
-            g["profit_weight"] = float(np.clip(old_val + np.random.uniform(-0.3, 0.3), 0.5, 5.0))
-            mutations.append(f"profit_weight: {old_val:.2f} → {g['profit_weight']:.2f}")
-        
-        if mutations:
-            self.log_operator_info(f"Memory compressor mutation applied", changes=", ".join(mutations))
-            
-        # Also mutate the intuition vector slightly
-        if np.random.rand() < mutation_rate * 0.5:
-            noise = np.random.normal(0, 0.05, self.intuition_vector.shape).astype(np.float32)
-            self.intuition_vector += noise
-            
-        self.set_genome(g)
-        
-    def crossover(self, other: "MemoryCompressor") -> "MemoryCompressor":
-        """Enhanced crossover with performance-based selection"""
-        if not isinstance(other, MemoryCompressor):
-            self.log_operator_warning("Crossover with incompatible type")
-            return self
-        
-        # Performance-based crossover
-        self_quality = np.mean(list(self._compression_quality_scores)) if self._compression_quality_scores else 0.0
-        other_quality = np.mean(list(other._compression_quality_scores)) if other._compression_quality_scores else 0.0
-        
-        # Favor higher quality parent
-        if self_quality > other_quality:
-            bias = 0.7  # Favor self
-        else:
-            bias = 0.3  # Favor other
-        
-        new_g = {k: (self.genome[k] if np.random.rand() < bias else other.genome[k]) for k in self.genome}
-        
-        child = MemoryCompressor(genome=new_g, debug=self.config.debug)
-        
-        # Cross intuition vectors
-        if len(self.intuition_vector) == len(other.intuition_vector):
-            mask = np.random.rand(*self.intuition_vector.shape) > 0.5
-            child.intuition_vector = np.where(mask, self.intuition_vector, other.intuition_vector)
-            child.profit_direction = np.where(mask, self.profit_direction, other.profit_direction)
-        
-        return child
-
-    # ═══════════════════════════════════════════════════════════════════
-    # ENHANCED STATE MANAGEMENT
-    # ═══════════════════════════════════════════════════════════════════
-
-    def _check_state_integrity(self) -> bool:
-        """Enhanced health check"""
+    def _trim_memory_buffers(self):
+        """Trim memory buffers to maintain size limits"""
         try:
-            # Check vector dimensions
-            if len(self.intuition_vector) != self.n_components:
-                return False
-            if len(self.profit_direction) != self.n_components:
-                return False
-            if len(self.loss_direction) != self.n_components:
-                return False
+            max_size = self.genome["max_memory_size"]
+            
+            # Keep most recent and most profitable
+            if len(self.profit_memory) > max_size // 2:
+                # Sort by profit and keep top performers + recent
+                sorted_profits = sorted(self.profit_memory, key=lambda x: x[1], reverse=True)
+                top_half = max_size // 4
+                recent_half = max_size // 4
                 
-            # Check vector validity
-            if not np.all(np.isfinite(self.intuition_vector)):
-                return False
-            if not np.all(np.isfinite(self.profit_direction)):
-                return False
-            if not np.all(np.isfinite(self.loss_direction)):
-                return False
+                self.profit_memory = sorted_profits[:top_half] + sorted_profits[-recent_half:]
             
-            # Check memory sizes
-            if len(self.profit_memory) > self.max_memory_size * 1.1:  # Allow small overflow
-                return False
-            if len(self.loss_memory) > self.max_memory_size * 1.1:
-                return False
-            
-            # Check compression count
-            if self._compression_count < 0:
-                return False
+            # Keep most recent and most costly losses
+            if len(self.loss_memory) > max_size // 2:
+                sorted_losses = sorted(self.loss_memory, key=lambda x: x[1], reverse=True)
+                top_half = max_size // 4
+                recent_half = max_size // 4
                 
-            return True
+                self.loss_memory = sorted_losses[:top_half] + sorted_losses[-recent_half:]
             
-        except Exception:
-            return False
+        except Exception as e:
+            self.logger.error(f"Memory trimming failed: {e}")
 
-    def _get_health_details(self) -> Dict[str, Any]:
-        """Enhanced health details"""
-        base_details = super()._get_health_details()
-        
-        compressor_details = {
-            'compression_info': {
-                'total_compressions': self._compression_count,
-                'compression_interval': self.compress_interval,
-                'n_components': self.n_components,
-                'compression_efficiency': self._compression_efficiency
-            },
-            'memory_info': {
+    def _record_compression(self, compression_data: Dict[str, Any], compression_results: Dict[str, Any]):
+        """Record compression results for analysis"""
+        try:
+            compression_record = {
+                'timestamp': time.time(),
+                'episode': compression_data.get('episode', 0),
                 'profit_memories': len(self.profit_memory),
                 'loss_memories': len(self.loss_memory),
-                'max_memory_size': self.max_memory_size,
-                'memory_utilization': (len(self.profit_memory) + len(self.loss_memory)) / (2 * self.max_memory_size)
-            },
-            'pattern_info': {
-                'intuition_norm': np.linalg.norm(self.intuition_vector),
-                'profit_direction_norm': np.linalg.norm(self.profit_direction),
-                'loss_direction_norm': np.linalg.norm(self.loss_direction),
-                'avg_compression_quality': (np.mean(list(self._compression_quality_scores)) 
-                                           if self._compression_quality_scores else 0.0)
-            },
-            'genome_config': self.genome.copy()
-        }
-        
-        if base_details:
-            base_details.update(compressor_details)
-            return base_details
-        
-        return compressor_details
+                'compression_results': compression_results,
+                'intuition_strength': np.linalg.norm(self.intuition_vector)
+            }
+            
+            self._compression_history.append(compression_record)
+            
+            # Calculate compression quality
+            if 'profit_compression' in compression_results:
+                profit_var = compression_results['profit_compression'].get('explained_variance', 0)
+                loss_var = compression_results.get('loss_compression', {}).get('explained_variance', 0)
+                
+                quality = (profit_var + loss_var) / 2
+                self._compression_quality_scores.append(quality)
+            
+        except Exception as e:
+            self.logger.error(f"Compression recording failed: {e}")
 
-    def _get_module_state(self) -> Dict[str, Any]:
-        """Enhanced state management"""
-        
-        # Convert memory to serializable format
-        profit_memory_serializable = [(vec.tolist(), pnl) for vec, pnl in self.profit_memory[-100:]]  # Keep recent
-        loss_memory_serializable = [(vec.tolist(), loss) for vec, loss in self.loss_memory[-100:]]
+    async def _generate_compression_thesis(self, compression_data: Dict[str, Any], 
+                                         memory_result: Dict[str, Any]) -> str:
+        """Generate comprehensive compression thesis"""
+        try:
+            # Memory status
+            total_memories = len(self.profit_memory) + len(self.loss_memory)
+            profit_memories = len(self.profit_memory)
+            loss_memories = len(self.loss_memory)
+            
+            # Compression status
+            compression_performed = memory_result.get('compression_performed', False)
+            intuition_strength = np.linalg.norm(self.intuition_vector)
+            
+            thesis_parts = [
+                f"Memory Compression Analysis: {total_memories} total memories ({profit_memories} profitable, {loss_memories} loss patterns)",
+                f"Intuition vector strength: {intuition_strength:.4f} representing compressed trading experience",
+                f"Memory utilization: {self._compression_performance['memory_utilization']:.1%} of maximum capacity"
+            ]
+            
+            if compression_performed:
+                compression_results = memory_result.get('compression_results', {})
+                thesis_parts.append(f"Compression cycle {self._compression_count} completed with pattern analysis")
+                
+                if 'profit_compression' in compression_results:
+                    profit_info = compression_results['profit_compression']
+                    if isinstance(profit_info, dict):
+                        explained_var = profit_info.get('explained_variance', 0)
+                        thesis_parts.append(f"Profit patterns: {explained_var:.1%} variance explained by {self.genome['n_components']} components")
+            
+            # Pattern evolution
+            if self._intuition_evolution:
+                recent_changes = len([e for e in self._intuition_evolution if time.time() - e['timestamp'] < 3600])
+                thesis_parts.append(f"Intuition evolution: {recent_changes} updates in last hour showing learning adaptation")
+            
+            # Compression efficiency
+            if self._compression_quality_scores:
+                avg_quality = np.mean(list(self._compression_quality_scores)[-5:])
+                thesis_parts.append(f"Compression quality: {avg_quality:.1%} (target: {self.config.min_compression_quality:.1%}+)")
+            
+            # Learning assessment
+            profit_ratio = profit_memories / max(total_memories, 1)
+            if profit_ratio > 0.6:
+                thesis_parts.append("High profit pattern density indicates effective learning and memory retention")
+            elif profit_ratio < 0.3:
+                thesis_parts.append("Low profit pattern density suggests need for strategy adjustment")
+            
+            return " | ".join(thesis_parts)
+            
+        except Exception as e:
+            return f"Compression thesis generation failed: {str(e)} - Memory compression continuing with basic analysis"
+
+    async def _update_compression_smart_bus(self, memory_result: Dict[str, Any], thesis: str):
+        """Update SmartInfoBus with compression results"""
+        try:
+            # Intuition vector
+            self.smart_bus.set(
+                'intuition_vector',
+                {
+                    'vector': self.intuition_vector.tolist(),
+                    'strength': float(np.linalg.norm(self.intuition_vector)),
+                    'components': self.genome["n_components"],
+                    'last_updated': time.time()
+                },
+                module='MemoryCompressor',
+                thesis=thesis
+            )
+            
+            # Compressed patterns
+            pattern_data = {
+                'profit_direction': self.profit_direction.tolist(),
+                'loss_direction': self.loss_direction.tolist(),
+                'profit_strength': float(np.linalg.norm(self.profit_direction)),
+                'loss_strength': float(np.linalg.norm(self.loss_direction)),
+                'compression_count': self._compression_count
+            }
+            
+            self.smart_bus.set(
+                'compressed_patterns',
+                pattern_data,
+                module='MemoryCompressor',
+                thesis="Compressed profit and loss patterns for intuitive trading decisions"
+            )
+            
+            # Memory compression status
+            compression_status = {
+                'total_memories': len(self.profit_memory) + len(self.loss_memory),
+                'profit_memories': len(self.profit_memory),
+                'loss_memories': len(self.loss_memory),
+                'memory_utilization': self._compression_performance['memory_utilization'],
+                'compression_efficiency': self._compression_efficiency,
+                'last_compression': self._compression_count
+            }
+            
+            self.smart_bus.set(
+                'memory_compression',
+                compression_status,
+                module='MemoryCompressor',
+                thesis="Memory compression status and utilization metrics"
+            )
+            
+            # Feature importance
+            if hasattr(self.profit_pca, 'components_'):
+                feature_importance = {
+                    'profit_components': self.profit_pca.components_.tolist(),
+                    'explained_variance_ratio': self.profit_pca.explained_variance_ratio_.tolist(),
+                    'n_features': getattr(self.profit_pca, 'n_features_in_', 0)
+                }
+                
+                self.smart_bus.set(
+                    'feature_importance',
+                    feature_importance,
+                    module='MemoryCompressor',
+                    thesis="Feature importance analysis from PCA compression"
+                )
+            
+        except Exception as e:
+            self.logger.error(f"Failed to update SmartInfoBus: {e}")
+
+    async def _handle_no_data_fallback(self) -> Dict[str, Any]:
+        """Handle case when no compression data is available"""
+        self.logger.warning("No compression data available - returning current intuition")
         
         return {
-            "profit_memory": profit_memory_serializable,
-            "loss_memory": loss_memory_serializable,
-            "intuition_vector": self.intuition_vector.tolist(),
-            "profit_direction": self.profit_direction.tolist(),
-            "loss_direction": self.loss_direction.tolist(),
-            "compression_count": self._compression_count,
-            "genome": self.genome.copy(),
-            "compression_history": list(self._compression_history)[-20:],  # Keep recent only
-            "compression_quality_scores": list(self._compression_quality_scores)[-30:],
-            "compression_efficiency": self._compression_efficiency,
-            "pattern_strength_history": list(self._pattern_strength_history)[-50:],
-            "adaptive_thresholds": self._adaptive_thresholds.copy()
+            'intuition_strength': float(np.linalg.norm(self.intuition_vector)),
+            'total_memories': len(self.profit_memory) + len(self.loss_memory),
+            'compression_count': self._compression_count,
+            'fallback_reason': 'no_compression_data'
         }
 
-    def _set_module_state(self, module_state: Dict[str, Any]):
-        """Enhanced state restoration"""
+    async def _handle_compression_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
+        """Handle compression errors"""
+        processing_time = (time.time() - start_time) * 1000
         
-        # Restore memory
-        profit_memory_data = module_state.get("profit_memory", [])
-        self.profit_memory = [(np.asarray(vec, np.float32), pnl) for vec, pnl in profit_memory_data]
+        # Update circuit breaker
+        self.circuit_breaker['failures'] += 1
+        self.circuit_breaker['last_failure'] = time.time()
         
-        loss_memory_data = module_state.get("loss_memory", [])
-        self.loss_memory = [(np.asarray(vec, np.float32), loss) for vec, loss in loss_memory_data]
+        if self.circuit_breaker['failures'] >= self.circuit_breaker['threshold']:
+            self.circuit_breaker['state'] = 'OPEN'
         
-        # Restore vectors
-        self.intuition_vector = np.asarray(module_state.get("intuition_vector", 
-            np.zeros(self.n_components)), np.float32)
-        self.profit_direction = np.asarray(module_state.get("profit_direction", 
-            np.zeros(self.n_components)), np.float32)
-        self.loss_direction = np.asarray(module_state.get("loss_direction", 
-            np.zeros(self.n_components)), np.float32)
+        # Log error with context
+        error_context = self.error_pinpointer.analyze_error(error, "MemoryCompressor")
+        explanation = self.english_explainer.explain_error(
+            "MemoryCompressor", str(error), "memory compression"
+        )
         
-        # Restore other state
-        self._compression_count = module_state.get("compression_count", 0)
-        self.set_genome(module_state.get("genome", self.genome))
-        self._compression_history = deque(module_state.get("compression_history", []), maxlen=50)
-        self._compression_quality_scores = deque(module_state.get("compression_quality_scores", []), maxlen=50)
-        self._compression_efficiency = module_state.get("compression_efficiency", 0.0)
-        self._pattern_strength_history = deque(module_state.get("pattern_strength_history", []), maxlen=200)
-        self._adaptive_thresholds = module_state.get("adaptive_thresholds", self._adaptive_thresholds)
+        self.logger.error(
+            format_operator_message(
+                "💥", "MEMORY_COMPRESSION_ERROR",
+                error=str(error),
+                details=explanation,
+                processing_time_ms=processing_time,
+                context="memory_compression"
+            )
+        )
+        
+        # Record failure
+        self._record_failure(error)
+        
+        return self._create_fallback_response(f"error: {str(error)}")
 
-    def get_compression_analysis_report(self) -> str:
-        """Generate operator-friendly compression analysis report"""
+    def _create_fallback_response(self, reason: str) -> Dict[str, Any]:
+        """Create fallback response for error cases"""
+        return {
+            'intuition_strength': float(np.linalg.norm(self.intuition_vector)),
+            'total_memories': len(self.profit_memory) + len(self.loss_memory),
+            'compression_count': self._compression_count,
+            'circuit_breaker_state': self.circuit_breaker['state'],
+            'fallback_reason': reason
+        }
+
+    def _update_compression_health(self):
+        """Update compression health metrics"""
+        try:
+            # Check compression quality
+            if self._compression_quality_scores:
+                avg_quality = np.mean(list(self._compression_quality_scores)[-5:])
+                if avg_quality < self.config.min_compression_quality:
+                    self._health_status = 'warning'
+                else:
+                    self._health_status = 'healthy'
+            
+            # Check memory utilization
+            if self._compression_performance['memory_utilization'] > 0.95:
+                self._health_status = 'warning'
+            
+            self._last_health_check = time.time()
+            
+        except Exception as e:
+            self.logger.error(f"Health check failed: {e}")
+            self._health_status = 'warning'
+
+    def _analyze_compression_efficiency(self):
+        """Analyze compression efficiency"""
+        try:
+            if len(self._compression_history) >= 3:
+                recent_compressions = list(self._compression_history)[-3:]
+                
+                # Calculate efficiency trend
+                intuition_strengths = [c['intuition_strength'] for c in recent_compressions]
+                if len(intuition_strengths) >= 2:
+                    trend = intuition_strengths[-1] - intuition_strengths[0]
+                    
+                    if trend > 0.1:  # Improving intuition
+                        self.logger.info(
+                            format_operator_message(
+                                "📈", "COMPRESSION_EFFICIENCY_IMPROVING",
+                                trend=f"{trend:.4f}",
+                                recent_strength=f"{intuition_strengths[-1]:.4f}",
+                                context="efficiency_analysis"
+                            )
+                        )
+            
+        except Exception as e:
+            self.logger.error(f"Efficiency analysis failed: {e}")
+
+    def _record_success(self, processing_time: float):
+        """Record successful processing"""
+        self.performance_tracker.record_metric(
+            'MemoryCompressor', 'compression_cycle', processing_time, True
+        )
         
-        # Current pattern strengths
-        profit_strength = np.linalg.norm(self.profit_direction)
-        loss_strength = np.linalg.norm(self.loss_direction)
-        intuition_strength = np.linalg.norm(self.intuition_vector)
+        # Update performance metrics
+        self._compression_performance['episodes_processed'] += 1
         
-        # Pattern clarity
-        if profit_strength > 0 and loss_strength > 0:
-            pattern_clarity = profit_strength / (loss_strength + 1e-8)
-        else:
-            pattern_clarity = 1.0
+        # Update average processing time
+        current_avg = self._compression_performance['avg_compression_time']
+        episodes = self._compression_performance['episodes_processed']
+        new_avg = (current_avg * (episodes - 1) + processing_time) / episodes
+        self._compression_performance['avg_compression_time'] = new_avg
         
-        # Memory utilization
-        memory_util = (len(self.profit_memory) + len(self.loss_memory)) / (2 * self.max_memory_size)
+        # Reset circuit breaker on success
+        if self.circuit_breaker['state'] == 'OPEN':
+            self.circuit_breaker['failures'] = 0
+            self.circuit_breaker['state'] = 'CLOSED'
+
+    def _record_failure(self, error: Exception):
+        """Record processing failure"""
+        self.performance_tracker.record_metric(
+            'MemoryCompressor', 'compression_cycle', 0, False
+        )
+
+    def get_state(self) -> Dict[str, Any]:
+        """Get module state for persistence"""
+        return {
+            'profit_memory': [(mem[0].tolist(), mem[1]) for mem in self.profit_memory[-100:]],  # Last 100
+            'loss_memory': [(mem[0].tolist(), mem[1]) for mem in self.loss_memory[-100:]],  # Last 100
+            'intuition_vector': self.intuition_vector.tolist(),
+            'profit_direction': self.profit_direction.tolist(),
+            'loss_direction': self.loss_direction.tolist(),
+            'genome': self.genome.copy(),
+            'compression_count': self._compression_count,
+            'compression_performance': self._compression_performance.copy(),
+            'circuit_breaker': self.circuit_breaker.copy(),
+            'health_status': self._health_status
+        }
+
+    def set_state(self, state: Dict[str, Any]):
+        """Set module state from persistence"""
+        if 'profit_memory' in state:
+            self.profit_memory = [(np.array(mem[0]), mem[1]) for mem in state['profit_memory']]
         
-        # Compression quality
-        avg_quality = (np.mean(list(self._compression_quality_scores)) 
-                      if self._compression_quality_scores else 0.0)
+        if 'loss_memory' in state:
+            self.loss_memory = [(np.array(mem[0]), mem[1]) for mem in state['loss_memory']]
         
-        return f"""
-🧠 MEMORY COMPRESSOR ANALYSIS
-═══════════════════════════════════════
-🔄 Compressions Performed: {self._compression_count}
-💡 Intuition Strength: {intuition_strength:.3f}
-📊 Compression Quality: {avg_quality:.3f}
-⚡ Efficiency: {self._compression_efficiency:.3f}
+        if 'intuition_vector' in state:
+            self.intuition_vector = np.array(state['intuition_vector'], dtype=np.float32)
+        
+        if 'profit_direction' in state:
+            self.profit_direction = np.array(state['profit_direction'], dtype=np.float32)
+        
+        if 'loss_direction' in state:
+            self.loss_direction = np.array(state['loss_direction'], dtype=np.float32)
+        
+        if 'genome' in state:
+            self.genome.update(state['genome'])
+        
+        if 'compression_count' in state:
+            self._compression_count = state['compression_count']
+        
+        if 'compression_performance' in state:
+            self._compression_performance.update(state['compression_performance'])
+        
+        if 'circuit_breaker' in state:
+            self.circuit_breaker.update(state['circuit_breaker'])
+        
+        if 'health_status' in state:
+            self._health_status = state['health_status']
 
-🎯 PATTERN ANALYSIS
-• Profit Direction Strength: {profit_strength:.3f}
-• Loss Direction Strength: {loss_strength:.3f}
-• Pattern Clarity: {pattern_clarity:.3f}
-• Components: {self.n_components}
+    def get_health_status(self) -> Dict[str, Any]:
+        """Get health status"""
+        return {
+            'status': self._health_status,
+            'last_check': self._last_health_check,
+            'circuit_breaker': self.circuit_breaker['state'],
+            'total_memories': len(self.profit_memory) + len(self.loss_memory),
+            'compression_count': self._compression_count,
+            'intuition_strength': float(np.linalg.norm(self.intuition_vector))
+        }
 
-💾 MEMORY STATUS
-• Profit Memories: {len(self.profit_memory):,}/{self.max_memory_size:,}
-• Loss Memories: {len(self.loss_memory):,}/{self.max_memory_size:,}
-• Memory Utilization: {memory_util:.1%}
-• Profit Threshold: €{self.profit_threshold:.2f}
+    def stop_monitoring(self):
+        """Stop background monitoring"""
+        self._monitoring_active = False
 
-🔧 COMPRESSION SETTINGS
-• Compression Interval: {self.compress_interval} episodes
-• Learning Rate: {self.learning_rate:.3f}
-• Profit Weight: {self.profit_weight:.2f}
-• Loss Avoidance Weight: {self.loss_avoidance_weight:.2f}
-
-📈 PERFORMANCE METRICS
-• Trading Records: {self._trades_processed}
-• Pattern Evolution Points: {len(self._intuition_evolution)}
-• Quality Score History: {len(self._compression_quality_scores)}
-        """
-
-    # Maintain backward compatibility
-    def step(self, *args, **kwargs):
-        """Backward compatibility step method"""
-        return self._step_impl(None, **kwargs)
-
-    def get_state(self):
-        """Backward compatibility state method"""
-        return super().get_state()
-
-    def set_state(self, state):
-        """Backward compatibility state method"""
-        super().set_state(state)
+    # Legacy compatibility methods
+    def propose_action(self, obs: Any = None, **kwargs) -> np.ndarray:
+        """Legacy compatibility for action proposal"""
+        # Return intuition vector as action guidance
+        if np.linalg.norm(self.intuition_vector) > 0:
+            # Convert to 2D action space
+            return np.array([self.intuition_vector[0], self.intuition_vector[1] if len(self.intuition_vector) > 1 else 0.0])
+        return np.array([0.0, 0.0])
+    
+    def confidence(self, obs: Any = None, **kwargs) -> float:
+        """Legacy compatibility for confidence"""
+        return float(np.linalg.norm(self.intuition_vector))

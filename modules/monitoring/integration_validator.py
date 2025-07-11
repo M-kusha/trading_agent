@@ -8,17 +8,17 @@ import importlib
 import inspect
 import ast
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Dict, List, Any, Optional,  TYPE_CHECKING
 from dataclasses import dataclass, field
 import yaml
 import json
 
-from modules.utils.info_bus import SmartInfoBus, InfoBusManager
-from modules.utils.english_explainer import EnglishExplainer
+from modules.utils.info_bus import  InfoBusManager
+from modules.utils.system_utilities import EnglishExplainer
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 
 if TYPE_CHECKING:
-    from modules.core.module_orchestrator import ModuleOrchestrator
+    from modules.core.module_system import ModuleOrchestrator
 
 
 @dataclass
@@ -161,9 +161,8 @@ class IntegrationValidator:
         
         # Config paths
         self.config_paths = [
-            "config/orchestration_policy.yaml",
+            "config/system_config.yaml",
             "config/risk_policy.yaml",
-            "config/module_registry.yaml",
             "config/explainability_standards.yaml"
         ]
         
@@ -458,10 +457,10 @@ class IntegrationValidator:
                     config = yaml.safe_load(f)
                 
                 # Validate structure based on file
-                if 'orchestration_policy' in config_path:
-                    self._validate_orchestration_policy(config, report)
-                elif 'module_registry' in config_path:
-                    self._validate_module_registry(config, report)
+                if 'system_config' in config_path:
+                    self._validate_system_config(config, report)
+                elif 'risk_policy' in config_path:
+                    self._validate_risk_policy(config, report)
                 elif 'explainability_standards' in config_path:
                     self._validate_explainability_standards(config, report)
                     
@@ -475,8 +474,8 @@ class IntegrationValidator:
                     suggestion="Fix YAML syntax errors"
                 ))
     
-    def _validate_orchestration_policy(self, config: Dict, report: ValidationReport):
-        """Validate orchestration policy configuration"""
+    def _validate_system_config(self, config: Dict, report: ValidationReport):
+        """Validate system configuration"""
         required_sections = ['system', 'execution', 'monitoring']
         
         for section in required_sections:
@@ -485,7 +484,21 @@ class IntegrationValidator:
                     module="Configuration",
                     issue_type='incomplete_config',
                     severity='warning',
-                    message=f"Missing '{section}' in orchestration_policy.yaml",
+                    message=f"Missing '{section}' in system_config.yaml",
+                    suggestion=f"Add {section} section to configuration"
+                ))
+    
+    def _validate_risk_policy(self, config: Dict, report: ValidationReport):
+        """Validate risk policy configuration"""
+        required_sections = ['system', 'execution', 'monitoring']
+        
+        for section in required_sections:
+            if section not in config:
+                report.issues.append(ValidationIssue(
+                    module="Configuration",
+                    issue_type='incomplete_config',
+                    severity='warning',
+                    message=f"Missing '{section}' in risk_policy.yaml",
                     suggestion=f"Add {section} section to configuration"
                 ))
     
