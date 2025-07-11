@@ -1,68 +1,176 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/meta/meta_agent.py
-# Enhanced with InfoBus integration & intelligent automation
+# 🚀 PRODUCTION-READY Meta Agent System
+# Advanced automation with SmartInfoBus integration and intelligent decision making
 # ─────────────────────────────────────────────────────────────
 
+import asyncio
+import time
+import threading
 import numpy as np
 import datetime
 from typing import Dict, Any, List, Optional, Tuple
 from collections import deque, defaultdict
+from dataclasses import dataclass, field
 from enum import Enum
 
-from modules.core.core import Module, ModuleConfig, audit_step
-from modules.core.mixins import AnalysisMixin, StateManagementMixin, TradingMixin
-from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
-from modules.utils.audit_utils import RotatingLogger, AuditTracker, format_operator_message, system_audit
+from modules.core.module_base import BaseModule, module
+from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.monitoring.health_monitor import HealthMonitor
+from modules.monitoring.performance_tracker import PerformanceTracker
 
 
 class MetaMode(Enum):
     """Meta agent operational modes"""
+    INITIALIZATION = "initialization"
     TRAINING = "training"
+    VALIDATION = "validation"
     LIVE_TRADING = "live_trading" 
     RETRAINING = "retraining"
     EVALUATION = "evaluation"
     EMERGENCY_STOP = "emergency_stop"
+    OPTIMIZATION = "optimization"
 
 
-class MetaAgent(Module, AnalysisMixin, TradingMixin):
-    """
-    Enhanced meta agent with InfoBus integration and intelligent automation.
-    Manages the entire training/trading lifecycle with automatic decision making
-    for when to retrain, when to go live, and when to stop trading.
-    """
+@dataclass
+class MetaAgentConfig:
+    """Configuration for Meta Agent"""
+    window: int = 20
+    profit_target: float = 150.0
+    retrain_threshold: float = -50.0
+    emergency_threshold: float = -100.0
+    confidence_threshold: float = 0.7
     
-    def __init__(self, window: int = 20, debug: bool = True, 
-                 profit_target: float = 150.0, 
-                 retrain_threshold: float = -50.0,
-                 emergency_threshold: float = -100.0,
-                 confidence_threshold: float = 0.7,
+    # Automation parameters
+    min_training_episodes: int = 100
+    convergence_episodes: int = 10
+    improvement_threshold: float = 0.05
+    live_evaluation_period: int = 3600  # 1 hour
+    retrain_cooldown: int = 7200  # 2 hours
+    emergency_cooldown: int = 1800  # 30 minutes
+    
+    # Performance thresholds
+    max_processing_time_ms: float = 300
+    circuit_breaker_threshold: int = 3
+    min_automation_score: float = 0.4
+    
+    # Decision parameters
+    confidence_decay: float = 0.98
+    performance_smoothing: float = 0.95
+    decision_history_size: int = 100
+
+
+@module(
+    name="MetaAgent",
+    version="3.0.0",
+    category="meta",
+    provides=["automation_decisions", "system_mode", "automation_metrics", "meta_performance"],
+    requires=["system_performance", "training_metrics", "market_conditions", "risk_signals"],
+    description="Advanced meta agent for autonomous trading system automation and lifecycle management",
+    thesis_required=True,
+    health_monitoring=True,
+    performance_tracking=True,
+    error_handling=True
+)
+class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
+    """
+    Advanced meta agent with SmartInfoBus integration.
+    Manages the entire trading lifecycle with intelligent automation decisions.
+    """
+
+    def __init__(self, 
+                 config: Optional[MetaAgentConfig] = None,
+                 genome: Optional[Dict[str, Any]] = None,
                  **kwargs):
         
-        # Enhanced configuration
-        config = ModuleConfig(
-            debug=debug,
-            max_history=500,
-            health_check_interval=60,
-            performance_window=100,
-            **kwargs
+        self.config = config or MetaAgentConfig()
+        super().__init__()
+        
+        # Initialize advanced systems
+        self._initialize_advanced_systems()
+        
+        # Initialize genome parameters
+        self._initialize_genome_parameters(genome)
+        
+        # Initialize meta agent state
+        self._initialize_meta_state()
+        
+        self.logger.info(
+            format_operator_message(
+                "🤖", "META_AGENT_INITIALIZED",
+                details=f"Modes: {len(MetaMode)}, Profit target: €{self.config.profit_target}",
+                result="Meta agent ready for automation",
+                context="meta_initialization"
+            )
         )
-        super().__init__(config)
+    
+    def _initialize_advanced_systems(self):
+        """Initialize advanced systems for meta agent"""
+        self.smart_bus = InfoBusManager.get_instance()
+        self.logger = RotatingLogger(
+            name="MetaAgent", 
+            log_path="logs/meta/meta_agent.log", 
+            max_lines=5000, 
+            operator_mode=True,
+            plain_english=True
+        )
+        self.error_pinpointer = ErrorPinpointer()
+        self.error_handler = create_error_handler("MetaAgent", self.error_pinpointer)
+        self.english_explainer = EnglishExplainer()
+        self.system_utilities = SystemUtilities()
+        self.performance_tracker = PerformanceTracker()
         
-        # Initialize mixins
-        self._initialize_analysis_state()
-        self._initialize_trading_state()
+        # Circuit breaker for automation operations
+        self.circuit_breaker = {
+            'failures': 0,
+            'last_failure': 0,
+            'state': 'CLOSED',
+            'threshold': self.config.circuit_breaker_threshold
+        }
         
-        # Core parameters
-        self.window = window
-        self.profit_target = profit_target
-        self.retrain_threshold = retrain_threshold
-        self.emergency_threshold = emergency_threshold
-        self.confidence_threshold = confidence_threshold
-        
+        # Health monitoring
+        self._health_status = 'healthy'
+        self._last_health_check = time.time()
+        self._start_monitoring()
+
+    def _initialize_genome_parameters(self, genome: Optional[Dict[str, Any]]):
+        """Initialize genome-based parameters"""
+        if genome:
+            self.genome = {
+                "profit_target": float(genome.get("profit_target", self.config.profit_target)),
+                "retrain_threshold": float(genome.get("retrain_threshold", self.config.retrain_threshold)),
+                "emergency_threshold": float(genome.get("emergency_threshold", self.config.emergency_threshold)),
+                "confidence_threshold": float(genome.get("confidence_threshold", self.config.confidence_threshold)),
+                "min_training_episodes": int(genome.get("min_training_episodes", self.config.min_training_episodes)),
+                "improvement_threshold": float(genome.get("improvement_threshold", self.config.improvement_threshold)),
+                "confidence_decay": float(genome.get("confidence_decay", self.config.confidence_decay)),
+                "performance_smoothing": float(genome.get("performance_smoothing", self.config.performance_smoothing))
+            }
+            # Update config with genome values
+            for key, value in self.genome.items():
+                if hasattr(self.config, key):
+                    setattr(self.config, key, value)
+        else:
+            self.genome = {
+                "profit_target": self.config.profit_target,
+                "retrain_threshold": self.config.retrain_threshold,
+                "emergency_threshold": self.config.emergency_threshold,
+                "confidence_threshold": self.config.confidence_threshold,
+                "min_training_episodes": self.config.min_training_episodes,
+                "improvement_threshold": self.config.improvement_threshold,
+                "confidence_decay": self.config.confidence_decay,
+                "performance_smoothing": self.config.performance_smoothing
+            }
+
+    def _initialize_meta_state(self):
+        """Initialize meta agent state"""
         # Operational state
-        self.current_mode = MetaMode.EVALUATION
+        self.current_mode = MetaMode.INITIALIZATION
         self.mode_start_time = datetime.datetime.now()
-        self.consecutive_losses = 0
         self.mode_transitions = deque(maxlen=50)
         
         # Performance tracking
@@ -70,6 +178,7 @@ class MetaAgent(Module, AnalysisMixin, TradingMixin):
         self.session_pnl = 0.0
         self.peak_pnl = 0.0
         self.drawdown_pct = 0.0
+        self.consecutive_losses = 0
         self.win_streak = 0
         self.loss_streak = 0
         
@@ -78,27 +187,18 @@ class MetaAgent(Module, AnalysisMixin, TradingMixin):
         self.training_start_time = None
         self.best_training_reward = -np.inf
         self.training_convergence_count = 0
+        self.validation_performance = deque(maxlen=20)
         
-        # Automation thresholds and conditions
-        self.automation_config = {
-            'min_training_episodes': 100,
-            'convergence_episodes': 10,
-            'improvement_threshold': 0.05,
-            'live_evaluation_period': 3600,  # 1 hour
-            'retrain_cooldown': 7200,  # 2 hours
-            'emergency_cooldown': 1800,  # 30 minutes
-            'confidence_decay': 0.98,
-            'performance_smoothing': 0.95
-        }
-        
-        # State tracking
+        # Automation state
         self.system_confidence = 0.5
+        self.automation_score = 0.0
+        self.last_decision_time = None
         self.last_retrain_time = None
         self.last_emergency_time = None
         self.evaluation_start_time = None
         
-        # Decision history for learning
-        self.decision_history = deque(maxlen=100)
+        # Decision tracking
+        self.decision_history = deque(maxlen=self.config.decision_history_size)
         self.automation_metrics = {
             'total_mode_switches': 0,
             'successful_live_sessions': 0,
@@ -106,888 +206,992 @@ class MetaAgent(Module, AnalysisMixin, TradingMixin):
             'retraining_sessions': 0,
             'avg_training_duration': 0.0,
             'avg_live_duration': 0.0,
-            'automation_accuracy': 0.0
+            'automation_accuracy': 0.0,
+            'decision_confidence': 0.0
         }
         
-        # Enhanced logging with rotation
-        self.logger = RotatingLogger(
-            "MetaAgent",
-            "logs/strategy/meta/meta_agent.log",
-            max_lines=2000,
-            operator_mode=debug
-        )
+        # System monitoring
+        self._performance_history = deque(maxlen=100)
+        self._confidence_history = deque(maxlen=100)
+        self._mode_performance = defaultdict(list)
+        self._decision_effectiveness = deque(maxlen=50)
         
-        # Audit system
-        self.audit_tracker = AuditTracker("MetaAgent")
+        # Risk management
+        self._risk_alerts = deque(maxlen=20)
+        self._system_warnings = deque(maxlen=30)
+        self._emergency_triggers = []
+
+    def _start_monitoring(self):
+        """Start background monitoring"""
+        def monitoring_loop():
+            while getattr(self, '_monitoring_active', True):
+                try:
+                    self._update_meta_health()
+                    self._analyze_automation_effectiveness()
+                    time.sleep(30)
+                except Exception as e:
+                    self.logger.error(f"Monitoring error: {e}")
         
-        self.log_operator_info(
-            "🤖 Enhanced Meta Agent initialized",
-            profit_target=f"€{profit_target}",
-            retrain_threshold=f"€{retrain_threshold}",
-            emergency_threshold=f"€{emergency_threshold}",
-            mode=self.current_mode.value,
-            automation_enabled=True
-        )
-    
-    def reset(self) -> None:
-        """Enhanced reset with comprehensive state cleanup"""
-        super().reset()
-        self._reset_analysis_state()
-        self._reset_trading_state()
+        self._monitoring_active = True
+        monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
+        monitor_thread.start()
+
+    async def _initialize(self):
+        """Initialize module"""
+        try:
+            # Set initial meta agent status in SmartInfoBus
+            initial_status = {
+                "current_mode": self.current_mode.value,
+                "system_confidence": self.system_confidence,
+                "automation_score": 0.0,
+                "total_mode_switches": 0
+            }
+            
+            self.smart_bus.set(
+                'automation_decisions',
+                initial_status,
+                module='MetaAgent',
+                thesis="Initial meta agent automation status"
+            )
+            
+            return True
+        except Exception as e:
+            self.logger.error(f"Initialization failed: {e}")
+            return False
+
+    async def process(self, **inputs) -> Dict[str, Any]:
+        """Process meta agent automation"""
+        start_time = time.time()
         
-        # Reset performance tracking
-        self.daily_pnl = 0.0
-        self.session_pnl = 0.0
-        self.peak_pnl = 0.0
-        self.drawdown_pct = 0.0
-        self.consecutive_losses = 0
-        self.win_streak = 0
-        self.loss_streak = 0
-        
-        # Reset mode state
-        self.current_mode = MetaMode.EVALUATION
-        self.mode_start_time = datetime.datetime.now()
-        self.mode_transitions.clear()
-        
-        # Reset training state
-        self.training_episodes = 0
-        self.training_start_time = None
-        self.best_training_reward = -np.inf
-        self.training_convergence_count = 0
-        
-        # Reset automation state
-        self.system_confidence = 0.5
-        self.decision_history.clear()
-        
-        self.log_operator_info("🔄 Meta Agent reset - all state cleared")
-    
-    @audit_step
-    def _step_impl(self, info_bus: Optional[InfoBus] = None, **kwargs) -> None:
-        """Enhanced step with InfoBus integration and intelligent automation"""
-        
-        if not info_bus:
-            self.log_operator_warning("No InfoBus provided - using fallback mode")
-            self._process_legacy_step(**kwargs)
-            return
-        
-        # Extract context and performance data
-        context = extract_standard_context(info_bus)
-        self._update_performance_from_info_bus(info_bus)
-        
-        # Core automation logic
-        self._evaluate_system_health(info_bus, context)
-        self._update_system_confidence(info_bus, context)
-        decision = self._make_automation_decision(info_bus, context)
-        
-        if decision:
-            self._execute_automation_decision(decision, info_bus, context)
-        
-        # Update analytics and tracking
-        self._update_automation_metrics()
-        self._track_decision_quality()
-        
-        # Publish automation status to InfoBus
-        self._publish_automation_status(info_bus)
-    
-    def _process_legacy_step(self, **kwargs):
-        """Fallback processing for backward compatibility"""
-        pnl = kwargs.get('pnl', 0.0)
-        
-        if np.isnan(pnl):
-            self.log_operator_error("NaN PnL received, setting to 0")
-            pnl = 0.0
-        
-        self._update_pnl_metrics(pnl)
-        
-        # Basic automation without InfoBus
-        if self.current_mode == MetaMode.LIVE_TRADING:
-            if pnl < self.emergency_threshold:
-                self._transition_to_mode(MetaMode.EMERGENCY_STOP, "Emergency PnL threshold")
-            elif self.daily_pnl < self.retrain_threshold:
-                self._transition_to_mode(MetaMode.RETRAINING, "Retrain PnL threshold")
-    
-    def _update_performance_from_info_bus(self, info_bus: InfoBus):
-        """Extract and update performance metrics from InfoBus"""
-        
-        # Extract PnL information
-        recent_trades = info_bus.get('recent_trades', [])
-        for trade in recent_trades:
-            pnl = trade.get('pnl', 0.0)
-            self._update_pnl_metrics(pnl)
-        
-        # Extract portfolio metrics
-        portfolio_metrics = info_bus.get('portfolio_metrics', {})
-        self.daily_pnl = portfolio_metrics.get('daily_pnl', self.daily_pnl)
-        self.drawdown_pct = portfolio_metrics.get('max_drawdown_pct', 0.0)
-        
-        # Extract training metrics if in training mode
-        if self.current_mode == MetaMode.TRAINING:
-            training_metrics = info_bus.get('training_metrics', {})
+        try:
+            # Extract meta data
+            meta_data = await self._extract_meta_data(**inputs)
+            
+            if not meta_data:
+                return await self._handle_no_data_fallback()
+            
+            # Update system performance
+            performance_result = await self._update_system_performance(meta_data)
+            
+            # Evaluate automation decision
+            decision_result = await self._evaluate_automation_decision(meta_data)
+            
+            # Execute decision if needed
+            execution_result = {}
+            if decision_result.get('decision_required', False):
+                execution_result = await self._execute_decision(decision_result, meta_data)
+            
+            # Update automation metrics
+            metrics_result = await self._update_automation_metrics()
+            
+            # Combine results
+            result = {**performance_result, **decision_result, **execution_result, **metrics_result}
+            
+            # Generate thesis
+            thesis = await self._generate_meta_thesis(meta_data, result)
+            
+            # Update SmartInfoBus
+            await self._update_meta_smart_bus(result, thesis)
+            
+            # Record success
+            processing_time = (time.time() - start_time) * 1000
+            self._record_success(processing_time)
+            
+            return result
+            
+        except Exception as e:
+            return await self._handle_meta_error(e, start_time)
+
+    async def _extract_meta_data(self, **inputs) -> Optional[Dict[str, Any]]:
+        """Extract meta data from SmartInfoBus"""
+        try:
+            # Get system performance
+            system_performance = self.smart_bus.get('system_performance', 'MetaAgent') or {}
+            
+            # Get training metrics
+            training_metrics = self.smart_bus.get('training_metrics', 'MetaAgent') or {}
+            
+            # Get market conditions
+            market_conditions = self.smart_bus.get('market_conditions', 'MetaAgent') or {}
+            
+            # Get risk signals
+            risk_signals = self.smart_bus.get('risk_signals', 'MetaAgent') or {}
+            
+            # Get direct inputs
+            pnl = inputs.get('pnl', 0.0)
+            performance_update = inputs.get('performance_update')
+            
+            return {
+                'system_performance': system_performance,
+                'training_metrics': training_metrics,
+                'market_conditions': market_conditions,
+                'risk_signals': risk_signals,
+                'pnl': pnl,
+                'performance_update': performance_update,
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to extract meta data: {e}")
+            return None
+
+    async def _update_system_performance(self, meta_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Update system performance metrics"""
+        try:
+            # Process PnL update
+            pnl = meta_data.get('pnl', 0.0)
+            if not np.isnan(pnl) and pnl != 0.0:
+                self._update_pnl_metrics(pnl)
+            
+            # Process performance update
+            performance_update = meta_data.get('performance_update')
+            if performance_update:
+                self._update_performance_from_data(performance_update)
+            
+            # Process training metrics
+            training_metrics = meta_data.get('training_metrics', {})
             if training_metrics:
                 self._update_training_metrics(training_metrics)
-    
+            
+            # Update confidence based on recent performance
+            self._update_system_confidence(meta_data)
+            
+            # Store performance history
+            self._performance_history.append({
+                'timestamp': time.time(),
+                'pnl': self.daily_pnl,
+                'confidence': self.system_confidence,
+                'mode': self.current_mode.value,
+                'drawdown': self.drawdown_pct
+            })
+            
+            return {
+                'performance_updated': True,
+                'daily_pnl': self.daily_pnl,
+                'system_confidence': self.system_confidence,
+                'current_mode': self.current_mode.value,
+                'drawdown_pct': self.drawdown_pct
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Performance update failed: {e}")
+            return {'performance_updated': False, 'error': str(e)}
+
     def _update_pnl_metrics(self, pnl: float):
-        """Update PnL-based metrics and streaks"""
-        
-        if pnl > 0:
-            self.win_streak += 1
-            self.loss_streak = 0
-            if self.consecutive_losses > 0:
-                self.log_operator_info(
-                    f"💰 Loss streak broken after {self.consecutive_losses} losses",
-                    profit=f"€{pnl:.2f}",
-                    win_streak=self.win_streak
-                )
-            self.consecutive_losses = 0
-        elif pnl < 0:
-            self.loss_streak += 1
-            self.win_streak = 0
-            self.consecutive_losses += 1
-            self.log_operator_warning(
-                f"📉 Loss recorded",
-                loss=f"€{pnl:.2f}",
-                consecutive_losses=self.consecutive_losses,
-                loss_streak=self.loss_streak
-            )
-        
-        self.session_pnl += pnl
+        """Update PnL-based metrics"""
         self.daily_pnl += pnl
+        self.session_pnl += pnl
         
         # Update peak and drawdown
         if self.daily_pnl > self.peak_pnl:
             self.peak_pnl = self.daily_pnl
         
         if self.peak_pnl > 0:
-            self.drawdown_pct = max(0, (self.peak_pnl - self.daily_pnl) / self.peak_pnl * 100)
-    
-    def _update_training_metrics(self, training_metrics: Dict[str, Any]):
-        """Update training-specific metrics"""
+            self.drawdown_pct = (self.peak_pnl - self.daily_pnl) / self.peak_pnl * 100
+        else:
+            self.drawdown_pct = 0.0
         
-        episode_reward = training_metrics.get('episode_reward_mean', 0)
-        self.training_episodes = training_metrics.get('episodes', self.training_episodes)
-        
-        # Track training improvement
-        if episode_reward > self.best_training_reward:
-            improvement = episode_reward - self.best_training_reward
-            if improvement > self.automation_config['improvement_threshold']:
+        # Update streaks
+        if pnl > 0:
+            self.win_streak += 1
+            self.loss_streak = 0
+            self.consecutive_losses = 0
+        elif pnl < 0:
+            self.loss_streak += 1
+            self.win_streak = 0
+            self.consecutive_losses += 1
+
+    def _update_performance_from_data(self, performance_data: Dict[str, Any]):
+        """Update performance from external data"""
+        if 'episode_reward' in performance_data:
+            reward = performance_data['episode_reward']
+            if reward > self.best_training_reward:
+                self.best_training_reward = reward
                 self.training_convergence_count += 1
-                self.log_operator_info(
-                    f"📈 Training improvement detected",
-                    episode_reward=f"{episode_reward:.3f}",
-                    improvement=f"{improvement:.3f}",
-                    convergence_count=self.training_convergence_count
-                )
-            self.best_training_reward = episode_reward
         
-        # Check for training convergence
-        if self.training_convergence_count >= self.automation_config['convergence_episodes']:
-            if self.training_episodes >= self.automation_config['min_training_episodes']:
-                self.log_operator_info(
-                    "🎯 Training convergence achieved",
-                    episodes=self.training_episodes,
-                    best_reward=f"{self.best_training_reward:.3f}",
-                    convergence_episodes=self.training_convergence_count
-                )
-    
-    def _evaluate_system_health(self, info_bus: InfoBus, context: Dict[str, Any]):
-        """Comprehensive system health evaluation"""
+        if 'validation_score' in performance_data:
+            self.validation_performance.append(performance_data['validation_score'])
+
+    def _update_training_metrics(self, training_metrics: Dict[str, Any]):
+        """Update training-related metrics"""
+        if 'episodes_completed' in training_metrics:
+            self.training_episodes = training_metrics['episodes_completed']
         
-        health_score = 1.0
-        health_factors = {}
-        
-        # Performance health
-        if self.daily_pnl < self.emergency_threshold:
-            health_factors['emergency_pnl'] = 0.0
-            health_score *= 0.1
-        elif self.daily_pnl < self.retrain_threshold:
-            health_factors['poor_pnl'] = 0.3
-            health_score *= 0.3
-        elif self.daily_pnl > self.profit_target * 0.5:
-            health_factors['good_pnl'] = 1.0
-        else:
-            health_factors['neutral_pnl'] = 0.7
-            health_score *= 0.7
-        
-        # Drawdown health
-        if self.drawdown_pct > 20:
-            health_factors['high_drawdown'] = 0.2
-            health_score *= 0.2
-        elif self.drawdown_pct > 10:
-            health_factors['medium_drawdown'] = 0.5
-            health_score *= 0.5
-        else:
-            health_factors['low_drawdown'] = 1.0
-        
-        # Loss streak health
-        if self.consecutive_losses > 10:
-            health_factors['long_loss_streak'] = 0.1
-            health_score *= 0.1
-        elif self.consecutive_losses > 5:
-            health_factors['medium_loss_streak'] = 0.4
-            health_score *= 0.4
-        else:
-            health_factors['manageable_losses'] = 1.0
-        
-        # Market regime health
-        regime = context.get('regime', 'unknown')
-        volatility = context.get('volatility_level', 'medium')
-        
-        if regime == 'volatile' and volatility == 'extreme':
-            health_factors['extreme_market'] = 0.3
-            health_score *= 0.3
-        elif regime == 'ranging' and volatility == 'low':
-            health_factors['difficult_market'] = 0.6
-            health_score *= 0.6
-        else:
-            health_factors['normal_market'] = 1.0
-        
-        # Store health assessment
-        self._update_performance_metric('system_health', health_score)
-        
-        if health_score < 0.3:
-            self.log_operator_error(
-                "🚨 Critical system health detected",
-                health_score=f"{health_score:.3f}",
-                factors=health_factors,
-                daily_pnl=f"€{self.daily_pnl:.2f}",
-                drawdown=f"{self.drawdown_pct:.1f}%"
-            )
-        elif health_score < 0.6:
-            self.log_operator_warning(
-                "⚠️ Poor system health",
-                health_score=f"{health_score:.3f}",
-                factors=health_factors
-            )
-    
-    def _update_system_confidence(self, info_bus: InfoBus, context: Dict[str, Any]):
-        """Update system confidence based on recent performance"""
-        
-        # Performance-based confidence
-        performance_confidence = 0.5
-        if self.daily_pnl > self.profit_target * 0.8:
-            performance_confidence = 0.9
-        elif self.daily_pnl > self.profit_target * 0.5:
-            performance_confidence = 0.8
-        elif self.daily_pnl > 0:
-            performance_confidence = 0.7
-        elif self.daily_pnl > self.retrain_threshold:
-            performance_confidence = 0.4
-        else:
-            performance_confidence = 0.2
-        
-        # Training-based confidence
-        training_confidence = 0.5
-        if self.current_mode == MetaMode.TRAINING:
-            if self.training_convergence_count >= self.automation_config['convergence_episodes']:
-                training_confidence = 0.9
-            elif self.training_episodes >= self.automation_config['min_training_episodes']:
-                training_confidence = 0.7
-        
-        # Market-based confidence
-        market_confidence = 0.7
-        regime = context.get('regime', 'unknown')
-        vol_level = context.get('volatility_level', 'medium')
-        
-        if regime == 'trending' and vol_level in ['low', 'medium']:
-            market_confidence = 0.9
-        elif regime == 'volatile' and vol_level == 'extreme':
-            market_confidence = 0.3
-        
-        # Combine confidences
-        new_confidence = (0.5 * performance_confidence + 
-                         0.3 * training_confidence + 
-                         0.2 * market_confidence)
-        
-        # Apply exponential smoothing
-        self.system_confidence = (self.automation_config['confidence_decay'] * self.system_confidence + 
-                                 (1 - self.automation_config['confidence_decay']) * new_confidence)
-        
-        self._update_performance_metric('system_confidence', self.system_confidence)
-    
-    def _make_automation_decision(self, info_bus: InfoBus, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Intelligent automation decision making"""
-        
-        current_time = datetime.datetime.now()
-        mode_duration = (current_time - self.mode_start_time).total_seconds()
-        
-        # Emergency stop conditions
-        if (self.daily_pnl <= self.emergency_threshold or 
-            self.consecutive_losses >= 15 or 
-            self.drawdown_pct >= 25):
+        if 'convergence_achieved' in training_metrics:
+            if training_metrics['convergence_achieved']:
+                self.training_convergence_count += 1
+
+    def _update_system_confidence(self, meta_data: Dict[str, Any]):
+        """Update system confidence based on performance"""
+        try:
+            # Base confidence on recent performance
+            if len(self._performance_history) > 0:
+                recent_performance = [p['pnl'] for p in list(self._performance_history)[-10:]]
+                if recent_performance:
+                    avg_performance = np.mean(recent_performance)
+                    performance_confidence = max(0, min(1, (avg_performance + 50) / 100))
+                else:
+                    performance_confidence = 0.5
+            else:
+                performance_confidence = 0.5
             
-            if self._check_cooldown(self.last_emergency_time, self.automation_config['emergency_cooldown']):
-                return {
-                    'action': 'emergency_stop',
-                    'reason': f'Emergency conditions: PnL=€{self.daily_pnl:.2f}, Losses={self.consecutive_losses}, DD={self.drawdown_pct:.1f}%',
-                    'priority': 'critical'
-                }
+            # Factor in drawdown
+            drawdown_confidence = max(0, 1 - (self.drawdown_pct / 50))  # 50% drawdown = 0 confidence
+            
+            # Factor in consecutive losses
+            loss_confidence = max(0, 1 - (self.consecutive_losses / 10))  # 10 losses = 0 confidence
+            
+            # Factor in training performance
+            training_confidence = 0.5
+            if self.training_episodes > 0:
+                training_confidence = min(1, self.training_convergence_count / 10)
+            
+            # Combine confidences
+            new_confidence = (
+                performance_confidence * 0.4 +
+                drawdown_confidence * 0.3 +
+                loss_confidence * 0.2 +
+                training_confidence * 0.1
+            )
+            
+            # Apply smoothing
+            self.system_confidence = (
+                self.config.performance_smoothing * self.system_confidence +
+                (1 - self.config.performance_smoothing) * new_confidence
+            )
+            
+            # Apply decay
+            self.system_confidence *= self.config.confidence_decay
+            
+            # Bound confidence
+            self.system_confidence = max(0.0, min(1.0, self.system_confidence))
+            
+            # Store confidence history
+            self._confidence_history.append(self.system_confidence)
+            
+        except Exception as e:
+            self.logger.error(f"Confidence update failed: {e}")
+
+    async def _evaluate_automation_decision(self, meta_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Evaluate if automation decision is needed"""
+        try:
+            current_time = datetime.datetime.now()
+            mode_duration = (current_time - self.mode_start_time).total_seconds()
+            
+            # Check for emergency conditions
+            emergency_decision = self._check_emergency_conditions(meta_data)
+            if emergency_decision:
+                return emergency_decision
+            
+            # Check mode-specific decision logic
+            decision = self._evaluate_mode_specific_decision(meta_data, mode_duration)
+            
+            return decision or {'decision_required': False}
+            
+        except Exception as e:
+            self.logger.error(f"Decision evaluation failed: {e}")
+            return {'decision_required': False, 'error': str(e)}
+
+    def _check_emergency_conditions(self, meta_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Check for emergency stop conditions"""
+        # Severe drawdown
+        if self.drawdown_pct > 30:  # 30% drawdown
+            return {
+                'decision_required': True,
+                'new_mode': MetaMode.EMERGENCY_STOP,
+                'reason': f'Severe drawdown: {self.drawdown_pct:.1f}%',
+                'priority': 'critical'
+            }
         
-        # Mode-specific decision logic
-        if self.current_mode == MetaMode.EVALUATION:
-            return self._evaluate_mode_decision(info_bus, context, mode_duration)
-        elif self.current_mode == MetaMode.TRAINING:
-            return self._training_mode_decision(info_bus, context, mode_duration)
-        elif self.current_mode == MetaMode.LIVE_TRADING:
-            return self._live_trading_decision(info_bus, context, mode_duration)
-        elif self.current_mode == MetaMode.RETRAINING:
-            return self._retraining_decision(info_bus, context, mode_duration)
+        # Consecutive losses
+        if self.consecutive_losses >= 15:
+            return {
+                'decision_required': True,
+                'new_mode': MetaMode.EMERGENCY_STOP,
+                'reason': f'Excessive consecutive losses: {self.consecutive_losses}',
+                'priority': 'high'
+            }
+        
+        # Daily loss threshold
+        if self.daily_pnl < self.config.emergency_threshold:
+            return {
+                'decision_required': True,
+                'new_mode': MetaMode.EMERGENCY_STOP,
+                'reason': f'Daily loss threshold breached: €{self.daily_pnl:.2f}',
+                'priority': 'critical'
+            }
+        
+        # System confidence collapse
+        if self.system_confidence < 0.1:
+            return {
+                'decision_required': True,
+                'new_mode': MetaMode.EMERGENCY_STOP,
+                'reason': f'System confidence collapsed: {self.system_confidence:.3f}',
+                'priority': 'high'
+            }
         
         return None
-    
-    def _evaluate_mode_decision(self, info_bus: InfoBus, context: Dict[str, Any], mode_duration: float) -> Optional[Dict[str, Any]]:
-        """Decision logic for evaluation mode"""
+
+    def _evaluate_mode_specific_decision(self, meta_data: Dict[str, Any], mode_duration: float) -> Optional[Dict[str, Any]]:
+        """Evaluate mode-specific transition logic"""
+        if self.current_mode == MetaMode.INITIALIZATION:
+            return self._evaluate_initialization_transition(meta_data, mode_duration)
+        elif self.current_mode == MetaMode.TRAINING:
+            return self._evaluate_training_transition(meta_data, mode_duration)
+        elif self.current_mode == MetaMode.VALIDATION:
+            return self._evaluate_validation_transition(meta_data, mode_duration)
+        elif self.current_mode == MetaMode.LIVE_TRADING:
+            return self._evaluate_live_trading_transition(meta_data, mode_duration)
+        elif self.current_mode == MetaMode.EVALUATION:
+            return self._evaluate_evaluation_transition(meta_data, mode_duration)
+        elif self.current_mode == MetaMode.EMERGENCY_STOP:
+            return self._evaluate_emergency_transition(meta_data, mode_duration)
         
-        # Minimum evaluation period
-        if mode_duration < 300:  # 5 minutes
-            return None
-        
-        # If system confidence is high, consider live trading
-        if self.system_confidence >= self.confidence_threshold:
-            if self.daily_pnl > 0:  # Profitable day so far
+        return None
+
+    def _evaluate_initialization_transition(self, meta_data: Dict[str, Any], mode_duration: float) -> Optional[Dict[str, Any]]:
+        """Evaluate transition from initialization"""
+        if mode_duration > 60:  # 1 minute
+            return {
+                'decision_required': True,
+                'new_mode': MetaMode.TRAINING,
+                'reason': 'Initialization complete',
+                'priority': 'normal'
+            }
+        return None
+
+    def _evaluate_training_transition(self, meta_data: Dict[str, Any], mode_duration: float) -> Optional[Dict[str, Any]]:
+        """Evaluate transition from training"""
+        # Check if enough episodes completed
+        if self.training_episodes >= self.config.min_training_episodes:
+            # Check for convergence
+            if self.training_convergence_count >= self.config.convergence_episodes:
                 return {
-                    'action': 'start_live_trading',
-                    'reason': f'High confidence ({self.system_confidence:.3f}) and profitable',
+                    'decision_required': True,
+                    'new_mode': MetaMode.VALIDATION,
+                    'reason': f'Training converged after {self.training_episodes} episodes',
                     'priority': 'normal'
                 }
         
-        # If performance is poor, start training
-        if self.daily_pnl < self.retrain_threshold * 0.5:
+        # Check for training timeout (prevent infinite training)
+        if mode_duration > 7200:  # 2 hours
             return {
-                'action': 'start_training',
-                'reason': f'Poor performance requires training: €{self.daily_pnl:.2f}',
-                'priority': 'high'
-            }
-        
-        # Extended evaluation - start with conservative training
-        if mode_duration > self.automation_config['live_evaluation_period']:
-            return {
-                'action': 'start_training',
-                'reason': 'Evaluation period complete, starting training',
+                'decision_required': True,
+                'new_mode': MetaMode.VALIDATION,
+                'reason': 'Training timeout - moving to validation',
                 'priority': 'normal'
             }
         
         return None
-    
-    def _training_mode_decision(self, info_bus: InfoBus, context: Dict[str, Any], mode_duration: float) -> Optional[Dict[str, Any]]:
-        """Decision logic for training mode"""
-        
-        # Check if training has converged
-        if (self.training_convergence_count >= self.automation_config['convergence_episodes'] and
-            self.training_episodes >= self.automation_config['min_training_episodes']):
+
+    def _evaluate_validation_transition(self, meta_data: Dict[str, Any], mode_duration: float) -> Optional[Dict[str, Any]]:
+        """Evaluate transition from validation"""
+        if len(self.validation_performance) >= 10:
+            avg_validation = np.mean(list(self.validation_performance)[-10:])
             
-            return {
-                'action': 'start_evaluation',
-                'reason': f'Training converged: {self.training_episodes} episodes, {self.training_convergence_count} improvements',
-                'priority': 'normal'
-            }
-        
-        # Max training time protection
-        if mode_duration > 14400:  # 4 hours
-            return {
-                'action': 'start_evaluation',
-                'reason': 'Max training time reached',
-                'priority': 'high'
-            }
-        
-        return None
-    
-    def _live_trading_decision(self, info_bus: InfoBus, context: Dict[str, Any], mode_duration: float) -> Optional[Dict[str, Any]]:
-        """Decision logic for live trading mode"""
-        
-        # Retrain if performance degrades
-        if self.daily_pnl <= self.retrain_threshold:
-            if self._check_cooldown(self.last_retrain_time, self.automation_config['retrain_cooldown']):
+            if avg_validation > 0.7:  # Good validation performance
                 return {
-                    'action': 'start_retraining',
-                    'reason': f'Performance below threshold: €{self.daily_pnl:.2f}',
-                    'priority': 'high'
+                    'decision_required': True,
+                    'new_mode': MetaMode.LIVE_TRADING,
+                    'reason': f'Validation successful: {avg_validation:.3f}',
+                    'priority': 'normal'
+                }
+            elif mode_duration > 1800:  # 30 minutes
+                return {
+                    'decision_required': True,
+                    'new_mode': MetaMode.RETRAINING,
+                    'reason': f'Validation failed: {avg_validation:.3f}',
+                    'priority': 'normal'
                 }
         
-        # Stop if confidence drops significantly
-        if self.system_confidence < 0.4:
+        return None
+
+    def _evaluate_live_trading_transition(self, meta_data: Dict[str, Any], mode_duration: float) -> Optional[Dict[str, Any]]:
+        """Evaluate transition from live trading"""
+        # Check for profit target
+        if self.daily_pnl >= self.config.profit_target:
             return {
-                'action': 'start_evaluation',
+                'decision_required': True,
+                'new_mode': MetaMode.EVALUATION,
+                'reason': f'Profit target reached: €{self.daily_pnl:.2f}',
+                'priority': 'normal'
+            }
+        
+        # Check for retrain threshold
+        if self.daily_pnl <= self.config.retrain_threshold:
+            return {
+                'decision_required': True,
+                'new_mode': MetaMode.RETRAINING,
+                'reason': f'Retrain threshold breached: €{self.daily_pnl:.2f}',
+                'priority': 'high'
+            }
+        
+        # Check for low confidence
+        if self.system_confidence < self.config.confidence_threshold:
+            return {
+                'decision_required': True,
+                'new_mode': MetaMode.EVALUATION,
                 'reason': f'Low system confidence: {self.system_confidence:.3f}',
                 'priority': 'normal'
             }
         
-        # Profit taking - if target achieved, evaluate new conditions
-        if self.daily_pnl >= self.profit_target:
+        return None
+
+    def _evaluate_evaluation_transition(self, meta_data: Dict[str, Any], mode_duration: float) -> Optional[Dict[str, Any]]:
+        """Evaluate transition from evaluation"""
+        if mode_duration > self.config.live_evaluation_period:
+            if self.system_confidence > self.config.confidence_threshold:
+                return {
+                    'decision_required': True,
+                    'new_mode': MetaMode.LIVE_TRADING,
+                    'reason': 'Evaluation complete - confidence restored',
+                    'priority': 'normal'
+                }
+            else:
+                return {
+                    'decision_required': True,
+                    'new_mode': MetaMode.RETRAINING,
+                    'reason': 'Evaluation complete - retraining needed',
+                    'priority': 'normal'
+                }
+        
+        return None
+
+    def _evaluate_emergency_transition(self, meta_data: Dict[str, Any], mode_duration: float) -> Optional[Dict[str, Any]]:
+        """Evaluate transition from emergency stop"""
+        if mode_duration > self.config.emergency_cooldown:
             return {
-                'action': 'start_evaluation',
-                'reason': f'Profit target achieved: €{self.daily_pnl:.2f}',
+                'decision_required': True,
+                'new_mode': MetaMode.EVALUATION,
+                'reason': 'Emergency cooldown complete',
                 'priority': 'normal'
             }
         
         return None
-    
-    def _retraining_decision(self, info_bus: InfoBus, context: Dict[str, Any], mode_duration: float) -> Optional[Dict[str, Any]]:
-        """Decision logic for retraining mode"""
-        
-        # Similar to training but more aggressive thresholds
-        if (self.training_convergence_count >= max(3, self.automation_config['convergence_episodes'] // 2) and
-            self.training_episodes >= self.automation_config['min_training_episodes'] // 2):
-            
-            return {
-                'action': 'start_evaluation',
-                'reason': f'Retraining complete: {self.training_episodes} episodes',
-                'priority': 'normal'
-            }
-        
-        # Faster timeout for retraining
-        if mode_duration > 7200:  # 2 hours
-            return {
-                'action': 'start_evaluation',
-                'reason': 'Max retraining time reached',
-                'priority': 'high'
-            }
-        
-        return None
-    
-    def _check_cooldown(self, last_time: Optional[datetime.datetime], cooldown_seconds: float) -> bool:
-        """Check if enough time has passed since last action"""
-        if last_time is None:
-            return True
-        
-        time_since = (datetime.datetime.now() - last_time).total_seconds()
-        return time_since >= cooldown_seconds
-    
-    def _execute_automation_decision(self, decision: Dict[str, Any], info_bus: InfoBus, context: Dict[str, Any]):
+
+    async def _execute_decision(self, decision: Dict[str, Any], meta_data: Dict[str, Any]) -> Dict[str, Any]:
         """Execute automation decision"""
-        
-        action = decision['action']
-        reason = decision['reason']
-        priority = decision['priority']
-        
-        self.log_operator_info(
-            f"🎯 Automation decision: {action}",
-            reason=reason,
-            priority=priority,
-            current_mode=self.current_mode.value,
-            confidence=f"{self.system_confidence:.3f}",
-            daily_pnl=f"€{self.daily_pnl:.2f}"
-        )
-        
-        # Execute the decision
-        if action == 'emergency_stop':
-            self._transition_to_mode(MetaMode.EMERGENCY_STOP, reason)
-            self.last_emergency_time = datetime.datetime.now()
+        try:
+            new_mode = decision['new_mode']
+            reason = decision['reason']
+            priority = decision.get('priority', 'normal')
             
-        elif action == 'start_training':
-            self._transition_to_mode(MetaMode.TRAINING, reason)
-            self.training_episodes = 0
-            self.training_start_time = datetime.datetime.now()
-            self.best_training_reward = -np.inf
-            self.training_convergence_count = 0
+            # Log decision
+            self.logger.info(
+                format_operator_message(
+                    "🔄", "AUTOMATION_DECISION",
+                    old_mode=self.current_mode.value,
+                    new_mode=new_mode.value,
+                    reason=reason,
+                    priority=priority,
+                    context="automation"
+                )
+            )
             
-        elif action == 'start_retraining':
-            self._transition_to_mode(MetaMode.RETRAINING, reason)
-            self.last_retrain_time = datetime.datetime.now()
-            self.training_episodes = 0
-            self.training_start_time = datetime.datetime.now()
-            self.best_training_reward = -np.inf
-            self.training_convergence_count = 0
+            # Record decision
+            decision_record = {
+                'timestamp': time.time(),
+                'old_mode': self.current_mode,
+                'new_mode': new_mode,
+                'reason': reason,
+                'priority': priority,
+                'confidence': self.system_confidence,
+                'pnl': self.daily_pnl
+            }
+            self.decision_history.append(decision_record)
             
-        elif action == 'start_live_trading':
-            self._transition_to_mode(MetaMode.LIVE_TRADING, reason)
+            # Execute mode transition
+            old_mode = self.current_mode
+            self._transition_to_mode(new_mode, reason)
             
-        elif action == 'start_evaluation':
-            self._transition_to_mode(MetaMode.EVALUATION, reason)
-            self.evaluation_start_time = datetime.datetime.now()
-        
-        # Record decision for learning
-        self.decision_history.append({
-            'timestamp': datetime.datetime.now().isoformat(),
-            'action': action,
-            'reason': reason,
-            'context': context.copy(),
-            'daily_pnl': self.daily_pnl,
-            'confidence': self.system_confidence,
-            'mode_before': self.current_mode.value
-        })
-        
-        # Update automation metrics
-        self.automation_metrics['total_mode_switches'] += 1
-        
+            # Update metrics
+            self.automation_metrics['total_mode_switches'] += 1
+            
+            if new_mode == MetaMode.EMERGENCY_STOP:
+                self.automation_metrics['emergency_stops'] += 1
+            elif new_mode == MetaMode.RETRAINING:
+                self.automation_metrics['retraining_sessions'] += 1
+            elif old_mode == MetaMode.LIVE_TRADING and new_mode != MetaMode.EMERGENCY_STOP:
+                self.automation_metrics['successful_live_sessions'] += 1
+            
+            return {
+                'decision_executed': True,
+                'old_mode': old_mode.value,
+                'new_mode': new_mode.value,
+                'reason': reason,
+                'priority': priority
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Decision execution failed: {e}")
+            return {'decision_executed': False, 'error': str(e)}
+
     def _transition_to_mode(self, new_mode: MetaMode, reason: str):
-        """Transition to a new operational mode"""
-        
+        """Execute mode transition"""
         old_mode = self.current_mode
         old_duration = (datetime.datetime.now() - self.mode_start_time).total_seconds()
         
-        # Record transition
-        transition = {
-            'timestamp': datetime.datetime.now().isoformat(),
-            'from_mode': old_mode.value,
-            'to_mode': new_mode.value,
-            'reason': reason,
+        # Update mode tracking
+        self._mode_performance[old_mode.value].append({
             'duration': old_duration,
-            'daily_pnl': self.daily_pnl,
-            'confidence': self.system_confidence
+            'pnl': self.session_pnl,
+            'end_confidence': self.system_confidence
+        })
+        
+        # Store transition
+        transition = {
+            'timestamp': datetime.datetime.now(),
+            'from_mode': old_mode,
+            'to_mode': new_mode,
+            'reason': reason,
+            'duration': old_duration
         }
         self.mode_transitions.append(transition)
         
         # Update state
         self.current_mode = new_mode
         self.mode_start_time = datetime.datetime.now()
+        self.session_pnl = 0.0  # Reset session PnL
         
-        # Update automation metrics based on mode
-        if new_mode == MetaMode.LIVE_TRADING:
-            if old_mode == MetaMode.TRAINING:
-                self.automation_metrics['avg_training_duration'] = (
-                    (self.automation_metrics['avg_training_duration'] * 
-                     self.automation_metrics['retraining_sessions'] + old_duration) /
-                    (self.automation_metrics['retraining_sessions'] + 1)
-                )
-                self.automation_metrics['retraining_sessions'] += 1
-        
+        # Mode-specific actions
+        if new_mode == MetaMode.TRAINING:
+            self.training_start_time = datetime.datetime.now()
+            self.training_episodes = 0
+        elif new_mode == MetaMode.EVALUATION:
+            self.evaluation_start_time = datetime.datetime.now()
+        elif new_mode == MetaMode.RETRAINING:
+            self.last_retrain_time = datetime.datetime.now()
         elif new_mode == MetaMode.EMERGENCY_STOP:
-            self.automation_metrics['emergency_stops'] += 1
-            if old_mode == MetaMode.LIVE_TRADING:
-                self.automation_metrics['avg_live_duration'] = (
-                    (self.automation_metrics['avg_live_duration'] * 
-                     self.automation_metrics['successful_live_sessions'] + old_duration) /
-                    (self.automation_metrics['successful_live_sessions'] + 1)
-                )
-        
-        elif old_mode == MetaMode.LIVE_TRADING and self.daily_pnl > 0:
-            self.automation_metrics['successful_live_sessions'] += 1
-        
-        self.log_operator_info(
-            f"🔄 Mode transition: {old_mode.value} → {new_mode.value}",
-            reason=reason,
-            duration=f"{old_duration:.0f}s",
-            daily_pnl=f"€{self.daily_pnl:.2f}",
-            confidence=f"{self.system_confidence:.3f}"
-        )
-    
-    def _update_automation_metrics(self):
+            self.last_emergency_time = datetime.datetime.now()
+
+    async def _update_automation_metrics(self) -> Dict[str, Any]:
         """Update automation performance metrics"""
-        
-        # Calculate automation accuracy based on decision outcomes
-        if len(self.decision_history) >= 5:
-            recent_decisions = list(self.decision_history)[-5:]
-            successful_decisions = 0
-            
-            for decision in recent_decisions:
-                # Simple success heuristic: if PnL improved after decision
-                if self.daily_pnl > decision['daily_pnl']:
-                    successful_decisions += 1
-            
-            self.automation_metrics['automation_accuracy'] = successful_decisions / len(recent_decisions)
-            
-            self._update_performance_metric('automation_accuracy', 
-                                          self.automation_metrics['automation_accuracy'])
-    
-    def _track_decision_quality(self):
-        """Track quality of automation decisions"""
-        
-        if len(self.decision_history) < 2:
-            return
-        
-        # Analyze recent decision outcomes
-        recent_decision = self.decision_history[-1]
-        
-        # Quality factors
-        quality_score = 0.5
-        
-        # Time since decision
-        decision_time = datetime.datetime.fromisoformat(recent_decision['timestamp'])
-        time_since = (datetime.datetime.now() - decision_time).total_seconds()
-        
-        # If PnL improved significantly after decision
-        pnl_improvement = self.daily_pnl - recent_decision['daily_pnl']
-        if pnl_improvement > 10:  # €10 improvement
-            quality_score += 0.3
-        elif pnl_improvement < -10:  # €10 deterioration
-            quality_score -= 0.3
-        
-        # If confidence improved
-        confidence_improvement = self.system_confidence - recent_decision['confidence']
-        if confidence_improvement > 0.1:
-            quality_score += 0.2
-        elif confidence_improvement < -0.1:
-            quality_score -= 0.2
-        
-        quality_score = max(0, min(1, quality_score))
-        
-        self._update_performance_metric('decision_quality', quality_score)
-    
-    def _publish_automation_status(self, info_bus: InfoBus):
-        """Publish automation status to InfoBus"""
-        
-        automation_status = {
-            'meta_mode': self.current_mode.value,
-            'system_confidence': self.system_confidence,
-            'daily_pnl': self.daily_pnl,
-            'session_pnl': self.session_pnl,
-            'drawdown_pct': self.drawdown_pct,
-            'consecutive_losses': self.consecutive_losses,
-            'win_streak': self.win_streak,
-            'loss_streak': self.loss_streak,
-            'automation_metrics': self.automation_metrics.copy(),
-            'mode_duration': (datetime.datetime.now() - self.mode_start_time).total_seconds(),
-            'last_transition': self.mode_transitions[-1] if self.mode_transitions else None
-        }
-        
-        InfoBusUpdater.update_meta_status(info_bus, automation_status)
-    
-    # ═══════════════════════════════════════════════════════════════════
-    # PUBLIC INTERFACE FOR SYSTEM CONTROL
-    # ═══════════════════════════════════════════════════════════════════
-    
-    def force_mode_transition(self, new_mode: str, reason: str = "Manual override") -> bool:
-        """Force a mode transition (for external control)"""
         try:
-            mode_enum = MetaMode(new_mode)
-            self._transition_to_mode(mode_enum, f"Manual: {reason}")
-            return True
-        except ValueError:
-            self.log_operator_error(f"Invalid mode: {new_mode}")
-            return False
-    
-    def get_automation_recommendations(self) -> Dict[str, Any]:
-        """Get current automation recommendations"""
-        
-        recommendations = []
-        
-        if self.current_mode == MetaMode.LIVE_TRADING:
-            if self.daily_pnl <= self.retrain_threshold:
-                recommendations.append({
-                    'action': 'consider_retraining',
-                    'reason': f'PnL below threshold: €{self.daily_pnl:.2f}',
-                    'urgency': 'high'
-                })
+            # Calculate automation score
+            if len(self.decision_history) > 0:
+                recent_decisions = list(self.decision_history)[-10:]
+                decision_quality = self._evaluate_decision_quality(recent_decisions)
+                self.automation_score = decision_quality
+            else:
+                self.automation_score = 0.5
             
-            if self.system_confidence < 0.5:
-                recommendations.append({
-                    'action': 'reduce_position_size',
-                    'reason': f'Low confidence: {self.system_confidence:.3f}',
-                    'urgency': 'medium'
-                })
-        
-        elif self.current_mode == MetaMode.TRAINING:
-            if self.training_convergence_count >= self.automation_config['convergence_episodes']:
-                recommendations.append({
-                    'action': 'consider_live_trading',
-                    'reason': f'Training converged after {self.training_episodes} episodes',
-                    'urgency': 'medium'
-                })
-        
-        return {
-            'recommendations': recommendations,
-            'current_mode': self.current_mode.value,
-            'system_confidence': self.system_confidence,
-            'daily_performance': f"€{self.daily_pnl:.2f}",
-            'automation_active': True
-        }
-    
-    def get_system_status(self) -> Dict[str, Any]:
-        """Get comprehensive system status"""
-        
-        return {
-            'operational_status': {
-                'mode': self.current_mode.value,
-                'mode_duration': (datetime.datetime.now() - self.mode_start_time).total_seconds(),
-                'system_confidence': self.system_confidence,
-                'automation_enabled': True
-            },
-            'performance_status': {
-                'daily_pnl': self.daily_pnl,
-                'session_pnl': self.session_pnl,
-                'peak_pnl': self.peak_pnl,
-                'drawdown_pct': self.drawdown_pct,
-                'profit_target': self.profit_target,
-                'progress_pct': (self.daily_pnl / self.profit_target) * 100
-            },
-            'trading_metrics': {
-                'consecutive_losses': self.consecutive_losses,
-                'win_streak': self.win_streak,
-                'loss_streak': self.loss_streak,
-                'trades_today': self._trades_processed
-            },
-            'automation_metrics': self.automation_metrics.copy(),
-            'thresholds': {
-                'retrain_threshold': self.retrain_threshold,
-                'emergency_threshold': self.emergency_threshold,
-                'confidence_threshold': self.confidence_threshold
-            },
-            'recent_transitions': list(self.mode_transitions)[-5:]
-        }
-    
-    # ═══════════════════════════════════════════════════════════════════
-    # OBSERVATION AND ACTION METHODS (Enhanced)
-    # ═══════════════════════════════════════════════════════════════════
-    
-    def get_observation_components(self) -> np.ndarray:
-        """Enhanced observation with automation state"""
-        
-        try:
-            # Base performance components
-            avg_pnl = self.daily_pnl / max(self._trades_processed, 1)
-            win_rate = self._get_win_rate()
+            # Update decision confidence
+            if len(self._confidence_history) > 0:
+                avg_confidence = np.mean(list(self._confidence_history)[-20:])
+                self.automation_metrics['decision_confidence'] = avg_confidence
             
-            # Recent performance
-            recent_pnl = self.session_pnl
+            # Calculate automation accuracy
+            if self.automation_metrics['total_mode_switches'] > 0:
+                success_rate = (
+                    self.automation_metrics['successful_live_sessions'] / 
+                    max(self.automation_metrics['total_mode_switches'], 1)
+                )
+                self.automation_metrics['automation_accuracy'] = success_rate
             
-            # Automation state
-            mode_encoded = {
-                MetaMode.EVALUATION: 0.0,
-                MetaMode.TRAINING: 0.2,
-                MetaMode.RETRAINING: 0.4,
-                MetaMode.LIVE_TRADING: 0.6,
-                MetaMode.EMERGENCY_STOP: 0.8
-            }.get(self.current_mode, 0.0)
-            
-            # System health indicators
-            drawdown_norm = self.drawdown_pct / 100.0
-            confidence_norm = self.system_confidence
-            loss_streak_norm = min(self.consecutive_losses / 10.0, 1.0)
-            
-            observation = np.array([
-                avg_pnl / 100.0,       # Normalized average PnL
-                win_rate,              # Win rate [0,1]
-                recent_pnl / 100.0,    # Normalized recent PnL
-                mode_encoded,          # Current automation mode
-                confidence_norm,       # System confidence
-                drawdown_norm,         # Normalized drawdown
-                loss_streak_norm,      # Normalized loss streak
-                float(len(self.decision_history)) / 100.0  # Decision history depth
-            ], dtype=np.float32)
-            
-            # Validate observation
-            if np.any(np.isnan(observation)):
-                self.log_operator_error(f"NaN in observation: {observation}")
-                observation = np.nan_to_num(observation)
-            
-            return observation
+            return {
+                'automation_metrics': {
+                    'automation_score': self.automation_score,
+                    'total_mode_switches': self.automation_metrics['total_mode_switches'],
+                    'automation_accuracy': self.automation_metrics['automation_accuracy'],
+                    'system_confidence': self.system_confidence,
+                    'current_mode': self.current_mode.value,
+                    'mode_duration': (datetime.datetime.now() - self.mode_start_time).total_seconds()
+                }
+            }
             
         except Exception as e:
-            self.log_operator_error(f"Observation generation failed: {e}")
-            return np.zeros(8, dtype=np.float32)
-    
-    def get_intensity(self, instrument: str) -> float:
-        """Enhanced intensity calculation with automation awareness"""
+            self.logger.error(f"Automation metrics update failed: {e}")
+            return {'automation_metrics': {'error': str(e)}}
+
+    def _evaluate_decision_quality(self, decisions: List[Dict[str, Any]]) -> float:
+        """Evaluate quality of recent decisions"""
+        if not decisions:
+            return 0.5
         
-        try:
-            # Base intensity from mode
-            base_intensity = {
-                MetaMode.EMERGENCY_STOP: 0.0,
-                MetaMode.EVALUATION: 0.3,
-                MetaMode.TRAINING: 0.1,  # Low intensity during training
-                MetaMode.RETRAINING: 0.2,
-                MetaMode.LIVE_TRADING: 0.8
-            }.get(self.current_mode, 0.5)
-            
-            # Adjust by confidence
-            confidence_multiplier = 0.5 + (self.system_confidence * 0.5)
-            
-            # Adjust by performance
-            if self.daily_pnl > self.profit_target * 0.8:
-                performance_multiplier = 1.2
-            elif self.daily_pnl > 0:
-                performance_multiplier = 1.0
-            elif self.daily_pnl > self.retrain_threshold:
-                performance_multiplier = 0.7
+        quality_scores = []
+        
+        for decision in decisions:
+            # Score based on outcome
+            if decision['new_mode'] == MetaMode.LIVE_TRADING:
+                # Live trading decision - score based on subsequent performance
+                score = 0.8 if self.daily_pnl > 0 else 0.3
+            elif decision['new_mode'] == MetaMode.EMERGENCY_STOP:
+                # Emergency stop - score based on prevention of further losses
+                score = 0.9 if decision['priority'] == 'critical' else 0.7
+            elif decision['new_mode'] == MetaMode.RETRAINING:
+                # Retraining decision - score based on subsequent improvement
+                score = 0.6  # Neutral score
             else:
-                performance_multiplier = 0.3
+                score = 0.5  # Default score
             
-            # Adjust by consecutive losses
-            loss_penalty = max(0.3, 1.0 - (self.consecutive_losses * 0.05))
+            # Adjust based on timing
+            time_since = time.time() - decision['timestamp']
+            if time_since < 3600:  # Recent decision
+                score *= 1.1  # Slight bonus for recent good decisions
             
-            # Calculate final intensity
-            intensity = base_intensity * confidence_multiplier * performance_multiplier * loss_penalty
+            quality_scores.append(score)
+        
+        return float(np.mean(quality_scores))
+
+    async def _generate_meta_thesis(self, meta_data: Dict[str, Any], 
+                                  result: Dict[str, Any]) -> str:
+        """Generate comprehensive meta agent thesis"""
+        try:
+            # Current status
+            current_mode = self.current_mode.value
+            mode_duration = (datetime.datetime.now() - self.mode_start_time).total_seconds()
             
-            # Clamp to safe range
-            intensity = np.clip(intensity, 0.0, 1.0)
+            # Performance metrics
+            daily_pnl = self.daily_pnl
+            system_confidence = self.system_confidence
+            automation_score = self.automation_score
             
-            self.log_operator_debug(
-                f"Intensity calculated for {instrument}",
-                intensity=f"{intensity:.3f}",
-                mode=self.current_mode.value,
-                confidence=f"{self.system_confidence:.3f}",
-                daily_pnl=f"€{self.daily_pnl:.2f}"
+            thesis_parts = [
+                f"Meta Agent Status: Operating in {current_mode.upper()} mode for {mode_duration/60:.1f} minutes",
+                f"System performance: €{daily_pnl:.2f} daily PnL with {system_confidence:.2f} confidence",
+                f"Automation effectiveness: {automation_score:.2f} decision quality score"
+            ]
+            
+            # Decision analysis
+            if result.get('decision_executed', False):
+                old_mode = result.get('old_mode', 'unknown')
+                new_mode = result.get('new_mode', 'unknown')
+                reason = result.get('reason', 'unknown')
+                thesis_parts.append(f"Mode transition: {old_mode} → {new_mode} ({reason})")
+            
+            # Risk assessment
+            if self.drawdown_pct > 10:
+                thesis_parts.append(f"Risk alert: {self.drawdown_pct:.1f}% drawdown detected")
+            
+            if self.consecutive_losses > 5:
+                thesis_parts.append(f"Performance concern: {self.consecutive_losses} consecutive losses")
+            
+            # Automation metrics
+            total_switches = self.automation_metrics['total_mode_switches']
+            automation_accuracy = self.automation_metrics['automation_accuracy']
+            thesis_parts.append(f"Automation stats: {total_switches} mode switches with {automation_accuracy:.1%} accuracy")
+            
+            # Training progress
+            if self.current_mode in [MetaMode.TRAINING, MetaMode.VALIDATION]:
+                thesis_parts.append(f"Training progress: {self.training_episodes} episodes, {self.training_convergence_count} convergences")
+            
+            # Confidence trend
+            if len(self._confidence_history) > 10:
+                recent_trend = np.mean(list(self._confidence_history)[-5:]) - np.mean(list(self._confidence_history)[-10:-5])
+                trend_desc = "IMPROVING" if recent_trend > 0.01 else "DECLINING" if recent_trend < -0.01 else "STABLE"
+                thesis_parts.append(f"Confidence trend: {trend_desc}")
+            
+            return " | ".join(thesis_parts)
+            
+        except Exception as e:
+            return f"Meta thesis generation failed: {str(e)} - Automation system maintaining core functionality"
+
+    async def _update_meta_smart_bus(self, result: Dict[str, Any], thesis: str):
+        """Update SmartInfoBus with meta agent results"""
+        try:
+            # Automation decisions
+            automation_data = {
+                'current_mode': self.current_mode.value,
+                'system_confidence': self.system_confidence,
+                'automation_score': self.automation_score,
+                'last_decision': result.get('decision_executed', False),
+                'mode_duration': (datetime.datetime.now() - self.mode_start_time).total_seconds()
+            }
+            
+            self.smart_bus.set(
+                'automation_decisions',
+                automation_data,
+                module='MetaAgent',
+                thesis=thesis
             )
             
-            return float(intensity)
+            # System mode
+            mode_data = {
+                'current_mode': self.current_mode.value,
+                'mode_start_time': self.mode_start_time.isoformat(),
+                'mode_transitions': len(self.mode_transitions),
+                'available_modes': [mode.value for mode in MetaMode]
+            }
+            
+            self.smart_bus.set(
+                'system_mode',
+                mode_data,
+                module='MetaAgent',
+                thesis="Current system operational mode and transition history"
+            )
+            
+            # Automation metrics
+            metrics_data = result.get('automation_metrics', {})
+            self.smart_bus.set(
+                'automation_metrics',
+                metrics_data,
+                module='MetaAgent',
+                thesis="Meta agent automation performance and decision quality metrics"
+            )
+            
+            # Meta performance
+            performance_data = {
+                'daily_pnl': self.daily_pnl,
+                'drawdown_pct': self.drawdown_pct,
+                'consecutive_losses': self.consecutive_losses,
+                'win_streak': self.win_streak,
+                'system_confidence': self.system_confidence,
+                'training_episodes': self.training_episodes
+            }
+            
+            self.smart_bus.set(
+                'meta_performance',
+                performance_data,
+                module='MetaAgent',
+                thesis="Meta agent performance tracking and system health metrics"
+            )
             
         except Exception as e:
-            self.log_operator_error(f"Intensity calculation failed for {instrument}: {e}")
-            return 0.0
-    
-    # ═══════════════════════════════════════════════════════════════════
-    # LEGACY COMPATIBILITY METHODS
-    # ═══════════════════════════════════════════════════════════════════
-    
-    def step(self, pnl: float = 0.0):
-        """Legacy step method for backward compatibility"""
-        self._process_legacy_step(pnl=pnl)
-    
-    def record(self, pnl: float):
-        """Legacy record method for backward compatibility"""
-        self._update_pnl_metrics(pnl)
-    
-    def get_meta_report(self) -> str:
-        """Generate operator-friendly meta agent report"""
+            self.logger.error(f"Failed to update SmartInfoBus: {e}")
+
+    async def _handle_no_data_fallback(self) -> Dict[str, Any]:
+        """Handle case when no meta data is available"""
+        self.logger.warning("No meta data available - maintaining current mode")
         
-        # Mode status with emoji
-        mode_emoji = {
-            MetaMode.EVALUATION: "🔍",
-            MetaMode.TRAINING: "🎓",
-            MetaMode.RETRAINING: "🔄",
-            MetaMode.LIVE_TRADING: "💰",
-            MetaMode.EMERGENCY_STOP: "🚨"
+        return {
+            'current_mode': self.current_mode.value,
+            'system_confidence': self.system_confidence,
+            'automation_score': self.automation_score,
+            'daily_pnl': self.daily_pnl,
+            'fallback_reason': 'no_meta_data'
         }
+
+    async def _handle_meta_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
+        """Handle meta agent errors"""
+        processing_time = (time.time() - start_time) * 1000
         
-        # Performance status
-        if self.daily_pnl >= self.profit_target:
-            perf_status = "🚀 Target Achieved"
-        elif self.daily_pnl > self.profit_target * 0.5:
-            perf_status = "✅ On Track"
-        elif self.daily_pnl > 0:
-            perf_status = "📈 Profitable"
-        elif self.daily_pnl > self.retrain_threshold:
-            perf_status = "⚠️ Below Target"
-        else:
-            perf_status = "📉 Poor Performance"
+        # Update circuit breaker
+        self.circuit_breaker['failures'] += 1
+        self.circuit_breaker['last_failure'] = time.time()
         
-        mode_duration = (datetime.datetime.now() - self.mode_start_time).total_seconds()
+        if self.circuit_breaker['failures'] >= self.circuit_breaker['threshold']:
+            self.circuit_breaker['state'] = 'OPEN'
         
-        return f"""
-🤖 META AGENT STATUS
-═══════════════════════════════════════
-{mode_emoji.get(self.current_mode, '❓')} Mode: {self.current_mode.value.upper()}
-⏱️ Duration: {mode_duration/60:.1f} minutes
-🎯 Confidence: {self.system_confidence:.3f}
+        # Log error with context
+        error_context = self.error_pinpointer.analyze_error(error, "MetaAgent")
+        explanation = self.english_explainer.explain_error(
+            "MetaAgent", str(error), "automation decision"
+        )
+        
+        self.logger.error(
+            format_operator_message(
+                "💥", "META_AGENT_ERROR",
+                error=str(error),
+                details=explanation,
+                processing_time_ms=processing_time,
+                context="automation"
+            )
+        )
+        
+        # Record failure
+        self._record_failure(error)
+        
+        return self._create_fallback_response(f"error: {str(error)}")
 
-💰 DAILY PERFORMANCE
-• PnL: €{self.daily_pnl:.2f} / €{self.profit_target:.2f} ({(self.daily_pnl/self.profit_target)*100:.1f}%)
-• Status: {perf_status}
-• Peak: €{self.peak_pnl:.2f}
-• Drawdown: {self.drawdown_pct:.1f}%
+    def _create_fallback_response(self, reason: str) -> Dict[str, Any]:
+        """Create fallback response for error cases"""
+        return {
+            'current_mode': self.current_mode.value,
+            'system_confidence': self.system_confidence,
+            'automation_score': self.automation_score,
+            'circuit_breaker_state': self.circuit_breaker['state'],
+            'fallback_reason': reason
+        }
 
-📊 TRADING METRICS
-• Win Streak: {self.win_streak}
-• Loss Streak: {self.loss_streak}
-• Consecutive Losses: {self.consecutive_losses}
-• Total Trades: {self._trades_processed}
+    def _update_meta_health(self):
+        """Update meta agent health metrics"""
+        try:
+            # Check automation effectiveness
+            if self.automation_score < self.config.min_automation_score:
+                self._health_status = 'warning'
+            else:
+                self._health_status = 'healthy'
+            
+            # Check system confidence
+            if self.system_confidence < 0.2:
+                self._health_status = 'critical'
+            
+            # Check emergency conditions
+            if self.current_mode == MetaMode.EMERGENCY_STOP:
+                self._health_status = 'warning'
+            
+            self._last_health_check = time.time()
+            
+        except Exception as e:
+            self.logger.error(f"Health check failed: {e}")
+            self._health_status = 'warning'
 
-🔄 AUTOMATION METRICS
-• Mode Switches: {self.automation_metrics['total_mode_switches']}
-• Successful Sessions: {self.automation_metrics['successful_live_sessions']}
-• Emergency Stops: {self.automation_metrics['emergency_stops']}
-• Automation Accuracy: {self.automation_metrics['automation_accuracy']:.1%}
+    def _analyze_automation_effectiveness(self):
+        """Analyze automation effectiveness"""
+        try:
+            if len(self.decision_history) >= 5:
+                recent_decisions = list(self.decision_history)[-5:]
+                effectiveness = self._evaluate_decision_quality(recent_decisions)
+                
+                self._decision_effectiveness.append(effectiveness)
+                
+                if effectiveness > 0.8:
+                    self.logger.info(
+                        format_operator_message(
+                            "🎯", "HIGH_AUTOMATION_EFFECTIVENESS",
+                            effectiveness=f"{effectiveness:.2f}",
+                            recent_decisions=len(recent_decisions),
+                            context="automation_analysis"
+                        )
+                    )
+                elif effectiveness < 0.4:
+                    self.logger.warning(
+                        format_operator_message(
+                            "⚠️", "LOW_AUTOMATION_EFFECTIVENESS",
+                            effectiveness=f"{effectiveness:.2f}",
+                            recent_decisions=len(recent_decisions),
+                            context="automation_analysis"
+                        )
+                    )
+            
+        except Exception as e:
+            self.logger.error(f"Automation effectiveness analysis failed: {e}")
 
-🎓 TRAINING STATUS
-• Episodes: {self.training_episodes}
-• Convergence Count: {self.training_convergence_count}
-• Best Reward: {self.best_training_reward:.3f}
+    def _record_success(self, processing_time: float):
+        """Record successful processing"""
+        self.performance_tracker.record_metric(
+            'MetaAgent', 'automation_cycle', processing_time, True
+        )
+        
+        # Reset circuit breaker on success
+        if self.circuit_breaker['state'] == 'OPEN':
+            self.circuit_breaker['failures'] = 0
+            self.circuit_breaker['state'] = 'CLOSED'
 
-⚙️ THRESHOLDS
-• Retrain: €{self.retrain_threshold:.2f}
-• Emergency: €{self.emergency_threshold:.2f}
-• Confidence: {self.confidence_threshold:.3f}
+    def _record_failure(self, error: Exception):
+        """Record processing failure"""
+        self.performance_tracker.record_metric(
+            'MetaAgent', 'automation_cycle', 0, False
+        )
 
-🔮 RECENT TRANSITIONS
-{chr(10).join([f"• {t['from_mode']} → {t['to_mode']}: {t['reason']}" for t in list(self.mode_transitions)[-3:]])}
-        """
+    # Legacy compatibility methods
+    def step(self, pnl: float = 0.0, **kwargs):
+        """Legacy compatibility for step"""
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+            meta_data = {'pnl': pnl}
+            result = loop.run_until_complete(self.process(**meta_data))
+            return result
+        finally:
+            loop.close()
+
+    def record(self, pnl: float):
+        """Legacy compatibility for recording"""
+        self._update_pnl_metrics(pnl)
+
+    def force_mode_transition(self, new_mode: str, reason: str = "Manual override") -> bool:
+        """Force mode transition"""
+        try:
+            mode_enum = MetaMode(new_mode)
+            self._transition_to_mode(mode_enum, reason)
+            
+            self.logger.info(
+                format_operator_message(
+                    "🔧", "FORCED_MODE_TRANSITION",
+                    new_mode=new_mode,
+                    reason=reason,
+                    context="manual_override"
+                )
+            )
+            
+            return True
+        except ValueError:
+            self.logger.error(f"Invalid mode: {new_mode}")
+            return False
+
+    def get_state(self) -> Dict[str, Any]:
+        """Get module state for persistence"""
+        return {
+            'current_mode': self.current_mode.value,
+            'automation_metrics': self.automation_metrics.copy(),
+            'daily_pnl': self.daily_pnl,
+            'system_confidence': self.system_confidence,
+            'automation_score': self.automation_score,
+            'training_episodes': self.training_episodes,
+            'consecutive_losses': self.consecutive_losses,
+            'genome': self.genome.copy(),
+            'circuit_breaker': self.circuit_breaker.copy(),
+            'health_status': self._health_status,
+            'mode_start_time': self.mode_start_time.isoformat()
+        }
+
+    def set_state(self, state: Dict[str, Any]):
+        """Set module state from persistence"""
+        if 'current_mode' in state:
+            try:
+                self.current_mode = MetaMode(state['current_mode'])
+            except ValueError:
+                self.current_mode = MetaMode.EVALUATION
+        
+        if 'automation_metrics' in state:
+            self.automation_metrics.update(state['automation_metrics'])
+        
+        if 'daily_pnl' in state:
+            self.daily_pnl = state['daily_pnl']
+        
+        if 'system_confidence' in state:
+            self.system_confidence = state['system_confidence']
+        
+        if 'automation_score' in state:
+            self.automation_score = state['automation_score']
+        
+        if 'training_episodes' in state:
+            self.training_episodes = state['training_episodes']
+        
+        if 'consecutive_losses' in state:
+            self.consecutive_losses = state['consecutive_losses']
+        
+        if 'genome' in state:
+            self.genome.update(state['genome'])
+        
+        if 'circuit_breaker' in state:
+            self.circuit_breaker.update(state['circuit_breaker'])
+        
+        if 'health_status' in state:
+            self._health_status = state['health_status']
+        
+        if 'mode_start_time' in state:
+            try:
+                self.mode_start_time = datetime.datetime.fromisoformat(state['mode_start_time'])
+            except (ValueError, TypeError):
+                self.mode_start_time = datetime.datetime.now()
+
+    def get_health_status(self) -> Dict[str, Any]:
+        """Get health status"""
+        return {
+            'status': self._health_status,
+            'last_check': self._last_health_check,
+            'circuit_breaker': self.circuit_breaker['state'],
+            'current_mode': self.current_mode.value,
+            'system_confidence': self.system_confidence,
+            'automation_score': self.automation_score
+        }
+
+    def stop_monitoring(self):
+        """Stop background monitoring"""
+        self._monitoring_active = False
+
+    def confidence(self, obs: Any = None, **kwargs) -> float:
+        """Legacy compatibility for confidence"""
+        return float(self.system_confidence)
+
+    def propose_action(self, obs: Any = None, **kwargs) -> np.ndarray:
+        """Legacy compatibility for action proposal"""
+        # Meta agent doesn't propose direct actions, but automation decisions
+        automation_signal = 1.0 if self.current_mode == MetaMode.LIVE_TRADING else 0.0
+        confidence_signal = self.system_confidence
+        
+        return np.array([automation_signal, confidence_signal])

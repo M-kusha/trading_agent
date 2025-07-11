@@ -1,153 +1,235 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/meta/ppo_agent.py
-# Enhanced with InfoBus integration & advanced features
+# 🚀 PRODUCTION-READY PPO Agent System
+# Advanced PPO with SmartInfoBus integration and neural networks
 # ─────────────────────────────────────────────────────────────
 
+import asyncio
+import time
+import threading
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-import datetime
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, List, Optional, Tuple
 from collections import deque, defaultdict
+from dataclasses import dataclass, field
+from datetime import datetime
 
-from modules.core.core import Module, ModuleConfig, audit_step
-from modules.core.mixins import AnalysisMixin, StateManagementMixin, TradingMixin
-from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
-from modules.utils.audit_utils import RotatingLogger, AuditTracker, format_operator_message, system_audit
+from modules.core.module_base import BaseModule, module
+from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.monitoring.health_monitor import HealthMonitor
+from modules.monitoring.performance_tracker import PerformanceTracker
+
+
+@dataclass
+class PPOConfig:
+    """Configuration for PPO Agent"""
+    obs_size: int = 10
+    act_size: int = 2
+    hidden_size: int = 64
+    learning_rate: float = 3e-4
+    device: str = "cpu"
+    
+    # PPO hyperparameters
+    clip_eps: float = 0.2
+    value_coeff: float = 0.5
+    entropy_coeff: float = 0.01
+    gae_lambda: float = 0.95
+    gamma: float = 0.99
+    max_grad_norm: float = 0.5
+    ppo_epochs: int = 4
+    batch_size: int = 64
+    
+    # Performance thresholds
+    max_processing_time_ms: float = 500
+    circuit_breaker_threshold: int = 3
+    min_performance_score: float = 0.3
+    
+    # Training parameters
+    buffer_size: int = 2048
+    early_stopping_patience: int = 100
+    lr_decay_patience: int = 50
 
 
 class EnhancedPPONetwork(nn.Module):
-    """Enhanced PPO network with advanced features"""
+    """Enhanced PPO network with improved architecture"""
     
     def __init__(self, obs_size: int, act_size: int, hidden_size: int = 64):
         super().__init__()
         
-        # Shared feature extraction
+        # Shared feature extractor
         self.feature_extractor = nn.Sequential(
             nn.Linear(obs_size, hidden_size),
-            nn.LayerNorm(hidden_size),
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(hidden_size, hidden_size),
-            nn.ReLU()
+            nn.ReLU(),
+            nn.Dropout(0.1)
         )
         
-        # Actor network with improved architecture
-        self.actor_head = nn.Sequential(
+        # Policy head (actor)
+        self.policy_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size // 2),
             nn.ReLU(),
-            nn.Linear(hidden_size // 2, act_size),
-            nn.Tanh()
+            nn.Linear(hidden_size // 2, act_size * 2)  # mean and log_std
         )
         
-        # Critic network with value decomposition
+        # Value head (critic)
         self.value_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size // 2),
             nn.ReLU(),
             nn.Linear(hidden_size // 2, 1)
         )
         
-        # Action std parameter (learnable)
-        self.log_std = nn.Parameter(torch.log(torch.ones(act_size) * 0.1))
-        
-        # Initialize weights
         self._initialize_weights()
     
     def _initialize_weights(self):
-        """Improved weight initialization"""
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.orthogonal_(m.weight, gain=0.01)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.LayerNorm):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
+        """Initialize network weights"""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.orthogonal_(module.weight, gain=np.sqrt(2))
+                nn.init.zeros_(module.bias)
+        
+        # Special initialization for policy output
+        for module in self.policy_head[-1:]:
+            if isinstance(module, nn.Linear):
+                nn.init.orthogonal_(module.weight, gain=1)
     
     def forward(self, obs: torch.Tensor):
-        """Forward pass with enhanced error handling"""
-        try:
-            # Validate input
-            if torch.any(torch.isnan(obs)):
-                obs = torch.nan_to_num(obs)
-            
-            # Feature extraction
-            features = self.feature_extractor(obs)
-            
-            # Actor output
-            action_mean = self.actor_head(features)
-            action_std = torch.exp(torch.clamp(self.log_std, -5, 2))
-            
-            # Critic output
-            value = self.value_head(features)
-            
-            # Validate outputs
-            if torch.any(torch.isnan(action_mean)):
-                action_mean = torch.zeros_like(action_mean)
-            if torch.any(torch.isnan(action_std)):
-                action_std = torch.ones_like(action_std) * 0.1
-            if torch.any(torch.isnan(value)):
-                value = torch.zeros_like(value)
-            
-            return action_mean, action_std, value
-            
-        except Exception as e:
-            batch_size = obs.shape[0] if obs.ndim > 1 else 1
-            act_size = self.log_std.shape[0]
-            return (
-                torch.zeros(batch_size, act_size, device=obs.device),
-                torch.ones(batch_size, act_size, device=obs.device) * 0.1,
-                torch.zeros(batch_size, 1, device=obs.device)
-            )
+        """Forward pass"""
+        features = self.feature_extractor(obs)
+        
+        # Policy output
+        policy_out = self.policy_head(features)
+        action_mean = policy_out[..., :policy_out.size(-1)//2]
+        action_log_std = policy_out[..., policy_out.size(-1)//2:]
+        action_log_std = torch.clamp(action_log_std, -20, 2)
+        
+        # Value output
+        value = self.value_head(features)
+        
+        return action_mean, action_log_std, value
 
 
-class PPOAgent(Module, AnalysisMixin, TradingMixin):
+@module(
+    name="PPOAgent",
+    version="3.0.0",
+    category="meta",
+    provides=["policy_actions", "agent_performance", "training_metrics", "policy_gradients"],
+    requires=["observations", "rewards", "market_data", "training_signals"],
+    description="Advanced PPO agent with SmartInfoBus integration for autonomous trading",
+    thesis_required=True,
+    health_monitoring=True,
+    performance_tracking=True,
+    error_handling=True
+)
+class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
-    Enhanced PPO agent with InfoBus integration and advanced features.
+    Advanced PPO agent with SmartInfoBus integration.
     Provides robust policy optimization with comprehensive monitoring and automation.
     """
-    
-    def __init__(self, obs_size: int, act_size: int = 2, hidden_size: int = 64, 
-                 lr: float = 3e-4, device: str = "cpu", debug: bool = True,
+
+    def __init__(self, 
+                 config: Optional[PPOConfig] = None,
+                 genome: Optional[Dict[str, Any]] = None,
                  **kwargs):
         
-        # Enhanced configuration
-        config = ModuleConfig(
-            debug=debug,
-            max_history=500,
-            health_check_interval=120,
-            performance_window=100,
-            **kwargs
+        self.config = config or PPOConfig()
+        super().__init__()
+        
+        # Initialize advanced systems
+        self._initialize_advanced_systems()
+        
+        # Initialize genome parameters
+        self._initialize_genome_parameters(genome)
+        
+        # Initialize PPO state
+        self._initialize_ppo_state()
+        
+        # Initialize neural components
+        self._initialize_neural_components()
+        
+        self.logger.info(
+            format_operator_message(
+                "🤖", "PPO_AGENT_INITIALIZED",
+                details=f"Obs: {self.config.obs_size}, Actions: {self.config.act_size}, Hidden: {self.config.hidden_size}",
+                result="PPO agent ready for training",
+                context="ppo_initialization"
+            )
         )
-        super().__init__(config)
+    
+    def _initialize_advanced_systems(self):
+        """Initialize advanced systems for PPO agent"""
+        self.smart_bus = InfoBusManager.get_instance()
+        self.logger = RotatingLogger(
+            name="PPOAgent", 
+            log_path="logs/meta/ppo_agent.log", 
+            max_lines=5000, 
+            operator_mode=True,
+            plain_english=True
+        )
+        self.error_pinpointer = ErrorPinpointer()
+        self.error_handler = create_error_handler("PPOAgent", self.error_pinpointer)
+        self.english_explainer = EnglishExplainer()
+        self.system_utilities = SystemUtilities()
+        self.performance_tracker = PerformanceTracker()
         
-        # Initialize mixins
-        self._initialize_analysis_state()
-        self._initialize_trading_state()
+        # Circuit breaker for neural operations
+        self.circuit_breaker = {
+            'failures': 0,
+            'last_failure': 0,
+            'state': 'CLOSED',
+            'threshold': self.config.circuit_breaker_threshold
+        }
         
-        # Core parameters
-        self.device = torch.device(device)
-        self.obs_size = obs_size
-        self.act_size = act_size
-        self.learning_rate = lr
+        # Health monitoring
+        self._health_status = 'healthy'
+        self._last_health_check = time.time()
+        self._start_monitoring()
+
+    def _initialize_genome_parameters(self, genome: Optional[Dict[str, Any]]):
+        """Initialize genome-based parameters"""
+        if genome:
+            self.genome = {
+                "obs_size": int(genome.get("obs_size", self.config.obs_size)),
+                "act_size": int(genome.get("act_size", self.config.act_size)),
+                "hidden_size": int(genome.get("hidden_size", self.config.hidden_size)),
+                "learning_rate": float(genome.get("learning_rate", self.config.learning_rate)),
+                "clip_eps": float(genome.get("clip_eps", self.config.clip_eps)),
+                "value_coeff": float(genome.get("value_coeff", self.config.value_coeff)),
+                "entropy_coeff": float(genome.get("entropy_coeff", self.config.entropy_coeff)),
+                "gae_lambda": float(genome.get("gae_lambda", self.config.gae_lambda)),
+                "gamma": float(genome.get("gamma", self.config.gamma))
+            }
+            # Update config with genome values
+            for key, value in self.genome.items():
+                if hasattr(self.config, key):
+                    setattr(self.config, key, value)
+        else:
+            self.genome = {
+                "obs_size": self.config.obs_size,
+                "act_size": self.config.act_size,
+                "hidden_size": self.config.hidden_size,
+                "learning_rate": self.config.learning_rate,
+                "clip_eps": self.config.clip_eps,
+                "value_coeff": self.config.value_coeff,
+                "entropy_coeff": self.config.entropy_coeff,
+                "gae_lambda": self.config.gae_lambda,
+                "gamma": self.config.gamma
+            }
+
+    def _initialize_ppo_state(self):
+        """Initialize PPO-specific state"""
+        # Device setup
+        self.device = torch.device(self.config.device)
         
-        # Enhanced network architecture
-        self.network = EnhancedPPONetwork(obs_size, act_size, hidden_size).to(self.device)
-        self.optimizer = optim.Adam(self.network.parameters(), lr=lr, eps=1e-5)
-        
-        # PPO hyperparameters with improved defaults
-        self.clip_eps = 0.2
-        self.value_coeff = 0.5
-        self.entropy_coeff = 0.01
-        self.gae_lambda = 0.95
-        self.gamma = 0.99
-        self.max_grad_norm = 0.5
-        self.ppo_epochs = 4
-        self.batch_size = 64
-        
-        # Experience buffer with enhanced storage
+        # Experience buffer
         self.buffer = {
             'observations': [],
             'actions': [],
@@ -176,856 +258,852 @@ class PPOAgent(Module, AnalysisMixin, TradingMixin):
             'value_loss_trend': 0.0,
             'entropy_trend': 0.0,
             'gradient_norm': 0.0,
-            'explained_variance': 0.0
+            'explained_variance': 0.0,
+            'learning_rate': self.config.learning_rate
         }
         
-        # Action tracking and analysis
-        self.last_action = np.zeros(act_size, dtype=np.float32)
+        # Action tracking
+        self.last_action = np.zeros(self.config.act_size, dtype=np.float32)
         self.action_history = deque(maxlen=1000)
         self.action_statistics = {
-            'mean_action': np.zeros(act_size),
-            'action_std': np.ones(act_size),
-            'action_range': np.ones(act_size),
+            'mean_action': np.zeros(self.config.act_size),
+            'action_std': np.ones(self.config.act_size),
+            'action_range': np.ones(self.config.act_size),
             'exploration_level': 0.5
         }
-        
-        # Advanced features
-        self.adaptive_lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='max', factor=0.8, patience=50, verbose=False
-        )
-        self.early_stopping_patience = 100
-        self.early_stopping_counter = 0
-        self.best_performance = -np.inf
         
         # Market context integration
         self.market_context_history = deque(maxlen=50)
         self.context_performance = defaultdict(lambda: {'rewards': [], 'count': 0})
         
-        # Enhanced logging with rotation
-        self.logger = RotatingLogger(
-            "PPOAgent",
-            "logs/strategy/ppo/ppo_agent.log",
-            max_lines=2000,
-            operator_mode=debug
-        )
-        
-        # Audit system
-        self.audit_tracker = AuditTracker("PPOAgent")
-        
-        self.log_operator_info(
-            "🎯 Enhanced PPO Agent initialized",
-            obs_size=obs_size,
-            act_size=act_size,
-            hidden_size=hidden_size,
-            learning_rate=f"{lr:.2e}",
-            device=device,
-            network_params=sum(p.numel() for p in self.network.parameters())
-        )
-    
-    def reset(self) -> None:
-        """Enhanced reset with comprehensive state cleanup"""
-        super().reset()
-        self._reset_analysis_state()
-        self._reset_trading_state()
-        
-        # Clear experience buffer
-        for key in self.buffer:
-            self.buffer[key].clear()
-        
-        # Reset tracking
-        self.episode_rewards.clear()
-        self.episode_lengths.clear()
-        self.policy_losses.clear()
-        self.value_losses.clear()
-        self.entropy_losses.clear()
-        
-        # Reset training statistics
-        self.training_stats = {
-            'total_updates': 0,
-            'episodes_completed': 0,
-            'best_episode_reward': -np.inf,
-            'avg_episode_reward': 0.0,
-            'policy_loss_trend': 0.0,
-            'value_loss_trend': 0.0,
-            'entropy_trend': 0.0,
-            'gradient_norm': 0.0,
-            'explained_variance': 0.0
-        }
-        
-        # Reset action tracking
-        self.last_action = np.zeros(self.act_size, dtype=np.float32)
-        self.action_history.clear()
-        self.action_statistics = {
-            'mean_action': np.zeros(self.act_size),
-            'action_std': np.ones(self.act_size),
-            'action_range': np.ones(self.act_size),
-            'exploration_level': 0.5
-        }
-        
-        # Reset adaptive components
+        # Learning adaptation
         self.early_stopping_counter = 0
         self.best_performance = -np.inf
+        self.performance_plateau_counter = 0
         
-        # Reset market context
-        self.market_context_history.clear()
-        self.context_performance.clear()
-        
-        self.log_operator_info("🔄 PPO Agent reset - all state cleared")
-    
-    @audit_step
-    def _step_impl(self, info_bus: Optional[InfoBus] = None, **kwargs) -> None:
-        """Enhanced step with InfoBus integration"""
-        
-        if info_bus:
-            # Extract and store market context
-            context = extract_standard_context(info_bus)
-            self.market_context_history.append(context)
+        # Neural performance metrics
+        self._neural_performance = {
+            'forward_passes': 0,
+            'backward_passes': 0,
+            'average_loss': 0.0,
+            'gradient_stability': 1.0
+        }
+
+    def _initialize_neural_components(self):
+        """Initialize neural network components"""
+        try:
+            # Main network
+            self.network = EnhancedPPONetwork(
+                self.config.obs_size, 
+                self.config.act_size, 
+                self.config.hidden_size
+            ).to(self.device)
             
-            # Update performance tracking from InfoBus
-            self._update_performance_from_info_bus(info_bus, context)
+            # Optimizer with improved settings
+            self.optimizer = optim.Adam(
+                self.network.parameters(), 
+                lr=self.config.learning_rate,
+                eps=1e-5,
+                weight_decay=1e-4
+            )
             
-            # Adapt learning based on market conditions
-            self._adapt_to_market_conditions(context)
+            # Learning rate scheduler
+            self.lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer, 
+                mode='max', 
+                factor=0.8, 
+                patience=self.config.lr_decay_patience,
+                verbose=False
+            )
             
-            # Publish agent status
-            self._publish_agent_status(info_bus)
-    
-    def _update_performance_from_info_bus(self, info_bus: InfoBus, context: Dict[str, Any]):
-        """Update performance metrics from InfoBus"""
-        
-        # Extract recent performance
-        recent_trades = info_bus.get('recent_trades', [])
-        if recent_trades:
-            total_pnl = sum(trade.get('pnl', 0) for trade in recent_trades)
-            self._update_trading_metrics({'pnl': total_pnl})
+            self.logger.info("Neural components initialized successfully")
             
-            # Update context-specific performance
-            regime = context.get('regime', 'unknown')
-            self.context_performance[regime]['rewards'].append(total_pnl)
-            self.context_performance[regime]['count'] += 1
-    
-    def _adapt_to_market_conditions(self, context: Dict[str, Any]):
-        """Adapt agent behavior based on market conditions"""
+        except Exception as e:
+            self.logger.error(f"Neural component initialization failed: {e}")
+            self._health_status = 'error'
+
+    def _start_monitoring(self):
+        """Start background monitoring"""
+        def monitoring_loop():
+            while getattr(self, '_monitoring_active', True):
+                try:
+                    self._update_ppo_health()
+                    self._analyze_learning_progress()
+                    time.sleep(30)
+                except Exception as e:
+                    self.logger.error(f"Monitoring error: {e}")
         
-        regime = context.get('regime', 'unknown')
-        volatility = context.get('volatility_level', 'medium')
-        
-        # Adjust exploration based on market conditions
-        if regime == 'volatile' or volatility == 'extreme':
-            # Reduce exploration in volatile markets
-            self.entropy_coeff = max(0.005, self.entropy_coeff * 0.95)
-        elif regime == 'trending' and volatility == 'low':
-            # Increase exploration in stable trending markets
-            self.entropy_coeff = min(0.02, self.entropy_coeff * 1.02)
-        
-        # Adjust learning rate based on regime performance
-        if regime in self.context_performance:
-            regime_performance = self.context_performance[regime]
-            if len(regime_performance['rewards']) >= 10:
-                avg_reward = np.mean(regime_performance['rewards'][-10:])
-                if avg_reward < 0:
-                    # Poor performance in this regime, increase learning
-                    for param_group in self.optimizer.param_groups:
-                        param_group['lr'] = min(param_group['lr'] * 1.02, 1e-3)
-                elif avg_reward > 10:
-                    # Good performance, stabilize learning
-                    for param_group in self.optimizer.param_groups:
-                        param_group['lr'] = max(param_group['lr'] * 0.98, 1e-5)
-    
-    def record_step(self, obs_vec: np.ndarray, reward: float, done: bool = False, **kwargs):
-        """Enhanced step recording with comprehensive validation"""
+        self._monitoring_active = True
+        monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
+        monitor_thread.start()
+
+    async def _initialize(self):
+        """Initialize module"""
+        try:
+            # Set initial PPO status in SmartInfoBus
+            initial_status = {
+                "episodes_completed": 0,
+                "training_updates": 0,
+                "average_reward": 0.0,
+                "learning_rate": self.config.learning_rate,
+                "performance_score": 0.0
+            }
+            
+            self.smart_bus.set(
+                'agent_performance',
+                initial_status,
+                module='PPOAgent',
+                thesis="Initial PPO agent performance status"
+            )
+            
+            return True
+        except Exception as e:
+            self.logger.error(f"Initialization failed: {e}")
+            return False
+
+    async def process(self, **inputs) -> Dict[str, Any]:
+        """Process PPO agent operations"""
+        start_time = time.time()
         
         try:
-            # Validate inputs
-            if np.any(np.isnan(obs_vec)):
-                self.log_operator_error(f"NaN in observation vector: {obs_vec}")
-                obs_vec = np.nan_to_num(obs_vec)
-            if np.isnan(reward):
-                self.log_operator_error("NaN reward, setting to 0")
-                reward = 0.0
+            # Extract PPO data
+            ppo_data = await self._extract_ppo_data(**inputs)
             
-            # Convert to tensors
-            obs_tensor = torch.as_tensor(obs_vec, dtype=torch.float32, device=self.device)
+            if not ppo_data:
+                return await self._handle_no_data_fallback()
             
-            # Get action and value from network
+            # Process action selection if observation provided
+            action_result = {}
+            if 'observation' in ppo_data:
+                action_result = await self._process_action_selection(ppo_data)
+            
+            # Process training if experience provided
+            training_result = {}
+            if 'experience' in ppo_data:
+                training_result = await self._process_training(ppo_data)
+            
+            # Update agent metrics
+            metrics_result = await self._update_agent_metrics()
+            
+            # Combine results
+            result = {**action_result, **training_result, **metrics_result}
+            
+            # Generate thesis
+            thesis = await self._generate_ppo_thesis(ppo_data, result)
+            
+            # Update SmartInfoBus
+            await self._update_ppo_smart_bus(result, thesis)
+            
+            # Record success
+            processing_time = (time.time() - start_time) * 1000
+            self._record_success(processing_time)
+            
+            return result
+            
+        except Exception as e:
+            return await self._handle_ppo_error(e, start_time)
+
+    async def _extract_ppo_data(self, **inputs) -> Optional[Dict[str, Any]]:
+        """Extract PPO data from SmartInfoBus"""
+        try:
+            # Get observations
+            observations = self.smart_bus.get('observations', 'PPOAgent')
+            
+            # Get rewards
+            rewards = self.smart_bus.get('rewards', 'PPOAgent')
+            
+            # Get market data
+            market_data = self.smart_bus.get('market_data', 'PPOAgent') or {}
+            
+            # Get training signals
+            training_signals = self.smart_bus.get('training_signals', 'PPOAgent') or {}
+            
+            # Get direct inputs
+            observation = inputs.get('observation')
+            experience = inputs.get('experience')
+            
+            return {
+                'observations': observations,
+                'rewards': rewards,
+                'market_data': market_data,
+                'training_signals': training_signals,
+                'observation': observation,
+                'experience': experience,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to extract PPO data: {e}")
+            return None
+
+    async def _process_action_selection(self, ppo_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Process action selection"""
+        try:
+            observation = ppo_data['observation']
+            
+            if isinstance(observation, np.ndarray):
+                obs_tensor = torch.tensor(observation, dtype=torch.float32).to(self.device)
+            else:
+                obs_tensor = torch.tensor([observation], dtype=torch.float32).to(self.device)
+            
+            # Ensure correct shape
+            if obs_tensor.dim() == 1:
+                obs_tensor = obs_tensor.unsqueeze(0)
+            
+            # Forward pass
             with torch.no_grad():
-                action_mean, action_std, value = self.network(obs_tensor.unsqueeze(0))
+                action_mean, action_log_std, value = self.network(obs_tensor)
                 
                 # Create action distribution
+                action_std = torch.exp(action_log_std)
                 dist = torch.distributions.Normal(action_mean, action_std)
+                
+                # Sample action
                 action = dist.sample()
                 log_prob = dist.log_prob(action).sum(dim=-1)
                 
-                # Validate network outputs
-                if torch.any(torch.isnan(action)):
-                    self.log_operator_error("NaN in sampled action")
-                    action = torch.zeros_like(action)
-                if torch.any(torch.isnan(log_prob)):
-                    self.log_operator_error("NaN in log probability")
-                    log_prob = torch.zeros_like(log_prob)
-                if torch.any(torch.isnan(value)):
-                    self.log_operator_error("NaN in value estimate")
-                    value = torch.zeros_like(value)
-            
-            # Store in buffer
-            self.buffer['observations'].append(obs_tensor)
-            self.buffer['actions'].append(action.squeeze(0))
-            self.buffer['log_probs'].append(log_prob.squeeze(0))
-            self.buffer['values'].append(value.squeeze(0))
-            self.buffer['rewards'].append(torch.tensor(reward, dtype=torch.float32, device=self.device))
-            self.buffer['dones'].append(torch.tensor(done, dtype=torch.bool, device=self.device))
+                # Convert to numpy
+                action_np = action.squeeze().cpu().numpy()
+                log_prob_np = log_prob.item()
+                value_np = value.squeeze().cpu().item()
             
             # Update action tracking
-            self.last_action = action.cpu().numpy().squeeze(0)
-            self.action_history.append(self.last_action.copy())
+            self.last_action = action_np
+            self.action_history.append(action_np.copy())
             self._update_action_statistics()
             
-            # Update trading metrics
-            self._update_trading_metrics({'pnl': reward})
+            # Update neural performance
+            self._neural_performance['forward_passes'] += 1
             
-            self.log_operator_debug(
-                f"Step recorded",
-                reward=f"{reward:.3f}",
-                action_mean=f"{self.last_action.mean():.3f}",
-                value_estimate=f"{value.item():.3f}",
-                buffer_size=len(self.buffer['rewards'])
-            )
+            return {
+                'action_selected': True,
+                'action': action_np.tolist(),
+                'log_prob': log_prob_np,
+                'value_estimate': value_np,
+                'action_std': action_std.squeeze().cpu().numpy().tolist()
+            }
             
         except Exception as e:
-            self.log_operator_error(f"Step recording failed: {e}")
-    
-    def _update_action_statistics(self):
-        """Update action statistics for analysis"""
-        
-        if len(self.action_history) >= 10:
-            recent_actions = np.array(list(self.action_history)[-50:])
-            
-            self.action_statistics['mean_action'] = np.mean(recent_actions, axis=0)
-            self.action_statistics['action_std'] = np.std(recent_actions, axis=0)
-            self.action_statistics['action_range'] = np.ptp(recent_actions, axis=0)
-            
-            # Calculate exploration level
-            action_diversity = np.mean(self.action_statistics['action_std'])
-            self.action_statistics['exploration_level'] = min(1.0, action_diversity / 0.5)
-    
-    def end_episode(self, gamma: float = None, final_value: float = 0.0):
-        """Enhanced episode ending with GAE and improved updates"""
-        
+            self.logger.error(f"Action selection failed: {e}")
+            return {'action_selected': False, 'error': str(e)}
+
+    async def _process_training(self, ppo_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Process PPO training"""
         try:
-            if len(self.buffer['rewards']) < 5:
-                self.log_operator_warning(f"Episode too short ({len(self.buffer['rewards'])} steps), skipping update")
-                self._clear_buffer()
-                return
+            experience = ppo_data['experience']
             
-            gamma = gamma if gamma is not None else self.gamma
+            # Add experience to buffer
+            if isinstance(experience, dict):
+                for key in ['observation', 'action', 'reward', 'log_prob', 'value', 'done']:
+                    if key in experience:
+                        if key == 'observation':
+                            self.buffer['observations'].append(experience[key])
+                        elif key == 'action':
+                            self.buffer['actions'].append(experience[key])
+                        elif key == 'reward':
+                            self.buffer['rewards'].append(experience[key])
+                        elif key == 'log_prob':
+                            self.buffer['log_probs'].append(experience[key])
+                        elif key == 'value':
+                            self.buffer['values'].append(experience[key])
+                        elif key == 'done':
+                            self.buffer['dones'].append(experience[key])
             
-            self.log_operator_info(
-                f"Episode ending",
-                steps=len(self.buffer['rewards']),
-                total_reward=f"{sum(r.item() for r in self.buffer['rewards']):.3f}"
-            )
+            # Check if buffer is ready for training
+            if len(self.buffer['observations']) >= self.config.batch_size:
+                update_result = await self._perform_policy_update()
+                return {'training_performed': True, 'update_result': update_result}
+            else:
+                return {'training_performed': False, 'buffer_size': len(self.buffer['observations'])}
             
-            # Calculate advantages and returns using GAE
-            self._compute_gae_returns(gamma, final_value)
+        except Exception as e:
+            self.logger.error(f"Training failed: {e}")
+            return {'training_performed': False, 'error': str(e)}
+
+    async def _perform_policy_update(self) -> Dict[str, Any]:
+        """Perform PPO policy update"""
+        try:
+            # Compute advantages and returns
+            self._compute_gae_returns()
             
-            # Perform PPO updates
-            update_stats = self._update_policy()
+            # Convert buffer to tensors
+            observations = torch.tensor(np.array(self.buffer['observations']), dtype=torch.float32).to(self.device)
+            actions = torch.tensor(np.array(self.buffer['actions']), dtype=torch.float32).to(self.device)
+            old_log_probs = torch.tensor(np.array(self.buffer['log_probs']), dtype=torch.float32).to(self.device)
+            advantages = torch.tensor(np.array(self.buffer['advantages']), dtype=torch.float32).to(self.device)
+            returns = torch.tensor(np.array(self.buffer['returns']), dtype=torch.float32).to(self.device)
             
-            # Update training statistics
-            self._update_training_statistics(update_stats)
+            # Normalize advantages
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
             
-            # Check for early stopping
-            self._check_early_stopping()
+            # Training loop
+            total_policy_loss = 0
+            total_value_loss = 0
+            total_entropy_loss = 0
+            
+            for epoch in range(self.config.ppo_epochs):
+                # Forward pass
+                action_mean, action_log_std, values = self.network(observations)
+                
+                # Create distribution
+                action_std = torch.exp(action_log_std)
+                dist = torch.distributions.Normal(action_mean, action_std)
+                
+                # Calculate new log probs and entropy
+                new_log_probs = dist.log_prob(actions).sum(dim=-1)
+                entropy = dist.entropy().sum(dim=-1)
+                
+                # Calculate ratio and clipped surrogate loss
+                ratio = torch.exp(new_log_probs - old_log_probs)
+                surr1 = ratio * advantages
+                surr2 = torch.clamp(ratio, 1 - self.config.clip_eps, 1 + self.config.clip_eps) * advantages
+                policy_loss = -torch.min(surr1, surr2).mean()
+                
+                # Value loss
+                value_loss = F.mse_loss(values.squeeze(), returns)
+                
+                # Entropy loss
+                entropy_loss = -entropy.mean()
+                
+                # Total loss
+                loss = policy_loss + self.config.value_coeff * value_loss + self.config.entropy_coeff * entropy_loss
+                
+                # Backward pass
+                self.optimizer.zero_grad()
+                loss.backward()
+                
+                # Gradient clipping
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.network.parameters(), self.config.max_grad_norm)
+                
+                self.optimizer.step()
+                
+                # Accumulate losses
+                total_policy_loss += policy_loss.item()
+                total_value_loss += value_loss.item()
+                total_entropy_loss += entropy_loss.item()
+            
+            # Update statistics
+            avg_policy_loss = total_policy_loss / self.config.ppo_epochs
+            avg_value_loss = total_value_loss / self.config.ppo_epochs
+            avg_entropy_loss = total_entropy_loss / self.config.ppo_epochs
+            
+            self.policy_losses.append(avg_policy_loss)
+            self.value_losses.append(avg_value_loss)
+            self.entropy_losses.append(avg_entropy_loss)
+            
+            # Update training stats
+            self.training_stats['total_updates'] += 1
+            self.training_stats['policy_loss_trend'] = avg_policy_loss
+            self.training_stats['value_loss_trend'] = avg_value_loss
+            self.training_stats['entropy_trend'] = avg_entropy_loss
+            self.training_stats['gradient_norm'] = float(grad_norm)
+            
+            # Calculate explained variance
+            with torch.no_grad():
+                explained_var = 1 - torch.var(returns - values.squeeze()) / torch.var(returns)
+                self.training_stats['explained_variance'] = float(explained_var)
+            
+            # Update neural performance
+            self._neural_performance['backward_passes'] += 1
+            self._neural_performance['average_loss'] = avg_policy_loss + avg_value_loss
             
             # Clear buffer
             self._clear_buffer()
             
-            # Update adaptive components
-            if len(self.episode_rewards) > 0:
-                self.adaptive_lr_scheduler.step(self.episode_rewards[-1])
-            
-        except Exception as e:
-            self.log_operator_error(f"Episode ending failed: {e}")
-            self._clear_buffer()
-    
-    def _compute_gae_returns(self, gamma: float, final_value: float):
-        """Compute Generalized Advantage Estimation"""
-        
-        try:
-            rewards = torch.stack(self.buffer['rewards'])
-            values = torch.stack(self.buffer['values'])
-            dones = torch.stack(self.buffer['dones'])
-            
-            # Validate tensors
-            if torch.any(torch.isnan(rewards)):
-                self.log_operator_error("NaN in rewards")
-                rewards = torch.nan_to_num(rewards)
-            if torch.any(torch.isnan(values)):
-                self.log_operator_error("NaN in values")
-                values = torch.nan_to_num(values)
-            
-            # Calculate returns and advantages
-            returns = torch.zeros_like(rewards)
-            advantages = torch.zeros_like(rewards)
-            
-            # Bootstrap final value
-            next_value = final_value
-            next_advantage = 0
-            
-            # Compute backwards
-            for t in reversed(range(len(rewards))):
-                if dones[t]:
-                    next_value = 0
-                    next_advantage = 0
-                
-                # Calculate TD error
-                td_error = rewards[t] + gamma * next_value - values[t]
-                
-                # Calculate advantage using GAE
-                advantages[t] = td_error + gamma * self.gae_lambda * next_advantage
-                
-                # Calculate return
-                returns[t] = rewards[t] + gamma * next_value
-                
-                next_value = values[t]
-                next_advantage = advantages[t]
-            
-            # Normalize advantages
-            if advantages.std() > 1e-6:
-                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-            
-            # Store in buffer
-            self.buffer['advantages'] = [advantages[i] for i in range(len(advantages))]
-            self.buffer['returns'] = [returns[i] for i in range(len(returns))]
-            
-            # Track episode reward
-            episode_reward = float(rewards.sum())
-            self.episode_rewards.append(episode_reward)
-            self.episode_lengths.append(len(rewards))
-            
-        except Exception as e:
-            self.log_operator_error(f"GAE computation failed: {e}")
-            # Fallback to simple advantage calculation
-            returns = []
-            running_return = final_value
-            for reward in reversed(self.buffer['rewards']):
-                running_return = reward + gamma * running_return
-                returns.insert(0, running_return)
-            
-            values = [v.item() for v in self.buffer['values']]
-            advantages = [ret - val for ret, val in zip(returns, values)]
-            
-            self.buffer['returns'] = [torch.tensor(r, device=self.device) for r in returns]
-            self.buffer['advantages'] = [torch.tensor(a, device=self.device) for a in advantages]
-    
-    def _update_policy(self) -> Dict[str, float]:
-        """Perform PPO policy updates"""
-        
-        try:
-            # Prepare data
-            observations = torch.stack(self.buffer['observations'])
-            actions = torch.stack(self.buffer['actions'])
-            old_log_probs = torch.stack(self.buffer['log_probs'])
-            returns = torch.stack(self.buffer['returns'])
-            advantages = torch.stack(self.buffer['advantages'])
-            
-            # Validate data
-            for name, tensor in [('observations', observations), ('actions', actions), 
-                               ('old_log_probs', old_log_probs), ('returns', returns), 
-                               ('advantages', advantages)]:
-                if torch.any(torch.isnan(tensor)):
-                    self.log_operator_error(f"NaN in {name}")
-                    tensor = torch.nan_to_num(tensor)
-            
-            total_policy_loss = 0
-            total_value_loss = 0
-            total_entropy_loss = 0
-            total_grad_norm = 0
-            
-            # Multiple epochs of updates
-            for epoch in range(self.ppo_epochs):
-                # Create mini-batches
-                indices = torch.randperm(len(observations), device=self.device)
-                
-                for start in range(0, len(observations), self.batch_size):
-                    end = start + self.batch_size
-                    batch_indices = indices[start:end]
-                    
-                    # Get batch data
-                    batch_obs = observations[batch_indices]
-                    batch_actions = actions[batch_indices]
-                    batch_old_log_probs = old_log_probs[batch_indices]
-                    batch_returns = returns[batch_indices]
-                    batch_advantages = advantages[batch_indices]
-                    
-                    # Forward pass
-                    action_mean, action_std, values = self.network(batch_obs)
-                    
-                    # Create distribution
-                    dist = torch.distributions.Normal(action_mean, action_std)
-                    new_log_probs = dist.log_prob(batch_actions).sum(dim=-1)
-                    entropy = dist.entropy().sum(dim=-1)
-                    
-                    # Calculate policy loss
-                    ratio = torch.exp(new_log_probs - batch_old_log_probs)
-                    
-                    # Clamp ratio for stability
-                    ratio = torch.clamp(ratio, 0.1, 10.0)
-                    
-                    surr1 = ratio * batch_advantages
-                    surr2 = torch.clamp(ratio, 1 - self.clip_eps, 1 + self.clip_eps) * batch_advantages
-                    policy_loss = -torch.min(surr1, surr2).mean()
-                    
-                    # Calculate value loss
-                    value_loss = F.mse_loss(values.squeeze(-1), batch_returns)
-                    
-                    # Calculate entropy loss
-                    entropy_loss = -entropy.mean()
-                    
-                    # Total loss
-                    total_loss = policy_loss + self.value_coeff * value_loss + self.entropy_coeff * entropy_loss
-                    
-                    # Validate loss
-                    if torch.isnan(total_loss):
-                        self.log_operator_error("NaN loss detected, skipping update")
-                        continue
-                    
-                    # Backward pass
-                    self.optimizer.zero_grad()
-                    total_loss.backward()
-                    
-                    # Gradient clipping
-                    grad_norm = torch.nn.utils.clip_grad_norm_(self.network.parameters(), self.max_grad_norm)
-                    
-                    # Update
-                    self.optimizer.step()
-                    
-                    # Accumulate statistics
-                    total_policy_loss += policy_loss.item()
-                    total_value_loss += value_loss.item()
-                    total_entropy_loss += entropy_loss.item()
-                    total_grad_norm += grad_norm.item()
-            
-            # Calculate averages
-            num_updates = self.ppo_epochs * max(1, len(observations) // self.batch_size)
-            
-            update_stats = {
-                'policy_loss': total_policy_loss / num_updates,
-                'value_loss': total_value_loss / num_updates,
-                'entropy_loss': total_entropy_loss / num_updates,
-                'grad_norm': total_grad_norm / num_updates
+            return {
+                'policy_loss': avg_policy_loss,
+                'value_loss': avg_value_loss,
+                'entropy_loss': avg_entropy_loss,
+                'gradient_norm': float(grad_norm),
+                'explained_variance': float(explained_var),
+                'epochs_completed': self.config.ppo_epochs
             }
             
-            # Store losses for tracking
-            self.policy_losses.append(update_stats['policy_loss'])
-            self.value_losses.append(update_stats['value_loss'])
-            self.entropy_losses.append(update_stats['entropy_loss'])
-            
-            return update_stats
-            
         except Exception as e:
-            self.log_operator_error(f"Policy update failed: {e}")
-            return {'policy_loss': 0, 'value_loss': 0, 'entropy_loss': 0, 'grad_norm': 0}
-    
-    def _update_training_statistics(self, update_stats: Dict[str, float]):
-        """Update comprehensive training statistics"""
+            self.logger.error(f"Policy update failed: {e}")
+            return {'error': str(e)}
+
+    def _compute_gae_returns(self):
+        """Compute GAE advantages and returns"""
+        rewards = np.array(self.buffer['rewards'])
+        values = np.array(self.buffer['values'])
+        dones = np.array(self.buffer['dones'])
         
-        self.training_stats['total_updates'] += 1
-        self.training_stats['episodes_completed'] += 1
+        advantages = np.zeros_like(rewards)
+        returns = np.zeros_like(rewards)
         
-        if len(self.episode_rewards) > 0:
-            latest_reward = self.episode_rewards[-1]
-            
-            # Update best reward
-            if latest_reward > self.training_stats['best_episode_reward']:
-                self.training_stats['best_episode_reward'] = latest_reward
-            
-            # Update average reward
-            self.training_stats['avg_episode_reward'] = float(np.mean(list(self.episode_rewards)[-50:]))
+        last_gae = 0
         
-        # Update loss trends
-        if len(self.policy_losses) >= 10:
-            recent_policy_losses = list(self.policy_losses)[-10:]
-            self.training_stats['policy_loss_trend'] = np.polyfit(range(len(recent_policy_losses)), recent_policy_losses, 1)[0]
-        
-        if len(self.value_losses) >= 10:
-            recent_value_losses = list(self.value_losses)[-10:]
-            self.training_stats['value_loss_trend'] = np.polyfit(range(len(recent_value_losses)), recent_value_losses, 1)[0]
-        
-        # Update from current update
-        self.training_stats['gradient_norm'] = update_stats['grad_norm']
-        
-        # Calculate explained variance
-        if len(self.buffer['returns']) > 0 and len(self.buffer['values']) > 0:
-            returns_np = np.array([r.item() for r in self.buffer['returns']])
-            values_np = np.array([v.item() for v in self.buffer['values']])
-            
-            if np.var(returns_np) > 1e-6:
-                explained_var = 1 - np.var(returns_np - values_np) / np.var(returns_np)
-                self.training_stats['explained_variance'] = max(0, explained_var)
-        
-        # Log statistics periodically
-        if self.training_stats['episodes_completed'] % 10 == 0:
-            self.log_operator_info(
-                f"📊 Training statistics update",
-                episodes=self.training_stats['episodes_completed'],
-                avg_reward=f"{self.training_stats['avg_episode_reward']:.3f}",
-                best_reward=f"{self.training_stats['best_episode_reward']:.3f}",
-                policy_loss=f"{update_stats['policy_loss']:.6f}",
-                value_loss=f"{update_stats['value_loss']:.6f}",
-                explained_variance=f"{self.training_stats['explained_variance']:.3f}"
-            )
-    
-    def _check_early_stopping(self):
-        """Check for early stopping conditions"""
-        
-        if len(self.episode_rewards) >= 20:
-            recent_performance = np.mean(list(self.episode_rewards)[-20:])
-            
-            if recent_performance > self.best_performance:
-                self.best_performance = recent_performance
-                self.early_stopping_counter = 0
+        for t in reversed(range(len(rewards))):
+            if t == len(rewards) - 1:
+                next_value = 0
+                next_non_terminal = 1 - dones[t]
             else:
-                self.early_stopping_counter += 1
+                next_value = values[t + 1]
+                next_non_terminal = 1 - dones[t]
             
-            if self.early_stopping_counter >= self.early_stopping_patience:
-                self.log_operator_warning(
-                    f"Early stopping triggered",
-                    patience=self.early_stopping_patience,
-                    best_performance=f"{self.best_performance:.3f}",
-                    recent_performance=f"{recent_performance:.3f}"
-                )
-    
+            delta = rewards[t] + self.config.gamma * next_value * next_non_terminal - values[t]
+            advantages[t] = last_gae = delta + self.config.gamma * self.config.gae_lambda * next_non_terminal * last_gae
+        
+        returns = advantages + values
+        
+        self.buffer['advantages'] = advantages.tolist()
+        self.buffer['returns'] = returns.tolist()
+
+    def _update_action_statistics(self):
+        """Update action statistics"""
+        if len(self.action_history) > 10:
+            actions = np.array(list(self.action_history)[-100:])  # Last 100 actions
+            
+            self.action_statistics['mean_action'] = np.mean(actions, axis=0)
+            self.action_statistics['action_std'] = np.std(actions, axis=0)
+            self.action_statistics['action_range'] = np.ptp(actions, axis=0)
+            
+            # Calculate exploration level
+            action_entropy = -np.sum(self.action_statistics['action_std'] * np.log(self.action_statistics['action_std'] + 1e-8))
+            self.action_statistics['exploration_level'] = float(np.clip(action_entropy / self.config.act_size, 0, 1))
+
     def _clear_buffer(self):
         """Clear experience buffer"""
         for key in self.buffer:
             self.buffer[key].clear()
-    
-    def select_action(self, obs_tensor: torch.Tensor) -> torch.Tensor:
-        """Enhanced action selection with validation"""
-        
+
+    async def _update_agent_metrics(self) -> Dict[str, Any]:
+        """Update agent performance metrics"""
         try:
-            # Validate input
-            if torch.any(torch.isnan(obs_tensor)):
-                self.log_operator_error("NaN in observation tensor")
-                obs_tensor = torch.nan_to_num(obs_tensor)
-            
-            with torch.no_grad():
-                action_mean, action_std, _ = self.network(obs_tensor)
-                
-                # Create distribution and sample
-                dist = torch.distributions.Normal(action_mean, action_std)
-                action = dist.sample()
-                
-                # Validate action
-                if torch.any(torch.isnan(action)):
-                    self.log_operator_error("NaN in action output")
-                    action = torch.zeros_like(action)
-                
-                # Clamp action to reasonable range
-                action = torch.clamp(action, -2.0, 2.0)
-                
-                return action
-            
-        except Exception as e:
-            self.log_operator_error(f"Action selection failed: {e}")
-            batch_size = obs_tensor.shape[0] if obs_tensor.ndim > 1 else 1
-            return torch.zeros(batch_size, self.act_size, device=self.device)
-    
-    # ═══════════════════════════════════════════════════════════════════
-    # OBSERVATION AND ANALYSIS METHODS
-    # ═══════════════════════════════════════════════════════════════════
-    
-    def get_observation_components(self) -> np.ndarray:
-        """Enhanced observation components with comprehensive agent state"""
-        
-        try:
-            # Action statistics
-            action_mean = float(self.action_statistics['mean_action'].mean())
-            action_std = float(self.action_statistics['action_std'].mean())
-            exploration_level = float(self.action_statistics['exploration_level'])
-            
-            # Performance metrics
+            # Calculate performance score
             if len(self.episode_rewards) > 0:
-                avg_reward = float(np.mean(list(self.episode_rewards)[-10:]))
-                reward_trend = 0.0
-                if len(self.episode_rewards) >= 5:
-                    recent_rewards = list(self.episode_rewards)[-5:]
-                    reward_trend = float(np.polyfit(range(len(recent_rewards)), recent_rewards, 1)[0])
+                avg_reward = np.mean(list(self.episode_rewards)[-10:])
+                performance_score = max(0, min(1, (avg_reward + 100) / 200))  # Normalize to 0-1
             else:
                 avg_reward = 0.0
-                reward_trend = 0.0
+                performance_score = 0.0
             
-            # Training progress
-            episodes_normalized = min(1.0, self.training_stats['episodes_completed'] / 1000.0)
+            # Update training stats
+            self.training_stats['avg_episode_reward'] = avg_reward
             
-            # Loss trends
-            policy_loss_trend = float(self.training_stats['policy_loss_trend'])
-            value_loss_trend = float(self.training_stats['value_loss_trend'])
+            # Learning rate adaptation
+            if len(self.episode_rewards) > 0:
+                self.lr_scheduler.step(avg_reward)
+                current_lr = self.optimizer.param_groups[0]['lr']
+                self.training_stats['learning_rate'] = current_lr
             
-            # Explained variance
-            explained_variance = float(self.training_stats['explained_variance'])
-            
-            # Current learning rate
-            current_lr = float(self.optimizer.param_groups[0]['lr']) / 1e-3  # Normalize
-            
-            observation = np.array([
-                action_mean,           # Current action bias
-                action_std,            # Action exploration level
-                exploration_level,     # Calculated exploration
-                avg_reward / 100.0,    # Normalized average reward
-                reward_trend / 10.0,   # Normalized reward trend
-                episodes_normalized,   # Training progress
-                policy_loss_trend,     # Policy improvement trend
-                value_loss_trend,      # Value learning trend
-                explained_variance,    # Value function quality
-                current_lr,            # Adaptive learning rate
-                float(len(self.buffer['rewards'])) / 200.0,  # Buffer fullness
-                self.entropy_coeff / 0.02  # Current exploration coefficient
-            ], dtype=np.float32)
-            
-            # Validate observation
-            if np.any(np.isnan(observation)):
-                self.log_operator_error(f"NaN in observation: {observation}")
-                observation = np.nan_to_num(observation)
-            
-            # Clamp to reasonable ranges
-            observation = np.clip(observation, -5.0, 5.0)
-            
-            return observation
+            return {
+                'agent_metrics': {
+                    'performance_score': performance_score,
+                    'average_reward': avg_reward,
+                    'episodes_completed': self.training_stats['episodes_completed'],
+                    'training_updates': self.training_stats['total_updates'],
+                    'exploration_level': self.action_statistics['exploration_level'],
+                    'learning_rate': self.training_stats['learning_rate']
+                }
+            }
             
         except Exception as e:
-            self.log_operator_error(f"Observation generation failed: {e}")
-            return np.zeros(12, dtype=np.float32)
-    
-    def _publish_agent_status(self, info_bus: InfoBus):
-        """Publish agent status to InfoBus"""
-        
-        agent_status = {
-            'agent_type': 'ppo',
-            'training_stats': self.training_stats.copy(),
-            'action_statistics': {
-                k: v.tolist() if isinstance(v, np.ndarray) else v 
-                for k, v in self.action_statistics.items()
-            },
-            'performance_metrics': {
-                'episodes_completed': len(self.episode_rewards),
-                'avg_episode_reward': float(np.mean(list(self.episode_rewards)[-10:])) if self.episode_rewards else 0.0,
-                'best_episode_reward': float(max(self.episode_rewards)) if self.episode_rewards else 0.0,
-                'recent_policy_loss': float(self.policy_losses[-1]) if self.policy_losses else 0.0,
-                'recent_value_loss': float(self.value_losses[-1]) if self.value_losses else 0.0,
-                'buffer_size': len(self.buffer['rewards'])
-            },
-            'learning_parameters': {
-                'learning_rate': float(self.optimizer.param_groups[0]['lr']),
-                'entropy_coeff': self.entropy_coeff,
-                'clip_eps': self.clip_eps,
-                'early_stopping_counter': self.early_stopping_counter
-            },
-            'context_performance': {
-                regime: {
-                    'avg_reward': float(np.mean(data['rewards'][-10:])) if len(data['rewards']) >= 10 else 0.0,
-                    'count': data['count']
+            self.logger.error(f"Agent metrics update failed: {e}")
+            return {'agent_metrics': {'error': str(e)}}
+
+    async def _generate_ppo_thesis(self, ppo_data: Dict[str, Any], 
+                                 result: Dict[str, Any]) -> str:
+        """Generate comprehensive PPO thesis"""
+        try:
+            # Performance metrics
+            episodes = self.training_stats['episodes_completed']
+            updates = self.training_stats['total_updates']
+            avg_reward = self.training_stats['avg_episode_reward']
+            
+            # Training metrics
+            policy_loss = self.training_stats['policy_loss_trend']
+            value_loss = self.training_stats['value_loss_trend']
+            explained_var = self.training_stats['explained_variance']
+            
+            thesis_parts = [
+                f"PPO Agent Performance: {episodes} episodes completed with {updates} policy updates",
+                f"Average reward: {avg_reward:.2f} with explained variance {explained_var:.2f}",
+                f"Learning progress: Policy loss {policy_loss:.4f}, Value loss {value_loss:.4f}"
+            ]
+            
+            # Action analysis
+            if result.get('action_selected', False):
+                action = result.get('action', [0, 0])
+                value_est = result.get('value_estimate', 0)
+                thesis_parts.append(f"Action selected: [{action[0]:.3f}, {action[1]:.3f}] with value estimate {value_est:.3f}")
+            
+            # Training analysis
+            if result.get('training_performed', False):
+                update_result = result.get('update_result', {})
+                grad_norm = update_result.get('gradient_norm', 0)
+                thesis_parts.append(f"Policy updated with gradient norm {grad_norm:.4f}")
+            
+            # Exploration analysis
+            exploration = self.action_statistics['exploration_level']
+            thesis_parts.append(f"Exploration level: {exploration:.2f} maintaining learning diversity")
+            
+            # Learning rate adaptation
+            current_lr = self.training_stats['learning_rate']
+            if current_lr != self.config.learning_rate:
+                thesis_parts.append(f"Learning rate adapted to {current_lr:.2e} for optimization")
+            
+            # Performance assessment
+            if len(self.episode_rewards) > 10:
+                recent_trend = np.mean(list(self.episode_rewards)[-5:]) - np.mean(list(self.episode_rewards)[-10:-5])
+                if recent_trend > 0.1:
+                    thesis_parts.append("Recent performance trend: IMPROVING")
+                elif recent_trend < -0.1:
+                    thesis_parts.append("Recent performance trend: DECLINING")
+                else:
+                    thesis_parts.append("Recent performance trend: STABLE")
+            
+            return " | ".join(thesis_parts)
+            
+        except Exception as e:
+            return f"PPO thesis generation failed: {str(e)} - Agent continuing with basic functionality"
+
+    async def _update_ppo_smart_bus(self, result: Dict[str, Any], thesis: str):
+        """Update SmartInfoBus with PPO results"""
+        try:
+            # Policy actions
+            if result.get('action_selected', False):
+                action_data = {
+                    'action': result.get('action', [0, 0]),
+                    'log_prob': result.get('log_prob', 0.0),
+                    'value_estimate': result.get('value_estimate', 0.0),
+                    'action_std': result.get('action_std', [1.0, 1.0]),
+                    'exploration_level': self.action_statistics['exploration_level']
                 }
-                for regime, data in self.context_performance.items()
+                
+                self.smart_bus.set(
+                    'policy_actions',
+                    action_data,
+                    module='PPOAgent',
+                    thesis=thesis
+                )
+            
+            # Agent performance
+            agent_metrics = result.get('agent_metrics', {})
+            performance_data = {
+                'performance_score': agent_metrics.get('performance_score', 0.0),
+                'average_reward': agent_metrics.get('average_reward', 0.0),
+                'episodes_completed': agent_metrics.get('episodes_completed', 0),
+                'training_updates': agent_metrics.get('training_updates', 0),
+                'learning_rate': agent_metrics.get('learning_rate', self.config.learning_rate)
             }
-        }
-        
-        InfoBusUpdater.update_agent_status(info_bus, 'ppo', agent_status)
-    
-    # ═══════════════════════════════════════════════════════════════════
-    # STATE MANAGEMENT AND PERSISTENCE
-    # ═══════════════════════════════════════════════════════════════════
-    
-    def get_state(self) -> Dict[str, Any]:
-        """Enhanced state management"""
-        base_state = super().get_state()
-        
-        agent_state = {
-            'network_state': self.network.state_dict(),
-            'optimizer_state': self.optimizer.state_dict(),
-            'training_stats': self.training_stats.copy(),
-            'action_statistics': {
-                k: v.tolist() if isinstance(v, np.ndarray) else v 
-                for k, v in self.action_statistics.items()
-            },
-            'hyperparameters': {
-                'clip_eps': self.clip_eps,
-                'value_coeff': self.value_coeff,
-                'entropy_coeff': self.entropy_coeff,
-                'gae_lambda': self.gae_lambda,
-                'gamma': self.gamma
-            },
-            'performance_history': {
-                'episode_rewards': list(self.episode_rewards),
-                'episode_lengths': list(self.episode_lengths),
-                'policy_losses': list(self.policy_losses),
-                'value_losses': list(self.value_losses)
-            },
-            'early_stopping_state': {
-                'best_performance': self.best_performance,
-                'early_stopping_counter': self.early_stopping_counter
-            },
-            'context_performance': {
-                regime: {
-                    'rewards': data['rewards'][-50:],  # Keep recent history
-                    'count': data['count']
+            
+            self.smart_bus.set(
+                'agent_performance',
+                performance_data,
+                module='PPOAgent',
+                thesis="PPO agent performance metrics and learning progress"
+            )
+            
+            # Training metrics
+            if result.get('training_performed', False):
+                training_data = {
+                    'policy_loss': self.training_stats['policy_loss_trend'],
+                    'value_loss': self.training_stats['value_loss_trend'],
+                    'entropy': self.training_stats['entropy_trend'],
+                    'gradient_norm': self.training_stats['gradient_norm'],
+                    'explained_variance': self.training_stats['explained_variance'],
+                    'total_updates': self.training_stats['total_updates']
                 }
-                for regime, data in self.context_performance.items()
-            },
-            'last_action': self.last_action.tolist()
+                
+                self.smart_bus.set(
+                    'training_metrics',
+                    training_data,
+                    module='PPOAgent',
+                    thesis="PPO training metrics and optimization progress"
+                )
+            
+            # Policy gradients info
+            gradient_data = {
+                'gradient_norm': self.training_stats['gradient_norm'],
+                'learning_rate': self.training_stats['learning_rate'],
+                'network_parameters': sum(p.numel() for p in self.network.parameters()),
+                'forward_passes': self._neural_performance['forward_passes'],
+                'backward_passes': self._neural_performance['backward_passes']
+            }
+            
+            self.smart_bus.set(
+                'policy_gradients',
+                gradient_data,
+                module='PPOAgent',
+                thesis="Policy gradient information and neural network performance"
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Failed to update SmartInfoBus: {e}")
+
+    async def _handle_no_data_fallback(self) -> Dict[str, Any]:
+        """Handle case when no PPO data is available"""
+        self.logger.warning("No PPO data available - returning current state")
+        
+        return {
+            'episodes_completed': self.training_stats['episodes_completed'],
+            'training_updates': self.training_stats['total_updates'],
+            'average_reward': self.training_stats['avg_episode_reward'],
+            'exploration_level': self.action_statistics['exploration_level'],
+            'fallback_reason': 'no_ppo_data'
+        }
+
+    async def _handle_ppo_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
+        """Handle PPO errors"""
+        processing_time = (time.time() - start_time) * 1000
+        
+        # Update circuit breaker
+        self.circuit_breaker['failures'] += 1
+        self.circuit_breaker['last_failure'] = time.time()
+        
+        if self.circuit_breaker['failures'] >= self.circuit_breaker['threshold']:
+            self.circuit_breaker['state'] = 'OPEN'
+        
+        # Log error with context
+        error_context = self.error_pinpointer.analyze_error(error, "PPOAgent")
+        explanation = self.english_explainer.explain_error(
+            "PPOAgent", str(error), "PPO training"
+        )
+        
+        self.logger.error(
+            format_operator_message(
+                "💥", "PPO_AGENT_ERROR",
+                error=str(error),
+                details=explanation,
+                processing_time_ms=processing_time,
+                context="ppo_training"
+            )
+        )
+        
+        # Record failure
+        self._record_failure(error)
+        
+        return self._create_fallback_response(f"error: {str(error)}")
+
+    def _create_fallback_response(self, reason: str) -> Dict[str, Any]:
+        """Create fallback response for error cases"""
+        return {
+            'episodes_completed': self.training_stats['episodes_completed'],
+            'training_updates': self.training_stats['total_updates'],
+            'average_reward': self.training_stats['avg_episode_reward'],
+            'circuit_breaker_state': self.circuit_breaker['state'],
+            'fallback_reason': reason
+        }
+
+    def _update_ppo_health(self):
+        """Update PPO health metrics"""
+        try:
+            # Check learning progress
+            if len(self.episode_rewards) > 20:
+                recent_performance = np.mean(list(self.episode_rewards)[-10:])
+                if recent_performance < -50:  # Poor performance threshold
+                    self._health_status = 'warning'
+                elif recent_performance > 50:  # Good performance
+                    self._health_status = 'healthy'
+            
+            # Check gradient stability
+            if self.training_stats['gradient_norm'] > 10.0:
+                self._health_status = 'warning'
+            
+            self._last_health_check = time.time()
+            
+        except Exception as e:
+            self.logger.error(f"Health check failed: {e}")
+            self._health_status = 'warning'
+
+    def _analyze_learning_progress(self):
+        """Analyze learning progress"""
+        try:
+            if len(self.episode_rewards) >= 20:
+                # Check for learning plateau
+                recent_rewards = list(self.episode_rewards)[-10:]
+                older_rewards = list(self.episode_rewards)[-20:-10]
+                
+                recent_avg = np.mean(recent_rewards)
+                older_avg = np.mean(older_rewards)
+                
+                improvement = recent_avg - older_avg
+                
+                if improvement > 5.0:
+                    self.logger.info(
+                        format_operator_message(
+                            "📈", "LEARNING_PROGRESS_GOOD",
+                            improvement=f"{improvement:.2f}",
+                            recent_avg=f"{recent_avg:.2f}",
+                            context="learning_analysis"
+                        )
+                    )
+                elif improvement < -5.0:
+                    self.logger.warning(
+                        format_operator_message(
+                            "📉", "LEARNING_REGRESSION",
+                            regression=f"{improvement:.2f}",
+                            recent_avg=f"{recent_avg:.2f}",
+                            context="learning_analysis"
+                        )
+                    )
+            
+        except Exception as e:
+            self.logger.error(f"Learning progress analysis failed: {e}")
+
+    def _record_success(self, processing_time: float):
+        """Record successful processing"""
+        self.performance_tracker.record_metric(
+            'PPOAgent', 'processing_cycle', processing_time, True
+        )
+        
+        # Reset circuit breaker on success
+        if self.circuit_breaker['state'] == 'OPEN':
+            self.circuit_breaker['failures'] = 0
+            self.circuit_breaker['state'] = 'CLOSED'
+
+    def _record_failure(self, error: Exception):
+        """Record processing failure"""
+        self.performance_tracker.record_metric(
+            'PPOAgent', 'processing_cycle', 0, False
+        )
+
+    # Legacy compatibility methods
+    def record_step(self, obs_vec: np.ndarray, reward: float, done: bool = False, **kwargs):
+        """Legacy compatibility for step recording"""
+        experience = {
+            'observation': obs_vec,
+            'reward': reward,
+            'done': done
         }
         
-        if base_state:
-            base_state.update(agent_state)
-            return base_state
+        # Add action and log_prob if available
+        if hasattr(self, 'last_action'):
+            experience['action'] = self.last_action
+        if hasattr(self, '_last_log_prob'):
+            experience['log_prob'] = self._last_log_prob
+        if hasattr(self, '_last_value'):
+            experience['value'] = self._last_value
         
-        return agent_state
-    
-    def set_state(self, state: Dict[str, Any], strict: bool = False):
-        """Enhanced state restoration"""
-        super().set_state(state)
+        # Store in buffer
+        for key, value in experience.items():
+            if key == 'observation':
+                self.buffer['observations'].append(value)
+            elif key == 'action':
+                self.buffer['actions'].append(value)
+            elif key == 'reward':
+                self.buffer['rewards'].append(value)
+            elif key == 'log_prob':
+                self.buffer['log_probs'].append(value)
+            elif key == 'value':
+                self.buffer['values'].append(value)
+            elif key == 'done':
+                self.buffer['dones'].append(value)
+
+    def select_action(self, obs_tensor: torch.Tensor) -> torch.Tensor:
+        """Legacy compatibility for action selection"""
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         
         try:
-            # Restore network and optimizer
-            if 'network_state' in state:
-                self.network.load_state_dict(state['network_state'], strict=strict)
-            if 'optimizer_state' in state:
-                self.optimizer.load_state_dict(state['optimizer_state'])
+            obs_np = obs_tensor.cpu().numpy()
+            ppo_data = {'observation': obs_np}
+            result = loop.run_until_complete(self._process_action_selection(ppo_data))
             
-            # Restore training statistics
-            if 'training_stats' in state:
-                self.training_stats.update(state['training_stats'])
-            
-            # Restore action statistics
-            if 'action_statistics' in state:
-                for key, value in state['action_statistics'].items():
-                    if isinstance(value, list):
-                        self.action_statistics[key] = np.array(value)
-                    else:
-                        self.action_statistics[key] = value
-            
-            # Restore hyperparameters
-            if 'hyperparameters' in state:
-                hyperparams = state['hyperparameters']
-                self.clip_eps = hyperparams.get('clip_eps', self.clip_eps)
-                self.value_coeff = hyperparams.get('value_coeff', self.value_coeff)
-                self.entropy_coeff = hyperparams.get('entropy_coeff', self.entropy_coeff)
-                self.gae_lambda = hyperparams.get('gae_lambda', self.gae_lambda)
-                self.gamma = hyperparams.get('gamma', self.gamma)
-            
-            # Restore performance history
-            if 'performance_history' in state:
-                history = state['performance_history']
-                self.episode_rewards = deque(history.get('episode_rewards', []), maxlen=100)
-                self.episode_lengths = deque(history.get('episode_lengths', []), maxlen=100)
-                self.policy_losses = deque(history.get('policy_losses', []), maxlen=100)
-                self.value_losses = deque(history.get('value_losses', []), maxlen=100)
-            
-            # Restore early stopping state
-            if 'early_stopping_state' in state:
-                es_state = state['early_stopping_state']
-                self.best_performance = es_state.get('best_performance', -np.inf)
-                self.early_stopping_counter = es_state.get('early_stopping_counter', 0)
-            
-            # Restore context performance
-            if 'context_performance' in state:
-                for regime, data in state['context_performance'].items():
-                    self.context_performance[regime]['rewards'] = data.get('rewards', [])
-                    self.context_performance[regime]['count'] = data.get('count', 0)
-            
-            # Restore last action
-            if 'last_action' in state:
-                self.last_action = np.array(state['last_action'], dtype=np.float32)
-            
-            self.log_operator_info("✅ PPO Agent state restored successfully")
-            
-        except Exception as e:
-            self.log_operator_error(f"State restoration failed: {e}")
-    
-    # ═══════════════════════════════════════════════════════════════════
-    # ANALYSIS AND REPORTING METHODS
-    # ═══════════════════════════════════════════════════════════════════
-    
-    def get_agent_report(self) -> str:
-        """Generate comprehensive agent report"""
-        
-        # Performance statistics
-        if len(self.episode_rewards) > 0:
-            avg_reward = np.mean(list(self.episode_rewards)[-10:])
-            best_reward = max(self.episode_rewards)
-            reward_std = np.std(list(self.episode_rewards)[-10:])
-        else:
-            avg_reward = 0.0
-            best_reward = 0.0
-            reward_std = 0.0
-        
-        # Learning status
-        current_lr = self.optimizer.param_groups[0]['lr']
-        
-        # Context performance summary
-        context_summary = {}
-        for regime, data in self.context_performance.items():
-            if len(data['rewards']) >= 5:
-                context_summary[regime] = {
-                    'avg': np.mean(data['rewards'][-10:]),
-                    'count': data['count']
-                }
-        
-        return f"""
-🎯 PPO AGENT STATUS
-═══════════════════════════════════════
-🧠 Network: {sum(p.numel() for p in self.network.parameters()):,} parameters
-📊 Episodes: {self.training_stats['episodes_completed']}
-🎯 Updates: {self.training_stats['total_updates']}
-
-💰 PERFORMANCE
-• Avg Reward (10ep): {avg_reward:.3f}
-• Best Reward: {best_reward:.3f}
-• Reward Std: {reward_std:.3f}
-• Explained Variance: {self.training_stats['explained_variance']:.3f}
-
-📈 LEARNING METRICS
-• Learning Rate: {current_lr:.2e}
-• Policy Loss Trend: {self.training_stats['policy_loss_trend']:.6f}
-• Value Loss Trend: {self.training_stats['value_loss_trend']:.6f}
-• Entropy Coeff: {self.entropy_coeff:.4f}
-
-🎭 ACTION ANALYSIS
-• Mean Action: {self.action_statistics['mean_action'].mean():.3f}
-• Action Std: {self.action_statistics['action_std'].mean():.3f}
-• Exploration Level: {self.action_statistics['exploration_level']:.3f}
-• Buffer Size: {len(self.buffer['rewards'])}/200
-
-⚡ EARLY STOPPING
-• Best Performance: {self.best_performance:.3f}
-• Patience Counter: {self.early_stopping_counter}/{self.early_stopping_patience}
-
-🌍 CONTEXT PERFORMANCE
-{chr(10).join([f"• {regime}: {data['avg']:.3f} ({data['count']} trades)" for regime, data in context_summary.items()])}
-
-🔧 HYPERPARAMETERS
-• Clip Epsilon: {self.clip_eps}
-• Value Coeff: {self.value_coeff}
-• GAE Lambda: {self.gae_lambda}
-• Gamma: {self.gamma}
-        """
-    
-    def get_weights(self) -> Dict[str, Any]:
-        """Get network weights"""
-        return {'network': self.network.state_dict()}
-    
-    def get_gradients(self) -> Dict[str, Any]:
-        """Get current gradients"""
-        gradients = {}
-        for name, param in self.network.named_parameters():
-            if param.grad is not None:
-                gradients[name] = param.grad.cpu().numpy()
+            if result.get('action_selected', False):
+                action = result['action']
+                self._last_log_prob = result['log_prob']
+                self._last_value = result['value_estimate']
+                return torch.tensor(action, dtype=torch.float32)
             else:
-                gradients[name] = None
-        return gradients
-    
-    # Legacy compatibility
-    def step(self, *args, **kwargs):
-        """Legacy step method"""
-        pass
+                return torch.zeros(self.config.act_size, dtype=torch.float32)
+        finally:
+            loop.close()
+
+    def end_episode(self, **kwargs):
+        """Legacy compatibility for episode end"""
+        if len(self.buffer['rewards']) > 0:
+            episode_reward = sum(self.buffer['rewards'])
+            self.episode_rewards.append(episode_reward)
+            self.training_stats['episodes_completed'] += 1
+            
+            # Update best performance
+            if episode_reward > self.training_stats['best_episode_reward']:
+                self.training_stats['best_episode_reward'] = episode_reward
+
+    def get_state(self) -> Dict[str, Any]:
+        """Get module state for persistence"""
+        return {
+            'training_stats': self.training_stats.copy(),
+            'action_statistics': self.action_statistics.copy(),
+            'genome': self.genome.copy(),
+            'episodes_completed': self.training_stats['episodes_completed'],
+            'total_updates': self.training_stats['total_updates'],
+            'best_performance': self.best_performance,
+            'circuit_breaker': self.circuit_breaker.copy(),
+            'health_status': self._health_status,
+            'network_state': self.network.state_dict() if hasattr(self, 'network') else {},
+            'optimizer_state': self.optimizer.state_dict() if hasattr(self, 'optimizer') else {}
+        }
+
+    def set_state(self, state: Dict[str, Any]):
+        """Set module state from persistence"""
+        if 'training_stats' in state:
+            self.training_stats.update(state['training_stats'])
+        
+        if 'action_statistics' in state:
+            self.action_statistics.update(state['action_statistics'])
+        
+        if 'genome' in state:
+            self.genome.update(state['genome'])
+        
+        if 'best_performance' in state:
+            self.best_performance = state['best_performance']
+        
+        if 'circuit_breaker' in state:
+            self.circuit_breaker.update(state['circuit_breaker'])
+        
+        if 'health_status' in state:
+            self._health_status = state['health_status']
+        
+        # Restore network and optimizer states
+        if 'network_state' in state and hasattr(self, 'network'):
+            try:
+                self.network.load_state_dict(state['network_state'])
+            except Exception as e:
+                self.logger.warning(f"Failed to restore network state: {e}")
+        
+        if 'optimizer_state' in state and hasattr(self, 'optimizer'):
+            try:
+                self.optimizer.load_state_dict(state['optimizer_state'])
+            except Exception as e:
+                self.logger.warning(f"Failed to restore optimizer state: {e}")
+
+    def get_health_status(self) -> Dict[str, Any]:
+        """Get health status"""
+        return {
+            'status': self._health_status,
+            'last_check': self._last_health_check,
+            'circuit_breaker': self.circuit_breaker['state'],
+            'episodes_completed': self.training_stats['episodes_completed'],
+            'average_reward': self.training_stats['avg_episode_reward'],
+            'learning_rate': self.training_stats['learning_rate']
+        }
+
+    def stop_monitoring(self):
+        """Stop background monitoring"""
+        self._monitoring_active = False
+
+    def confidence(self, obs: Any = None, **kwargs) -> float:
+        """Legacy compatibility for confidence"""
+        # Return confidence based on performance and exploration
+        performance_confidence = max(0, min(1, (self.training_stats['avg_episode_reward'] + 50) / 100))
+        exploration_confidence = 1.0 - self.action_statistics['exploration_level']
+        
+        return (performance_confidence + exploration_confidence) / 2
+
+    def propose_action(self, obs: Any = None, **kwargs) -> np.ndarray:
+        """Legacy compatibility for action proposal"""
+        if obs is not None:
+            if isinstance(obs, np.ndarray):
+                obs_tensor = torch.tensor(obs, dtype=torch.float32)
+            else:
+                obs_tensor = torch.tensor([obs], dtype=torch.float32)
+            
+            action_tensor = self.select_action(obs_tensor)
+            return action_tensor.numpy()
+        
+        return self.last_action

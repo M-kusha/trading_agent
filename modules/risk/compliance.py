@@ -1,979 +1,902 @@
-# ─────────────────────────────────────────────────────────────
-# File: modules/risk/compliance.py
-# Enhanced with InfoBus integration & intelligent validation
-# ─────────────────────────────────────────────────────────────
+"""
+Enhanced Compliance Module with SmartInfoBus Integration
+Comprehensive trade validation and regulatory compliance monitoring
+"""
 
-from __future__ import annotations
 import numpy as np
 import datetime
 import os
-from typing import Any, List, Dict, Optional, Set, Tuple
+from typing import Dict, Any, List, Optional, Union, Tuple, Set
 from collections import deque, defaultdict
 
-from modules.core.core import Module, ModuleConfig, audit_step
-from modules.core.mixins import RiskMixin, TradingMixin, StateManagementMixin
-from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
-from modules.utils.audit_utils import AuditTracker, format_operator_message
+from modules.core.module_base import BaseModule, module
+from modules.core.mixins import SmartInfoBusRiskMixin, SmartInfoBusStateMixin, SmartInfoBusTradingMixin
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.monitoring.health_monitor import HealthMonitor
+from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-class ComplianceModule(Module, RiskMixin, TradingMixin, StateManagementMixin):
+@module(
+    name="ComplianceModule",
+    version="3.0.0",
+    category="risk",
+    provides=["compliance_status", "validation_results", "risk_limits"],
+    requires=["positions", "pending_orders", "market_context"],
+    description="Enhanced compliance validation with intelligent risk assessment and regulatory monitoring",
+    thesis_required=True,
+    health_monitoring=True,
+    performance_tracking=True,
+    error_handling=True
+)
+class ComplianceModule(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, SmartInfoBusTradingMixin):
     """
-    Enhanced compliance validation system with InfoBus integration.
-    Provides comprehensive trade validation with intelligent risk assessment.
+    Enhanced Compliance Module with SmartInfoBus Integration
+    
+    Provides comprehensive trade validation, regulatory compliance monitoring,
+    and intelligent risk limit enforcement with context-aware adjustments.
     """
-
-    DEFAULT_ALLOWED_SYMBOLS = {
-        "EUR/USD", "EURUSD", "XAU/USD", "XAUUSD", "GBP/USD", "GBPUSD",
-        "USD/JPY", "USDJPY", "AUD/USD", "AUDUSD", "USD/CHF", "USDCHF",
+    
+    # Default allowed instruments
+    DEFAULT_ALLOWED_INSTRUMENTS = {
+        "EUR/USD", "EURUSD", "GBP/USD", "GBPUSD", "USD/JPY", "USDJPY",
+        "XAU/USD", "XAUUSD", "AUD/USD", "AUDUSD", "USD/CHF", "USDCHF",
         "NZD/USD", "NZDUSD", "EUR/GBP", "EURGBP", "EUR/JPY", "EURJPY",
         "GBP/JPY", "GBPJPY", "CHF/JPY", "CHFJPY", "AUD/JPY", "AUDJPY"
     }
-
-    def __init__(
-        self,
-        max_leverage: float = 30.0,
-        max_single_position_risk: float = 0.20,
-        max_total_risk: float = 0.50,
-        max_daily_trades: int = 100,
-        min_trade_size: float = 0.01,
-        max_trade_size: float = 10.0,
-        allowed_symbols: Optional[List[str]] = None,
-        restricted_hours: Optional[List[int]] = None,
-        dynamic_limits: bool = True,
-        debug: bool = False,
-        **kwargs
-    ):
-        # Initialize with enhanced config
-        config = ModuleConfig(
-            debug=debug,
-            max_history=kwargs.get('max_history', 200),
-            audit_enabled=kwargs.get('audit_enabled', True),
-            **kwargs
-        )
-        super().__init__(config)
+    
+    def __init__(self, config=None, **kwargs):
+        self.config = config or {}
+        super().__init__()
+        self._initialize_advanced_systems()
         
-        # Initialize mixins
-        self._initialize_risk_state()
-        self._initialize_trading_state()
+        # Core compliance configuration
+        self.max_leverage = self.config.get('max_leverage', 30.0)
+        self.max_position_risk = self.config.get('max_position_risk', 0.20)
+        self.max_total_risk = self.config.get('max_total_risk', 0.50)
+        self.max_daily_trades = self.config.get('max_daily_trades', 100)
+        self.min_trade_size = self.config.get('min_trade_size', 0.01)
+        self.max_trade_size = self.config.get('max_trade_size', 10.0)
+        self.enabled = self.config.get('enabled', True)
         
-        # Core configuration
-        self.dynamic_limits = dynamic_limits
+        # Dynamic risk management
+        self.dynamic_limits = self.config.get('dynamic_limits', True)
+        self.regime_aware = self.config.get('regime_aware', True)
         
-        # Risk parameters
-        self.base_limits = {
-            'max_leverage': float(max_leverage),
-            'max_single_position_risk': float(max_single_position_risk),
-            'max_total_risk': float(max_total_risk),
-            'max_daily_trades': int(max_daily_trades),
-            'min_trade_size': float(min_trade_size),
-            'max_trade_size': float(max_trade_size)
-        }
+        # Allowed instruments management
+        self.allowed_instruments = self._initialize_allowed_instruments()
+        self.restricted_hours = set(self.config.get('restricted_hours', []))
         
-        # Current limits (may be adjusted dynamically)
-        self.current_limits = self.base_limits.copy()
-        
-        # Symbol management
-        self.allowed_symbols = self._normalize_symbols(
-            allowed_symbols or self._get_default_symbols()
-        )
-        
-        # Time restrictions
-        self.restricted_hours = set(restricted_hours) if restricted_hours else set()
-        
-        # Enhanced state tracking
+        # State tracking
         self.daily_trade_count = 0
         self.last_trade_date = None
         self.total_exposure = 0.0
-        self.violations_count = 0
-        self.violation_history = deque(maxlen=100)
+        self.current_leverage = 0.0
         
-        # Compliance tracking
-        self.compliance_flags: List[str] = []
-        self.validation_cache = {}
-        self.risk_budget_used = 0.0
+        # Risk budget tracking
+        self.risk_budget_usage = 0.0
+        self.position_limits = {}
+        self.compliance_score = 1.0
         
-        # Performance metrics
-        self.validation_stats = defaultdict(int)
-        self.rejection_reasons = defaultdict(int)
-        self.approval_rate = 1.0
-        
-        # Market context awareness
-        self.context_adjustments = {
-            'volatile': {'leverage': 0.8, 'position_risk': 0.8, 'daily_trades': 1.2},
-            'ranging': {'leverage': 1.1, 'position_risk': 1.1, 'daily_trades': 0.9},
-            'trending': {'leverage': 1.0, 'position_risk': 1.0, 'daily_trades': 1.0}
+        # Validation tracking
+        self.validation_stats = {
+            'total_validations': 0,
+            'approved': 0,
+            'rejected': 0,
+            'violations': defaultdict(int)
         }
         
-        # Audit system
-        self.audit_manager = AuditTracker("ComplianceModule")
+        # Performance analytics
+        self.rejection_history = deque(maxlen=100)
+        self.approval_rate_history = deque(maxlen=50)
+        self.compliance_violations = deque(maxlen=200)
         
-        self.log_operator_info(
-            "🛡️ Enhanced Compliance Module initialized",
-            max_leverage=f"{max_leverage:.1f}x",
-            position_risk_limit=f"{max_single_position_risk:.1%}",
-            total_risk_limit=f"{max_total_risk:.1%}",
-            allowed_symbols=len(self.allowed_symbols),
-            dynamic_limits=dynamic_limits
+        # Context-aware adjustments
+        self.regime_adjustments = {
+            'volatile': {'leverage': 0.7, 'position_risk': 0.8, 'daily_trades': 1.2},
+            'trending': {'leverage': 1.1, 'position_risk': 1.0, 'daily_trades': 0.9},
+            'ranging': {'leverage': 1.0, 'position_risk': 1.1, 'daily_trades': 1.0},
+            'crisis': {'leverage': 0.5, 'position_risk': 0.6, 'daily_trades': 0.7}
+        }
+        
+        self.logger.info(format_operator_message(
+            message="Enhanced Compliance Module initialized",
+            icon="🛡️",
+            max_leverage=f"{self.max_leverage:.1f}x",
+            position_risk_limit=f"{self.max_position_risk:.1%}",
+            allowed_instruments=len(self.allowed_instruments),
+            dynamic_limits=self.dynamic_limits,
+            enabled=self.enabled
+        ))
+    
+    def _initialize_advanced_systems(self):
+        """Initialize advanced monitoring and error handling systems"""
+        self.smart_bus = InfoBusManager.get_instance()
+        self.logger = RotatingLogger(
+            name="ComplianceModule",
+            log_path="logs/risk/compliance.log",
+            max_lines=5000,
+            operator_mode=True,
+            plain_english=True
         )
-
-    def _get_default_symbols(self) -> List[str]:
-        """Get default allowed symbols from environment or defaults"""
-        env_symbols = os.getenv("COMPLIANCE_SYMBOLS")
-        if env_symbols:
-            return [s.strip() for s in env_symbols.split(",")]
-        return list(self.DEFAULT_ALLOWED_SYMBOLS)
-
-    def _normalize_symbols(self, symbols: List[str]) -> Set[str]:
-        """Normalize symbols to handle both EUR/USD and EURUSD formats"""
+        self.error_pinpointer = ErrorPinpointer()
+        self.error_handler = create_error_handler("ComplianceModule", self.error_pinpointer)
+        self.english_explainer = EnglishExplainer()
+        self.system_utilities = SystemUtilities()
+        self.performance_tracker = PerformanceTracker()
+    
+    def _initialize_allowed_instruments(self) -> Set[str]:
+        """Initialize allowed instruments from config or environment"""
+        try:
+            # Check environment variable first
+            env_instruments = os.getenv("COMPLIANCE_INSTRUMENTS")
+            if env_instruments:
+                instruments = [inst.strip().upper() for inst in env_instruments.split(",")]
+                return self._normalize_instrument_symbols(instruments)
+            
+            # Use config or defaults
+            config_instruments = self.config.get('allowed_instruments', list(self.DEFAULT_ALLOWED_INSTRUMENTS))
+            return self._normalize_instrument_symbols(config_instruments)
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "instrument_initialization")
+            self.logger.warning(f"Instrument initialization failed: {error_context}")
+            return self._normalize_instrument_symbols(list(self.DEFAULT_ALLOWED_INSTRUMENTS))
+    
+    def _normalize_instrument_symbols(self, instruments: List[str]) -> Set[str]:
+        """Normalize instrument symbols to handle different formats"""
         normalized = set()
-        for sym in symbols:
-            sym = sym.strip().upper()
-            normalized.add(sym)
-            # Add both formats
-            if "/" in sym:
-                normalized.add(sym.replace("/", ""))
-            elif len(sym) == 6:  # Likely EURUSD format
-                normalized.add(f"{sym[:3]}/{sym[3:]}")
-        return normalized
-
-    def reset(self) -> None:
-        """Enhanced reset with comprehensive state cleanup"""
-        super().reset()
-        self._reset_risk_state()
-        self._reset_trading_state()
         
-        # Reset compliance state
-        self.daily_trade_count = 0
-        self.last_trade_date = None
-        self.total_exposure = 0.0
-        self.violations_count = 0
-        self.violation_history.clear()
-        
-        # Reset tracking
-        self.compliance_flags.clear()
-        self.validation_cache.clear()
-        self.risk_budget_used = 0.0
-        
-        # Reset statistics
-        self.validation_stats.clear()
-        self.rejection_reasons.clear()
-        self.approval_rate = 1.0
-        
-        # Reset limits to base values
-        self.current_limits = self.base_limits.copy()
-        
-        self.log_operator_info("🔄 Compliance Module reset - all validation state cleared")
-
-    @audit_step
-    def _step_impl(self, info_bus: Optional[InfoBus] = None, **kwargs) -> None:
-        """Enhanced step with InfoBus integration"""
-        
-        if not info_bus:
-            self.log_operator_warning("No InfoBus provided - compliance inactive")
-            return
-        
-        # Extract context for dynamic limit adjustment
-        context = extract_standard_context(info_bus)
-        
-        # Update daily trade tracking
-        self._update_daily_tracking(info_bus)
-        
-        # Adjust limits dynamically if enabled
-        if self.dynamic_limits:
-            self._adjust_limits_for_context(context)
-        
-        # Validate pending trades
-        self._validate_pending_trades(info_bus, context)
-        
-        # Update risk assessment
-        self._assess_current_risk(info_bus, context)
-        
-        # Update InfoBus with compliance status
-        self._update_info_bus(info_bus)
-        
-        # Update performance metrics
-        self._update_compliance_metrics()
-
-    def _update_daily_tracking(self, info_bus: InfoBus) -> None:
-        """Update daily trade count tracking"""
-        
-        current_date = datetime.datetime.now().date()
-        
-        # Reset counter if new day
-        if self.last_trade_date != current_date:
-            if self.last_trade_date is not None and self.daily_trade_count > 0:
-                self.log_operator_info(
-                    f"📊 Daily trading summary",
-                    date=str(self.last_trade_date),
-                    trades=self.daily_trade_count,
-                    limit=self.current_limits['max_daily_trades']
-                )
+        for instrument in instruments:
+            instrument = instrument.strip().upper()
+            normalized.add(instrument)
             
-            self.daily_trade_count = 0
-            self.last_trade_date = current_date
+            # Add both slash and non-slash formats
+            if "/" in instrument:
+                normalized.add(instrument.replace("/", ""))
+            elif len(instrument) == 6:  # EURUSD format
+                normalized.add(f"{instrument[:3]}/{instrument[3:]}")
         
-        # Count new trades from InfoBus
-        recent_trades = InfoBusExtractor.get_recent_trades(info_bus)
-        if recent_trades:
-            # Only count trades that happened today
-            today_trades = [
-                trade for trade in recent_trades
-                if self._is_trade_today(trade)
-            ]
-            self.daily_trade_count += len(today_trades)
-
-    def _is_trade_today(self, trade: Dict[str, Any]) -> bool:
-        """Check if trade happened today"""
+        return normalized
+    
+    async def process(self, **kwargs) -> Dict[str, Any]:
+        """
+        Enhanced compliance validation with comprehensive analysis
+        
+        Returns:
+            Dict containing compliance status, validation results, and risk assessment
+        """
         try:
-            trade_time = trade.get('timestamp')
-            if isinstance(trade_time, str):
-                trade_date = datetime.datetime.fromisoformat(
-                    trade_time.replace('Z', '+00:00')
-                ).date()
-                return trade_date == datetime.datetime.now().date()
-        except:
-            pass
-        return True  # Assume recent if can't parse
-
-    def _adjust_limits_for_context(self, context: Dict[str, Any]) -> None:
-        """Dynamically adjust limits based on market context"""
-        
-        regime = context.get('regime', 'unknown')
-        volatility_level = context.get('volatility_level', 'medium')
-        
-        # Get adjustment factors
-        adjustments = self.context_adjustments.get(regime, {'leverage': 1.0, 'position_risk': 1.0, 'daily_trades': 1.0})
-        
-        # Additional volatility adjustments
-        vol_multiplier = 1.0
-        if volatility_level == 'extreme':
-            vol_multiplier = 0.7
-        elif volatility_level == 'high':
-            vol_multiplier = 0.85
-        elif volatility_level == 'low':
-            vol_multiplier = 1.15
-        
-        # Apply adjustments
-        self.current_limits['max_leverage'] = (
-            self.base_limits['max_leverage'] * 
-            adjustments['leverage'] * vol_multiplier
-        )
-        
-        self.current_limits['max_single_position_risk'] = (
-            self.base_limits['max_single_position_risk'] * 
-            adjustments['position_risk'] * vol_multiplier
-        )
-        
-        self.current_limits['max_daily_trades'] = int(
-            self.base_limits['max_daily_trades'] * 
-            adjustments['daily_trades']
-        )
-
-    def _validate_pending_trades(self, info_bus: InfoBus, context: Dict[str, Any]) -> None:
-        """Validate any pending trades in InfoBus"""
-        
-        pending_orders = info_bus.get('pending_orders', [])
-        
-        for order in pending_orders:
-            try:
-                is_valid = self._validate_trade_from_info_bus(order, info_bus, context)
+            if not self.enabled:
+                return self._generate_disabled_response()
+            
+            # Extract comprehensive market context
+            market_context = self.smart_bus.get('market_context', 'ComplianceModule') or {}
+            positions = self.smart_bus.get('positions', 'ComplianceModule') or []
+            pending_orders = self.smart_bus.get('pending_orders', 'ComplianceModule') or []
+            balance = self.smart_bus.get('balance', 'ComplianceModule') or 10000.0
+            
+            # Update daily tracking
+            self._update_daily_tracking()
+            
+            # Adjust limits based on market context
+            current_limits = self._calculate_dynamic_limits(market_context)
+            
+            # Validate pending orders
+            validation_results = await self._validate_pending_orders_comprehensive(
+                pending_orders, positions, balance, market_context, current_limits
+            )
+            
+            # Assess current risk exposure
+            risk_assessment = self._assess_current_risk_exposure(positions, balance, current_limits)
+            
+            # Generate intelligent thesis
+            thesis = await self._generate_compliance_thesis(validation_results, risk_assessment, market_context)
+            
+            # Calculate compliance metrics
+            compliance_metrics = self._calculate_compliance_metrics(validation_results, risk_assessment)
+            
+            # Update SmartInfoBus
+            self._update_smart_info_bus(validation_results, risk_assessment, compliance_metrics, thesis)
+            
+            # Record performance metrics
+            self.performance_tracker.record_metric(
+                'ComplianceModule', 'validation_cycle', 
+                validation_results.get('processing_time_ms', 0), True
+            )
+            
+            return {
+                'compliance_score': self.compliance_score,
+                'validation_results': validation_results,
+                'risk_assessment': risk_assessment,
+                'compliance_metrics': compliance_metrics,
+                'current_limits': current_limits,
+                'thesis': thesis,
+                'recommendations': self._generate_recommendations(validation_results, risk_assessment)
+            }
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "ComplianceModule")
+            self.logger.error(f"Compliance processing failed: {error_context}")
+            return self._generate_error_response(str(error_context))
+    
+    def _update_daily_tracking(self):
+        """Update daily trade count tracking"""
+        try:
+            current_date = datetime.datetime.now().date()
+            
+            # Reset counter for new day
+            if self.last_trade_date != current_date:
+                if self.last_trade_date and self.daily_trade_count > 0:
+                    self.logger.info(format_operator_message(
+                        message="Daily trading summary",
+                        icon="📊",
+                        date=str(self.last_trade_date),
+                        trades=self.daily_trade_count,
+                        limit=self.max_daily_trades
+                    ))
                 
-                # Add validation result to order
-                order['compliance_validated'] = is_valid
-                order['compliance_flags'] = self.compliance_flags.copy()
+                self.daily_trade_count = 0
+                self.last_trade_date = current_date
                 
-            except Exception as e:
-                self.log_operator_error(f"Trade validation failed: {e}")
-                order['compliance_validated'] = False
-                order['compliance_flags'] = [f"validation_error: {str(e)}"]
-
-    def _validate_trade_from_info_bus(self, order: Dict[str, Any], 
-                                    info_bus: InfoBus, context: Dict[str, Any]) -> bool:
-        """Validate a trade using InfoBus data"""
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "daily_tracking")
+            self.logger.warning(f"Daily tracking update failed: {error_context}")
+    
+    def _calculate_dynamic_limits(self, market_context: Dict[str, Any]) -> Dict[str, float]:
+        """Calculate dynamic limits based on market context"""
+        try:
+            # Start with base limits
+            current_limits = {
+                'max_leverage': self.max_leverage,
+                'max_position_risk': self.max_position_risk,
+                'max_total_risk': self.max_total_risk,
+                'max_daily_trades': self.max_daily_trades,
+                'min_trade_size': self.min_trade_size,
+                'max_trade_size': self.max_trade_size
+            }
+            
+            if not self.dynamic_limits:
+                return current_limits
+            
+            # Apply regime-based adjustments
+            regime = market_context.get('regime', 'unknown')
+            volatility_level = market_context.get('volatility_level', 'medium')
+            
+            # Regime adjustments
+            if regime in self.regime_adjustments:
+                adjustments = self.regime_adjustments[regime]
+                current_limits['max_leverage'] *= adjustments['leverage']
+                current_limits['max_position_risk'] *= adjustments['position_risk']
+                current_limits['max_daily_trades'] = int(current_limits['max_daily_trades'] * adjustments['daily_trades'])
+            
+            # Volatility adjustments
+            volatility_multipliers = {
+                'low': {'leverage': 1.1, 'position_risk': 1.1, 'trade_size': 1.0},
+                'medium': {'leverage': 1.0, 'position_risk': 1.0, 'trade_size': 1.0},
+                'high': {'leverage': 0.8, 'position_risk': 0.8, 'trade_size': 0.9},
+                'extreme': {'leverage': 0.6, 'position_risk': 0.6, 'trade_size': 0.8}
+            }
+            
+            if volatility_level in volatility_multipliers:
+                vol_adj = volatility_multipliers[volatility_level]
+                current_limits['max_leverage'] *= vol_adj['leverage']
+                current_limits['max_position_risk'] *= vol_adj['position_risk']
+                current_limits['max_trade_size'] *= vol_adj['trade_size']
+            
+            # Apply bounds to prevent extreme adjustments
+            current_limits['max_leverage'] = max(5.0, min(100.0, current_limits['max_leverage']))
+            current_limits['max_position_risk'] = max(0.05, min(0.5, current_limits['max_position_risk']))
+            current_limits['max_total_risk'] = max(0.2, min(1.0, current_limits['max_total_risk']))
+            
+            return current_limits
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "dynamic_limits")
+            self.logger.warning(f"Dynamic limits calculation failed: {error_context}")
+            return {
+                'max_leverage': self.max_leverage,
+                'max_position_risk': self.max_position_risk,
+                'max_total_risk': self.max_total_risk,
+                'max_daily_trades': self.max_daily_trades,
+                'min_trade_size': self.min_trade_size,
+                'max_trade_size': self.max_trade_size
+            }
+    
+    async def _validate_pending_orders_comprehensive(self, pending_orders: List[Dict], 
+                                                   positions: List[Dict], balance: float,
+                                                   market_context: Dict[str, Any], 
+                                                   current_limits: Dict[str, float]) -> Dict[str, Any]:
+        """Comprehensive validation of pending orders"""
+        start_time = datetime.datetime.now()
         
-        # Clear previous flags
-        self.compliance_flags.clear()
-        
-        # Extract trade parameters
-        instrument = order.get('instrument', order.get('symbol', 'UNKNOWN'))
-        size = abs(order.get('size', order.get('volume', 0)))
-        price = order.get('price', self._get_current_price(instrument, info_bus))
-        
-        # Get current state from InfoBus
-        risk_data = info_bus.get('risk', {})
-        balance = risk_data.get('balance', risk_data.get('equity', 10000))
-        positions = InfoBusExtractor.get_positions(info_bus)
-        
-        # Build validation context
-        validation_context = {
-            'timestamp': info_bus.get('timestamp', datetime.datetime.now().isoformat()),
-            'step_idx': info_bus.get('step_idx', 0),
-            'market_context': context,
-            'instrument': instrument,
-            'size': size,
-            'price': price,
-            'balance': balance,
-            'positions': positions
+        validation_results = {
+            'total_orders': len(pending_orders),
+            'approved': [],
+            'rejected': [],
+            'violations': [],
+            'validation_details': []
         }
         
-        # Perform comprehensive validation
-        return self._comprehensive_trade_validation(validation_context)
-
-    def _comprehensive_trade_validation(self, ctx: Dict[str, Any]) -> bool:
-        """Perform comprehensive trade validation"""
-        
-        validation_passed = True
-        checks_performed = []
-        
         try:
+            for order in pending_orders:
+                order_validation = await self._validate_single_order(
+                    order, positions, balance, market_context, current_limits
+                )
+                
+                validation_results['validation_details'].append(order_validation)
+                
+                if order_validation['approved']:
+                    validation_results['approved'].append(order)
+                    self.validation_stats['approved'] += 1
+                else:
+                    validation_results['rejected'].append(order)
+                    validation_results['violations'].extend(order_validation['violations'])
+                    
+                    # Track rejection reasons
+                    for violation in order_validation['violations']:
+                        self.validation_stats['violations'][violation['type']] += 1
+                
+                self.validation_stats['total_validations'] += 1
+            
+            # Calculate processing time
+            processing_time = (datetime.datetime.now() - start_time).total_seconds() * 1000
+            validation_results['processing_time_ms'] = processing_time
+            
+            # Update approval rate
+            if self.validation_stats['total_validations'] > 0:
+                approval_rate = self.validation_stats['approved'] / self.validation_stats['total_validations']
+                self.approval_rate_history.append(approval_rate)
+            
+            return validation_results
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "order_validation")
+            self.logger.error(f"Order validation failed: {error_context}")
+            return {'error': error_context, 'total_orders': len(pending_orders)}
+    
+    async def _validate_single_order(self, order: Dict[str, Any], positions: List[Dict],
+                                    balance: float, market_context: Dict[str, Any],
+                                    current_limits: Dict[str, float]) -> Dict[str, Any]:
+        """Validate a single order with comprehensive checks"""
+        try:
+            violations = []
+            order_details = {
+                'instrument': order.get('instrument', order.get('symbol', 'UNKNOWN')),
+                'size': abs(order.get('size', order.get('volume', 0))),
+                'side': order.get('side', 'BUY' if order.get('size', 0) > 0 else 'SELL'),
+                'price': order.get('price', 1.0)
+            }
+            
             # 1. Daily trade limit check
-            if not self._check_daily_trade_limit(ctx):
-                validation_passed = False
-            checks_performed.append(('daily_limit', validation_passed))
+            if self.daily_trade_count >= current_limits['max_daily_trades']:
+                violations.append({
+                    'type': 'daily_trade_limit',
+                    'message': f"Daily trade limit exceeded: {self.daily_trade_count}/{current_limits['max_daily_trades']}",
+                    'severity': 'critical'
+                })
             
-            # 2. Trading hours check
-            if not self._check_trading_hours(ctx):
-                validation_passed = False
-            checks_performed.append(('trading_hours', validation_passed))
+            # 2. Instrument allowlist check
+            if not self._is_instrument_allowed(order_details['instrument']):
+                violations.append({
+                    'type': 'instrument_not_allowed',
+                    'message': f"Instrument {order_details['instrument']} not in allowlist",
+                    'severity': 'critical'
+                })
             
-            # 3. Symbol allowlist check
-            if not self._check_allowed_symbol(ctx):
-                validation_passed = False
-            checks_performed.append(('symbol_allowed', validation_passed))
+            # 3. Trading hours check
+            if self._is_trading_restricted():
+                violations.append({
+                    'type': 'restricted_hours',
+                    'message': f"Trading restricted during current hour",
+                    'severity': 'warning'
+                })
             
             # 4. Trade size validation
-            if not self._check_trade_size_limits(ctx):
-                validation_passed = False
-            checks_performed.append(('trade_size', validation_passed))
+            size_violations = self._validate_trade_size(order_details['size'], current_limits)
+            violations.extend(size_violations)
             
             # 5. Position risk validation
-            if not self._check_position_risk(ctx):
-                validation_passed = False
-            checks_performed.append(('position_risk', validation_passed))
+            position_risk_violations = self._validate_position_risk(
+                order_details, positions, balance, current_limits
+            )
+            violations.extend(position_risk_violations)
             
             # 6. Total exposure validation
-            if not self._check_total_exposure(ctx):
-                validation_passed = False
-            checks_performed.append(('total_exposure', validation_passed))
+            exposure_violations = self._validate_total_exposure(
+                order_details, positions, balance, current_limits
+            )
+            violations.extend(exposure_violations)
             
             # 7. Leverage validation
-            if not self._check_leverage_limit(ctx):
-                validation_passed = False
-            checks_performed.append(('leverage', validation_passed))
+            leverage_violations = self._validate_leverage_limits(
+                order_details, positions, balance, current_limits
+            )
+            violations.extend(leverage_violations)
             
             # 8. Market context validation
-            if not self._check_market_context_restrictions(ctx):
-                validation_passed = False
-            checks_performed.append(('market_context', validation_passed))
+            context_violations = self._validate_market_context(order_details, market_context)
+            violations.extend(context_violations)
             
-            # Update statistics
-            self.validation_stats['total_validations'] += 1
-            if validation_passed:
-                self.validation_stats['approved'] += 1
-            else:
-                self.validation_stats['rejected'] += 1
-                self.violations_count += 1
+            # Determine approval status
+            critical_violations = [v for v in violations if v.get('severity') == 'critical']
+            approved = len(critical_violations) == 0
             
-            # Record validation audit
-            self._record_validation_audit(ctx, validation_passed, checks_performed)
+            return {
+                'order_details': order_details,
+                'approved': approved,
+                'violations': violations,
+                'risk_score': len(violations) / 8.0,  # Normalize by number of checks
+                'validation_timestamp': datetime.datetime.now().isoformat()
+            }
             
         except Exception as e:
-            self.log_operator_error(f"Validation process failed: {e}")
-            self.compliance_flags.append(f"validation_error: {str(e)}")
-            validation_passed = False
-        
-        return validation_passed
-
-    def _check_daily_trade_limit(self, ctx: Dict[str, Any]) -> bool:
-        """Check daily trade limit"""
-        if self.daily_trade_count >= self.current_limits['max_daily_trades']:
-            self.compliance_flags.append(
-                f"Daily trade limit exceeded: {self.daily_trade_count}/{self.current_limits['max_daily_trades']}"
-            )
-            self.rejection_reasons['daily_limit'] += 1
-            return False
-        return True
-
-    def _check_trading_hours(self, ctx: Dict[str, Any]) -> bool:
-        """Check trading hours restrictions"""
-        current_hour = datetime.datetime.now().hour
-        if current_hour in self.restricted_hours:
-            self.compliance_flags.append(f"Trading restricted at hour {current_hour}")
-            self.rejection_reasons['restricted_hours'] += 1
-            return False
-        return True
-
-    def _check_allowed_symbol(self, ctx: Dict[str, Any]) -> bool:
-        """Check if symbol is in allowlist"""
-        instrument = ctx['instrument'].upper()
-        
-        # Check both formats
-        if instrument not in self.allowed_symbols:
-            # Try alternative format
-            if "/" in instrument:
-                alt_format = instrument.replace("/", "")
-            elif len(instrument) == 6:
-                alt_format = f"{instrument[:3]}/{instrument[3:]}"
-            else:
-                alt_format = instrument
-            
-            if alt_format not in self.allowed_symbols:
-                self.compliance_flags.append(f"Symbol {instrument} not in allowlist")
-                self.rejection_reasons['symbol_not_allowed'] += 1
-                return False
-        
-        return True
-
-    def _check_trade_size_limits(self, ctx: Dict[str, Any]) -> bool:
-        """Check trade size within limits"""
-        size = ctx['size']
-        
-        if size < self.current_limits['min_trade_size']:
-            self.compliance_flags.append(
-                f"Trade size {size:.4f} below minimum {self.current_limits['min_trade_size']}"
-            )
-            self.rejection_reasons['size_too_small'] += 1
-            return False
-        
-        if size > self.current_limits['max_trade_size']:
-            self.compliance_flags.append(
-                f"Trade size {size:.4f} exceeds maximum {self.current_limits['max_trade_size']}"
-            )
-            self.rejection_reasons['size_too_large'] += 1
-            return False
-        
-        return True
-
-    def _check_position_risk(self, ctx: Dict[str, Any]) -> bool:
-        """Check single position risk limit"""
-        size = ctx['size']
-        price = ctx['price']
-        balance = ctx['balance']
-        
-        # Calculate position value (assuming standard lot sizing)
-        position_value = size * price * 100_000  # Standard forex lot
-        position_risk = position_value / max(balance, 1.0)
-        
-        if position_risk > self.current_limits['max_single_position_risk']:
-            self.compliance_flags.append(
-                f"Position risk {position_risk:.1%} exceeds limit {self.current_limits['max_single_position_risk']:.1%}"
-            )
-            self.rejection_reasons['position_risk'] += 1
-            return False
-        
-        return True
-
-    def _check_total_exposure(self, ctx: Dict[str, Any]) -> bool:
-        """Check total portfolio exposure"""
-        size = ctx['size']
-        price = ctx['price']
-        balance = ctx['balance']
-        positions = ctx['positions']
-        
-        # Calculate new position value
-        new_position_value = size * price * 100_000
-        
-        # Calculate existing exposure
-        existing_exposure = 0.0
-        for pos in positions:
-            pos_size = abs(pos.get('size', 0))
-            pos_price = pos.get('current_price', pos.get('entry_price', price))
-            existing_exposure += pos_size * pos_price * 100_000
-        
-        # Total exposure
-        total_exposure = existing_exposure + new_position_value
-        total_risk = total_exposure / max(balance, 1.0)
-        
-        if total_risk > self.current_limits['max_total_risk']:
-            self.compliance_flags.append(
-                f"Total risk {total_risk:.1%} exceeds limit {self.current_limits['max_total_risk']:.1%}"
-            )
-            self.rejection_reasons['total_exposure'] += 1
-            return False
-        
-        # Update exposure tracking
-        self.total_exposure = total_exposure
-        
-        return True
-
-    def _check_leverage_limit(self, ctx: Dict[str, Any]) -> bool:
-        """Check leverage limit"""
-        leverage = self.total_exposure / max(ctx['balance'], 1.0)
-        
-        if leverage > self.current_limits['max_leverage']:
-            self.compliance_flags.append(
-                f"Leverage {leverage:.1f}x exceeds limit {self.current_limits['max_leverage']:.1f}x"
-            )
-            self.rejection_reasons['leverage'] += 1
-            return False
-        
-        return True
-
-    def _check_market_context_restrictions(self, ctx: Dict[str, Any]) -> bool:
-        """Check market context-specific restrictions"""
-        market_context = ctx.get('market_context', {})
-        
-        # Restrict large trades in extreme volatility
-        volatility_level = market_context.get('volatility_level', 'medium')
-        if volatility_level == 'extreme' and ctx['size'] > self.current_limits['max_trade_size'] * 0.5:
-            self.compliance_flags.append(
-                f"Large trade restricted in extreme volatility: {ctx['size']:.4f}"
-            )
-            self.rejection_reasons['extreme_volatility'] += 1
-            return False
-        
-        # Additional regime-specific restrictions can be added here
-        
-        return True
-
-    def _get_current_price(self, instrument: str, info_bus: InfoBus) -> float:
-        """Get current price for instrument from InfoBus"""
-        prices = info_bus.get('prices', {})
-        
-        # Try exact match first
-        if instrument in prices:
-            return float(prices[instrument])
-        
-        # Try alternative formats
-        for symbol, price in prices.items():
-            if (symbol.replace("/", "") == instrument.replace("/", "") or
-                symbol.replace("/", "") == instrument or
-                symbol == instrument.replace("/", "")):
-                return float(price)
-        
-        # Default fallback
-        return 1.0
-
-    def _assess_current_risk(self, info_bus: InfoBus, context: Dict[str, Any]) -> None:
-        """Assess current risk status"""
-        
-        risk_data = info_bus.get('risk', {})
-        balance = risk_data.get('balance', 10000)
-        positions = InfoBusExtractor.get_positions(info_bus)
-        
-        # Calculate current exposure
-        current_exposure = 0.0
-        for pos in positions:
-            pos_size = abs(pos.get('size', 0))
-            pos_price = pos.get('current_price', 1.0)
-            current_exposure += pos_size * pos_price * 100_000
-        
-        # Calculate risk metrics
-        current_leverage = current_exposure / max(balance, 1.0)
-        risk_utilization = current_leverage / self.current_limits['max_leverage']
-        
-        # Update risk budget tracking
-        self.risk_budget_used = min(risk_utilization, 1.0)
-        
-        # Generate warnings for high risk utilization
-        if risk_utilization > 0.8:
-            self.log_operator_warning(
-                f"⚠️ High risk utilization: {risk_utilization:.1%}",
-                leverage=f"{current_leverage:.1f}x",
-                limit=f"{self.current_limits['max_leverage']:.1f}x"
-            )
-        
-        # Track in risk state
-        self._update_risk_metrics({
-            'current_leverage': current_leverage,
-            'risk_utilization': risk_utilization,
-            'total_exposure': current_exposure
-        })
-
-    def _update_info_bus(self, info_bus: InfoBus) -> None:
-        """Update InfoBus with compliance status"""
-        
-        # Add module data
-        InfoBusUpdater.add_module_data(info_bus, 'compliance', {
-            'daily_trade_count': self.daily_trade_count,
-            'daily_limit': self.current_limits['max_daily_trades'],
-            'violations_count': self.violations_count,
-            'approval_rate': self.approval_rate,
-            'risk_budget_used': self.risk_budget_used,
-            'current_limits': self.current_limits.copy(),
-            'allowed_symbols_count': len(self.allowed_symbols),
-            'compliance_flags': self.compliance_flags.copy()
-        })
-        
-        # Add compliance flags to InfoBus
-        for flag in self.compliance_flags:
-            InfoBusUpdater.add_compliance_flag(info_bus, flag)
-        
-        # Update risk snapshot
-        InfoBusUpdater.update_risk_snapshot(info_bus, {
-            'compliance_risk_score': self.risk_budget_used,
-            'daily_trades_remaining': max(0, self.current_limits['max_daily_trades'] - self.daily_trade_count),
-            'leverage_utilization': self.risk_budget_used
-        })
-        
-        # Add alerts for compliance issues
-        if self.compliance_flags:
-            InfoBusUpdater.add_alert(
-                info_bus,
-                f"Compliance violations detected: {len(self.compliance_flags)} issues",
-                severity="warning",
-                module="ComplianceModule"
-            )
-
-    def _record_validation_audit(self, ctx: Dict[str, Any], passed: bool, 
-                               checks: List[Tuple[str, bool]]) -> None:
-        """Record detailed validation audit"""
-        
-        audit_data = {
-            'validation_result': passed,
-            'trade_details': {
-                'instrument': ctx['instrument'],
-                'size': ctx['size'],
-                'price': ctx['price']
-            },
-            'checks_performed': [
-                {'check': check_name, 'passed': check_result}
-                for check_name, check_result in checks
-            ],
-            'compliance_flags': self.compliance_flags.copy(),
-            'current_limits': self.current_limits.copy(),
-            'market_context': ctx.get('market_context', {}),
-            'risk_metrics': {
-                'daily_trades': self.daily_trade_count,
-                'total_exposure': self.total_exposure,
-                'risk_budget_used': self.risk_budget_used
+            error_context = self.error_pinpointer.analyze_error(e, "single_order_validation")
+            return {
+                'order_details': order_details,
+                'approved': False,
+                'violations': [{'type': 'validation_error', 'message': error_context, 'severity': 'critical'}],
+                'risk_score': 1.0,
+                'error': error_context
             }
-        }
+    
+    def _is_instrument_allowed(self, instrument: str) -> bool:
+        """Check if instrument is in allowlist"""
+        return instrument.upper() in self.allowed_instruments
+    
+    def _is_trading_restricted(self) -> bool:
+        """Check if trading is restricted at current hour"""
+        if not self.restricted_hours:
+            return False
         
-        self.audit_manager.record_event(
-            event_type="trade_validation",
-            module="ComplianceModule",
-            details=audit_data,
-            severity="warning" if not passed else "info"
-        )
-
-    def _update_compliance_metrics(self) -> None:
-        """Update performance and compliance metrics"""
+        current_hour = datetime.datetime.now().hour
+        return current_hour in self.restricted_hours
+    
+    def _validate_trade_size(self, size: float, current_limits: Dict[str, float]) -> List[Dict[str, Any]]:
+        """Validate trade size against limits"""
+        violations = []
         
-        # Calculate approval rate
-        total_validations = self.validation_stats.get('total_validations', 0)
-        if total_validations > 0:
-            self.approval_rate = self.validation_stats.get('approved', 0) / total_validations
-        
-        # Update performance metrics
-        self._update_performance_metric('approval_rate', self.approval_rate)
-        self._update_performance_metric('daily_trade_count', self.daily_trade_count)
-        self._update_performance_metric('violations_count', self.violations_count)
-        self._update_performance_metric('risk_budget_used', self.risk_budget_used)
-        
-        # Track violation frequency
-        if self.compliance_flags:
-            self.violation_history.append({
-                'timestamp': datetime.datetime.now().isoformat(),
-                'flags': self.compliance_flags.copy(),
-                'count': len(self.compliance_flags)
+        if size < current_limits['min_trade_size']:
+            violations.append({
+                'type': 'size_too_small',
+                'message': f"Trade size {size:.4f} below minimum {current_limits['min_trade_size']:.4f}",
+                'severity': 'warning'
             })
-
-    def get_observation_components(self) -> np.ndarray:
-        """Enhanced observation components for model integration"""
+        
+        if size > current_limits['max_trade_size']:
+            violations.append({
+                'type': 'size_too_large',
+                'message': f"Trade size {size:.4f} exceeds maximum {current_limits['max_trade_size']:.4f}",
+                'severity': 'critical'
+            })
+        
+        return violations
+    
+    def _validate_position_risk(self, order_details: Dict[str, Any], positions: List[Dict],
+                               balance: float, current_limits: Dict[str, float]) -> List[Dict[str, Any]]:
+        """Validate position risk limits"""
+        violations = []
         
         try:
-            # Daily trade utilization
-            daily_utilization = min(
-                self.daily_trade_count / max(self.current_limits['max_daily_trades'], 1),
-                1.0
-            )
+            # Calculate position value (simplified for forex)
+            size = order_details['size']
+            price = order_details['price']
+            position_value = size * price * 100000  # Standard lot size
             
-            # Risk budget utilization
-            risk_utilization = self.risk_budget_used
+            # Calculate risk as percentage of balance
+            position_risk = position_value / max(balance, 1.0)
             
-            # Violation indicators
-            has_violations = float(len(self.compliance_flags) > 0)
-            violation_frequency = min(
-                self.violations_count / max(self.validation_stats.get('total_validations', 1), 1),
-                1.0
-            )
-            
-            # Approval rate
-            approval_rate = self.approval_rate
-            
-            # Dynamic adjustment factor
-            leverage_adjustment = (
-                self.current_limits['max_leverage'] / self.base_limits['max_leverage']
-            )
-            
-            # Recent violation trend
-            if len(self.violation_history) >= 10:
-                recent_violations = sum(1 for v in list(self.violation_history)[-10:] if v['count'] > 0)
-                violation_trend = recent_violations / 10.0
-            else:
-                violation_trend = 0.0
-            
-            return np.array([
-                daily_utilization,      # Daily trade utilization
-                risk_utilization,       # Risk budget utilization
-                has_violations,         # Current violations indicator
-                violation_frequency,    # Historical violation frequency
-                approval_rate,          # Trade approval rate
-                leverage_adjustment,    # Dynamic limit adjustment
-                violation_trend         # Recent violation trend
-            ], dtype=np.float32)
+            if position_risk > current_limits['max_position_risk']:
+                violations.append({
+                    'type': 'position_risk_exceeded',
+                    'message': f"Position risk {position_risk:.1%} exceeds limit {current_limits['max_position_risk']:.1%}",
+                    'severity': 'critical'
+                })
             
         except Exception as e:
-            self.log_operator_error(f"Compliance observation generation failed: {e}")
-            return np.zeros(7, dtype=np.float32)
-
-    def get_compliance_report(self) -> str:
-        """Generate operator-friendly compliance report"""
+            error_context = self.error_pinpointer.analyze_error(e, "position_risk_validation")
+            violations.append({
+                'type': 'position_risk_calculation_error',
+                'message': f"Risk calculation failed: {error_context}",
+                'severity': 'warning'
+            })
         
-        # Status indicators
-        if self.risk_budget_used > 0.8:
-            risk_status = "🚨 Critical"
-        elif self.risk_budget_used > 0.5:
-            risk_status = "⚠️ Elevated"
-        else:
-            risk_status = "✅ Normal"
+        return violations
+    
+    def _validate_total_exposure(self, order_details: Dict[str, Any], positions: List[Dict],
+                                balance: float, current_limits: Dict[str, float]) -> List[Dict[str, Any]]:
+        """Validate total portfolio exposure"""
+        violations = []
         
-        # Approval rate status
-        if self.approval_rate > 0.9:
-            approval_status = "🎯 Excellent"
-        elif self.approval_rate > 0.7:
-            approval_status = "✅ Good"
-        elif self.approval_rate > 0.5:
-            approval_status = "⚡ Fair"
-        else:
-            approval_status = "⚠️ Poor"
-        
-        # Daily trading status
-        daily_utilization = self.daily_trade_count / max(self.current_limits['max_daily_trades'], 1)
-        if daily_utilization > 0.8:
-            daily_status = "⚠️ High Usage"
-        elif daily_utilization > 0.5:
-            daily_status = "⚡ Moderate"
-        else:
-            daily_status = "✅ Available"
-        
-        # Dynamic limits indicator
-        leverage_ratio = self.current_limits['max_leverage'] / self.base_limits['max_leverage']
-        if leverage_ratio != 1.0:
-            limits_status = f"🔧 Adjusted ({leverage_ratio:.2f}x)"
-        else:
-            limits_status = "📊 Base Limits"
-        
-        # Top rejection reasons
-        top_rejections = sorted(self.rejection_reasons.items(), key=lambda x: x[1], reverse=True)[:3]
-        rejection_lines = []
-        for reason, count in top_rejections:
-            if count > 0:
-                rejection_lines.append(f"  🚫 {reason.replace('_', ' ').title()}: {count}")
-        
-        # Current flags
-        flag_lines = []
-        for flag in self.compliance_flags[-5:]:  # Show last 5 flags
-            flag_lines.append(f"  ⚠️ {flag}")
-        
-        return f"""
-🛡️ ENHANCED COMPLIANCE MODULE
-═══════════════════════════════════════
-🎯 Risk Status: {risk_status} ({self.risk_budget_used:.1%} budget used)
-📊 Approval Rate: {approval_status} ({self.approval_rate:.1%})
-📈 Daily Trading: {daily_status} ({self.daily_trade_count}/{self.current_limits['max_daily_trades']})
-🔧 Limit Status: {limits_status}
-
-⚖️ CURRENT LIMITS
-• Leverage: {self.current_limits['max_leverage']:.1f}x (base: {self.base_limits['max_leverage']:.1f}x)
-• Position Risk: {self.current_limits['max_single_position_risk']:.1%}
-• Total Risk: {self.current_limits['max_total_risk']:.1%}
-• Trade Size: {self.current_limits['min_trade_size']:.3f} - {self.current_limits['max_trade_size']:.3f}
-• Dynamic Adjustments: {'✅ Enabled' if self.dynamic_limits else '❌ Disabled'}
-
-🌍 SYMBOL MANAGEMENT
-• Allowed Symbols: {len(self.allowed_symbols)}
-• Sample Symbols: {', '.join(list(self.allowed_symbols)[:5])}{'...' if len(self.allowed_symbols) > 5 else ''}
-• Restricted Hours: {list(self.restricted_hours) if self.restricted_hours else 'None'}
-
-📊 VALIDATION PERFORMANCE
-• Total Validations: {self.validation_stats.get('total_validations', 0)}
-• Approved: {self.validation_stats.get('approved', 0)}
-• Rejected: {self.validation_stats.get('rejected', 0)}
-• Total Violations: {self.violations_count}
-
-🚫 TOP REJECTION REASONS
-{chr(10).join(rejection_lines) if rejection_lines else "  ✅ No rejections yet"}
-
-⚠️ CURRENT COMPLIANCE FLAGS
-{chr(10).join(flag_lines) if flag_lines else "  ✅ No active flags"}
-
-💡 OPERATIONAL STATUS
-• Risk Budget Used: {self.risk_budget_used:.1%}
-• Total Exposure: €{self.total_exposure:,.0f}
-• Violations History: {len(self.violation_history)} records
-• Last Validation: {('Recent' if self.validation_stats.get('total_validations', 0) > 0 else 'None')}
-        """
-
-    def mutate(self, mutation_rate: float = 0.1) -> None:
-        """Evolutionary parameter mutation"""
-        
-        import random
-        
-        if random.random() < mutation_rate:
-            # Mutate leverage limit
-            self.base_limits['max_leverage'] = max(
-                5.0, 
-                min(100.0, self.base_limits['max_leverage'] + random.gauss(0, 5.0))
-            )
-        
-        if random.random() < mutation_rate:
-            # Mutate position risk limit
-            self.base_limits['max_single_position_risk'] = max(
-                0.05,
-                min(0.5, self.base_limits['max_single_position_risk'] + random.gauss(0, 0.02))
-            )
-        
-        if random.random() < mutation_rate:
-            # Mutate total risk limit
-            self.base_limits['max_total_risk'] = max(
-                0.2,
-                min(1.0, self.base_limits['max_total_risk'] + random.gauss(0, 0.05))
-            )
-        
-        # Update current limits
-        self.current_limits = self.base_limits.copy()
-        
-        self.log_operator_info(
-            "🧬 Compliance parameters mutated",
-            leverage=f"{self.base_limits['max_leverage']:.1f}x",
-            position_risk=f"{self.base_limits['max_single_position_risk']:.1%}",
-            total_risk=f"{self.base_limits['max_total_risk']:.1%}"
-        )
-
-    def crossover(self, other: 'ComplianceModule') -> 'ComplianceModule':
-        """Create offspring through parameter crossover"""
-        
-        import random
-        
-        # Combine parameters from both parents
-        child_params = {}
-        for param in ['max_leverage', 'max_single_position_risk', 'max_total_risk']:
-            if random.random() > 0.5:
-                child_params[param] = self.base_limits[param]
-            else:
-                child_params[param] = other.base_limits[param]
-        
-        # Create child with combined parameters
-        child = ComplianceModule(
-            max_leverage=child_params['max_leverage'],
-            max_single_position_risk=child_params['max_single_position_risk'],
-            max_total_risk=child_params['max_total_risk'],
-            max_daily_trades=self.base_limits['max_daily_trades'],
-            allowed_symbols=list(self.allowed_symbols),
-            debug=self.config.debug
-        )
-        
-        return child
-
-    def _get_health_details(self) -> Dict[str, Any]:
-        """Enhanced health reporting"""
-        base_details = super()._get_health_details()
-        
-        compliance_details = {
-            'compliance_status': {
-                'daily_trades': f"{self.daily_trade_count}/{self.current_limits['max_daily_trades']}",
-                'risk_budget_used': f"{self.risk_budget_used:.1%}",
-                'total_violations': self.violations_count,
-                'approval_rate': f"{self.approval_rate:.1%}"
-            },
-            'limit_adjustments': {
-                'leverage_ratio': (
-                    self.current_limits['max_leverage'] / self.base_limits['max_leverage']
-                ),
-                'position_risk_ratio': (
-                    self.current_limits['max_single_position_risk'] / self.base_limits['max_single_position_risk']
-                ),
-                'dynamic_adjustments_active': self.dynamic_limits
-            },
-            'violation_analysis': {
-                'recent_violations': len([
-                    v for v in self.violation_history 
-                    if v.get('count', 0) > 0
-                ]),
-                'top_rejection_reasons': dict(sorted(
-                    self.rejection_reasons.items(),
-                    key=lambda x: x[1],
-                    reverse=True
-                )[:3])
-            },
-            'symbol_management': {
-                'allowed_symbols': len(self.allowed_symbols),
-                'restricted_hours': len(self.restricted_hours)
-            }
-        }
-        
-        if base_details:
-            base_details.update(compliance_details)
-            return base_details
-        
-        return compliance_details
-
-    # ================== LEGACY COMPATIBILITY ==================
-
-    def validate_trade(self, instrument: str, size: float, price: float, 
-                      balance: float, current_positions: Optional[Dict[str, Any]] = None,
-                      timestamp: Optional[datetime.datetime] = None) -> bool:
-        """Legacy compatibility method"""
-        
-        # Convert to standard position format
-        positions = []
-        if current_positions:
-            for symbol, pos_data in current_positions.items():
-                positions.append({
-                    'symbol': symbol,
-                    'size': pos_data.get('size', pos_data.get('lots', 0)),
-                    'current_price': price,  # Use provided price as default
-                    'entry_price': pos_data.get('price_open', price)
+        try:
+            # Calculate existing exposure
+            existing_exposure = 0.0
+            for position in positions:
+                pos_size = abs(position.get('size', position.get('volume', 0)))
+                pos_price = position.get('current_price', position.get('price', 1.0))
+                existing_exposure += pos_size * pos_price * 100000
+            
+            # Add new order exposure
+            new_position_value = order_details['size'] * order_details['price'] * 100000
+            total_exposure = existing_exposure + new_position_value
+            
+            # Calculate total risk
+            total_risk = total_exposure / max(balance, 1.0)
+            
+            if total_risk > current_limits['max_total_risk']:
+                violations.append({
+                    'type': 'total_risk_exceeded',
+                    'message': f"Total risk {total_risk:.1%} exceeds limit {current_limits['max_total_risk']:.1%}",
+                    'severity': 'critical'
                 })
+            
+            # Update exposure tracking
+            self.total_exposure = total_exposure
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "total_exposure_validation")
+            violations.append({
+                'type': 'exposure_calculation_error',
+                'message': f"Exposure calculation failed: {error_context}",
+                'severity': 'warning'
+            })
         
-        # Create validation context
-        ctx = {
-            'timestamp': (timestamp or datetime.datetime.now()).isoformat(),
-            'market_context': {'regime': 'unknown', 'volatility_level': 'medium'},
-            'instrument': instrument,
-            'size': size,
-            'price': price,
-            'balance': balance,
-            'positions': positions
+        return violations
+    
+    def _validate_leverage_limits(self, order_details: Dict[str, Any], positions: List[Dict],
+                                 balance: float, current_limits: Dict[str, float]) -> List[Dict[str, Any]]:
+        """Validate leverage limits"""
+        violations = []
+        
+        try:
+            # Calculate current leverage including new order
+            leverage = self.total_exposure / max(balance, 1.0)
+            self.current_leverage = leverage
+            
+            if leverage > current_limits['max_leverage']:
+                violations.append({
+                    'type': 'leverage_exceeded',
+                    'message': f"Leverage {leverage:.1f}x exceeds limit {current_limits['max_leverage']:.1f}x",
+                    'severity': 'critical'
+                })
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "leverage_validation")
+            violations.append({
+                'type': 'leverage_calculation_error',
+                'message': f"Leverage calculation failed: {error_context}",
+                'severity': 'warning'
+            })
+        
+        return violations
+    
+    def _validate_market_context(self, order_details: Dict[str, Any], 
+                                market_context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Validate against market context restrictions"""
+        violations = []
+        
+        try:
+            volatility_level = market_context.get('volatility_level', 'medium')
+            regime = market_context.get('regime', 'unknown')
+            
+            # Restrict large trades during extreme volatility
+            if volatility_level == 'extreme' and order_details['size'] > self.max_trade_size * 0.5:
+                violations.append({
+                    'type': 'extreme_volatility_restriction',
+                    'message': f"Large trade restricted during extreme volatility",
+                    'severity': 'warning'
+                })
+            
+            # Crisis regime restrictions
+            if regime == 'crisis' and order_details['size'] > self.max_trade_size * 0.3:
+                violations.append({
+                    'type': 'crisis_regime_restriction',
+                    'message': f"Trade size restricted during crisis regime",
+                    'severity': 'warning'
+                })
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "market_context_validation")
+            violations.append({
+                'type': 'context_validation_error',
+                'message': f"Context validation failed: {error_context}",
+                'severity': 'info'
+            })
+        
+        return violations
+    
+    def _assess_current_risk_exposure(self, positions: List[Dict], balance: float,
+                                     current_limits: Dict[str, float]) -> Dict[str, Any]:
+        """Assess current risk exposure and compliance status"""
+        try:
+            # Calculate current metrics
+            total_positions = len(positions)
+            current_exposure = self.total_exposure
+            current_leverage = self.current_leverage
+            
+            # Calculate risk budget usage
+            leverage_usage = current_leverage / current_limits['max_leverage']
+            exposure_usage = (current_exposure / balance) / current_limits['max_total_risk']
+            daily_trades_usage = self.daily_trade_count / current_limits['max_daily_trades']
+            
+            # Overall risk budget usage
+            self.risk_budget_usage = max(leverage_usage, exposure_usage, daily_trades_usage)
+            
+            # Calculate compliance score
+            violations_count = sum(self.validation_stats['violations'].values())
+            total_validations = max(self.validation_stats['total_validations'], 1)
+            violation_rate = violations_count / total_validations
+            
+            self.compliance_score = max(0.0, 1.0 - violation_rate - (self.risk_budget_usage - 1.0) * 0.5)
+            
+            return {
+                'total_positions': total_positions,
+                'current_exposure': current_exposure,
+                'current_leverage': current_leverage,
+                'risk_budget_usage': self.risk_budget_usage,
+                'compliance_score': self.compliance_score,
+                'daily_trade_count': self.daily_trade_count,
+                'leverage_usage': leverage_usage,
+                'exposure_usage': exposure_usage,
+                'daily_trades_usage': daily_trades_usage,
+                'violation_rate': violation_rate
+            }
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "risk_assessment")
+            self.logger.error(f"Risk assessment failed: {error_context}")
+            return {'error': error_context, 'compliance_score': 0.5}
+    
+    def _calculate_compliance_metrics(self, validation_results: Dict[str, Any],
+                                     risk_assessment: Dict[str, Any]) -> Dict[str, Any]:
+        """Calculate comprehensive compliance metrics"""
+        try:
+            # Validation metrics
+            total_orders = validation_results.get('total_orders', 0)
+            approved_orders = len(validation_results.get('approved', []))
+            rejected_orders = len(validation_results.get('rejected', []))
+            
+            approval_rate = approved_orders / max(total_orders, 1)
+            rejection_rate = rejected_orders / max(total_orders, 1)
+            
+            # Risk metrics
+            risk_budget_usage = risk_assessment.get('risk_budget_usage', 0.0)
+            compliance_score = risk_assessment.get('compliance_score', 1.0)
+            
+            # Historical metrics
+            avg_approval_rate = np.mean(self.approval_rate_history) if self.approval_rate_history else 1.0
+            
+            # Violation breakdown
+            violation_breakdown = dict(self.validation_stats['violations'])
+            
+            return {
+                'approval_rate': approval_rate,
+                'rejection_rate': rejection_rate,
+                'avg_approval_rate': avg_approval_rate,
+                'compliance_score': compliance_score,
+                'risk_budget_usage': risk_budget_usage,
+                'total_validations': self.validation_stats['total_validations'],
+                'total_violations': sum(violation_breakdown.values()),
+                'violation_breakdown': violation_breakdown,
+                'daily_trade_utilization': self.daily_trade_count / self.max_daily_trades
+            }
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "compliance_metrics")
+            self.logger.error(f"Compliance metrics calculation failed: {error_context}")
+            return {'compliance_score': 0.5, 'error': error_context}
+    
+    async def _generate_compliance_thesis(self, validation_results: Dict[str, Any],
+                                         risk_assessment: Dict[str, Any],
+                                         market_context: Dict[str, Any]) -> str:
+        """Generate intelligent thesis explaining compliance decisions"""
+        try:
+            thesis_parts = []
+            
+            # Validation overview
+            total_orders = validation_results.get('total_orders', 0)
+            approved = len(validation_results.get('approved', []))
+            rejected = len(validation_results.get('rejected', []))
+            
+            if total_orders > 0:
+                thesis_parts.append(
+                    f"Processed {total_orders} orders: {approved} approved, {rejected} rejected "
+                    f"({approved/total_orders:.1%} approval rate)"
+                )
+            else:
+                thesis_parts.append("No pending orders to validate")
+            
+            # Risk assessment
+            compliance_score = risk_assessment.get('compliance_score', 1.0)
+            risk_budget_usage = risk_assessment.get('risk_budget_usage', 0.0)
+            
+            if compliance_score >= 0.9:
+                thesis_parts.append(f"EXCELLENT compliance maintained ({compliance_score:.1%})")
+            elif compliance_score >= 0.7:
+                thesis_parts.append(f"GOOD compliance status ({compliance_score:.1%})")
+            elif compliance_score >= 0.5:
+                thesis_parts.append(f"FAIR compliance with room for improvement ({compliance_score:.1%})")
+            else:
+                thesis_parts.append(f"POOR compliance requiring immediate attention ({compliance_score:.1%})")
+            
+            # Risk budget analysis
+            if risk_budget_usage > 0.8:
+                thesis_parts.append(f"HIGH risk budget utilization ({risk_budget_usage:.1%}) - approaching limits")
+            elif risk_budget_usage > 0.5:
+                thesis_parts.append(f"MODERATE risk budget usage ({risk_budget_usage:.1%})")
+            else:
+                thesis_parts.append(f"Conservative risk budget usage ({risk_budget_usage:.1%})")
+            
+            # Violation analysis
+            violations = validation_results.get('violations', [])
+            if violations:
+                violation_types = set(v['type'] for v in violations)
+                thesis_parts.append(f"Detected {len(violations)} violations: {', '.join(list(violation_types)[:3])}")
+            
+            # Market context impact
+            regime = market_context.get('regime', 'unknown')
+            volatility = market_context.get('volatility_level', 'medium')
+            
+            if self.dynamic_limits:
+                thesis_parts.append(f"Dynamic limits adjusted for {regime} regime and {volatility} volatility")
+            
+            # Daily trading status
+            daily_usage = self.daily_trade_count / self.max_daily_trades
+            if daily_usage > 0.8:
+                thesis_parts.append(f"Daily trade limit utilization HIGH ({daily_usage:.1%})")
+            
+            return " | ".join(thesis_parts)
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "thesis_generation")
+            return f"Thesis generation failed: {error_context}"
+    
+    def _generate_recommendations(self, validation_results: Dict[str, Any],
+                                 risk_assessment: Dict[str, Any]) -> List[str]:
+        """Generate intelligent recommendations based on compliance analysis"""
+        recommendations = []
+        
+        try:
+            # Risk budget recommendations
+            risk_budget_usage = risk_assessment.get('risk_budget_usage', 0.0)
+            
+            if risk_budget_usage > 0.9:
+                recommendations.append("IMMEDIATE: Reduce position sizes - risk budget critically high")
+                recommendations.append("Consider closing some positions to free up risk capacity")
+            elif risk_budget_usage > 0.7:
+                recommendations.append("Monitor risk budget closely - approaching limits")
+            
+            # Violation-based recommendations
+            violations = validation_results.get('violations', [])
+            violation_types = [v['type'] for v in violations]
+            
+            if 'daily_trade_limit' in violation_types:
+                recommendations.append("Daily trade limit reached - wait for next trading day")
+            
+            if 'leverage_exceeded' in violation_types:
+                recommendations.append("Reduce leverage by closing positions or increasing margin")
+            
+            if 'position_risk_exceeded' in violation_types:
+                recommendations.append("Consider smaller position sizes or better risk management")
+            
+            # Compliance score recommendations
+            compliance_score = risk_assessment.get('compliance_score', 1.0)
+            
+            if compliance_score < 0.7:
+                recommendations.append("Review and improve trade validation processes")
+                recommendations.append("Consider more conservative position sizing")
+            
+            # Daily trading recommendations
+            daily_usage = self.daily_trade_count / self.max_daily_trades
+            if daily_usage > 0.8:
+                recommendations.append("Approaching daily trade limit - prioritize high-conviction trades")
+            
+            # Proactive recommendations
+            if not recommendations:
+                recommendations.append("Compliance status optimal - maintain current risk management practices")
+                recommendations.append("Continue monitoring for regime changes that may affect limits")
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "recommendations")
+            recommendations.append(f"Recommendation generation failed: {error_context}")
+        
+        return recommendations
+    
+    def _update_smart_info_bus(self, validation_results: Dict[str, Any],
+                              risk_assessment: Dict[str, Any], 
+                              compliance_metrics: Dict[str, Any], thesis: str):
+        """Update SmartInfoBus with compliance results"""
+        try:
+            # Core compliance status
+            self.smart_bus.set('compliance_status', {
+                'compliance_score': self.compliance_score,
+                'risk_budget_usage': self.risk_budget_usage,
+                'validation_results': validation_results,
+                'risk_assessment': risk_assessment,
+                'compliance_metrics': compliance_metrics,
+                'thesis': thesis
+            }, module='ComplianceModule', thesis=thesis)
+            
+            # Validation results for other modules
+            self.smart_bus.set('validation_results', {
+                'approved_orders': validation_results.get('approved', []),
+                'rejected_orders': validation_results.get('rejected', []),
+                'approval_rate': compliance_metrics.get('approval_rate', 1.0)
+            }, module='ComplianceModule', 
+            thesis=f"Order validation: {len(validation_results.get('approved', []))} approved")
+            
+            # Risk limits for risk management modules
+            self.smart_bus.set('risk_limits', {
+                'max_leverage': self.max_leverage,
+                'max_position_risk': self.max_position_risk,
+                'max_total_risk': self.max_total_risk,
+                'current_leverage': self.current_leverage,
+                'risk_budget_usage': self.risk_budget_usage
+            }, module='ComplianceModule', thesis="Risk limits and current utilization updated")
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "smart_info_bus_update")
+            self.logger.error(f"SmartInfoBus update failed: {error_context}")
+    
+    def _generate_disabled_response(self) -> Dict[str, Any]:
+        """Generate response when module is disabled"""
+        return {
+            'compliance_score': 1.0,
+            'validation_results': {'total_orders': 0, 'approved': [], 'rejected': []},
+            'risk_assessment': {'compliance_score': 1.0, 'risk_budget_usage': 0.0},
+            'compliance_metrics': {'compliance_score': 1.0, 'approval_rate': 1.0},
+            'current_limits': {},
+            'thesis': "Compliance Module is disabled",
+            'recommendations': ["Enable Compliance Module for trade validation"]
         }
-        
-        # Use enhanced validation
-        return self._comprehensive_trade_validation(ctx)
-
-    def step(self, **kwargs) -> bool:
-        """Legacy step interface"""
-        
-        # Extract trade data from kwargs if available
-        trade = kwargs.get("trade")
-        if not trade:
-            return True  # No trade to validate
-        
-        # Extract environment data
-        env = kwargs.get("env")
-        if env:
-            balance = getattr(env, "balance", 10000.0)
-            positions = getattr(env, "open_positions", {})
-            
-            # Get price from environment data
-            instrument = trade.get("instrument", "")
-            try:
-                df = env.data.get(instrument, {}).get("D1")
-                if df is not None and env.current_step < len(df):
-                    price = float(df.iloc[env.current_step]["close"])
-                else:
-                    price = 1.0
-            except:
-                price = 1.0
-            
-            # Use enhanced validation
-            return self.validate_trade(
-                instrument=instrument,
-                size=abs(trade.get("size", 0.0)),
-                price=price,
-                balance=balance,
-                current_positions=positions
-            )
-        
-        return True
+    
+    def _generate_error_response(self, error_context: str) -> Dict[str, Any]:
+        """Generate response when processing fails"""
+        return {
+            'compliance_score': 0.5,
+            'validation_results': {'error': error_context},
+            'risk_assessment': {'compliance_score': 0.5, 'error': error_context},
+            'compliance_metrics': {'compliance_score': 0.5, 'error': error_context},
+            'current_limits': {},
+            'thesis': f"Compliance processing failed: {error_context}",
+            'recommendations': ["Investigate compliance system errors"]
+        }
+    
+    def get_state(self) -> Dict[str, Any]:
+        """Get complete module state for hot-reload"""
+        return {
+            'daily_trade_count': self.daily_trade_count,
+            'last_trade_date': self.last_trade_date.isoformat() if self.last_trade_date else None,
+            'total_exposure': self.total_exposure,
+            'current_leverage': self.current_leverage,
+            'risk_budget_usage': self.risk_budget_usage,
+            'compliance_score': self.compliance_score,
+            'validation_stats': dict(self.validation_stats),
+            'config': self.config.copy()
+        }
+    
+    def set_state(self, state: Dict[str, Any]) -> None:
+        """Set module state for hot-reload"""
+        self.daily_trade_count = state.get('daily_trade_count', 0)
+        last_date_str = state.get('last_trade_date')
+        self.last_trade_date = datetime.datetime.fromisoformat(last_date_str).date() if last_date_str else None
+        self.total_exposure = state.get('total_exposure', 0.0)
+        self.current_leverage = state.get('current_leverage', 0.0)
+        self.risk_budget_usage = state.get('risk_budget_usage', 0.0)
+        self.compliance_score = state.get('compliance_score', 1.0)
+        self.validation_stats.update(state.get('validation_stats', {}))
+        self.config.update(state.get('config', {}))
+    
+    def get_health_metrics(self) -> Dict[str, Any]:
+        """Get health metrics for monitoring"""
+        return {
+            'compliance_score': self.compliance_score,
+            'risk_budget_usage': self.risk_budget_usage,
+            'approval_rate': self.validation_stats['approved'] / max(self.validation_stats['total_validations'], 1),
+            'daily_trade_count': self.daily_trade_count,
+            'current_leverage': self.current_leverage,
+            'total_violations': sum(self.validation_stats['violations'].values()),
+            'enabled': self.enabled
+        }

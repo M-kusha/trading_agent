@@ -1,958 +1,910 @@
-# ─────────────────────────────────────────────────────────────
-# File: modules/risk/correlated_risk_controller.py
-# Enhanced with InfoBus integration & intelligent correlation analysis
-# ─────────────────────────────────────────────────────────────
+"""
+Enhanced Correlated Risk Controller with SmartInfoBus Integration
+Monitors correlation risk between positions and instruments
+"""
 
 import numpy as np
 import datetime
-from typing import Dict, Any, List, Optional, Tuple, Union
+from typing import Dict, Any, List, Optional, Union, Tuple
 from collections import deque, defaultdict
+from scipy.stats import pearsonr
+from scipy.cluster.hierarchy import linkage, fcluster
 
-from modules.core.core import Module, ModuleConfig, audit_step
-from modules.core.mixins import RiskMixin, AnalysisMixin, StateManagementMixin
-from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
-from modules.utils.audit_utils import AuditTracker, format_operator_message
+from modules.core.module_base import BaseModule, module
+from modules.core.mixins import SmartInfoBusRiskMixin, SmartInfoBusStateMixin
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.monitoring.health_monitor import HealthMonitor
+from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-class CorrelatedRiskController(Module, RiskMixin, AnalysisMixin, StateManagementMixin):
+@module(
+    name="CorrelatedRiskController",
+    version="3.0.0",
+    category="risk",
+    provides=["correlation_risk", "diversification_score", "correlation_clusters"],
+    requires=["positions", "prices", "market_context"],
+    description="Enhanced correlation risk monitoring with intelligent clustering and diversification analysis",
+    thesis_required=True,
+    health_monitoring=True,
+    performance_tracking=True,
+    error_handling=True
+)
+class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
-    Enhanced correlation risk controller with InfoBus integration.
-    Monitors and controls risk from correlated positions with intelligent analysis.
+    Enhanced Correlated Risk Controller with SmartInfoBus Integration
+    
+    Monitors correlation risk between positions with advanced analytics including
+    hierarchical clustering, dynamic correlation analysis, and regime-aware adjustments.
     """
-
-    def __init__(
-        self,
-        max_corr: float = 0.9,
-        warning_corr: float = 0.7,
-        info_corr: float = 0.5,
-        enabled: bool = True,
-        history_size: int = 20,
-        correlation_window: int = 50,
-        dynamic_thresholds: bool = True,
-        debug: bool = True,
-        **kwargs
-    ):
-        # Initialize with enhanced config
-        config = ModuleConfig(
-            debug=debug,
-            max_history=max(history_size, 50),
-            audit_enabled=kwargs.get('audit_enabled', True),
-            **kwargs
-        )
-        super().__init__(config)
+    
+    def __init__(self, config=None, **kwargs):
+        self.config = config or {}
+        super().__init__()
+        self._initialize_advanced_systems()
         
-        # Initialize mixins
-        self._initialize_risk_state()
-        self._initialize_analysis_state()
+        # Configuration with intelligent defaults
+        self.max_correlation = self.config.get('max_correlation', 0.8)
+        self.warning_correlation = self.config.get('warning_correlation', 0.6)
+        self.min_diversification = self.config.get('min_diversification', 0.3)
+        self.lookback_window = self.config.get('lookback_window', 50)
+        self.enabled = self.config.get('enabled', True)
         
-        # Core configuration
-        self.enabled = enabled
-        self.dynamic_thresholds = dynamic_thresholds
-        
-        # Correlation thresholds
-        self.base_thresholds = {
-            'max_corr': float(max_corr),
-            'warning_corr': float(warning_corr),
-            'info_corr': float(info_corr)
-        }
-        
-        # Current thresholds (may be adjusted dynamically)
-        self.current_thresholds = self.base_thresholds.copy()
-        
-        # Enhanced state tracking
-        self.correlation_history = deque(maxlen=history_size)
-        self.current_correlations: Dict[Tuple[str, str], float] = {}
-        self.correlation_matrix_history = deque(maxlen=10)  # Store recent matrices
-        self.risk_score = 0.0
-        self.step_count = 0
-        
-        # Alert system with enhanced categorization
-        self.alerts: Dict[str, List[Dict[str, Any]]] = {
-            "info": [],
-            "warning": [],
-            "critical": []
-        }
-        
-        # Performance tracking
-        self.correlation_analytics = defaultdict(list)
-        self.regime_correlations = defaultdict(lambda: defaultdict(list))
-        self.correlation_trends = {}
+        # Enhanced correlation tracking
+        self.correlation_matrix = {}
+        self.correlation_history = deque(maxlen=100)
+        self.price_history = defaultdict(lambda: deque(maxlen=self.lookback_window))
+        self.return_history = defaultdict(lambda: deque(maxlen=self.lookback_window))
         
         # Risk assessment
-        self._high_correlation_pairs = set()
-        self._correlation_concentration = 0.0
-        self._diversification_score = 1.0
+        self.correlation_risk_score = 0.0
+        self.diversification_score = 1.0
+        self.cluster_risk_score = 0.0
+        self.severity_level = "normal"
         
-        # Audit system
-        self.audit_manager = AuditTracker("CorrelatedRiskController")
-        self._last_significant_event = None
+        # Advanced analytics
+        self.correlation_clusters = {}
+        self.regime_correlations = defaultdict(lambda: defaultdict(list))
+        self.dynamic_correlations = {}
+        self.volatility_adjusted_correlations = {}
         
-        self.log_operator_info(
-            "🔗 Enhanced Correlation Risk Controller initialized",
-            max_correlation=f"{max_corr:.1%}",
-            warning_threshold=f"{warning_corr:.1%}",
-            info_threshold=f"{info_corr:.1%}",
-            dynamic_thresholds=dynamic_thresholds,
-            enabled=enabled
-        )
-
-    def reset(self) -> None:
-        """Enhanced reset with comprehensive state cleanup"""
-        super().reset()
-        self._reset_risk_state()
-        self._reset_analysis_state()
-        
-        # Reset correlation tracking
-        self.correlation_history.clear()
-        self.current_correlations.clear()
-        self.correlation_matrix_history.clear()
-        self.risk_score = 0.0
+        # Performance tracking
         self.step_count = 0
+        self.correlation_violations = 0
+        self.diversification_violations = 0
         
-        # Reset alerts
-        for severity in self.alerts:
-            self.alerts[severity].clear()
+        self.logger.info(format_operator_message(
+            message="Enhanced Correlated Risk Controller initialized",
+            icon="🔗",
+            max_correlation=f"{self.max_correlation:.2f}",
+            warning_threshold=f"{self.warning_correlation:.2f}",
+            min_diversification=f"{self.min_diversification:.2f}",
+            enabled=self.enabled
+        ))
+    
+    def _initialize_advanced_systems(self):
+        """Initialize advanced monitoring and error handling systems"""
+        self.smart_bus = InfoBusManager.get_instance()
+        self.logger = RotatingLogger(
+            name="CorrelatedRiskController",
+            log_path="logs/risk/correlated_risk_controller.log",
+            max_lines=5000,
+            operator_mode=True,
+            plain_english=True
+        )
+        self.error_pinpointer = ErrorPinpointer()
+        self.error_handler = create_error_handler("CorrelatedRiskController", self.error_pinpointer)
+        self.english_explainer = EnglishExplainer()
+        self.system_utilities = SystemUtilities()
+        self.performance_tracker = PerformanceTracker()
+    
+    async def process(self, **kwargs) -> Dict[str, Any]:
+        """
+        Enhanced correlation risk analysis with comprehensive monitoring
         
-        # Reset analytics
-        self.correlation_analytics.clear()
-        self.regime_correlations.clear()
-        self.correlation_trends.clear()
-        
-        # Reset risk assessment
-        self._high_correlation_pairs.clear()
-        self._correlation_concentration = 0.0
-        self._diversification_score = 1.0
-        
-        # Reset thresholds to base values
-        self.current_thresholds = self.base_thresholds.copy()
-        
-        self.log_operator_info("🔄 Correlation Risk Controller reset - all tracking cleared")
-
-    @audit_step
-    def _step_impl(self, info_bus: Optional[InfoBus] = None, **kwargs) -> None:
-        """Enhanced step with InfoBus integration"""
-        
-        if not info_bus:
-            self.log_operator_warning("No InfoBus provided - correlation controller inactive")
-            return
-        
-        if not self.enabled:
-            self.risk_score = 0.0
-            return
-        
-        self.step_count += 1
-        
-        # Extract context for intelligent analysis
-        context = extract_standard_context(info_bus)
-        
-        # Extract correlation data from InfoBus
-        correlations = self._extract_correlations_from_info_bus(info_bus)
-        
-        if not correlations:
-            self._handle_no_correlation_data(context)
-            return
-        
-        # Process correlation analysis
-        critical_found = self._analyze_correlations_enhanced(correlations, info_bus, context)
-        
-        # Update dynamic thresholds if enabled
-        if self.dynamic_thresholds:
-            self._update_dynamic_thresholds(context)
-        
-        # Calculate comprehensive risk score
-        self._calculate_comprehensive_risk_score(context)
-        
-        # Update InfoBus with results
-        self._update_info_bus(info_bus, critical_found)
-        
-        # Record audit for significant events
-        if critical_found or self.risk_score > 0.5:
-            self._record_comprehensive_audit(info_bus, context, correlations)
-        
-        # Update performance metrics
-        self._update_correlation_metrics()
-
-    def _extract_correlations_from_info_bus(self, info_bus: InfoBus) -> Dict[Tuple[str, str], float]:
-        """Extract correlation data from InfoBus with multiple fallback methods"""
-        
-        correlations = {}
-        
+        Returns:
+            Dict containing correlation risk assessment, clusters, and diversification metrics
+        """
         try:
-            # Method 1: Direct correlation data from module data
-            module_data = info_bus.get('module_data', {})
+            if not self.enabled:
+                return self._generate_disabled_response()
             
-            # Check for correlation data from various modules
-            for module_name in ['correlation_engine', 'market_analyzer', 'risk_analyzer']:
-                if module_name in module_data:
-                    corr_data = module_data[module_name].get('correlations', {})
-                    if corr_data:
-                        correlations.update(self._process_correlation_data(corr_data))
+            self.step_count += 1
             
-            # Method 2: Calculate from position data
-            if not correlations:
-                correlations = self._calculate_correlations_from_positions(info_bus)
+            # Extract comprehensive market data
+            positions = self.smart_bus.get('positions', 'CorrelatedRiskController') or []
+            prices = self.smart_bus.get('prices', 'CorrelatedRiskController') or {}
+            market_context = self.smart_bus.get('market_context', 'CorrelatedRiskController') or {}
             
-            # Method 3: Calculate from price data
-            if not correlations and len(self.correlation_matrix_history) >= 2:
-                correlations = self._estimate_correlations_from_history(info_bus)
+            # Update price and return histories
+            self._update_price_histories(prices)
             
-            # Method 4: Generate synthetic for training (if absolutely no data)
-            if not correlations and self.step_count < 50:  # Only during bootstrap
-                correlations = self._generate_bootstrap_correlations(info_bus)
+            # Perform comprehensive correlation analysis
+            correlation_results = await self._analyze_correlations_comprehensive(positions, market_context)
+            
+            # Generate intelligent thesis
+            thesis = await self._generate_correlation_thesis(correlation_results, market_context)
+            
+            # Calculate comprehensive risk metrics
+            risk_metrics = self._calculate_correlation_risk_metrics(correlation_results)
+            
+            # Update SmartInfoBus
+            self._update_smart_info_bus(correlation_results, risk_metrics, thesis)
+            
+            # Record performance metrics
+            self.performance_tracker.record_metric(
+                'CorrelatedRiskController', 'correlation_analysis', 
+                correlation_results.get('processing_time_ms', 0), True
+            )
+            
+            return {
+                'correlation_risk_score': self.correlation_risk_score,
+                'diversification_score': self.diversification_score,
+                'severity_level': self.severity_level,
+                'correlation_results': correlation_results,
+                'risk_metrics': risk_metrics,
+                'thesis': thesis,
+                'recommendations': self._generate_recommendations(correlation_results)
+            }
             
         except Exception as e:
-            self.log_operator_warning(f"Correlation extraction failed: {e}")
-        
-        return correlations
-
-    def _process_correlation_data(self, corr_data: Any) -> Dict[Tuple[str, str], float]:
-        """Safely process correlation data from various formats"""
-        
-        processed = {}
-        
+            error_context = self.error_pinpointer.analyze_error(e, "CorrelatedRiskController")
+            self.logger.error(f"Correlation analysis failed: {error_context}")
+            return self._generate_error_response(str(error_context))
+    
+    def _update_price_histories(self, prices: Dict[str, float]):
+        """Update price and return histories for correlation calculation"""
         try:
-            if isinstance(corr_data, dict):
-                # Handle different key formats
-                for key, value in corr_data.items():
-                    try:
-                        if isinstance(key, (tuple, list)) and len(key) >= 2:
-                            clean_key = (str(key[0]), str(key[1]))
-                            processed[clean_key] = float(value)
-                        elif isinstance(key, str):
-                            # Handle string formats
-                            if '_' in key:
-                                parts = key.split('_', 1)
-                                if len(parts) == 2:
-                                    processed[(parts[0], parts[1])] = float(value)
-                            elif '-' in key:
-                                parts = key.split('-', 1)
-                                if len(parts) == 2:
-                                    processed[(parts[0], parts[1])] = float(value)
-                    except (ValueError, IndexError, TypeError):
-                        continue
+            current_time = datetime.datetime.now()
+            
+            for instrument, price in prices.items():
+                if price and price > 0:
+                    # Update price history
+                    self.price_history[instrument].append({
+                        'price': float(price),
+                        'timestamp': current_time
+                    })
+                    
+                    # Calculate returns if we have previous price
+                    if len(self.price_history[instrument]) >= 2:
+                        prev_price = self.price_history[instrument][-2]['price']
+                        return_value = (price - prev_price) / prev_price if prev_price > 0 else 0.0
                         
-            elif isinstance(corr_data, (list, np.ndarray)):
-                # Handle matrix format
-                corr_array = np.array(corr_data)
-                if corr_array.ndim == 2:
-                    n = min(corr_array.shape[0], corr_array.shape[1])
-                    for i in range(n):
-                        for j in range(i + 1, n):
-                            if (i < corr_array.shape[0] and j < corr_array.shape[1] and
-                                not np.isnan(corr_array[i, j]) and not np.isinf(corr_array[i, j])):
-                                processed[(f"INST_{i}", f"INST_{j}")] = float(corr_array[i, j])
-                                
+                        self.return_history[instrument].append({
+                            'return': return_value,
+                            'timestamp': current_time
+                        })
+                        
         except Exception as e:
-            self.log_operator_warning(f"Correlation data processing failed: {e}")
-        
-        return processed
-
-    def _calculate_correlations_from_positions(self, info_bus: InfoBus) -> Dict[Tuple[str, str], float]:
-        """Calculate correlations from position price movements"""
-        
-        positions = InfoBusExtractor.get_positions(info_bus)
-        prices = info_bus.get('prices', {})
-        
-        if len(positions) < 2 or not prices:
-            return {}
-        
-        correlations = {}
+            error_context = self.error_pinpointer.analyze_error(e, "price_history_update")
+            self.logger.warning(f"Price history update failed: {error_context}")
+    
+    async def _analyze_correlations_comprehensive(self, positions: List[Dict], 
+                                                market_context: Dict[str, Any]) -> Dict[str, Any]:
+        """Comprehensive correlation analysis with advanced features"""
+        start_time = datetime.datetime.now()
         
         try:
-            # Get instruments from positions
-            instruments = list(set(pos.get('symbol', '') for pos in positions))
-            instruments = [inst for inst in instruments if inst in prices]
+            # Extract instruments from positions
+            instruments = list(set(pos.get('symbol', pos.get('instrument', '')) for pos in positions))
+            instruments = [inst for inst in instruments if inst and inst in self.return_history]
             
             if len(instruments) < 2:
-                return {}
+                return self._generate_insufficient_data_response()
             
-            # Use price history to estimate correlations
-            if len(self.correlation_matrix_history) >= 10:
-                # Calculate rolling correlation from recent price data
-                recent_prices = {}
-                for inst in instruments:
-                    recent_prices[inst] = [prices[inst]]  # Current price
-                    
-                    # Add historical prices if available
-                    for hist_data in list(self.correlation_matrix_history)[-10:]:
-                        if inst in hist_data.get('prices', {}):
-                            recent_prices[inst].append(hist_data['prices'][inst])
-                
-                # Calculate correlations
-                for i, inst1 in enumerate(instruments):
-                    for j, inst2 in enumerate(instruments[i+1:], i+1):
-                        if (len(recent_prices.get(inst1, [])) >= 5 and 
-                            len(recent_prices.get(inst2, [])) >= 5):
-                            
-                            prices1 = np.array(recent_prices[inst1][-5:])
-                            prices2 = np.array(recent_prices[inst2][-5:])
-                            
-                            # Calculate returns
-                            returns1 = np.diff(prices1) / (prices1[:-1] + 1e-8)
-                            returns2 = np.diff(prices2) / (prices2[:-1] + 1e-8)
-                            
-                            # Calculate correlation
-                            if len(returns1) >= 3 and len(returns2) >= 3:
-                                corr = np.corrcoef(returns1, returns2)[0, 1]
-                                if not np.isnan(corr):
-                                    correlations[(inst1, inst2)] = float(corr)
-                                    
+            # Calculate correlation matrix
+            correlation_matrix = self._calculate_enhanced_correlation_matrix(instruments, market_context)
+            
+            # Perform clustering analysis
+            cluster_analysis = self._perform_correlation_clustering(correlation_matrix, instruments)
+            
+            # Calculate diversification metrics
+            diversification_metrics = self._calculate_diversification_metrics(correlation_matrix, positions)
+            
+            # Analyze correlation violations
+            violation_analysis = self._analyze_correlation_violations(correlation_matrix, instruments)
+            
+            # Regime-specific analysis
+            regime_analysis = self._analyze_regime_correlations(correlation_matrix, market_context)
+            
+            # Calculate processing time
+            processing_time = (datetime.datetime.now() - start_time).total_seconds() * 1000
+            
+            return {
+                'correlation_matrix': correlation_matrix,
+                'cluster_analysis': cluster_analysis,
+                'diversification_metrics': diversification_metrics,
+                'violation_analysis': violation_analysis,
+                'regime_analysis': regime_analysis,
+                'instruments_analyzed': instruments,
+                'processing_time_ms': processing_time,
+                'market_context': market_context
+            }
+            
         except Exception as e:
-            self.log_operator_warning(f"Position correlation calculation failed: {e}")
-        
-        return correlations
-
-    def _estimate_correlations_from_history(self, info_bus: InfoBus) -> Dict[Tuple[str, str], float]:
-        """Estimate current correlations from historical patterns"""
-        
-        if not self.correlation_history:
-            return {}
-        
-        # Get recent average correlations
-        recent_correlations = defaultdict(list)
-        
-        for hist_data in list(self.correlation_history)[-5:]:
-            correlations = hist_data.get('correlations', {})
-            for pair, corr in correlations.items():
-                recent_correlations[pair].append(corr)
-        
-        # Calculate averages
-        estimated = {}
-        for pair, corr_list in recent_correlations.items():
-            if len(corr_list) >= 2:
-                estimated[pair] = float(np.mean(corr_list))
-        
-        return estimated
-
-    def _generate_bootstrap_correlations(self, info_bus: InfoBus) -> Dict[Tuple[str, str], float]:
-        """Generate realistic bootstrap correlations for early training"""
-        
-        positions = InfoBusExtractor.get_positions(info_bus)
-        if len(positions) < 2:
-            return {}
-        
-        instruments = list(set(pos.get('symbol', '') for pos in positions))
-        if len(instruments) < 2:
-            return {}
-        
-        correlations = {}
+            error_context = self.error_pinpointer.analyze_error(e, "correlation_analysis")
+            self.logger.error(f"Correlation analysis failed: {error_context}")
+            return self._generate_analysis_error_response(str(error_context))
+    
+    def _calculate_enhanced_correlation_matrix(self, instruments: List[str], 
+                                             market_context: Dict[str, Any]) -> Dict[Tuple[str, str], float]:
+        """Calculate enhanced correlation matrix with regime and volatility adjustments"""
+        correlation_matrix = {}
+        regime = market_context.get('regime', 'unknown')
+        volatility_regime = market_context.get('volatility_level', 'medium')
         
         try:
-            # Generate realistic correlations based on instrument types
             for i, inst1 in enumerate(instruments):
                 for j, inst2 in enumerate(instruments[i+1:], i+1):
-                    # Generate correlation based on instrument similarity
-                    if self._are_instruments_similar(inst1, inst2):
-                        # Similar instruments have higher correlation
-                        base_corr = 0.6 + np.random.normal(0, 0.2)
-                    else:
-                        # Different instruments have lower correlation
-                        base_corr = 0.2 + np.random.normal(0, 0.3)
+                    # Get return data
+                    returns1 = [r['return'] for r in self.return_history[inst1] if r['return'] is not None]
+                    returns2 = [r['return'] for r in self.return_history[inst2] if r['return'] is not None]
                     
-                    # Clamp to valid range
-                    corr = np.clip(base_corr, -0.95, 0.95)
-                    correlations[(inst1, inst2)] = float(corr)
-                    
-        except Exception as e:
-            self.log_operator_warning(f"Bootstrap correlation generation failed: {e}")
-        
-        return correlations
-
-    def _are_instruments_similar(self, inst1: str, inst2: str) -> bool:
-        """Determine if two instruments are similar (for correlation estimation)"""
-        
-        # Major currency pairs
-        major_pairs = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CHF', 'AUD/USD', 'NZD/USD']
-        major_pairs_no_slash = [p.replace('/', '') for p in major_pairs]
-        
-        # Gold instruments
-        gold_instruments = ['XAU/USD', 'XAUUSD', 'GOLD']
-        
-        # Check if both are major pairs
-        if ((inst1 in major_pairs or inst1 in major_pairs_no_slash) and
-            (inst2 in major_pairs or inst2 in major_pairs_no_slash)):
-            return True
-        
-        # Check if both are gold instruments
-        if inst1 in gold_instruments and inst2 in gold_instruments:
-            return True
-        
-        # Check if they share a common currency
-        for inst in [inst1, inst2]:
-            inst_clean = inst.replace('/', '')
-            if len(inst_clean) >= 6:
-                base1, quote1 = inst_clean[:3], inst_clean[3:6]
-                
-                for other_inst in [inst1, inst2]:
-                    if other_inst == inst:
-                        continue
-                    other_clean = other_inst.replace('/', '')
-                    if len(other_clean) >= 6:
-                        base2, quote2 = other_clean[:3], other_clean[3:6]
-                        if base1 in [base2, quote2] or quote1 in [base2, quote2]:
-                            return True
-        
-        return False
-
-    def _handle_no_correlation_data(self, context: Dict[str, Any]) -> None:
-        """Handle case when no correlation data is available"""
-        
-        self.risk_score = 0.0
-        self.current_correlations.clear()
-        
-        # Clear alerts
-        for severity in self.alerts:
-            self.alerts[severity].clear()
-        
-        # Log occasionally
-        if self.step_count % 100 == 0:
-            self.log_operator_info(
-                "📊 No correlation data available",
-                step=self.step_count,
-                regime=context.get('regime', 'unknown')
-            )
-
-    def _analyze_correlations_enhanced(self, correlations: Dict[Tuple[str, str], float],
-                                     info_bus: InfoBus, context: Dict[str, Any]) -> bool:
-        """Enhanced correlation analysis with context awareness"""
-        
-        # Update current correlations
-        self.current_correlations = correlations.copy()
-        
-        # Clear previous alerts
-        for severity in self.alerts:
-            self.alerts[severity].clear()
-        
-        critical_found = False
-        correlation_stats = []
-        
-        # Analyze each correlation pair
-        for (inst1, inst2), corr in correlations.items():
-            try:
-                abs_corr = abs(float(corr))
-                correlation_stats.append(abs_corr)
-                
-                # Determine severity with context adjustment
-                severity = self._get_correlation_severity_enhanced(abs_corr, context)
-                
-                if severity != "none":
-                    alert_data = {
-                        'pair': (inst1, inst2),
-                        'correlation': corr,
-                        'abs_correlation': abs_corr,
-                        'severity': severity,
-                        'context': context.copy(),
-                        'timestamp': info_bus.get('timestamp', datetime.datetime.now().isoformat())
-                    }
-                    
-                    self.alerts[severity].append(alert_data)
-                    
-                    # Log significant correlations
-                    if severity in ["warning", "critical"]:
-                        if severity == "critical":
-                            self.log_operator_error(
-                                f"🚨 CRITICAL correlation: {inst1}/{inst2}",
-                                correlation=f"{corr:.3f}",
-                                threshold=f"{self.current_thresholds['max_corr']:.3f}",
-                                regime=context.get('regime', 'unknown')
-                            )
-                            critical_found = True
-                        else:
-                            self.log_operator_warning(
-                                f"⚠️ High correlation: {inst1}/{inst2}",
-                                correlation=f"{corr:.3f}",
-                                threshold=f"{self.current_thresholds['warning_corr']:.3f}"
-                            )
-                    
-                    # Track high correlation pairs
-                    if severity in ["warning", "critical"]:
-                        self._high_correlation_pairs.add((inst1, inst2))
-                    
-            except (ValueError, TypeError) as e:
-                self.log_operator_warning(f"Invalid correlation data for {inst1}/{inst2}: {e}")
-                continue
-
-    
-        
-        # Calculate portfolio-level metrics
-        self._calculate_portfolio_correlation_metrics(correlation_stats, context)
-        
-        # Update correlation trends
-        self._update_correlation_trends(correlations, context)
-        
-        # Store correlation history
-        self._store_correlation_snapshot(correlations, context, info_bus)
-        
-        return critical_found
-    
-
-    def _update_risk_metrics(self, additional_metrics: Optional[Dict[str, float]] = None) -> None:
-        """Update risk metrics tracking"""
-        
-        try:
-            # Update core risk metrics
-            self._update_performance_metric('correlation_risk_score', self.risk_score)
-            self._update_performance_metric('correlation_count', len(self.current_correlations))
-            self._update_performance_metric('high_correlation_pairs', len(self._high_correlation_pairs))
-            self._update_performance_metric('concentration_risk', self._correlation_concentration)
-            self._update_performance_metric('diversification_score', self._diversification_score)
-            
-            # Update additional metrics if provided
-            if additional_metrics:
-                for metric_name, value in additional_metrics.items():
-                    if isinstance(value, (int, float)) and np.isfinite(value):
-                        self._update_performance_metric(f'corr_{metric_name}', float(value))
-            
-            # Update alert metrics
-            total_alerts = sum(len(alerts) for alerts in self.alerts.values())
-            critical_alerts = len(self.alerts.get('critical', []))
-            
-            self._update_performance_metric('total_correlation_alerts', total_alerts)
-            self._update_performance_metric('critical_correlation_alerts', critical_alerts)
-            
-        except Exception as e:
-            self.log_operator_warning(f"Risk metrics update failed: {e}")
-
-    def _get_correlation_severity_enhanced(self, abs_corr: float, context: Dict[str, Any]) -> str:
-        """Enhanced severity assessment with context awareness"""
-        
-        # Get current thresholds
-        thresholds = self.current_thresholds
-        
-        # Base severity assessment
-        if abs_corr >= thresholds['max_corr']:
-            base_severity = "critical"
-        elif abs_corr >= thresholds['warning_corr']:
-            base_severity = "warning"
-        elif abs_corr >= thresholds['info_corr']:
-            base_severity = "info"
-        else:
-            base_severity = "none"
-        
-        # Context-based adjustments
-        regime = context.get('regime', 'unknown')
-        volatility_level = context.get('volatility_level', 'medium')
-        
-        # More tolerant in volatile markets (correlations naturally increase)
-        if volatility_level in ['high', 'extreme'] and base_severity == "warning":
-            if abs_corr < thresholds['max_corr'] * 0.95:  # 5% tolerance
-                base_severity = "info"
-        
-        # More strict in ranging markets (should maintain diversification)
-        elif regime == 'ranging' and base_severity == "info":
-            if abs_corr > thresholds['info_corr'] * 1.2:  # 20% stricter
-                base_severity = "warning"
-        
-        return base_severity
-
-    def _calculate_portfolio_correlation_metrics(self, correlation_stats: List[float], 
-                                                context: Dict[str, Any]) -> None:
-        """Calculate portfolio-level correlation metrics"""
-        
-        if not correlation_stats:
-            self._correlation_concentration = 0.0
-            self._diversification_score = 1.0
-            return
-        
-        try:
-            # Correlation concentration (how clustered the correlations are)
-            high_corr_count = sum(1 for corr in correlation_stats if corr > 0.7)
-            self._correlation_concentration = high_corr_count / max(len(correlation_stats), 1)
-            
-            # Diversification score (inverse of average correlation)
-            avg_correlation = np.mean(correlation_stats)
-            self._diversification_score = max(0.0, 1.0 - avg_correlation)
-            
-            # Update analytics
-            regime = context.get('regime', 'unknown')
-            self.correlation_analytics['avg_correlation'].append(avg_correlation)
-            self.correlation_analytics['max_correlation'].append(max(correlation_stats))
-            self.correlation_analytics['concentration'].append(self._correlation_concentration)
-            
-            # Store by regime
-            self.regime_correlations[regime]['avg'].append(avg_correlation)
-            self.regime_correlations[regime]['max'].append(max(correlation_stats))
-            
-        except Exception as e:
-            self.log_operator_warning(f"Portfolio correlation metrics calculation failed: {e}")
-
-    def _update_correlation_trends(self, correlations: Dict[Tuple[str, str], float],
-                                  context: Dict[str, Any]) -> None:
-        """Update correlation trend analysis"""
-        
-        try:
-            for pair, current_corr in correlations.items():
-                # Initialize trend tracking
-                if pair not in self.correlation_trends:
-                    self.correlation_trends[pair] = deque(maxlen=10)
-                
-                # Add current correlation
-                self.correlation_trends[pair].append({
-                    'correlation': current_corr,
-                    'timestamp': datetime.datetime.now().isoformat(),
-                    'regime': context.get('regime', 'unknown')
-                })
-                
-                # Analyze trend if enough data
-                if len(self.correlation_trends[pair]) >= 5:
-                    recent_corrs = [item['correlation'] for item in list(self.correlation_trends[pair])[-5:]]
-                    trend_slope = np.polyfit(range(len(recent_corrs)), recent_corrs, 1)[0]
-                    
-                    # Alert on rapidly increasing correlations
-                    if trend_slope > 0.1:  # Correlation increasing by >0.1 over 5 periods
-                        self.log_operator_warning(
-                            f"📈 Rising correlation trend: {pair[0]}/{pair[1]}",
-                            trend_slope=f"{trend_slope:.3f}",
-                            current_corr=f"{current_corr:.3f}"
-                        )
+                    if len(returns1) >= 10 and len(returns2) >= 10:
+                        # Calculate basic correlation
+                        min_length = min(len(returns1), len(returns2))
+                        returns1_aligned = returns1[-min_length:]
+                        returns2_aligned = returns2[-min_length:]
                         
+                        try:
+                            pearson_result = pearsonr(returns1_aligned, returns2_aligned)
+                            correlation: float = pearson_result[0]  # type: ignore
+                            
+                            # Apply regime adjustments
+                            adjusted_correlation = self._apply_regime_adjustments(
+                                correlation, inst1, inst2, regime, volatility_regime
+                            )
+                            
+                            correlation_matrix[(inst1, inst2)] = adjusted_correlation
+                            
+                            # Store in regime history
+                            self.regime_correlations[regime][(inst1, inst2)].append(adjusted_correlation)
+                            
+                        except Exception:
+                            # Fallback to basic calculation
+                            correlation_matrix[(inst1, inst2)] = 0.0
+                    else:
+                        # Insufficient data - use instrument similarity heuristic
+                        correlation_matrix[(inst1, inst2)] = self._estimate_correlation_heuristic(inst1, inst2)
+            
+            return correlation_matrix
+            
         except Exception as e:
-            self.log_operator_warning(f"Correlation trend update failed: {e}")
-
-    def _store_correlation_snapshot(self, correlations: Dict[Tuple[str, str], float],
-                                   context: Dict[str, Any], info_bus: InfoBus) -> None:
-        """Store comprehensive correlation snapshot"""
-        
-        snapshot = {
-            'timestamp': info_bus.get('timestamp', datetime.datetime.now().isoformat()),
-            'step_idx': info_bus.get('step_idx', self.step_count),
-            'correlations': correlations.copy(),
-            'context': context.copy(),
-            'prices': info_bus.get('prices', {}),
-            'portfolio_metrics': {
-                'concentration': self._correlation_concentration,
-                'diversification_score': self._diversification_score,
-                'high_corr_pairs': len(self._high_correlation_pairs)
-            },
-            'alert_counts': {severity: len(alerts) for severity, alerts in self.alerts.items()}
-        }
-        
-        self.correlation_history.append(snapshot)
-        self.correlation_matrix_history.append(snapshot)
-
-    def _update_dynamic_thresholds(self, context: Dict[str, Any]) -> None:
-        """Update thresholds dynamically based on market context"""
-        
-        if not self.dynamic_thresholds:
-            return
-        
+            error_context = self.error_pinpointer.analyze_error(e, "correlation_matrix")
+            self.logger.error(f"Correlation matrix calculation failed: {error_context}")
+            return {}
+    
+    def _apply_regime_adjustments(self, correlation: float, inst1: str, inst2: str, 
+                                 regime: str, volatility_regime: str) -> float:
+        """Apply regime-specific adjustments to correlation"""
         try:
-            regime = context.get('regime', 'unknown')
-            volatility_level = context.get('volatility_level', 'medium')
+            adjusted_correlation = correlation
             
-            # Base threshold adjustments
-            adjustments = {'max_corr': 1.0, 'warning_corr': 1.0, 'info_corr': 1.0}
+            # Volatility regime adjustments
+            if volatility_regime == 'high':
+                # Correlations tend to increase during high volatility
+                adjusted_correlation = min(0.95, correlation * 1.2)
+            elif volatility_regime == 'extreme':
+                # Extreme volatility often leads to correlation convergence
+                adjusted_correlation = min(0.95, correlation * 1.4)
+            elif volatility_regime == 'low':
+                # Low volatility allows for better diversification
+                adjusted_correlation = max(-0.95, correlation * 0.8)
             
-            # Regime-based adjustments
-            if regime == 'volatile':
-                # More tolerant during volatile periods
-                adjustments = {'max_corr': 1.1, 'warning_corr': 1.15, 'info_corr': 1.2}
-            elif regime == 'ranging':
-                # More strict during ranging periods
-                adjustments = {'max_corr': 0.95, 'warning_corr': 0.9, 'info_corr': 0.85}
+            # Market regime adjustments
+            if regime == 'crisis':
+                # Crisis periods show correlation convergence
+                adjusted_correlation = min(0.95, adjusted_correlation * 1.3)
+            elif regime == 'trending':
+                # Trending markets may reduce correlations
+                adjusted_correlation = max(-0.95, adjusted_correlation * 0.9)
             
-            # Volatility-based adjustments
-            if volatility_level == 'extreme':
-                # Additional tolerance in extreme volatility
-                for key in adjustments:
-                    adjustments[key] *= 1.1
-            elif volatility_level == 'low':
-                # Stricter in low volatility
-                for key in adjustments:
-                    adjustments[key] *= 0.95
+            return float(np.clip(adjusted_correlation, -0.95, 0.95))
             
-            # Apply adjustments
-            for threshold_name, multiplier in adjustments.items():
-                self.current_thresholds[threshold_name] = min(
-                    self.base_thresholds[threshold_name] * multiplier,
-                    0.98  # Never exceed 98% correlation threshold
-                )
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "regime_adjustment")
+            self.logger.warning(f"Regime adjustment failed: {error_context}")
+            return correlation
+    
+    def _estimate_correlation_heuristic(self, inst1: str, inst2: str) -> float:
+        """Estimate correlation using instrument type heuristics"""
+        try:
+            # Currency pair correlations
+            if all('USD' in inst for inst in [inst1, inst2]):
+                return 0.4  # USD pairs tend to be moderately correlated
+            elif all(any(curr in inst for curr in ['EUR', 'GBP']) for inst in [inst1, inst2]):
+                return 0.5  # European currencies moderate correlation
+            elif all('JPY' in inst for inst in [inst1, inst2]):
+                return 0.6  # JPY pairs tend to be more correlated
+            
+            # Gold and currency correlations
+            elif all('XAU' in inst or 'GOLD' in inst for inst in [inst1, inst2]):
+                return 0.8  # Gold instruments highly correlated
+            elif any('XAU' in inst or 'GOLD' in inst for inst in [inst1, inst2]):
+                return -0.2  # Gold vs currencies often negative correlation
+            
+            # Different asset classes
+            else:
+                return 0.1  # Low correlation for different asset types
+                
+        except Exception:
+            return 0.0
+    
+    def _perform_correlation_clustering(self, correlation_matrix: Dict[Tuple[str, str], float], 
+                                      instruments: List[str]) -> Dict[str, Any]:
+        """Perform hierarchical clustering based on correlations"""
+        try:
+            if len(instruments) < 3:
+                return {'clusters': {0: instruments}, 'cluster_count': 1, 'silhouette_score': 1.0}
+            
+            # Build distance matrix (1 - |correlation|)
+            n = len(instruments)
+            distance_matrix = np.ones((n, n))
+            
+            for i, inst1 in enumerate(instruments):
+                for j, inst2 in enumerate(instruments):
+                    if i != j:
+                        correlation = correlation_matrix.get((inst1, inst2), 
+                                                           correlation_matrix.get((inst2, inst1), 0.0))
+                        distance_matrix[i, j] = 1 - abs(correlation)
+            
+            # Perform hierarchical clustering
+            linkage_matrix = linkage(distance_matrix[np.triu_indices(n, k=1)], method='ward')
+            
+            # Determine optimal number of clusters
+            optimal_clusters = min(max(2, len(instruments) // 3), 5)
+            cluster_labels = fcluster(linkage_matrix, optimal_clusters, criterion='maxclust')
+            
+            # Organize clusters
+            clusters = defaultdict(list)
+            for i, label in enumerate(cluster_labels):
+                clusters[label].append(instruments[i])
+            
+            # Calculate cluster risk scores
+            cluster_risks = {}
+            for cluster_id, cluster_instruments in clusters.items():
+                cluster_risk = self._calculate_cluster_risk(cluster_instruments, correlation_matrix)
+                cluster_risks[cluster_id] = cluster_risk
+            
+            # Store clusters for external access
+            self.correlation_clusters = dict(clusters)
+            
+            return {
+                'clusters': dict(clusters),
+                'cluster_count': len(clusters),
+                'cluster_risks': cluster_risks,
+                'max_cluster_risk': max(cluster_risks.values()) if cluster_risks else 0.0,
+                'clustering_quality': self._assess_clustering_quality(clusters, correlation_matrix)
+            }
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "correlation_clustering")
+            self.logger.warning(f"Correlation clustering failed: {error_context}")
+            return {'clusters': {0: instruments}, 'cluster_count': 1, 'error': error_context}
+    
+    def _calculate_cluster_risk(self, cluster_instruments: List[str], 
+                               correlation_matrix: Dict[Tuple[str, str], float]) -> float:
+        """Calculate risk score for a correlation cluster"""
+        try:
+            if len(cluster_instruments) < 2:
+                return 0.0
+            
+            # Calculate average intra-cluster correlation
+            correlations = []
+            for i, inst1 in enumerate(cluster_instruments):
+                for j, inst2 in enumerate(cluster_instruments[i+1:], i+1):
+                    corr = correlation_matrix.get((inst1, inst2), 
+                                                correlation_matrix.get((inst2, inst1), 0.0))
+                    correlations.append(abs(corr))
+            
+            if correlations:
+                avg_correlation = np.mean(correlations)
+                # Risk increases exponentially with correlation and cluster size
+                size_factor = len(cluster_instruments) / 10.0  # Normalize by typical portfolio size
+                return float(avg_correlation * (1 + size_factor))
+            
+            return 0.0
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "cluster_risk")
+            self.logger.warning(f"Cluster risk calculation failed: {error_context}")
+            return 0.0
+    
+    def _assess_clustering_quality(self, clusters: Dict[int, List[str]], 
+                                  correlation_matrix: Dict[Tuple[str, str], float]) -> float:
+        """Assess the quality of correlation clustering"""
+        try:
+            if len(clusters) <= 1:
+                return 0.0
+            
+            # Calculate silhouette-like score
+            total_score = 0.0
+            total_instruments = 0
+            
+            for cluster_id, cluster_instruments in clusters.items():
+                for instrument in cluster_instruments:
+                    # Intra-cluster cohesion
+                    intra_cluster_corr = []
+                    for other_inst in cluster_instruments:
+                        if other_inst != instrument:
+                            corr = correlation_matrix.get((instrument, other_inst),
+                                                        correlation_matrix.get((other_inst, instrument), 0.0))
+                            intra_cluster_corr.append(abs(corr))
+                    
+                    # Inter-cluster separation
+                    inter_cluster_corr = []
+                    for other_cluster_id, other_cluster in clusters.items():
+                        if other_cluster_id != cluster_id:
+                            for other_inst in other_cluster:
+                                corr = correlation_matrix.get((instrument, other_inst),
+                                                            correlation_matrix.get((other_inst, instrument), 0.0))
+                                inter_cluster_corr.append(abs(corr))
+                    
+                    if intra_cluster_corr and inter_cluster_corr:
+                        cohesion = np.mean(intra_cluster_corr)
+                        separation = np.mean(inter_cluster_corr)
+                        score = cohesion - separation  # Higher is better clustering
+                        total_score += score
+                        total_instruments += 1
+            
+            return float(total_score / max(total_instruments, 1))
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "clustering_quality")
+            self.logger.warning(f"Clustering quality assessment failed: {error_context}")
+            return 0.0
+    
+    def _calculate_diversification_metrics(self, correlation_matrix: Dict[Tuple[str, str], float], 
+                                         positions: List[Dict]) -> Dict[str, Any]:
+        """Calculate comprehensive diversification metrics"""
+        try:
+            if not correlation_matrix:
+                return {'diversification_score': 1.0, 'effective_positions': len(positions)}
+            
+            # Calculate average correlation
+            correlations = list(correlation_matrix.values())
+            avg_correlation = np.mean([abs(corr) for corr in correlations]) if correlations else 0.0
+            
+            # Calculate diversification ratio (1 - average correlation)
+            basic_diversification = 1.0 - avg_correlation
+            
+            # Calculate effective number of positions (Herfindahl-like index)
+            position_weights = []
+            total_exposure = 0.0
+            
+            for position in positions:
+                size = abs(position.get('size', position.get('volume', 0)))
+                price = position.get('current_price', position.get('price', 1.0))
+                exposure = size * price
+                total_exposure += exposure
+                position_weights.append(exposure)
+            
+            if total_exposure > 0:
+                # Normalize weights
+                weights = [w / total_exposure for w in position_weights]
+                # Calculate concentration (Herfindahl index)
+                concentration = sum(w**2 for w in weights)
+                effective_positions = 1.0 / concentration if concentration > 0 else len(positions)
+            else:
+                effective_positions = len(positions)
+            
+            # Combine diversification measures
+            position_diversification = min(1.0, effective_positions / len(positions)) if positions else 1.0
+            self.diversification_score = (basic_diversification + position_diversification) / 2.0
+            
+            return {
+                'diversification_score': self.diversification_score,
+                'avg_correlation': avg_correlation,
+                'effective_positions': effective_positions,
+                'concentration_index': 1.0 - position_diversification,
+                'position_count': len(positions),
+                'correlation_pairs': len(correlation_matrix)
+            }
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "diversification_metrics")
+            self.logger.error(f"Diversification metrics calculation failed: {error_context}")
+            return {'diversification_score': 0.5, 'effective_positions': 1}
+    
+    def _analyze_correlation_violations(self, correlation_matrix: Dict[Tuple[str, str], float], 
+                                      instruments: List[str]) -> Dict[str, Any]:
+        """Analyze correlation violations and risk concentrations"""
+        try:
+            violations = {'critical': [], 'warning': [], 'info': []}
+            
+            for (inst1, inst2), correlation in correlation_matrix.items():
+                abs_corr = abs(correlation)
+                
+                if abs_corr >= self.max_correlation:
+                    violations['critical'].append({
+                        'instruments': (inst1, inst2),
+                        'correlation': correlation,
+                        'threshold': self.max_correlation,
+                        'severity': 'critical'
+                    })
+                    self.correlation_violations += 1
+                elif abs_corr >= self.warning_correlation:
+                    violations['warning'].append({
+                        'instruments': (inst1, inst2),
+                        'correlation': correlation,
+                        'threshold': self.warning_correlation,
+                        'severity': 'warning'
+                    })
+            
+            # Check diversification violations
+            if self.diversification_score < self.min_diversification:
+                violations['critical'].append({
+                    'type': 'diversification',
+                    'score': self.diversification_score,
+                    'threshold': self.min_diversification,
+                    'severity': 'critical'
+                })
+                self.diversification_violations += 1
+            
+            return {
+                'violations': violations,
+                'total_violations': sum(len(v) for v in violations.values()),
+                'critical_pairs': len(violations['critical']),
+                'warning_pairs': len(violations['warning']),
+                'max_correlation': max([abs(corr) for corr in correlation_matrix.values()]) if correlation_matrix else 0.0
+            }
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "violation_analysis")
+            self.logger.error(f"Violation analysis failed: {error_context}")
+            return {'violations': {'critical': [], 'warning': [], 'info': []}, 'total_violations': 0}
+    
+    def _analyze_regime_correlations(self, correlation_matrix: Dict[Tuple[str, str], float], 
+                                   market_context: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze regime-specific correlation patterns"""
+        try:
+            regime = market_context.get('regime', 'unknown')
+            volatility_regime = market_context.get('volatility_level', 'medium')
+            
+            # Store current correlations in regime history
+            for pair, correlation in correlation_matrix.items():
+                self.regime_correlations[regime][pair].append(correlation)
+            
+            # Calculate regime-specific statistics
+            regime_stats = {}
+            for regime_name, regime_data in self.regime_correlations.items():
+                if regime_data:
+                    all_correlations = []
+                    for pair_correlations in regime_data.values():
+                        all_correlations.extend(pair_correlations)
+                    
+                    if all_correlations:
+                        regime_stats[regime_name] = {
+                            'avg_correlation': float(np.mean([abs(c) for c in all_correlations])),
+                            'max_correlation': float(np.max([abs(c) for c in all_correlations])),
+                            'correlation_volatility': float(np.std(all_correlations)),
+                            'sample_count': len(all_correlations)
+                        }
+            
+            return {
+                'current_regime': regime,
+                'current_volatility': volatility_regime,
+                'regime_stats': regime_stats,
+                'regime_shift_impact': self._assess_regime_shift_impact(regime_stats, regime)
+            }
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "regime_analysis")
+            self.logger.warning(f"Regime analysis failed: {error_context}")
+            return {'current_regime': 'unknown', 'regime_stats': {}}
+    
+    def _assess_regime_shift_impact(self, regime_stats: Dict[str, Dict], current_regime: str) -> str:
+        """Assess the impact of potential regime shifts on correlations"""
+        try:
+            if current_regime not in regime_stats or len(regime_stats) < 2:
+                return "insufficient_data"
+            
+            current_avg = regime_stats[current_regime]['avg_correlation']
+            
+            # Compare with other regimes
+            other_regimes = {k: v for k, v in regime_stats.items() if k != current_regime}
+            if not other_regimes:
+                return "no_comparison_data"
+            
+            max_other_avg = max(stats['avg_correlation'] for stats in other_regimes.values())
+            min_other_avg = min(stats['avg_correlation'] for stats in other_regimes.values())
+            
+            if current_avg > max_other_avg * 1.2:
+                return "high_correlation_regime"
+            elif current_avg < min_other_avg * 0.8:
+                return "low_correlation_regime"
+            else:
+                return "normal_correlation_regime"
                 
         except Exception as e:
-            self.log_operator_warning(f"Dynamic threshold update failed: {e}")
-
-    def _calculate_comprehensive_risk_score(self, context: Dict[str, Any]) -> None:
-        """Calculate comprehensive correlation risk score"""
-        
+            error_context = self.error_pinpointer.analyze_error(e, "regime_shift_assessment")
+            return "assessment_error"
+    
+    def _calculate_correlation_risk_metrics(self, correlation_results: Dict[str, Any]) -> Dict[str, Any]:
+        """Calculate comprehensive correlation risk metrics"""
         try:
-            base_score = 0.0
+            violation_analysis = correlation_results['violation_analysis']
+            diversification_metrics = correlation_results['diversification_metrics']
+            cluster_analysis = correlation_results['cluster_analysis']
             
-            # Weight by alert severity
-            base_score += len(self.alerts["critical"]) * 0.5
-            base_score += len(self.alerts["warning"]) * 0.3
-            base_score += len(self.alerts["info"]) * 0.1
+            # Violation-based risk
+            violation_risk = (
+                len(violation_analysis['violations']['critical']) * 1.0 +
+                len(violation_analysis['violations']['warning']) * 0.6
+            ) / max(len(correlation_results['instruments_analyzed']), 1)
             
-            # Factor in concentration risk
-            base_score += self._correlation_concentration * 0.4
+            # Diversification risk
+            diversification_risk = max(0.0, (self.min_diversification - self.diversification_score) / self.min_diversification)
             
-            # Factor in diversification
-            base_score += (1.0 - self._diversification_score) * 0.3
+            # Cluster concentration risk
+            self.cluster_risk_score = cluster_analysis.get('max_cluster_risk', 0.0)
             
-            # Context adjustments
-            regime = context.get('regime', 'unknown')
-            if regime == 'volatile':
-                base_score *= 0.8  # More tolerant in volatile markets
-            elif regime == 'ranging':
-                base_score *= 1.2  # More concerned in ranging markets
-            
-            # Normalize
-            self.risk_score = min(base_score, 1.0)
-            
-            # Update risk tracking
-            self._update_risk_metrics({
-                'correlation_risk_score': self.risk_score,
-                'concentration': self._correlation_concentration,
-                'diversification': self._diversification_score
-            })
-            
-        except Exception as e:
-            self.log_operator_warning(f"Risk score calculation failed: {e}")
-            self.risk_score = 0.0
-
-    def _update_info_bus(self, info_bus: InfoBus, critical_found: bool) -> None:
-        """Update InfoBus with correlation analysis results"""
-        
-        # Add module data
-        InfoBusUpdater.add_module_data(info_bus, 'correlated_risk_controller', {
-            'risk_score': self.risk_score,
-            'correlation_count': len(self.current_correlations),
-            'high_corr_pairs': len(self._high_correlation_pairs),
-            'alerts': {severity: len(alerts) for severity, alerts in self.alerts.items()},
-            'thresholds': self.current_thresholds.copy(),
-            'portfolio_metrics': {
-                'concentration': self._correlation_concentration,
-                'diversification_score': self._diversification_score
-            },
-            'critical_found': critical_found
-        })
-        
-        # Update risk snapshot
-        InfoBusUpdater.update_risk_snapshot(info_bus, {
-            'correlation_risk_score': self.risk_score,
-            'high_correlations': len([
-                alert for alert in self.alerts['critical'] + self.alerts['warning']
-            ]),
-            'diversification_score': self._diversification_score
-        })
-        
-        # Add alerts for critical situations
-        if critical_found:
-            InfoBusUpdater.add_alert(
-                info_bus,
-                f"Critical correlations detected: {len(self.alerts['critical'])} pairs",
-                severity="critical",
-                module="CorrelatedRiskController"
+            # Combined correlation risk score
+            self.correlation_risk_score = min(1.0, 
+                violation_risk * 0.4 + 
+                diversification_risk * 0.4 + 
+                self.cluster_risk_score * 0.2
             )
-        elif self.risk_score > 0.6:
-            InfoBusUpdater.add_alert(
-                info_bus,
-                f"Elevated correlation risk: {self.risk_score:.1%}",
-                severity="warning",
-                module="CorrelatedRiskController"
-            )
-
-    def _record_comprehensive_audit(self, info_bus: InfoBus, context: Dict[str, Any],
-                                   correlations: Dict[Tuple[str, str], float]) -> None:
-        """Record comprehensive audit trail"""
-        
-        audit_data = {
-            'risk_score': self.risk_score,
-            'correlation_count': len(correlations),
-            'context': context,
-            'alerts': {
-                severity: [
-                    {
-                        'pair': alert['pair'],
-                        'correlation': alert['correlation'],
-                        'severity': alert['severity']
-                    }
-                    for alert in alerts
-                ]
-                for severity, alerts in self.alerts.items()
-                if alerts
-            },
-            'portfolio_metrics': {
-                'concentration': self._correlation_concentration,
-                'diversification_score': self._diversification_score,
-                'high_corr_pairs_count': len(self._high_correlation_pairs)
-            },
-            'thresholds': self.current_thresholds.copy(),
-            'step_count': self.step_count
-        }
-        
-        self.audit_manager.record_event(
-            event_type="correlation_analysis",
-            module="CorrelatedRiskController",
-            details=audit_data,
-            severity="critical" if any(
-                alert.get('severity') == 'critical'
-                for alerts in self.alerts.values()
-                for alert in alerts
-            ) else "warning" if self.risk_score > 0.5 else "info"
-        )
-
-    def _update_correlation_metrics(self) -> None:
-        """Update performance and correlation metrics"""
-        
-        # Update performance metrics
-        self._update_performance_metric('risk_score', self.risk_score)
-        self._update_performance_metric('correlation_count', len(self.current_correlations))
-        self._update_performance_metric('high_corr_pairs', len(self._high_correlation_pairs))
-        self._update_performance_metric('diversification_score', self._diversification_score)
-        
-        # Update alert metrics
-        total_alerts = sum(len(alerts) for alerts in self.alerts.values())
-        self._update_performance_metric('total_alerts', total_alerts)
-
-    def get_observation_components(self) -> np.ndarray:
-        """Enhanced observation components for model integration"""
-        
-        try:
-            # Basic risk metrics
-            risk_score = float(self.risk_score)
-            correlation_count_norm = min(len(self.current_correlations) / 20.0, 1.0)
             
-            # Correlation statistics
-            if self.current_correlations:
-                corr_values = list(self.current_correlations.values())
-                avg_corr = np.mean(np.abs(corr_values))
-                max_corr = np.max(np.abs(corr_values))
+            # Determine severity level
+            if self.correlation_risk_score > 0.7 or len(violation_analysis['violations']['critical']) > 0:
+                self.severity_level = 'critical'
+            elif self.correlation_risk_score > 0.4 or len(violation_analysis['violations']['warning']) > 0:
+                self.severity_level = 'warning'
+            elif self.correlation_risk_score > 0.1:
+                self.severity_level = 'elevated'
             else:
-                avg_corr = 0.0
-                max_corr = 0.0
+                self.severity_level = 'normal'
             
-            # Alert indicators
-            critical_alerts = len(self.alerts["critical"]) / 10.0  # Normalized
-            warning_alerts = len(self.alerts["warning"]) / 10.0
-            
-            # Portfolio metrics
-            concentration = self._correlation_concentration
-            diversification = self._diversification_score
-            
-            return np.array([
-                risk_score,                    # Overall correlation risk
-                correlation_count_norm,        # Number of correlations tracked
-                avg_corr,                      # Average absolute correlation
-                max_corr,                      # Maximum absolute correlation
-                min(critical_alerts, 1.0),    # Critical alerts (normalized)
-                min(warning_alerts, 1.0),     # Warning alerts (normalized)
-                concentration,                 # Correlation concentration
-                diversification                # Diversification score
-            ], dtype=np.float32)
+            return {
+                'correlation_risk_score': self.correlation_risk_score,
+                'diversification_score': self.diversification_score,
+                'cluster_risk_score': self.cluster_risk_score,
+                'severity_level': self.severity_level,
+                'violation_risk': violation_risk,
+                'diversification_risk': diversification_risk
+            }
             
         except Exception as e:
-            self.log_operator_error(f"Correlation observation generation failed: {e}")
-            return np.zeros(8, dtype=np.float32)
-
-    def get_correlation_report(self) -> str:
-        """Generate operator-friendly correlation report"""
+            error_context = self.error_pinpointer.analyze_error(e, "risk_metrics")
+            self.logger.error(f"Risk metrics calculation failed: {error_context}")
+            return {'correlation_risk_score': 0.5, 'severity_level': 'unknown'}
+    
+    async def _generate_correlation_thesis(self, correlation_results: Dict[str, Any], 
+                                         market_context: Dict[str, Any]) -> str:
+        """Generate intelligent thesis explaining correlation analysis"""
+        try:
+            instruments = correlation_results['instruments_analyzed']
+            violation_analysis = correlation_results['violation_analysis']
+            diversification_metrics = correlation_results['diversification_metrics']
+            cluster_analysis = correlation_results['cluster_analysis']
+            regime_analysis = correlation_results['regime_analysis']
+            
+            thesis_parts = []
+            
+            # Portfolio overview
+            thesis_parts.append(
+                f"Analyzed {len(instruments)} instruments with {len(correlation_results['correlation_matrix'])} correlation pairs"
+            )
+            
+            # Diversification assessment
+            div_score = diversification_metrics['diversification_score']
+            if div_score >= 0.7:
+                thesis_parts.append(f"EXCELLENT diversification achieved ({div_score:.1%})")
+            elif div_score >= 0.5:
+                thesis_parts.append(f"ADEQUATE diversification maintained ({div_score:.1%})")
+            else:
+                thesis_parts.append(f"POOR diversification detected ({div_score:.1%}) - concentration risk elevated")
+            
+            # Violation analysis
+            critical_violations = len(violation_analysis['violations']['critical'])
+            warning_violations = len(violation_analysis['violations']['warning'])
+            
+            if critical_violations > 0:
+                thesis_parts.append(f"CRITICAL: {critical_violations} correlation violations exceed {self.max_correlation:.1%} threshold")
+            elif warning_violations > 0:
+                thesis_parts.append(f"WARNING: {warning_violations} correlations approaching limits")
+            else:
+                thesis_parts.append("All correlations within acceptable ranges")
+            
+            # Cluster analysis
+            cluster_count = cluster_analysis['cluster_count']
+            max_cluster_risk = cluster_analysis.get('max_cluster_risk', 0.0)
+            
+            if max_cluster_risk > 0.7:
+                thesis_parts.append(f"HIGH cluster concentration risk detected in {cluster_count} correlation clusters")
+            elif cluster_count > 1:
+                thesis_parts.append(f"Portfolio organized into {cluster_count} correlation clusters with manageable risk")
+            
+            # Regime analysis
+            regime = regime_analysis['current_regime']
+            regime_shift_impact = regime_analysis.get('regime_shift_impact', 'unknown')
+            
+            if regime != 'unknown':
+                if regime_shift_impact == 'high_correlation_regime':
+                    thesis_parts.append(f"Current {regime} regime shows elevated correlation levels - monitor for regime shifts")
+                elif regime_shift_impact == 'low_correlation_regime':
+                    thesis_parts.append(f"Current {regime} regime provides favorable diversification environment")
+            
+            # Risk assessment conclusion
+            thesis_parts.append(
+                f"Overall correlation risk: {self.severity_level.upper()} "
+                f"(score: {self.correlation_risk_score:.2f})"
+            )
+            
+            return " | ".join(thesis_parts)
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "thesis_generation")
+            return f"Thesis generation failed: {error_context}"
+    
+    def _generate_recommendations(self, correlation_results: Dict[str, Any]) -> List[str]:
+        """Generate intelligent recommendations based on correlation analysis"""
+        recommendations = []
         
-        # Status indicators
-        if self.risk_score > 0.7:
-            risk_status = "🚨 Critical"
-        elif self.risk_score > 0.4:
-            risk_status = "⚠️ Elevated"
-        else:
-            risk_status = "✅ Normal"
+        try:
+            violation_analysis = correlation_results['violation_analysis']
+            diversification_metrics = correlation_results['diversification_metrics']
+            cluster_analysis = correlation_results['cluster_analysis']
+            
+            # Critical violation recommendations
+            critical_violations = violation_analysis['violations']['critical']
+            if critical_violations:
+                recommendations.append("IMMEDIATE: Reduce positions in highly correlated instruments")
+                for violation in critical_violations[:3]:  # Show top 3
+                    if violation.get('instruments'):
+                        inst1, inst2 = violation['instruments']
+                        recommendations.append(f"Consider closing or reducing {inst1} or {inst2} positions")
+            
+            # Diversification recommendations
+            if diversification_metrics['diversification_score'] < self.min_diversification:
+                recommendations.append("Improve portfolio diversification by adding uncorrelated instruments")
+                recommendations.append("Consider reducing position sizes in concentrated areas")
+            
+            # Cluster-based recommendations
+            max_cluster_risk = cluster_analysis.get('max_cluster_risk', 0.0)
+            if max_cluster_risk > 0.6:
+                recommendations.append("High cluster concentration detected - rebalance across clusters")
+                
+                # Identify problematic clusters
+                cluster_risks = cluster_analysis.get('cluster_risks', {})
+                high_risk_clusters = [cid for cid, risk in cluster_risks.items() if risk > 0.6]
+                if high_risk_clusters:
+                    recommendations.append(f"Focus on rebalancing clusters: {', '.join(map(str, high_risk_clusters))}")
+            
+            # Position-specific recommendations
+            effective_positions = diversification_metrics['effective_positions']
+            position_count = diversification_metrics['position_count']
+            
+            if effective_positions < position_count * 0.6:
+                recommendations.append("Concentration detected - consider equal weighting or risk parity approach")
+            
+            # Proactive recommendations
+            if not recommendations:
+                recommendations.append("Correlation risk well managed - maintain current diversification strategy")
+                recommendations.append("Continue monitoring for regime shifts that may affect correlations")
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "recommendations")
+            recommendations.append(f"Recommendation generation failed: {error_context}")
         
-        # Diversification status
-        if self._diversification_score > 0.8:
-            diversification_status = "🎯 Excellent"
-        elif self._diversification_score > 0.6:
-            diversification_status = "✅ Good"
-        elif self._diversification_score > 0.4:
-            diversification_status = "⚡ Fair"
-        else:
-            diversification_status = "⚠️ Poor"
-        
-        # Current high correlations
-        high_corr_lines = []
-        for severity in ['critical', 'warning']:
-            for alert in self.alerts[severity]:
-                pair = alert['pair']
-                corr = alert['correlation']
-                emoji = "🚨" if severity == 'critical' else "⚠️"
-                high_corr_lines.append(f"  {emoji} {pair[0]}/{pair[1]}: {corr:.3f}")
-        
-        # Recent correlation trends
-        trend_lines = []
-        for pair, trend_data in list(self.correlation_trends.items())[:5]:  # Show top 5
-            if len(trend_data) >= 3:
-                recent_corrs = [item['correlation'] for item in list(trend_data)[-3:]]
-                trend_direction = "📈" if recent_corrs[-1] > recent_corrs[0] else "📉" if recent_corrs[-1] < recent_corrs[0] else "➡️"
-                trend_lines.append(f"  {trend_direction} {pair[0]}/{pair[1]}: {recent_corrs[-1]:.3f}")
-        
-        return f"""
-🔗 CORRELATED RISK CONTROLLER
-═══════════════════════════════════════
-🎯 Risk Status: {risk_status} ({self.risk_score:.1%})
-📊 Diversification: {diversification_status} ({self._diversification_score:.1%})
-🔗 Tracked Pairs: {len(self.current_correlations)}
-🔄 Controller Enabled: {'✅ Yes' if self.enabled else '❌ No'}
-
-⚖️ CORRELATION THRESHOLDS
-• Info Level: {self.current_thresholds['info_corr']:.1%}
-• Warning Level: {self.current_thresholds['warning_corr']:.1%}
-• Critical Level: {self.current_thresholds['max_corr']:.1%}
-• Dynamic Adjustments: {'✅ Enabled' if self.dynamic_thresholds else '❌ Disabled'}
-
-📊 PORTFOLIO ANALYSIS
-• Concentration Risk: {self._correlation_concentration:.1%}
-• High Correlation Pairs: {len(self._high_correlation_pairs)}
-• Average Correlation: {(np.mean(np.abs(list(self.current_correlations.values()))) if self.current_correlations else 0):.1%}
-• Maximum Correlation: {(np.max(np.abs(list(self.current_correlations.values()))) if self.current_correlations else 0):.1%}
-
-🚨 CURRENT HIGH CORRELATIONS
-{chr(10).join(high_corr_lines) if high_corr_lines else "  ✅ No high correlations detected"}
-
-📈 CORRELATION TRENDS
-{chr(10).join(trend_lines[:5]) if trend_lines else "  📊 Insufficient data for trends"}
-
-🚨 ALERT SUMMARY
-• Critical: {len(self.alerts['critical'])}
-• Warning: {len(self.alerts['warning'])}
-• Info: {len(self.alerts['info'])}
-
-💡 MONITORING STATUS
-• Step Count: {self.step_count:,}
-• Analysis History: {len(self.correlation_history)} snapshots
-• Trend Tracking: {len(self.correlation_trends)} pairs
-• Last Update: {(self.correlation_history[-1]['timestamp'] if self.correlation_history else 'Never')}
-        """
-
-    # ================== LEGACY COMPATIBILITY ==================
-
-    def step(self, correlations: Optional[Union[Dict, List, np.ndarray]] = None,
-            positions: Optional[Dict[str, Any]] = None,
-            correlation_matrix: Optional[np.ndarray] = None,
-            instruments: Optional[List[str]] = None, **kwargs) -> bool:
-        """Legacy compatibility method"""
-        
-        # Create mock InfoBus from legacy parameters
-        mock_info_bus = {
-            'step_idx': self.step_count,
-            'timestamp': datetime.datetime.now().isoformat(),
-            'positions': [],
-            'module_data': {}
+        return recommendations
+    
+    def _update_smart_info_bus(self, correlation_results: Dict[str, Any], 
+                              risk_metrics: Dict[str, Any], thesis: str):
+        """Update SmartInfoBus with correlation analysis results"""
+        try:
+            # Core correlation risk data
+            self.smart_bus.set('correlation_risk', {
+                'risk_score': self.correlation_risk_score,
+                'severity_level': self.severity_level,
+                'correlation_results': correlation_results,
+                'risk_metrics': risk_metrics,
+                'thesis': thesis
+            }, module='CorrelatedRiskController', thesis=thesis)
+            
+            # Diversification score for other modules
+            self.smart_bus.set('diversification_score', self.diversification_score, 
+                             module='CorrelatedRiskController', 
+                             thesis=f"Portfolio diversification: {self.diversification_score:.1%}")
+            
+            # Correlation clusters for portfolio management
+            self.smart_bus.set('correlation_clusters', self.correlation_clusters, 
+                             module='CorrelatedRiskController', 
+                             thesis=f"Identified {len(self.correlation_clusters)} correlation clusters")
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "smart_info_bus_update")
+            self.logger.error(f"SmartInfoBus update failed: {error_context}")
+    
+    def _generate_insufficient_data_response(self) -> Dict[str, Any]:
+        """Generate response when insufficient data is available"""
+        return {
+            'correlation_matrix': {},
+            'cluster_analysis': {'clusters': {}, 'cluster_count': 0},
+            'diversification_metrics': {'diversification_score': 1.0, 'effective_positions': 0},
+            'violation_analysis': {'violations': {'critical': [], 'warning': [], 'info': []}, 'total_violations': 0},
+            'regime_analysis': {'current_regime': 'unknown'},
+            'instruments_analyzed': [],
+            'processing_time_ms': 0,
+            'status': 'insufficient_data'
         }
-        
-        # Add correlation data to mock InfoBus
-        if correlations is not None:
-            mock_info_bus['module_data']['correlation_engine'] = {
-                'correlations': correlations
-            }
-        
-        # Add positions
-        if positions:
-            for symbol, pos_data in positions.items():
-                mock_info_bus['positions'].append({
-                    'symbol': symbol,
-                    'size': pos_data.get('size', 0),
-                    'current_price': pos_data.get('current_price', 1.0)
-                })
-        
-        # Use enhanced step method
-        self._step_impl(mock_info_bus)
-        
-        # Return True if critical correlations detected
-        return len(self.alerts['critical']) > 0
+    
+    def _generate_disabled_response(self) -> Dict[str, Any]:
+        """Generate response when module is disabled"""
+        return {
+            'correlation_risk_score': 0.0,
+            'diversification_score': 1.0,
+            'severity_level': 'disabled',
+            'correlation_results': self._generate_insufficient_data_response(),
+            'risk_metrics': {'correlation_risk_score': 0.0, 'severity_level': 'disabled'},
+            'thesis': "Correlated Risk Controller is disabled",
+            'recommendations': ["Enable Correlated Risk Controller for correlation monitoring"]
+        }
+    
+    def _generate_error_response(self, error_context: str) -> Dict[str, Any]:
+        """Generate response when processing fails"""
+        return {
+            'correlation_risk_score': 0.5,
+            'diversification_score': 0.5,
+            'severity_level': 'error',
+            'correlation_results': self._generate_insufficient_data_response(),
+            'risk_metrics': {'correlation_risk_score': 0.5, 'severity_level': 'error'},
+            'thesis': f"Correlation analysis failed: {error_context}",
+            'recommendations': ["Investigate correlation analysis system errors"]
+        }
+    
+    def _generate_analysis_error_response(self, error_context: str) -> Dict[str, Any]:
+        """Generate response when analysis fails"""
+        return {
+            'correlation_matrix': {},
+            'cluster_analysis': {'error': error_context},
+            'diversification_metrics': {'diversification_score': 0.5},
+            'violation_analysis': {'violations': {'critical': [], 'warning': [], 'info': []}, 'total_violations': 0},
+            'regime_analysis': {'current_regime': 'error'},
+            'instruments_analyzed': [],
+            'processing_time_ms': 0,
+            'status': 'analysis_error',
+            'error': error_context
+        }
+    
+    def get_state(self) -> Dict[str, Any]:
+        """Get complete module state for hot-reload"""
+        return {
+            'correlation_matrix': self.correlation_matrix,
+            'correlation_risk_score': self.correlation_risk_score,
+            'diversification_score': self.diversification_score,
+            'severity_level': self.severity_level,
+            'correlation_clusters': self.correlation_clusters,
+            'step_count': self.step_count,
+            'correlation_violations': self.correlation_violations,
+            'diversification_violations': self.diversification_violations,
+            'config': self.config.copy()
+        }
+    
+    def set_state(self, state: Dict[str, Any]) -> None:
+        """Set module state for hot-reload"""
+        self.correlation_matrix = state.get('correlation_matrix', {})
+        self.correlation_risk_score = state.get('correlation_risk_score', 0.0)
+        self.diversification_score = state.get('diversification_score', 1.0)
+        self.severity_level = state.get('severity_level', 'normal')
+        self.correlation_clusters = state.get('correlation_clusters', {})
+        self.step_count = state.get('step_count', 0)
+        self.correlation_violations = state.get('correlation_violations', 0)
+        self.diversification_violations = state.get('diversification_violations', 0)
+        self.config.update(state.get('config', {}))
+    
+    def get_health_metrics(self) -> Dict[str, Any]:
+        """Get health metrics for monitoring"""
+        return {
+            'correlation_risk_score': self.correlation_risk_score,
+            'diversification_score': self.diversification_score,
+            'severity_level': self.severity_level,
+            'instruments_tracked': len(self.price_history),
+            'correlation_violations': self.correlation_violations,
+            'diversification_violations': self.diversification_violations,
+            'cluster_count': len(self.correlation_clusters),
+            'enabled': self.enabled
+        }

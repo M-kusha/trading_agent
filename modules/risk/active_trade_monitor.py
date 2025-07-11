@@ -1,646 +1,651 @@
-# ─────────────────────────────────────────────────────────────
-# File: modules/risk/active_trade_monitor.py
-# Enhanced with InfoBus integration & operator-centric design
-# ─────────────────────────────────────────────────────────────
+"""
+Enhanced Active Trade Monitor with SmartInfoBus Integration
+Monitors position duration and provides intelligent alerts with context awareness
+"""
 
 import numpy as np
 import datetime
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Union, Tuple
 from collections import deque, defaultdict
 
-from modules.core.core import Module, ModuleConfig, audit_step
-from modules.core.mixins import RiskMixin, TradingMixin, StateManagementMixin
-from modules.utils.audit_utils import AuditTracker
-from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
+from modules.core.module_base import BaseModule, module
+from modules.core.mixins import SmartInfoBusRiskMixin, SmartInfoBusStateMixin
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.monitoring.health_monitor import HealthMonitor
+from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-
-class ActiveTradeMonitor(Module, RiskMixin, TradingMixin, StateManagementMixin):
+@module(
+    name="ActiveTradeMonitor",
+    version="3.0.0",
+    category="risk",
+    provides=["position_duration_risk", "duration_alerts", "position_tracking"],
+    requires=["positions", "market_context"],
+    description="Enhanced position duration monitoring with intelligent risk assessment",
+    thesis_required=True,
+    health_monitoring=True,
+    performance_tracking=True,
+    error_handling=True
+)
+class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
-    Enhanced active trade duration monitor with InfoBus integration.
-    Provides real-time position duration tracking with intelligent alerts.
+    Enhanced Active Trade Monitor with SmartInfoBus Integration
+    
+    Monitors position durations with intelligent context-aware thresholds,
+    velocity analysis, and progressive risk assessment.
     """
-
-    def __init__(
-        self,
-        max_duration: int = 200,
-        warning_duration: int = 50,
-        critical_duration: int = 150,
-        enabled: bool = True,
-        severity_weights: Optional[Dict[str, float]] = None,
-        debug: bool = True,
-        **kwargs
-    ):
-        # Initialize with enhanced config
-        config = ModuleConfig(
-            debug=debug,
-            max_history=kwargs.get('max_history', 100),
-            audit_enabled=kwargs.get('audit_enabled', True),
-            **kwargs
-        )
-        super().__init__(config)
+    
+    def __init__(self, config=None, **kwargs):
+        self.config = config or {}
+        super().__init__()
+        self._initialize_advanced_systems()
         
-        # Initialize mixins
-        self._initialize_risk_state()
-        self._initialize_trading_state()
+        # Configuration with intelligent defaults
+        self.max_duration = self.config.get('max_duration', 200)
+        self.warning_duration = self.config.get('warning_duration', 50)
+        self.critical_duration = self.config.get('critical_duration', 150)
+        self.enabled = self.config.get('enabled', True)
         
-        # Enhanced configuration
-        self.max_duration = max_duration
-        self.warning_duration = warning_duration
-        self.critical_duration = critical_duration
-        self.enabled = enabled
+        # Enhanced tracking systems
+        self.position_durations: Dict[str, int] = {}
+        self.position_first_seen: Dict[str, str] = {}
+        self.position_velocity: Dict[str, float] = {}
+        self.duration_history = deque(maxlen=100)
         
-        # Severity system with adaptive weights
-        self.severity_weights = severity_weights or {
-            "info": 0.0,
-            "warning": 0.5,
-            "critical": 1.0
+        # Risk assessment
+        self.risk_score = 0.0
+        self.severity_level = "normal"
+        self.alert_count = 0
+        self.step_count = 0
+        
+        # Context-aware thresholds
+        self.dynamic_thresholds = {
+            'volatile_market': {'multiplier': 1.5, 'velocity_tolerance': 0.8},
+            'trending_market': {'multiplier': 0.8, 'velocity_tolerance': 1.2},
+            'ranging_market': {'multiplier': 1.0, 'velocity_tolerance': 1.0}
         }
         
-        # Enhanced state tracking
-        self.position_durations: Dict[str, int] = {}
-        self.position_first_seen: Dict[str, str] = {}  # Track when position was first detected
-        self.alerts: Dict[str, str] = {}
-        self.risk_score = 0.0
-        self.step_count = 0
-        self._last_alert_step = 0
+        # Performance analytics
+        self.closure_analytics = {'normal': 0, 'timeout': 0, 'emergency': 0}
+        self.regime_performance: Dict[str, Dict[str, Any]] = defaultdict(lambda: {'durations': [], 'closures': 0})
         
-        # Duration history for analytics
-        self._duration_history = deque(maxlen=self.config.max_history)
-        self._risk_score_history = deque(maxlen=50)
-        self._alert_frequency = defaultdict(int)
-        
-        # Performance tracking
-        self._positions_closed_normally = 0
-        self._positions_closed_timeout = 0
-        self._max_concurrent_positions = 0
-        
-        # Audit system
-        self.audit_manager = AuditTracker("ActiveTradeMonitor")
-        
-        self.log_operator_info(
-            "🔍 Active Trade Monitor initialized",
-            max_duration=f"{max_duration} steps",
-            warning_threshold=f"{warning_duration} steps",
-            critical_threshold=f"{critical_duration} steps",
-            enabled=enabled
+        self.logger.info(format_operator_message(
+            icon="🔍",
+            message="Enhanced Active Trade Monitor initialized",
+            max_duration=f"{self.max_duration} steps",
+            warning_threshold=f"{self.warning_duration} steps",
+            enabled=self.enabled
+        ))
+    
+    def _initialize_advanced_systems(self):
+        """Initialize advanced monitoring and error handling systems"""
+        self.smart_bus = InfoBusManager.get_instance()
+        self.logger = RotatingLogger(
+            name="ActiveTradeMonitor",
+            log_path="logs/risk/active_trade_monitor.log",
+            max_lines=5000,
+            operator_mode=True,
+            plain_english=True
         )
-
-    def reset(self) -> None:
-        """Enhanced reset with full state cleanup"""
-        super().reset()
-        self._reset_risk_state()
-        self._reset_trading_state()
+        self.error_pinpointer = ErrorPinpointer()
+        self.error_handler = create_error_handler("ActiveTradeMonitor", self.error_pinpointer)
+        self.english_explainer = EnglishExplainer()
+        self.system_utilities = SystemUtilities()
+        self.performance_tracker = PerformanceTracker()
+    
+    async def process(self, **kwargs) -> Dict[str, Any]:
+        """
+        Enhanced position duration monitoring with comprehensive analysis
         
-        # Reset monitor state
-        self.position_durations.clear()
-        self.position_first_seen.clear()
-        self.alerts.clear()
-        self.risk_score = 0.0
-        self.step_count = 0
-        self._last_alert_step = 0
-        
-        # Reset history
-        self._duration_history.clear()
-        self._risk_score_history.clear()
-        self._alert_frequency.clear()
-        
-        # Reset performance tracking
-        self._positions_closed_normally = 0
-        self._positions_closed_timeout = 0
-        self._max_concurrent_positions = 0
-        
-        self.log_operator_info("🔄 Active Trade Monitor reset - all tracking cleared")
-
-    @audit_step
-    def _step_impl(self, info_bus: Optional[InfoBus] = None, **kwargs) -> None:
-        """Enhanced step with InfoBus integration"""
-        
-        if not info_bus:
-            self.log_operator_warning("No InfoBus provided - monitor inactive")
-            return
+        Returns:
+            Dict containing duration risk assessment, alerts, and recommendations
+        """
+        try:
+            if not self.enabled:
+                return self._generate_disabled_response()
             
-        if not self.enabled:
-            self.risk_score = 0.0
-            return
-        
-        self.step_count += 1
-        
-        # Extract positions from InfoBus
-        positions = InfoBusExtractor.get_positions(info_bus)
-        current_step = info_bus.get('step_idx', self.step_count)
-        
-        # Process position monitoring
-        self._monitor_positions(positions, current_step, info_bus)
-        
-        # Update risk assessment
-        self._calculate_risk_score(info_bus)
-        
-        # Update InfoBus with monitoring results
-        self._update_info_bus(info_bus)
-        
-        # Record performance metrics
-        self._update_monitoring_metrics()
-
-    def _monitor_positions(self, positions: List[Dict[str, Any]], 
-                          current_step: int, info_bus: InfoBus) -> None:
-        """Monitor active positions with enhanced duration tracking"""
+            self.step_count += 1
+            
+            # Extract comprehensive market context
+            market_context = self.smart_bus.get('market_context', 'ActiveTradeMonitor') or {}
+            positions = self.smart_bus.get('positions', 'ActiveTradeMonitor') or []
+            
+            # Process position monitoring with context awareness
+            monitoring_results = await self._monitor_positions_comprehensive(positions, market_context)
+            
+            # Generate intelligent thesis
+            thesis = await self._generate_monitoring_thesis(monitoring_results, market_context)
+            
+            # Calculate risk metrics
+            risk_metrics = self._calculate_comprehensive_risk_metrics(monitoring_results)
+            
+            # Update SmartInfoBus
+            self._update_smart_info_bus(monitoring_results, risk_metrics, thesis)
+            
+            # Record performance metrics
+            self.performance_tracker.record_metric(
+                'ActiveTradeMonitor', 'monitoring_cycle', 
+                monitoring_results.get('processing_time_ms', 0), True
+            )
+            
+            return {
+                'risk_score': self.risk_score,
+                'severity_level': self.severity_level,
+                'monitoring_results': monitoring_results,
+                'risk_metrics': risk_metrics,
+                'thesis': thesis,
+                'recommendations': self._generate_recommendations(monitoring_results)
+            }
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "ActiveTradeMonitor")
+            self.logger.error(f"Position monitoring failed: {error_context}")
+            return self._generate_error_response(str(error_context))
+    
+    async def _monitor_positions_comprehensive(self, positions: List[Dict], 
+                                             market_context: Dict[str, Any]) -> Dict[str, Any]:
+        """Comprehensive position monitoring with intelligent analysis"""
+        start_time = datetime.datetime.now()
         
         # Clear previous alerts
-        self.alerts.clear()
+        alerts = {'critical': [], 'warning': [], 'info': []}
         current_symbols = set()
         
-        if not positions:
-            self._handle_no_positions()
-            return
-        
-        # Process each position
+        # Process each position with enhanced analytics
         for position in positions:
-            symbol = position.get('symbol', position.get('instrument', 'UNKNOWN'))
-            current_symbols.add(symbol)
-            
-            # Calculate duration
-            duration = self._calculate_position_duration(position, symbol, current_step)
-            self.position_durations[symbol] = duration
-            
-            # Track first seen
-            if symbol not in self.position_first_seen:
-                self.position_first_seen[symbol] = info_bus.get('timestamp', 
-                    datetime.datetime.now().isoformat())
-            
-            # Assess severity and generate alerts
-            severity = self._assess_position_severity(symbol, duration, position, info_bus)
-            
-            if severity != "info":
-                self.alerts[symbol] = severity
-                self._handle_position_alert(symbol, duration, severity, position)
+            try:
+                symbol = position.get('symbol', position.get('instrument', 'UNKNOWN'))
+                current_symbols.add(symbol)
+                
+                # Calculate enhanced duration metrics
+                duration_info = self._calculate_enhanced_duration(position, symbol)
+                self.position_durations[symbol] = duration_info['duration']
+                self.position_velocity[symbol] = duration_info['velocity']
+                
+                # Track first seen timestamp
+                if symbol not in self.position_first_seen:
+                    self.position_first_seen[symbol] = datetime.datetime.now().isoformat()
+                
+                # Assess severity with context awareness
+                severity_info = self._assess_position_severity_enhanced(
+                    symbol, duration_info, position, market_context
+                )
+                
+                if severity_info['level'] != 'normal':
+                    alerts[severity_info['level']].append({
+                        'symbol': symbol,
+                        'duration': duration_info['duration'],
+                        'velocity': duration_info['velocity'],
+                        'severity': severity_info,
+                        'position_info': position,
+                        'context_factors': severity_info.get('context_factors', [])
+                    })
+                
+            except Exception as e:
+                error_context = self.error_pinpointer.analyze_error(e, "position_processing")
+                self.logger.warning(f"Position processing failed for {symbol}: {error_context}")
         
-        # Handle closed positions
-        self._handle_closed_positions(current_symbols)
+        # Handle position closures
+        closure_info = self._process_position_closures(current_symbols, market_context)
         
-        # Update concurrent position tracking
-        self._max_concurrent_positions = max(
-            self._max_concurrent_positions, 
-            len(current_symbols)
-        )
-
-    def _calculate_position_duration(self, position: Dict[str, Any], 
-                                   symbol: str, current_step: int) -> int:
-        """Enhanced position duration calculation with multiple fallback methods"""
+        # Calculate processing time
+        processing_time = (datetime.datetime.now() - start_time).total_seconds() * 1000
         
+        return {
+            'alerts': alerts,
+            'positions_tracked': len(current_symbols),
+            'duration_statistics': self._calculate_duration_statistics(),
+            'closure_info': closure_info,
+            'processing_time_ms': processing_time,
+            'market_context': market_context
+        }
+    
+    def _calculate_enhanced_duration(self, position: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+        """Calculate enhanced duration metrics with velocity analysis"""
         try:
-            # Method 1: Direct duration field
-            for duration_field in ["duration", "time_open", "bars_held", "steps_open"]:
-                if duration_field in position and position[duration_field] is not None:
-                    return max(0, int(position[duration_field]))
+            # Method 1: Direct duration from position
+            duration = position.get('duration', position.get('bars_held', 0))
+            if duration and duration > 0:
+                base_duration = int(duration)
+            else:
+                # Method 2: Calculate from entry step
+                entry_step = position.get('entry_step', 0)
+                current_step = self.smart_bus.get('step_idx', 'ActiveTradeMonitor') or self.step_count
+                base_duration = max(0, current_step - entry_step) if entry_step else 0
             
-            # Method 2: Calculate from entry step
-            for entry_field in ["entry_step", "open_step", "start_step"]:
-                if entry_field in position and position[entry_field] is not None:
-                    entry_step = int(position[entry_field])
-                    return max(0, current_step - entry_step)
-            
-            # Method 3: Calculate from timestamps
-            if "entry_time" in position:
-                try:
-                    entry_time = position["entry_time"]
-                    if isinstance(entry_time, str):
-                        entry_time = datetime.datetime.fromisoformat(
-                            entry_time.replace('Z', '+00:00')
-                        )
-                    
-                    now = datetime.datetime.now(datetime.timezone.utc)
-                    duration_minutes = (now - entry_time).total_seconds() / 60
-                    return max(0, int(duration_minutes))  # Convert to steps (assuming 1 step = 1 minute)
-                except Exception as e:
-                    self.log_operator_warning(f"Timestamp parsing failed for {symbol}: {e}")
-            
-            # Method 4: Increment from previous tracking
+            # Calculate velocity (rate of change)
             previous_duration = self.position_durations.get(symbol, 0)
-            return previous_duration + 1
+            velocity = base_duration - previous_duration if previous_duration else 0
+            
+            # Store in history for analytics
+            self.duration_history.append({
+                'symbol': symbol,
+                'duration': base_duration,
+                'velocity': velocity,
+                'timestamp': datetime.datetime.now().isoformat()
+            })
+            
+            return {
+                'duration': base_duration,
+                'velocity': velocity,
+                'acceleration': velocity - self.position_velocity.get(symbol, 0),
+                'trend': 'increasing' if velocity > 0 else 'stable' if velocity == 0 else 'decreasing'
+            }
             
         except Exception as e:
-            self.log_operator_error(f"Duration calculation failed for {symbol}: {e}")
-            return self.position_durations.get(symbol, 1)
-
-    def _assess_position_severity(self, symbol: str, duration: int, 
-                                position: Dict[str, Any], info_bus: InfoBus) -> str:
-        """Enhanced severity assessment with context awareness"""
-        
-        # Base severity assessment
-        if duration >= self.max_duration:
-            base_severity = "critical"
-        elif duration >= self.critical_duration:
-            base_severity = "warning"
-        elif duration >= self.warning_duration:
-            base_severity = "warning"
-        else:
-            base_severity = "info"
-        
-        # Context-aware adjustments
-        context = extract_standard_context(info_bus)
-        
-        # Adjust for market conditions
-        market_regime = context.get('regime', 'unknown')
-        volatility_level = context.get('volatility_level', 'medium')
-        
-        # More lenient in volatile markets
-        if volatility_level in ['high', 'extreme'] and base_severity == "warning":
-            # Allow longer durations in high volatility
-            tolerance_multiplier = 1.3 if volatility_level == 'high' else 1.5
-            adjusted_duration = duration / tolerance_multiplier
+            error_context = self.error_pinpointer.analyze_error(e, "duration_calculation")
+            self.logger.warning(f"Duration calculation failed for {symbol}: {error_context}")
+            return {'duration': 0, 'velocity': 0, 'acceleration': 0, 'trend': 'unknown'}
+    
+    def _assess_position_severity_enhanced(self, symbol: str, duration_info: Dict[str, Any],
+                                         position: Dict[str, Any], market_context: Dict[str, Any]) -> Dict[str, Any]:
+        """Enhanced severity assessment with context awareness and velocity analysis"""
+        try:
+            duration = duration_info['duration']
+            velocity = duration_info['velocity']
             
-            if adjusted_duration < self.warning_duration:
-                base_severity = "info"
-            elif adjusted_duration < self.critical_duration:
-                base_severity = "warning"
-        
-        # Consider position PnL
-        position_pnl = position.get('unrealised_pnl', position.get('pnl', 0))
-        if position_pnl > 0 and base_severity == "warning":
-            # Profitable positions get slight tolerance
-            base_severity = "info" if duration < self.critical_duration else "warning"
-        
-        return base_severity
-
-    def _handle_position_alert(self, symbol: str, duration: int, 
-                             severity: str, position: Dict[str, Any]) -> None:
-        """Handle position alerts with structured logging and audit"""
-        
-        position_pnl = position.get('unrealised_pnl', position.get('pnl', 0))
-        position_size = position.get('size', position.get('volume', 0))
-        
-        # Create structured alert
-        alert_data = {
-            'symbol': symbol,
-            'duration': duration,
-            'severity': severity,
-            'pnl': position_pnl,
-            'size': position_size,
-            'thresholds': {
-                'warning': self.warning_duration,
-                'critical': self.critical_duration,
-                'max': self.max_duration
-            },
-            'first_seen': self.position_first_seen.get(symbol),
-            'step_count': self.step_count
+            # Get context-adjusted thresholds
+            regime = market_context.get('regime', 'unknown')
+            volatility = market_context.get('volatility_level', 'medium')
+            
+            thresholds = self._get_context_adjusted_thresholds(regime, volatility)
+            
+            # Base severity assessment
+            if duration >= thresholds['critical']:
+                base_level = 'critical'
+            elif duration >= thresholds['warning']:
+                base_level = 'warning'
+            elif duration >= thresholds['info']:
+                base_level = 'info'
+            else:
+                base_level = 'normal'
+            
+            # Velocity-based adjustments
+            context_factors = []
+            
+            # Rapid duration increase
+            if velocity > 5 and base_level == 'info':
+                base_level = 'warning'
+                context_factors.append('rapid_duration_increase')
+            
+            # Profitable position tolerance
+            position_pnl = position.get('unrealised_pnl', position.get('pnl', 0))
+            if position_pnl > 0 and base_level == 'warning' and duration < thresholds['critical']:
+                base_level = 'info'
+                context_factors.append('profitable_position_tolerance')
+            
+            # High volatility tolerance
+            if volatility in ['high', 'extreme'] and base_level == 'warning':
+                if duration < thresholds['critical'] * 0.9:
+                    base_level = 'info'
+                    context_factors.append('high_volatility_tolerance')
+            
+            return {
+                'level': base_level,
+                'threshold_used': thresholds[base_level] if base_level != 'normal' else thresholds['info'],
+                'context_factors': context_factors,
+                'position_pnl': position_pnl,
+                'regime_factor': regime,
+                'volatility_factor': volatility
+            }
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "severity_assessment")
+            self.logger.warning(f"Severity assessment failed for {symbol}: {error_context}")
+            return {'level': 'unknown', 'threshold_used': 0, 'context_factors': ['assessment_error']}
+    
+    def _get_context_adjusted_thresholds(self, regime: str, volatility: str) -> Dict[str, int]:
+        """Get context-adjusted duration thresholds"""
+        base_thresholds = {
+            'info': self.warning_duration,
+            'warning': self.critical_duration,
+            'critical': self.max_duration
         }
         
-        # Log appropriate operator message
-        if severity == "critical":
-            self.log_operator_error(
-                f"🚨 CRITICAL: {symbol} held {duration} steps",
-                pnl=f"€{position_pnl:.2f}",
-                size=f"{position_size:.4f}",
-                limit=f"{self.max_duration} steps"
-            )
-        elif severity == "warning":
-            self.log_operator_warning(
-                f"⚠️ Long position: {symbol} held {duration} steps",
-                pnl=f"€{position_pnl:.2f}",
-                threshold=f"{self.warning_duration} steps"
-            )
+        # Get regime multiplier
+        regime_config = self.dynamic_thresholds.get(f"{regime}_market", self.dynamic_thresholds['ranging_market'])
+        multiplier = regime_config['multiplier']
         
-        # Record in audit trail
-        self.audit_manager.record_event(
-            event_type="position_duration_alert",
-            module="ActiveTradeMonitor",
-            details=alert_data,
-            severity=severity
-        )
+        # Volatility adjustments
+        volatility_multipliers = {
+            'low': 0.8,
+            'medium': 1.0,
+            'high': 1.3,
+            'extreme': 1.6
+        }
         
-        # Update alert frequency tracking
-        self._alert_frequency[severity] += 1
-        self._last_alert_step = self.step_count
-
-    def _handle_no_positions(self) -> None:
-        """Handle state when no positions are active"""
+        vol_multiplier = volatility_multipliers.get(volatility, 1.0)
+        final_multiplier = multiplier * vol_multiplier
         
-        # Mark any previously tracked positions as closed normally
-        for symbol in list(self.position_durations.keys()):
-            duration = self.position_durations[symbol]
-            
-            if duration < self.max_duration:
-                self._positions_closed_normally += 1
-            else:
-                self._positions_closed_timeout += 1
-            
-            # Log position closure
-            self.log_operator_info(
-                f"📍 Position closed: {symbol}",
-                duration=f"{duration} steps",
-                status="normal" if duration < self.max_duration else "timeout"
-            )
-        
-        # Clear tracking
-        self.position_durations.clear()
-        self.position_first_seen.clear()
-        self.risk_score = 0.0
-
-    def _handle_closed_positions(self, current_symbols: set) -> None:
-        """Handle positions that are no longer active"""
-        
+        return {
+            level: int(threshold * final_multiplier)
+            for level, threshold in base_thresholds.items()
+        }
+    
+    def _process_position_closures(self, current_symbols: set, market_context: Dict[str, Any]) -> Dict[str, Any]:
+        """Process position closures and update analytics"""
         closed_symbols = set(self.position_durations.keys()) - current_symbols
+        closure_info = {'closed_count': len(closed_symbols), 'closure_details': []}
         
         for symbol in closed_symbols:
-            duration = self.position_durations[symbol]
+            duration = self.position_durations.get(symbol, 0)
             
-            # Classify closure
-            if duration < self.max_duration:
-                self._positions_closed_normally += 1
-                closure_type = "normal"
+            # Classify closure type
+            if duration >= self.max_duration:
+                closure_type = 'timeout'
+            elif duration >= self.critical_duration:
+                closure_type = 'emergency'
             else:
-                self._positions_closed_timeout += 1
-                closure_type = "timeout"
+                closure_type = 'normal'
             
-            # Log closure
-            self.log_operator_info(
-                f"📍 Position closed: {symbol}",
-                duration=f"{duration} steps",
-                status=closure_type
-            )
+            self.closure_analytics[closure_type] += 1
             
-            # Remove from tracking
+            # Update regime performance
+            regime = market_context.get('regime', 'unknown')
+            if regime not in self.regime_performance:
+                self.regime_performance[regime] = {'durations': [], 'closures': 0}
+            self.regime_performance[regime]['durations'].append(duration)
+            self.regime_performance[regime]['closures'] += 1
+            
+            closure_info['closure_details'].append({
+                'symbol': symbol,
+                'duration': duration,
+                'type': closure_type,
+                'first_seen': self.position_first_seen.get(symbol)
+            })
+            
+            # Clean up tracking
             self.position_durations.pop(symbol, None)
             self.position_first_seen.pop(symbol, None)
-
-    def _calculate_risk_score(self, info_bus: InfoBus) -> None:
-        """Calculate comprehensive risk score"""
-        
-        if not self.position_durations:
-            self.risk_score = 0.0
-            return
-        
-        total_severity = 0.0
-        position_count = len(self.position_durations)
-        
-        # Calculate severity-weighted score
-        for symbol, severity in self.alerts.items():
-            total_severity += self.severity_weights.get(severity, 0.0)
-        
-        # Base risk score
-        base_score = total_severity / max(position_count, 1)
-        
-        # Context adjustments
-        context = extract_standard_context(info_bus)
-        
-        # Increase risk in certain market conditions
-        market_multiplier = 1.0
-        if context.get('volatility_level') == 'extreme':
-            market_multiplier = 1.2
-        elif context.get('regime') == 'volatile':
-            market_multiplier = 1.1
-        
-        # Adjust for position concentration
-        if position_count > 5:  # High concentration
-            concentration_multiplier = 1.0 + (position_count - 5) * 0.1
-        else:
-            concentration_multiplier = 1.0
-        
-        # Final risk score
-        self.risk_score = min(1.0, base_score * market_multiplier * concentration_multiplier)
-        
-        # Track risk score history
-        self._risk_score_history.append(self.risk_score)
-
-    def _update_info_bus(self, info_bus: InfoBus) -> None:
-        """Update InfoBus with monitoring results"""
-        
-        # Add module data
-        InfoBusUpdater.add_module_data(info_bus, 'active_trade_monitor', {
-            'risk_score': self.risk_score,
-            'position_count': len(self.position_durations),
-            'alerts': self.alerts.copy(),
-            'durations': self.position_durations.copy(),
-            'max_concurrent': self._max_concurrent_positions,
-            'closure_stats': {
-                'normal': self._positions_closed_normally,
-                'timeout': self._positions_closed_timeout
-            }
-        })
-        
-        # Add risk data to InfoBus
-        InfoBusUpdater.update_risk_snapshot(info_bus, {
-            'duration_risk_score': self.risk_score,
-            'long_positions_count': sum(1 for alerts in self.alerts.values() 
-                                      if alerts in ['warning', 'critical']),
-            'position_durations': self.position_durations.copy()
-        })
-        
-        # Add alerts for critical situations
-        if self.risk_score > 0.7:
-            InfoBusUpdater.add_alert(
-                info_bus,
-                f"High duration risk: {self.risk_score:.1%} of positions held too long",
-                severity="warning",
-                module="ActiveTradeMonitor"
-            )
-
-    def _update_monitoring_metrics(self) -> None:
-        """Update performance metrics"""
-        
-        self._update_performance_metric('risk_score', self.risk_score)
-        self._update_performance_metric('position_count', len(self.position_durations))
-        self._update_performance_metric('alert_count', len(self.alerts))
-        
-        # Update duration statistics
-        if self.position_durations:
-            avg_duration = np.mean(list(self.position_durations.values()))
-            max_duration = max(self.position_durations.values())
+            self.position_velocity.pop(symbol, None)
             
-            self._update_performance_metric('avg_duration', avg_duration)
-            self._update_performance_metric('max_current_duration', max_duration)
-            
-            # Track in history
-            self._duration_history.append({
-                'timestamp': datetime.datetime.now().isoformat(),
-                'avg_duration': avg_duration,
-                'max_duration': max_duration,
-                'position_count': len(self.position_durations),
-                'alert_count': len(self.alerts)
-            })
-
-    def get_observation_components(self) -> np.ndarray:
-        """Enhanced observation components for model integration"""
+            # Log significant closures
+            if closure_type in ['timeout', 'emergency']:
+                self.logger.warning(format_operator_message(
+                    icon="⏰",
+                    message=f"Position closed - {closure_type}",
+                    symbol=symbol,
+                    duration=f"{duration} steps",
+                    regime=regime
+                ))
         
+        return closure_info
+    
+    def _calculate_duration_statistics(self) -> Dict[str, Any]:
+        """Calculate comprehensive duration statistics"""
         try:
-            # Basic risk metrics
-            risk_score = float(self.risk_score)
-            position_count_norm = min(len(self.position_durations) / 10.0, 1.0)
-            alert_ratio = len(self.alerts) / max(len(self.position_durations), 1)
+            if not self.position_durations:
+                return {'active_positions': 0, 'avg_duration': 0, 'max_duration': 0}
             
-            # Duration statistics
-            if self.position_durations:
-                durations = list(self.position_durations.values())
-                avg_duration_norm = np.mean(durations) / max(self.max_duration, 1)
-                max_duration_norm = max(durations) / max(self.max_duration, 1)
-            else:
-                avg_duration_norm = 0.0
-                max_duration_norm = 0.0
+            durations = list(self.position_durations.values())
             
-            # Alert frequency (recent activity)
-            recent_alert_activity = min(
-                sum(self._alert_frequency.values()) / max(self.step_count, 1),
-                1.0
-            )
-            
-            # Performance ratio
-            total_closures = self._positions_closed_normally + self._positions_closed_timeout
-            normal_closure_ratio = (
-                self._positions_closed_normally / max(total_closures, 1)
-            )
-            
-            return np.array([
-                risk_score,                    # Current risk score
-                position_count_norm,           # Normalized position count
-                alert_ratio,                   # Alert ratio
-                avg_duration_norm,             # Normalized average duration
-                max_duration_norm,             # Normalized max duration
-                recent_alert_activity,         # Recent alert frequency
-                normal_closure_ratio           # Normal closure ratio
-            ], dtype=np.float32)
+            return {
+                'active_positions': len(durations),
+                'avg_duration': float(np.mean(durations)),
+                'max_duration': int(np.max(durations)),
+                'min_duration': int(np.min(durations)),
+                'std_duration': float(np.std(durations)),
+                'median_duration': float(np.median(durations)),
+                'positions_over_warning': len([d for d in durations if d >= self.warning_duration]),
+                'positions_over_critical': len([d for d in durations if d >= self.critical_duration])
+            }
             
         except Exception as e:
-            self.log_operator_error(f"Observation generation failed: {e}")
-            return np.zeros(7, dtype=np.float32)
-
-    def get_monitoring_report(self) -> str:
-        """Generate operator-friendly monitoring report"""
-        
-        # Status indicators
-        if self.risk_score > 0.7:
-            risk_status = "🚨 Critical"
-        elif self.risk_score > 0.3:
-            risk_status = "⚠️ Elevated" 
-        else:
-            risk_status = "✅ Normal"
-        
-        # Performance status
-        total_closures = self._positions_closed_normally + self._positions_closed_timeout
-        if total_closures > 0:
-            normal_rate = self._positions_closed_normally / total_closures
-            if normal_rate > 0.8:
-                performance_status = "🎯 Excellent"
-            elif normal_rate > 0.6:
-                performance_status = "✅ Good"
-            elif normal_rate > 0.4:
-                performance_status = "⚡ Fair"
+            error_context = self.error_pinpointer.analyze_error(e, "statistics_calculation")
+            self.logger.warning(f"Statistics calculation failed: {error_context}")
+            return {'active_positions': 0, 'avg_duration': 0, 'max_duration': 0}
+    
+    def _calculate_comprehensive_risk_metrics(self, monitoring_results: Dict[str, Any]) -> Dict[str, Any]:
+        """Calculate comprehensive risk metrics"""
+        try:
+            alerts = monitoring_results['alerts']
+            stats = monitoring_results['duration_statistics']
+            
+            # Alert-based risk score
+            alert_risk = (
+                len(alerts['critical']) * 1.0 +
+                len(alerts['warning']) * 0.6 +
+                len(alerts['info']) * 0.3
+            ) / max(stats['active_positions'], 1)
+            
+            # Duration concentration risk
+            concentration_risk = 0.0
+            if stats['active_positions'] > 0:
+                over_warning_ratio = stats['positions_over_warning'] / stats['active_positions']
+                over_critical_ratio = stats['positions_over_critical'] / stats['active_positions']
+                concentration_risk = over_warning_ratio * 0.5 + over_critical_ratio * 1.0
+            
+            # Velocity risk (positions increasing duration rapidly)
+            velocity_risk = 0.0
+            rapid_increase_count = sum(1 for v in self.position_velocity.values() if v > 3)
+            if self.position_velocity:
+                velocity_risk = rapid_increase_count / len(self.position_velocity)
+            
+            # Combined risk score
+            self.risk_score = min(1.0, alert_risk + concentration_risk + velocity_risk)
+            
+            # Determine severity level
+            if self.risk_score > 0.7 or len(alerts['critical']) > 0:
+                self.severity_level = 'critical'
+            elif self.risk_score > 0.4 or len(alerts['warning']) > 0:
+                self.severity_level = 'warning'
+            elif self.risk_score > 0.1 or len(alerts['info']) > 0:
+                self.severity_level = 'elevated'
             else:
-                performance_status = "⚠️ Poor"
-        else:
-            performance_status = "📊 No Data"
-        
-        # Current positions summary
-        position_lines = []
-        for symbol, duration in self.position_durations.items():
-            status = self.alerts.get(symbol, 'normal')
-            status_emoji = "🚨" if status == "critical" else "⚠️" if status == "warning" else "✅"
-            position_lines.append(f"  {status_emoji} {symbol}: {duration} steps ({status})")
-        
-        return f"""
-🔍 ACTIVE TRADE MONITOR
-═══════════════════════════════════════
-🎯 Risk Status: {risk_status} ({self.risk_score:.1%})
-📊 Active Positions: {len(self.position_durations)}
-⚠️ Current Alerts: {len(self.alerts)}
-🔄 Monitor Enabled: {'✅ Yes' if self.enabled else '❌ No'}
-
-⏱️ DURATION THRESHOLDS
-• Warning: {self.warning_duration} steps
-• Critical: {self.critical_duration} steps
-• Maximum: {self.max_duration} steps
-
-📈 PERFORMANCE METRICS
-• Performance: {performance_status} ({(normal_rate if total_closures > 0 else 0):.1%} normal closures)
-• Normal Closures: {self._positions_closed_normally}
-• Timeout Closures: {self._positions_closed_timeout}
-• Max Concurrent: {self._max_concurrent_positions}
-• Total Alerts: {sum(self._alert_frequency.values())}
-
-📍 CURRENT POSITIONS
-{chr(10).join(position_lines) if position_lines else "  📭 No active positions"}
-
-🚨 ALERT BREAKDOWN
-• Critical: {self._alert_frequency.get('critical', 0)}
-• Warning: {self._alert_frequency.get('warning', 0)}
-• Info: {self._alert_frequency.get('info', 0)}
-
-💡 MONITOR STATUS
-• Step Count: {self.step_count:,}
-• Last Alert: Step {self._last_alert_step}
-• Tracking Since: {min(self.position_first_seen.values()) if self.position_first_seen else 'N/A'}
-        """
-
-    def _get_health_details(self) -> Dict[str, Any]:
-        """Enhanced health reporting"""
-        base_details = super()._get_health_details()
-        
-        monitor_details = {
-            'monitor_status': {
-                'enabled': self.enabled,
-                'step_count': self.step_count,
+                self.severity_level = 'normal'
+            
+            return {
                 'risk_score': self.risk_score,
-                'positions_tracked': len(self.position_durations)
-            },
-            'alert_system': {
-                'total_alerts': sum(self._alert_frequency.values()),
-                'last_alert_step': self._last_alert_step,
-                'alert_frequency': dict(self._alert_frequency)
-            },
-            'closure_performance': {
-                'normal_closures': self._positions_closed_normally,
-                'timeout_closures': self._positions_closed_timeout,
-                'closure_rate': (
-                    self._positions_closed_normally / 
-                    max(self._positions_closed_normally + self._positions_closed_timeout, 1)
-                )
-            },
-            'risk_trends': {
-                'recent_risk_avg': (
-                    np.mean(list(self._risk_score_history)[-10:]) 
-                    if len(self._risk_score_history) >= 10 else self.risk_score
-                ),
-                'risk_volatility': (
-                    np.std(list(self._risk_score_history)[-20:])
-                    if len(self._risk_score_history) >= 20 else 0.0
-                )
+                'severity_level': self.severity_level,
+                'alert_risk': alert_risk,
+                'concentration_risk': concentration_risk,
+                'velocity_risk': velocity_risk,
+                'total_alerts': len(alerts['critical']) + len(alerts['warning']) + len(alerts['info'])
             }
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "risk_metrics")
+            self.logger.error(f"Risk metrics calculation failed: {error_context}")
+            return {'risk_score': 0.5, 'severity_level': 'unknown'}
+    
+    async def _generate_monitoring_thesis(self, monitoring_results: Dict[str, Any], 
+                                        market_context: Dict[str, Any]) -> str:
+        """Generate intelligent thesis explaining monitoring decisions"""
+        try:
+            stats = monitoring_results['duration_statistics']
+            alerts = monitoring_results['alerts']
+            regime = market_context.get('regime', 'unknown')
+            volatility = market_context.get('volatility_level', 'medium')
+            
+            # Build thesis components
+            thesis_parts = []
+            
+            # Position overview
+            if stats['active_positions'] > 0:
+                thesis_parts.append(
+                    f"Monitoring {stats['active_positions']} active positions with "
+                    f"average duration of {stats['avg_duration']:.1f} steps"
+                )
+                
+                # Duration distribution analysis
+                if stats['positions_over_critical'] > 0:
+                    thesis_parts.append(
+                        f"CRITICAL: {stats['positions_over_critical']} positions exceed "
+                        f"{self.critical_duration} step threshold, indicating potential issues"
+                    )
+                elif stats['positions_over_warning'] > 0:
+                    thesis_parts.append(
+                        f"WARNING: {stats['positions_over_warning']} positions approaching "
+                        f"duration limits, monitoring closely"
+                    )
+                else:
+                    thesis_parts.append("All positions within acceptable duration ranges")
+            else:
+                thesis_parts.append("No active positions to monitor")
+            
+            # Market context analysis
+            if regime != 'unknown':
+                adjusted_thresholds = self._get_context_adjusted_thresholds(regime, volatility)
+                thesis_parts.append(
+                    f"Market regime ({regime}) and volatility ({volatility}) result in "
+                    f"adjusted warning threshold of {adjusted_thresholds['warning']} steps"
+                )
+            
+            # Alert analysis
+            total_alerts = len(alerts['critical']) + len(alerts['warning']) + len(alerts['info'])
+            if total_alerts > 0:
+                thesis_parts.append(
+                    f"Generated {total_alerts} alerts: {len(alerts['critical'])} critical, "
+                    f"{len(alerts['warning'])} warning, {len(alerts['info'])} informational"
+                )
+            
+            # Risk assessment conclusion
+            thesis_parts.append(
+                f"Overall position duration risk: {self.severity_level.upper()} "
+                f"(score: {self.risk_score:.2f})"
+            )
+            
+            # Performance insights
+            if self.closure_analytics['timeout'] > 0:
+                timeout_rate = self.closure_analytics['timeout'] / sum(self.closure_analytics.values())
+                thesis_parts.append(
+                    f"Historical analysis shows {timeout_rate:.1%} timeout closure rate, "
+                    f"suggesting need for duration management improvements"
+                )
+            
+            return " | ".join(thesis_parts)
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "thesis_generation")
+            return f"Thesis generation failed: {error_context}"
+    
+    def _generate_recommendations(self, monitoring_results: Dict[str, Any]) -> List[str]:
+        """Generate intelligent recommendations based on monitoring results"""
+        recommendations = []
+        
+        try:
+            alerts = monitoring_results['alerts']
+            stats = monitoring_results['duration_statistics']
+            
+            # Critical situation recommendations
+            if len(alerts['critical']) > 0:
+                recommendations.append("IMMEDIATE: Close or reduce positions exceeding maximum duration")
+                recommendations.append("Consider emergency risk reduction measures")
+            
+            # Warning level recommendations
+            if len(alerts['warning']) > 0:
+                recommendations.append("Review positions approaching duration limits")
+                recommendations.append("Consider tightening stop losses or taking partial profits")
+            
+            # Concentration recommendations
+            if stats['active_positions'] > 5:
+                recommendations.append("High position concentration detected - consider reducing position count")
+            
+            # Velocity-based recommendations
+            rapid_positions = [symbol for symbol, velocity in self.position_velocity.items() if velocity > 3]
+            if rapid_positions:
+                recommendations.append(f"Monitor rapidly aging positions: {', '.join(rapid_positions[:3])}")
+            
+            # Performance-based recommendations
+            if self.closure_analytics['timeout'] > self.closure_analytics['normal']:
+                recommendations.append("High timeout closure rate - review position management strategy")
+            
+            # Proactive recommendations
+            if not recommendations:
+                recommendations.append("Position duration monitoring optimal - continue current strategy")
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "recommendations")
+            recommendations.append(f"Recommendation generation failed: {error_context}")
+        
+        return recommendations
+    
+    def _update_smart_info_bus(self, monitoring_results: Dict[str, Any], 
+                              risk_metrics: Dict[str, Any], thesis: str):
+        """Update SmartInfoBus with monitoring results"""
+        try:
+            # Core monitoring data
+            self.smart_bus.set('position_duration_risk', {
+                'risk_score': self.risk_score,
+                'severity_level': self.severity_level,
+                'monitoring_results': monitoring_results,
+                'risk_metrics': risk_metrics,
+                'thesis': thesis
+            }, module='ActiveTradeMonitor', thesis=thesis)
+            
+            # Duration alerts for other modules
+            self.smart_bus.set('duration_alerts', monitoring_results['alerts'], 
+                             module='ActiveTradeMonitor', 
+                             thesis=f"Duration alerts: {len(monitoring_results['alerts']['critical'])} critical")
+            
+            # Position tracking data
+            self.smart_bus.set('position_tracking', {
+                'durations': self.position_durations.copy(),
+                'velocities': self.position_velocity.copy(),
+                'statistics': monitoring_results['duration_statistics']
+            }, module='ActiveTradeMonitor', thesis="Position tracking metrics updated")
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "smart_info_bus_update")
+            self.logger.error(f"SmartInfoBus update failed: {error_context}")
+    
+    def _generate_disabled_response(self) -> Dict[str, Any]:
+        """Generate response when module is disabled"""
+        return {
+            'risk_score': 0.0,
+            'severity_level': 'disabled',
+            'monitoring_results': {'alerts': {'critical': [], 'warning': [], 'info': []}},
+            'risk_metrics': {'risk_score': 0.0, 'severity_level': 'disabled'},
+            'thesis': "Active Trade Monitor is disabled",
+            'recommendations': ["Enable Active Trade Monitor for position duration tracking"]
         }
-        
-        if base_details:
-            base_details.update(monitor_details)
-            return base_details
-        
-        return monitor_details
-
-    # ================== LEGACY COMPATIBILITY ==================
-
-    def step(self, open_positions: Optional[Union[List[Dict], Dict[str, Dict]]] = None,
-            current_step: Optional[int] = None, **kwargs) -> float:
-        """Legacy compatibility method"""
-        
-        # Convert legacy parameters to InfoBus format
-        mock_info_bus = {
-            'step_idx': current_step or self.step_count,
-            'timestamp': datetime.datetime.now().isoformat(),
-            'positions': []
+    
+    def _generate_error_response(self, error_context: str) -> Dict[str, Any]:
+        """Generate response when processing fails"""
+        return {
+            'risk_score': 0.5,
+            'severity_level': 'error',
+            'monitoring_results': {'alerts': {'critical': [], 'warning': [], 'info': []}},
+            'risk_metrics': {'risk_score': 0.5, 'severity_level': 'error'},
+            'thesis': f"Position monitoring failed: {error_context}",
+            'recommendations': ["Investigate position monitoring system errors"]
         }
-        
-        # Convert positions to standard format
-        if open_positions:
-            if isinstance(open_positions, dict):
-                for symbol, pos_data in open_positions.items():
-                    mock_info_bus['positions'].append({
-                        'symbol': symbol,
-                        'size': pos_data.get('size', pos_data.get('lots', 0)),
-                        'entry_step': pos_data.get('entry_step', 0),
-                        'duration': pos_data.get('duration', 0),
-                        'pnl': pos_data.get('pnl', 0)
-                    })
-            elif isinstance(open_positions, list):
-                mock_info_bus['positions'] = open_positions
-        
-        # Use enhanced step method
-        self._step_impl(mock_info_bus)
-        
-        return self.risk_score
+    
+    def get_state(self) -> Dict[str, Any]:
+        """Get complete module state for hot-reload"""
+        return {
+            'position_durations': self.position_durations.copy(),
+            'position_first_seen': self.position_first_seen.copy(),
+            'position_velocity': self.position_velocity.copy(),
+            'risk_score': self.risk_score,
+            'severity_level': self.severity_level,
+            'closure_analytics': self.closure_analytics.copy(),
+            'step_count': self.step_count,
+            'config': self.config.copy()
+        }
+    
+    def set_state(self, state: Dict[str, Any]) -> None:
+        """Set module state for hot-reload"""
+        self.position_durations = state.get('position_durations', {})
+        self.position_first_seen = state.get('position_first_seen', {})
+        self.position_velocity = state.get('position_velocity', {})
+        self.risk_score = state.get('risk_score', 0.0)
+        self.severity_level = state.get('severity_level', 'normal')
+        self.closure_analytics = state.get('closure_analytics', {'normal': 0, 'timeout': 0, 'emergency': 0})
+        self.step_count = state.get('step_count', 0)
+        self.config.update(state.get('config', {}))
+    
+    def get_health_metrics(self) -> Dict[str, Any]:
+        """Get health metrics for monitoring"""
+        total_closures = sum(self.closure_analytics.values())
+        return {
+            'positions_tracked': len(self.position_durations),
+            'risk_score': self.risk_score,
+            'severity_level': self.severity_level,
+            'timeout_rate': self.closure_analytics['timeout'] / max(total_closures, 1),
+            'avg_position_duration': np.mean(list(self.position_durations.values())) if self.position_durations else 0,
+            'enabled': self.enabled
+        }

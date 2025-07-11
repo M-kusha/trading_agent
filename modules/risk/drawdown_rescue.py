@@ -1,992 +1,1034 @@
-# ─────────────────────────────────────────────────────────────
-# File: modules/risk/drawdown_rescue.py
-# Enhanced with InfoBus integration & intelligent rescue mechanisms
-# ─────────────────────────────────────────────────────────────
+"""
+Enhanced Drawdown Rescue with SmartInfoBus Integration
+Intelligent drawdown monitoring and rescue mechanisms
+"""
 
 import numpy as np
 import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union, Tuple
 from collections import deque, defaultdict
 
-from modules.core.core import Module, ModuleConfig, audit_step
-from modules.core.mixins import RiskMixin, TradingMixin, StateManagementMixin
-from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
-from modules.utils.audit_utils import AuditTracker, format_operator_message
+from modules.core.module_base import BaseModule, module
+from modules.core.mixins import SmartInfoBusRiskMixin, SmartInfoBusStateMixin, SmartInfoBusTradingMixin
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.monitoring.health_monitor import HealthMonitor
+from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-class DrawdownRescue(Module, RiskMixin, TradingMixin, StateManagementMixin):
+@module(
+    name="DrawdownRescue",
+    version="3.0.0",
+    category="risk",
+    provides=["drawdown_risk", "rescue_status", "risk_adjustment"],
+    requires=["balance", "equity", "positions", "market_context"],
+    description="Enhanced drawdown monitoring with intelligent rescue mechanisms and risk adjustment",
+    thesis_required=True,
+    health_monitoring=True,
+    performance_tracking=True,
+    error_handling=True
+)
+class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, SmartInfoBusTradingMixin):
     """
-    Enhanced drawdown rescue system with InfoBus integration.
-    Provides intelligent drawdown monitoring and progressive risk reduction.
+    Enhanced Drawdown Rescue with SmartInfoBus Integration
+    
+    Monitors portfolio drawdown with advanced analytics including velocity analysis,
+    progressive rescue mechanisms, and intelligent risk adjustment factors.
     """
-
-    def __init__(
-        self,
-        dd_limit: float = 0.25,
-        warning_dd: float = 0.15,
-        info_dd: float = 0.08,
-        recovery_threshold: float = 0.5,
-        enabled: bool = True,
-        velocity_window: int = 10,
-        training_mode: bool = True,
-        adaptive_rescue: bool = True,
-        debug: bool = True,
-        **kwargs
-    ):
-        # Initialize with enhanced config
-        config = ModuleConfig(
-            debug=debug,
-            max_history=kwargs.get('max_history', 100),
-            audit_enabled=kwargs.get('audit_enabled', True),
-            **kwargs
-        )
-        super().__init__(config)
+    
+    def __init__(self, config=None, **kwargs):
+        self.config = config or {}
+        super().__init__()
+        self._initialize_advanced_systems()
         
-        # Initialize mixins
-        self._initialize_risk_state()
-        self._initialize_trading_state()
+        # Configuration with intelligent defaults
+        self.dd_limit = self.config.get('dd_limit', 0.25)
+        self.warning_dd = self.config.get('warning_dd', 0.15)
+        self.info_dd = self.config.get('info_dd', 0.08)
+        self.recovery_threshold = self.config.get('recovery_threshold', 0.5)
+        self.enabled = self.config.get('enabled', True)
         
-        # Core configuration
-        self.enabled = enabled
-        self.training_mode = training_mode
-        self.adaptive_rescue = adaptive_rescue
+        # Advanced rescue configuration
+        self.velocity_window = self.config.get('velocity_window', 10)
+        self.rescue_mode_enabled = self.config.get('rescue_mode', True)
+        self.adaptive_thresholds = self.config.get('adaptive_thresholds', True)
         
-        # Drawdown thresholds
-        self.base_thresholds = {
-            'dd_limit': float(dd_limit),
-            'warning_dd': float(warning_dd),
-            'info_dd': float(info_dd),
-            'recovery_threshold': float(recovery_threshold)
-        }
-        
-        # Current thresholds (may be adjusted dynamically)
-        self.current_thresholds = self.base_thresholds.copy()
-        
-        # Enhanced state tracking
+        # State tracking
         self.current_dd = 0.0
         self.max_dd = 0.0
         self.peak_balance = 0.0
-        self.severity = "none"
-        self.step_count = 0
-        
-        # Velocity and trend analysis
-        self.dd_history = deque(maxlen=velocity_window)
-        self.balance_history = deque(maxlen=50)
         self.dd_velocity = 0.0
         self.dd_acceleration = 0.0
-        self.recovery_progress = 0.0
+        self.severity_level = "normal"
         
-        # Risk adjustment system
-        self.risk_adjustment = 1.0
+        # Rescue system state
         self.rescue_mode = False
         self.rescue_start_time = None
-        self.consecutive_rescue_days = 0
+        self.risk_adjustment_factor = 1.0
+        self.rescue_intervention_count = 0
+        
+        # Advanced analytics
+        self.dd_history = deque(maxlen=self.velocity_window)
+        self.balance_history = deque(maxlen=100)
+        self.recovery_events = []
+        self.regime_drawdowns = defaultdict(list)
         
         # Performance tracking
-        self.drawdown_analytics = defaultdict(list)
-        self.regime_drawdowns = defaultdict(list)
-        self.recovery_events = []
-        
-        # Rescue effectiveness tracking
-        self._rescue_interventions = 0
-        self._successful_recoveries = 0
-        self._false_alarms = 0
-        self._analysis_history = deque(maxlen=200)
-        self._risk_metrics_history = deque(maxlen=100)
-        
-        # Audit system
-        self.audit_manager = AuditTracker("DrawdownRescue")
-        self._last_significant_event = None
-        
-        self.log_operator_info(
-            "🛟 Enhanced Drawdown Rescue initialized",
-            critical_limit=f"{dd_limit:.1%}",
-            warning_threshold=f"{warning_dd:.1%}",
-            info_threshold=f"{info_dd:.1%}",
-            training_mode=training_mode,
-            adaptive_rescue=adaptive_rescue,
-            enabled=enabled
-        )
-
-
-    def _update_risk_metrics(self, metrics: Dict[str, Any]) -> None:
-        """Update risk metrics tracking"""
-        try:
-            if not hasattr(self, '_risk_metrics_history'):
-                self._risk_metrics_history = deque(maxlen=100)
-            
-            # Add timestamp
-            metrics['timestamp'] = datetime.datetime.now().isoformat()
-            metrics['step'] = self.step_count
-            
-            self._risk_metrics_history.append(metrics)
-            
-            # Update current metrics for external access
-            for key, value in metrics.items():
-                if hasattr(self, f'_current_{key}'):
-                    setattr(self, f'_current_{key}', value)
-                    
-        except Exception as e:
-            self.log_operator_warning(f"Risk metrics update failed: {e}")
-
-
-    def reset(self) -> None:
-        """Enhanced reset with comprehensive state cleanup"""
-        super().reset()
-        self._reset_risk_state()
-        self._reset_trading_state()
-        
-        # Reset drawdown tracking
-        self.current_dd = 0.0
-        self.max_dd = 0.0
-        self.peak_balance = 0.0
-        self.severity = "none"
         self.step_count = 0
+        self.successful_recoveries = 0
+        self.false_alarms = 0
+        self.emergency_interventions = 0
         
-        # Reset velocity tracking
-        self.dd_history.clear()
-        self.balance_history.clear()
-        self.dd_velocity = 0.0
-        self.dd_acceleration = 0.0
-        self.recovery_progress = 0.0
+        # Dynamic thresholds
+        self.current_thresholds = {
+            'dd_limit': self.dd_limit,
+            'warning_dd': self.warning_dd,
+            'info_dd': self.info_dd
+        }
         
-        # Reset rescue system
-        self.risk_adjustment = 1.0
-        self.rescue_mode = False
-        self.rescue_start_time = None
-        self.consecutive_rescue_days = 0
+        # Context-aware adjustments
+        self.regime_multipliers = {
+            'volatile': {'warning': 1.3, 'critical': 1.2, 'velocity_tolerance': 0.8},
+            'trending': {'warning': 0.9, 'critical': 0.95, 'velocity_tolerance': 1.1},
+            'ranging': {'warning': 1.0, 'critical': 1.0, 'velocity_tolerance': 1.0},
+            'crisis': {'warning': 0.8, 'critical': 0.85, 'velocity_tolerance': 0.7}
+        }
         
-        # Reset analytics
-        self.drawdown_analytics.clear()
-        self.regime_drawdowns.clear()
-        self.recovery_events.clear()
+        self.logger.info(format_operator_message(
+            message="Enhanced Drawdown Rescue initialized",
+            icon="🛟",
+            critical_limit=f"{self.dd_limit:.1%}",
+            warning_threshold=f"{self.warning_dd:.1%}",
+            rescue_mode=self.rescue_mode_enabled,
+            adaptive_thresholds=self.adaptive_thresholds,
+            enabled=self.enabled
+        ))
+    
+    def _initialize_advanced_systems(self):
+        """Initialize advanced monitoring and error handling systems"""
+        self.smart_bus = InfoBusManager.get_instance()
+        self.logger = RotatingLogger(
+            name="DrawdownRescue",
+            log_path="logs/risk/drawdown_rescue.log",
+            max_lines=5000,
+            operator_mode=True,
+            plain_english=True
+        )
+        self.error_pinpointer = ErrorPinpointer()
+        self.error_handler = create_error_handler("DrawdownRescue", self.error_pinpointer)
+        self.english_explainer = EnglishExplainer()
+        self.system_utilities = SystemUtilities()
+        self.performance_tracker = PerformanceTracker()
+    
+    async def process(self, **kwargs) -> Dict[str, Any]:
+        """
+        Enhanced drawdown monitoring with comprehensive rescue mechanisms
         
-        # Reset performance tracking
-        self._rescue_interventions = 0
-        self._successful_recoveries = 0
-        self._false_alarms = 0
-        
-        # Reset thresholds to base values
-        self.current_thresholds = self.base_thresholds.copy()
-        
-        self.log_operator_info("🔄 Drawdown Rescue reset - all tracking cleared")
-
-    @audit_step
-    def _step_impl(self, info_bus: Optional[InfoBus] = None, **kwargs) -> None:
-        """Enhanced step with InfoBus integration"""
-        
-        if not info_bus:
-            self.log_operator_warning("No InfoBus provided - drawdown rescue inactive")
-            return
-        
-        if not self.enabled:
-            self.risk_adjustment = 1.0
-            self.rescue_mode = False
-            return
-        
-        self.step_count += 1
-        
-        # Extract context for intelligent analysis
-        context = extract_standard_context(info_bus)
-        
-        # Extract drawdown data from InfoBus
-        calculated_dd = self._extract_drawdown_from_info_bus(info_bus)
-        
-        if calculated_dd is None:
-            self._handle_no_drawdown_data(context)
-            return
-        
-        # Process comprehensive drawdown analysis
-        critical_found = self._analyze_drawdown_comprehensive(calculated_dd, info_bus, context)
-        
-        # Update rescue mechanisms
-        self._update_rescue_system(context)
-        
-        # Calculate risk adjustment
-        self._calculate_risk_adjustment(context)
-        
-        # Update InfoBus with results
-        self._update_info_bus(info_bus, critical_found)
-        
-        # Record audit for significant events
-        if critical_found or self.severity in ["warning", "critical"]:
-            self._record_comprehensive_audit(info_bus, context)
-        
-        # Update performance metrics
-        self._update_rescue_metrics()
-
-    def _extract_drawdown_from_info_bus(self, info_bus: InfoBus) -> Optional[float]:
-        """Extract drawdown from InfoBus with multiple sophisticated methods"""
-        
+        Returns:
+            Dict containing drawdown risk assessment, rescue status, and risk adjustments
+        """
         try:
-            # Method 1: Direct drawdown from risk snapshot
-            risk_data = info_bus.get('risk', {})
-            current_drawdown = risk_data.get('current_drawdown')
-            if current_drawdown is not None and not np.isnan(current_drawdown):
-                return max(0.0, float(current_drawdown))
+            if not self.enabled:
+                return self._generate_disabled_response()
             
-            # Method 2: Calculate from balance and peak balance
-            balance = risk_data.get('balance', risk_data.get('equity'))
-            peak_balance = risk_data.get('peak_balance')
+            self.step_count += 1
             
-            if balance is not None and peak_balance is not None and peak_balance > 0:
-                dd = (peak_balance - balance) / peak_balance
-                return max(0.0, float(dd))
+            # Extract comprehensive financial data
+            balance = self.smart_bus.get('balance', 'DrawdownRescue') or 10000.0
+            equity = self.smart_bus.get('equity', 'DrawdownRescue') or balance
+            positions = self.smart_bus.get('positions', 'DrawdownRescue') or []
+            market_context = self.smart_bus.get('market_context', 'DrawdownRescue') or {}
             
-            # Method 3: Track peak balance automatically from InfoBus
-            if balance is not None and balance > 0:
-                balance = float(balance)
-                self.balance_history.append(balance)
-                
-                # Update peak balance
-                if balance > self.peak_balance:
-                    self.peak_balance = balance
-                
-                if self.peak_balance > 0:
-                    dd = (self.peak_balance - balance) / self.peak_balance
-                    return max(0.0, dd)
+            # Update balance tracking
+            self._update_balance_tracking(balance, equity)
             
-            # Method 4: Calculate from positions unrealized PnL
-            positions = InfoBusExtractor.get_positions(info_bus)
-            if positions and balance is not None:
-                total_unrealized = sum(pos.get('unrealised_pnl', 0) for pos in positions)
-                
-                # If we have significant unrealized losses, include in drawdown
-                if total_unrealized < -100:  # Significant unrealized loss
-                    effective_balance = balance + total_unrealized
-                    if self.peak_balance > 0:
-                        dd = (self.peak_balance - effective_balance) / self.peak_balance
-                        return max(0.0, dd)
+            # Calculate comprehensive drawdown metrics
+            drawdown_analysis = await self._analyze_drawdown_comprehensive(balance, equity, market_context)
             
-            # Method 5: Extract from module data
-            module_data = info_bus.get('module_data', {})
-            for module_name in ['risk_manager', 'portfolio_manager', 'balance_tracker']:
-                if module_name in module_data:
-                    module_dd = module_data[module_name].get('drawdown')
-                    if module_dd is not None:
-                        return max(0.0, float(module_dd))
+            # Update rescue system
+            rescue_status = self._update_rescue_system(drawdown_analysis, market_context)
             
-            # Method 6: Running peak from balance history
-            if len(self.balance_history) >= 5:
-                balances = list(self.balance_history)
-                current_bal = balances[-1]
-                peak_bal = max(balances)
-                if peak_bal > 0:
-                    dd = (peak_bal - current_bal) / peak_bal
-                    return max(0.0, dd)
+            # Calculate risk adjustment
+            risk_adjustment = self._calculate_risk_adjustment(drawdown_analysis, rescue_status)
             
-        except Exception as e:
-            self.log_operator_warning(f"Drawdown extraction failed: {e}")
-        
-        return None
-
-    def _handle_no_drawdown_data(self, context: Dict[str, Any]) -> None:
-        """Handle case when no drawdown data is available"""
-        
-        self.current_dd = 0.0
-        self.severity = "none"
-        self.risk_adjustment = 1.0
-        self.rescue_mode = False
-        
-        # Log occasionally
-        if self.step_count % 100 == 0:
-            self.log_operator_info(
-                "📊 No drawdown data available",
-                step=self.step_count,
-                regime=context.get('regime', 'unknown'),
-                training_mode=self.training_mode
-            )
-
-    def _analyze_drawdown_comprehensive(self, calculated_dd: float, 
-                                       info_bus: InfoBus, context: Dict[str, Any]) -> bool:
-        """Comprehensive drawdown analysis with advanced metrics"""
-        
-        # Update basic state
-        old_dd = self.current_dd
-        old_severity = self.severity
-        self.current_dd = calculated_dd
-        self.max_dd = max(self.max_dd, calculated_dd)
-        
-        # Calculate velocity and acceleration
-        self._calculate_drawdown_dynamics()
-        
-        # Determine severity with enhanced logic
-        self.severity = self._determine_drawdown_severity_enhanced(calculated_dd, context)
-        
-        # Calculate recovery progress
-        self._calculate_recovery_progress()
-        
-        # Log significant changes
-        critical_found = self._log_drawdown_changes(old_dd, old_severity, context)
-        
-        # Update analytics
-        self._update_drawdown_analytics(context)
-        
-        # Store drawdown snapshot
-        self._store_drawdown_snapshot(info_bus, context)
-        
-        return critical_found
-
-    def _calculate_drawdown_dynamics(self) -> None:
-        """Calculate drawdown velocity and acceleration"""
-        
-        # Add current drawdown to history
-        self.dd_history.append(self.current_dd)
-        
-        try:
-            if len(self.dd_history) >= 2:
-                # Calculate velocity (rate of change)
-                self.dd_velocity = self.dd_history[-1] - self.dd_history[-2]
-                
-                if len(self.dd_history) >= 3:
-                    # Calculate acceleration (rate of velocity change)
-                    prev_velocity = self.dd_history[-2] - self.dd_history[-3]
-                    self.dd_acceleration = self.dd_velocity - prev_velocity
-                else:
-                    self.dd_acceleration = 0.0
-            else:
-                self.dd_velocity = 0.0
-                self.dd_acceleration = 0.0
-                
-        except Exception as e:
-            self.log_operator_warning(f"Drawdown dynamics calculation failed: {e}")
-            self.dd_velocity = 0.0
-            self.dd_acceleration = 0.0
-
-    def _determine_drawdown_severity_enhanced(self, drawdown: float, 
-                                            context: Dict[str, Any]) -> str:
-        """Enhanced severity determination with context and velocity"""
-        
-        # Get current thresholds
-        thresholds = self.current_thresholds
-        
-        # Base severity assessment
-        if drawdown >= thresholds['dd_limit']:
-            base_severity = "critical"
-        elif drawdown >= thresholds['warning_dd']:
-            base_severity = "warning"
-        elif drawdown >= thresholds['info_dd']:
-            base_severity = "info"
-        else:
-            base_severity = "none"
-        
-        # Velocity-based adjustments
-        if self.dd_velocity > 0.02:  # Rapidly increasing drawdown (>2%)
-            if base_severity == "info":
-                base_severity = "warning"
-            elif base_severity == "warning":
-                base_severity = "critical"
-        elif self.dd_velocity < -0.01:  # Recovering (improving by >1%)
-            if base_severity == "warning" and drawdown < thresholds['warning_dd'] * 0.9:
-                base_severity = "info"
-        
-        # Acceleration-based adjustments
-        if self.dd_acceleration > 0.01:  # Accelerating downward
-            if base_severity in ["info", "warning"]:
-                # Escalate severity for accelerating drawdowns
-                severity_escalation = {"info": "warning", "warning": "critical"}
-                base_severity = severity_escalation.get(base_severity, base_severity)
-        
-        # Context-based adjustments
-        regime = context.get('regime', 'unknown')
-        volatility_level = context.get('volatility_level', 'medium')
-        
-        # More tolerant in volatile markets
-        if volatility_level in ['high', 'extreme'] and base_severity == "warning":
-            if drawdown < thresholds['dd_limit'] * 0.8:  # 20% tolerance
-                base_severity = "info"
-        
-        return base_severity
-
-    def _calculate_recovery_progress(self) -> None:
-        """Calculate recovery progress from maximum drawdown"""
-        
-        try:
-            if self.max_dd > 0:
-                recovery_amount = max(0, self.max_dd - self.current_dd)
-                self.recovery_progress = recovery_amount / self.max_dd
-            else:
-                self.recovery_progress = 0.0
-                
-            # Check for recovery milestone
-            if (self.recovery_progress >= self.current_thresholds['recovery_threshold'] and
-                self.max_dd > self.current_thresholds['info_dd']):
-                
-                # Record recovery event
-                if not hasattr(self, '_last_recovery_recorded') or self._last_recovery_recorded != self.step_count:
-                    self.recovery_events.append({
-                        'timestamp': datetime.datetime.now().isoformat(),
-                        'step': self.step_count,
-                        'max_dd': self.max_dd,
-                        'current_dd': self.current_dd,
-                        'recovery_progress': self.recovery_progress
-                    })
-                    self._successful_recoveries += 1
-                    self._last_recovery_recorded = self.step_count
-                    
-                    self.log_operator_info(
-                        f"🎯 Recovery milestone achieved",
-                        progress=f"{self.recovery_progress:.1%}",
-                        max_dd=f"{self.max_dd:.1%}",
-                        current_dd=f"{self.current_dd:.1%}"
-                    )
-                    
-        except Exception as e:
-            self.log_operator_warning(f"Recovery progress calculation failed: {e}")
-
-    def _log_drawdown_changes(self, old_dd: float, old_severity: str, 
-                             context: Dict[str, Any]) -> bool:
-        """Log significant drawdown changes"""
-        
-        critical_found = False
-        
-        try:
-            # Log severity changes or significant movements
-            should_log = (
-                self.severity != old_severity or
-                abs(self.current_dd - old_dd) > 0.01 or  # >1% change
-                self.severity in ["warning", "critical"] or
-                self.dd_velocity > 0.015  # Rapid deterioration
+            # Generate intelligent thesis
+            thesis = await self._generate_drawdown_thesis(drawdown_analysis, rescue_status, market_context)
+            
+            # Calculate comprehensive metrics
+            drawdown_metrics = self._calculate_drawdown_metrics(drawdown_analysis, rescue_status)
+            
+            # Update SmartInfoBus
+            self._update_smart_info_bus(drawdown_analysis, rescue_status, risk_adjustment, thesis)
+            
+            # Record performance metrics
+            self.performance_tracker.record_metric(
+                'DrawdownRescue', 'analysis_cycle', 
+                drawdown_analysis.get('processing_time_ms', 0), True
             )
             
-            if should_log:
-                # Build comprehensive message
-                msg_parts = [f"Drawdown {self.current_dd:.1%} - {self.severity.upper()}"]
-                
-                if self.dd_velocity != 0:
-                    velocity_text = "deteriorating" if self.dd_velocity > 0 else "improving"
-                    msg_parts.append(f"({velocity_text} {abs(self.dd_velocity):.1%})")
-                
-                if self.recovery_progress > 0:
-                    msg_parts.append(f"(recovery: {self.recovery_progress:.1%})")
-                
-                message = " ".join(msg_parts)
-                
-                # Log with appropriate severity
-                if self.severity == "critical":
-                    self.log_operator_error(
-                        f"🚨 CRITICAL: {message}",
-                        limit=f"{self.current_thresholds['dd_limit']:.1%}",
-                        velocity=f"{self.dd_velocity:+.1%}",
-                        regime=context.get('regime', 'unknown')
-                    )
-                    critical_found = True
-                elif self.severity == "warning":
-                    self.log_operator_warning(
-                        f"⚠️ WARNING: {message}",
-                        threshold=f"{self.current_thresholds['warning_dd']:.1%}",
-                        velocity=f"{self.dd_velocity:+.1%}"
-                    )
-                elif self.severity == "info":
-                    self.log_operator_info(
-                        f"ℹ️ INFO: {message}",
-                        threshold=f"{self.current_thresholds['info_dd']:.1%}"
-                    )
-                elif self.config.debug:
-                    self.log_operator_info(f"📊 {message}")
-                    
-        except Exception as e:
-            self.log_operator_warning(f"Drawdown logging failed: {e}")
-        
-        return critical_found
-
-    def _update_drawdown_analytics(self, context: Dict[str, Any]) -> None:
-        """Update comprehensive drawdown analytics"""
-        
-        try:
-            # Update general analytics
-            self.drawdown_analytics['current_dd'].append(self.current_dd)
-            self.drawdown_analytics['max_dd'].append(self.max_dd)
-            self.drawdown_analytics['velocity'].append(self.dd_velocity)
-            self.drawdown_analytics['recovery_progress'].append(self.recovery_progress)
-            
-            # Update regime-specific analytics
-            regime = context.get('regime', 'unknown')
-            self.regime_drawdowns[regime].append({
-                'drawdown': self.current_dd,
-                'severity': self.severity,
-                'velocity': self.dd_velocity,
-                'timestamp': datetime.datetime.now().isoformat()
-            })
-            
-            # Update risk tracking
-            self._update_risk_metrics({
+            return {
                 'current_drawdown': self.current_dd,
-                'max_drawdown': self.max_dd,
-                'drawdown_velocity': self.dd_velocity,
-                'recovery_progress': self.recovery_progress
-            })
-            
-        except Exception as e:
-            self.log_operator_warning(f"Drawdown analytics update failed: {e}")
-
-    def _store_drawdown_snapshot(self, info_bus: InfoBus, context: Dict[str, Any]) -> None:
-        """Store comprehensive drawdown snapshot"""
-        
-        try:
-            snapshot = {
-                'timestamp': info_bus.get('timestamp', datetime.datetime.now().isoformat()),
-                'step_idx': info_bus.get('step_idx', self.step_count),
-                'current_dd': self.current_dd,
-                'max_dd': self.max_dd,
-                'severity': self.severity,
-                'velocity': self.dd_velocity,
-                'acceleration': self.dd_acceleration,
-                'recovery_progress': self.recovery_progress,
-                'risk_adjustment': self.risk_adjustment,
+                'severity_level': self.severity_level,
                 'rescue_mode': self.rescue_mode,
-                'context': context.copy(),
-                'balance': info_bus.get('risk', {}).get('balance'),
-                'peak_balance': self.peak_balance
+                'risk_adjustment_factor': self.risk_adjustment_factor,
+                'drawdown_analysis': drawdown_analysis,
+                'rescue_status': rescue_status,
+                'risk_adjustment': risk_adjustment,
+                'drawdown_metrics': drawdown_metrics,
+                'thesis': thesis,
+                'recommendations': self._generate_recommendations(drawdown_analysis, rescue_status)
             }
             
-            # Store in analysis history
-            self._analysis_history.append(snapshot)
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "DrawdownRescue")
+            self.logger.error(f"Drawdown analysis failed: {error_context}")
+            return self._generate_error_response(str(error_context))
+    
+    def _update_balance_tracking(self, balance: float, equity: float):
+        """Update balance and equity tracking"""
+        try:
+            # Use equity for drawdown calculation (includes unrealized P&L)
+            effective_balance = equity if equity > 0 else balance
+            
+            # Track balance history
+            self.balance_history.append({
+                'balance': balance,
+                'equity': equity,
+                'effective_balance': effective_balance,
+                'timestamp': datetime.datetime.now()
+            })
+            
+            # Update peak balance
+            if effective_balance > self.peak_balance:
+                self.peak_balance = effective_balance
+                
+                # Log new peak achievement
+                if self.step_count > 1:  # Avoid logging on first step
+                    self.logger.info(format_operator_message(
+                        message="New peak balance achieved",
+                        icon="📈",
+                        peak_balance=f"€{self.peak_balance:,.2f}",
+                        previous_max_dd=f"{self.max_dd:.1%}"
+                    ))
+                    
+                    # Reset max drawdown on new peak
+                    if self.max_dd > 0:
+                        self.max_dd = 0.0
             
         except Exception as e:
-            self.log_operator_warning(f"Drawdown snapshot storage failed: {e}")
-
-    def _update_rescue_system(self, context: Dict[str, Any]) -> None:
-        """Update intelligent rescue system"""
+            error_context = self.error_pinpointer.analyze_error(e, "balance_tracking")
+            self.logger.warning(f"Balance tracking failed: {error_context}")
+    
+    async def _analyze_drawdown_comprehensive(self, balance: float, equity: float,
+                                            market_context: Dict[str, Any]) -> Dict[str, Any]:
+        """Comprehensive drawdown analysis with advanced metrics"""
+        start_time = datetime.datetime.now()
         
         try:
+            effective_balance = equity if equity > 0 else balance
+            
+            # Calculate current drawdown
+            if self.peak_balance > 0:
+                self.current_dd = max(0.0, (self.peak_balance - effective_balance) / self.peak_balance)
+            else:
+                self.current_dd = 0.0
+            
+            # Update maximum drawdown
+            self.max_dd = max(self.max_dd, self.current_dd)
+            
+            # Calculate velocity and acceleration
+            velocity_metrics = self._calculate_velocity_metrics()
+            
+            # Adjust thresholds for market context
+            context_thresholds = self._calculate_context_adjusted_thresholds(market_context)
+            
+            # Determine severity level
+            severity_assessment = self._assess_drawdown_severity(velocity_metrics, context_thresholds)
+            
+            # Calculate recovery metrics
+            recovery_metrics = self._calculate_recovery_metrics()
+            
+            # Regime-specific analysis
+            regime_analysis = self._analyze_regime_patterns(market_context)
+            
+            # Calculate processing time
+            processing_time = (datetime.datetime.now() - start_time).total_seconds() * 1000
+            
+            return {
+                'current_drawdown': self.current_dd,
+                'max_drawdown': self.max_dd,
+                'peak_balance': self.peak_balance,
+                'effective_balance': effective_balance,
+                'velocity_metrics': velocity_metrics,
+                'context_thresholds': context_thresholds,
+                'severity_assessment': severity_assessment,
+                'recovery_metrics': recovery_metrics,
+                'regime_analysis': regime_analysis,
+                'processing_time_ms': processing_time,
+                'market_context': market_context
+            }
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "drawdown_analysis")
+            self.logger.error(f"Drawdown analysis failed: {error_context}")
+            return self._generate_analysis_error_response(str(error_context))
+    
+    def _calculate_velocity_metrics(self) -> Dict[str, Any]:
+        """Calculate drawdown velocity and acceleration metrics"""
+        try:
+            # Add current drawdown to history
+            self.dd_history.append(self.current_dd)
+            
+            # Calculate velocity (rate of change)
+            if len(self.dd_history) >= 2:
+                self.dd_velocity = self.dd_history[-1] - self.dd_history[-2]
+            else:
+                self.dd_velocity = 0.0
+            
+            # Calculate acceleration (rate of velocity change)
+            if len(self.dd_history) >= 3:
+                prev_velocity = self.dd_history[-2] - self.dd_history[-3]
+                self.dd_acceleration = self.dd_velocity - prev_velocity
+            else:
+                self.dd_acceleration = 0.0
+            
+            # Calculate trend metrics
+            trend_direction = 'deteriorating' if self.dd_velocity > 0 else 'improving' if self.dd_velocity < 0 else 'stable'
+            
+            # Calculate momentum
+            momentum = 0.0
+            if len(self.dd_history) >= 5:
+                recent_dds = list(self.dd_history)[-5:]
+                trend_slope = np.polyfit(range(len(recent_dds)), recent_dds, 1)[0]
+                momentum = trend_slope
+            
+            return {
+                'velocity': self.dd_velocity,
+                'acceleration': self.dd_acceleration,
+                'trend_direction': trend_direction,
+                'momentum': momentum,
+                'volatility': np.std(list(self.dd_history)) if len(self.dd_history) >= 3 else 0.0
+            }
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "velocity_calculation")
+            self.logger.warning(f"Velocity calculation failed: {error_context}")
+            return {'velocity': 0.0, 'acceleration': 0.0, 'trend_direction': 'unknown', 'momentum': 0.0}
+    
+    def _calculate_context_adjusted_thresholds(self, market_context: Dict[str, Any]) -> Dict[str, float]:
+        """Calculate context-adjusted drawdown thresholds"""
+        try:
+            if not self.adaptive_thresholds:
+                return self.current_thresholds.copy()
+            
+            regime = market_context.get('regime', 'unknown')
+            volatility_level = market_context.get('volatility_level', 'medium')
+            
+            # Get base thresholds
+            adjusted_thresholds = {
+                'info_dd': self.info_dd,
+                'warning_dd': self.warning_dd,
+                'dd_limit': self.dd_limit
+            }
+            
+            # Apply regime-specific adjustments
+            if regime in self.regime_multipliers:
+                regime_config = self.regime_multipliers[regime]
+                adjusted_thresholds['warning_dd'] *= regime_config['warning']
+                adjusted_thresholds['dd_limit'] *= regime_config['critical']
+            
+            # Apply volatility adjustments
+            volatility_multipliers = {
+                'low': 0.8,      # Stricter in low volatility
+                'medium': 1.0,   # Normal thresholds
+                'high': 1.2,     # More lenient in high volatility
+                'extreme': 1.4   # Very lenient in extreme volatility
+            }
+            
+            vol_multiplier = volatility_multipliers.get(volatility_level, 1.0)
+            for key in adjusted_thresholds:
+                adjusted_thresholds[key] *= vol_multiplier
+            
+            # Apply bounds to prevent extreme adjustments
+            adjusted_thresholds['info_dd'] = max(0.03, min(0.15, adjusted_thresholds['info_dd']))
+            adjusted_thresholds['warning_dd'] = max(0.08, min(0.25, adjusted_thresholds['warning_dd']))
+            adjusted_thresholds['dd_limit'] = max(0.15, min(0.50, adjusted_thresholds['dd_limit']))
+            
+            # Update current thresholds
+            self.current_thresholds = adjusted_thresholds
+            
+            return adjusted_thresholds
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "threshold_adjustment")
+            self.logger.warning(f"Threshold adjustment failed: {error_context}")
+            return self.current_thresholds.copy()
+    
+    def _assess_drawdown_severity(self, velocity_metrics: Dict[str, float],
+                                 context_thresholds: Dict[str, float]) -> Dict[str, Any]:
+        """Assess drawdown severity with velocity consideration"""
+        try:
+            # Base severity assessment
+            if self.current_dd >= context_thresholds['dd_limit']:
+                base_severity = 'critical'
+            elif self.current_dd >= context_thresholds['warning_dd']:
+                base_severity = 'warning'
+            elif self.current_dd >= context_thresholds['info_dd']:
+                base_severity = 'info'
+            else:
+                base_severity = 'normal'
+            
+            # Velocity-based adjustments
+            velocity = velocity_metrics['velocity']
+            acceleration = velocity_metrics['acceleration']
+            
+            severity_factors = []
+            
+            # Rapid deterioration escalation
+            if velocity > 0.02:  # 2% increase per step
+                if base_severity == 'info':
+                    base_severity = 'warning'
+                elif base_severity == 'warning':
+                    base_severity = 'critical'
+                severity_factors.append('rapid_deterioration')
+            
+            # Acceleration-based escalation
+            if acceleration > 0.01:  # Accelerating downward
+                if base_severity in ['normal', 'info']:
+                    base_severity = 'warning'
+                severity_factors.append('accelerating_decline')
+            
+            # Recovery de-escalation
+            if velocity < -0.01 and base_severity == 'warning':  # Improving by >1%
+                if self.current_dd < context_thresholds['warning_dd'] * 0.9:
+                    base_severity = 'info'
+                    severity_factors.append('recovering')
+            
+            self.severity_level = base_severity
+            
+            return {
+                'level': base_severity,
+                'base_assessment': base_severity,
+                'severity_factors': severity_factors,
+                'velocity_impact': velocity > 0.015,
+                'acceleration_impact': acceleration > 0.008,
+                'threshold_used': context_thresholds.get(f'{base_severity}_dd', context_thresholds['info_dd'])
+            }
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "severity_assessment")
+            self.logger.warning(f"Severity assessment failed: {error_context}")
+            return {'level': 'unknown', 'base_assessment': 'unknown', 'severity_factors': []}
+    
+    def _calculate_recovery_metrics(self) -> Dict[str, Any]:
+        """Calculate recovery progress and metrics"""
+        try:
+            # Basic recovery calculation
+            if self.max_dd > 0:
+                recovery_amount = max(0.0, self.max_dd - self.current_dd)
+                recovery_progress = recovery_amount / self.max_dd
+            else:
+                recovery_progress = 0.0
+            
+            # Recovery velocity
+            recovery_velocity = 0.0
+            if len(self.dd_history) >= 3:
+                recent_recovery = self.dd_history[-3] - self.current_dd  # Recovery over 3 steps
+                recovery_velocity = recent_recovery / 3.0
+            
+            # Recovery stability
+            recovery_stability = 0.0
+            if len(self.dd_history) >= 5:
+                recent_dds = list(self.dd_history)[-5:]
+                if all(dd <= recent_dds[0] for dd in recent_dds):  # Consistent improvement
+                    recovery_stability = 1.0
+                else:
+                    recovery_stability = 0.5
+            
+            # Check for recovery milestone
+            milestone_achieved = False
+            if (recovery_progress >= self.recovery_threshold and 
+                self.max_dd > self.current_thresholds['info_dd']):
+                
+                milestone_achieved = True
+                
+                # Record recovery event
+                self.recovery_events.append({
+                    'timestamp': datetime.datetime.now(),
+                    'max_dd': self.max_dd,
+                    'recovery_progress': recovery_progress,
+                    'step_count': self.step_count
+                })
+                
+                self.successful_recoveries += 1
+                
+                self.logger.info(format_operator_message(
+                    message="Recovery milestone achieved",
+                    icon="🎯",
+                    progress=f"{recovery_progress:.1%}",
+                    max_dd=f"{self.max_dd:.1%}",
+                    current_dd=f"{self.current_dd:.1%}"
+                ))
+            
+            return {
+                'recovery_progress': recovery_progress,
+                'recovery_velocity': recovery_velocity,
+                'recovery_stability': recovery_stability,
+                'milestone_achieved': milestone_achieved,
+                'total_recoveries': self.successful_recoveries
+            }
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "recovery_metrics")
+            self.logger.warning(f"Recovery metrics calculation failed: {error_context}")
+            return {'recovery_progress': 0.0, 'recovery_velocity': 0.0, 'recovery_stability': 0.0}
+    
+    def _analyze_regime_patterns(self, market_context: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze regime-specific drawdown patterns"""
+        try:
+            regime = market_context.get('regime', 'unknown')
+            
+            # Store current drawdown in regime history
+            if regime != 'unknown':
+                self.regime_drawdowns[regime].append({
+                    'drawdown': self.current_dd,
+                    'timestamp': datetime.datetime.now(),
+                    'step_count': self.step_count
+                })
+            
+            # Calculate regime statistics
+            regime_stats = {}
+            for regime_name, regime_data in self.regime_drawdowns.items():
+                if regime_data:
+                    drawdowns = [entry['drawdown'] for entry in regime_data]
+                    regime_stats[regime_name] = {
+                        'avg_drawdown': float(np.mean(drawdowns)),
+                        'max_drawdown': float(np.max(drawdowns)),
+                        'drawdown_volatility': float(np.std(drawdowns)),
+                        'sample_count': len(drawdowns)
+                    }
+            
+            # Assess current regime relative to historical patterns
+            regime_assessment = 'normal'
+            if regime in regime_stats:
+                current_stats = regime_stats[regime]
+                if self.current_dd > current_stats['avg_drawdown'] * 1.5:
+                    regime_assessment = 'above_average'
+                elif self.current_dd > current_stats['max_drawdown'] * 0.9:
+                    regime_assessment = 'near_maximum'
+                elif self.current_dd < current_stats['avg_drawdown'] * 0.5:
+                    regime_assessment = 'below_average'
+            
+            return {
+                'current_regime': regime,
+                'regime_stats': regime_stats,
+                'regime_assessment': regime_assessment,
+                'regime_pattern': self._identify_regime_pattern(regime, regime_stats)
+            }
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "regime_analysis")
+            self.logger.warning(f"Regime analysis failed: {error_context}")
+            return {'current_regime': 'unknown', 'regime_stats': {}, 'regime_assessment': 'unknown'}
+    
+    def _identify_regime_pattern(self, current_regime: str, regime_stats: Dict[str, Dict]) -> str:
+        """Identify patterns in regime-specific drawdowns"""
+        try:
+            if current_regime not in regime_stats or len(regime_stats) < 2:
+                return 'insufficient_data'
+            
+            current_avg = regime_stats[current_regime]['avg_drawdown']
+            other_regimes = {k: v for k, v in regime_stats.items() if k != current_regime}
+            
+            if not other_regimes:
+                return 'no_comparison'
+            
+            other_avg = np.mean([stats['avg_drawdown'] for stats in other_regimes.values()])
+            
+            if current_avg > other_avg * 1.3:
+                return 'high_risk_regime'
+            elif current_avg < other_avg * 0.7:
+                return 'low_risk_regime'
+            else:
+                return 'normal_risk_regime'
+                
+        except Exception:
+            return 'pattern_analysis_error'
+    
+    def _update_rescue_system(self, drawdown_analysis: Dict[str, Any],
+                             market_context: Dict[str, Any]) -> Dict[str, Any]:
+        """Update rescue system status and interventions"""
+        try:
+            severity_assessment = drawdown_analysis['severity_assessment']
+            velocity_metrics = drawdown_analysis['velocity_metrics']
+            
             old_rescue_mode = self.rescue_mode
             
             # Determine if rescue mode should be activated
-            should_activate_rescue = (
-                self.severity in ["warning", "critical"] or
-                (self.dd_velocity > 0.02 and self.current_dd > self.current_thresholds['info_dd']) or
-                (self.dd_acceleration > 0.01 and self.current_dd > 0.05)
+            should_activate = (
+                severity_assessment['level'] in ['warning', 'critical'] or
+                (velocity_metrics['velocity'] > 0.02 and self.current_dd > self.current_thresholds['info_dd']) or
+                velocity_metrics['acceleration'] > 0.01
             )
             
             # Activate rescue mode
-            if should_activate_rescue and not self.rescue_mode:
+            if should_activate and not self.rescue_mode and self.rescue_mode_enabled:
                 self.rescue_mode = True
                 self.rescue_start_time = datetime.datetime.now()
-                self._rescue_interventions += 1
+                self.rescue_intervention_count += 1
                 
-                self.log_operator_warning(
-                    "🛟 Rescue mode ACTIVATED",
+                self.logger.warning(format_operator_message(
+                    message="Rescue mode ACTIVATED",
+                    icon="🛟",
                     drawdown=f"{self.current_dd:.1%}",
-                    velocity=f"{self.dd_velocity:+.1%}",
-                    reason=self.severity
-                )
+                    velocity=f"{velocity_metrics['velocity']:+.2%}",
+                    reason=severity_assessment['level'],
+                    intervention_count=self.rescue_intervention_count
+                ))
             
             # Deactivate rescue mode
             elif self.rescue_mode and (
-                self.severity == "none" and 
-                self.dd_velocity < 0 and 
-                self.recovery_progress > 0.3
+                severity_assessment['level'] == 'normal' and
+                velocity_metrics['velocity'] < 0 and
+                drawdown_analysis['recovery_metrics']['recovery_progress'] > 0.3
             ):
+                rescue_duration = (datetime.datetime.now() - (self.rescue_start_time or datetime.datetime.now())).total_seconds() / 60
                 self.rescue_mode = False
-                rescue_duration = (datetime.datetime.now() - self.rescue_start_time).total_seconds() / 60
                 
-                self.log_operator_info(
-                    "✅ Rescue mode DEACTIVATED",
+                self.logger.info(format_operator_message(
+                    message="Rescue mode DEACTIVATED",
+                    icon="✅",
                     duration=f"{rescue_duration:.1f} minutes",
-                    recovery=f"{self.recovery_progress:.1%}",
-                    final_dd=f"{self.current_dd:.1%}"
-                )
+                    final_dd=f"{self.current_dd:.1%}",
+                    recovery=f"{drawdown_analysis['recovery_metrics']['recovery_progress']:.1%}"
+                ))
             
-            # Update consecutive rescue days tracking
-            if self.rescue_mode and not old_rescue_mode:
-                self.consecutive_rescue_days += 1
-            elif not self.rescue_mode and old_rescue_mode:
-                self.consecutive_rescue_days = 0
+            # Emergency intervention check
+            emergency_intervention = False
+            if (self.current_dd > self.current_thresholds['dd_limit'] * 1.2 and
+                velocity_metrics['velocity'] > 0.03):
                 
+                emergency_intervention = True
+                self.emergency_interventions += 1
+                
+                self.logger.error(format_operator_message(
+                    message="EMERGENCY INTERVENTION",
+                    icon="🚨",
+                    drawdown=f"{self.current_dd:.1%}",
+                    velocity=f"{velocity_metrics['velocity']:+.2%}",
+                    intervention_number=self.emergency_interventions
+                ))
+            
+            return {
+                'rescue_mode': self.rescue_mode,
+                'rescue_activated': not old_rescue_mode and self.rescue_mode,
+                'rescue_deactivated': old_rescue_mode and not self.rescue_mode,
+                'rescue_duration_minutes': (
+                    (datetime.datetime.now() - self.rescue_start_time).total_seconds() / 60
+                    if self.rescue_mode and self.rescue_start_time else 0.0
+                ),
+                'intervention_count': self.rescue_intervention_count,
+                'emergency_intervention': emergency_intervention,
+                'emergency_count': self.emergency_interventions
+            }
+            
         except Exception as e:
-            self.log_operator_warning(f"Rescue system update failed: {e}")
-
-    def _calculate_risk_adjustment(self, context: Dict[str, Any]) -> None:
+            error_context = self.error_pinpointer.analyze_error(e, "rescue_system")
+            self.logger.error(f"Rescue system update failed: {error_context}")
+            return {'rescue_mode': False, 'error': error_context}
+    
+    def _calculate_risk_adjustment(self, drawdown_analysis: Dict[str, Any],
+                                  rescue_status: Dict[str, Any]) -> Dict[str, Any]:
         """Calculate intelligent risk adjustment factor"""
-        
         try:
-            base_adjustment = self._get_base_risk_adjustment()
+            severity_level = drawdown_analysis['severity_assessment']['level']
+            velocity_metrics = drawdown_analysis['velocity_metrics']
+            recovery_metrics = drawdown_analysis['recovery_metrics']
+            
+            # Base adjustment based on severity
+            base_adjustments = {
+                'normal': 1.0,
+                'info': 0.9,
+                'warning': 0.7,
+                'critical': 0.4
+            }
+            
+            base_adjustment = base_adjustments.get(severity_level, 0.5)
             
             # Velocity-based adjustments
-            if self.dd_velocity > 0.02:  # Rapid deterioration
-                base_adjustment *= 0.7
-            elif self.dd_velocity > 0.01:  # Moderate deterioration
-                base_adjustment *= 0.85
-            elif self.dd_velocity < -0.01:  # Recovering
-                base_adjustment = min(1.0, base_adjustment * 1.15)
+            velocity_adjustment = 1.0
+            if velocity_metrics['velocity'] > 0.02:  # Rapid deterioration
+                velocity_adjustment = 0.7
+            elif velocity_metrics['velocity'] > 0.01:  # Moderate deterioration
+                velocity_adjustment = 0.85
+            elif velocity_metrics['velocity'] < -0.01:  # Recovering
+                velocity_adjustment = min(1.2, 1.0 + abs(velocity_metrics['velocity']) * 5)
             
-            # Acceleration-based adjustments
-            if self.dd_acceleration > 0.01:  # Accelerating downward
-                base_adjustment *= 0.8
+            # Recovery-based adjustments
+            recovery_adjustment = 1.0
+            if recovery_metrics['recovery_progress'] > 0.5:
+                recovery_adjustment = 1.1  # Slightly more aggressive during recovery
+            elif recovery_metrics['recovery_velocity'] > 0.01:
+                recovery_adjustment = 1.05
             
-            # Context-based adjustments
-            regime = context.get('regime', 'unknown')
-            volatility_level = context.get('volatility_level', 'medium')
-            
-            # More conservative in volatile markets during drawdown
-            if self.severity != "none" and volatility_level in ['high', 'extreme']:
-                base_adjustment *= 0.9
-            
-            # More aggressive recovery in trending markets
-            if regime == 'trending' and self.recovery_progress > 0.2:
-                base_adjustment = min(1.0, base_adjustment * 1.1)
-            
-            # Apply adaptive rescue if enabled
-            if self.adaptive_rescue and self.rescue_mode:
+            # Rescue mode adjustments
+            rescue_adjustment = 1.0
+            if rescue_status['rescue_mode']:
                 # Progressive risk reduction during rescue
-                rescue_duration = (datetime.datetime.now() - self.rescue_start_time).total_seconds() / 3600  # hours
-                rescue_factor = max(0.5, 1.0 - rescue_duration * 0.1)  # Reduce 10% per hour
-                base_adjustment *= rescue_factor
+                rescue_duration = rescue_status['rescue_duration_minutes']
+                rescue_adjustment = max(0.3, 1.0 - rescue_duration * 0.02)  # 2% reduction per minute
             
-            # Final bounds and smoothing
-            target_adjustment = np.clip(base_adjustment, 0.1, 1.0)
+            # Emergency intervention
+            if rescue_status.get('emergency_intervention', False):
+                rescue_adjustment = min(rescue_adjustment, 0.2)  # Severe reduction
+            
+            # Calculate final adjustment
+            raw_adjustment = base_adjustment * velocity_adjustment * recovery_adjustment * rescue_adjustment
             
             # Smooth transitions to avoid abrupt changes
-            if hasattr(self, 'risk_adjustment'):
+            if hasattr(self, 'risk_adjustment_factor'):
                 smoothing_factor = 0.3
-                self.risk_adjustment = (
-                    self.risk_adjustment * (1 - smoothing_factor) + 
-                    target_adjustment * smoothing_factor
+                self.risk_adjustment_factor = (
+                    self.risk_adjustment_factor * (1 - smoothing_factor) +
+                    raw_adjustment * smoothing_factor
                 )
             else:
-                self.risk_adjustment = target_adjustment
+                self.risk_adjustment_factor = raw_adjustment
             
-            self.risk_adjustment = float(np.clip(self.risk_adjustment, 0.1, 1.0))
+            # Apply bounds
+            self.risk_adjustment_factor = float(np.clip(self.risk_adjustment_factor, 0.1, 1.5))
+            
+            return {
+                'risk_adjustment_factor': self.risk_adjustment_factor,
+                'base_adjustment': base_adjustment,
+                'velocity_adjustment': velocity_adjustment,
+                'recovery_adjustment': recovery_adjustment,
+                'rescue_adjustment': rescue_adjustment,
+                'raw_adjustment': raw_adjustment,
+                'adjustment_reason': self._determine_adjustment_reason(severity_level, rescue_status)
+            }
             
         except Exception as e:
-            self.log_operator_warning(f"Risk adjustment calculation failed: {e}")
-            self.risk_adjustment = 0.5  # Conservative fallback
-
-    def _get_base_risk_adjustment(self) -> float:
-        """Get base risk adjustment based on severity"""
-        
-        severity_adjustments = {
-            "none": 1.0,
-            "info": 0.8,
-            "warning": 0.5,
-            "critical": 0.2
-        }
-        
-        return severity_adjustments.get(self.severity, 0.5)
-
-    def _update_info_bus(self, info_bus: InfoBus, critical_found: bool) -> None:
-        """Update InfoBus with drawdown rescue results"""
-        
-        # Add module data
-        InfoBusUpdater.add_module_data(info_bus, 'drawdown_rescue', {
-            'current_drawdown': self.current_dd,
-            'max_drawdown': self.max_dd,
-            'severity': self.severity,
-            'velocity': self.dd_velocity,
-            'acceleration': self.dd_acceleration,
-            'recovery_progress': self.recovery_progress,
-            'risk_adjustment': self.risk_adjustment,
-            'rescue_mode': self.rescue_mode,
-            'rescue_interventions': self._rescue_interventions,
-            'successful_recoveries': self._successful_recoveries,
-            'thresholds': self.current_thresholds.copy()
-        })
-        
-        # Update risk snapshot
-        InfoBusUpdater.update_risk_snapshot(info_bus, {
-            'drawdown_risk_score': min(self.current_dd * 2, 1.0),  # Normalized risk score
-            'rescue_active': self.rescue_mode,
-            'risk_reduction_factor': self.risk_adjustment
-        })
-        
-        # Add alerts for critical situations
-        if critical_found:
-            InfoBusUpdater.add_alert(
-                info_bus,
-                f"Critical drawdown: {self.current_dd:.1%} (limit: {self.current_thresholds['dd_limit']:.1%})",
-                severity="critical",
-                module="DrawdownRescue"
+            error_context = self.error_pinpointer.analyze_error(e, "risk_adjustment")
+            self.logger.error(f"Risk adjustment calculation failed: {error_context}")
+            return {'risk_adjustment_factor': 0.5, 'error': error_context}
+    
+    def _determine_adjustment_reason(self, severity_level: str, rescue_status: Dict[str, Any]) -> str:
+        """Determine the primary reason for risk adjustment"""
+        if rescue_status.get('emergency_intervention', False):
+            return 'emergency_intervention'
+        elif rescue_status['rescue_mode']:
+            return 'rescue_mode_active'
+        elif severity_level == 'critical':
+            return 'critical_drawdown'
+        elif severity_level == 'warning':
+            return 'warning_drawdown'
+        elif severity_level == 'info':
+            return 'elevated_drawdown'
+        else:
+            return 'normal_operation'
+    
+    def _calculate_drawdown_metrics(self, drawdown_analysis: Dict[str, Any],
+                                   rescue_status: Dict[str, Any]) -> Dict[str, Any]:
+        """Calculate comprehensive drawdown metrics"""
+        try:
+            velocity_metrics = drawdown_analysis['velocity_metrics']
+            recovery_metrics = drawdown_analysis['recovery_metrics']
+            
+            # Performance metrics
+            total_interventions = self.rescue_intervention_count + self.emergency_interventions
+            intervention_success_rate = (
+                self.successful_recoveries / max(total_interventions, 1)
             )
-        elif self.rescue_mode:
-            InfoBusUpdater.add_alert(
-                info_bus,
-                f"Rescue mode active: {self.current_dd:.1%} drawdown",
-                severity="warning",
-                module="DrawdownRescue"
-            )
-
-    def _record_comprehensive_audit(self, info_bus: InfoBus, context: Dict[str, Any]) -> None:
-        """Record comprehensive audit trail"""
-        
-        audit_data = {
-            'drawdown_metrics': {
-                'current_dd': self.current_dd,
-                'max_dd': self.max_dd,
-                'severity': self.severity,
-                'velocity': self.dd_velocity,
-                'acceleration': self.dd_acceleration,
-                'recovery_progress': self.recovery_progress
-            },
-            'rescue_system': {
-                'risk_adjustment': self.risk_adjustment,
-                'rescue_mode': self.rescue_mode,
-                'rescue_interventions': self._rescue_interventions,
-                'successful_recoveries': self._successful_recoveries
-            },
-            'context': context,
-            'thresholds': self.current_thresholds.copy(),
-            'step_count': self.step_count,
-            'balance_info': {
-                'current_balance': info_bus.get('risk', {}).get('balance'),
-                'peak_balance': self.peak_balance,
-                'balance_history_size': len(self.balance_history)
+            
+            # Risk metrics
+            risk_trend = 'improving' if velocity_metrics['velocity'] < 0 else 'deteriorating' if velocity_metrics['velocity'] > 0 else 'stable'
+            
+            # System effectiveness
+            avg_recovery_time = 0.0
+            if self.recovery_events:
+                recovery_times = [
+                    (event['step_count'] - (self.recovery_events[i-1]['step_count'] if i > 0 else 0))
+                    for i, event in enumerate(self.recovery_events)
+                ]
+                avg_recovery_time = np.mean(recovery_times)
+            
+            return {
+                'current_drawdown': self.current_dd,
+                'max_drawdown': self.max_dd,
+                'severity_level': self.severity_level,
+                'risk_adjustment_factor': self.risk_adjustment_factor,
+                'drawdown_velocity': velocity_metrics['velocity'],
+                'recovery_progress': recovery_metrics['recovery_progress'],
+                'rescue_interventions': self.rescue_intervention_count,
+                'emergency_interventions': self.emergency_interventions,
+                'successful_recoveries': self.successful_recoveries,
+                'intervention_success_rate': intervention_success_rate,
+                'risk_trend': risk_trend,
+                'avg_recovery_time': avg_recovery_time,
+                'rescue_mode_active': rescue_status['rescue_mode']
             }
-        }
-        
-        self.audit_manager.record_event(
-            event_type="drawdown_analysis",
-            module="DrawdownRescue",
-            details=audit_data,
-            severity="critical" if self.severity == "critical" else "warning" if self.severity == "warning" else "info"
-        )
-
-    def _update_rescue_metrics(self) -> None:
-        """Update performance and rescue metrics"""
-        
-        # Update performance metrics
-        self._update_performance_metric('current_drawdown', self.current_dd)
-        self._update_performance_metric('max_drawdown', self.max_dd)
-        self._update_performance_metric('risk_adjustment', self.risk_adjustment)
-        self._update_performance_metric('recovery_progress', self.recovery_progress)
-        
-        # Update rescue system metrics
-        self._update_performance_metric('rescue_interventions', self._rescue_interventions)
-        self._update_performance_metric('successful_recoveries', self._successful_recoveries)
-        
-        # Calculate rescue effectiveness
-        if self._rescue_interventions > 0:
-            effectiveness = self._successful_recoveries / self._rescue_interventions
-            self._update_performance_metric('rescue_effectiveness', effectiveness)
-
-    def _determine_current_session(self, info_bus: Optional[InfoBus] = None) -> str:
-                """Determine current trading session with enhanced detection"""
-                
-                try:
-                    # Method 1: Try InfoBus session data
-                    if info_bus:
-                        session = info_bus.get('session')
-                        if session and session != 'unknown':
-                            return session
-                        
-                        # Method 2: Try market context
-                        market_context = info_bus.get('market_context', {})
-                        session = market_context.get('session')
-                        if session and session != 'unknown':
-                            return session
-                    
-                    # Method 3: Determine from current time (UTC)
-                    import datetime
-                    import pytz
-                    
-                    now_utc = datetime.datetime.now(pytz.UTC)
-                    hour_utc = now_utc.hour
-                    
-                    # Trading session detection based on UTC hours
-                    if 22 <= hour_utc or hour_utc < 6:  # 22:00-06:00 UTC
-                        return 'asian'
-                    elif 6 <= hour_utc < 14:  # 06:00-14:00 UTC  
-                        return 'european'
-                    elif 14 <= hour_utc < 22:  # 14:00-22:00 UTC
-                        return 'american'
-                    else:
-                        return 'rollover'
-                        
-                except Exception as e:
-                    self.log_operator_warning(f"Session detection failed: {e}")
-                    return 'unknown'
-
-    def get_observation_components(self) -> np.ndarray:
-        """Enhanced observation components for model integration"""
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "drawdown_metrics")
+            self.logger.error(f"Drawdown metrics calculation failed: {error_context}")
+            return {'current_drawdown': self.current_dd, 'error': error_context}
+    
+    async def _generate_drawdown_thesis(self, drawdown_analysis: Dict[str, Any],
+                                       rescue_status: Dict[str, Any],
+                                       market_context: Dict[str, Any]) -> str:
+        """Generate intelligent thesis explaining drawdown analysis"""
+        try:
+            thesis_parts = []
+            
+            # Drawdown status
+            if self.current_dd > 0:
+                thesis_parts.append(
+                    f"Portfolio drawdown: {self.current_dd:.1%} (max: {self.max_dd:.1%}) "
+                    f"from peak balance of €{self.peak_balance:,.0f}"
+                )
+            else:
+                thesis_parts.append("Portfolio at or near peak performance with no significant drawdown")
+            
+            # Severity assessment
+            severity_level = drawdown_analysis['severity_assessment']['level']
+            velocity = drawdown_analysis['velocity_metrics']['velocity']
+            
+            if severity_level == 'critical':
+                thesis_parts.append(f"CRITICAL drawdown level requiring immediate intervention")
+            elif severity_level == 'warning':
+                thesis_parts.append(f"WARNING level drawdown with active monitoring")
+            elif severity_level == 'info':
+                thesis_parts.append(f"Elevated drawdown within acceptable parameters")
+            else:
+                thesis_parts.append("Drawdown levels normal and well-controlled")
+            
+            # Velocity analysis
+            if velocity > 0.02:
+                thesis_parts.append(f"RAPID deterioration detected (velocity: {velocity:+.2%} per step)")
+            elif velocity > 0.01:
+                thesis_parts.append(f"Moderate deterioration trend (velocity: {velocity:+.2%})")
+            elif velocity < -0.01:
+                thesis_parts.append(f"Recovery in progress (velocity: {velocity:+.2%})")
+            
+            # Rescue system status
+            if rescue_status['rescue_mode']:
+                duration = rescue_status['rescue_duration_minutes']
+                thesis_parts.append(f"Rescue mode ACTIVE for {duration:.1f} minutes - risk reduction engaged")
+            elif rescue_status.get('emergency_intervention', False):
+                thesis_parts.append("EMERGENCY intervention triggered - maximum risk reduction applied")
+            
+            # Recovery analysis
+            recovery_progress = drawdown_analysis['recovery_metrics']['recovery_progress']
+            if recovery_progress > 0.5:
+                thesis_parts.append(f"Strong recovery progress: {recovery_progress:.1%} from maximum drawdown")
+            elif recovery_progress > 0.2:
+                thesis_parts.append(f"Moderate recovery underway: {recovery_progress:.1%}")
+            
+            # Market context impact
+            regime = market_context.get('regime', 'unknown')
+            if regime != 'unknown' and self.adaptive_thresholds:
+                adjusted_threshold = drawdown_analysis['context_thresholds']['warning_dd']
+                thesis_parts.append(f"Thresholds adjusted for {regime} market regime (warning: {adjusted_threshold:.1%})")
+            
+            # Risk adjustment conclusion
+            thesis_parts.append(
+                f"Risk adjustment factor: {self.risk_adjustment_factor:.1%} "
+                f"({drawdown_analysis.get('risk_adjustment', {}).get('adjustment_reason', 'normal_operation')})"
+            )
+            
+            return " | ".join(thesis_parts)
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "thesis_generation")
+            return f"Thesis generation failed: {error_context}"
+    
+    def _generate_recommendations(self, drawdown_analysis: Dict[str, Any],
+                                 rescue_status: Dict[str, Any]) -> List[str]:
+        """Generate intelligent recommendations based on drawdown analysis"""
+        recommendations = []
         
         try:
-            # Severity mapping
-            severity_map = {"none": 0.0, "info": 0.25, "warning": 0.5, "critical": 1.0}
-            severity_score = severity_map.get(self.severity, 0.0)
+            severity_level = drawdown_analysis['severity_assessment']['level']
+            velocity_metrics = drawdown_analysis['velocity_metrics']
+            recovery_metrics = drawdown_analysis['recovery_metrics']
             
-            # Normalized components
-            drawdown_norm = float(np.clip(self.current_dd, 0.0, 1.0))
-            max_drawdown_norm = float(np.clip(self.max_dd, 0.0, 1.0))
-            risk_adjustment = float(self.risk_adjustment)
+            # Critical situation recommendations
+            if severity_level == 'critical':
+                recommendations.append("IMMEDIATE: Reduce position sizes significantly")
+                recommendations.append("Consider closing losing positions to halt drawdown progression")
+                recommendations.append("Implement emergency risk management protocols")
             
-            # Velocity (centered at 0.5 for neutral)
-            velocity_norm = float(np.clip(self.dd_velocity + 0.5, 0.0, 1.0))
+            # Warning level recommendations
+            elif severity_level == 'warning':
+                recommendations.append("Reduce risk exposure and position sizes")
+                recommendations.append("Tighten stop losses and review position management")
+                recommendations.append("Monitor drawdown velocity closely")
             
-            # Recovery progress
-            recovery_norm = float(self.recovery_progress)
+            # Velocity-based recommendations
+            if velocity_metrics['velocity'] > 0.02:
+                recommendations.append("URGENT: Rapid drawdown detected - immediate risk reduction required")
+            elif velocity_metrics['velocity'] > 0.01:
+                recommendations.append("Drawdown accelerating - consider defensive positioning")
             
-            # Rescue mode indicator
-            rescue_mode_indicator = float(self.rescue_mode)
+            # Recovery recommendations
+            if recovery_metrics['recovery_progress'] > 0.3:
+                recommendations.append("Recovery in progress - maintain current risk management approach")
+                if recovery_metrics['recovery_velocity'] > 0:
+                    recommendations.append("Positive recovery momentum - consider gradual risk increase")
             
-            # Trend indicator (based on recent velocity)
-            if len(self.dd_history) >= 3:
-                recent_trend = np.mean([
-                    self.dd_history[-1] - self.dd_history[-2],
-                    self.dd_history[-2] - self.dd_history[-3]
-                ])
-                trend_indicator = float(np.clip(recent_trend + 0.5, 0.0, 1.0))
-            else:
-                trend_indicator = 0.5
+            # Rescue mode recommendations
+            if rescue_status['rescue_mode']:
+                recommendations.append("Rescue mode active - follow reduced risk guidelines")
+                recommendations.append("Focus on capital preservation over profit maximization")
             
-            return np.array([
-                severity_score,            # Drawdown severity
-                drawdown_norm,            # Current drawdown
-                max_drawdown_norm,        # Maximum drawdown
-                risk_adjustment,          # Risk adjustment factor
-                velocity_norm,            # Drawdown velocity
-                recovery_norm,            # Recovery progress
-                rescue_mode_indicator,    # Rescue mode active
-                trend_indicator           # Trend indicator
-            ], dtype=np.float32)
+            # Emergency intervention recommendations
+            if rescue_status.get('emergency_intervention', False):
+                recommendations.append("EMERGENCY: Implement maximum risk reduction immediately")
+                recommendations.append("Consider halting new position entries temporarily")
+            
+            # Performance-based recommendations
+            if self.successful_recoveries < self.rescue_intervention_count:
+                recommendations.append("Review rescue system effectiveness - consider parameter adjustments")
+            
+            # Proactive recommendations
+            if not recommendations:
+                recommendations.append("Drawdown management optimal - continue current approach")
+                recommendations.append("Monitor for early warning signs of drawdown acceleration")
             
         except Exception as e:
-            self.log_operator_error(f"Drawdown observation generation failed: {e}")
-            return np.zeros(8, dtype=np.float32)
-
-    def get_drawdown_report(self) -> str:
-        """Generate operator-friendly drawdown report"""
-        
-        # Status indicators
-        if self.severity == "critical":
-            status = "🚨 Critical"
-        elif self.severity == "warning":
-            status = "⚠️ Warning"
-        elif self.severity == "info":
-            status = "ℹ️ Monitored"
-        else:
-            status = "✅ Normal"
-        
-        # Rescue status
-        if self.rescue_mode:
-            rescue_status = "🛟 Active"
-            rescue_duration = (datetime.datetime.now() - self.rescue_start_time).total_seconds() / 60
-            rescue_info = f"(Active for {rescue_duration:.1f} min)"
-        else:
-            rescue_status = "💤 Standby"
-            rescue_info = ""
-        
-        # Velocity status
-        if self.dd_velocity > 0.01:
-            velocity_status = "📉 Deteriorating"
-        elif self.dd_velocity < -0.01:
-            velocity_status = "📈 Improving"
-        else:
-            velocity_status = "➡️ Stable"
-        
-        # Recovery status
-        if self.recovery_progress > 0.5:
-            recovery_status = "🎯 Strong Recovery"
-        elif self.recovery_progress > 0.2:
-            recovery_status = "⚡ Moderate Recovery"
-        elif self.recovery_progress > 0:
-            recovery_status = "🔄 Early Recovery"
-        else:
-            recovery_status = "📊 No Recovery"
-        
-        # Recent rescue history
-        rescue_history_lines = []
-        for event in self.recovery_events[-3:]:  # Show last 3 recoveries
-            timestamp = event['timestamp'][:19]  # Remove microseconds
-            rescue_history_lines.append(
-                f"  ✅ {timestamp}: {event['max_dd']:.1%} → {event['current_dd']:.1%} "
-                f"({event['recovery_progress']:.1%} recovery)"
-            )
-        
-        return f"""
-🛟 ENHANCED DRAWDOWN RESCUE
-═══════════════════════════════════════
-🎯 Status: {status} ({self.current_dd:.1%} drawdown)
-🛟 Rescue Mode: {rescue_status} {rescue_info}
-📊 Velocity: {velocity_status} ({self.dd_velocity:+.1%})
-🔄 Recovery: {recovery_status} ({self.recovery_progress:.1%})
-
-⚖️ DRAWDOWN THRESHOLDS
-• Info Level: {self.current_thresholds['info_dd']:.1%}
-• Warning Level: {self.current_thresholds['warning_dd']:.1%}
-• Critical Level: {self.current_thresholds['dd_limit']:.1%}
-• Recovery Threshold: {self.current_thresholds['recovery_threshold']:.1%}
-
-📊 CURRENT METRICS
-• Current Drawdown: {self.current_dd:.1%}
-• Maximum Drawdown: {self.max_dd:.1%}
-• Peak Balance: €{self.peak_balance:,.0f}
-• Velocity: {self.dd_velocity:+.1%} per step
-• Acceleration: {self.dd_acceleration:+.1%} per step²
-
-🛡️ RISK MANAGEMENT
-• Risk Adjustment: {self.risk_adjustment:.1%}
-• Training Mode: {'✅ Enabled' if self.training_mode else '❌ Disabled'}
-• Adaptive Rescue: {'✅ Enabled' if self.adaptive_rescue else '❌ Disabled'}
-• Consecutive Rescue Days: {self.consecutive_rescue_days}
-
-📈 RESCUE PERFORMANCE
-• Total Interventions: {self._rescue_interventions}
-• Successful Recoveries: {self._successful_recoveries}
-• Success Rate: {(self._successful_recoveries / max(self._rescue_interventions, 1)):.1%}
-• False Alarms: {self._false_alarms}
-
-📜 RECENT RECOVERY HISTORY
-{chr(10).join(rescue_history_lines) if rescue_history_lines else "  📭 No recent recoveries"}
-
-💡 SYSTEM STATUS
-• Step Count: {self.step_count:,}
-• Balance History: {len(self.balance_history)} records
-• DD History: {len(self.dd_history)} records
-• Regime Tracking: {len(self.regime_drawdowns)} regimes
-        """
-
-    # ================== RESCUE SYSTEM INTERFACE ==================
-
-    def get_risk_adjustment(self) -> float:
-        """Get current risk adjustment factor for external use"""
-        return self.risk_adjustment
-
-    def is_rescue_mode_active(self) -> bool:
-        """Check if rescue mode is currently active"""
-        return self.rescue_mode
-
-    def get_rescue_recommendations(self) -> Dict[str, Any]:
-        """Get current rescue recommendations"""
-        
-        recommendations = {
-            'reduce_position_size': self.risk_adjustment < 0.8,
-            'close_losing_positions': self.severity in ["warning", "critical"],
-            'stop_new_trades': self.rescue_mode and self.dd_velocity > 0.02,
-            'increase_stops': self.severity != "none",
-            'wait_for_recovery': self.recovery_progress > 0 and self.dd_velocity < 0
-        }
+            error_context = self.error_pinpointer.analyze_error(e, "recommendations")
+            recommendations.append(f"Recommendation generation failed: {error_context}")
         
         return recommendations
-
-    # ================== LEGACY COMPATIBILITY ==================
-
-    def step(self, current_drawdown: Optional[float] = None,
-            balance: Optional[float] = None, peak_balance: Optional[float] = None,
-            equity: Optional[float] = None, **kwargs) -> bool:
-        """Legacy compatibility method"""
-        
-        # Create mock InfoBus from legacy parameters
-        mock_info_bus = {
-            'step_idx': self.step_count,
-            'timestamp': datetime.datetime.now().isoformat(),
-            'risk': {}
+    
+    def _update_smart_info_bus(self, drawdown_analysis: Dict[str, Any],
+                              rescue_status: Dict[str, Any],
+                              risk_adjustment: Dict[str, Any], thesis: str):
+        """Update SmartInfoBus with drawdown analysis results"""
+        try:
+            # Core drawdown risk data
+            self.smart_bus.set('drawdown_risk', {
+                'current_drawdown': self.current_dd,
+                'severity_level': self.severity_level,
+                'drawdown_analysis': drawdown_analysis,
+                'rescue_status': rescue_status,
+                'risk_adjustment': risk_adjustment,
+                'thesis': thesis
+            }, module='DrawdownRescue', thesis=thesis)
+            
+            # Rescue status for other modules
+            self.smart_bus.set('rescue_status', {
+                'rescue_mode': self.rescue_mode,
+                'rescue_duration': rescue_status.get('rescue_duration_minutes', 0.0),
+                'intervention_count': self.rescue_intervention_count,
+                'emergency_active': rescue_status.get('emergency_intervention', False)
+            }, module='DrawdownRescue', 
+            thesis=f"Rescue mode: {'ACTIVE' if self.rescue_mode else 'STANDBY'}")
+            
+            # Risk adjustment factor for position sizing
+            self.smart_bus.set('risk_adjustment', self.risk_adjustment_factor,
+                             module='DrawdownRescue',
+                             thesis=f"Risk adjustment: {self.risk_adjustment_factor:.1%} ({risk_adjustment.get('adjustment_reason', 'normal')})")
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "smart_info_bus_update")
+            self.logger.error(f"SmartInfoBus update failed: {error_context}")
+    
+    def _generate_disabled_response(self) -> Dict[str, Any]:
+        """Generate response when module is disabled"""
+        return {
+            'current_drawdown': 0.0,
+            'severity_level': 'disabled',
+            'rescue_mode': False,
+            'risk_adjustment_factor': 1.0,
+            'drawdown_analysis': {},
+            'rescue_status': {'rescue_mode': False},
+            'risk_adjustment': {'risk_adjustment_factor': 1.0},
+            'drawdown_metrics': {},
+            'thesis': "Drawdown Rescue is disabled",
+            'recommendations': ["Enable Drawdown Rescue for portfolio protection"]
         }
+    
+    def _generate_error_response(self, error_context: str) -> Dict[str, Any]:
+        """Generate response when processing fails"""
+        return {
+            'current_drawdown': 0.0,
+            'severity_level': 'error',
+            'rescue_mode': False,
+            'risk_adjustment_factor': 0.5,
+            'drawdown_analysis': {'error': error_context},
+            'rescue_status': {'error': error_context},
+            'risk_adjustment': {'risk_adjustment_factor': 0.5, 'error': error_context},
+            'drawdown_metrics': {'error': error_context},
+            'thesis': f"Drawdown analysis failed: {error_context}",
+            'recommendations': ["Investigate drawdown analysis system errors"]
+        }
+    
+    def _generate_analysis_error_response(self, error_context: str) -> Dict[str, Any]:
+        """Generate response when analysis fails"""
+        return {
+            'current_drawdown': self.current_dd,
+            'max_drawdown': self.max_dd,
+            'peak_balance': self.peak_balance,
+            'velocity_metrics': {'velocity': 0.0, 'acceleration': 0.0},
+            'severity_assessment': {'level': 'unknown'},
+            'recovery_metrics': {'recovery_progress': 0.0},
+            'processing_time_ms': 0,
+            'error': error_context
+        }
+    
+    def get_state(self) -> Dict[str, Any]:
+        """Get complete module state for hot-reload"""
+        return {
+            'current_dd': self.current_dd,
+            'max_dd': self.max_dd,
+            'peak_balance': self.peak_balance,
+            'dd_velocity': self.dd_velocity,
+            'dd_acceleration': self.dd_acceleration,
+            'severity_level': self.severity_level,
+            'rescue_mode': self.rescue_mode,
+            'rescue_start_time': self.rescue_start_time.isoformat() if self.rescue_start_time else None,
+            'risk_adjustment_factor': self.risk_adjustment_factor,
+            'rescue_intervention_count': self.rescue_intervention_count,
+            'successful_recoveries': self.successful_recoveries,
+            'emergency_interventions': self.emergency_interventions,
+            'step_count': self.step_count,
+            'config': self.config.copy()
+        }
+    
+    def set_state(self, state: Dict[str, Any]) -> None:
+        """Set module state for hot-reload"""
+        self.current_dd = state.get('current_dd', 0.0)
+        self.max_dd = state.get('max_dd', 0.0)
+        self.peak_balance = state.get('peak_balance', 0.0)
+        self.dd_velocity = state.get('dd_velocity', 0.0)
+        self.dd_acceleration = state.get('dd_acceleration', 0.0)
+        self.severity_level = state.get('severity_level', 'normal')
+        self.rescue_mode = state.get('rescue_mode', False)
         
-        # Add drawdown data to mock InfoBus
-        if current_drawdown is not None:
-            mock_info_bus['risk']['current_drawdown'] = current_drawdown
+        rescue_time_str = state.get('rescue_start_time')
+        self.rescue_start_time = datetime.datetime.fromisoformat(rescue_time_str) if rescue_time_str else None
         
-        if balance is not None:
-            mock_info_bus['risk']['balance'] = balance
-        
-        if peak_balance is not None:
-            mock_info_bus['risk']['peak_balance'] = peak_balance
-        
-        if equity is not None:
-            mock_info_bus['risk']['equity'] = equity
-        
-        # Use enhanced step method
-        self._step_impl(mock_info_bus)
-        
-        # Return True if critical drawdown reached
-        return self.severity == "critical"
+        self.risk_adjustment_factor = state.get('risk_adjustment_factor', 1.0)
+        self.rescue_intervention_count = state.get('rescue_intervention_count', 0)
+        self.successful_recoveries = state.get('successful_recoveries', 0)
+        self.emergency_interventions = state.get('emergency_interventions', 0)
+        self.step_count = state.get('step_count', 0)
+        self.config.update(state.get('config', {}))
+    
+    def get_health_metrics(self) -> Dict[str, Any]:
+        """Get health metrics for monitoring"""
+        return {
+            'current_drawdown': self.current_dd,
+            'max_drawdown': self.max_dd,
+            'severity_level': self.severity_level,
+            'rescue_mode': self.rescue_mode,
+            'risk_adjustment_factor': self.risk_adjustment_factor,
+            'intervention_success_rate': self.successful_recoveries / max(self.rescue_intervention_count, 1),
+            'rescue_interventions': self.rescue_intervention_count,
+            'emergency_interventions': self.emergency_interventions,
+            'enabled': self.enabled
+        }
