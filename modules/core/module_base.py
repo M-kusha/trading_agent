@@ -43,15 +43,25 @@ class ModuleMetadata:
     
     # Valid categories for modules
     VALID_CATEGORIES = [
+        'auditing',    # Auditing and compliance
+        'core',        # Core infrastructure
+        'external',    # External integrations
+        'features',    # Feature engineering
         'market',      # Market data processing
-        'strategy',    # Trading strategy
-        'risk',        # Risk management
-        'voting',      # Voting/consensus
         'memory',      # Memory/state management
         'meta',        # Meta-analysis
+        'models',      # Model implementations
         'monitoring',  # System monitoring
-        'general',     # General purpose
-        'example'      # Example/demo modules
+        'position',    # Position management
+        'reward',      # Reward calculation
+        'risk',        # Risk management
+        'simulation',  # Simulation modules
+        'strategy',    # Trading strategy
+        'trading_modes', # Trading mode implementations
+        'utils',       # Utility functions
+        'visualization', # Visualization modules
+        'voting',      # Voting/consensus
+        'general'      # General purpose
     ]
     
     def __post_init__(self):
@@ -614,7 +624,7 @@ class BaseModule(ABC):
     6. Handle errors gracefully with recovery
     """
     
-    def __init__(self):
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
         """Initialize base module with production-grade defaults"""
         # Verify module has metadata
         if not hasattr(self.__class__, '__module_metadata__'):
@@ -628,6 +638,10 @@ class BaseModule(ABC):
             raise AttributeError(
                 f"{self.__class__.__name__} is missing required '__module_metadata__' attribute."
             )
+        
+        # Store configuration
+        self.config = config or {}
+        
         self.logger = self._setup_logger()
 
         # State tracking
@@ -666,6 +680,15 @@ class BaseModule(ABC):
             f"✅ MODULE INITIALIZED: {self.__class__.__name__} "
             f"v{self.metadata.version} ({self.metadata.category})"
         )
+    
+    def set_config(self, config: Dict[str, Any]):
+        """Set module configuration"""
+        self.config.update(config)
+        self.logger.info(f"Configuration updated for {self.__class__.__name__}")
+    
+    def get_config(self, key: str, default: Any = None) -> Any:
+        """Get configuration value"""
+        return self.config.get(key, default)
     
     def _setup_logger(self) -> logging.Logger:
         """
@@ -1087,234 +1110,3 @@ class BaseModule(ABC):
             f"health={self._health_status}, "
             f"steps={self._step_count})"
         )
-
-# ═══════════════════════════════════════════════════════════════════
-# PRODUCTION-GRADE EXAMPLE MODULE
-# ═══════════════════════════════════════════════════════════════════
-
-@module(
-    provides=['example_output', 'example_confidence'],
-    requires=['market_data', 'risk_score'],
-    category='example',
-    explainable=True,
-    hot_reload=True,
-    timeout_ms=100,
-    priority=1
-)
-class ExampleModule(BaseModule):
-    """
-    PRODUCTION-GRADE example module demonstrating all standards.
-    Use this as template for all new modules.
-    
-    This module demonstrates:
-    - Proper initialization
-    - Input validation
-    - Async processing
-    - Output generation with thesis
-    - Error handling
-    - State management
-    - Performance tracking
-    """
-    
-    def _initialize(self):
-        """Initialize module-specific state"""
-        self.processing_history = deque(maxlen=1000)
-        self.decision_cache = {}
-        self.last_decision = None
-        self.decision_threshold = 0.5
-        self.logger.info("Example module initialized with default threshold 0.5")
-    
-    def _get_custom_state(self) -> Dict[str, Any]:
-        """Get custom state for persistence"""
-        return {
-            'decision_threshold': self.decision_threshold,
-            'last_decision': self.last_decision,
-            'cache_size': len(self.decision_cache)
-        }
-    
-    def _set_custom_state(self, state: Dict[str, Any]):
-        """Restore custom state"""
-        self.decision_threshold = state.get('decision_threshold', 0.5)
-        self.last_decision = state.get('last_decision')
-    
-    @with_timeout()
-    @with_retry()
-    @requires('market_data', 'risk_score')
-    @provides('example_output', 'example_confidence')
-    async def process(self, **inputs) -> Dict[str, Any]:
-        """
-        Process inputs and generate outputs with thesis.
-        
-        This method demonstrates all production standards:
-        - Input validation
-        - Error handling
-        - Performance tracking
-        - Thesis generation
-        - Output validation
-        """
-        start_time = time.time()
-        
-        try:
-            # Validate inputs (decorator already checked presence)
-            self.validate_inputs(inputs)
-            
-            market_data = inputs['market_data']
-            risk_score = inputs['risk_score']
-            
-            # Additional validation
-            if not isinstance(market_data, dict):
-                raise ValueError("market_data must be a dictionary")
-            
-            if not isinstance(risk_score, (int, float)) or not 0 <= risk_score <= 1:
-                raise ValueError("risk_score must be a number between 0 and 1")
-            
-            # Simulate async processing
-            await asyncio.sleep(0.01)  # Simulate some async work
-            
-            # Generate decision
-            decision = self._make_decision(market_data, risk_score)
-            confidence = self._calculate_confidence(market_data, risk_score)
-            
-            # Generate explanation
-            thesis = self.explain_decision(decision, {
-                'market_data': market_data,
-                'risk_score': risk_score,
-                'confidence': confidence,
-                'method': 'threshold_based',
-                'threshold': self.decision_threshold
-            })
-            
-            # Cache decision
-            cache_key = f"{hash(str(market_data))}_{risk_score}"
-            self.decision_cache[cache_key] = decision
-            self.last_decision = decision
-            
-            # Limit cache size
-            if len(self.decision_cache) > 100:
-                # Remove oldest entries
-                oldest_keys = list(self.decision_cache.keys())[:20]
-                for key in oldest_keys:
-                    del self.decision_cache[key]
-            
-            # Record processing
-            self.processing_history.append({
-                'timestamp': time.time(),
-                'decision': decision,
-                'confidence': confidence,
-                'risk_score': risk_score,
-                'cache_hit': cache_key in self.decision_cache
-            })
-            
-            # Prepare outputs
-            outputs = {
-                'example_output': decision,
-                'example_confidence': confidence,
-                '_thesis': thesis,
-                '_confidence': confidence,
-                '_cache_size': len(self.decision_cache),
-                '_processing_time_ms': (time.time() - start_time) * 1000
-            }
-            
-            # Validate outputs
-            self.validate_outputs(outputs)
-            
-            # Record success
-            duration_ms = (time.time() - start_time) * 1000
-            self.record_execution(duration_ms, True)
-            
-            return outputs
-            
-        except Exception as e:
-            duration_ms = (time.time() - start_time) * 1000
-            self.record_execution(duration_ms, False, str(e))
-            raise
-    
-    def _make_decision(self, market_data: Dict[str, Any], risk_score: float) -> Dict[str, Any]:
-        """
-        Make example decision with proper validation.
-        
-        Args:
-            market_data: Market data dictionary
-            risk_score: Risk score between 0 and 1
-            
-        Returns:
-            Decision dictionary
-        """
-        # Calculate market sentiment (example)
-        sentiment = market_data.get('sentiment', 0.5)
-        volatility = market_data.get('volatility', 0.5)
-        
-        # Adjust threshold based on risk
-        adjusted_threshold = self.decision_threshold * (1 - risk_score * 0.3)
-        
-        # Make decision
-        if risk_score > 0.7:
-            action = 'conservative'
-            size = 0.2
-        elif risk_score > 0.3:
-            if sentiment > adjusted_threshold:
-                action = 'moderate_long'
-                size = 0.5
-            else:
-                action = 'moderate_short'
-                size = 0.5
-        else:
-            if sentiment > adjusted_threshold:
-                action = 'aggressive_long'
-                size = 0.8
-            else:
-                action = 'aggressive_short' 
-                size = 0.8
-        
-        return {
-            'action': action,
-            'size': size,
-            'risk_level': risk_score,
-            'sentiment': sentiment,
-            'volatility': volatility,
-            'threshold_used': adjusted_threshold,
-            'timestamp': time.time(),
-            'reason': f'Risk score {risk_score:.2f} with sentiment {sentiment:.2f} suggests {action} approach'
-        }
-    
-    def _calculate_confidence(self, market_data: Dict[str, Any], risk_score: float) -> float:
-        """
-        Calculate confidence in decision.
-        
-        Args:
-            market_data: Market data dictionary  
-            risk_score: Risk score between 0 and 1
-            
-        Returns:
-            Confidence score between 0 and 1
-        """
-        # Base confidence on data quality
-        base_confidence = 0.8
-        
-        # Adjust based on data completeness
-        required_fields = ['sentiment', 'volatility', 'volume', 'price']
-        available_fields = sum(1 for f in required_fields if f in market_data)
-        data_quality = available_fields / len(required_fields)
-        
-        base_confidence *= data_quality
-        
-        # Adjust based on risk
-        if risk_score > 0.8:
-            base_confidence *= 0.7  # Lower confidence in high risk
-        elif risk_score < 0.2:
-            base_confidence *= 0.9  # Slightly lower confidence in very low risk
-        
-        # Adjust based on volatility
-        volatility = market_data.get('volatility', 0.5)
-        if volatility > 0.7:
-            base_confidence *= 0.8
-        
-        # Check cache hit rate
-        if self.processing_history:
-            recent = list(self.processing_history)[-10:]
-            cache_hits = sum(1 for r in recent if r.get('cache_hit', False))
-            cache_rate = cache_hits / len(recent)
-            if cache_rate > 0.5:
-                base_confidence *= 1.1  # Boost confidence if patterns are stable
-        
-        return max(0.0, min(1.0, base_confidence))

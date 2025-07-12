@@ -116,17 +116,61 @@ class ModuleConfig:
         self.emergency_cooldown_s = kwargs.get('emergency_cooldown_s', 300)
         self.emergency_health_threshold = kwargs.get('emergency_health_threshold', 0.7)
         
-        # Module discovery paths
+        # Module discovery paths - MODERNIZED MODULES ONLY
         self.module_paths = kwargs.get('module_paths', [
-            'modules/auditing',
-            'modules/market',
-            'modules/memory',
-            'modules/strategy', 
-            'modules/risk',
-            'modules/voting',
-            'modules/monitoring',
-            'modules/meta'
+            # ✅ MODERNIZED MODULES (with @module decorator and BaseModule)
+            'modules/auditing',     # AuditingCoordinator, TradeExplanationAuditor, TradeThesisTracker
+            'modules/external',     # NewsSentimentModule  
+            'modules/features',     # AdvancedFeatureEngine, MultiScaleFeatureEngine
+            'modules/market',       # MarketThemeDetector, FractalRegimeConfirmation, etc.
+            'modules/memory',       # PlaybookMemory, NeuralMemoryArchitect, etc.
+            'modules/meta',         # MetaAgent, PPOAgent, PPOLagAgent, etc.
+            'modules/models',       # EnhancedWorldModel
+            'modules/position',     # PositionManager
+            'modules/reward',       # RiskAdjustedReward
+            'modules/risk',         # All risk modules are modernized
+            
+            # 🔄 LEGACY MODULES (commented out until modernized)
+            # Uncomment these paths after modernizing the modules in them:
+            # 'modules/simulation',    # OpponentSimulator, RoleCoach, ShadowSimulator
+            # 'modules/strategy',      # BiasAuditor, CurriculumPlannerPlus, etc.
+            # 'modules/trading_modes', # TradingModeManager
+            # 'modules/visualization', # VisualizationInterface, TradeMapVisualizer
+            # 'modules/voting',        # TimeHorizonAligner, StrategyArbiter, etc.
         ])
+        
+        # Legacy modules that need modernization (for tracking purposes)
+        self.legacy_modules = {
+            'modules/simulation': [
+                'OpponentSimulator',     # Line 17: class OpponentSimulator(Module, ...)
+                'RoleCoach',             # Line 17: class RoleCoach(Module, ...)
+                'ShadowSimulator'        # Line 17: class ShadowSimulator(Module, ...)
+            ],
+            'modules/strategy': [
+                'BiasAuditor',           # Line 16: class BiasAuditor(Module, ...)
+                'CurriculumPlannerPlus', # Line 16: class CurriculumPlannerPlus(Module, ...)
+                'ExplanationGenerator',  # Line 16: class ExplanationGenerator(Module, ...)
+                'OpponentModeEnhancer',  # Line 16: class OpponentModeEnhancer(Module, ...)
+                'PlaybookClusterer',     # Line 28: class PlaybookClusterer(Module, ...)
+                'StrategyGenomePool',    # Line 18: class StrategyGenomePool(Module, ...)
+                'StrategyIntrospector',  # Line 16: class StrategyIntrospector(Module, ...)
+                'ThesisEvolutionEngine'  # Line 17: class ThesisEvolutionEngine(Module, ...)
+            ],
+            'modules/trading_modes': [
+                'TradingModeManager'     # Line 17: class TradingModeManager(Module, ...)
+            ],
+            'modules/visualization': [
+                'VisualizationInterface', # Line 17: class VisualizationInterface(Module, ...)
+                'TradeMapVisualizer'     # Line 16: class TradeMapVisualizer(Module, ...)
+            ],
+            'modules/voting': [
+                'TimeHorizonAligner',       # Line 16: class TimeHorizonAligner(Module, ...)
+                'StrategyArbiter',          # Line 18: class StrategyArbiter(Module, ...)
+                'ConsensusDetector',        # Line 16: class ConsensusDetector(Module, ...)
+                'CollusionAuditor',         # Line 16: class CollusionAuditor(Module, ...)
+                'AlternativeRealitySampler' # Line 16: class AlternativeRealitySampler(Module, ...)
+            ]
+        }
         
         # Dynamic configuration support
         self._config_watchers: List[Callable] = []
@@ -1254,8 +1298,24 @@ class ModuleOrchestrator:
                 self.logger.warning(f"Module {name} already registered")
                 return
             
-            # Create instance
-            instance = module_class()
+            # Get module configuration from ConfigurationManager
+            module_config = {}
+            if hasattr(self, 'config_manager') and self.config_manager:
+                module_config = self.config_manager.get_module_config(name)
+            
+            # Create instance with configuration
+            try:
+                # Try to pass configuration to module constructor
+                if module_config:
+                    instance = module_class(config=module_config)
+                else:
+                    instance = module_class()
+            except TypeError:
+                # Fallback if module doesn't accept config parameter
+                instance = module_class()
+                # Apply configuration after creation if module has set_config method
+                if hasattr(instance, 'set_config') and module_config:
+                    instance.set_config(module_config)
             
             # Store module
             self.modules[name] = instance
@@ -1718,21 +1778,102 @@ class ModuleOrchestrator:
         return "\n".join(lines)
     
     def _load_system_configuration(self):
-        """Load system configuration from files"""
-        config_paths = [
-            Path('config/system_config.yaml'),
-            Path('config/risk_policy.yaml'),
-            Path('config/explainability_standards.yaml')
-        ]
-        
-        for config_path in config_paths:
-            if config_path.exists():
-                try:
-                    self.config.load_from_file(config_path)
-                    self.logger.info(f"Loaded configuration from {config_path}")
-                    break
-                except Exception as e:
-                    self.logger.error(f"Failed to load {config_path}: {e}")
+        """Load system configuration from files using ConfigurationManager"""
+        try:
+            from modules.core.configuration_manager import ConfigurationManager
+            
+            # Get configuration manager instance
+            config_manager = ConfigurationManager.get_instance()
+            
+            # Load execution configuration
+            execution_config = config_manager.get_execution_config()
+            if execution_config:
+                self._apply_execution_configuration(execution_config)
+            
+            # Load module registry
+            module_registry = config_manager.get_module_registry()
+            if module_registry:
+                self._apply_module_registry(module_registry)
+            
+            # Store reference to config manager
+            self.config_manager = config_manager
+            
+            self.logger.info("✅ System configuration loaded from ConfigurationManager")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to load system configuration: {e}")
+            self.config_manager = None
+    
+    def _apply_execution_configuration(self, execution_config: Dict[str, Any]):
+        """Apply execution configuration to orchestrator"""
+        try:
+            # Apply timeouts
+            if 'timeouts' in execution_config:
+                timeouts = execution_config['timeouts']
+                if 'default_ms' in timeouts:
+                    self.config.default_timeout_ms = timeouts['default_ms']
+                
+                # Apply module-specific timeouts
+                if 'by_module' in timeouts:
+                    self.module_timeouts = timeouts['by_module']
+                
+                # Apply category-specific timeouts
+                if 'by_category' in timeouts:
+                    self.category_timeouts = timeouts['by_category']
+            
+            # Apply circuit breaker configuration
+            if 'circuit_breakers' in execution_config:
+                cb_config = execution_config['circuit_breakers']
+                if 'failure_threshold' in cb_config:
+                    self.config.circuit_breaker_threshold = cb_config['failure_threshold']
+                if 'recovery_time_s' in cb_config:
+                    self.config.recovery_time_s = cb_config['recovery_time_s']
+            
+            # Apply performance configuration
+            if 'performance' in execution_config:
+                perf_config = execution_config['performance']
+                if 'enable_caching' in perf_config:
+                    self.config.cache_enabled = perf_config['enable_caching']
+                
+                # Apply memory limits
+                if 'memory_limits' in perf_config:
+                    mem_limits = perf_config['memory_limits']
+                    if 'per_module_mb' in mem_limits:
+                        self.config.memory_warning_mb = mem_limits['per_module_mb']
+                
+                # Apply CPU limits
+                if 'cpu_limits' in perf_config:
+                    cpu_limits = perf_config['cpu_limits']
+                    if 'total_worker_threads' in cpu_limits:
+                        self.config.max_parallel_modules = cpu_limits['total_worker_threads']
+            
+            # Apply parallel stages configuration
+            if 'parallel_stages' in execution_config:
+                self.execution_stages_config = execution_config['parallel_stages']
+            
+            self.logger.info("✅ Applied execution configuration")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to apply execution configuration: {e}")
+    
+    def _apply_module_registry(self, module_registry: Dict[str, Any]):
+        """Apply module registry configuration"""
+        try:
+            # Store module registry for later use during registration
+            self.module_registry_config = module_registry
+            
+            # Apply module-specific configurations
+            for module_name, module_config in module_registry.items():
+                if isinstance(module_config, dict):
+                    # Store module configuration for later application
+                    if not hasattr(self, 'pending_module_configs'):
+                        self.pending_module_configs = {}
+                    self.pending_module_configs[module_name] = module_config
+            
+            self.logger.info(f"✅ Applied module registry: {len(module_registry)} modules")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to apply module registry: {e}")
     
     def _validate_system_integrity(self) -> bool:
         """Validate system integrity"""
@@ -1833,3 +1974,23 @@ class ModuleOrchestrator:
             ])
         
         return "\n".join(lines)
+
+    def get_legacy_module_status(self) -> Dict[str, Any]:
+        """Get status of legacy modules that need modernization."""
+        legacy_status = {}
+        for path, modules in self.config.legacy_modules.items():
+            legacy_status[path] = {
+                'total_modules': len(modules),
+                'modernized_count': 0,
+                'instructions': []
+            }
+            for module_name in modules:
+                if module_name in self.modules:
+                    legacy_status[path]['modernized_count'] += 1
+                else:
+                    legacy_status[path]['instructions'].append({
+                        'module_name': module_name,
+                        'path': path,
+                        'reason': 'Module not found in current modules list. Please ensure it is registered.'
+                    })
+        return legacy_status
