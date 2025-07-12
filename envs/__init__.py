@@ -8,7 +8,7 @@ Clean separation of concerns for better maintainability and testing.
 
 from .config import TradingConfig, MarketState, EpisodeMetrics
 from .env import EnhancedTradingEnv
-from .shared_utils import TradingPipeline, UnifiedRiskManager
+
 
 __version__ = "1.0.0"
 __author__ = "AI Trading Team"
@@ -18,8 +18,7 @@ __all__ = [
     "TradingConfig", 
     "MarketState",
     "EpisodeMetrics",
-    "TradingPipeline",
-    "UnifiedRiskManager",
+
     
 ]
 

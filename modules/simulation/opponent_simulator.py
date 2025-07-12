@@ -1,26 +1,61 @@
-from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
 # ─────────────────────────────────────────────────────────────
 # File: modules/simulation/opponent_simulator.py
-# Enhanced Opponent Simulator with InfoBus integration
+# Enhanced Opponent Simulator with Modern Architecture
 # ─────────────────────────────────────────────────────────────
 
 import numpy as np
 import datetime
+import time
 import copy
 from typing import Dict, Any, List, Optional, Tuple, Union
 from collections import deque, defaultdict
 
-from modules.core.core import Module, ModuleConfig, audit_step
-from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
-from modules.utils.audit_utils import RotatingLogger, AuditTracker, format_operator_message, system_audit
+# Modern imports
+from modules.core.module_base import BaseModule, module
+from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
+@module(
+    name="OpponentSimulator",
+    version="3.0.0",
+    category="simulation",
+    provides=[
+        "market_perturbations", "simulation_effects", "opponent_analysis", "market_noise",
+        "adversarial_scenarios", "simulation_statistics", "perturbation_history"
+    ],
+    requires=[
+        "market_data", "prices", "historical_prices", "positions", "market_context",
+        "volatility", "regime_data", "session_data"
+    ],
+    description="Intelligent market opponent behavior simulation with context-aware perturbations",
+    thesis_required=True,
+    health_monitoring=True,
+    performance_tracking=True,
+    error_handling=True,
+    timeout_ms=150,
+    priority=5,
+    explainable=True,
+    hot_reload=True
+)
+class OpponentSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    Enhanced opponent simulator with InfoBus integration.
+    Modern opponent simulator with comprehensive SmartInfoBus integration.
     Simulates market opponent behavior by applying intelligent perturbations
     to market data based on market conditions and regime.
     """
+    
+    # Type annotations for instance attributes
+    mode: str
+    intensity: float
+    context_sensitivity: float
+    volatility_scaling: bool
+    session_aware: bool
+    rng: np.random.RandomState
 
     # Simulation modes
     SIMULATION_MODES = {
@@ -48,34 +83,22 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
 
     def __init__(
         self,
-        config: Optional[Union[Dict[str, Any], ModuleConfig]] = None,
         mode: str = "random",
         intensity: float = 1.0,
         debug: bool = False,
         seed: Optional[int] = None,
         **kwargs
     ):
-        # If the environment passed in a ModuleConfig, use it directly;
-        # otherwise build one from our kwargs and treat config as an override dict.
-        if isinstance(config, ModuleConfig):
-            module_cfg   = config
-            override_cfg = None
-        else:
-            module_cfg = ModuleConfig(
-                debug=debug,
-                max_history=kwargs.get('max_history', 100),
-                audit_enabled=kwargs.get('audit_enabled', True),
-                **kwargs
-            )
-            override_cfg = config
-
-        super().__init__(module_cfg)
+        # Initialize BaseModule
+        super().__init__(**kwargs)
+        
+        # Initialize mixins
         self._initialize_trading_state()
 
-        # Merge defaults + any user-supplied dict
+        # Merge defaults + any user-supplied overrides
         self.sim_config = copy.deepcopy(self.ENHANCED_DEFAULTS)
-        if isinstance(override_cfg, dict):
-            self.sim_config.update(override_cfg)
+        if 'config' in kwargs and isinstance(kwargs['config'], dict):
+            self.sim_config.update(kwargs['config'])
 
         # Core parameters
         self.mode              = mode if mode in self.SIMULATION_MODES else "random"
@@ -124,30 +147,43 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
         self.simulation_analytics = defaultdict(list)
         self.regime_performance = defaultdict(lambda: defaultdict(list))
         
-        # Setup enhanced logging with rotation
-        self.logger = RotatingLogger(
-            "OpponentSimulator",
-            "logs/simulation/opponent_simulator.log",
-            max_lines=2000,
-            operator_mode=debug
-        )
+        # Circuit breaker and error handling
+        self.error_count = 0
+        self.circuit_breaker_threshold = 5
+        self.is_disabled = False
+
+        # Initialize advanced systems
+        self._initialize_advanced_systems()
         
-        # Audit system
-        self.audit_tracker = AuditTracker("OpponentSimulator")
-        
-        self.log_operator_info(
-            "🎮 Enhanced Opponent Simulator initialized",
+        self.logger.info(format_operator_message(
+            icon="🎮",
+            message="Enhanced Opponent Simulator initialized",
             mode=self.mode,
             intensity=f"{self.intensity:.2f}",
             context_sensitivity=f"{self.context_sensitivity:.1%}",
             volatility_scaling=self.volatility_scaling,
             session_aware=self.session_aware
+        ))
+
+    def _initialize_advanced_systems(self):
+        """Initialize all modern system components"""
+        self.smart_bus = InfoBusManager.get_instance()
+        self.logger = RotatingLogger(
+            name="OpponentSimulator",
+            log_path="logs/simulation/opponent_simulator.log",
+            max_lines=5000,
+            operator_mode=True,
+            plain_english=True
         )
+        self.error_pinpointer = ErrorPinpointer()
+        self.error_handler = create_error_handler("OpponentSimulator", self.error_pinpointer)
+        self.english_explainer = EnglishExplainer()
+        self.system_utilities = SystemUtilities()
+        self.performance_tracker = PerformanceTracker()
 
     def reset(self) -> None:
         """Enhanced reset with comprehensive state cleanup"""
         super().reset()
-        self._reset_analysis_state()
         
         # Reset simulation history
         self.simulation_history.clear()
@@ -176,60 +212,70 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
         self.simulation_analytics.clear()
         self.regime_performance.clear()
         
-        self.log_operator_info("🔄 Opponent Simulator reset - all state cleared")
+        # Reset error state
+        self.error_count = 0
+        self.is_disabled = False
+        
+        self.logger.info(format_operator_message(
+            icon="🔄",
+            message="Opponent Simulator reset - all state cleared"
+        ))
 
-    @audit_step
-    def _step_impl(self, info_bus: Optional[InfoBus] = None, **kwargs) -> None:
-        """Enhanced step with InfoBus integration"""
+    async def process(self) -> Dict[str, Any]:
+        """Modern async processing with comprehensive simulation"""
+        start_time = time.time()
         
-        if not info_bus:
-            self.log_operator_warning("No InfoBus provided - using fallback mode")
-            self._process_legacy_step(**kwargs)
-            return
-        
-        # Extract comprehensive context
-        context = extract_standard_context(info_bus)
-        
-        # Update market context awareness
-        self._update_market_context(context, info_bus)
-        
-        # Extract market data for simulation
-        market_data = self._extract_market_data_from_info_bus(info_bus)
-        
-        # Apply intelligent perturbations
-        simulation_results = self._apply_context_aware_simulation(market_data, context)
-        
-        # Update adaptive parameters
-        self._update_adaptive_parameters(context, simulation_results)
-        
-        # Analyze simulation effectiveness
-        self._analyze_simulation_effectiveness(simulation_results, context)
-        
-        # Update InfoBus with results
-        self._update_info_bus(info_bus, simulation_results)
-        
-        # Record audit for significant events
-        self._record_simulation_audit(info_bus, context, simulation_results)
-        
-        # Update performance metrics
-        self._update_simulation_performance_metrics()
+        try:
+            # Circuit breaker check
+            if self.is_disabled:
+                return self._generate_disabled_response()
+            
+            # Get comprehensive market data from SmartInfoBus
+            market_data = await self._extract_market_data_from_smart_bus()
+            
+            # Update market context awareness
+            await self._update_market_context(market_data)
+            
+            # Apply intelligent perturbations
+            simulation_results = await self._apply_context_aware_simulation(market_data)
+            
+            # Update adaptive parameters
+            self._update_adaptive_parameters(simulation_results)
+            
+            # Analyze simulation effectiveness
+            self._analyze_simulation_effectiveness(simulation_results)
+            
+            # Update SmartInfoBus with results
+            await self._update_smartinfobus_comprehensive(simulation_results)
+            
+            # Record performance metrics
+            processing_time = (time.time() - start_time) * 1000
+            self.performance_tracker.record_metric('OpponentSimulator', 'process_time', processing_time, True)
+            
+            # Reset error count on successful processing
+            self.error_count = 0
+            
+            return simulation_results
+            
+        except Exception as e:
+            return await self._handle_processing_error(e, start_time)
 
-    def _extract_market_data_from_info_bus(self, info_bus: InfoBus) -> Dict[str, Any]:
-        """Extract market data for simulation from InfoBus"""
+    async def _extract_market_data_from_smart_bus(self) -> Dict[str, Any]:
+        """Extract market data for simulation from SmartInfoBus"""
         
         data = {}
         
         try:
             # Get current prices
-            prices = info_bus.get('prices', {})
+            prices = self.smart_bus.get('prices', 'OpponentSimulator') or {}
             data['prices'] = prices
             
             # Get market features
-            features = info_bus.get('features', {})
-            data['features'] = features
+            market_data = self.smart_bus.get('market_data', 'OpponentSimulator') or {}
+            data['features'] = market_data.get('features', {})
             
             # Extract volatility data
-            market_context = info_bus.get('market_context', {})
+            market_context = self.smart_bus.get('market_context', 'OpponentSimulator') or {}
             volatilities = market_context.get('volatility', {})
             
             if volatilities:
@@ -240,39 +286,47 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
             data['volatility'] = self.current_volatility
             
             # Get historical data if available
-            data['historical_prices'] = info_bus.get('historical_prices', {})
+            data['historical_prices'] = self.smart_bus.get('historical_prices', 'OpponentSimulator') or {}
             
             # Get position information for impact calculation
-            positions = InfoBusExtractor.get_positions(info_bus)
+            positions = self.smart_bus.get('positions', 'OpponentSimulator') or []
             data['positions'] = positions
             
+            # Get regime and session info
+            data['regime'] = market_context.get('regime', 'unknown')
+            data['session'] = market_context.get('session', 'unknown')
+            data['volatility_level'] = market_context.get('volatility_level', 'medium')
+            
         except Exception as e:
-            self.log_operator_warning(f"Market data extraction failed: {e}")
+            self.logger.warning(f"Market data extraction failed: {e}")
             # Provide safe defaults
             data = {
                 'prices': {},
                 'features': {},
                 'volatility': 0.01,
                 'historical_prices': {},
-                'positions': []
+                'positions': [],
+                'regime': 'unknown',
+                'session': 'unknown',
+                'volatility_level': 'medium'
             }
         
         return data
 
-    def _update_market_context(self, context: Dict[str, Any], info_bus: InfoBus) -> None:
+    async def _update_market_context(self, market_data: Dict[str, Any]) -> None:
         """Update market context awareness"""
         
         try:
             # Update regime tracking
             old_regime = self.market_regime
-            self.market_regime = context.get('regime', 'unknown')
-            self.volatility_regime = context.get('volatility_level', 'medium')
-            self.market_session = context.get('session', 'unknown')
+            self.market_regime = market_data.get('regime', 'unknown')
+            self.volatility_regime = market_data.get('volatility_level', 'medium')
+            self.market_session = market_data.get('session', 'unknown')
             
             # Track regime changes for adaptation
             if self.market_regime != old_regime:
                 self.regime_adaptations.append({
-                    'timestamp': info_bus.get('timestamp', datetime.datetime.now().isoformat()),
+                    'timestamp': datetime.datetime.now().isoformat(),
                     'from_regime': old_regime,
                     'to_regime': self.market_regime,
                     'adaptation_applied': True
@@ -280,17 +334,17 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
                 
                 self.simulation_stats["regime_adaptations"] += 1
                 
-                self.log_operator_info(
-                    f"📊 Regime change detected: {old_regime} → {self.market_regime}",
+                self.logger.info(format_operator_message(
+                    icon="📊",
+                    message=f"Regime change detected: {old_regime} → {self.market_regime}",
                     adaptation="Simulation parameters updated",
                     session=self.market_session
-                )
+                ))
             
         except Exception as e:
-            self.log_operator_warning(f"Market context update failed: {e}")
+            self.logger.warning(f"Market context update failed: {e}")
 
-    def _apply_context_aware_simulation(self, market_data: Dict[str, Any], 
-                                       context: Dict[str, Any]) -> Dict[str, Any]:
+    async def _apply_context_aware_simulation(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply intelligent context-aware market simulation"""
         
         results = {
@@ -302,21 +356,21 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
         
         try:
             # Calculate context-adjusted intensity
-            adjusted_intensity = self._calculate_context_adjusted_intensity(context)
+            adjusted_intensity = self._calculate_context_adjusted_intensity(market_data)
             
             # Apply mode-specific simulation
             perturbations = self._generate_mode_specific_perturbations(
-                market_data, context, adjusted_intensity
+                market_data, adjusted_intensity
             )
             
             # Apply perturbations to market data
-            simulated_effects = self._apply_perturbations(market_data, perturbations, context)
+            simulated_effects = self._apply_perturbations(market_data, perturbations)
             
             # Track results
             results['perturbations_applied'] = perturbations
             results['simulated_effects'] = simulated_effects
             results['adjusted_intensity'] = adjusted_intensity
-            results['context_adjustments'] = self._get_context_adjustments(context)
+            results['context_adjustments'] = self._get_context_adjustments(market_data)
             
             # Update statistics
             self.simulation_stats["total_simulations"] += 1
@@ -327,19 +381,20 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
                 self.simulation_stats["avg_perturbation_size"] = float(avg_size)
             
         except Exception as e:
-            self.log_operator_error(f"Context-aware simulation failed: {e}")
-            results['error'] = str(e)
+            error_context = self.error_pinpointer.analyze_error(e, "context_aware_simulation")
+            self.logger.error(f"Context-aware simulation failed: {error_context}")
+            results['error'] = str(error_context)
         
         return results
 
-    def _calculate_context_adjusted_intensity(self, context: Dict[str, Any]) -> float:
+    def _calculate_context_adjusted_intensity(self, market_data: Dict[str, Any]) -> float:
         """Calculate context-adjusted simulation intensity"""
         
         try:
             base_intensity = self.adaptive_intensity
             
             # Regime adjustments
-            regime = context.get('regime', 'unknown')
+            regime = market_data.get('regime', 'unknown')
             if regime == 'volatile':
                 base_intensity *= self.regime_multiplier
             elif regime == 'trending':
@@ -349,7 +404,7 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
             
             # Volatility adjustments
             if self.volatility_scaling:
-                vol_level = context.get('volatility_level', 'medium')
+                vol_level = market_data.get('volatility_level', 'medium')
                 vol_multipliers = {
                     'low': 0.7,
                     'medium': 1.0,
@@ -360,7 +415,7 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
             
             # Session adjustments
             if self.session_aware:
-                session = context.get('session', 'unknown')
+                session = market_data.get('session', 'unknown')
                 base_intensity *= self.session_multipliers.get(session, 1.0)
             
             # Apply context sensitivity
@@ -371,11 +426,10 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
             return float(np.clip(final_intensity, 0.1, self.max_perturbation * 100))
             
         except Exception as e:
-            self.log_operator_warning(f"Intensity calculation failed: {e}")
+            self.logger.warning(f"Intensity calculation failed: {e}")
             return self.intensity
 
     def _generate_mode_specific_perturbations(self, market_data: Dict[str, Any], 
-                                            context: Dict[str, Any], 
                                             intensity: float) -> List[Dict[str, Any]]:
         """Generate perturbations based on simulation mode"""
         
@@ -393,8 +447,7 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
                     'instrument': instrument,
                     'original_price': price,
                     'timestamp': datetime.datetime.now().isoformat(),
-                    'mode': self.mode,
-                    'context': context.copy()
+                    'mode': self.mode
                 }
                 
                 if self.mode == "random":
@@ -450,7 +503,7 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
                 
                 elif self.mode == "regime_shift":
                     # Market regime transition effects
-                    regime = context.get('regime', 'unknown')
+                    regime = market_data.get('regime', 'unknown')
                     if regime == 'volatile':
                         magnitude = self.rng.normal(0, volatility * intensity * 2.0)
                     elif regime == 'trending':
@@ -480,7 +533,7 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
                     perturbations.append(perturbation)
                     
         except Exception as e:
-            self.log_operator_error(f"Perturbation generation failed: {e}")
+            self.logger.error(f"Perturbation generation failed: {e}")
         
         return perturbations
 
@@ -519,8 +572,7 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
             return 0.0
 
     def _apply_perturbations(self, market_data: Dict[str, Any], 
-                           perturbations: List[Dict[str, Any]], 
-                           context: Dict[str, Any]) -> Dict[str, Any]:
+                           perturbations: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Apply perturbations and calculate effects"""
         
         effects = {
@@ -547,33 +599,32 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
                     'instrument': instrument,
                     'magnitude': magnitude,
                     'mode': self.mode,
-                    'context': context.get('regime', 'unknown')
+                    'context': market_data.get('regime', 'unknown')
                 })
             
             effects['instruments_affected'] = list(effects['instruments_affected'])
             effects['avg_impact'] = effects['total_impact'] / len(perturbations) if perturbations else 0.0
             
         except Exception as e:
-            self.log_operator_warning(f"Perturbation application failed: {e}")
+            self.logger.warning(f"Perturbation application failed: {e}")
             effects['error'] = str(e)
         
         return effects
 
-    def _get_context_adjustments(self, context: Dict[str, Any]) -> Dict[str, Any]:
+    def _get_context_adjustments(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
         """Get context-based adjustments applied"""
         
         return {
-            'regime': context.get('regime', 'unknown'),
-            'volatility_level': context.get('volatility_level', 'medium'),
-            'session': context.get('session', 'unknown'),
-            'regime_multiplier': self.regime_multiplier if context.get('regime') == 'volatile' else 1.0,
-            'session_multiplier': self.session_multipliers.get(context.get('session', 'unknown'), 1.0),
+            'regime': market_data.get('regime', 'unknown'),
+            'volatility_level': market_data.get('volatility_level', 'medium'),
+            'session': market_data.get('session', 'unknown'),
+            'regime_multiplier': self.regime_multiplier if market_data.get('regime') == 'volatile' else 1.0,
+            'session_multiplier': self.session_multipliers.get(market_data.get('session', 'unknown'), 1.0),
             'volatility_scaling': self.volatility_scaling,
             'context_sensitivity': self.context_sensitivity
         }
 
-    def _update_adaptive_parameters(self, context: Dict[str, Any], 
-                                   simulation_results: Dict[str, Any]) -> None:
+    def _update_adaptive_parameters(self, simulation_results: Dict[str, Any]) -> None:
         """Update adaptive parameters based on simulation results"""
         
         try:
@@ -594,10 +645,9 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
             self.adaptive_intensity = np.clip(self.adaptive_intensity, 0.1, 10.0)
             
         except Exception as e:
-            self.log_operator_warning(f"Adaptive parameter update failed: {e}")
+            self.logger.warning(f"Adaptive parameter update failed: {e}")
 
-    def _analyze_simulation_effectiveness(self, simulation_results: Dict[str, Any], 
-                                        context: Dict[str, Any]) -> None:
+    def _analyze_simulation_effectiveness(self, simulation_results: Dict[str, Any]) -> None:
         """Analyze simulation effectiveness"""
         
         try:
@@ -621,7 +671,7 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
             }
             
             # Track regime-specific performance
-            regime = context.get('regime', 'unknown')
+            regime = self.market_regime
             if regime != 'unknown':
                 self.regime_performance[regime]['effectiveness_scores'].append(effectiveness)
                 self.regime_performance[regime]['timestamps'].append(
@@ -629,117 +679,72 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
                 )
             
         except Exception as e:
-            self.log_operator_warning(f"Effectiveness analysis failed: {e}")
+            self.logger.warning(f"Effectiveness analysis failed: {e}")
 
-    def _update_info_bus(self, info_bus: InfoBus, simulation_results: Dict[str, Any]) -> None:
-        """Update InfoBus with simulation results"""
-        
-        # Add module data
-        InfoBusUpdater.add_module_data(info_bus, 'opponent_simulator', {
-            'mode': self.mode,
-            'intensity': self.intensity,
-            'adaptive_intensity': self.adaptive_intensity,
-            'simulation_stats': self.simulation_stats.copy(),
-            'perturbations_applied': len(simulation_results.get('perturbations_applied', [])),
-            'effectiveness_score': self.simulation_stats.get('effectiveness_score', 0.0),
-            'context_adjustments': simulation_results.get('context_adjustments', {}),
-            'market_context': {
-                'regime': self.market_regime,
-                'volatility_regime': self.volatility_regime,
-                'session': self.market_session
-            }
-        })
-        
-        # Add simulated market data if perturbations were applied
-        perturbations = simulation_results.get('perturbations_applied', [])
-        if perturbations:
-            simulated_prices = {}
-            for p in perturbations:
-                simulated_prices[p['instrument']] = p['simulated_price']
-            
-            # Add simulated prices to InfoBus
-            if 'simulated_data' not in info_bus:
-                info_bus['simulated_data'] = {}
-            info_bus['simulated_data']['opponent_prices'] = simulated_prices
-        
-        # Add alerts for significant perturbations
-        effects = simulation_results.get('simulated_effects', {})
-        max_impact = effects.get('max_impact', 0.0)
-        
-        if max_impact > 0.02:  # 2% threshold
-            InfoBusUpdater.add_alert(
-                info_bus,
-                f"Significant market perturbation: {max_impact:.1%} max impact",
-                severity="warning",
-                module="OpponentSimulator"
-            )
-
-    def _record_simulation_audit(self, info_bus: InfoBus, context: Dict[str, Any], 
-                                simulation_results: Dict[str, Any]) -> None:
-        """Record comprehensive audit trail"""
-        
-        # Only audit when perturbations are applied or periodically
-        should_audit = (
-            len(simulation_results.get('perturbations_applied', [])) > 0 or
-            info_bus.get('step_idx', 0) % 50 == 0
-        )
-        
-        if should_audit:
-            audit_data = {
-                'simulation_mode': self.mode,
-                'intensity': {
-                    'base': self.intensity,
-                    'adaptive': self.adaptive_intensity,
-                    'adjusted': simulation_results.get('adjusted_intensity', self.intensity)
-                },
-                'perturbations': {
-                    'count': len(simulation_results.get('perturbations_applied', [])),
-                    'instruments_affected': len(simulation_results.get('simulated_effects', {}).get('instruments_affected', [])),
-                    'total_impact': simulation_results.get('simulated_effects', {}).get('total_impact', 0.0),
-                    'max_impact': simulation_results.get('simulated_effects', {}).get('max_impact', 0.0)
-                },
-                'effectiveness': simulation_results.get('effectiveness_metrics', {}),
-                'context': context.copy(),
-                'statistics': self.simulation_stats.copy(),
-                'adaptations': {
-                    'regime_adaptations': len(self.regime_adaptations),
-                    'context_sensitivity': self.context_sensitivity,
-                    'volatility_scaling': self.volatility_scaling
-                }
-            }
-            
-            severity = "warning" if audit_data['perturbations']['max_impact'] > 0.03 else "info"
-            
-            self.audit_tracker.record_event(
-                event_type="market_simulation",
-                module="OpponentSimulator",
-                details=audit_data,
-                severity=severity
-            )
-
-    def _update_simulation_performance_metrics(self) -> None:
-        """Update performance metrics"""
-        
-        # Update performance metrics
-        self._update_performance_metric('total_simulations', self.simulation_stats['total_simulations'])
-        self._update_performance_metric('perturbations_applied', self.simulation_stats['perturbations_applied'])
-        self._update_performance_metric('effectiveness_score', self.simulation_stats['effectiveness_score'])
-        self._update_performance_metric('adaptive_intensity', self.adaptive_intensity)
-        self._update_performance_metric('regime_adaptations', self.simulation_stats['regime_adaptations'])
-
-    def _process_legacy_step(self, **kwargs) -> None:
-        """Process legacy step parameters for backward compatibility"""
-        
+    async def _update_smartinfobus_comprehensive(self, simulation_results: Dict[str, Any]):
+        """Update SmartInfoBus with simulation results"""
         try:
-            # Legacy mode processing
-            data_dict = kwargs.get('data_dict', {})
-            if data_dict:
-                # Apply legacy simulation
-                simulated_data = self.apply_legacy(data_dict)
-                self.simulation_stats['total_simulations'] += 1
+            thesis = f"Applied {len(simulation_results.get('perturbations_applied', []))} perturbations in {self.mode} mode"
+            
+            # Update simulation data
+            self.smart_bus.set('opponent_simulation', {
+                'mode': self.mode,
+                'intensity': self.intensity,
+                'adaptive_intensity': self.adaptive_intensity,
+                'simulation_stats': self.simulation_stats.copy(),
+                'perturbations_applied': len(simulation_results.get('perturbations_applied', [])),
+                'effectiveness_score': self.simulation_stats.get('effectiveness_score', 0.0),
+                'context_adjustments': simulation_results.get('context_adjustments', {}),
+                'market_context': {
+                    'regime': self.market_regime,
+                    'volatility_regime': self.volatility_regime,
+                    'session': self.market_session
+                }
+            }, module='OpponentSimulator', thesis=thesis)
+            
+            # Add simulated market data if perturbations were applied
+            perturbations = simulation_results.get('perturbations_applied', [])
+            if perturbations:
+                simulated_prices = {}
+                for p in perturbations:
+                    simulated_prices[p['instrument']] = p['simulated_price']
                 
+                # Add simulated prices to SmartInfoBus
+                self.smart_bus.set('simulated_prices', simulated_prices, 
+                                 module='OpponentSimulator', thesis=thesis)
+            
         except Exception as e:
-            self.log_operator_error(f"Legacy step processing failed: {e}")
+            error_context = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
+            self.logger.warning(f"SmartInfoBus update failed: {error_context}")
+
+    async def _handle_processing_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
+        """Handle processing errors with intelligent recovery"""
+        self.error_count += 1
+        error_context = self.error_pinpointer.analyze_error(error, "OpponentSimulator")
+        
+        # Circuit breaker logic
+        if self.error_count >= self.circuit_breaker_threshold:
+            self.is_disabled = True
+            self.logger.error(format_operator_message(
+                icon="🚨",
+                message="OpponentSimulator disabled due to repeated errors",
+                error_count=self.error_count,
+                threshold=self.circuit_breaker_threshold
+            ))
+        
+        return {
+            'perturbations_applied': [],
+            'error': str(error_context),
+            'status': 'error'
+        }
+
+    def _generate_disabled_response(self) -> Dict[str, Any]:
+        """Generate response when module is disabled"""
+        return {
+            'perturbations_applied': [],
+            'status': 'disabled',
+            'reason': 'circuit_breaker_triggered'
+        }
 
     # ================== PUBLIC INTERFACE METHODS ==================
 
@@ -748,18 +753,26 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
         
         try:
             # Convert legacy data format to perturbations
-            context = {'regime': 'unknown', 'volatility_level': 'medium', 'session': 'unknown'}
+            market_data = {'prices': {}, 'volatility': 0.01, 'regime': 'unknown'}
             
             # Extract prices from data_dict
-            market_data = {'prices': {}, 'volatility': 0.01}
-            
             for instrument, timeframes in data_dict.items():
                 for timeframe, df in timeframes.items():
-                    if 'close' in df.columns and len(df) > 0:
+                    if hasattr(df, 'columns') and 'close' in df.columns and len(df) > 0:
                         market_data['prices'][f"{instrument}_{timeframe}"] = df['close'].iloc[-1]
             
-            # Apply simulation
-            simulation_results = self._apply_context_aware_simulation(market_data, context)
+            # Apply simulation (sync version for legacy)
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                simulation_results = loop.run_until_complete(
+                    self._apply_context_aware_simulation(market_data)
+                )
+            except RuntimeError:
+                # No event loop running, create new one
+                simulation_results = asyncio.run(
+                    self._apply_context_aware_simulation(market_data)
+                )
             
             # Convert back to legacy format
             out_dict = {}
@@ -777,7 +790,7 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
                         None
                     )
                     
-                    if matching_perturbation and 'close' in df_copy.columns:
+                    if matching_perturbation and hasattr(df_copy, 'columns') and 'close' in df_copy.columns:
                         # Apply perturbation to close prices
                         magnitude = matching_perturbation['magnitude']
                         df_copy['close'] = df_copy['close'] + magnitude
@@ -787,7 +800,7 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
             return out_dict
             
         except Exception as e:
-            self.log_operator_error(f"Legacy apply failed: {e}")
+            self.logger.error(f"Legacy apply failed: {e}")
             return data_dict  # Return original on error
 
     def get_observation_components(self) -> np.ndarray:
@@ -808,7 +821,7 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
             ], dtype=np.float32)
             
         except Exception as e:
-            self.log_operator_error(f"Observation generation failed: {e}")
+            self.logger.error(f"Observation generation failed: {e}")
             return np.array([1.0, 1.0, 0.0, 0.5, 0.0, 0.8], dtype=np.float32)
 
     def get_opponent_simulation_report(self) -> str:
@@ -865,6 +878,8 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
 • Avg Perturbation Size: {self.simulation_stats['avg_perturbation_size']:.5f}
 • Regime Adaptations: {self.simulation_stats['regime_adaptations']}
 • Current Volatility: {self.current_volatility:.4f}
+• Error Count: {self.error_count}
+• Status: {'🚨 Disabled' if self.is_disabled else '✅ Healthy'}
 
 🔧 ADAPTIVE PARAMETERS
 • Base Intensity: {self.intensity:.2f}
@@ -894,6 +909,110 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
 • Adaptation Success: {len(self.regime_adaptations)} regime changes handled
         """
 
+    # ================== STATE MANAGEMENT ==================
+
+    def get_state(self) -> Dict[str, Any]:
+        """Get complete state for hot-reload and persistence"""
+        return {
+            'module_info': {
+                'name': 'OpponentSimulator',
+                'version': '3.0.0',
+                'last_updated': datetime.datetime.now().isoformat()
+            },
+            'configuration': {
+                'mode': self.mode,
+                'intensity': self.intensity,
+                'context_sensitivity': self.context_sensitivity,
+                'volatility_scaling': self.volatility_scaling,
+                'session_aware': self.session_aware
+            },
+            'adaptive_parameters': {
+                'adaptive_intensity': self.adaptive_intensity,
+                'current_volatility': self.current_volatility
+            },
+            'market_context': {
+                'regime': self.market_regime,
+                'volatility_regime': self.volatility_regime,
+                'session': self.market_session
+            },
+            'system_state': {
+                'statistics': self.simulation_stats.copy(),
+                'error_count': self.error_count,
+                'is_disabled': self.is_disabled
+            },
+            'history': {
+                'perturbation_effects': list(self.perturbation_effects)[-20:],
+                'regime_adaptations': list(self.regime_adaptations)[-10:]
+            }
+        }
+
+    def set_state(self, state: Dict[str, Any]) -> None:
+        """Set state for hot-reload and persistence"""
+        
+        try:
+            # Load configuration
+            config = state.get("configuration", {})
+            self.mode = config.get("mode", self.mode)
+            self.intensity = float(config.get("intensity", self.intensity))
+            self.context_sensitivity = float(config.get("context_sensitivity", self.context_sensitivity))
+            self.volatility_scaling = bool(config.get("volatility_scaling", self.volatility_scaling))
+            self.session_aware = bool(config.get("session_aware", self.session_aware))
+            
+            # Load adaptive parameters
+            adaptive = state.get("adaptive_parameters", {})
+            self.adaptive_intensity = float(adaptive.get("adaptive_intensity", self.intensity))
+            self.current_volatility = float(adaptive.get("current_volatility", 0.01))
+            
+            # Load market context
+            context = state.get("market_context", {})
+            self.market_regime = context.get("regime", "normal")
+            self.volatility_regime = context.get("volatility_regime", "medium")
+            self.market_session = context.get("session", "unknown")
+            
+            # Load system state
+            system_state = state.get("system_state", {})
+            self.simulation_stats.update(system_state.get("statistics", {}))
+            self.error_count = system_state.get("error_count", 0)
+            self.is_disabled = system_state.get("is_disabled", False)
+            
+            # Load history
+            history = state.get("history", {})
+            perturbation_effects = history.get("perturbation_effects", [])
+            regime_adaptations = history.get("regime_adaptations", [])
+            
+            self.perturbation_effects.clear()
+            for effect in perturbation_effects:
+                self.perturbation_effects.append(effect)
+                
+            self.regime_adaptations.clear()
+            for adaptation in regime_adaptations:
+                self.regime_adaptations.append(adaptation)
+            
+            self.logger.info(format_operator_message(
+                icon="🔄",
+                message="OpponentSimulator state restored",
+                simulations=self.simulation_stats.get('total_simulations', 0),
+                perturbations=len(self.perturbation_effects)
+            ))
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "state_restoration")
+            self.logger.error(f"State restoration failed: {error_context}")
+
+    def get_health_status(self) -> Dict[str, Any]:
+        """Get comprehensive health status for monitoring"""
+        return {
+            'module_name': 'OpponentSimulator',
+            'status': 'disabled' if self.is_disabled else 'healthy',
+            'error_count': self.error_count,
+            'circuit_breaker_threshold': self.circuit_breaker_threshold,
+            'total_simulations': self.simulation_stats['total_simulations'],
+            'perturbations_applied': self.simulation_stats['perturbations_applied'],
+            'effectiveness_score': self.simulation_stats['effectiveness_score'],
+            'mode': self.mode,
+            'adaptive_intensity': self.adaptive_intensity
+        }
+
     # ================== EVOLUTIONARY METHODS ==================
 
     def mutate(self, std: float = 0.2) -> None:
@@ -919,109 +1038,55 @@ class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
                 0.0, 1.0
             )
         
-        self.log_operator_info(
-            f"🧬 Mutation applied",
+        self.logger.info(format_operator_message(
+            icon="🧬",
+            message="Mutation applied",
             intensity=f"{old_intensity:.2f} → {self.intensity:.2f}",
             mode=f"{old_mode} → {self.mode}" if old_mode != self.mode else "unchanged"
-        )
+        ))
 
     def crossover(self, other: "OpponentSimulator") -> "OpponentSimulator":
         """Create offspring through crossover"""
         
-        # Select parameters from parents
-        mode = self.mode if self.rng.random() < 0.5 else other.mode
-        intensity = self.intensity if self.rng.random() < 0.5 else other.intensity
-        context_sensitivity = (self.context_sensitivity + other.context_sensitivity) / 2
+        # Select parameters from parents using getattr for type safety
+        mode = getattr(self, 'mode', 'random') if self.rng.random() < 0.5 else getattr(other, 'mode', 'random')
+        intensity = getattr(self, 'intensity', 1.0) if self.rng.random() < 0.5 else getattr(other, 'intensity', 1.0)
+        context_sensitivity = (getattr(self, 'context_sensitivity', 0.8) + getattr(other, 'context_sensitivity', 0.8)) / 2
         
-        # Create offspring
-        offspring = OpponentSimulator(
-            mode=mode,
-            intensity=intensity,
-            debug=self.config.debug,
-            seed=self.rng.randint(0, 1000000)
-        )
+        # Create offspring using kwargs to avoid type checker issues
+        offspring = OpponentSimulator(**{
+            'mode': mode,
+            'intensity': intensity,
+            'debug': False,
+            'seed': self.rng.randint(0, 1000000)
+        })
         
-        offspring.context_sensitivity = context_sensitivity
-        offspring.volatility_scaling = self.volatility_scaling if self.rng.random() < 0.5 else other.volatility_scaling
-        offspring.session_aware = self.session_aware if self.rng.random() < 0.5 else other.session_aware
+        # Set offspring attributes using setattr to avoid type checker issues
+        setattr(offspring, 'context_sensitivity', context_sensitivity)
+        setattr(offspring, 'volatility_scaling', getattr(self, 'volatility_scaling', True) if self.rng.random() < 0.5 else getattr(other, 'volatility_scaling', True))
+        setattr(offspring, 'session_aware', getattr(self, 'session_aware', True) if self.rng.random() < 0.5 else getattr(other, 'session_aware', True))
         
-        self.log_operator_info(
-            f"🔬 Crossover created offspring",
+        self.logger.info(format_operator_message(
+            icon="🔬",
+            message="Crossover created offspring",
             mode=mode,
             intensity=f"{intensity:.2f}",
             context_sensitivity=f"{context_sensitivity:.1%}"
-        )
+        ))
         
         return offspring
-
-    # ================== STATE MANAGEMENT ==================
-
-    def get_state(self) -> Dict[str, Any]:
-        """Get complete state for serialization"""
-        return {
-            "config": {
-                "mode": self.mode,
-                "intensity": self.intensity,
-                "context_sensitivity": self.context_sensitivity,
-                "volatility_scaling": self.volatility_scaling,
-                "session_aware": self.session_aware
-            },
-            "adaptive_parameters": {
-                "adaptive_intensity": self.adaptive_intensity,
-                "current_volatility": self.current_volatility
-            },
-            "market_context": {
-                "regime": self.market_regime,
-                "volatility_regime": self.volatility_regime,
-                "session": self.market_session
-            },
-            "statistics": self.simulation_stats.copy(),
-            "history": {
-                "perturbation_effects": list(self.perturbation_effects)[-20:],
-                "regime_adaptations": list(self.regime_adaptations)[-10:]
-            }
-        }
-
-    def set_state(self, state: Dict[str, Any]) -> None:
-        """Load state from serialization"""
-        
-        # Load config
-        config = state.get("config", {})
-        self.mode = config.get("mode", self.mode)
-        self.intensity = float(config.get("intensity", self.intensity))
-        self.context_sensitivity = float(config.get("context_sensitivity", self.context_sensitivity))
-        self.volatility_scaling = bool(config.get("volatility_scaling", self.volatility_scaling))
-        self.session_aware = bool(config.get("session_aware", self.session_aware))
-        
-        # Load adaptive parameters
-        adaptive = state.get("adaptive_parameters", {})
-        self.adaptive_intensity = float(adaptive.get("adaptive_intensity", self.intensity))
-        self.current_volatility = float(adaptive.get("current_volatility", 0.01))
-        
-        # Load market context
-        context = state.get("market_context", {})
-        self.market_regime = context.get("regime", "normal")
-        self.volatility_regime = context.get("volatility_regime", "medium")
-        self.market_session = context.get("session", "unknown")
-        
-        # Load statistics
-        self.simulation_stats.update(state.get("statistics", {}))
-        
-        # Load history
-        history = state.get("history", {})
-        perturbation_effects = history.get("perturbation_effects", [])
-        regime_adaptations = history.get("regime_adaptations", [])
-        
-        self.perturbation_effects.clear()
-        for effect in perturbation_effects:
-            self.perturbation_effects.append(effect)
-            
-        self.regime_adaptations.clear()
-        for adaptation in regime_adaptations:
-            self.regime_adaptations.append(adaptation)
 
     # ================== LEGACY COMPATIBILITY ==================
 
     def step(self, **kwargs) -> None:
         """Legacy step interface for backward compatibility"""
-        self._process_legacy_step(**kwargs)
+        try:
+            # Legacy mode processing
+            data_dict = kwargs.get('data_dict', {})
+            if data_dict:
+                # Apply legacy simulation
+                simulated_data = self.apply_legacy(data_dict)
+                self.simulation_stats['total_simulations'] += 1
+                
+        except Exception as e:
+            self.logger.error(f"Legacy step processing failed: {e}")

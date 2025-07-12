@@ -1,23 +1,50 @@
-from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
 # ─────────────────────────────────────────────────────────────
 # File: modules/simulation/shadow_simulator.py
-# Enhanced Shadow Simulator with InfoBus integration
+# Enhanced Shadow Simulator with Modern Architecture
 # ─────────────────────────────────────────────────────────────
 
 import numpy as np
 import datetime
+import time
 import copy
 from typing import Dict, Any, List, Optional, Tuple, Union
 from collections import deque, defaultdict
 
-from modules.core.core import Module, ModuleConfig, audit_step
-from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
-from modules.utils.audit_utils import RotatingLogger, AuditTracker, format_operator_message, system_audit
+# Modern imports
+from modules.core.module_base import BaseModule, module
+from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
+@module(
+    name="ShadowSimulator",
+    version="3.0.0",
+    category="simulation",
+    provides=[
+        "shadow_predictions", "scenario_analysis", "strategy_simulations", "forward_projections",
+        "simulation_confidence", "scenario_recommendations", "simulation_statistics"
+    ],
+    requires=[
+        "market_data", "prices", "positions", "recent_trades", "pending_orders", "committee_votes",
+        "market_context", "risk_metrics", "trading_performance"
+    ],
+    description="Intelligent forward-looking trade simulation with context-aware strategy variations",
+    thesis_required=True,
+    health_monitoring=True,
+    performance_tracking=True,
+    error_handling=True,
+    timeout_ms=200,
+    priority=4,
+    explainable=True,
+    hot_reload=True
+)
+class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    Enhanced shadow simulator with InfoBus integration.
+    Modern shadow simulator with comprehensive SmartInfoBus integration.
     Provides intelligent forward-looking trade simulation with context-aware
     strategy variations and comprehensive performance analysis.
     """
@@ -50,35 +77,23 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
 
     def __init__(
         self,
-        config: Optional[Union[Dict[str, Any], ModuleConfig]] = None,
         horizon: int = 5,
         strategy: str = "adaptive",
         debug: bool = False,
         **kwargs
     ):
-        # --- distinguish the ModuleConfig (from the env) vs. a plain dict of overrides ---
-        if isinstance(config, ModuleConfig):
-            module_cfg   = config
-            override_cfg = None
-        else:
-            module_cfg   = ModuleConfig(
-                debug=debug,
-                max_history=kwargs.get("max_history", 100),
-                audit_enabled=kwargs.get("audit_enabled", True),
-                **kwargs
-            )
-            override_cfg = config
-
-        # --- initialize base Module with the real ModuleConfig ---
-        super().__init__(module_cfg)
+        # Initialize BaseModule
+        super().__init__(**kwargs)
+        
+        # Initialize mixins
         self._initialize_trading_state()
 
-        # --- build your sim_config from defaults, then update only if an actual dict was passed ---
+        # Build sim_config from defaults, then update if config override is provided
         self.sim_config = copy.deepcopy(self.ENHANCED_DEFAULTS)
-        if isinstance(override_cfg, dict):
-            self.sim_config.update(override_cfg)
+        if 'config' in kwargs and isinstance(kwargs['config'], dict):
+            self.sim_config.update(kwargs['config'])
 
-        # --- now pull everything out of self.sim_config as before ---
+        # Core parameters
         self.horizon               = int(horizon)
         self.strategy              = strategy if strategy in self.SIMULATION_STRATEGIES else "adaptive"
         self.confidence_threshold  = float(self.sim_config["confidence_threshold"])
@@ -131,30 +146,43 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
         self.env_backup_state = None
         self.simulation_environments = {}
         
-        # Setup enhanced logging with rotation
-        self.logger = RotatingLogger(
-            "ShadowSimulator",
-            "logs/simulation/shadow_simulator.log",
-            max_lines=2000,
-            operator_mode=debug
-        )
+        # Circuit breaker and error handling
+        self.error_count = 0
+        self.circuit_breaker_threshold = 5
+        self.is_disabled = False
+
+        # Initialize advanced systems
+        self._initialize_advanced_systems()
         
-        # Audit system
-        self.audit_tracker = AuditTracker("ShadowSimulator")
-        
-        self.log_operator_info(
-            "🔮 Enhanced Shadow Simulator initialized",
+        self.logger.info(format_operator_message(
+            icon="🔮",
+            message="Enhanced Shadow Simulator initialized",
             horizon=self.horizon,
             strategy=self.strategy,
             confidence_threshold=f"{self.confidence_threshold:.1%}",
             regime_awareness=self.regime_awareness,
             scenarios=self.scenario_count
+        ))
+
+    def _initialize_advanced_systems(self):
+        """Initialize all modern system components"""
+        self.smart_bus = InfoBusManager.get_instance()
+        self.logger = RotatingLogger(
+            name="ShadowSimulator",
+            log_path="logs/simulation/shadow_simulator.log",
+            max_lines=5000,
+            operator_mode=True,
+            plain_english=True
         )
+        self.error_pinpointer = ErrorPinpointer()
+        self.error_handler = create_error_handler("ShadowSimulator", self.error_pinpointer)
+        self.english_explainer = EnglishExplainer()
+        self.system_utilities = SystemUtilities()
+        self.performance_tracker = PerformanceTracker()
 
     def reset(self) -> None:
         """Enhanced reset with comprehensive state cleanup"""
         super().reset()
-        self._reset_analysis_state()
         
         # Reset simulation history
         self.simulation_history.clear()
@@ -199,81 +227,96 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
         self.env_backup_state = None
         self.simulation_environments.clear()
         
-        self.log_operator_info("🔄 Shadow Simulator reset - all state cleared")
+        # Reset error state
+        self.error_count = 0
+        self.is_disabled = False
+        
+        self.logger.info(format_operator_message(
+            icon="🔄",
+            message="Shadow Simulator reset - all state cleared"
+        ))
 
-    @audit_step
-    def _step_impl(self, info_bus: Optional[InfoBus] = None, **kwargs) -> None:
-        """Enhanced step with InfoBus integration"""
+    async def process(self) -> Dict[str, Any]:
+        """Modern async processing with comprehensive simulation"""
+        start_time = time.time()
         
-        if not info_bus:
-            self.log_operator_warning("No InfoBus provided - using fallback mode")
-            self._process_legacy_step(**kwargs)
-            return
-        
-        # Extract comprehensive context
-        context = extract_standard_context(info_bus)
-        
-        # Update market context awareness
-        self._update_market_context(context, info_bus)
-        
-        # Extract simulation data from InfoBus
-        simulation_data = self._extract_simulation_data_from_info_bus(info_bus)
-        
-        # Perform multi-scenario simulation
-        simulation_results = self._perform_multi_scenario_simulation(simulation_data, context)
-        
-        # Analyze simulation effectiveness
-        self._analyze_simulation_effectiveness(simulation_results, context)
-        
-        # Update adaptive parameters
-        self._update_adaptive_parameters(simulation_results, context)
-        
-        # Update InfoBus with results
-        self._update_info_bus(info_bus, simulation_results)
-        
-        # Record audit for significant simulations
-        self._record_simulation_audit(info_bus, context, simulation_results)
-        
-        # Update performance metrics
-        self._update_simulation_performance_metrics()
+        try:
+            # Circuit breaker check
+            if self.is_disabled:
+                return self._generate_disabled_response()
+            
+            # Get comprehensive simulation data from SmartInfoBus
+            simulation_data = await self._extract_simulation_data_from_smart_bus()
+            
+            # Update market context awareness
+            await self._update_market_context(simulation_data)
+            
+            # Perform multi-scenario simulation
+            simulation_results = await self._perform_multi_scenario_simulation(simulation_data)
+            
+            # Analyze simulation effectiveness
+            self._analyze_simulation_effectiveness(simulation_results)
+            
+            # Update adaptive parameters
+            self._update_adaptive_parameters(simulation_results)
+            
+            # Update SmartInfoBus with results
+            await self._update_smartinfobus_comprehensive(simulation_results)
+            
+            # Record performance metrics
+            processing_time = (time.time() - start_time) * 1000
+            self.performance_tracker.record_metric('ShadowSimulator', 'process_time', processing_time, True)
+            
+            # Reset error count on successful processing
+            self.error_count = 0
+            
+            return simulation_results
+            
+        except Exception as e:
+            return await self._handle_processing_error(e, start_time)
 
-    def _extract_simulation_data_from_info_bus(self, info_bus: InfoBus) -> Dict[str, Any]:
-        """Extract simulation data from InfoBus"""
+    async def _extract_simulation_data_from_smart_bus(self) -> Dict[str, Any]:
+        """Extract simulation data from SmartInfoBus"""
         
         data = {}
         
         try:
             # Get current market state
-            prices = info_bus.get('prices', {})
+            prices = self.smart_bus.get('prices', 'ShadowSimulator') or {}
             data['current_prices'] = prices
             
             # Get current positions
-            positions = InfoBusExtractor.get_positions(info_bus)
+            positions = self.smart_bus.get('positions', 'ShadowSimulator') or []
             data['current_positions'] = positions
             
             # Get market features
-            features = info_bus.get('features', {})
-            data['market_features'] = features
+            market_data = self.smart_bus.get('market_data', 'ShadowSimulator') or {}
+            data['market_features'] = market_data.get('features', {})
             
             # Get risk snapshot
-            risk_data = info_bus.get('risk', {})
+            risk_data = self.smart_bus.get('risk_metrics', 'ShadowSimulator') or {}
             data['risk_state'] = risk_data
             
             # Get recent trading activity
-            recent_trades = info_bus.get('recent_trades', [])
+            recent_trades = self.smart_bus.get('recent_trades', 'ShadowSimulator') or []
             data['recent_trades'] = recent_trades
             
             # Get pending orders
-            pending_orders = info_bus.get('pending_orders', [])
+            pending_orders = self.smart_bus.get('pending_orders', 'ShadowSimulator') or []
             data['pending_orders'] = pending_orders
             
             # Get committee votes for decision context
-            votes = info_bus.get('votes', [])
+            votes = self.smart_bus.get('committee_votes', 'ShadowSimulator') or []
             data['committee_votes'] = votes
             
             # Get market context
-            market_context = info_bus.get('market_context', {})
+            market_context = self.smart_bus.get('market_context', 'ShadowSimulator') or {}
             data['market_context'] = market_context
+            
+            # Extract regime, session, and volatility
+            data['regime'] = market_context.get('regime', 'unknown')
+            data['session'] = market_context.get('session', 'unknown')
+            data['volatility_level'] = market_context.get('volatility_level', 'medium')
             
             # Extract volatility
             volatilities = market_context.get('volatility', {})
@@ -284,11 +327,11 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             
             data['current_volatility'] = self.current_volatility
             
-            # Get environment reference for simulation
-            data['environment'] = info_bus.get('environment')
+            # Get environment reference for simulation (if available)
+            data['environment'] = self.smart_bus.get('environment', 'ShadowSimulator')
             
         except Exception as e:
-            self.log_operator_warning(f"Simulation data extraction failed: {e}")
+            self.logger.warning(f"Simulation data extraction failed: {e}")
             # Provide safe defaults
             data = {
                 'current_prices': {},
@@ -299,34 +342,38 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
                 'pending_orders': [],
                 'committee_votes': [],
                 'market_context': {},
+                'regime': 'unknown',
+                'session': 'unknown',
+                'volatility_level': 'medium',
                 'current_volatility': 0.01,
                 'environment': None
             }
         
         return data
 
-    def _update_market_context(self, context: Dict[str, Any], info_bus: InfoBus) -> None:
+    async def _update_market_context(self, simulation_data: Dict[str, Any]) -> None:
         """Update market context awareness"""
         
         try:
             # Update regime tracking
             old_regime = self.market_regime
-            self.market_regime = context.get('regime', 'unknown')
-            self.volatility_regime = context.get('volatility_level', 'medium')
-            self.market_session = context.get('session', 'unknown')
+            self.market_regime = simulation_data.get('regime', 'unknown')
+            self.volatility_regime = simulation_data.get('volatility_level', 'medium')
+            self.market_session = simulation_data.get('session', 'unknown')
             
             # Adapt simulation parameters for regime change
             if self.market_regime != old_regime and self.regime_awareness:
                 self._adapt_simulation_for_regime(old_regime, self.market_regime)
                 
-                self.log_operator_info(
-                    f"📊 Regime change detected: {old_regime} → {self.market_regime}",
+                self.logger.info(format_operator_message(
+                    icon="📊",
+                    message=f"Regime change detected: {old_regime} → {self.market_regime}",
                     adaptation="Simulation parameters updated",
                     session=self.market_session
-                )
+                ))
             
         except Exception as e:
-            self.log_operator_warning(f"Market context update failed: {e}")
+            self.logger.warning(f"Market context update failed: {e}")
 
     def _adapt_simulation_for_regime(self, old_regime: str, new_regime: str) -> None:
         """Adapt simulation parameters for regime change"""
@@ -362,10 +409,9 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
                     self.strategy_weights[strategy] /= total_weight
             
         except Exception as e:
-            self.log_operator_warning(f"Regime adaptation failed: {e}")
+            self.logger.warning(f"Regime adaptation failed: {e}")
 
-    def _perform_multi_scenario_simulation(self, simulation_data: Dict[str, Any], 
-                                          context: Dict[str, Any]) -> Dict[str, Any]:
+    async def _perform_multi_scenario_simulation(self, simulation_data: Dict[str, Any]) -> Dict[str, Any]:
         """Perform comprehensive multi-scenario simulation"""
         
         results = {
@@ -375,35 +421,27 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             'avg_score': 0.0,
             'confidence': 0.0,
             'recommendations': [],
-            'context': context.copy()
+            'context': {
+                'regime': self.market_regime,
+                'session': self.market_session,
+                'volatility_level': self.volatility_regime
+            }
         }
         
         try:
-            # Get environment for simulation
-            env = simulation_data.get('environment')
-            if env is None:
-                self.log_operator_warning("No environment available for simulation")
-                return results
-            
-            # Backup environment state
-            self._backup_environment_state(env)
-            
             # Generate scenarios
-            scenarios = self._generate_simulation_scenarios(simulation_data, context)
+            scenarios = self._generate_simulation_scenarios(simulation_data)
             
             # Simulate each scenario
             scenario_results = []
             for i, scenario in enumerate(scenarios):
                 try:
-                    scenario_result = self._simulate_scenario(env, scenario, simulation_data, context)
+                    scenario_result = await self._simulate_scenario(scenario, simulation_data)
                     scenario_results.append(scenario_result)
                     
                 except Exception as e:
-                    self.log_operator_warning(f"Scenario {i} simulation failed: {e}")
+                    self.logger.warning(f"Scenario {i} simulation failed: {e}")
                     continue
-                finally:
-                    # Always restore environment
-                    self._restore_environment_state(env)
             
             # Analyze results
             if scenario_results:
@@ -412,7 +450,7 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
                 results['worst_scenario'] = min(scenario_results, key=lambda s: s.get('score', 0))
                 results['avg_score'] = np.mean([s.get('score', 0) for s in scenario_results])
                 results['confidence'] = self._calculate_simulation_confidence(scenario_results)
-                results['recommendations'] = self._generate_simulation_recommendations(scenario_results, context)
+                results['recommendations'] = self._generate_simulation_recommendations(scenario_results, simulation_data)
             
             # Update statistics
             self.simulation_stats['total_simulations'] += 1
@@ -423,48 +461,13 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             self.scenario_results.append(results)
             
         except Exception as e:
-            self.log_operator_error(f"Multi-scenario simulation failed: {e}")
-            results['error'] = str(e)
+            error_context = self.error_pinpointer.analyze_error(e, "multi_scenario_simulation")
+            self.logger.error(f"Multi-scenario simulation failed: {error_context}")
+            results['error'] = str(error_context)
         
         return results
 
-    def _backup_environment_state(self, env) -> None:
-        """Backup environment state for safe simulation"""
-        
-        try:
-            if hasattr(env, 'get_state'):
-                self.env_backup_state = env.get_state()
-            else:
-                # Fallback: backup key attributes
-                self.env_backup_state = {
-                    'current_step': getattr(env, 'current_step', 0),
-                    'balance': getattr(env, 'balance', 10000),
-                    'positions': copy.deepcopy(getattr(env, 'positions', {})),
-                    'market_state': copy.deepcopy(getattr(env, 'market_state', {}))
-                }
-        except Exception as e:
-            self.log_operator_warning(f"Environment backup failed: {e}")
-            self.env_backup_state = None
-
-    def _restore_environment_state(self, env) -> None:
-        """Restore environment state after simulation"""
-        
-        try:
-            if self.env_backup_state is None:
-                return
-            
-            if hasattr(env, 'set_state'):
-                env.set_state(self.env_backup_state)
-            else:
-                # Fallback: restore key attributes
-                for attr, value in self.env_backup_state.items():
-                    if hasattr(env, attr):
-                        setattr(env, attr, value)
-        except Exception as e:
-            self.log_operator_warning(f"Environment restore failed: {e}")
-
-    def _generate_simulation_scenarios(self, simulation_data: Dict[str, Any], 
-                                      context: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _generate_simulation_scenarios(self, simulation_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Generate diverse simulation scenarios"""
         
         scenarios = []
@@ -489,10 +492,10 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
                     'strategy': strategy,
                     'description': self.SIMULATION_STRATEGIES[strategy],
                     'base_actions': base_actions,
-                    'modified_actions': self._modify_actions_for_strategy(base_actions, strategy, context),
-                    'horizon': self._get_strategy_horizon(strategy, context),
-                    'risk_scaling': self._get_strategy_risk_scaling(strategy, context),
-                    'context_adjustments': self._get_strategy_context_adjustments(strategy, context)
+                    'modified_actions': self._modify_actions_for_strategy(base_actions, strategy, simulation_data),
+                    'horizon': self._get_strategy_horizon(strategy, simulation_data),
+                    'risk_scaling': self._get_strategy_risk_scaling(strategy, simulation_data),
+                    'context_adjustments': self._get_strategy_context_adjustments(strategy, simulation_data)
                 }
                 scenarios.append(scenario)
             
@@ -502,15 +505,15 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
                     'strategy': 'adaptive',
                     'description': 'Context-adaptive strategy',
                     'base_actions': base_actions,
-                    'modified_actions': self._create_adaptive_actions(base_actions, context),
+                    'modified_actions': self._create_adaptive_actions(base_actions, simulation_data),
                     'horizon': self.adaptive_horizon,
                     'risk_scaling': True,
-                    'context_adjustments': self._get_adaptive_context_adjustments(context)
+                    'context_adjustments': self._get_adaptive_context_adjustments(simulation_data)
                 }
                 scenarios.append(adaptive_scenario)
             
         except Exception as e:
-            self.log_operator_warning(f"Scenario generation failed: {e}")
+            self.logger.warning(f"Scenario generation failed: {e}")
             # Fallback: create basic scenario
             scenarios = [{
                 'strategy': 'balanced',
@@ -559,11 +562,11 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             return base_actions
             
         except Exception as e:
-            self.log_operator_warning(f"Base action extraction failed: {e}")
+            self.logger.warning(f"Base action extraction failed: {e}")
             return {}
 
     def _modify_actions_for_strategy(self, base_actions: Dict[str, Any], 
-                                    strategy: str, context: Dict[str, Any]) -> Dict[str, Any]:
+                                    strategy: str, simulation_data: Dict[str, Any]) -> Dict[str, Any]:
         """Modify actions based on strategy"""
         
         try:
@@ -587,7 +590,7 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             
             elif strategy == "momentum":
                 # Amplify in trend direction
-                trend_multiplier = 1.3 if context.get('regime') == 'trending' else 1.0
+                trend_multiplier = 1.3 if simulation_data.get('regime') == 'trending' else 1.0
                 for key in modified_actions:
                     modified_actions[key] *= trend_multiplier
             
@@ -598,13 +601,13 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             
             elif strategy == "volatility_play":
                 # Adjust for volatility
-                vol_multiplier = 1.5 if context.get('volatility_level') in ['high', 'extreme'] else 0.7
+                vol_multiplier = 1.5 if simulation_data.get('volatility_level') in ['high', 'extreme'] else 0.7
                 for key in modified_actions:
                     modified_actions[key] *= vol_multiplier
             
             elif strategy == "regime_specific":
                 # Regime-specific adjustments
-                regime = context.get('regime', 'unknown')
+                regime = simulation_data.get('regime', 'unknown')
                 regime_multipliers = {
                     'volatile': 0.7,
                     'trending': 1.2,
@@ -622,20 +625,20 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             return modified_actions
             
         except Exception as e:
-            self.log_operator_warning(f"Action modification failed: {e}")
+            self.logger.warning(f"Action modification failed: {e}")
             return base_actions
 
     def _create_adaptive_actions(self, base_actions: Dict[str, Any], 
-                                context: Dict[str, Any]) -> Dict[str, Any]:
+                                simulation_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create adaptive actions based on context"""
         
         try:
             adaptive_actions = copy.deepcopy(base_actions)
             
             # Adapt based on market regime
-            regime = context.get('regime', 'unknown')
-            vol_level = context.get('volatility_level', 'medium')
-            session = context.get('session', 'unknown')
+            regime = simulation_data.get('regime', 'unknown')
+            vol_level = simulation_data.get('volatility_level', 'medium')
+            session = simulation_data.get('session', 'unknown')
             
             # Regime adaptation
             if regime == 'volatile':
@@ -676,10 +679,10 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             return adaptive_actions
             
         except Exception as e:
-            self.log_operator_warning(f"Adaptive action creation failed: {e}")
+            self.logger.warning(f"Adaptive action creation failed: {e}")
             return base_actions
 
-    def _get_strategy_horizon(self, strategy: str, context: Dict[str, Any]) -> int:
+    def _get_strategy_horizon(self, strategy: str, simulation_data: Dict[str, Any]) -> int:
         """Get strategy-specific horizon"""
         
         base_horizon = self.adaptive_horizon
@@ -698,15 +701,15 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
         multiplier = strategy_multipliers.get(strategy, 1.0)
         
         # Additional context adjustments
-        if context.get('volatility_level') == 'extreme':
+        if simulation_data.get('volatility_level') == 'extreme':
             multiplier *= 0.8  # Shorter horizon in extreme volatility
-        elif context.get('regime') == 'trending':
+        elif simulation_data.get('regime') == 'trending':
             multiplier *= 1.1  # Slightly longer in trends
         
         horizon = int(base_horizon * multiplier)
         return max(1, min(horizon, 15))  # Bounds
 
-    def _get_strategy_risk_scaling(self, strategy: str, context: Dict[str, Any]) -> bool:
+    def _get_strategy_risk_scaling(self, strategy: str, simulation_data: Dict[str, Any]) -> bool:
         """Get strategy-specific risk scaling setting"""
         
         risk_scaling_strategies = {
@@ -722,7 +725,7 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
         
         return risk_scaling_strategies.get(strategy, self.risk_scaling)
 
-    def _get_strategy_context_adjustments(self, strategy: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    def _get_strategy_context_adjustments(self, strategy: str, simulation_data: Dict[str, Any]) -> Dict[str, Any]:
         """Get strategy-specific context adjustments"""
         
         adjustments = {
@@ -744,7 +747,7 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
         
         return adjustments
 
-    def _get_adaptive_context_adjustments(self, context: Dict[str, Any]) -> Dict[str, Any]:
+    def _get_adaptive_context_adjustments(self, simulation_data: Dict[str, Any]) -> Dict[str, Any]:
         """Get adaptive context adjustments"""
         
         return {
@@ -756,8 +759,8 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             'learning_rate': self.learning_rate
         }
 
-    def _simulate_scenario(self, env, scenario: Dict[str, Any], 
-                          simulation_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    async def _simulate_scenario(self, scenario: Dict[str, Any], 
+                          simulation_data: Dict[str, Any]) -> Dict[str, Any]:
         """Simulate a single scenario"""
         
         result = {
@@ -778,44 +781,34 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             modified_actions = scenario['modified_actions']
             horizon = scenario['horizon']
             
-            initial_balance = getattr(env, 'balance', 10000)
+            # Simulate using available data or synthetic environment
+            initial_balance = simulation_data.get('risk_state', {}).get('balance', 10000)
             trades = []
             timeline = []
             
-            # Simulate forward steps
+            # Simple forward simulation without environment
             for step in range(horizon):
-                # Check if we can continue
-                if not self._can_continue_simulation(env):
-                    break
-                
                 step_result = {
                     'step': step,
                     'timestamp': datetime.datetime.now().isoformat(),
-                    'balance': getattr(env, 'balance', initial_balance),
+                    'balance': initial_balance,
                     'actions_taken': [],
                     'trades_executed': []
                 }
                 
                 # Execute actions based on strategy
-                step_trades = self._execute_scenario_step(env, modified_actions, strategy, context)
+                step_trades = self._execute_scenario_step(modified_actions, strategy, simulation_data)
                 
                 if step_trades:
                     trades.extend(step_trades)
                     step_result['trades_executed'] = step_trades
                 
                 timeline.append(step_result)
-                
-                # Advance environment
-                if hasattr(env, 'step'):
-                    try:
-                        env.step()
-                    except Exception as e:
-                        self.log_operator_warning(f"Environment step failed: {e}")
-                        break
             
             # Calculate results
-            final_balance = getattr(env, 'balance', initial_balance)
-            total_pnl = final_balance - initial_balance
+            final_balance = initial_balance
+            total_pnl = sum(trade.get('pnl', 0) for trade in trades)
+            final_balance += total_pnl
             
             # Calculate performance metrics
             result.update({
@@ -827,7 +820,7 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             })
             
             # Calculate score
-            result['score'] = self._calculate_scenario_score(result, scenario, context)
+            result['score'] = self._calculate_scenario_score(result, scenario, simulation_data)
             
             # Calculate success rate
             if trades:
@@ -840,83 +833,64 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             result['risk_metrics'] = self._calculate_scenario_risk_metrics(result, initial_balance)
             
         except Exception as e:
-            self.log_operator_warning(f"Scenario simulation failed: {e}")
+            self.logger.warning(f"Scenario simulation failed: {e}")
             result['error'] = str(e)
             result['score'] = 0.0
         
         return result
 
-    def _can_continue_simulation(self, env) -> bool:
-        """Check if simulation can continue"""
-        
-        try:
-            # Check if environment has data left
-            if hasattr(env, 'current_step') and hasattr(env, 'data'):
-                for instrument_data in env.data.values():
-                    for timeframe_data in instrument_data.values():
-                        if env.current_step >= len(timeframe_data):
-                            return False
-            
-            # Check balance
-            balance = getattr(env, 'balance', 10000)
-            if balance <= 0:
-                return False
-            
-            return True
-            
-        except Exception:
-            return False
-
-    def _execute_scenario_step(self, env, modified_actions: Dict[str, Any], 
-                              strategy: str, context: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _execute_scenario_step(self, modified_actions: Dict[str, Any], 
+                              strategy: str, simulation_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Execute one step of scenario simulation"""
         
         trades = []
         
         try:
-            # Get instruments from environment
-            instruments = getattr(env, 'instruments', ['EUR/USD', 'XAU/USD'])
+            # Get instruments from current prices
+            current_prices = simulation_data.get('current_prices', {})
+            instruments = list(current_prices.keys()) or ['EUR/USD', 'XAU/USD']
             
             # Execute trades based on modified actions
-            for i, instrument in enumerate(instruments):
-                if i * 2 in modified_actions and (i * 2 + 1) in modified_actions:
-                    action_0 = modified_actions[i * 2]
-                    action_1 = modified_actions[i * 2 + 1]
+            for i, instrument in enumerate(instruments[:2]):  # Limit to 2 instruments
+                if str(i * 2) in modified_actions and str(i * 2 + 1) in modified_actions:
+                    action_0 = modified_actions[str(i * 2)]
+                    action_1 = modified_actions[str(i * 2 + 1)]
                     
                     # Execute trade if action is significant
                     if abs(action_0) > 0.1 or abs(action_1) > 0.1:
-                        trade = self._execute_simulated_trade(env, instrument, action_0, action_1, strategy)
+                        trade = self._execute_simulated_trade(instrument, action_0, action_1, strategy, simulation_data)
                         if trade:
                             trades.append(trade)
             
         except Exception as e:
-            self.log_operator_warning(f"Scenario step execution failed: {e}")
+            self.logger.warning(f"Scenario step execution failed: {e}")
         
         return trades
 
-    def _execute_simulated_trade(self, env, instrument: str, action_0: float, 
-                                action_1: float, strategy: str) -> Optional[Dict[str, Any]]:
+    def _execute_simulated_trade(self, instrument: str, action_0: float, 
+                                action_1: float, strategy: str, simulation_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Execute a simulated trade"""
         
         try:
-            # Use environment's trade execution if available
-            if hasattr(env, '_execute_trade'):
-                trade = env._execute_trade(instrument, action_0, action_1)
-                if trade:
-                    trade['simulation_strategy'] = strategy
-                    trade['simulation_timestamp'] = datetime.datetime.now().isoformat()
-                return trade
+            # Get current price
+            current_prices = simulation_data.get('current_prices', {})
+            current_price = current_prices.get(instrument)
             
-            # Fallback: create synthetic trade
-            current_price = self._get_current_price(env, instrument)
             if current_price is None:
-                return None
+                # Fallback prices
+                fallback_prices = {
+                    'EUR/USD': 1.0850,
+                    'XAU/USD': 2000.0,
+                    'GBP/USD': 1.2650,
+                    'USD/JPY': 150.0
+                }
+                current_price = fallback_prices.get(instrument, 1.0)
             
             # Determine position size (simplified)
             position_size = abs(action_0) * 0.1  # 10% of action magnitude
             side = 'BUY' if action_0 > 0 else 'SELL'
             
-            # Simulate basic P&L
+            # Simulate basic P&L using action_1 as performance indicator
             estimated_pnl = action_1 * position_size * 100  # Simplified
             
             return {
@@ -932,37 +906,11 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             }
             
         except Exception as e:
-            self.log_operator_warning(f"Simulated trade execution failed: {e}")
+            self.logger.warning(f"Simulated trade execution failed: {e}")
             return None
 
-    def _get_current_price(self, env, instrument: str) -> Optional[float]:
-        """Get current price for instrument"""
-        
-        try:
-            # Try to get from environment data
-            if hasattr(env, 'data') and instrument in env.data:
-                timeframe_data = env.data[instrument]
-                if 'D1' in timeframe_data:
-                    df = timeframe_data['D1']
-                    current_step = getattr(env, 'current_step', 0)
-                    if current_step < len(df):
-                        return float(df.iloc[current_step]['close'])
-            
-            # Fallback prices
-            fallback_prices = {
-                'EUR/USD': 1.0850,
-                'XAU/USD': 2000.0,
-                'GBP/USD': 1.2650,
-                'USD/JPY': 150.0
-            }
-            
-            return fallback_prices.get(instrument, 1.0)
-            
-        except Exception:
-            return 1.0
-
     def _calculate_scenario_score(self, result: Dict[str, Any], 
-                                 scenario: Dict[str, Any], context: Dict[str, Any]) -> float:
+                                 scenario: Dict[str, Any], simulation_data: Dict[str, Any]) -> float:
         """Calculate scenario performance score"""
         
         try:
@@ -1008,7 +956,7 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             return float(np.clip(score, -1.0, 1.0))
             
         except Exception as e:
-            self.log_operator_warning(f"Scenario scoring failed: {e}")
+            self.logger.warning(f"Scenario scoring failed: {e}")
             return 0.0
 
     def _calculate_scenario_risk_metrics(self, result: Dict[str, Any], 
@@ -1051,7 +999,7 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             }
             
         except Exception as e:
-            self.log_operator_warning(f"Risk metrics calculation failed: {e}")
+            self.logger.warning(f"Risk metrics calculation failed: {e}")
             return {'max_drawdown': 0.0, 'volatility': 0.0, 'sharpe': 0.0}
 
     def _calculate_simulation_confidence(self, scenario_results: List[Dict[str, Any]]) -> float:
@@ -1082,11 +1030,11 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             return float(np.clip(final_confidence, 0.0, 1.0))
             
         except Exception as e:
-            self.log_operator_warning(f"Confidence calculation failed: {e}")
+            self.logger.warning(f"Confidence calculation failed: {e}")
             return 0.5
 
     def _generate_simulation_recommendations(self, scenario_results: List[Dict[str, Any]], 
-                                           context: Dict[str, Any]) -> List[str]:
+                                           simulation_data: Dict[str, Any]) -> List[str]:
         """Generate recommendations based on simulation results"""
         
         recommendations = []
@@ -1121,8 +1069,8 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
                 recommendations.append(f"⚡ Moderate risk: {abs(max_dd):.1%} drawdown possible")
             
             # Context-specific recommendations
-            regime = context.get('regime', 'unknown')
-            vol_level = context.get('volatility_level', 'medium')
+            regime = simulation_data.get('regime', 'unknown')
+            vol_level = simulation_data.get('volatility_level', 'medium')
             
             if regime == 'volatile' and best_strategy in ['greedy', 'momentum']:
                 recommendations.append("💥 Volatile market: Consider more conservative approach despite signal")
@@ -1146,13 +1094,12 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
                 recommendations.append(f"📊 Top strategies: {', '.join(top_names)}")
             
         except Exception as e:
-            self.log_operator_warning(f"Recommendation generation failed: {e}")
+            self.logger.warning(f"Recommendation generation failed: {e}")
             recommendations.append("⚠️ Unable to generate specific recommendations")
         
         return recommendations[:5]  # Limit to top 5
 
-    def _analyze_simulation_effectiveness(self, simulation_results: Dict[str, Any], 
-                                        context: Dict[str, Any]) -> None:
+    def _analyze_simulation_effectiveness(self, simulation_results: Dict[str, Any]) -> None:
         """Analyze simulation effectiveness"""
         
         try:
@@ -1171,8 +1118,8 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
                 self.strategy_performance[strategy].append(score)
             
             # Update regime and session performance
-            regime = context.get('regime', 'unknown')
-            session = context.get('session', 'unknown')
+            regime = self.market_regime
+            session = self.market_session
             
             if regime != 'unknown':
                 self.regime_performance[regime]['avg_scores'].append(avg_score)
@@ -1183,10 +1130,9 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
                 self.session_performance[session]['confidences'].append(confidence)
             
         except Exception as e:
-            self.log_operator_warning(f"Effectiveness analysis failed: {e}")
+            self.logger.warning(f"Effectiveness analysis failed: {e}")
 
-    def _update_adaptive_parameters(self, simulation_results: Dict[str, Any], 
-                                   context: Dict[str, Any]) -> None:
+    def _update_adaptive_parameters(self, simulation_results: Dict[str, Any]) -> None:
         """Update adaptive parameters based on simulation results"""
         
         try:
@@ -1227,141 +1173,86 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
                 'avg_score': simulation_results.get('avg_score', 0.0),
                 'confidence': new_confidence,
                 'strategy_weights': self.strategy_weights.copy(),
-                'context': context.copy()
+                'context': simulation_results.get('context', {}).copy()
             })
             
         except Exception as e:
-            self.log_operator_warning(f"Adaptive parameter update failed: {e}")
+            self.logger.warning(f"Adaptive parameter update failed: {e}")
 
-    def _update_info_bus(self, info_bus: InfoBus, simulation_results: Dict[str, Any]) -> None:
-        """Update InfoBus with simulation results"""
-        
-        # Add module data
-        InfoBusUpdater.add_module_data(info_bus, 'shadow_simulator', {
-            'simulation_strategy': self.strategy,
-            'horizon': self.horizon,
-            'adaptive_horizon': self.adaptive_horizon,
-            'confidence_score': self.confidence_score,
-            'simulation_stats': self.simulation_stats.copy(),
-            'strategy_weights': self.strategy_weights.copy(),
-            'simulation_results': {
-                'avg_score': simulation_results.get('avg_score', 0.0),
-                'confidence': simulation_results.get('confidence', 0.0),
-                'scenarios_evaluated': len(simulation_results.get('scenarios', [])),
-                'best_strategy': simulation_results.get('best_scenario', {}).get('scenario', {}).get('strategy', 'unknown')
-            },
-            'recommendations': simulation_results.get('recommendations', []),
-            'market_context': {
-                'regime': self.market_regime,
-                'volatility_regime': self.volatility_regime,
-                'session': self.market_session
-            }
-        })
-        
-        # Add simulation predictions to InfoBus
-        best_scenario = simulation_results.get('best_scenario', {})
-        if best_scenario:
-            if 'predictions' not in info_bus:
-                info_bus['predictions'] = {}
+    async def _update_smartinfobus_comprehensive(self, simulation_results: Dict[str, Any]):
+        """Update SmartInfoBus with simulation results"""
+        try:
+            best_scenario = simulation_results.get('best_scenario', {})
+            thesis = f"Shadow simulation completed: {len(simulation_results.get('scenarios', []))} scenarios, confidence {simulation_results.get('confidence', 0):.1%}"
             
-            info_bus['predictions']['shadow_simulation'] = {
-                'strategy': best_scenario.get('scenario', {}).get('strategy', 'unknown'),
-                'expected_pnl': best_scenario.get('total_pnl', 0.0),
-                'confidence': simulation_results.get('confidence', 0.0),
-                'trade_count_estimate': best_scenario.get('trade_count', 0),
-                'risk_estimate': best_scenario.get('risk_metrics', {}).get('max_drawdown', 0.0)
-            }
-        
-        # Add alerts for significant simulation results
-        confidence = simulation_results.get('confidence', 0.0)
-        avg_score = simulation_results.get('avg_score', 0.0)
-        
-        if confidence > 0.8 and avg_score > 0.5:
-            InfoBusUpdater.add_alert(
-                info_bus,
-                f"High confidence simulation: {confidence:.1%} confidence, {avg_score:.1%} score",
-                severity="info",
-                module="ShadowSimulator"
-            )
-        elif confidence < 0.3:
-            InfoBusUpdater.add_alert(
-                info_bus,
-                f"Low simulation confidence: {confidence:.1%} - consider caution",
-                severity="warning",
-                module="ShadowSimulator"
-            )
-
-    def _record_simulation_audit(self, info_bus: InfoBus, context: Dict[str, Any], 
-                                simulation_results: Dict[str, Any]) -> None:
-        """Record comprehensive audit trail"""
-        
-        # Only audit when simulations are performed or periodically
-        should_audit = (
-            len(simulation_results.get('scenarios', [])) > 0 or
-            info_bus.get('step_idx', 0) % 50 == 0
-        )
-        
-        if should_audit:
-            audit_data = {
-                'simulation_config': {
-                    'strategy': self.strategy,
-                    'horizon': self.horizon,
-                    'adaptive_horizon': self.adaptive_horizon,
-                    'scenario_count': self.scenario_count,
-                    'confidence_threshold': self.confidence_threshold
-                },
+            # Update simulation data
+            self.smart_bus.set('shadow_simulation', {
+                'simulation_strategy': self.strategy,
+                'horizon': self.horizon,
+                'adaptive_horizon': self.adaptive_horizon,
+                'confidence_score': self.confidence_score,
+                'simulation_stats': self.simulation_stats.copy(),
+                'strategy_weights': self.strategy_weights.copy(),
                 'simulation_results': {
-                    'scenarios_evaluated': len(simulation_results.get('scenarios', [])),
                     'avg_score': simulation_results.get('avg_score', 0.0),
                     'confidence': simulation_results.get('confidence', 0.0),
-                    'best_strategy': simulation_results.get('best_scenario', {}).get('scenario', {}).get('strategy', 'unknown')
+                    'scenarios_evaluated': len(simulation_results.get('scenarios', [])),
+                    'best_strategy': best_scenario.get('scenario', {}).get('strategy', 'unknown')
                 },
-                'adaptive_parameters': {
-                    'strategy_weights': self.strategy_weights.copy(),
-                    'confidence_score': self.confidence_score,
-                    'learning_rate': self.learning_rate
-                },
-                'context': context.copy(),
-                'statistics': self.simulation_stats.copy(),
-                'recommendations': simulation_results.get('recommendations', [])
-            }
+                'recommendations': simulation_results.get('recommendations', []),
+                'market_context': {
+                    'regime': self.market_regime,
+                    'volatility_regime': self.volatility_regime,
+                    'session': self.market_session
+                }
+            }, module='ShadowSimulator', thesis=thesis)
             
-            confidence = simulation_results.get('confidence', 0.0)
-            severity = "info" if confidence > 0.6 else "warning" if confidence < 0.3 else "info"
+            # Add simulation predictions
+            if best_scenario:
+                self.smart_bus.set('simulation_predictions', {
+                    'strategy': best_scenario.get('scenario', {}).get('strategy', 'unknown'),
+                    'expected_pnl': best_scenario.get('total_pnl', 0.0),
+                    'confidence': simulation_results.get('confidence', 0.0),
+                    'trade_count_estimate': best_scenario.get('trade_count', 0),
+                    'risk_estimate': best_scenario.get('risk_metrics', {}).get('max_drawdown', 0.0)
+                }, module='ShadowSimulator', thesis=thesis)
             
-            self.audit_tracker.record_event(
-                event_type="shadow_simulation",
-                module="ShadowSimulator",
-                details=audit_data,
-                severity=severity
-            )
-
-    def _update_simulation_performance_metrics(self) -> None:
-        """Update performance metrics"""
-        
-        # Update performance metrics
-        self._update_performance_metric('total_simulations', self.simulation_stats['total_simulations'])
-        self._update_performance_metric('scenarios_evaluated', self.simulation_stats['scenarios_evaluated'])
-        self._update_performance_metric('prediction_accuracy', self.simulation_stats['prediction_accuracy'])
-        self._update_performance_metric('strategy_effectiveness', self.simulation_stats['strategy_effectiveness'])
-        self._update_performance_metric('confidence_score', self.confidence_score)
-        self._update_performance_metric('adaptive_horizon', self.adaptive_horizon)
-
-    def _process_legacy_step(self, **kwargs) -> None:
-        """Process legacy step parameters for backward compatibility"""
-        
-        try:
-            # Legacy simulation if environment and actions provided
-            env = kwargs.get('env')
-            actions = kwargs.get('actions')
-            
-            if env is not None and actions is not None:
-                # Perform legacy simulation
-                simulated_trades = self.simulate_legacy(env, actions)
-                self.simulation_stats['total_simulations'] += 1
-                
         except Exception as e:
-            self.log_operator_error(f"Legacy step processing failed: {e}")
+            error_context = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
+            self.logger.warning(f"SmartInfoBus update failed: {error_context}")
+
+    async def _handle_processing_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
+        """Handle processing errors with intelligent recovery"""
+        self.error_count += 1
+        error_context = self.error_pinpointer.analyze_error(error, "ShadowSimulator")
+        
+        # Circuit breaker logic
+        if self.error_count >= self.circuit_breaker_threshold:
+            self.is_disabled = True
+            self.logger.error(format_operator_message(
+                icon="🚨",
+                message="ShadowSimulator disabled due to repeated errors",
+                error_count=self.error_count,
+                threshold=self.circuit_breaker_threshold
+            ))
+        
+        return {
+            'scenarios': [],
+            'avg_score': 0.0,
+            'confidence': 0.0,
+            'error': str(error_context),
+            'status': 'error'
+        }
+
+    def _generate_disabled_response(self) -> Dict[str, Any]:
+        """Generate response when module is disabled"""
+        return {
+            'scenarios': [],
+            'avg_score': 0.0,
+            'confidence': 0.0,
+            'status': 'disabled',
+            'reason': 'circuit_breaker_triggered'
+        }
 
     # ================== PUBLIC INTERFACE METHODS ==================
 
@@ -1369,17 +1260,11 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
         """Legacy simulation interface for backward compatibility"""
         
         try:
-            # Backup environment
-            self._backup_environment_state(env)
-            
             trades = []
             
             # Simple forward simulation
             for step in range(self.horizon):
-                if not self._can_continue_simulation(env):
-                    break
-                
-                # Execute actions based on strategy
+                # Get instruments (fallback if not available)
                 instruments = getattr(env, 'instruments', ['EUR/USD', 'XAU/USD'])
                 
                 for i, instrument in enumerate(instruments):
@@ -1399,21 +1284,14 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
                             action_1 = np.random.uniform(-1, 1)
                         
                         # Execute trade
-                        trade = self._execute_simulated_trade(env, instrument, action_0, action_1, self.strategy)
+                        trade = self._execute_simulated_trade(instrument, action_0, action_1, self.strategy, {})
                         if trade:
                             trades.append(trade)
-                
-                # Advance environment
-                if hasattr(env, 'step'):
-                    env.step()
-            
-            # Restore environment
-            self._restore_environment_state(env)
             
             return trades
             
         except Exception as e:
-            self.log_operator_error(f"Legacy simulation failed: {e}")
+            self.logger.error(f"Legacy simulation failed: {e}")
             return []
 
     def get_observation_components(self) -> np.ndarray:
@@ -1435,7 +1313,7 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             ], dtype=np.float32)
             
         except Exception as e:
-            self.log_operator_error(f"Observation generation failed: {e}")
+            self.logger.error(f"Observation generation failed: {e}")
             return np.array([5.0, 5.0, 0.0, 0.5, 0.6, 0.0, 0.0, 0.0], dtype=np.float32)
 
     def get_shadow_simulation_report(self) -> str:
@@ -1486,6 +1364,7 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
 📊 Confidence: {confidence_status} ({self.confidence_score:.1%})
 🔭 Horizon: Base {self.horizon} | Adaptive {self.adaptive_horizon}
 ⚙️ Scenarios: {self.scenario_count} per simulation
+🔧 Status: {'🚨 Disabled' if self.is_disabled else '✅ Healthy'}
 
 📈 SIMULATION CONFIGURATION
 • Confidence Threshold: {self.confidence_threshold:.1%}
@@ -1502,6 +1381,7 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
 • Prediction Accuracy: {self.simulation_stats['prediction_accuracy']:.1%}
 • Strategy Effectiveness: {self.simulation_stats['strategy_effectiveness']:.1%}
 • Avg Scenario Score: {self.simulation_stats['avg_scenario_score']:.1%}
+• Error Count: {self.error_count}
 
 🎯 STRATEGY PERFORMANCE (Top 3)
 {chr(10).join(strategy_lines) if strategy_lines else "  📭 No strategy data available"}
@@ -1537,157 +1417,142 @@ class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
 • Adaptation Rate: {self.learning_rate:.1%} per session
         """
 
-    # ================== EVOLUTIONARY METHODS ==================
-
-    def mutate(self, std: float = 1.0) -> None:
-        """Mutate simulation parameters"""
-        
-        old_horizon = self.horizon
-        old_strategy = self.strategy
-        
-        # Mutate horizon
-        self.horizon = max(1, int(self.horizon + np.random.randint(-2, 3)))
-        self.adaptive_horizon = self.horizon
-        
-        # Mutate strategy occasionally
-        if np.random.random() < 0.3:
-            self.strategy = np.random.choice(list(self.SIMULATION_STRATEGIES.keys()))
-        
-        # Mutate other parameters
-        if np.random.random() < 0.1:
-            self.confidence_threshold = np.clip(
-                self.confidence_threshold + np.random.normal(0, 0.1),
-                0.1, 0.9
-            )
-        
-        self.log_operator_info(
-            f"🧬 Simulation mutation applied",
-            horizon=f"{old_horizon} → {self.horizon}",
-            strategy=f"{old_strategy} → {self.strategy}" if old_strategy != self.strategy else "unchanged"
-        )
-
-    def crossover(self, other: "ShadowSimulator") -> "ShadowSimulator":
-        """Create offspring through crossover"""
-        
-        # Select parameters from parents
-        horizon = self.horizon if np.random.random() < 0.5 else other.horizon
-        strategy = self.strategy if np.random.random() < 0.5 else other.strategy
-        confidence_threshold = (self.confidence_threshold + other.confidence_threshold) / 2
-        
-        # Create offspring
-        offspring = ShadowSimulator(
-            horizon=horizon,
-            strategy=strategy,
-            debug=self.config.debug
-        )
-        
-        # Mix other parameters
-        offspring.confidence_threshold = confidence_threshold
-        offspring.risk_scaling = self.risk_scaling if np.random.random() < 0.5 else other.risk_scaling
-        offspring.regime_awareness = self.regime_awareness if np.random.random() < 0.5 else other.regime_awareness
-        offspring.scenario_count = int((self.scenario_count + other.scenario_count) / 2)
-        
-        # Mix strategy weights
-        for strategy_name in self.strategy_weights:
-            offspring.strategy_weights[strategy_name] = (
-                self.strategy_weights[strategy_name] + 
-                other.strategy_weights.get(strategy_name, 1.0)
-            ) / 2
-        
-        self.log_operator_info(
-            f"🔬 Simulation crossover created offspring",
-            horizon=horizon,
-            strategy=strategy,
-            confidence_threshold=f"{confidence_threshold:.1%}"
-        )
-        
-        return offspring
-
     # ================== STATE MANAGEMENT ==================
 
     def get_state(self) -> Dict[str, Any]:
-        """Get complete state for serialization"""
+        """Get complete state for hot-reload and persistence"""
         return {
-            "config": {
-                "horizon": self.horizon,
-                "strategy": self.strategy,
-                "confidence_threshold": self.confidence_threshold,
-                "risk_scaling": self.risk_scaling,
-                "regime_awareness": self.regime_awareness,
-                "volatility_adjustment": self.volatility_adjustment,
-                "scenario_count": self.scenario_count
+            'module_info': {
+                'name': 'ShadowSimulator',
+                'version': '3.0.0',
+                'last_updated': datetime.datetime.now().isoformat()
             },
-            "adaptive_parameters": {
-                "adaptive_horizon": self.adaptive_horizon,
-                "confidence_score": self.confidence_score,
-                "strategy_weights": self.strategy_weights.copy()
+            'configuration': {
+                'horizon': self.horizon,
+                'strategy': self.strategy,
+                'confidence_threshold': self.confidence_threshold,
+                'risk_scaling': self.risk_scaling,
+                'regime_awareness': self.regime_awareness,
+                'volatility_adjustment': self.volatility_adjustment,
+                'scenario_count': self.scenario_count
             },
-            "market_context": {
-                "regime": self.market_regime,
-                "volatility_regime": self.volatility_regime,
-                "session": self.market_session,
-                "current_volatility": self.current_volatility
+            'adaptive_parameters': {
+                'adaptive_horizon': self.adaptive_horizon,
+                'confidence_score': self.confidence_score,
+                'strategy_weights': self.strategy_weights.copy()
             },
-            "statistics": self.simulation_stats.copy(),
-            "history": {
-                "scenario_results": list(self.scenario_results)[-10:],
-                "learning_history": list(self.learning_history)[-10:],
-                "prediction_accuracy": list(self.prediction_accuracy)[-20:]
+            'market_context': {
+                'regime': self.market_regime,
+                'volatility_regime': self.volatility_regime,
+                'session': self.market_session,
+                'current_volatility': self.current_volatility
+            },
+            'system_state': {
+                'statistics': self.simulation_stats.copy(),
+                'error_count': self.error_count,
+                'is_disabled': self.is_disabled
+            },
+            'history': {
+                'scenario_results': list(self.scenario_results)[-10:],
+                'learning_history': list(self.learning_history)[-10:],
+                'prediction_accuracy': list(self.prediction_accuracy)[-20:]
             }
         }
 
     def set_state(self, state: Dict[str, Any]) -> None:
-        """Load state from serialization"""
+        """Set state for hot-reload and persistence"""
         
-        # Load config
-        config = state.get("config", {})
-        self.horizon = int(config.get("horizon", self.horizon))
-        self.strategy = config.get("strategy", self.strategy)
-        self.confidence_threshold = float(config.get("confidence_threshold", self.confidence_threshold))
-        self.risk_scaling = bool(config.get("risk_scaling", self.risk_scaling))
-        self.regime_awareness = bool(config.get("regime_awareness", self.regime_awareness))
-        self.volatility_adjustment = bool(config.get("volatility_adjustment", self.volatility_adjustment))
-        self.scenario_count = int(config.get("scenario_count", self.scenario_count))
-        
-        # Load adaptive parameters
-        adaptive = state.get("adaptive_parameters", {})
-        self.adaptive_horizon = int(adaptive.get("adaptive_horizon", self.horizon))
-        self.confidence_score = float(adaptive.get("confidence_score", 0.5))
-        self.strategy_weights.update(adaptive.get("strategy_weights", {}))
-        
-        # Load market context
-        context = state.get("market_context", {})
-        self.market_regime = context.get("regime", "normal")
-        self.volatility_regime = context.get("volatility_regime", "medium")
-        self.market_session = context.get("session", "unknown")
-        self.current_volatility = float(context.get("current_volatility", 0.01))
-        
-        # Load statistics
-        self.simulation_stats.update(state.get("statistics", {}))
-        
-        # Load history
-        history = state.get("history", {})
-        
-        scenario_results = history.get("scenario_results", [])
-        self.scenario_results.clear()
-        for result in scenario_results:
-            self.scenario_results.append(result)
+        try:
+            # Load configuration
+            config = state.get("configuration", {})
+            self.horizon = int(config.get("horizon", self.horizon))
+            self.strategy = config.get("strategy", self.strategy)
+            self.confidence_threshold = float(config.get("confidence_threshold", self.confidence_threshold))
+            self.risk_scaling = bool(config.get("risk_scaling", self.risk_scaling))
+            self.regime_awareness = bool(config.get("regime_awareness", self.regime_awareness))
+            self.volatility_adjustment = bool(config.get("volatility_adjustment", self.volatility_adjustment))
+            self.scenario_count = int(config.get("scenario_count", self.scenario_count))
             
-        learning_history = history.get("learning_history", [])
-        self.learning_history.clear()
-        for entry in learning_history:
-            self.learning_history.append(entry)
+            # Load adaptive parameters
+            adaptive = state.get("adaptive_parameters", {})
+            self.adaptive_horizon = int(adaptive.get("adaptive_horizon", self.horizon))
+            self.confidence_score = float(adaptive.get("confidence_score", 0.5))
+            self.strategy_weights.update(adaptive.get("strategy_weights", {}))
             
-        prediction_accuracy = history.get("prediction_accuracy", [])
-        self.prediction_accuracy.clear()
-        for accuracy in prediction_accuracy:
-            self.prediction_accuracy.append(accuracy)
+            # Load market context
+            context = state.get("market_context", {})
+            self.market_regime = context.get("regime", "normal")
+            self.volatility_regime = context.get("volatility_regime", "medium")
+            self.market_session = context.get("session", "unknown")
+            self.current_volatility = float(context.get("current_volatility", 0.01))
+            
+            # Load system state
+            system_state = state.get("system_state", {})
+            self.simulation_stats.update(system_state.get("statistics", {}))
+            self.error_count = system_state.get("error_count", 0)
+            self.is_disabled = system_state.get("is_disabled", False)
+            
+            # Load history
+            history = state.get("history", {})
+            
+            scenario_results = history.get("scenario_results", [])
+            self.scenario_results.clear()
+            for result in scenario_results:
+                self.scenario_results.append(result)
+                
+            learning_history = history.get("learning_history", [])
+            self.learning_history.clear()
+            for entry in learning_history:
+                self.learning_history.append(entry)
+                
+            prediction_accuracy = history.get("prediction_accuracy", [])
+            self.prediction_accuracy.clear()
+            for accuracy in prediction_accuracy:
+                self.prediction_accuracy.append(accuracy)
+            
+            self.logger.info(format_operator_message(
+                icon="🔄",
+                message="ShadowSimulator state restored",
+                simulations=self.simulation_stats.get('total_simulations', 0),
+                scenarios=len(self.scenario_results),
+                confidence=f"{self.confidence_score:.1%}"
+            ))
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "state_restoration")
+            self.logger.error(f"State restoration failed: {error_context}")
+
+    def get_health_status(self) -> Dict[str, Any]:
+        """Get comprehensive health status for monitoring"""
+        return {
+            'module_name': 'ShadowSimulator',
+            'status': 'disabled' if self.is_disabled else 'healthy',
+            'error_count': self.error_count,
+            'circuit_breaker_threshold': self.circuit_breaker_threshold,
+            'total_simulations': self.simulation_stats['total_simulations'],
+            'scenarios_evaluated': self.simulation_stats['scenarios_evaluated'],
+            'prediction_accuracy': self.simulation_stats['prediction_accuracy'],
+            'strategy_effectiveness': self.simulation_stats['strategy_effectiveness'],
+            'confidence_score': self.confidence_score,
+            'current_strategy': self.strategy
+        }
 
     # ================== LEGACY COMPATIBILITY ==================
 
     def step(self, **kwargs) -> None:
         """Legacy step interface for backward compatibility"""
-        self._process_legacy_step(**kwargs)
+        try:
+            # Legacy simulation if environment and actions provided
+            env = kwargs.get('env')
+            actions = kwargs.get('actions')
+            
+            if env is not None and actions is not None:
+                # Perform legacy simulation
+                simulated_trades = self.simulate_legacy(env, actions)
+                self.simulation_stats['total_simulations'] += 1
+                
+        except Exception as e:
+            self.logger.error(f"Legacy step processing failed: {e}")
 
     def simulate(self, env, actions: np.ndarray) -> List[Dict[str, Any]]:
         """Legacy simulate interface for backward compatibility"""
