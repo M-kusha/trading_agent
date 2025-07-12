@@ -1,7 +1,7 @@
 # envs/config.py
 """
-Complete Configuration System for the Trading Environment
-Includes presets, factory methods, and all required parameters
+Enhanced Configuration System for InfoBus-Integrated Trading Environment
+Includes presets, factory methods, and full InfoBus compatibility
 """
 import os
 import json
@@ -12,7 +12,7 @@ from pathlib import Path
 
 @dataclass
 class TradingConfig:
-    """Centralized configuration for the trading environment"""
+    """Centralized configuration for InfoBus-integrated trading environment"""
     
     # ═══════════════════════════════════════════════════════════════════
     # Core Environment Parameters
@@ -23,6 +23,11 @@ class TradingConfig:
     init_seed: int = 42
     max_steps_per_episode: int = field(init=False)
     
+    # InfoBus Configuration
+    info_bus_enabled: bool = True
+    info_bus_audit_level: str = "INFO"  # DEBUG, INFO, WARNING, ERROR
+    info_bus_validation: bool = True
+    
     # ═══════════════════════════════════════════════════════════════════
     # Data and Instruments
     # ═══════════════════════════════════════════════════════════════════
@@ -31,7 +36,7 @@ class TradingConfig:
     timeframes: List[str] = field(default_factory=lambda: ["H1", "H4", "D1"])
     
     # ═══════════════════════════════════════════════════════════════════
-    # Trading Parameters
+    # Trading Parameters  
     # ═══════════════════════════════════════════════════════════════════
     no_trade_penalty: float = 0.3
     consensus_min: float = 0.30
@@ -49,6 +54,11 @@ class TradingConfig:
     max_drawdown: float = 0.20
     max_correlation: float = 0.8
     
+    # Enhanced Risk Parameters for InfoBus
+    risk_check_frequency: int = 1  # Steps between risk checks
+    risk_alert_cooldown: int = 5   # Steps between similar alerts
+    max_concurrent_alerts: int = 10
+    
     # ═══════════════════════════════════════════════════════════════════
     # Training Environment
     # ═══════════════════════════════════════════════════════════════════
@@ -57,6 +67,13 @@ class TradingConfig:
     live_mode: bool = False
     enable_shadow_sim: bool = True
     enable_news_sentiment: bool = False
+    
+    # Module Enablement Flags
+    enable_meta_rl: bool = True
+    enable_memory_systems: bool = True
+    enable_strategy_evolution: bool = True
+    enable_risk_monitoring: bool = True
+    enable_visualization: bool = True
     
     # ═══════════════════════════════════════════════════════════════════
     # PPO Hyperparameters
@@ -90,22 +107,42 @@ class TradingConfig:
     n_eval_episodes: int = 5
     
     # ═══════════════════════════════════════════════════════════════════
-    # Directory Structure
+    # Enhanced Directory Structure with Rotation
     # ═══════════════════════════════════════════════════════════════════
     log_dir: str = "logs"
     log_level: str = "INFO"
+    log_rotation_lines: int = 2000  # Mandatory 2000-line rotation
     checkpoint_dir: str = "checkpoints"
     model_dir: str = "models"
     tensorboard_dir: str = "logs/tensorboard"
     
+    # InfoBus-specific directories
+    info_bus_log_dir: str = "logs/info_bus"
+    audit_log_dir: str = "logs/audit"
+    operator_log_dir: str = "logs/operator"
+    
     def __post_init__(self) -> None:
-        """Post-initialization setup"""
+        """Post-initialization setup with InfoBus support"""
         # Create the alias after dataclass finishes init
         object.__setattr__(self, "max_steps_per_episode", self.max_steps)
         
-        # Ensure directories exist
-        for directory in [self.log_dir, self.checkpoint_dir, self.model_dir, 
-                         self.tensorboard_dir, self.data_dir]:
+        # Ensure all directories exist
+        all_dirs = [
+            self.log_dir, self.checkpoint_dir, self.model_dir, 
+            self.tensorboard_dir, self.data_dir, self.info_bus_log_dir,
+            self.audit_log_dir, self.operator_log_dir
+        ]
+        
+        for directory in all_dirs:
+            Path(directory).mkdir(parents=True, exist_ok=True)
+            
+        # Create module-specific log directories
+        module_log_dirs = [
+            "logs/trading", "logs/risk", "logs/strategy", "logs/memory",
+            "logs/voting", "logs/market", "logs/position", "logs/features"
+        ]
+        
+        for directory in module_log_dirs:
             Path(directory).mkdir(parents=True, exist_ok=True)
     
     def get_model_config(self) -> Dict[str, Any]:
@@ -125,6 +162,27 @@ class TradingConfig:
             "target_kl": self.target_kl,
             "policy_hidden_size": self.policy_hidden_size,
             "value_hidden_size": self.value_hidden_size,
+        }
+    
+    def get_info_bus_config(self) -> Dict[str, Any]:
+        """Get InfoBus configuration dictionary"""
+        return {
+            "enabled": self.info_bus_enabled,
+            "audit_level": self.info_bus_audit_level,
+            "validation": self.info_bus_validation,
+            "log_dir": self.info_bus_log_dir,
+            "rotation_lines": self.log_rotation_lines,
+        }
+    
+    def get_module_config(self) -> Dict[str, Any]:
+        """Get module configuration dictionary"""
+        return {
+            "debug": self.debug,
+            "max_history": 100,
+            "audit_enabled": True,
+            "log_rotation_lines": self.log_rotation_lines,
+            "health_check_interval": 100,
+            "info_bus_enabled": self.info_bus_enabled,
         }
     
     def save_config(self, path: str):
@@ -153,61 +211,88 @@ class TradingConfig:
         return (
             f"TradingConfig(\n"
             f"  Mode: {'LIVE' if self.live_mode else ('TEST' if self.test_mode else 'BACKTEST')}\n"
+            f"  InfoBus: {'ENABLED' if self.info_bus_enabled else 'DISABLED'}\n"
             f"  Balance: ${self.initial_balance:,.2f}\n"
             f"  Max Steps: {self.max_steps}\n"
             f"  Instruments: {self.instruments}\n"
             f"  Training Steps: {self.final_training_steps:,}\n"
             f"  Learning Rate: {self.learning_rate}\n"
             f"  Risk Limits: DD={self.max_drawdown:.1%}, Exposure={self.max_total_exposure:.1%}\n"
+            f"  Log Rotation: {self.log_rotation_lines} lines\n"
             f")"
         )
 
 
 @dataclass
 class MarketState:
-    """Encapsulates current market state"""
+    """Enhanced market state with InfoBus integration"""
     balance: float
     peak_balance: float
     current_step: int
     current_drawdown: float
     last_trade_step: Dict[str, int] = field(default_factory=dict)
+    
+    # Enhanced state tracking
+    session_start_balance: float = field(init=False)
+    session_trades: int = 0
+    session_pnl: float = 0.0
+    last_info_bus_update: int = 0
+    
+    def __post_init__(self):
+        object.__setattr__(self, "session_start_balance", self.balance)
 
 
 @dataclass
 class EpisodeMetrics:
-    """Tracks episode-level metrics"""
+    """Enhanced episode metrics with InfoBus tracking"""
     pnls: List[float] = field(default_factory=list)
     durations: List[int] = field(default_factory=list)
     drawdowns: List[float] = field(default_factory=list)
     trades: List[Dict[str, Any]] = field(default_factory=list)
     votes_log: List[Dict[str, Any]] = field(default_factory=list)
     reasoning_trace: List[str] = field(default_factory=list)
+    
+    # InfoBus-specific metrics
+    info_bus_events: List[Dict[str, Any]] = field(default_factory=list)
+    module_performance: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    consensus_history: List[float] = field(default_factory=list)
+    risk_alerts: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class ConfigPresets:
-    """Preset configurations for different trading scenarios"""
+    """Enhanced preset configurations for InfoBus-integrated environment"""
     
     @staticmethod
     def conservative_live() -> TradingConfig:
-        """Conservative configuration for live trading"""
+        """Conservative configuration for live trading with InfoBus"""
         return TradingConfig(
             # Conservative risk settings
             initial_balance=1000.0,
-            max_position_pct=0.05,  # Very small positions
-            max_total_exposure=0.15,  # Low total exposure
-            max_drawdown=0.10,  # Strict drawdown limit
-            min_inst_confidence=0.75,  # High confidence required
-            consensus_min=0.50,  # Higher consensus required
+            max_position_pct=0.05,
+            max_total_exposure=0.15,
+            max_drawdown=0.10,
+            min_inst_confidence=0.75,
+            consensus_min=0.50,
             
             # Live trading settings
             live_mode=True,
             debug=False,
-            enable_shadow_sim=False,  # No simulation in live mode
+            enable_shadow_sim=False,
+            
+            # InfoBus settings
+            info_bus_enabled=True,
+            info_bus_audit_level="WARNING",  # Only important events
+            info_bus_validation=True,
+            
+            # Enhanced monitoring
+            risk_check_frequency=1,
+            risk_alert_cooldown=3,
+            max_concurrent_alerts=5,
             
             # Conservative learning
-            learning_rate=1e-4,  # Slower learning
-            ent_coef=0.001,  # Less exploration
-            n_steps=1024,  # Smaller batches
+            learning_rate=1e-4,
+            ent_coef=0.001,
+            n_steps=1024,
             
             # Shorter episodes for safety
             max_steps=100,
@@ -220,50 +305,12 @@ class ConfigPresets:
             
             # Single instrument to start
             instruments=["EUR/USD"],
-            timeframes=["H1", "H4", "D1"],  # Longer timeframes for stability
-        )
-    
-    @staticmethod
-    def aggressive_backtest() -> TradingConfig:
-        """Aggressive configuration for backtesting"""
-        return TradingConfig(
-            # Aggressive risk settings
-            initial_balance=10000.0,
-            max_position_pct=0.20,  # Larger positions
-            max_total_exposure=0.50,  # Higher exposure
-            max_drawdown=0.30,  # Allow bigger drawdowns
-            min_inst_confidence=0.40,  # Lower confidence threshold
-            consensus_min=0.20,  # Lower consensus required
-            
-            # Backtest settings
-            live_mode=False,
-            test_mode=False,
-            debug=False,
-            enable_shadow_sim=True,
-            
-            # Aggressive learning
-            learning_rate=5e-4,  # Faster learning
-            ent_coef=0.02,  # More exploration
-            n_steps=4096,  # Larger batches
-            batch_size=128,
-            
-            # Longer episodes
-            max_steps=500,
-            final_training_steps=200000,
-            
-            # Standard monitoring
-            log_interval=20,
-            checkpoint_freq=20000,
-            eval_freq=10000,
-            
-            # Multiple instruments
-            instruments=["EUR/USD", "XAU/USD", "GBP/USD"],
             timeframes=["H1", "H4", "D1"],
         )
     
     @staticmethod
     def research_mode() -> TradingConfig:
-        """Research configuration for experimentation"""
+        """Research configuration with full InfoBus debugging"""
         return TradingConfig(
             # Research settings
             initial_balance=5000.0,
@@ -271,27 +318,36 @@ class ConfigPresets:
             max_total_exposure=0.30,
             max_drawdown=0.25,
             
-            # Research mode flags
+            # Full debugging mode
             live_mode=False,
             test_mode=True,
-            debug=True,  # Full debugging
+            debug=True,
             enable_shadow_sim=True,
-            enable_news_sentiment=True,  # All features enabled
+            enable_news_sentiment=True,
+            
+            # InfoBus full debugging
+            info_bus_enabled=True,
+            info_bus_audit_level="DEBUG",  # All events
+            info_bus_validation=True,
+            
+            # Detailed monitoring
+            risk_check_frequency=1,
+            risk_alert_cooldown=1,
+            max_concurrent_alerts=20,
             
             # Fast iteration
             learning_rate=3e-4,
             n_steps=1024,
-            batch_size=32,  # Small batches for fast updates
+            batch_size=32,
             
-            # Short episodes for quick experiments
+            # Short episodes for experiments
             max_steps=100,
             final_training_steps=25000,
             
-            # Frequent logging for analysis
-            log_interval=5,
+            # Frequent logging
+            log_interval=1,
             checkpoint_freq=5000,
             eval_freq=2500,
-            n_eval_episodes=3,
             
             # Full instrument set
             instruments=["EUR/USD", "XAU/USD"],
@@ -299,72 +355,85 @@ class ConfigPresets:
         )
     
     @staticmethod
-    def demo_online() -> TradingConfig:
-        """Configuration for online demo trading"""
+    def production_backtest() -> TradingConfig:
+        """Production backtesting with balanced InfoBus monitoring"""
         return TradingConfig(
-            # Demo trading settings
-            initial_balance=2000.0,
-            max_position_pct=0.08,
-            max_total_exposure=0.25,
-            max_drawdown=0.15,
-            min_inst_confidence=0.65,
-            consensus_min=0.40,
+            # Production settings
+            initial_balance=10000.0,
+            max_position_pct=0.15,
+            max_total_exposure=0.40,
+            max_drawdown=0.25,
+            min_inst_confidence=0.50,
+            consensus_min=0.30,
             
-            # Online demo mode
-            live_mode=True,  # Use live execution
+            # Backtest mode
+            live_mode=False,
             test_mode=False,
-            debug=True,  # Keep debugging for monitoring
-            enable_shadow_sim=False,  # No simulation needed
+            debug=False,
+            enable_shadow_sim=True,
             
-            # Online learning parameters
-            learning_rate=2e-4,  # Moderate learning rate
-            ent_coef=0.015,  # Balanced exploration
-            n_steps=512,  # Smaller steps for online updates
-            batch_size=32,
-            n_epochs=5,  # Fewer epochs for faster updates
+            # Balanced InfoBus monitoring
+            info_bus_enabled=True,
+            info_bus_audit_level="INFO",
+            info_bus_validation=True,
             
-            # Real-time constraints
-            max_steps=50,  # Shorter episodes
-            final_training_steps=10000,  # Continuous learning
+            # Standard monitoring
+            risk_check_frequency=1,
+            risk_alert_cooldown=5,
+            max_concurrent_alerts=10,
             
-            # Real-time monitoring
-            log_interval=1,  # Log every step
-            checkpoint_freq=1000,
-            eval_freq=500,
+            # Production learning
+            learning_rate=3e-4,
+            n_steps=2048,
+            batch_size=64,
             
-            # Focus on major pairs
+            # Full episodes
+            max_steps=200,
+            final_training_steps=100000,
+            
+            # Standard monitoring
+            log_interval=10,
+            checkpoint_freq=10000,
+            eval_freq=5000,
+            
+            # Multiple instruments
             instruments=["EUR/USD", "XAU/USD"],
             timeframes=["H1", "H4", "D1"],
         )
-    
-    @staticmethod
-    def get_available_presets() -> List[str]:
-        """Get list of available preset names"""
-        return ["conservative", "aggressive", "research", "demo_online"]
 
 
 class ConfigFactory:
-    """Factory for creating and modifying configurations"""
+    """Enhanced factory for creating InfoBus-compatible configurations"""
     
     @staticmethod
     def create_config(
         mode: str = "backtest",
         risk_level: str = "moderate",
+        info_bus_level: str = "auto",
         **overrides
     ) -> TradingConfig:
-        """Create configuration with specified parameters"""
+        """Create configuration with InfoBus integration"""
         
         # Base configurations by mode
         if mode == "live":
             config = ConfigPresets.conservative_live()
-        elif mode == "demo":
-            config = ConfigPresets.demo_online()
         elif mode == "research":
             config = ConfigPresets.research_mode()
-        elif mode == "aggressive":
-            config = ConfigPresets.aggressive_backtest()
+        elif mode == "production":
+            config = ConfigPresets.production_backtest()
         else:  # backtest
             config = TradingConfig()
+        
+        # Adjust InfoBus level
+        if info_bus_level == "auto":
+            if config.debug:
+                config.info_bus_audit_level = "DEBUG"
+            elif config.live_mode:
+                config.info_bus_audit_level = "WARNING"
+            else:
+                config.info_bus_audit_level = "INFO"
+        else:
+            config.info_bus_audit_level = info_bus_level.upper()
         
         # Adjust risk level
         if risk_level == "conservative":
@@ -372,13 +441,17 @@ class ConfigFactory:
             config.max_total_exposure *= 0.7
             config.max_drawdown *= 0.8
             config.min_inst_confidence = min(config.min_inst_confidence + 0.1, 0.9)
+            config.risk_check_frequency = 1  # More frequent checks
+            config.risk_alert_cooldown = 3   # Faster alerts
         elif risk_level == "aggressive":
             config.max_position_pct *= 1.5
             config.max_total_exposure *= 1.3
             config.max_drawdown *= 1.2
             config.min_inst_confidence = max(config.min_inst_confidence - 0.1, 0.3)
+            config.risk_check_frequency = 2  # Less frequent checks
+            config.risk_alert_cooldown = 10  # Slower alerts
         
-        # Apply any overrides
+        # Apply overrides
         for key, value in overrides.items():
             if hasattr(config, key):
                 setattr(config, key, value)
@@ -386,131 +459,73 @@ class ConfigFactory:
                 print(f"Warning: Unknown config parameter '{key}'")
         
         return config
-    
-    @staticmethod
-    def quick_config(
-        balance: float = 3000.0,
-        instruments: List[str] = None,
-        live: bool = False,
-        debug: bool = True
-    ) -> TradingConfig:
-        """Quick configuration for common use cases"""
-        if instruments is None:
-            instruments = ["EUR/USD"]
-        
-        return TradingConfig(
-            initial_balance=balance,
-            instruments=instruments,
-            live_mode=live,
-            debug=debug,
-            max_steps=200 if not live else 50,
-            final_training_steps=50000 if not live else 10000,
-        )
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Configuration Validation
+# Configuration Validation with InfoBus Checks
 # ═══════════════════════════════════════════════════════════════════
 
 def validate_config(config: TradingConfig) -> List[str]:
-    """Validate configuration and return list of warnings/errors"""
+    """Enhanced validation with InfoBus compatibility checks"""
     warnings = []
     
-    # Risk validation
+    # Standard risk validation
     if config.max_total_exposure > 1.0:
-        warnings.append("Total exposure > 100% is very risky")
+        warnings.append("⚠️ Total exposure > 100% is very risky")
     
     if config.max_drawdown > 0.5:
-        warnings.append("Max drawdown > 50% is extremely risky")
+        warnings.append("⚠️ Max drawdown > 50% is extremely risky")
     
     if config.max_position_pct > 0.3:
-        warnings.append("Position size > 30% per trade is very risky")
+        warnings.append("⚠️ Position size > 30% per trade is very risky")
     
-    # Training validation
-    if config.learning_rate > 1e-3:
-        warnings.append("Learning rate might be too high")
-    
-    if config.batch_size > config.n_steps:
-        warnings.append("Batch size should not exceed n_steps")
+    # InfoBus validation
+    if config.info_bus_enabled:
+        if config.info_bus_audit_level not in ["DEBUG", "INFO", "WARNING", "ERROR"]:
+            warnings.append("⚠️ Invalid InfoBus audit level")
+        
+        if config.risk_check_frequency < 1:
+            warnings.append("⚠️ Risk check frequency too low for InfoBus")
+        
+        if config.log_rotation_lines > 5000:
+            warnings.append("⚠️ Log rotation lines > 5000 may impact performance")
     
     # Live mode validation
     if config.live_mode:
-        if config.debug and config.max_position_pct > 0.1:
-            warnings.append("Large positions in live mode - consider reducing")
+        if not config.info_bus_enabled:
+            warnings.append("⚠️ InfoBus recommended for live trading")
         
-        if config.final_training_steps > 50000:
-            warnings.append("Very long training in live mode")
+        if config.debug and config.max_position_pct > 0.1:
+            warnings.append("⚠️ Large positions in live debug mode")
     
     return warnings
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Utility Functions
-# ═══════════════════════════════════════════════════════════════════
-
-def print_config_comparison(config1: TradingConfig, config2: TradingConfig):
-    """Print comparison between two configurations"""
-    print("Configuration Comparison:")
-    print("=" * 50)
-    
-    for field in config1.__dataclass_fields__:
-        val1 = getattr(config1, field)
-        val2 = getattr(config2, field)
-        
-        if val1 != val2:
-            print(f"{field:25} | {val1:15} | {val2:15}")
-
-
-def get_config_summary(config: TradingConfig) -> Dict[str, Any]:
-    """Get a summary of key configuration parameters"""
-    return {
-        "mode": "LIVE" if config.live_mode else ("TEST" if config.test_mode else "BACKTEST"),
-        "balance": config.initial_balance,
-        "risk_level": "HIGH" if config.max_drawdown > 0.25 else ("LOW" if config.max_drawdown < 0.15 else "MEDIUM"),
-        "instruments": len(config.instruments),
-        "training_steps": config.final_training_steps,
-        "learning_rate": config.learning_rate,
-    }
-
-
-# ═══════════════════════════════════════════════════════════════════
-# Example Usage and Testing
+# Example Usage
 # ═══════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    print("🔧 Trading Configuration System")
-    print("=" * 60)
+    print("🔧 Enhanced Trading Configuration System with InfoBus")
+    print("=" * 70)
     
-    # Test different presets
+    # Test configurations
     configs = {
         "Conservative Live": ConfigPresets.conservative_live(),
-        "Aggressive Backtest": ConfigPresets.aggressive_backtest(),
         "Research Mode": ConfigPresets.research_mode(),
-        "Demo Online": ConfigPresets.demo_online(),
+        "Production Backtest": ConfigPresets.production_backtest(),
     }
     
     for name, config in configs.items():
         print(f"\n📋 {name}:")
-        summary = get_config_summary(config)
-        for key, value in summary.items():
-            print(f"  {key:15}: {value}")
+        print(f"  InfoBus: {config.info_bus_enabled} ({config.info_bus_audit_level})")
+        print(f"  Risk Level: {config.max_drawdown:.1%} DD, {config.max_total_exposure:.1%} Exposure")
+        print(f"  Log Rotation: {config.log_rotation_lines} lines")
         
-        # Validate
         warnings = validate_config(config)
         if warnings:
-            print(f"  ⚠️  Warnings: {len(warnings)}")
-            for warning in warnings[:2]:  # Show first 2
+            print(f"  ⚠️ Warnings: {len(warnings)}")
+            for warning in warnings[:2]:
                 print(f"    - {warning}")
     
-    # Test factory
-    print(f"\n🏭 Factory Examples:")
-    custom_config = ConfigFactory.create_config(
-        mode="live",
-        risk_level="conservative",
-        initial_balance=5000.0,
-        instruments=["EUR/USD", "GBP/USD"]
-    )
-    print(f"Custom config balance: ${custom_config.initial_balance}")
-    print(f"Custom config instruments: {custom_config.instruments}")
-    
-    print("\n✅ Configuration system test completed!")
+    print("\n✅ Enhanced configuration system test completed!")

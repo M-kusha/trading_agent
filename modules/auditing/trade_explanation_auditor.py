@@ -1,326 +1,430 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/auditing/trade_explanation_auditor.py
+# ENHANCED: Trade auditor using SmartInfoBus architecture
 # ─────────────────────────────────────────────────────────────
-import logging
+
 import numpy as np
 import datetime
 from typing import Dict, Any, List, Optional
-from modules.core.core import Module
-from modules.utils.info_bus import InfoBus, TradeInfo
+from collections import deque
 
-class TradeExplanationAuditor(Module):
+# ✅ FIXED: Proper imports for SmartInfoBus system
+from modules.core.module_base import BaseModule, module
+from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusRiskMixin
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.audit_utils import format_operator_message
 
-    # trade_explanation_auditor.py
+
+@module(
+    provides=['trade_explanations', 'audit_alerts', 'explanation_metrics'],
+    requires=['trading_signal', 'market_data', 'trades'],
+    category='auditing',
+    is_voting_member=False,
+    hot_reload=True,
+    explainable=True,
+    timeout_ms=100,
+    priority=3,
+    version="2.0.0"
+)
+class TradeExplanationAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin):
     """
-    Enhanced trade explanation auditor integrated with InfoBus.
-    Provides comprehensive audit trail for every trading decision.
+    🔍 PRODUCTION-GRADE Trade Explanation Auditor
+    
+    Advanced trade auditing with:
+    - Real-time explanation validation
+    - Confidence tracking and alerting
+    - Pattern recognition for trade quality
+    - NASA/MILITARY GRADE reliability patterns
     """
     
-    def __init__(self, history_len: int = 100, debug: bool = True):
-        super().__init__()
-        # immediately turn any floating‐point invalid operation into an exception
-        np.seterr(all='raise')
-
-        self.history_len = history_len
-        self.debug = debug
-        self.reset()
-
-        # set up a dedicated logger
-        self.logger = logging.getLogger(f"TradeExplanationAuditor_{id(self)}")
-        self.logger.setLevel(logging.DEBUG)
-        self.logger.propagate = False
-
+    def _initialize(self):
+        """Initialize trade auditor with SmartInfoBus integration"""
+        # Initialize base mixins
+        self._initialize_trading_state()
         
+        # Auditor-specific state
+        self.trade_explanations = deque(maxlen=1000)
+        self.session_start = datetime.datetime.now()
+        self.explanation_cache = {}
+        
+        # Quality metrics
+        self.quality_metrics = {
+            'total_trades_audited': 0,
+            'high_confidence_trades': 0,
+            'low_confidence_trades': 0,
+            'missing_explanations': 0,
+            'pattern_violations': 0
+        }
+        
+        # Alert thresholds
+        self.alert_thresholds = {
+            'low_confidence_rate': 0.3,  # Alert if >30% low confidence
+            'missing_explanation_rate': 0.1,  # Alert if >10% missing explanations
+            'pattern_violation_rate': 0.15  # Alert if >15% pattern violations
+        }
+        
+        self.logger.info(f"🔍 {self.__class__.__name__} initialized with explanation auditing")
+    
     def reset(self) -> None:
-        """Reset audit history"""
-        self.explanations: List[Dict[str, Any]] = []
-        self.step_counter = 0
-        self.trade_summaries: Dict[str, Dict[str, Any]] = {}
-        self.module_contributions: Dict[str, List[float]] = {}
+        """Reset with automatic infrastructure cleanup"""
+        super().reset()
         
-    def step(self, info_bus: Optional[InfoBus] = None, **kwargs) -> None:
-        """Process step from InfoBus or kwargs"""
-        if info_bus:
-            self._process_info_bus(info_bus)
+        # Module-specific reset
+        self.trade_explanations.clear()
+        self.session_start = datetime.datetime.now()
+        self.explanation_cache.clear()
+        self.quality_metrics = {
+            'total_trades_audited': 0,
+            'high_confidence_trades': 0,
+            'low_confidence_trades': 0,
+            'missing_explanations': 0,
+            'pattern_violations': 0
+        }
+        
+        self.logger.info("🔄 Trade explanation auditor reset complete")
+    
+    async def process(self, **inputs) -> Dict[str, Any]:
+        """
+        🔍 MAIN AUDITING PROCESS
+        
+        Audits trade explanations and generates quality metrics:
+        1. Extract trade and explanation data
+        2. Validate explanation quality and completeness
+        3. Detect patterns and anomalies
+        4. Generate alerts for quality issues
+        """
+        try:
+            # Extract audit context
+            context = self._extract_audit_context(inputs)
+            
+            # Process trades for explanation auditing
+            processed_trades = self._process_trade_explanations(inputs, context)
+            
+            # Create explanation analysis
+            explanation_analysis = self._analyze_explanations(processed_trades, context)
+            
+            # Check for alerts
+            alerts = self._check_for_alerts(explanation_analysis, context)
+            
+            # Update quality metrics
+            self._update_quality_metrics(explanation_analysis)
+            
+            # Generate thesis
+            thesis = self._generate_explanation_thesis(explanation_analysis, alerts)
+            
+            # Store results in SmartInfoBus
+            smart_bus = InfoBusManager.get_instance()
+            smart_bus.set(
+                'trade_explanations',
+                explanation_analysis,
+                module=self.__class__.__name__,
+                thesis=thesis,
+                confidence=explanation_analysis.get('overall_confidence', 0.7)
+            )
+            
+            return {
+                'trade_explanations': explanation_analysis,
+                'audit_alerts': alerts,
+                'explanation_metrics': self.quality_metrics,
+                '_thesis': thesis
+            }
+            
+        except Exception as e:
+            self.logger.error(f"❌ Explanation audit failed: {e}")
+            return {
+                'trade_explanations': {'error': str(e)},
+                'audit_alerts': [{'type': 'audit_failure', 'message': str(e)}],
+                'explanation_metrics': self.quality_metrics,
+                '_thesis': f"Trade explanation audit encountered error: {str(e)}"
+            }
+    
+    def _extract_audit_context(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract context for explanation auditing"""
+        return {
+            'trading_signal': inputs.get('trading_signal', {}),
+            'market_data': inputs.get('market_data', {}),
+            'trades': inputs.get('trades', []),
+            'timestamp': inputs.get('timestamp', datetime.datetime.now()),
+            'step_idx': inputs.get('step_idx', 0),
+            'risk_score': 0.5  # Default risk score - can be enhanced later
+        }
+    
+    def _process_trade_explanations(self, inputs: Dict[str, Any], context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Process and validate trade explanations"""
+        processed_trades = []
+        trades = context.get('trades', [])
+        
+        for trade in trades:
+            explanation = self._audit_single_trade_explanation(trade, context)
+            if explanation:
+                processed_trades.append(explanation)
+                self.trade_explanations.append(explanation)
+        
+        return processed_trades
+    
+    def _audit_single_trade_explanation(self, trade: Dict[str, Any], context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Audit explanation for a single trade"""
+        try:
+            trade_explanation = {
+                'trade_id': f"{trade.get('symbol', 'UNK')}_{trade.get('timestamp', '')}",
+                'symbol': trade.get('symbol'),
+                'action': trade.get('action', 'unknown'),
+                'pnl': trade.get('pnl', 0),
+                'explanation_quality': 0.0,
+                'confidence': trade.get('confidence', 0.5),
+                'has_thesis': bool(trade.get('reason') or trade.get('_thesis')),
+                'market_regime': context.get('market_regime', 'unknown'),
+                'risk_level': 'high' if context['risk_score'] > 0.7 else 'normal',
+                'processed_at': datetime.datetime.now().isoformat(),
+                'quality_issues': []
+            }
+            
+            # Validate explanation quality
+            self._validate_explanation_quality(trade_explanation, trade)
+            
+            # Log significant trades automatically
+            if abs(trade_explanation['pnl']) > 50 or trade_explanation['explanation_quality'] < 0.5:
+                emoji = "🎉" if trade_explanation['pnl'] > 0 else "⚠️"
+                quality_emoji = "✅" if trade_explanation['explanation_quality'] > 0.7 else "❌"
+                
+                self.logger.info(
+                    format_operator_message(
+                        emoji,
+                        f"Trade audit: {trade_explanation['symbol']} ${trade_explanation['pnl']:.2f}",
+                        quality=f"{quality_emoji} {trade_explanation['explanation_quality']:.1%}",
+                        confidence=f"{trade_explanation['confidence']:.1%}",
+                        context="trade_audit"
+                    )
+                )
+            
+            return trade_explanation
+            
+        except Exception as e:
+            self.logger.error(f"❌ Failed to audit trade explanation: {e}")
+            return None
+    
+    def _validate_explanation_quality(self, trade_explanation: Dict[str, Any], trade: Dict[str, Any]):
+        """Validate and score explanation quality"""
+        quality_score = 0.0
+        issues = []
+        
+        # Check for thesis/reason
+        if trade_explanation['has_thesis']:
+            quality_score += 0.4
         else:
-            self._process_kwargs(**kwargs)
-            
-    def _process_info_bus(self, info_bus: InfoBus) -> None:
-        """Extract explanation from InfoBus"""
-        # Process any new trades
-        for trade in info_bus.get('recent_trades', []):
-            self._record_trade_explanation(trade, info_bus)
-            
-        # Record step explanation
-        explanation = {
-            'timestamp': info_bus.get('timestamp', datetime.datetime.now().isoformat()),
-            'step': info_bus.get('step_idx', self.step_counter),
-            'episode': info_bus.get('episode_idx', 0),
-            'consensus': info_bus.get('consensus', 0.5),
-            'market_regime': info_bus.get('market_context', {}).get('regime', 'unknown'),
-            'positions': len(info_bus.get('positions', [])),
-            'pnl_today': info_bus.get('pnl_today', 0.0),
-            'alerts': info_bus.get('alerts', []),
-            'votes': self._summarize_votes(info_bus.get('votes', [])),
-            'risk_status': self._extract_risk_status(info_bus.get('risk', {}))
-        }
+            issues.append('missing_thesis')
         
-        self._add_explanation(explanation)
+        # Check confidence level
+        confidence = trade_explanation['confidence']
+        if confidence > 0.7:
+            quality_score += 0.3
+        elif confidence < 0.3:
+            issues.append('low_confidence')
+            quality_score += 0.1
+        else:
+            quality_score += 0.2
         
-    def _process_kwargs(self, **kwargs) -> None:
-        """Legacy kwargs processing"""
-        explanation = {
-            'timestamp': datetime.datetime.now().isoformat(),
-            'step': self.step_counter,
-            'action': kwargs.get('action'),
-            'order_status': kwargs.get('order_status'),
-            'reasoning': kwargs.get('reasoning'),
-            'confidence': kwargs.get('confidence'),
-            'regime': kwargs.get('regime'),
-            'voting': kwargs.get('voting'),
-            'pnl': kwargs.get('pnl'),
-            'modules_trace': kwargs.get('modules_trace'),
-            'exception': str(kwargs.get('exception')) if kwargs.get('exception') else None
-        }
+        # Check for action clarity
+        if trade_explanation['action'] in ['buy', 'sell', 'hold']:
+            quality_score += 0.2
+        else:
+            issues.append('unclear_action')
         
-        self._add_explanation(explanation)
+        # Check for risk assessment
+        if 'risk_assessment' in trade:
+            quality_score += 0.1
+        else:
+            issues.append('missing_risk_assessment')
         
-    def _record_trade_explanation(self, trade: TradeInfo, info_bus: InfoBus) -> None:
-        """Create detailed explanation for a specific trade"""
-        trade_id = f"{trade['symbol']}_{trade['timestamp']}"
+        trade_explanation['explanation_quality'] = quality_score
+        trade_explanation['quality_issues'] = issues
+    
+    def _analyze_explanations(self, processed_trades: List[Dict[str, Any]], context: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze overall explanation quality and patterns"""
+        if not processed_trades:
+            return {
+                'trade_count': 0,
+                'avg_quality': 1.0,
+                'avg_confidence': 1.0,
+                'overall_confidence': 1.0,
+                'pattern_analysis': 'No trades to analyze'
+            }
         
-        explanation = {
-            'trade_id': trade_id,
-            'symbol': trade['symbol'],
-            'side': trade['side'],
-            'size': trade['size'],
-            'price': trade['price'],
-            'pnl': trade['pnl'],
-            'reason': trade.get('reason', 'unknown'),
-            'confidence': trade.get('confidence', 0.5),
-            'market_context': {
-                'regime': info_bus.get('market_context', {}).get('regime'),
-                'volatility': info_bus.get('market_context', {}).get('volatility', {}).get(trade['symbol']),
-                'session': info_bus.get('market_status', {}).get('session')
-            },
-            'risk_metrics': {
-                'drawdown': info_bus.get('risk', {}).get('current_drawdown', 0),
-                'exposure': info_bus.get('risk', {}).get('margin_used', 0),
-                'var': info_bus.get('risk', {}).get('var_95', 0)
-            },
-            'module_votes': self._get_module_votes_for_trade(trade, info_bus.get('votes', []))
-        }
+        # Calculate averages
+        total_quality = sum(t['explanation_quality'] for t in processed_trades)
+        total_confidence = sum(t['confidence'] for t in processed_trades)
         
-        self.trade_summaries[trade_id] = explanation
+        avg_quality = total_quality / len(processed_trades)
+        avg_confidence = total_confidence / len(processed_trades)
         
-        if self.debug:
-            print(f"[TradeExplanationAuditor] Trade {trade_id}: {trade['side']} "
-                  f"{trade['size']} @ {trade['price']}, PnL: {trade['pnl']:.2f}")
-            
-    def _summarize_votes(self, votes: List[Dict]) -> Dict[str, Any]:
-        """Summarize voting patterns without ever producing a NaN."""
-        # collect only real numeric confidences
-        confidences = [
-            v.get('confidence', 0.0)
-            for v in votes
-            if isinstance(v.get('confidence', None), (int, float))
-        ]
-        avg_confidence = float(np.mean(confidences)) if confidences else 0.0
-
-        summary = {
-            'total_votes': len(votes),
+        # Analyze patterns
+        missing_thesis_count = len([t for t in processed_trades if not t['has_thesis']])
+        low_confidence_count = len([t for t in processed_trades if t['confidence'] < 0.5])
+        
+        # Pattern analysis
+        pattern_analysis = f"Quality: {avg_quality:.1%}, Confidence: {avg_confidence:.1%}"
+        if missing_thesis_count > 0:
+            pattern_analysis += f", Missing thesis: {missing_thesis_count}"
+        if low_confidence_count > 0:
+            pattern_analysis += f", Low confidence: {low_confidence_count}"
+        
+        return {
+            'trade_count': len(processed_trades),
+            'avg_quality': avg_quality,
             'avg_confidence': avg_confidence,
-            'consensus_direction': self._calculate_consensus_direction(votes),
-            'top_modules': self._get_top_voting_modules(votes)
+            'overall_confidence': min(avg_quality, avg_confidence),
+            'missing_thesis_count': missing_thesis_count,
+            'low_confidence_count': low_confidence_count,
+            'pattern_analysis': pattern_analysis,
+            'detailed_trades': processed_trades[-10:]  # Keep last 10 for debugging
         }
-        return summary
-
+    
+    def _check_for_alerts(self, analysis: Dict[str, Any], context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Generate alerts based on explanation quality"""
+        alerts = []
         
-    def _calculate_consensus_direction(self, votes: List[Dict]) -> str:
-        """Determine overall voting direction"""
-        directions = []
-        for vote in votes:
-            action = vote.get('action')
-            if isinstance(action, (list, np.ndarray)):
-                # Assume first element is direction
-                directions.append(np.sign(action[0]) if len(action) > 0 else 0)
-            else:
-                directions.append(np.sign(float(action)) if action else 0)
-                
-        avg_direction = np.mean(directions) if directions else 0
+        if analysis['trade_count'] == 0:
+            return alerts
         
-        if avg_direction > 0.1:
-            return "bullish"
-        elif avg_direction < -0.1:
-            return "bearish"
+        # Check explanation quality alerts
+        if analysis['avg_quality'] < 0.5:
+            alerts.append({
+                'type': 'low_explanation_quality',
+                'severity': 'high',
+                'message': f"Low explanation quality detected: {analysis['avg_quality']:.1%}",
+                'avg_quality': analysis['avg_quality'],
+                'timestamp': datetime.datetime.now().isoformat()
+            })
+        
+        # Check confidence alerts
+        if analysis['avg_confidence'] < 0.4:
+            alerts.append({
+                'type': 'low_confidence_pattern',
+                'severity': 'medium',
+                'message': f"Low confidence pattern detected: {analysis['avg_confidence']:.1%}",
+                'avg_confidence': analysis['avg_confidence'],
+                'timestamp': datetime.datetime.now().isoformat()
+            })
+        
+        # Check missing thesis rate
+        missing_rate = analysis['missing_thesis_count'] / analysis['trade_count']
+        if missing_rate > self.alert_thresholds['missing_explanation_rate']:
+            alerts.append({
+                'type': 'missing_explanations',
+                'severity': 'medium',
+                'message': f"High rate of missing explanations: {missing_rate:.1%}",
+                'missing_count': analysis['missing_thesis_count'],
+                'total_count': analysis['trade_count'],
+                'timestamp': datetime.datetime.now().isoformat()
+            })
+        
+        # Risk-based alerts
+        if context['risk_score'] > 0.8 and analysis['avg_confidence'] < 0.6:
+            alerts.append({
+                'type': 'high_risk_low_confidence',
+                'severity': 'critical',
+                'message': "High risk environment with low confidence trades",
+                'risk_score': context['risk_score'],
+                'confidence': analysis['avg_confidence'],
+                'timestamp': datetime.datetime.now().isoformat()
+            })
+        
+        return alerts
+    
+    def _update_quality_metrics(self, analysis: Dict[str, Any]):
+        """Update running quality metrics"""
+        self.quality_metrics['total_trades_audited'] += analysis['trade_count']
+        
+        if analysis['trade_count'] > 0:
+            high_conf_trades = analysis['trade_count'] - analysis['low_confidence_count']
+            self.quality_metrics['high_confidence_trades'] += high_conf_trades
+            self.quality_metrics['low_confidence_trades'] += analysis['low_confidence_count']
+            self.quality_metrics['missing_explanations'] += analysis['missing_thesis_count']
+            
+            # Pattern violations (trades with multiple quality issues)
+            pattern_violations = sum(1 for trade in analysis.get('detailed_trades', []) 
+                                   if len(trade.get('quality_issues', [])) > 2)
+            self.quality_metrics['pattern_violations'] += pattern_violations
+    
+    def _generate_explanation_thesis(self, analysis: Dict[str, Any], alerts: List[Dict[str, Any]]) -> str:
+        """Generate explanation audit thesis"""
+        if analysis['trade_count'] == 0:
+            return "No trades processed for explanation auditing in this cycle."
+        
+        quality = analysis['avg_quality']
+        confidence = analysis['avg_confidence']
+        
+        if quality > 0.8 and confidence > 0.7:
+            thesis = f"Excellent explanation quality detected with {analysis['trade_count']} trades audited. "
+            thesis += f"Average quality: {quality:.1%}, confidence: {confidence:.1%}."
+        elif quality > 0.6 and confidence > 0.5:
+            thesis = f"Good explanation quality with {analysis['trade_count']} trades audited. "
+            thesis += f"Quality: {quality:.1%}, confidence: {confidence:.1%}."
         else:
-            return "neutral"
-            
-    def _get_top_voting_modules(self, votes: List[Dict]) -> List[str]:
-        """Get modules with highest confidence"""
-        sorted_votes = sorted(votes, key=lambda v: v.get('confidence', 0), reverse=True)
-        return [v.get('module', 'unknown') for v in sorted_votes[:3]]
+            thesis = f"Explanation quality needs improvement. {analysis['trade_count']} trades audited. "
+            thesis += f"Quality: {quality:.1%}, confidence: {confidence:.1%}."
         
-    def _extract_risk_status(self, risk: Dict) -> Dict[str, Any]:
-        """Extract key risk metrics"""
-        return {
-            'drawdown': risk.get('current_drawdown', 0),
-            'exposure': risk.get('margin_used', 0) / max(risk.get('equity', 1), 1),
-            'position_count': len(risk.get('open_positions', [])),
-            'at_risk_limit': risk.get('current_drawdown', 0) > 0.9 * risk.get('dd_limit', 0.3)
-        }
+        if alerts:
+            thesis += f" Generated {len(alerts)} quality alerts requiring attention."
         
-    def _get_module_votes_for_trade(self, trade: TradeInfo, votes: List[Dict]) -> List[Dict]:
-        """Extract votes relevant to this trade"""
-        relevant_votes = []
-        for vote in votes:
-            if vote.get('instrument') == trade['symbol']:
-                relevant_votes.append({
-                    'module': vote.get('module'),
-                    'confidence': vote.get('confidence'),
-                    'reasoning': vote.get('reasoning')
-                })
-        return relevant_votes
+        return thesis
+    
+    def generate_detailed_report(self) -> str:
+        """Generate comprehensive explanation audit report"""
+        session_duration = (datetime.datetime.now() - self.session_start).total_seconds() / 3600
+        total_audited = self.quality_metrics['total_trades_audited']
         
-    def _add_explanation(self, explanation: Dict[str, Any]) -> None:
-        """Add explanation to history with size management"""
-        self.explanations.append(explanation)
-        self.step_counter += 1
+        if total_audited == 0:
+            return "No trades have been audited yet."
         
-        if len(self.explanations) > self.history_len:
-            self.explanations.pop(0)
-            
-    def get_trade_analysis(self, n_recent: int = 10) -> Dict[str, Any]:
-        """Analyze recent trades for patterns"""
-        recent_trades = list(self.trade_summaries.values())[-n_recent:]
+        high_conf_rate = self.quality_metrics['high_confidence_trades'] / total_audited
+        missing_rate = self.quality_metrics['missing_explanations'] / total_audited
+        violation_rate = self.quality_metrics['pattern_violations'] / total_audited
         
-        if not recent_trades:
-            return {}
-            
-        analysis = {
-            'total_trades': len(recent_trades),
-            'total_pnl': sum(t['pnl'] for t in recent_trades),
-            'win_rate': sum(1 for t in recent_trades if t['pnl'] > 0) / len(recent_trades),
-            'avg_confidence': np.mean([t['confidence'] for t in recent_trades]),
-            'regime_breakdown': self._analyze_by_regime(recent_trades),
-            'reason_breakdown': self._analyze_by_reason(recent_trades)
-        }
-        
-        return analysis
-        
-    def _analyze_by_regime(self, trades: List[Dict]) -> Dict[str, Any]:
-        """Analyze performance by market regime"""
-        regime_stats = {}
-        for trade in trades:
-            regime = trade.get('market_context', {}).get('regime', 'unknown')
-            if regime not in regime_stats:
-                regime_stats[regime] = {'count': 0, 'pnl': 0, 'wins': 0}
-            regime_stats[regime]['count'] += 1
-            regime_stats[regime]['pnl'] += trade['pnl']
-            if trade['pnl'] > 0:
-                regime_stats[regime]['wins'] += 1
-                
-        # Calculate win rates
-        for regime, stats in regime_stats.items():
-            stats['win_rate'] = stats['wins'] / stats['count'] if stats['count'] > 0 else 0
-            
-        return regime_stats
-        
-    def _analyze_by_reason(self, trades: List[Dict]) -> Dict[str, int]:
-        """Count trades by reason"""
-        reason_counts = {}
-        for trade in trades:
-            reason = trade.get('reason', 'unknown')
-            reason_counts[reason] = reason_counts.get(reason, 0) + 1
-        return reason_counts
-        
-    def get_observation_components(self) -> np.ndarray:
+        return f"""
+🔍 TRADE EXPLANATION AUDIT REPORT
+═══════════════════════════════════════
+📅 Session Duration: {session_duration:.1f} hours
+📊 Total Trades Audited: {total_audited}
+
+📈 EXPLANATION QUALITY METRICS
+• High Confidence Rate: {high_conf_rate:.1%}
+• Missing Explanations: {missing_rate:.1%}
+• Pattern Violations: {violation_rate:.1%}
+
+⚠️ QUALITY ALERTS
+• Low Confidence: {self.quality_metrics['low_confidence_trades']}
+• Missing Explanations: {self.quality_metrics['missing_explanations']}
+• Pattern Violations: {self.quality_metrics['pattern_violations']}
+
+🎯 RECOMMENDATIONS
+• Target explanation completeness >90%
+• Maintain confidence levels >70%
+• Monitor pattern violations <10%
         """
-        Build a 6‐dim vector of audit metrics.
-        If anything is ever NaN or infinite, we log the full vector and raise.
-        """
-        if not self.explanations:
-            obs = np.zeros(6, dtype=np.float32)
-        else:
-            recent = self.explanations[-10:]
-            # safe average confidence
-            confs = [
-                e['confidence']
-                for e in recent
-                if isinstance(e.get('confidence', None), (int, float))
-            ]
-            avg_conf = float(np.mean(confs)) if confs else 0.0
-
-            ta = self.get_trade_analysis()
-            obs = np.array([
-                float(len(self.explanations)),        # total steps recorded
-                avg_conf,                             # average confidence over last 10
-                ta.get('win_rate', 0.5),              # win rate
-                ta.get('total_pnl', 0.0) / 100.0,     # normalized PnL
-                float(len(self.trade_summaries)),     # number of trades
-                float(self.step_counter)              # steps since reset
-            ], dtype=np.float32)
-
-        # Fail fast if anything is non‐finite
-        if not np.all(np.isfinite(obs)):
-            self.logger.exception("🛑 Non‐finite in auditor obs: %r", obs)
-            raise ValueError(f"Invalid values in audit observation: {obs!r}")
-
-        return obs
+    
+    def get_explanation_statistics(self) -> Dict[str, Any]:
+        """Get detailed explanation statistics"""
+        if not self.trade_explanations:
+            return {'error': 'No explanations available'}
         
-    def generate_report(self) -> str:
-        """Generate human-readable audit report"""
-        analysis = self.get_trade_analysis()
+        recent_explanations = list(self.trade_explanations)[-100:]  # Last 100
         
-        report = f"""
-Trade Explanation Audit Report
-==============================
-Generated: {datetime.datetime.now().isoformat()}
-Total Steps: {self.step_counter}
-Total Trades: {len(self.trade_summaries)}
-
-Performance Summary:
-- Total P&L: ${analysis.get('total_pnl', 0):.2f}
-- Win Rate: {analysis.get('win_rate', 0):.1%}
-- Avg Confidence: {analysis.get('avg_confidence', 0):.2f}
-
-Regime Analysis:
-"""
-        for regime, stats in analysis.get('regime_breakdown', {}).items():
-            report += f"- {regime}: {stats['count']} trades, "
-            report += f"${stats['pnl']:.2f} P&L, {stats['win_rate']:.1%} win rate\n"
-            
-        report += "\nTop Trade Reasons:\n"
-        for reason, count in sorted(analysis.get('reason_breakdown', {}).items(), 
-                                   key=lambda x: x[1], reverse=True)[:5]:
-            report += f"- {reason}: {count} trades\n"
-            
-        return report
+        avg_quality = sum(exp['explanation_quality'] for exp in recent_explanations) / len(recent_explanations)
+        avg_confidence = sum(exp['confidence'] for exp in recent_explanations) / len(recent_explanations)
         
-    def get_state(self) -> Dict[str, Any]:
-        """Save complete audit state"""
         return {
-            'explanations': self.explanations.copy(),
-            'step_counter': self.step_counter,
-            'trade_summaries': self.trade_summaries.copy(),
-            'module_contributions': self.module_contributions.copy()
+            'total_explanations': len(self.trade_explanations),
+            'recent_explanations': len(recent_explanations),
+            'avg_quality': avg_quality,
+            'avg_confidence': avg_confidence,
+            'quality_metrics': self.quality_metrics,
+            'session_duration_hours': (datetime.datetime.now() - self.session_start).total_seconds() / 3600
         }
-        
-    def set_state(self, state: Dict[str, Any]) -> None:
-        """Restore audit state"""
-        self.explanations = state.get('explanations', []).copy()
-        self.step_counter = state.get('step_counter', 0)
-        self.trade_summaries = state.get('trade_summaries', {}).copy()
-        self.module_contributions = state.get('module_contributions', {}).copy()
-        
-    def export_as_jsonl(self, path: str) -> None:
-        """Export audit trail as JSONL"""
-        import json
-        with open(path, 'w', encoding='utf-8') as f:
-            for exp in self.explanations:
-                f.write(json.dumps(exp, default=str) + '\n')
-                
-    def to_dataframe(self):
-        """Convert to pandas DataFrame for analysis"""
-        import pandas as pd
-        return pd.DataFrame(self.explanations)
+
+
+# ────────────────────────────────────────────────────────────────────────────────
+# 🔍 MODULE REGISTRATION
+# ────────────────────────────────────────────────────────────────────────────────
+# Module is automatically discovered and registered via @module decorator
+# No manual registration needed - SmartInfoBus handles everything!

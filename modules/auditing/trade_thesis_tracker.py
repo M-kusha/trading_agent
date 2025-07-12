@@ -1,409 +1,453 @@
+
 # ─────────────────────────────────────────────────────────────
-# File: modules/auditing/trade_thesis_tracker.py    
+# File: modules/auditing/trade_thesis_tracker.py
+# ENHANCED: Thesis tracker using SmartInfoBus architecture
 # ─────────────────────────────────────────────────────────────
 
 import numpy as np
 import datetime
-from typing import Any, Tuple, List, Dict, Optional
-from collections import defaultdict
-from modules.core.core import Module
+from collections import defaultdict, deque
+from typing import Any, Dict, Optional, List
 
-class TradeThesisTracker(Module):
+# ✅ FIXED: Proper imports for SmartInfoBus system
+from modules.core.module_base import BaseModule, module
+from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.audit_utils import format_operator_message
+
+
+@module(
+    provides=['thesis_analysis', 'thesis_performance', 'thesis_alerts'],
+    requires=['trading_signal', 'market_data', 'trades'],
+    category='auditing',
+    is_voting_member=False,
+    hot_reload=True,
+    explainable=True,
+    timeout_ms=100,
+    priority=3,
+    version="2.0.0"
+)
+class TradeThesisTracker(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
+    """
+    🧠 PRODUCTION-GRADE Trade Thesis Tracker
     
-    """Tracks trade performance, thesis, and patterns for auditing and analysis"""
-    def __init__(self, debug: bool = True):
-        super().__init__()
-        self.debug = debug
-        self.reset()
-
-    def reset(self) -> None:
-        """Reset all tracking data"""
-        self.records: List[Dict[str, Any]] = []
-        self.thesis_performance: Dict[str, Dict[str, float]] = defaultdict(
-            lambda: {"count": 0, "total_pnl": 0.0, "wins": 0, "losses": 0}
-        )
-        self.pattern_performance: Dict[str, Dict[str, float]] = defaultdict(
-            lambda: {"count": 0, "total_pnl": 0.0}
-        )
-        self.context_stats: Dict[str, Any] = {}
-        self.active_trades: Dict[str, Dict[str, Any]] = {}
-
-    def step(self, trades: Optional[List[Dict[str, Any]]] = None, **kwargs) -> None:
-        """Process trades and extract thesis information"""
-        if not trades:
-            return
-            
-        current_time = datetime.datetime.now().isoformat()
+    Advanced thesis tracking with:
+    - Real-time thesis evolution monitoring
+    - Performance tracking per thesis
+    - Thesis change detection and alerting
+    - NASA/MILITARY GRADE reliability patterns
+    """
+    
+    def _initialize(self):
+        """Initialize thesis-specific state with SmartInfoBus integration"""
+        # Initialize base mixins
+        self._initialize_trading_state()
+        self._initialize_state_management()
         
-        for trade in trades:
-            # Extract trade information with defaults
-            instrument = trade.get("instrument", "UNKNOWN")
-            pnl = float(trade.get("pnl", 0.0))
-            size = float(trade.get("size", 0.0))
+        # Thesis tracking state
+        self.current_thesis = "unknown"
+        self.thesis_changes = 0
+        self.thesis_performance = defaultdict(lambda: {"trades": 0, "pnl": 0.0, "confidence": 0.0})
+        self.thesis_history = deque(maxlen=500)
+        
+        # Thesis evolution tracking
+        self.thesis_patterns = defaultdict(int)
+        self.transition_matrix = defaultdict(lambda: defaultdict(int))
+        
+        # Performance metrics
+        self.session_start = datetime.datetime.now()
+        self.best_thesis = None
+        self.worst_thesis = None
+        
+        # Alert thresholds
+        self.alert_thresholds = {
+            'frequent_changes': 10,  # Alert if >10 changes per hour
+            'poor_performance': -100,  # Alert if thesis loses >$100
+            'low_confidence': 0.3  # Alert if thesis confidence <30%
+        }
+        
+        self.logger.info(f"🧠 {self.__class__.__name__} initialized with thesis tracking")
+    
+    def reset(self) -> None:
+        """Reset with automatic cleanup"""
+        super().reset()
+        
+        # Reset thesis state
+        self.current_thesis = "unknown"
+        self.thesis_changes = 0
+        self.thesis_performance.clear()
+        self.thesis_history.clear()
+        self.thesis_patterns.clear()
+        self.transition_matrix.clear()
+        
+        self.session_start = datetime.datetime.now()
+        self.best_thesis = None
+        self.worst_thesis = None
+        
+        self.logger.info("🔄 Trade thesis tracker reset complete")
+    
+    async def process(self, **inputs) -> Dict[str, Any]:
+        """
+        🧠 MAIN THESIS TRACKING PROCESS
+        
+        Tracks thesis evolution and performance:
+        1. Extract current thesis from trading signals
+        2. Detect and handle thesis changes
+        3. Update performance metrics per thesis
+        4. Generate alerts for significant changes
+        """
+        try:
+            # Extract thesis context
+            context = self._extract_thesis_context(inputs)
             
-            # Determine thesis from various sources
-            thesis = self._extract_thesis(trade, kwargs)
+            # Detect thesis changes
+            new_thesis = self._extract_current_thesis(inputs, context)
+            thesis_changed = self._handle_potential_thesis_change(new_thesis)
             
-            # Extract pattern and context
-            pattern = self._extract_pattern(trade, kwargs)
-            context = self._extract_context(trade, kwargs)
+            # Process trades with thesis context
+            processed_trades = self._process_trades_with_thesis(inputs, context)
             
-            # Create enhanced record
-            record = {
-                "timestamp": current_time,
-                "instrument": instrument,
-                "thesis": thesis,
-                "pattern": pattern,
-                "context": context,
-                "pnl": pnl,
-                "size": size,
-                "side": trade.get("side", "UNKNOWN"),
-                "entry_price": trade.get("entry_price", 0.0),
-                "exit_price": trade.get("exit_price", 0.0),
-                "duration": trade.get("duration", 0),
-                "features": trade.get("features", []),
-                "metadata": {
-                    "exit_reason": trade.get("exit_reason", "unknown"),
-                    "confidence": kwargs.get("consensus", 0.5),
-                    "mode": kwargs.get("mode", "normal"),
-                    "regime": kwargs.get("regime", "unknown")
-                }
+            # Update thesis performance
+            self._update_thesis_performance(processed_trades)
+            
+            # Generate thesis analysis
+            thesis_analysis = self._generate_thesis_analysis()
+            
+            # Check for alerts
+            alerts = self._check_for_thesis_alerts(thesis_analysis, context)
+            
+            # Generate thesis for explainability
+            thesis_explanation = self._generate_thesis_explanation(thesis_analysis, thesis_changed)
+            
+            # Store results in SmartInfoBus
+            smart_bus = InfoBusManager.get_instance()
+            smart_bus.set(
+                'thesis_analysis',
+                thesis_analysis,
+                module=self.__class__.__name__,
+                thesis=thesis_explanation,
+                confidence=thesis_analysis.get('current_confidence', 0.7)
+            )
+            
+            return {
+                'thesis_analysis': thesis_analysis,
+                'thesis_performance': dict(self.thesis_performance),
+                'thesis_alerts': alerts,
+                '_thesis': thesis_explanation
             }
             
-            # Store record
-            self.records.append(record)
-            
-            # Update performance tracking
-            self._update_performance(record)
-            
-            if self.debug:
-                print(f"[TradeThesisTracker] {instrument} | {thesis} | "
-                      f"PnL: {pnl:.2f} | Pattern: {pattern}")
-
-    def _extract_thesis(self, trade: Dict[str, Any], context: Dict[str, Any]) -> str:
-        """Extract thesis from trade and context"""
-        # Check for explicit thesis
-        if "thesis" in trade:
-            return str(trade["thesis"])
-            
-        # Infer from voting data
-        if "votes" in context:
-            # Find dominant voter
-            votes = context["votes"]
-            if votes:
-                # Aggregate votes across timeframes
-                vote_totals = defaultdict(float)
-                for vote_dict in votes.values():
-                    for member, weight in vote_dict.items():
-                        vote_totals[member] += weight
-                        
-                if vote_totals:
-                    dominant = max(vote_totals.items(), key=lambda x: x[1])[0]
-                    return f"strategy_{dominant}"
-                    
-        # Infer from features
-        if "features" in trade and len(trade["features"]) > 0:
-            features = trade["features"]
-            if isinstance(features, np.ndarray) and len(features) > 2:
-                # Simple classification based on feature values
-                if features[0] > features[1]:  # Price up
-                    return "momentum_long"
-                else:
-                    return "momentum_short"
-                    
-        # Default thesis based on side
-        side = trade.get("side", "").upper()
-        if side == "BUY":
-            return "generic_long"
-        elif side == "SELL":
-            return "generic_short"
-        else:
-            return "unknown"
-
-    def _extract_pattern(self, trade: Dict[str, Any], context: Dict[str, Any]) -> str:
-        """Extract market pattern from context"""
-        # Check regime
-        regime = context.get("regime", "").lower()
+        except Exception as e:
+            self.logger.error(f"❌ Thesis tracking failed: {e}")
+            return {
+                'thesis_analysis': {'error': str(e)},
+                'thesis_performance': dict(self.thesis_performance),
+                'thesis_alerts': [{'type': 'tracking_failure', 'message': str(e)}],
+                '_thesis': f"Thesis tracking encountered error: {str(e)}"
+            }
+    
+    def _extract_thesis_context(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract context for thesis analysis"""
+        trading_signal = inputs.get('trading_signal', {})
         
-        # Check volatility
-        volatility = context.get("volatility", {})
-        if isinstance(volatility, dict):
-            avg_vol = np.mean(list(volatility.values())) if volatility else 0.02
-        else:
-            avg_vol = float(volatility) if volatility else 0.02
+        return {
+            'trading_signal': trading_signal,
+            'market_data': inputs.get('market_data', {}),
+            'trades': inputs.get('trades', []),
+            'timestamp': inputs.get('timestamp', datetime.datetime.now()),
+            'step_idx': inputs.get('step_idx', 0),
+            'signal_confidence': trading_signal.get('confidence', 0.5),
+            'signal_action': trading_signal.get('action', 'unknown'),
+            'signal_reason': trading_signal.get('reason', '')
+        }
+    
+    def _extract_current_thesis(self, inputs: Dict[str, Any], context: Dict[str, Any]) -> str:
+        """Extract current trading thesis from inputs"""
+        # Extract from trading signal
+        signal = context['trading_signal']
+        
+        if not signal:
+            return "no_signal"
+        
+        # Build thesis from components
+        action = context['signal_action']
+        confidence_level = "high" if context['signal_confidence'] > 0.7 else "medium" if context['signal_confidence'] > 0.4 else "low"
+        
+        # Try to extract market regime or sentiment
+        market_regime = "unknown"
+        if context['market_data']:
+            # Simple market regime detection based on price movement
+            prices = context['market_data'].get('close', [])
+            if len(prices) >= 5:
+                recent_trend = "trending_up" if prices[-1] > prices[-5] else "trending_down"
+                market_regime = recent_trend
+        
+        # Construct thesis
+        thesis = f"{action}_{market_regime}_{confidence_level}"
+        
+        # Include reason/thesis if available
+        if context['signal_reason']:
+            # Extract key words from reason to enhance thesis
+            reason_words = context['signal_reason'].lower().split()
+            key_indicators = ['bullish', 'bearish', 'breakout', 'reversal', 'momentum', 'support', 'resistance']
+            found_indicators = [word for word in reason_words if word in key_indicators]
+            if found_indicators:
+                thesis += f"_{found_indicators[0]}"
+        
+        return thesis
+    
+    def _handle_potential_thesis_change(self, new_thesis: str) -> bool:
+        """Handle potential thesis change with logging"""
+        if new_thesis != self.current_thesis:
+            self._handle_thesis_change(self.current_thesis, new_thesis)
+            return True
+        return False
+    
+    def _handle_thesis_change(self, old_thesis: str, new_thesis: str):
+        """Handle thesis change with automatic logging and tracking"""
+        self.thesis_changes += 1
+        
+        # Record transition
+        self.transition_matrix[old_thesis][new_thesis] += 1
+        
+        # Record in history
+        self.thesis_history.append({
+            'timestamp': datetime.datetime.now(),
+            'old_thesis': old_thesis,
+            'new_thesis': new_thesis,
+            'change_number': self.thesis_changes
+        })
+        
+        # Update current thesis
+        self.current_thesis = new_thesis
+        
+        # Log the change
+        self.logger.info(
+            format_operator_message(
+                "🧠",
+                f"Thesis change: {old_thesis} → {new_thesis}",
+                change_count=self.thesis_changes,
+                context="thesis_evolution"
+            )
+        )
+    
+    def _process_trades_with_thesis(self, inputs: Dict[str, Any], context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Process trades with thesis context"""
+        processed_trades = []
+        trades = context.get('trades', [])
+        
+        for trade in trades:
+            processed_trade = self._process_single_trade_with_thesis(trade, context)
+            if processed_trade:
+                processed_trades.append(processed_trade)
+        
+        return processed_trades
+    
+    def _process_single_trade_with_thesis(self, trade: Dict[str, Any], context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Process single trade with thesis context"""
+        try:
+            processed_trade = {
+                'trade_id': f"{trade.get('symbol', 'UNK')}_{trade.get('timestamp', '')}",
+                'symbol': trade.get('symbol'),
+                'action': trade.get('action', 'unknown'),
+                'pnl': trade.get('pnl', 0),
+                'thesis': self.current_thesis,
+                'confidence': context.get('signal_confidence', 0.5),
+                'timestamp': context['timestamp'],
+                'processed_at': datetime.datetime.now().isoformat()
+            }
             
-        # Classify pattern
-        if regime == "trending":
-            if avg_vol < 0.015:
-                return "trend_low_vol"
+            return processed_trade
+            
+        except Exception as e:
+            self.logger.error(f"❌ Failed to process trade with thesis: {e}")
+            return None
+    
+    def _update_thesis_performance(self, processed_trades: List[Dict[str, Any]]):
+        """Update thesis performance metrics"""
+        for trade in processed_trades:
+            thesis = trade['thesis']
+            pnl = trade['pnl']
+            confidence = trade['confidence']
+            
+            # Update performance
+            self.thesis_performance[thesis]['trades'] += 1
+            self.thesis_performance[thesis]['pnl'] += pnl
+            
+            # Update confidence (exponential moving average)
+            current_conf = self.thesis_performance[thesis]['confidence']
+            if current_conf == 0:
+                self.thesis_performance[thesis]['confidence'] = confidence
             else:
-                return "trend_high_vol"
-        elif regime == "volatile":
-            return "range_bound"
-        elif avg_vol > 0.03:
-            return "high_volatility"
-        else:
-            return "normal"
-
-    def _extract_context(self, trade: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract trading context"""
-        return {
-            "drawdown": context.get("drawdown", 0.0),
-            "balance": context.get("balance", 0.0),
-            "mode": context.get("mode", "normal"),
-            "consensus": context.get("consensus", 0.5),
-            "step": context.get("current_step", 0),
-            "episode": context.get("episode", 0)
-        }
-
-    def _update_performance(self, record: Dict[str, Any]):
-        """Update performance statistics"""
-        thesis = record["thesis"]
-        pattern = record["pattern"]
-        pnl = record["pnl"]
+                alpha = 0.2
+                self.thesis_performance[thesis]['confidence'] = (
+                    alpha * confidence + (1 - alpha) * current_conf
+                )
         
-        # Update thesis performance
-        thesis_stats = self.thesis_performance[thesis]
-        thesis_stats["count"] += 1
-        thesis_stats["total_pnl"] += pnl
-        if pnl > 0:
-            thesis_stats["wins"] += 1
-        elif pnl < 0:
-            thesis_stats["losses"] += 1
-            
-        # Update pattern performance
-        pattern_stats = self.pattern_performance[pattern]
-        pattern_stats["count"] += 1
-        pattern_stats["total_pnl"] += pnl
-
-    def get_observation_components(self, last_n: int = 50) -> np.ndarray:
-        """Return comprehensive performance metrics"""
-        if not self.records:
-            return np.zeros(12, dtype=np.float32)
-
-        # Use recent records
-        recent = self.records[-last_n:] if last_n else self.records
-        
-        # Calculate metrics
-        total_trades = len(recent)
-        total_pnl = sum(r["pnl"] for r in recent)
-        win_rate = sum(1 for r in recent if r["pnl"] > 0) / max(1, total_trades)
-        
-        # Thesis diversity
-        unique_theses = len(set(r["thesis"] for r in recent))
-        
-        # Best and worst thesis
-        best_thesis_pnl = 0.0
-        worst_thesis_pnl = 0.0
-        if self.thesis_performance:
-            perfs = [(t, s["total_pnl"]/max(1, s["count"])) 
-                     for t, s in self.thesis_performance.items()]
-            if perfs:
-                best_thesis_pnl = max(p[1] for p in perfs)
-                worst_thesis_pnl = min(p[1] for p in perfs)
-        
-        # Pattern analysis
-        pattern_counts = defaultdict(int)
-        for r in recent:
-            pattern_counts[r["pattern"]] += 1
-        
-        most_common_pattern_pct = (
-            max(pattern_counts.values()) / total_trades 
-            if pattern_counts else 0.0
-        )
-        
-        # Average metrics
-        avg_pnl = total_pnl / max(1, total_trades)
-        avg_duration = np.mean([r["duration"] for r in recent if "duration" in r] or [0])
-        avg_size = np.mean([abs(r["size"]) for r in recent if "size" in r] or [0])
-        
-        # Sharpe approximation (daily)
-        if total_trades > 1:
-            pnls = [r["pnl"] for r in recent]
-            sharpe = np.mean(pnls) / (np.std(pnls) + 1e-6) * np.sqrt(252)
-        else:
-            sharpe = 0.0
-        
-        return np.array([
-            float(total_trades),
-            total_pnl,
-            win_rate,
-            float(unique_theses),
-            best_thesis_pnl,
-            worst_thesis_pnl,
-            most_common_pattern_pct,
-            avg_pnl,
-            avg_duration,
-            avg_size,
-            sharpe,
-            float(len(self.thesis_performance))
-        ], dtype=np.float32)
-
-    def get_stats(self) -> Dict[str, Any]:
-        """Get comprehensive statistics"""
-        stats = {
-            "total_records": len(self.records),
-            "thesis_performance": dict(self.thesis_performance),
-            "pattern_performance": dict(self.pattern_performance),
-            "top_strategies": self.get_top_strategies(5),
-            "worst_strategies": self.get_worst_strategies(5),
-            "pattern_analysis": self.analyze_patterns(),
-            "time_analysis": self.analyze_by_time()
-        }
-        return stats
-
-    def get_top_strategies(self, n: int = 5) -> List[Tuple[str, Dict[str, float]]]:
-        """Get top performing strategies"""
+        # Update best/worst thesis
+        self._update_best_worst_thesis()
+    
+    def _update_best_worst_thesis(self):
+        """Update best and worst performing thesis"""
         if not self.thesis_performance:
-            return []
-            
-        # Calculate average PnL per trade
-        thesis_avg = []
-        for thesis, stats in self.thesis_performance.items():
-            if stats["count"] > 0:
-                avg_pnl = stats["total_pnl"] / stats["count"]
-                win_rate = stats["wins"] / stats["count"] if stats["count"] > 0 else 0
-                thesis_avg.append((
-                    thesis,
-                    {
-                        "avg_pnl": avg_pnl,
-                        "total_pnl": stats["total_pnl"],
-                        "count": stats["count"],
-                        "win_rate": win_rate
-                    }
-                ))
+            return
         
-        # Sort by average PnL
-        thesis_avg.sort(key=lambda x: x[1]["avg_pnl"], reverse=True)
-        return thesis_avg[:n]
-
-    def get_worst_strategies(self, n: int = 5) -> List[Tuple[str, Dict[str, float]]]:
-        """Get worst performing strategies"""
-        strategies = self.get_top_strategies(len(self.thesis_performance))
-        return strategies[-n:] if len(strategies) >= n else strategies
-
-    def analyze_patterns(self) -> Dict[str, Any]:
-        """Analyze performance by market pattern"""
-        pattern_analysis = {}
+        performances = [(thesis, stats['pnl']) for thesis, stats in self.thesis_performance.items()]
         
-        for pattern, stats in self.pattern_performance.items():
-            if stats["count"] > 0:
-                pattern_analysis[pattern] = {
-                    "avg_pnl": stats["total_pnl"] / stats["count"],
-                    "total_pnl": stats["total_pnl"],
-                    "count": stats["count"],
-                    "percentage": stats["count"] / len(self.records) if self.records else 0
-                }
-                
-        return pattern_analysis
-
-    def analyze_by_time(self) -> Dict[str, Any]:
-        """Analyze performance over time"""
-        if not self.records:
-            return {}
-            
-        # Group by hour of day (if timestamps available)
-        hourly_pnl = defaultdict(lambda: {"count": 0, "total_pnl": 0.0})
+        if performances:
+            self.best_thesis = max(performances, key=lambda x: x[1])[0]
+            self.worst_thesis = min(performances, key=lambda x: x[1])[0]
+    
+    def _generate_thesis_analysis(self) -> Dict[str, Any]:
+        """Generate comprehensive thesis analysis"""
+        session_duration = (datetime.datetime.now() - self.session_start).total_seconds() / 3600
         
-        for record in self.records:
-            try:
-                timestamp = datetime.datetime.fromisoformat(record["timestamp"])
-                hour = timestamp.hour
-                hourly_pnl[hour]["count"] += 1
-                hourly_pnl[hour]["total_pnl"] += record["pnl"]
-            except:
-                pass
-                
-        # Calculate averages
-        hourly_avg = {}
-        for hour, stats in hourly_pnl.items():
-            if stats["count"] > 0:
-                hourly_avg[hour] = stats["total_pnl"] / stats["count"]
-                
+        # Calculate thesis diversity
+        active_thesis_count = len(self.thesis_performance)
+        
+        # Calculate change frequency
+        change_frequency = self.thesis_changes / max(session_duration, 0.1)  # changes per hour
+        
+        # Get current thesis performance
+        current_performance = self.thesis_performance.get(self.current_thesis, {"pnl": 0, "trades": 0, "confidence": 0})
+        
+        # Calculate overall performance
+        total_pnl = sum(stats['pnl'] for stats in self.thesis_performance.values())
+        total_trades = sum(stats['trades'] for stats in self.thesis_performance.values())
+        
         return {
-            "hourly_average_pnl": hourly_avg,
-            "best_hour": max(hourly_avg.items(), key=lambda x: x[1])[0] if hourly_avg else None,
-            "worst_hour": min(hourly_avg.items(), key=lambda x: x[1])[0] if hourly_avg else None
+            'current_thesis': self.current_thesis,
+            'thesis_changes': self.thesis_changes,
+            'change_frequency': change_frequency,
+            'active_thesis_count': active_thesis_count,
+            'current_confidence': current_performance['confidence'],
+            'current_performance': current_performance,
+            'best_thesis': self.best_thesis,
+            'worst_thesis': self.worst_thesis,
+            'total_pnl': total_pnl,
+            'total_trades': total_trades,
+            'session_duration_hours': session_duration,
+            'thesis_diversity': active_thesis_count / max(self.thesis_changes, 1)
         }
-
-    def get_state(self) -> Dict[str, Any]:
-        """Save complete state"""
+    
+    def _check_for_thesis_alerts(self, analysis: Dict[str, Any], context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Check for thesis-related alerts"""
+        alerts = []
+        
+        # Frequent changes alert
+        if analysis['change_frequency'] > self.alert_thresholds['frequent_changes']:
+            alerts.append({
+                'type': 'frequent_thesis_changes',
+                'severity': 'medium',
+                'message': f"High thesis change frequency: {analysis['change_frequency']:.1f}/hour",
+                'frequency': analysis['change_frequency'],
+                'threshold': self.alert_thresholds['frequent_changes'],
+                'timestamp': datetime.datetime.now().isoformat()
+            })
+        
+        # Poor performance alert
+        current_pnl = analysis['current_performance']['pnl']
+        if current_pnl < self.alert_thresholds['poor_performance']:
+            alerts.append({
+                'type': 'poor_thesis_performance',
+                'severity': 'high',
+                'message': f"Current thesis showing poor performance: ${current_pnl:.2f}",
+                'thesis': analysis['current_thesis'],
+                'pnl': current_pnl,
+                'timestamp': datetime.datetime.now().isoformat()
+            })
+        
+        # Low confidence alert
+        if analysis['current_confidence'] < self.alert_thresholds['low_confidence']:
+            alerts.append({
+                'type': 'low_thesis_confidence',
+                'severity': 'medium',
+                'message': f"Low confidence in current thesis: {analysis['current_confidence']:.1%}",
+                'thesis': analysis['current_thesis'],
+                'confidence': analysis['current_confidence'],
+                'timestamp': datetime.datetime.now().isoformat()
+            })
+        
+        return alerts
+    
+    def _generate_thesis_explanation(self, analysis: Dict[str, Any], thesis_changed: bool) -> str:
+        """Generate thesis tracking explanation"""
+        current_thesis = analysis['current_thesis']
+        changes = analysis['thesis_changes']
+        performance = analysis['current_performance']['pnl']
+        
+        if thesis_changed:
+            explanation = f"Thesis evolved to '{current_thesis}' (change #{changes}). "
+        else:
+            explanation = f"Continuing with thesis '{current_thesis}'. "
+        
+        if performance > 0:
+            explanation += f"Current thesis showing positive performance (+${performance:.2f}). "
+        elif performance < 0:
+            explanation += f"Current thesis showing negative performance (${performance:.2f}). "
+        else:
+            explanation += "Current thesis at break-even. "
+        
+        # Add diversity insight
+        if analysis['active_thesis_count'] > 5:
+            explanation += f"High thesis diversity ({analysis['active_thesis_count']} active) indicates adaptive strategy."
+        elif analysis['active_thesis_count'] < 3:
+            explanation += f"Low thesis diversity ({analysis['active_thesis_count']} active) indicates consistent strategy."
+        
+        return explanation
+    
+    def get_comprehensive_thesis_analysis(self) -> Dict[str, Any]:
+        """Get comprehensive thesis analysis using trading state"""
+        base_analysis = self._generate_thesis_analysis()
+        
+        # Add transition analysis
+        transitions = {}
+        for from_thesis, to_dict in self.transition_matrix.items():
+            transitions[from_thesis] = dict(to_dict)
+        
+        # Add pattern analysis
+        thesis_patterns = dict(self.thesis_patterns)
+        
+        # Add recent history
+        recent_history = list(self.thesis_history)[-20:]  # Last 20 changes
+        
         return {
-            "records": self.records.copy(),
-            "thesis_performance": dict(self.thesis_performance),
-            "pattern_performance": dict(self.pattern_performance),
-            "context_stats": self.context_stats.copy(),
-            "active_trades": self.active_trades.copy()
+            **base_analysis,
+            'transitions': transitions,
+            'patterns': thesis_patterns,
+            'recent_history': recent_history,
+            'trading_summary': self._get_trading_summary() if hasattr(self, '_get_trading_summary') else {}
         }
+    
+    def generate_thesis_report(self) -> str:
+        """Generate comprehensive thesis report"""
+        analysis = self.get_comprehensive_thesis_analysis()
+        
+        return f"""
+🧠 TRADE THESIS ANALYSIS REPORT
+═══════════════════════════════════════
+📅 Session Duration: {analysis['session_duration_hours']:.1f} hours
+🎯 Current Thesis: {analysis['current_thesis']}
+🔄 Thesis Changes: {analysis['thesis_changes']}
 
-    def set_state(self, state: Dict[str, Any]):
-        """Restore complete state"""
-        self.records = state.get("records", []).copy()
-        
-        # Restore defaultdicts
-        self.thesis_performance = defaultdict(
-            lambda: {"count": 0, "total_pnl": 0.0, "wins": 0, "losses": 0}
-        )
-        self.thesis_performance.update(state.get("thesis_performance", {}))
-        
-        self.pattern_performance = defaultdict(
-            lambda: {"count": 0, "total_pnl": 0.0}
-        )
-        self.pattern_performance.update(state.get("pattern_performance", {}))
-        
-        self.context_stats = state.get("context_stats", {}).copy()
-        self.active_trades = state.get("active_trades", {}).copy()
-        
-        if self.debug:
-            print(f"[TradeThesisTracker] State restored ({len(self.records)} records)")
+📊 PERFORMANCE METRICS
+• Current P&L: ${analysis['current_performance']['pnl']:.2f}
+• Current Confidence: {analysis['current_confidence']:.1%}
+• Total P&L: ${analysis['total_pnl']:.2f}
+• Total Trades: {analysis['total_trades']}
 
-    def export_as_jsonl(self, path: str):
-        """Export records as JSONL"""
-        import json
-        with open(path, "w", encoding="utf-8") as f:
-            for r in self.records:
-                f.write(json.dumps(r, default=str) + "\n")
+🏆 BEST/WORST THESIS
+• Best: {analysis['best_thesis']} (${self.thesis_performance.get(analysis['best_thesis'], {}).get('pnl', 0):.2f})
+• Worst: {analysis['worst_thesis']} (${self.thesis_performance.get(analysis['worst_thesis'], {}).get('pnl', 0):.2f})
 
-    def to_dataframe(self):
-        """Convert to pandas DataFrame"""
-        import pandas as pd
-        if not self.records:
-            return pd.DataFrame()
-            
-        # Flatten nested structures
-        flat_records = []
-        for r in self.records:
-            flat = r.copy()
-            # Flatten context
-            if "context" in flat and isinstance(flat["context"], dict):
-                for k, v in flat["context"].items():
-                    flat[f"context_{k}"] = v
-                del flat["context"]
-            # Flatten metadata
-            if "metadata" in flat and isinstance(flat["metadata"], dict):
-                for k, v in flat["metadata"].items():
-                    flat[f"meta_{k}"] = v
-                del flat["metadata"]
-            flat_records.append(flat)
-            
-        return pd.DataFrame(flat_records)
+📈 ADAPTATION METRICS
+• Change Frequency: {analysis['change_frequency']:.1f}/hour
+• Thesis Diversity: {analysis['thesis_diversity']:.2f}
+• Active Thesis Count: {analysis['active_thesis_count']}
+        """
 
-    def get_recommendation(self) -> Dict[str, Any]:
-        """Get trading recommendations based on historical performance"""
-        if not self.thesis_performance:
-            return {"recommendation": "Insufficient data"}
-            
-        top_strategies = self.get_top_strategies(3)
-        worst_strategies = self.get_worst_strategies(3)
-        pattern_analysis = self.analyze_patterns()
-        
-        recommendations = {
-            "preferred_strategies": [s[0] for s in top_strategies],
-            "avoid_strategies": [s[0] for s in worst_strategies],
-            "best_pattern": max(pattern_analysis.items(), 
-                               key=lambda x: x[1]["avg_pnl"])[0] if pattern_analysis else None,
-            "total_pnl": sum(r["pnl"] for r in self.records),
-            "win_rate": sum(1 for r in self.records if r["pnl"] > 0) / len(self.records) if self.records else 0
-        }
-        
-        return recommendations
+
+# ────────────────────────────────────────────────────────────────────────────────
+# 🧠 MODULE REGISTRATION
+# ────────────────────────────────────────────────────────────────────────────────
+# Module is automatically discovered and registered via @module decorator
+# No manual registration needed - SmartInfoBus handles everything!
