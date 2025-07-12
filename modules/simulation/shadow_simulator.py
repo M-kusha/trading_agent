@@ -1,3 +1,4 @@
+from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
 # ─────────────────────────────────────────────────────────────
 # File: modules/simulation/shadow_simulator.py
 # Enhanced Shadow Simulator with InfoBus integration
@@ -10,12 +11,11 @@ from typing import Dict, Any, List, Optional, Tuple, Union
 from collections import deque, defaultdict
 
 from modules.core.core import Module, ModuleConfig, audit_step
-from modules.core.mixins import AnalysisMixin, StateManagementMixin
 from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
 from modules.utils.audit_utils import RotatingLogger, AuditTracker, format_operator_message, system_audit
 
 
-class ShadowSimulator(Module, AnalysisMixin, StateManagementMixin):
+class ShadowSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     Enhanced shadow simulator with InfoBus integration.
     Provides intelligent forward-looking trade simulation with context-aware
@@ -71,7 +71,7 @@ class ShadowSimulator(Module, AnalysisMixin, StateManagementMixin):
 
         # --- initialize base Module with the real ModuleConfig ---
         super().__init__(module_cfg)
-        self._initialize_analysis_state()
+        self._initialize_trading_state()
 
         # --- build your sim_config from defaults, then update only if an actual dict was passed ---
         self.sim_config = copy.deepcopy(self.ENHANCED_DEFAULTS)

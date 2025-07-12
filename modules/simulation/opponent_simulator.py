@@ -1,3 +1,4 @@
+from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
 # ─────────────────────────────────────────────────────────────
 # File: modules/simulation/opponent_simulator.py
 # Enhanced Opponent Simulator with InfoBus integration
@@ -10,12 +11,11 @@ from typing import Dict, Any, List, Optional, Tuple, Union
 from collections import deque, defaultdict
 
 from modules.core.core import Module, ModuleConfig, audit_step
-from modules.core.mixins import AnalysisMixin, StateManagementMixin
 from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
 from modules.utils.audit_utils import RotatingLogger, AuditTracker, format_operator_message, system_audit
 
 
-class OpponentSimulator(Module, AnalysisMixin, StateManagementMixin):
+class OpponentSimulator(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     Enhanced opponent simulator with InfoBus integration.
     Simulates market opponent behavior by applying intelligent perturbations
@@ -70,7 +70,7 @@ class OpponentSimulator(Module, AnalysisMixin, StateManagementMixin):
             override_cfg = config
 
         super().__init__(module_cfg)
-        self._initialize_analysis_state()
+        self._initialize_trading_state()
 
         # Merge defaults + any user-supplied dict
         self.sim_config = copy.deepcopy(self.ENHANCED_DEFAULTS)

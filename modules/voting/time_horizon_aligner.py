@@ -1,3 +1,4 @@
+from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
 # ─────────────────────────────────────────────────────────────
 # File: modules/voting/time_horizon_aligner.py
 # Enhanced Time Horizon Aligner with InfoBus integration
@@ -9,12 +10,11 @@ from typing import Dict, Any, List, Optional, Tuple
 from collections import deque, defaultdict
 
 from modules.core.core import Module, ModuleConfig, audit_step
-from modules.core.mixins import AnalysisMixin, StateManagementMixin
 from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
 from modules.utils.audit_utils import RotatingLogger, AuditTracker, format_operator_message, system_audit
 
 
-class TimeHorizonAligner(Module, AnalysisMixin, StateManagementMixin):
+class TimeHorizonAligner(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     Enhanced time horizon aligner with InfoBus integration.
     Applies time-based scaling to voting weights based on member time horizons,
@@ -40,7 +40,7 @@ class TimeHorizonAligner(Module, AnalysisMixin, StateManagementMixin):
         super().__init__(enhanced_config)
         
         # Initialize mixins
-        self._initialize_analysis_state()
+        self._initialize_trading_state()
         
         # Core parameters
         self.horizons = np.asarray(horizons, dtype=np.float32)

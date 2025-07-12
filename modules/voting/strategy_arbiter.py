@@ -1,3 +1,4 @@
+from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
 # ─────────────────────────────────────────────────────────────
 # File: modules/voting/strategy_arbiter.py
 # Enhanced Strategy Arbiter with InfoBus integration
@@ -10,13 +11,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from collections import deque, defaultdict
 
 from modules.core.core import Module, ModuleConfig, audit_step
-from modules.core.mixins import AnalysisMixin, StateManagementMixin
 from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
 from modules.utils.audit_utils import RotatingLogger, AuditTracker, format_operator_message, system_audit
 from utils.get_dir import _BASE_GATE, _smart_gate
 
 
-class StrategyArbiter(Module, AnalysisMixin, StateManagementMixin):
+class StrategyArbiter(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     Enhanced strategy arbiter with InfoBus integration.
     Coordinates multiple trading experts through sophisticated voting mechanisms,
@@ -53,7 +53,7 @@ class StrategyArbiter(Module, AnalysisMixin, StateManagementMixin):
         super().__init__(enhanced_config)
         
         # Initialize mixins
-        self._initialize_analysis_state()
+        self._initialize_trading_state()
         
         # Validate inputs
         if len(init_weights) != len(members):

@@ -19,7 +19,6 @@ from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
 from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
-from modules.monitoring.health_monitor import HealthMonitor
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
@@ -162,7 +161,6 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
         self.english_explainer = EnglishExplainer()
         self.system_utilities = SystemUtilities()
         self.performance_tracker = PerformanceTracker()
-        self.health_monitor = HealthMonitor()
 
     def _create_empty_profile(self) -> Dict[str, Any]:
         """Create empty strategy profile with all required fields"""

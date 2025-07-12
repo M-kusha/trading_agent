@@ -1,3 +1,4 @@
+from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
 # ─────────────────────────────────────────────────────────────
 # File: modules/simulation/role_coach.py
 # Enhanced Role Coach with InfoBus integration
@@ -10,12 +11,11 @@ from typing import Dict, Any, List, Optional, Tuple, Union
 from collections import deque, defaultdict
 
 from modules.core.core import Module, ModuleConfig, audit_step
-from modules.core.mixins import AnalysisMixin, StateManagementMixin
 from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
 from modules.utils.audit_utils import RotatingLogger, AuditTracker, format_operator_message, system_audit
 
 
-class RoleCoach(Module, AnalysisMixin, StateManagementMixin):
+class RoleCoach(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     Enhanced role coach with InfoBus integration.
     Provides intelligent trade discipline coaching with context-aware
@@ -68,7 +68,7 @@ class RoleCoach(Module, AnalysisMixin, StateManagementMixin):
 
         # initialize base Module
         super().__init__(module_cfg)
-        self._initialize_analysis_state()
+        self._initialize_trading_state()
 
         # build your coach_config from defaults, then only update if override_cfg is a dict
         self.coach_config = copy.deepcopy(self.ENHANCED_DEFAULTS)

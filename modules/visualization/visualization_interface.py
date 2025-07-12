@@ -1,3 +1,4 @@
+from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
 # ─────────────────────────────────────────────────────────────
 # File: modules/visualization/visualization_interface.py
 # Enhanced Visualization Interface with InfoBus integration
@@ -10,12 +11,11 @@ from typing import List, Dict, Any, Optional, Union
 from collections import deque, defaultdict
 
 from modules.core.core import Module, ModuleConfig, audit_step
-from modules.core.mixins import AnalysisMixin, StateManagementMixin
 from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
 from modules.utils.audit_utils import RotatingLogger, AuditTracker, format_operator_message, system_audit
 
 
-class VisualizationInterface(Module, AnalysisMixin, StateManagementMixin):
+class VisualizationInterface(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     Enhanced visualization interface with InfoBus integration.
     Serves as the central data aggregator for all visualization and dashboard needs.
@@ -41,7 +41,7 @@ class VisualizationInterface(Module, AnalysisMixin, StateManagementMixin):
         super().__init__(enhanced_config)
         
         # Initialize mixins
-        self._initialize_analysis_state()
+        self._initialize_trading_state()
         
         # Core parameters
         self.debug = debug

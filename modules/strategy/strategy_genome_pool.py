@@ -21,7 +21,6 @@ from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
 from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
-from modules.monitoring.health_monitor import HealthMonitor
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
@@ -165,7 +164,6 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         self.english_explainer = EnglishExplainer()
         self.system_utilities = SystemUtilities()
         self.performance_tracker = PerformanceTracker()
-        self.health_monitor = HealthMonitor()
 
     def _initialize_population(self) -> np.ndarray:
         """Initialize population with enhanced seeding strategies"""

@@ -1,3 +1,4 @@
+from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
 # ─────────────────────────────────────────────────────────────
 # File: modules/visualization/trade_map_visualizer.py
 # Enhanced Trade Map Visualizer with InfoBus integration
@@ -9,12 +10,11 @@ from typing import List, Dict, Any, Optional, Union, Tuple
 import copy
 
 from modules.core.core import Module, ModuleConfig, audit_step
-from modules.core.mixins import AnalysisMixin, StateManagementMixin
 from modules.utils.info_bus import InfoBus, InfoBusExtractor, InfoBusUpdater, extract_standard_context
 from modules.utils.audit_utils import RotatingLogger, AuditTracker, format_operator_message, system_audit
 
 
-class TradeMapVisualizer(Module, AnalysisMixin, StateManagementMixin):
+class TradeMapVisualizer(Module, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     Enhanced trade map visualizer with InfoBus integration.
     Creates comprehensive visual analysis of trading performance, patterns, and system behavior.
@@ -41,7 +41,7 @@ class TradeMapVisualizer(Module, AnalysisMixin, StateManagementMixin):
         super().__init__(enhanced_config)
         
         # Initialize mixins
-        self._initialize_analysis_state()
+        self._initialize_trading_state()
         
         # Core parameters
         self.debug = debug
