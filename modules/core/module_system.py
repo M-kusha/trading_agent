@@ -129,14 +129,14 @@ class ModuleConfig:
             'modules/position',     # PositionManager
             'modules/reward',       # RiskAdjustedReward
             'modules/risk',         # All risk modules are modernized
+            'modules/strategy',     # ThesisEvolutionEngine (modernized)
+            'modules/trading_modes', # TradingModeManager (modernized)
+            'modules/visualization', # VisualizationInterface, TradeMapVisualizer
+            'modules/voting',       # All voting modules modernized
             
             # 🔄 LEGACY MODULES (commented out until modernized)
             # Uncomment these paths after modernizing the modules in them:
             # 'modules/simulation',    # OpponentSimulator, RoleCoach, ShadowSimulator
-            # 'modules/strategy',      # BiasAuditor, CurriculumPlannerPlus, etc.
-            # 'modules/trading_modes', # TradingModeManager
-            # 'modules/visualization', # VisualizationInterface, TradeMapVisualizer
-            # 'modules/voting',        # TimeHorizonAligner, StrategyArbiter, etc.
         ])
         
         # Legacy modules that need modernization (for tracking purposes)
@@ -145,30 +145,6 @@ class ModuleConfig:
                 'OpponentSimulator',     # Line 17: class OpponentSimulator(Module, ...)
                 'RoleCoach',             # Line 17: class RoleCoach(Module, ...)
                 'ShadowSimulator'        # Line 17: class ShadowSimulator(Module, ...)
-            ],
-            'modules/strategy': [
-                'BiasAuditor',           # Line 16: class BiasAuditor(Module, ...)
-                'CurriculumPlannerPlus', # Line 16: class CurriculumPlannerPlus(Module, ...)
-                'ExplanationGenerator',  # Line 16: class ExplanationGenerator(Module, ...)
-                'OpponentModeEnhancer',  # Line 16: class OpponentModeEnhancer(Module, ...)
-                'PlaybookClusterer',     # Line 28: class PlaybookClusterer(Module, ...)
-                'StrategyGenomePool',    # Line 18: class StrategyGenomePool(Module, ...)
-                'StrategyIntrospector',  # Line 16: class StrategyIntrospector(Module, ...)
-                'ThesisEvolutionEngine'  # Line 17: class ThesisEvolutionEngine(Module, ...)
-            ],
-            'modules/trading_modes': [
-                'TradingModeManager'     # Line 17: class TradingModeManager(Module, ...)
-            ],
-            'modules/visualization': [
-                'VisualizationInterface', # Line 17: class VisualizationInterface(Module, ...)
-                'TradeMapVisualizer'     # Line 16: class TradeMapVisualizer(Module, ...)
-            ],
-            'modules/voting': [
-                'TimeHorizonAligner',       # Line 16: class TimeHorizonAligner(Module, ...)
-                'StrategyArbiter',          # Line 18: class StrategyArbiter(Module, ...)
-                'ConsensusDetector',        # Line 16: class ConsensusDetector(Module, ...)
-                'CollusionAuditor',         # Line 16: class CollusionAuditor(Module, ...)
-                'AlternativeRealitySampler' # Line 16: class AlternativeRealitySampler(Module, ...)
             ]
         }
         
