@@ -50,20 +50,105 @@ class ModernTradingEnv(gym.Env):
         self.current_step = 0
         
         # ═══════════════════════════════════════════════════════════
-        # SmartInfoBus & Module System
+        # Logging (Initialize first to avoid circular dependencies)
         # ═══════════════════════════════════════════════════════════
-        self.smart_bus = InfoBusManager.get_instance()
-        self.orchestrator = ModuleOrchestrator()
+        try:
+            self.logger = RotatingLogger(
+                name="ModernTradingEnv",
+                log_path="logs/modern_env.log",
+                max_lines=2000,
+                operator_mode=True
+            )
+        except Exception as e:
+            print(f"Failed to create logger: {e}")
+            # Create simple fallback logger
+            class FallbackLogger:
+                def info(self, msg): print(f"INFO: {msg}")
+                def warning(self, msg): print(f"WARNING: {msg}")
+                def error(self, msg): print(f"ERROR: {msg}")
+            self.logger = FallbackLogger()
         
         # ═══════════════════════════════════════════════════════════
-        # Logging
+        # SmartInfoBus & Module System
         # ═══════════════════════════════════════════════════════════
-        self.logger = RotatingLogger(
-            name="ModernTradingEnv",
-            log_path="logs/modern_env.log",
-            max_lines=2000,
-            operator_mode=True
-        )
+        
+        # Try to initialize SmartInfoBus with timeout to prevent hanging
+        self.smart_bus = None
+        self.smart_bus_enabled = False
+        
+        try:
+            import threading
+            import time
+            
+            def init_smart_bus():
+                try:
+                    self.smart_bus = InfoBusManager.get_instance()
+                    self.smart_bus_enabled = True
+                except Exception as e:
+                    self.logger.warning(f"SmartInfoBus initialization failed: {e}")
+                    self.smart_bus = None
+                    self.smart_bus_enabled = False
+            
+            # Start SmartInfoBus initialization in background
+            bus_thread = threading.Thread(target=init_smart_bus, daemon=True)
+            bus_thread.start()
+            
+            # Wait for a short time, but don't hang
+            bus_thread.join(timeout=1.0)  # 1 second timeout
+            
+            if bus_thread.is_alive():
+                self.logger.warning("SmartInfoBus initialization taking too long - using fallback mode")
+                self.smart_bus = None
+                self.smart_bus_enabled = False
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to start SmartInfoBus: {e}")
+            self.smart_bus = None
+            self.smart_bus_enabled = False
+        
+        # Create fallback SmartInfoBus if needed
+        if not self.smart_bus_enabled:
+            self.smart_bus = self._create_fallback_smart_bus()
+            self.smart_bus_enabled = True
+        
+        # Make ModuleOrchestrator initialization optional/lazy to prevent hanging
+        self.orchestrator = None
+        self.orchestrator_enabled = False
+        
+        # Try to initialize orchestrator, but don't fail if it hangs
+        try:
+            # Initialize orchestrator in a separate thread with timeout
+            import threading
+            import time
+            
+            def init_orchestrator():
+                try:
+                    self.orchestrator = ModuleOrchestrator()
+                    self.orchestrator.initialize()
+                    self.orchestrator_enabled = True
+                except Exception as e:
+                    self.logger.warning(f"ModuleOrchestrator initialization failed: {e}")
+                    self.orchestrator = None
+                    self.orchestrator_enabled = False
+            
+            # Start orchestrator initialization in background
+            orchestrator_thread = threading.Thread(target=init_orchestrator, daemon=True)
+            orchestrator_thread.start()
+            
+            # Wait for a short time, but don't hang
+            orchestrator_thread.join(timeout=2.0)  # 2 second timeout
+            
+            if orchestrator_thread.is_alive():
+                self.logger.warning("ModuleOrchestrator initialization taking too long - continuing without it")
+                self.orchestrator = None
+                self.orchestrator_enabled = False
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to start ModuleOrchestrator: {e}")
+            self.orchestrator = None
+            self.orchestrator_enabled = False
+        
+
         
         # ═══════════════════════════════════════════════════════════
         # Market Data & State
@@ -102,11 +187,13 @@ class ModernTradingEnv(gym.Env):
         # ═══════════════════════════════════════════════════════════
         self._setup_environment()
         
+        # Log initialization status
+        module_count = len(self.orchestrator.modules) if self.orchestrator else 0
         self.logger.info(
             format_operator_message(
                 "🚀", "MODERN_ENV_INITIALIZED",
-                details=f"{len(self.instruments)} instruments, {len(self.orchestrator.modules)} modules",
-                result="Zero-wiring architecture active",
+                details=f"{len(self.instruments)} instruments, {module_count} modules",
+                result="Zero-wiring architecture active" if self.orchestrator_enabled else "Fallback mode active",
                 context="system_startup"
             )
         )
@@ -250,11 +337,12 @@ class ModernTradingEnv(gym.Env):
         obs = self._get_observation()
         
         # Create reset info
+        modules_active = len(self.orchestrator.modules) if self.orchestrator else 0
         info = {
             'episode': self.episode_count,
             'step': self.current_step,
             'balance': self.market_state.balance,
-            'modules_active': len(self.orchestrator.modules),
+            'modules_active': modules_active,
             'reset': True
         }
         
@@ -289,11 +377,12 @@ class ModernTradingEnv(gym.Env):
             thesis="Current market state for modules"
         )
         
-        # Execute modules through orchestrator
-        try:
-            asyncio.run(self.orchestrator.execute_step({}))
-        except Exception as e:
-            self.logger.error(f"Module execution failed: {e}")
+        # Execute modules through orchestrator (if available)
+        if self.orchestrator_enabled and self.orchestrator:
+            try:
+                asyncio.run(self.orchestrator.execute_step({}))
+            except Exception as e:
+                self.logger.error(f"Module execution failed: {e}")
         
         # Get final trading decision from SmartInfoBus
         final_action = self.smart_bus.get('final_trading_action', 'Environment') or action
@@ -308,12 +397,13 @@ class ModernTradingEnv(gym.Env):
         terminated, truncated = self._check_termination()
         
         # Create step info
+        modules_executed = len(self.orchestrator.modules) if self.orchestrator else 0
         info = {
             'step': self.current_step,
             'balance': self.market_state.balance,
             'drawdown': self.market_state.current_drawdown,
             'reward': reward,
-            'modules_executed': len(self.orchestrator.modules),
+            'modules_executed': modules_executed,
             'terminated': terminated,
             'truncated': truncated
         }
@@ -437,11 +527,38 @@ class ModernTradingEnv(gym.Env):
         
         return False, False
     
+    def _create_fallback_smart_bus(self):
+        """Create a fallback SmartInfoBus implementation"""
+        class FallbackSmartBus:
+            def __init__(self):
+                self._data = {}
+                self._module_disabled = set()
+                self._data_store = {}
+            
+            def set(self, key, value, module=None, thesis=None):
+                self._data[key] = value
+                self._data_store[key] = value
+            
+            def get(self, key, module=None):
+                return self._data.get(key)
+            
+            def register_provider(self, module, keys):
+                pass
+            
+            def register_consumer(self, module, keys):
+                pass
+            
+            def get_performance_metrics(self):
+                return {}
+        
+        return FallbackSmartBus()
+    
     def get_smartinfobus_status(self) -> Dict[str, Any]:
         """Get SmartInfoBus system status"""
+        modules_active = len(self.orchestrator.modules) if self.orchestrator else 0
         return {
             'performance_metrics': self.smart_bus.get_performance_metrics(),
-            'modules_active': len(self.orchestrator.modules),
+            'modules_active': modules_active,
             'modules_disabled': list(self.smart_bus._module_disabled),
             'data_keys': len(self.smart_bus._data_store),
             'current_step': self.current_step,

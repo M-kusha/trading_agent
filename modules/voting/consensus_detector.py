@@ -1046,7 +1046,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "consensus_weighting")
-            return np.mean(list(consensus_components.values())) if consensus_components else 0.5
+            return float(np.mean(list(consensus_components.values()))) if consensus_components else 0.5
 
     async def _calculate_dynamic_component_weights(self, consensus_components: Dict[str, float],
                                                  actions: List[np.ndarray], confidences: List[float],
@@ -1154,7 +1154,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             # 1. Component coherence (how well components agree)
             if len(consensus_components) > 1:
                 component_values = list(consensus_components.values())
-                coherence = 1.0 - np.std(component_values) / max(np.mean(component_values), 1e-6)
+                coherence = 1.0 - float(np.std(component_values)) / max(float(np.mean(component_values)), 1e-6)
                 self.quality_metrics['coherence'] = max(0.0, min(1.0, coherence))
                 quality_components.append(self.quality_metrics['coherence'])
             
@@ -1164,7 +1164,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                     event.get('consensus', 0.5) 
                     for event in list(self.consensus_history)[-self.consensus_intelligence['stability_window']:]
                 ]
-                stability = 1.0 - np.std(recent_consensus)
+                stability = 1.0 - float(np.std(recent_consensus))
                 self.quality_metrics['stability'] = max(0.0, min(1.0, stability))
                 quality_components.append(self.quality_metrics['stability'])
             
@@ -1176,8 +1176,8 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             
             # 4. Reliability (based on confidence levels and consistency)
             if confidences:
-                avg_confidence = np.mean(confidences)
-                conf_consistency = 1.0 - np.std(confidences) / max(np.mean(confidences), 1e-6)
+                avg_confidence = float(np.mean(confidences))
+                conf_consistency = 1.0 - float(np.std(confidences)) / max(float(np.mean(confidences)), 1e-6)
                 reliability = (avg_confidence + conf_consistency) / 2.0
                 self.quality_metrics['reliability'] = max(0.0, min(1.0, reliability))
                 quality_components.append(self.quality_metrics['reliability'])
@@ -1364,9 +1364,9 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             
             # Update performance metrics
             self._update_performance_metric('consensus_score', consensus)
-            self._update_performance_metric('consensus_quality', self.consensus_quality)
-            self._update_performance_metric('directional_consensus', self.directional_consensus)
-            self._update_performance_metric('temporal_stability', self.temporal_stability)
+            self._update_performance_metric('consensus_quality', float(self.consensus_quality))
+            self._update_performance_metric('directional_consensus', float(self.directional_consensus))
+            self._update_performance_metric('temporal_stability', float(self.temporal_stability))
             
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "consensus_statistics_update")
@@ -1996,3 +1996,591 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             consensus_level = "🟡 MODERATE"
         elif self.last_consensus > 0.4:
             consensus_level = "🟠 LOW-MODERATE"
+        elif self.last_consensus > 0.2:
+            consensus_level = "🟠 LOW"
+        else:
+            consensus_level = "🔴 VERY LOW"
+        
+        # Quality assessment
+        if self.consensus_quality > 0.8:
+            quality_level = "✅ Excellent"
+        elif self.consensus_quality > 0.6:
+            quality_level = "⚡ Good"
+        elif self.consensus_quality > 0.4:
+            quality_level = "⚠️ Fair"
+        else:
+            quality_level = "🚨 Poor"
+        
+        # Trend analysis
+        if len(self.consensus_trends) > 0:
+            recent_trend = self.consensus_trends[-1]
+            trend_direction = recent_trend.get('trend_direction', 'unknown')
+            if trend_direction == 'increasing':
+                trend_status = "📈 Improving"
+            elif trend_direction == 'decreasing':
+                trend_status = "📉 Declining"
+            else:
+                trend_status = "→ Stable"
+        else:
+            trend_status = "📭 No data"
+        
+        # Component breakdown
+        component_lines = []
+        for method, score in self.consensus_components.items():
+            if score > 0.7:
+                emoji = "✅"
+            elif score > 0.5:
+                emoji = "⚡"
+            elif score > 0.3:
+                emoji = "⚠️"
+            else:
+                emoji = "🚨"
+            component_lines.append(f"  {emoji} {method.replace('_', ' ').title()}: {score:.1%}")
+        
+        # Member contributions summary
+        if self.member_contributions:
+            high_contributors = sum(1 for contrib in self.member_contributions.values() 
+                                  if contrib.get('consensus_contribution', 0.5) > 0.7)
+            low_contributors = sum(1 for contrib in self.member_contributions.values() 
+                                 if contrib.get('consensus_contribution', 0.5) < 0.3)
+            member_summary = f"{high_contributors} high, {low_contributors} low contributors"
+        else:
+            member_summary = "No contribution data"
+        
+        # System effectiveness
+        effectiveness = self.quality_metrics.get('overall_effectiveness', 0.0)
+        if effectiveness > 0.8:
+            effectiveness_status = "✅ Excellent"
+        elif effectiveness > 0.6:
+            effectiveness_status = "⚡ Good"
+        elif effectiveness > 0.4:
+            effectiveness_status = "⚠️ Fair"
+        else:
+            effectiveness_status = "🚨 Poor"
+        
+        return f"""
+🤝 CONSENSUS DETECTOR v3.0
+═══════════════════════════════════════════════════════════════
+📊 Current Consensus: {consensus_level} ({self.last_consensus:.1%})
+🎯 Quality Level: {quality_level} ({self.consensus_quality:.1%})
+📈 Trend: {trend_status}
+
+📊 Consensus Components:
+{chr(10).join(component_lines) if component_lines else "  📭 No components available"}
+
+🎯 Advanced Metrics:
+• Directional Consensus: {self.directional_consensus:.1%}
+• Magnitude Consensus: {self.magnitude_consensus:.1%}
+• Confidence Consensus: {self.confidence_consensus:.1%}
+• Network Consensus: {self.network_consensus:.1%}
+• Temporal Stability: {self.temporal_stability:.1%}
+
+🎯 Quality Dimensions:
+• Coherence: {self.quality_metrics.get('coherence', 0):.1%}
+• Stability: {self.quality_metrics.get('stability', 0):.1%}
+• Diversity: {self.quality_metrics.get('diversity', 0):.1%}
+• Reliability: {self.quality_metrics.get('reliability', 0):.1%}
+• Predictive Accuracy: {self.quality_metrics.get('predictive_accuracy', 0):.1%}
+• Temporal Consistency: {self.quality_metrics.get('temporal_consistency', 0):.1%}
+
+📈 Performance Statistics:
+• Total Computations: {self.consensus_stats['total_computations']}
+• High Consensus Events: {self.consensus_stats['high_consensus_count']}
+• Low Consensus Events: {self.consensus_stats['low_consensus_count']}
+• Average Consensus: {self.consensus_stats['avg_consensus']:.1%}
+• Consensus Volatility: {self.consensus_stats['consensus_volatility']:.3f}
+• Overall Effectiveness: {effectiveness_status} ({effectiveness:.1%})
+
+👥 Member Analysis:
+• Committee Size: {self.n_members} members
+• Contributions Tracked: {len(self.member_contributions)}
+• Contributor Summary: {member_summary}
+• Average Influence: {np.mean([c.get('influence_weight', 0) for c in self.member_contributions.values()]):.3f} (if available)
+
+⚙️ System Configuration:
+• Consensus Threshold: {self.threshold:.1%}
+• Methods Active: {', '.join(self.consensus_methods)}
+• Quality Weighting: {'✅ Enabled' if self.quality_weighting else '❌ Disabled'}
+• Temporal Smoothing: {'✅ Enabled' if self.temporal_smoothing else '❌ Disabled'}
+• Smoothing Alpha: {self.consensus_intelligence.get('smoothing_alpha', 0.3):.3f}
+• Stability Window: {self.consensus_intelligence.get('stability_window', 10)} steps
+
+📊 Intelligence Parameters:
+• Trend Sensitivity: {self.consensus_intelligence.get('trend_sensitivity', 0.15):.1%}
+• Adaptation Rate: {self.consensus_intelligence.get('adaptation_rate', 0.12):.1%}
+• Confidence Weighting: {self.consensus_intelligence.get('confidence_weighting', 0.8):.1%}
+• Temporal Memory: {self.consensus_intelligence.get('temporal_memory', 0.85):.1%}
+
+📊 Recent Activity:
+• Consensus History: {len(self.consensus_history)} entries
+• Trend Data Points: {len(self.consensus_trends)} tracked
+• Regime Patterns: {len(self.regime_consensus_history)} regimes
+• Prediction History: {len(self.prediction_history)} predictions
+
+🔧 System Health:
+• Error Count: {self.error_count}/{self.circuit_breaker_threshold}
+• Status: {'🚨 DISABLED' if self.is_disabled else '✅ OPERATIONAL'}
+• Session Duration: {(datetime.datetime.now() - datetime.datetime.fromisoformat(self.consensus_stats['session_start'])).total_seconds() / 3600:.1f} hours
+• Data Quality: {quality_level}
+        """
+
+    def get_health_status(self) -> Dict[str, Any]:
+        """Get health status for system monitoring"""
+        return {
+            'module_name': 'ConsensusDetector',
+            'status': 'disabled' if self.is_disabled else 'healthy',
+            'metrics': self._get_health_metrics(),
+            'alerts': self._generate_health_alerts(),
+            'recommendations': self._generate_health_recommendations()
+        }
+
+    def _generate_health_alerts(self) -> List[Dict[str, Any]]:
+        """Generate health-related alerts"""
+        alerts = []
+        
+        if self.is_disabled:
+            alerts.append({
+                'severity': 'critical',
+                'message': 'ConsensusDetector disabled due to errors',
+                'action': 'Investigate error logs and restart module'
+            })
+        
+        if self.error_count > 2:
+            alerts.append({
+                'severity': 'warning',
+                'message': f'High error count: {self.error_count}',
+                'action': 'Monitor for recurring issues'
+            })
+        
+        # Consensus level alerts
+        if self.last_consensus < 0.2:
+            alerts.append({
+                'severity': 'warning',
+                'message': f'Very low consensus detected: {self.last_consensus:.1%}',
+                'action': 'Review committee decision-making process'
+            })
+        elif self.last_consensus > 0.95:
+            alerts.append({
+                'severity': 'info',
+                'message': f'Extremely high consensus: {self.last_consensus:.1%}',
+                'action': 'Consider if decision-making lacks diversity'
+            })
+        
+        # Quality alerts
+        if self.consensus_quality < 0.3:
+            alerts.append({
+                'severity': 'warning',
+                'message': f'Low consensus quality: {self.consensus_quality:.1%}',
+                'action': 'Review consensus algorithms and member input quality'
+            })
+        
+        # Volatility alerts
+        volatility = self.consensus_stats.get('consensus_volatility', 0.0)
+        if volatility > 0.3:
+            alerts.append({
+                'severity': 'warning',
+                'message': f'High consensus volatility: {volatility:.3f}',
+                'action': 'Consider increasing temporal smoothing or reviewing decision stability'
+            })
+        
+        # Insufficient data
+        if len(self.consensus_history) < 5:
+            alerts.append({
+                'severity': 'info',
+                'message': 'Insufficient consensus history for reliable analysis',
+                'action': 'Continue operations to build consensus baseline'
+            })
+        
+        return alerts
+
+    def _generate_health_recommendations(self) -> List[str]:
+        """Generate health-related recommendations"""
+        recommendations = []
+        
+        if self.is_disabled:
+            recommendations.append("Restart ConsensusDetector module after investigating errors")
+        
+        if len(self.consensus_history) < 10:
+            recommendations.append("Insufficient consensus history - continue operations to establish patterns")
+        
+        # Quality recommendations
+        if self.consensus_quality < 0.5:
+            recommendations.append("Low consensus quality - review algorithm weighting and member input methods")
+        
+        # Smoothing recommendations
+        alpha = self.consensus_intelligence.get('smoothing_alpha', 0.3)
+        if alpha > 0.6:
+            recommendations.append("High smoothing factor may mask important consensus changes")
+        elif alpha < 0.1:
+            recommendations.append("Low smoothing factor may cause excessive consensus volatility")
+        
+        # Member contribution recommendations
+        if self.member_contributions:
+            low_contributors = sum(1 for contrib in self.member_contributions.values() 
+                                 if contrib.get('consensus_contribution', 0.5) < 0.3)
+            if low_contributors > self.n_members // 2:
+                recommendations.append(f"Many members ({low_contributors}) have low consensus contribution - consider member training")
+        
+        # Volatility recommendations
+        volatility = self.consensus_stats.get('consensus_volatility', 0.0)
+        if volatility > 0.4:
+            recommendations.append("High consensus volatility - consider process stabilization measures")
+        
+        if not recommendations:
+            recommendations.append("ConsensusDetector operating within normal parameters")
+        
+        return recommendations
+
+    async def _handle_processing_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
+        """Handle processing errors with intelligent recovery"""
+        self.error_count += 1
+        error_context = self.error_pinpointer.analyze_error(error, "ConsensusDetector")
+        
+        # Circuit breaker logic
+        if self.error_count >= self.circuit_breaker_threshold:
+            self.is_disabled = True
+            self.logger.error(format_operator_message(
+                icon="🚨",
+                message="Consensus Detector disabled due to repeated errors",
+                error_count=self.error_count,
+                threshold=self.circuit_breaker_threshold
+            ))
+        
+        # Record error performance
+        processing_time = (time.time() - start_time) * 1000
+        self.performance_tracker.record_metric('ConsensusDetector', 'process_time', processing_time, False)
+        
+        return {
+            'consensus_score': 0.5,
+            'consensus_quality': 0.5,
+            'consensus_components': {},
+            'directional_consensus': 0.5,
+            'magnitude_consensus': 0.5,
+            'confidence_consensus': 0.5,
+            'member_contributions': {},
+            'consensus_trends': {},
+            'quality_metrics': {'error': str(error_context)},
+            'consensus_recommendations': ["Investigate consensus detector errors"],
+            'health_metrics': {'status': 'error', 'error_context': str(error_context)}
+        }
+
+    def _get_safe_voting_defaults(self) -> Dict[str, Any]:
+        """Get safe defaults when voting data retrieval fails"""
+        return {
+            'votes': [], 'raw_proposals': [], 'member_confidences': [],
+            'voting_summary': {}, 'alpha_weights': [], 'blended_action': [],
+            'market_context': {}, 'agreement_score': 0.5, 'consensus_direction': 'neutral',
+            'market_regime': 'unknown', 'volatility_data': {}
+        }
+
+    def _generate_disabled_response(self) -> Dict[str, Any]:
+        """Generate response when module is disabled"""
+        return {
+            'consensus_score': 0.5,
+            'consensus_quality': 0.5,
+            'consensus_components': {},
+            'directional_consensus': 0.5,
+            'magnitude_consensus': 0.5,
+            'confidence_consensus': 0.5,
+            'member_contributions': {},
+            'consensus_trends': {},
+            'quality_metrics': {'status': 'disabled'},
+            'consensus_recommendations': ["Restart consensus detector system"],
+            'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'}
+        }
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STATE MANAGEMENT AND HOT-RELOAD SUPPORT
+    # ═══════════════════════════════════════════════════════════════════
+
+    def get_state(self) -> Dict[str, Any]:
+        """Get complete state for hot-reload and persistence"""
+        return {
+            'module_info': {
+                'name': 'ConsensusDetector',
+                'version': '3.0.0',
+                'last_updated': datetime.datetime.now().isoformat()
+            },
+            'configuration': {
+                'n_members': self.n_members,
+                'threshold': self.threshold,
+                'quality_weighting': self.quality_weighting,
+                'temporal_smoothing': self.temporal_smoothing,
+                'consensus_methods': self.consensus_methods,
+                'debug': self.debug
+            },
+            'consensus_state': {
+                'last_consensus': self.last_consensus,
+                'consensus_quality': self.consensus_quality,
+                'directional_consensus': self.directional_consensus,
+                'magnitude_consensus': self.magnitude_consensus,
+                'confidence_consensus': self.confidence_consensus,
+                'network_consensus': self.network_consensus,
+                'temporal_stability': self.temporal_stability,
+                'consensus_components': self.consensus_components.copy()
+            },
+            'intelligence_state': {
+                'consensus_intelligence': self.consensus_intelligence.copy(),
+                'market_adaptation': self.market_adaptation.copy(),
+                'quality_metrics': self.quality_metrics.copy()
+            },
+            'member_state': {
+                'member_contributions': {k: v.copy() for k, v in self.member_contributions.items()},
+                'consensus_insights': self.consensus_insights.copy()
+            },
+            'history_state': {
+                'consensus_history': list(self.consensus_history)[-50:],
+                'consensus_trends': list(self.consensus_trends)[-30:],
+                'prediction_history': list(self.prediction_history)[-20:],
+                'regime_consensus_history': {
+                    regime: list(history)[-20:] 
+                    for regime, history in self.regime_consensus_history.items()
+                },
+                'consensus_patterns': {k: v.copy() for k, v in self.consensus_patterns.items()}
+            },
+            'statistics_state': {
+                'consensus_stats': self.consensus_stats.copy()
+            },
+            'error_state': {
+                'error_count': self.error_count,
+                'is_disabled': self.is_disabled
+            },
+            'performance_metrics': self.get_health_metrics()
+        }
+
+    def set_state(self, state: Dict[str, Any]) -> None:
+        """Set state for hot-reload and persistence"""
+        try:
+            # Load configuration
+            config = state.get("configuration", {})
+            self.n_members = int(config.get("n_members", self.n_members))
+            self.threshold = float(config.get("threshold", self.threshold))
+            self.quality_weighting = bool(config.get("quality_weighting", self.quality_weighting))
+            self.temporal_smoothing = bool(config.get("temporal_smoothing", self.temporal_smoothing))
+            self.consensus_methods = config.get("consensus_methods", self.consensus_methods)
+            self.debug = bool(config.get("debug", self.debug))
+            
+            # Load consensus state
+            consensus_state = state.get("consensus_state", {})
+            self.last_consensus = float(consensus_state.get("last_consensus", 0.0))
+            self.consensus_quality = float(consensus_state.get("consensus_quality", 0.0))
+            self.directional_consensus = float(consensus_state.get("directional_consensus", 0.0))
+            self.magnitude_consensus = float(consensus_state.get("magnitude_consensus", 0.0))
+            self.confidence_consensus = float(consensus_state.get("confidence_consensus", 0.0))
+            self.network_consensus = float(consensus_state.get("network_consensus", 0.0))
+            self.temporal_stability = float(consensus_state.get("temporal_stability", 0.0))
+            self.consensus_components = consensus_state.get("consensus_components", {})
+            
+            # Load intelligence state
+            intelligence_state = state.get("intelligence_state", {})
+            self.consensus_intelligence.update(intelligence_state.get("consensus_intelligence", {}))
+            self.market_adaptation.update(intelligence_state.get("market_adaptation", {}))
+            self.quality_metrics.update(intelligence_state.get("quality_metrics", {}))
+            
+            # Load member state
+            member_state = state.get("member_state", {})
+            member_contributions_data = member_state.get("member_contributions", {})
+            self.member_contributions.clear()
+            for member_id, contribution_data in member_contributions_data.items():
+                self.member_contributions[int(member_id)] = contribution_data
+            
+            self.consensus_insights.update(member_state.get("consensus_insights", {}))
+            
+            # Load history state
+            history_state = state.get("history_state", {})
+            
+            # Load consensus history
+            self.consensus_history.clear()
+            for entry in history_state.get("consensus_history", []):
+                self.consensus_history.append(entry)
+            
+            # Load consensus trends
+            self.consensus_trends.clear()
+            for entry in history_state.get("consensus_trends", []):
+                self.consensus_trends.append(entry)
+            
+            # Load prediction history
+            self.prediction_history.clear()
+            for entry in history_state.get("prediction_history", []):
+                self.prediction_history.append(entry)
+            
+            # Load regime consensus history
+            regime_history_data = history_state.get("regime_consensus_history", {})
+            self.regime_consensus_history.clear()
+            for regime, history_list in regime_history_data.items():
+                regime_deque = deque(maxlen=30)
+                for entry in history_list:
+                    regime_deque.append(entry)
+                self.regime_consensus_history[regime] = regime_deque
+            
+            # Load consensus patterns
+            self.consensus_patterns.clear()
+            patterns_data = history_state.get("consensus_patterns", {})
+            for key, pattern_data in patterns_data.items():
+                self.consensus_patterns[key] = pattern_data
+            
+            # Load statistics state
+            statistics_state = state.get("statistics_state", {})
+            self.consensus_stats.update(statistics_state.get("consensus_stats", {}))
+            
+            # Load error state
+            error_state = state.get("error_state", {})
+            self.error_count = error_state.get("error_count", 0)
+            self.is_disabled = error_state.get("is_disabled", False)
+            
+            self.logger.info(format_operator_message(
+                icon="🔄",
+                message="Consensus Detector state restored",
+                members=self.n_members,
+                threshold=f"{self.threshold:.3f}",
+                consensus_score=f"{self.last_consensus:.3f}",
+                total_computations=self.consensus_stats.get('total_computations', 0)
+            ))
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "state_restoration")
+            self.logger.error(f"State restoration failed: {error_context}")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # RESET AND CLEANUP METHODS
+    # ═══════════════════════════════════════════════════════════════════
+
+    def reset(self) -> None:
+        """Enhanced reset with comprehensive state cleanup"""
+        super().reset()
+        
+        # Reset consensus state
+        self.last_consensus = 0.0
+        self.consensus_quality = 0.0
+        self.directional_consensus = 0.0
+        self.magnitude_consensus = 0.0
+        self.confidence_consensus = 0.0
+        self.network_consensus = 0.0
+        self.temporal_stability = 0.0
+        
+        # Reset history
+        self.consensus_history.clear()
+        self.consensus_trends.clear()
+        self.prediction_history.clear()
+        
+        # Reset member tracking
+        self.member_contributions.clear()
+        self.consensus_components.clear()
+        self.consensus_patterns.clear()
+        self.regime_consensus_history.clear()
+        
+        # Reset metrics
+        self.quality_metrics = {
+            'coherence': 0.5,
+            'stability': 0.5,
+            'diversity': 0.5,
+            'reliability': 0.5,
+            'predictive_accuracy': 0.5,
+            'temporal_consistency': 0.5
+        }
+        
+        # Reset statistics
+        self.consensus_stats = {
+            'total_computations': 0,
+            'high_consensus_count': 0,
+            'low_consensus_count': 0,
+            'avg_consensus': 0.5,
+            'consensus_volatility': 0.0,
+            'quality_score': 0.5,
+            'trend_accuracy': 0.0,
+            'prediction_accuracy': 0.0,
+            'session_start': datetime.datetime.now().isoformat()
+        }
+        
+        # Reset insights
+        self.consensus_insights = {
+            'dominant_patterns': [],
+            'member_dynamics': {},
+            'consensus_predictors': {},
+            'quality_drivers': {}
+        }
+        
+        # Reset error state
+        self.error_count = 0
+        self.is_disabled = False
+        
+        self.logger.info(format_operator_message(
+            icon="🔄",
+            message="Consensus Detector reset completed",
+            status="All consensus state cleared and systems reinitialized"
+        ))
+
+    def _update_performance_metric(self, metric_name: str, value: float) -> None:
+        """Update performance metric for tracking and analysis"""
+        try:
+            if hasattr(self, 'performance_tracker') and self.performance_tracker:
+                self.performance_tracker.record_metric('ConsensusDetector', metric_name, value, True)
+            
+            # Also store in internal tracking for historical analysis
+            if not hasattr(self, '_performance_history'):
+                self._performance_history = defaultdict(lambda: deque(maxlen=50))
+            
+            self._performance_history[metric_name].append({
+                'timestamp': datetime.datetime.now().isoformat(),
+                'value': value
+            })
+            
+        except Exception as e:
+            # Don't let performance tracking failures affect main functionality
+            if hasattr(self, 'logger'):
+                self.logger.warning(f"Performance metric update failed for {metric_name}: {e}")
+
+    def get_performance_history(self, metric_name: str) -> List[Dict[str, Any]]:
+        """Get historical performance data for a specific metric"""
+        try:
+            if hasattr(self, '_performance_history'):
+                return list(self._performance_history.get(metric_name, []))
+            return []
+        except Exception:
+            return []
+
+    def get_all_performance_metrics(self) -> Dict[str, Any]:
+        """Get all current performance metrics"""
+        try:
+            metrics = {
+                'consensus_score': self.last_consensus,
+                'consensus_quality': self.consensus_quality,
+                'directional_consensus': self.directional_consensus,
+                'magnitude_consensus': self.magnitude_consensus,
+                'confidence_consensus': self.confidence_consensus,
+                'temporal_stability': self.temporal_stability,
+                'consensus_volatility': self.consensus_stats.get('consensus_volatility', 0.0),
+                'avg_consensus': self.consensus_stats.get('avg_consensus', 0.5),
+                'total_computations': self.consensus_stats.get('total_computations', 0),
+                'high_consensus_ratio': (
+                    self.consensus_stats.get('high_consensus_count', 0) / 
+                    max(self.consensus_stats.get('total_computations', 1), 1)
+                ),
+                'low_consensus_ratio': (
+                    self.consensus_stats.get('low_consensus_count', 0) / 
+                    max(self.consensus_stats.get('total_computations', 1), 1)
+                )
+            }
+            
+            # Add quality metrics
+            metrics.update({f'quality_{k}': v for k, v in self.quality_metrics.items()})
+            
+            return metrics
+            
+        except Exception as e:
+            if hasattr(self, 'logger'):
+                self.logger.warning(f"Performance metrics retrieval failed: {e}")
+            return {}
+
+    def __del__(self):
+        """Cleanup on destruction"""
+        try:
+            if hasattr(self, 'logger') and self.logger:
+                self.logger.info(format_operator_message(
+                    icon="👋",
+                    message="Consensus Detector shutting down",
+                    total_computations=self.consensus_stats.get('total_computations', 0),
+                    avg_consensus=f"{self.consensus_stats.get('avg_consensus', 0.5):.1%}"
+                ))
+        except Exception:
+            pass  # Ignore cleanup errors

@@ -1302,14 +1302,24 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             return 0.0
 
     def _update_performance_metric(self, metric_name: str, value: float) -> None:
-        """Update performance metric for tracking"""
-        try:
-            # Track performance metrics for monitoring
-            if hasattr(self, 'performance_tracker'):
-                self.performance_tracker.record_metric('CollusionAuditor', metric_name, value, True)
-        except Exception:
-            # Silently fail if performance tracking is not available
-            pass
+            """Update performance metric for tracking and analysis"""
+            try:
+                if hasattr(self, 'performance_tracker') and self.performance_tracker:
+                    self.performance_tracker.record_metric('ConsensusDetector', metric_name, value, True)
+                
+                # Also store in internal tracking for historical analysis
+                if not hasattr(self, '_performance_history'):
+                    self._performance_history = defaultdict(lambda: deque(maxlen=50))
+                
+                self._performance_history[metric_name].append({
+                    'timestamp': datetime.datetime.now().isoformat(),
+                    'value': value
+                })
+                
+            except Exception as e:
+                # Don't let performance tracking failures affect main functionality
+                if hasattr(self, 'logger'):
+                    self.logger.warning(f"Performance metric update failed for {metric_name}: {e}")
 
     async def _analyze_temporal_coordination_patterns(self, voting_data: Dict[str, Any]) -> Dict[str, Any]:
         """Analyze temporal coordination patterns and timing-based collusion"""
