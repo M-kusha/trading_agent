@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/risk/anomaly_detector.py
-# 🚀 PRODUCTION-READY Enhanced Anomaly Detector
+# [ROCKET] PRODUCTION-READY Enhanced Anomaly Detector
 # Advanced anomaly detection with SmartInfoBus integration and intelligent automation
 # ─────────────────────────────────────────────────────────────
 
@@ -95,11 +95,11 @@ class AnomalyDetectorConfig:
     health_monitoring=True,
     performance_tracking=True,
     error_handling=True,
-    voting=True
+    is_voting_member=True
 )
 class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    🚀 Advanced anomaly detection system with SmartInfoBus integration.
+    [ROCKET] Advanced anomaly detection system with SmartInfoBus integration.
     Provides intelligent anomaly detection with context-aware thresholds and comprehensive analysis.
     """
 
@@ -109,10 +109,20 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                  action_dim: int = 8,
                  **kwargs):
         
-        self.config = config or AnomalyDetectorConfig()
         self.enabled = enabled
         self.action_dim = int(action_dim)
+        
         super().__init__()
+        
+        # Set config after super() call to avoid BaseModule interference
+        self.config = config or AnomalyDetectorConfig()
+        
+        # Ensure config is the right type
+        if not isinstance(self.config, AnomalyDetectorConfig):
+            if isinstance(self.config, dict):
+                self.config = AnomalyDetectorConfig(**self.config)
+            else:
+                self.config = AnomalyDetectorConfig()
         
         # Initialize advanced systems
         self._initialize_advanced_systems()
@@ -120,9 +130,12 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         # Initialize detection state
         self._initialize_detection_state()
         
+        # Start monitoring after all initialization is complete
+        self._start_monitoring()
+        
         self.logger.info(format_operator_message(
             message="Enhanced anomaly detector ready",
-            icon="🔍",
+            icon="[SEARCH]",
             enabled=enabled,
             adaptive_thresholds=self.config.adaptive_thresholds,
             regime_awareness=self.config.regime_awareness,
@@ -156,7 +169,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         # Health monitoring
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        self._start_monitoring()
+        # Note: _start_monitoring() moved to end of initialization
 
     def _initialize_detection_state(self):
         """Initialize anomaly detection state"""
@@ -256,7 +269,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
 
-    async def _initialize(self):
+    def _initialize(self):
         """Initialize module with SmartInfoBus integration"""
         try:
             # Set initial anomaly detection status
@@ -276,10 +289,8 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 thesis="Initial enhanced anomaly detector status"
             )
             
-            return True
         except Exception as e:
             self.logger.error(f"Anomaly detector initialization failed: {e}")
-            return False
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process anomaly detection with enhanced analytics"""
@@ -418,7 +429,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             if context_changed:
                 self.logger.info(format_operator_message(
                     message="Market context changed - adapting detection",
-                    icon="📊",
+                    icon="[STATS]",
                     old_regime=old_regime,
                     new_regime=self.market_regime,
                     volatility=self.volatility_regime,
@@ -561,7 +572,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                     critical_found = True
                     self.logger.error(format_operator_message(
                         message="CRITICAL PnL anomaly detected",
-                        icon="🚨",
+                        icon="[ALERT]",
                         pnl=f"€{pnl:,.2f}",
                         limit=f"€{adjusted_limit:,.0f}",
                         regime=self.market_regime,
@@ -570,7 +581,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 else:
                     self.logger.warning(format_operator_message(
                         message="PnL anomaly detected",
-                        icon="⚠️",
+                        icon="[WARN]",
                         pnl=f"€{pnl:,.2f}",
                         limit=f"€{adjusted_limit:,.0f}"
                     ))
@@ -598,7 +609,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                     anomalies_detected += 1
                     if severity == AnomalySeverity.CRITICAL:
                         critical_found = True
-                        self.logger.error(f"🚨 CRITICAL: Statistical PnL anomaly - z-score {z_score:.2f}")
+                        self.logger.error(f"[ALERT] CRITICAL: Statistical PnL anomaly - z-score {z_score:.2f}")
             
             # 3. Regime-specific detection
             regime_anomaly = await self._detect_regime_specific_pnl_anomaly_async(pnl, detection_data)
@@ -638,7 +649,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                     "details": "Observation could not be converted to valid numpy array"
                 })
                 
-                self.logger.error("🚨 CRITICAL: Invalid observation format detected")
+                self.logger.error("[ALERT] CRITICAL: Invalid observation format detected")
                 return {'observation_detected': True, 'critical': True, 'anomalies_count': 1}
             
             critical_found = False
@@ -664,7 +675,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 
                 self.logger.error(format_operator_message(
                     message="CRITICAL: Invalid observation values",
-                    icon="🚨",
+                    icon="[ALERT]",
                     nan_count=nan_count,
                     inf_count=inf_count,
                     shape=str(obs.shape)
@@ -699,7 +710,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                         anomalies_detected += 1
                         if severity == AnomalySeverity.CRITICAL:
                             critical_found = True
-                            self.logger.error(f"🚨 CRITICAL: Extreme observation values - max z-score {max_z_score:.2f}")
+                            self.logger.error(f"[ALERT] CRITICAL: Extreme observation values - max z-score {max_z_score:.2f}")
             
             return {
                 'observation_detected': True,
@@ -757,7 +768,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                     
                     self.logger.warning(format_operator_message(
                         message="Volume anomaly detected",
-                        icon="⚠️",
+                        icon="[WARN]",
                         volume=f"{volume:,.0f}",
                         z_score=f"{z_score:.2f}",
                         regime=self.market_regime
@@ -821,7 +832,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                         
                         self.logger.warning(format_operator_message(
                             message="Price jump detected",
-                            icon="⚠️",
+                            icon="[WARN]",
                             change=f"{price_change:.1%}",
                             from_price=f"{prev_price:.5f}",
                             to_price=f"{price:.5f}",
@@ -843,6 +854,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         """Enhanced volatility anomaly detection"""
         try:
             anomalies_detected = 0
+            current_vol = 0.0  # Initialize to ensure it's always defined
             
             # Calculate current volatility from recent price history
             if len(self.price_history) >= 10:
@@ -877,14 +889,14 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                         if severity == AnomalySeverity.CRITICAL:
                             self.logger.error(format_operator_message(
                                 message="CRITICAL volatility spike",
-                                icon="🚨",
+                                icon="[ALERT]",
                                 volatility=f"{current_vol:.1%}",
                                 z_score=f"{vol_z_score:.2f}"
                             ))
                         else:
                             self.logger.warning(format_operator_message(
                                 message="Volatility spike detected",
-                                icon="⚠️",
+                                icon="[WARN]",
                                 volatility=f"{current_vol:.1%}",
                                 z_score=f"{vol_z_score:.2f}"
                             ))
@@ -990,7 +1002,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 direction_text = "BUY" if trade_directions[0] > 0 else "SELL"
                 self.logger.info(format_operator_message(
                     message="Unidirectional trading pattern",
-                    icon="📊",
+                    icon="[STATS]",
                     direction=direction_text,
                     count=len(trade_directions),
                     regime=self.market_regime
@@ -1008,7 +1020,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 
                 anomalies_detected += 1
                 
-                self.logger.warning(f"⚠️ High frequency trading detected: {len(trades)} trades")
+                self.logger.warning(f"[WARN] High frequency trading detected: {len(trades)} trades")
             
             # 3. Extreme trade size detection
             if trade_sizes:
@@ -1163,7 +1175,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 
                 self.logger.info(format_operator_message(
                     message="Thresholds adapted",
-                    icon="🔧",
+                    icon="[TOOL]",
                     changes=len(adaptation_changes),
                     regime=self.market_regime
                 ))
@@ -1378,7 +1390,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                     
                     self.logger.info(format_operator_message(
                         message="Emergency cleared - returning to active mode",
-                        icon="✅",
+                        icon="[OK]",
                         anomaly_score=f"{self.anomaly_score:.2f}"
                     ))
             
@@ -1401,7 +1413,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 
                 self.logger.info(format_operator_message(
                     message="Detection mode changed",
-                    icon="🔄",
+                    icon="[RELOAD]",
                     old_mode=old_mode.value,
                     new_mode=self.current_mode.value,
                     anomaly_score=f"{self.anomaly_score:.2f}",
@@ -1669,7 +1681,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             
             self.logger.info(format_operator_message(
                 message="Training thresholds finalized",
-                icon="✅",
+                icon="[OK]",
                 pnl_threshold=f"€{self.current_thresholds['pnl_limit']:,.0f}",
                 obs_threshold=f"{self.current_thresholds['observation_zscore']:.1f}"
             ))
@@ -1896,7 +1908,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         
         self.logger.error(format_operator_message(
             message="Anomaly detector error",
-            icon="💥",
+            icon="[CRASH]",
             error=str(error),
             details=explanation,
             processing_time_ms=processing_time,
@@ -1923,6 +1935,10 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
     def _update_detection_health(self):
         """Update detection health metrics"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, '_detection_quality') or not hasattr(self, '_processing_times'):
+                return  # Skip if not fully initialized yet
+                
             # Check detection quality
             if self._detection_quality < self.config.min_detection_quality:
                 self._health_status = 'warning'
@@ -1948,20 +1964,24 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
     def _analyze_detection_effectiveness(self):
         """Analyze detection effectiveness"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, 'detection_effectiveness'):
+                return  # Skip if not fully initialized yet
+                
             if len(self.detection_effectiveness) >= 20:
                 effectiveness = np.mean(list(self.detection_effectiveness)[-20:])
                 
                 if effectiveness > 0.8:
                     self.logger.info(format_operator_message(
                         message="High detection effectiveness achieved",
-                        icon="🎯",
+                        icon="[TARGET]",
                         effectiveness=f"{effectiveness:.2f}",
                         score=f"{self.anomaly_score:.2f}"
                     ))
                 elif effectiveness < 0.4:
                     self.logger.warning(format_operator_message(
                         message="Low detection effectiveness detected",
-                        icon="⚠️",
+                        icon="[WARN]",
                         effectiveness=f"{effectiveness:.2f}",
                         mode=self.current_mode.value
                     ))
@@ -1972,6 +1992,10 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
     def _adapt_detection_parameters(self):
         """Continuous detection parameter adaptation"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, 'detection_effectiveness') or not hasattr(self, '_detection_quality'):
+                return  # Skip if not fully initialized yet
+                
             # Adapt sensitivity based on recent performance
             if len(self.detection_effectiveness) >= 10:
                 recent_effectiveness = np.mean(list(self.detection_effectiveness)[-10:])
@@ -1997,6 +2021,10 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
     def _cleanup_old_data(self):
         """Cleanup old data to maintain performance"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, 'anomalies') or not hasattr(self, 'regime_baselines'):
+                return  # Skip if not fully initialized yet
+                
             # Cleanup old anomaly records
             for anomaly_type in self.anomalies:
                 if len(self.anomalies[anomaly_type]) > 100:
@@ -2080,7 +2108,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         self.anomaly_score = 0.0
         self.detection_confidence = 0.5
         
-        self.logger.info("🔄 Anomaly history cleared")
+        self.logger.info("[RELOAD] Anomaly history cleared")
 
     def get_observation_components(self) -> np.ndarray:
         """Enhanced observation components for model integration"""
@@ -2149,46 +2177,46 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         
         # Status indicators
         if self.anomaly_score > self.config.critical_threshold:
-            detection_status = "🚨 Critical"
+            detection_status = "[ALERT] Critical"
         elif self.anomaly_score > self.config.warning_threshold:
-            detection_status = "⚠️ Elevated"
+            detection_status = "[WARN] Elevated"
         else:
-            detection_status = "✅ Normal"
+            detection_status = "[OK] Normal"
         
         # Mode status
         mode_emoji = {
-            AnomalyDetectionMode.INITIALIZATION: "🔄",
+            AnomalyDetectionMode.INITIALIZATION: "[RELOAD]",
             AnomalyDetectionMode.TRAINING: "🎓",
-            AnomalyDetectionMode.CALIBRATION: "🔧",
-            AnomalyDetectionMode.ACTIVE: "✅",
-            AnomalyDetectionMode.ENHANCED: "⚡",
+            AnomalyDetectionMode.CALIBRATION: "[TOOL]",
+            AnomalyDetectionMode.ACTIVE: "[OK]",
+            AnomalyDetectionMode.ENHANCED: "[FAST]",
             AnomalyDetectionMode.EMERGENCY: "🆘",
-            AnomalyDetectionMode.MAINTENANCE: "🔧"
+            AnomalyDetectionMode.MAINTENANCE: "[TOOL]"
         }
         
         mode_status = f"{mode_emoji.get(self.current_mode, '❓')} {self.current_mode.value.upper()}"
         
         # Health status
-        health_emoji = "✅" if self._health_status == 'healthy' else "⚠️"
-        cb_status = "🔴 OPEN" if self.circuit_breaker['state'] == 'OPEN' else "🟢 CLOSED"
+        health_emoji = "[OK]" if self._health_status == 'healthy' else "[WARN]"
+        cb_status = "[RED] OPEN" if self.circuit_breaker['state'] == 'OPEN' else "[GREEN] CLOSED"
         
         # Training status
         if self.config.training_mode:
             if self.is_training_complete:
-                training_status = "✅ Completed"
+                training_status = "[OK] Completed"
             else:
                 training_status = f"🎓 In Progress ({self.training_progress:.0%})"
         else:
-            training_status = "❌ Disabled"
+            training_status = "[FAIL] Disabled"
         
         # Data sufficiency status
         pnl_sufficiency = len(self.pnl_history) / (self.pnl_history.maxlen or 1)
         if pnl_sufficiency > 0.8:
-            data_status = "✅ Sufficient"
+            data_status = "[OK] Sufficient"
         elif pnl_sufficiency > 0.5:
-            data_status = "⚡ Partial"
+            data_status = "[FAST] Partial"
         else:
-            data_status = "❌ Limited"
+            data_status = "[FAIL] Limited"
         
         # Current anomalies breakdown
         anomaly_lines = []
@@ -2196,56 +2224,56 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             if anomalies:
                 critical_count = sum(1 for a in anomalies if a.get('severity') == AnomalySeverity.CRITICAL.value)
                 warning_count = sum(1 for a in anomalies if a.get('severity') == AnomalySeverity.WARNING.value)
-                emoji = "🚨" if critical_count > 0 else "⚠️" if warning_count > 0 else "ℹ️"
+                emoji = "[ALERT]" if critical_count > 0 else "[WARN]" if warning_count > 0 else "ℹ️"
                 anomaly_lines.append(f"  {emoji} {anomaly_type.replace('_', ' ').title()}: {len(anomalies)} ({critical_count} critical)")
         
         # Detection effectiveness
         if len(self.detection_effectiveness) >= 10:
             recent_effectiveness = np.mean(list(self.detection_effectiveness)[-10:])
-            effectiveness_status = "📈 High" if recent_effectiveness > 0.8 else "📊 Medium" if recent_effectiveness > 0.5 else "📉 Low"
+            effectiveness_status = "[CHART] High" if recent_effectiveness > 0.8 else "[STATS] Medium" if recent_effectiveness > 0.5 else "📉 Low"
         else:
-            effectiveness_status = "📊 Calculating"
+            effectiveness_status = "[STATS] Calculating"
         
         # Threshold adaptation status
         if self.config.adaptive_thresholds:
             recent_adaptations = len([h for h in list(self.threshold_history)[-10:] if h.get('changes')])
-            adaptation_status = f"✅ Active ({recent_adaptations} recent)"
+            adaptation_status = f"[OK] Active ({recent_adaptations} recent)"
         else:
-            adaptation_status = "❌ Disabled"
+            adaptation_status = "[FAIL] Disabled"
         
         return f"""
-🔍 ENHANCED ANOMALY DETECTOR v4.0
+[SEARCH] ENHANCED ANOMALY DETECTOR v4.0
 ═══════════════════════════════════════════════════
-🎯 Detection Status: {detection_status} ({self.anomaly_score:.1%} risk)
-🔧 Detection Mode: {mode_status}
-📊 Market Context: {self.market_regime.title()} regime, {self.volatility_regime.title()} volatility
+[TARGET] Detection Status: {detection_status} ({self.anomaly_score:.1%} risk)
+[TOOL] Detection Mode: {mode_status}
+[STATS] Market Context: {self.market_regime.title()} regime, {self.volatility_regime.title()} volatility
 🎓 Training Status: {training_status}
-🔄 Detector Enabled: {'✅ Yes' if self.enabled else '❌ No'}
+[RELOAD] Detector Enabled: {'[OK] Yes' if self.enabled else '[FAIL] No'}
 
-🏥 SYSTEM HEALTH
+[HEALTH] SYSTEM HEALTH
 • Status: {health_emoji} {self._health_status.upper()}
 • Circuit Breaker: {cb_status}
 • Detection Quality: {self._detection_quality:.2f}
 • Detection Confidence: {self.detection_confidence:.2f}
 
-⚖️ DETECTION THRESHOLDS
+[BALANCE] DETECTION THRESHOLDS
 • PnL Limit: €{self.current_thresholds['pnl_limit']:,.0f}
 • Volume Z-Score: {self.current_thresholds['volume_zscore']:.1f}
 • Price Z-Score: {self.current_thresholds['price_zscore']:.1f}
 • Observation Z-Score: {self.current_thresholds['observation_zscore']:.1f}
 • Adaptive Thresholds: {adaptation_status}
 
-📊 DATA COLLECTION STATUS
+[STATS] DATA COLLECTION STATUS
 • PnL History: {len(self.pnl_history)}/{self.pnl_history.maxlen}
 • Volume History: {len(self.volume_history)}/{self.volume_history.maxlen}
 • Price History: {len(self.price_history)}/{self.price_history.maxlen}
 • Observation History: {len(self.observation_history)}/{self.observation_history.maxlen}
 • Data Quality: {data_status} ({pnl_sufficiency:.1%})
 
-🚨 CURRENT ANOMALIES ({total_anomalies} total)
-{chr(10).join(anomaly_lines) if anomaly_lines else "  ✅ No anomalies detected"}
+[ALERT] CURRENT ANOMALIES ({total_anomalies} total)
+{chr(10).join(anomaly_lines) if anomaly_lines else "  [OK] No anomalies detected"}
 
-📈 DETECTION PERFORMANCE
+[CHART] DETECTION PERFORMANCE
 • Detection Effectiveness: {effectiveness_status}
 • Total Detections: {self.detection_stats.get('total_anomalies', 0)}
 • PnL Anomalies: {self.detection_stats.get('pnl_count', 0)}
@@ -2254,13 +2282,13 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
 • Observation Anomalies: {self.detection_stats.get('observation_count', 0)}
 • System Anomalies: {self.detection_stats.get('system_count', 0)}
 
-🔧 ADAPTIVE BEHAVIOR
+[TOOL] ADAPTIVE BEHAVIOR
 • Sensitivity Multiplier: {self.adaptive_params['sensitivity_multiplier']:.2f}
 • Regime Adaptation: {self.adaptive_params['regime_adaptation_factor']:.2f}
 • Volatility Tolerance: {self.adaptive_params['volatility_tolerance']:.2f}
 • Learning Momentum: {self.adaptive_params['learning_momentum']:.2f}
 
-📊 MARKET CONTEXT TRACKING
+[STATS] MARKET CONTEXT TRACKING
 • Current Regime: {self.market_regime.title()}
 • Market Session: {self.market_session.title()}
 • Volatility Level: {self.volatility_regime.title()}
@@ -2272,12 +2300,12 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
 {chr(10).join([f"  • {name}: {data.get('timestamp', 'N/A')}" for name, data in self.external_anomaly_sources.items()]) if self.external_anomaly_sources else "  📭 No external sources"}
 
 💡 ADVANCED FEATURES
-• Sequence Analysis: {'✅ Active' if hasattr(self, 'sequence_analyzer') else '❌ Inactive'}
-• Correlation Analysis: {'✅ Active' if hasattr(self, 'correlation_analyzer') else '❌ Inactive'}
-• Pattern Detection: {'✅ Active' if hasattr(self, 'pattern_detector') else '❌ Inactive'}
-• Market Structure Analysis: {'✅ Active' if len(self.anomalies.get('market_structure', [])) >= 0 else '❌ Inactive'}
+• Sequence Analysis: {'[OK] Active' if hasattr(self, 'sequence_analyzer') else '[FAIL] Inactive'}
+• Correlation Analysis: {'[OK] Active' if hasattr(self, 'correlation_analyzer') else '[FAIL] Inactive'}
+• Pattern Detection: {'[OK] Active' if hasattr(self, 'pattern_detector') else '[FAIL] Inactive'}
+• Market Structure Analysis: {'[OK] Active' if len(self.anomalies.get('market_structure', [])) >= 0 else '[FAIL] Inactive'}
 
-📈 STEP STATISTICS
+[CHART] STEP STATISTICS
 • Total Steps: {self.step_count:,}
 • Processing Time Avg: {(np.mean(list(self._processing_times)[-10:]) * 1000):.1f}ms (last 10)
 • Threshold Adaptations: {len(self.threshold_history)}
@@ -2355,7 +2383,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         self.current_mode = AnomalyDetectionMode.INITIALIZATION
         self.mode_start_time = datetime.datetime.now()
         
-        self.logger.info("🔄 Enhanced Anomaly Detector reset - all state cleared")
+        self.logger.info("[RELOAD] Enhanced Anomaly Detector reset - all state cleared")
 
     def step(self, pnl: Optional[float] = None, obs: Optional[np.ndarray] = None,
             volume: Optional[float] = None, price: Optional[float] = None,
@@ -2458,6 +2486,136 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 if anomalies
             }
         }
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in anomaly detection and risk assessment"""
+        try:
+            base_confidence = 0.8  # High confidence in anomaly detection capabilities
+            
+            # Adjust confidence based on detection quality
+            if hasattr(self, '_detection_quality') and self._detection_quality:
+                base_confidence += self._detection_quality * 0.15
+            
+            # Historical accuracy adjustment - use available data
+            if hasattr(self, 'detection_effectiveness') and len(self.detection_effectiveness) > 0:
+                avg_effectiveness = np.mean(list(self.detection_effectiveness))
+                accuracy_boost = (avg_effectiveness - 0.5) * 0.2
+                base_confidence += accuracy_boost
+            
+            # Data sufficiency adjustment
+            if hasattr(self, 'pnl_history') and len(self.pnl_history) > 0:
+                data_sufficiency = min(0.1, len(self.pnl_history) / 100 * 0.1)
+                base_confidence += data_sufficiency
+            
+            # Current anomaly level adjustment
+            current_severity = AnomalySeverity.INFO
+            severity_adjustments = {
+                AnomalySeverity.INFO: 0.05,
+                AnomalySeverity.WARNING: 0.0,
+                AnomalySeverity.CRITICAL: -0.1,
+                AnomalySeverity.EMERGENCY: -0.2
+            }
+            base_confidence += severity_adjustments.get(current_severity, 0.0)
+            
+            # Detection mode adjustment
+            if self.current_mode == AnomalyDetectionMode.TRAINING:
+                base_confidence *= 0.7  # Lower confidence during training
+            elif self.current_mode == AnomalyDetectionMode.EMERGENCY:
+                base_confidence *= 0.8  # Slightly lower confidence in emergency mode
+            
+            return float(np.clip(base_confidence, 0.1, 1.0))
+            
+        except Exception as e:
+            return 0.6  # Moderate default confidence
+
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose risk management actions based on anomaly detection"""
+        try:
+            # Get current anomaly status
+            anomalies = self.smart_bus.get('anomaly_detection', 'EnhancedAnomalyDetector') or {}
+            market_data = inputs.get('market_data', {})
+            
+            # Determine overall risk level
+            risk_level = 'normal'
+            actions = []
+            
+            if anomalies:
+                # Analyze severity of detected anomalies
+                max_severity = AnomalySeverity.INFO
+                anomaly_count = 0
+                
+                if isinstance(anomalies, dict):
+                    for anomaly_type, data in anomalies.items():
+                        if isinstance(data, dict) and 'severity' in data:
+                            severity = data['severity']
+                            anomaly_count += 1
+                            
+                            # Track highest severity
+                            if severity == 'emergency':
+                                max_severity = AnomalySeverity.EMERGENCY
+                            elif severity == 'critical' and max_severity != AnomalySeverity.EMERGENCY:
+                                max_severity = AnomalySeverity.CRITICAL
+                            elif severity == 'warning' and max_severity not in [AnomalySeverity.EMERGENCY, AnomalySeverity.CRITICAL]:
+                                max_severity = AnomalySeverity.WARNING
+                
+                # Generate actions based on severity
+                if max_severity == AnomalySeverity.EMERGENCY:
+                    risk_level = 'emergency'
+                    actions.extend([
+                        {'action': 'halt_trading', 'reason': 'Emergency anomaly detected', 'priority': 'immediate'},
+                        {'action': 'close_risky_positions', 'reason': 'Risk mitigation', 'priority': 'high'},
+                        {'action': 'notify_operators', 'reason': 'Manual intervention required', 'priority': 'immediate'}
+                    ])
+                    
+                elif max_severity == AnomalySeverity.CRITICAL:
+                    risk_level = 'critical'
+                    actions.extend([
+                        {'action': 'reduce_position_size', 'reason': 'Critical anomaly detected', 'priority': 'high'},
+                        {'action': 'increase_monitoring', 'reason': 'Enhanced surveillance needed', 'priority': 'medium'},
+                        {'action': 'tighten_risk_limits', 'reason': 'Anomalous market conditions', 'priority': 'high'}
+                    ])
+                    
+                elif max_severity == AnomalySeverity.WARNING:
+                    risk_level = 'warning'
+                    actions.extend([
+                        {'action': 'increase_monitoring', 'reason': 'Warning-level anomaly', 'priority': 'medium'},
+                        {'action': 'review_positions', 'reason': 'Anomaly assessment', 'priority': 'low'}
+                    ])
+            
+            # Market-specific adjustments
+            if market_data:
+                volatility = market_data.get('volatility', 0)
+                if volatility > 0.5:  # High volatility
+                    actions.append({
+                        'action': 'adjust_volatility_limits', 
+                        'reason': f'High volatility detected: {volatility:.2f}', 
+                        'priority': 'medium'
+                    })
+            
+            return {
+                'action_type': 'anomaly_risk_management',
+                'risk_level': risk_level,
+                'anomaly_count': len(anomalies) if isinstance(anomalies, dict) else 0,
+                'actions': actions,
+                'detection_mode': self.current_mode.value,
+                'confidence': await self.calculate_confidence({}, **inputs),
+                'timestamp': datetime.datetime.now().isoformat(),
+                'recommendations': {
+                    'immediate': [a for a in actions if a.get('priority') == 'immediate'],
+                    'high_priority': [a for a in actions if a.get('priority') == 'high'],
+                    'medium_priority': [a for a in actions if a.get('priority') == 'medium'],
+                    'low_priority': [a for a in actions if a.get('priority') == 'low']
+                }
+            }
+            
+        except Exception as e:
+            return {
+                'action_type': 'anomaly_risk_management',
+                'risk_level': 'unknown',
+                'error': str(e),
+                'actions': [{'action': 'monitor', 'reason': 'Error in anomaly analysis', 'priority': 'low'}],
+                'confidence': 0.1
+            }
 
 
 # ================== SUPPORTING CLASSES ==================

@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/core/module_base.py
-# 🚀 PRODUCTION-READY SmartInfoBus Module Base System
+# [ROCKET] PRODUCTION-READY SmartInfoBus Module Base System
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # FIXED: Abstract method enforcement, complete docstrings, state management
 # ─────────────────────────────────────────────────────────────
@@ -31,6 +31,7 @@ class ModuleMetadata:
     requires: List[str]
     version: str = "1.0.0"
     category: str = "general"
+    description: str = ""
     is_voting_member: bool = False
     hot_reload: bool = True
     explainable: bool = True
@@ -40,6 +41,10 @@ class ModuleMetadata:
     max_retries: int = 3
     critical: bool = False
     dependencies: List[str] = field(default_factory=list)
+    thesis_required: bool = False
+    health_monitoring: bool = False
+    performance_tracking: bool = False
+    error_handling: bool = False
     
     # Valid categories for modules
     VALID_CATEGORIES = [
@@ -143,6 +148,7 @@ class ModuleMetadata:
             'requires': self.requires,
             'version': self.version,
             'category': self.category,
+            'description': self.description,
             'is_voting_member': self.is_voting_member,
             'hot_reload': self.hot_reload,
             'explainable': self.explainable,
@@ -151,7 +157,11 @@ class ModuleMetadata:
             'min_confidence': self.min_confidence,
             'max_retries': self.max_retries,
             'critical': self.critical,
-            'dependencies': self.dependencies
+            'dependencies': self.dependencies,
+            'thesis_required': self.thesis_required,
+            'health_monitoring': self.health_monitoring,
+            'performance_tracking': self.performance_tracking,
+            'error_handling': self.error_handling
         }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -184,6 +194,11 @@ def module(**kwargs):
         timeout_ms: Maximum execution time
         priority: Execution priority (higher = earlier)
         critical: Whether module is critical to system operation
+
+        thesis_required: Whether module requires thesis generation
+        health_monitoring: Whether module supports health monitoring
+        performance_tracking: Whether module supports performance tracking
+        error_handling: Whether module supports error handling
     """
     def decorator(cls):
         # Validate class inheritance
@@ -192,9 +207,18 @@ def module(**kwargs):
         
         # Create and validate metadata
         try:
+            # Filter out decorator-specific arguments that aren't metadata fields
+            metadata_kwargs = kwargs.copy()
+            name = metadata_kwargs.pop('name', cls.__name__)
+            
+            # Remove decorator-specific arguments that aren't part of ModuleMetadata
+            decorator_args = ['thesis_required', 'health_monitoring', 'performance_tracking', 'error_handling']
+            for arg in decorator_args:
+                metadata_kwargs.pop(arg, None)
+            
             metadata = ModuleMetadata(
-                name=kwargs.get('name', cls.__name__),
-                **kwargs
+                name=name,
+                **metadata_kwargs
             )
         except ValueError as e:
             raise ValueError(f"Module {cls.__name__} metadata validation failed: {e}")
@@ -340,6 +364,9 @@ def _enhance_validation_methods(cls):
             
             return True
         cls.validate_outputs = validate_outputs
+
+
+
 
 def _enhance_explanation_capability(cls):
     """Enhance module with explanation generation"""
@@ -677,7 +704,7 @@ class BaseModule(ABC):
         
         # Log initialization
         self.logger.info(
-            f"✅ MODULE INITIALIZED: {self.__class__.__name__} "
+            f"[OK] MODULE INITIALIZED: {self.__class__.__name__} "
             f"v{self.metadata.version} ({self.metadata.category})"
         )
     
@@ -833,6 +860,26 @@ class BaseModule(ABC):
                 raise ValueError(f"Invalid confidence value: {conf}")
         
         return True
+
+     # ──────────────────────────────────────────────────────────────
+    # OPTIONAL CAPABILITIES – confidence scoring & voting
+    #   • A module overrides one (or both) of these to opt-in.
+    #   • Leaving the stub unchanged means “I don't support it”.
+    # ──────────────────────────────────────────────────────────────
+
+    @abstractmethod
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """
+        ASYNC trading action proposal - must be implemented by modules using trading mixin.
+        """
+        pass
+
+    @abstractmethod
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """
+        ASYNC confidence calculation - must be implemented by modules using trading mixin.
+        """
+        pass
     
     def explain_decision(self, decision: Any, context: Dict[str, Any]) -> str:
         """
@@ -932,7 +979,7 @@ class BaseModule(ABC):
         # Re-initialize module-specific state
         self._initialize()
         
-        self.logger.info(f"🔄 MODULE RESET: {self.__class__.__name__}")
+        self.logger.info(f"[RELOAD] MODULE RESET: {self.__class__.__name__}")
 
     def _get_custom_state(self) -> Dict[str, Any]:
         """Get custom module state for persistence. Override in subclasses."""
@@ -1068,7 +1115,7 @@ class BaseModule(ABC):
                 recent_success_rate = self._calculate_recent_success_rate()
                 if recent_success_rate > 0.8:  # 80% recent success rate
                     self._health_status = "OK"
-                    self.logger.info(f"✅ Module health recovered: {self.__class__.__name__}")
+                    self.logger.info(f"[OK] Module health recovered: {self.__class__.__name__}")
         else:
             self._failure_count += 1
             self._error_count += 1
@@ -1078,7 +1125,7 @@ class BaseModule(ABC):
             recent_success_rate = self._calculate_recent_success_rate()
             if recent_success_rate < 0.5:  # Less than 50% recent success
                 self._health_status = "DEGRADED"
-                self.logger.warning(f"⚠️ Module health degraded: {self.__class__.__name__}")
+                self.logger.warning(f"[WARN] Module health degraded: {self.__class__.__name__}")
             
             # Log error with pinpointer if available
             if error and self.error_pinpointer:

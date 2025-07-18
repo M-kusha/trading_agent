@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/risk/execution_quality_monitor.py
-# 🚀 PRODUCTION-READY Enhanced Execution Quality Monitor
+# [ROCKET] PRODUCTION-READY Enhanced Execution Quality Monitor
 # Advanced execution monitoring with SmartInfoBus integration and intelligent training mode
 # ─────────────────────────────────────────────────────────────
 
@@ -68,11 +68,11 @@ class ExecutionQualityConfig:
     health_monitoring=True,
     performance_tracking=True,
     error_handling=True,
-    voting=True
+    is_voting_member=True
 )
 class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    🚀 Advanced execution quality monitor with SmartInfoBus integration.
+    [ROCKET] Advanced execution quality monitor with SmartInfoBus integration.
     Monitors execution metrics including slippage, latency, fill rates, and spreads
     with intelligent context-aware analysis.
     """
@@ -94,7 +94,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         
         self.logger.info(format_operator_message(
             message="Enhanced execution quality monitor ready",
-            icon="⚡",
+            icon="[FAST]",
             training_mode=training_mode,
             stats_window=self.config.stats_window,
             config_loaded=True
@@ -121,7 +121,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             'failures': 0,
             'last_failure': 0,
             'state': 'CLOSED',
-            'threshold': self.config.circuit_breaker_threshold
+            'threshold': getattr(self.config, 'circuit_breaker_threshold', 5)
         }
         
         # Health monitoring
@@ -141,11 +141,11 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         self.mode_start_time = datetime.datetime.now()
         
         # Enhanced histories
-        self.slippage_history = deque(maxlen=self.config.stats_window)
-        self.latency_history = deque(maxlen=self.config.stats_window)
-        self.fill_history = deque(maxlen=self.config.stats_window)
-        self.spread_history = deque(maxlen=self.config.stats_window)
-        self.quality_history = deque(maxlen=self.config.stats_window)
+        self.slippage_history = deque(maxlen=getattr(self.config, 'stats_window', 50))
+        self.latency_history = deque(maxlen=getattr(self.config, 'stats_window', 50))
+        self.fill_history = deque(maxlen=getattr(self.config, 'stats_window', 50))
+        self.spread_history = deque(maxlen=getattr(self.config, 'stats_window', 50))
+        self.quality_history = deque(maxlen=getattr(self.config, 'stats_window', 50))
         
         # Instrument-specific tracking
         self.instrument_metrics: Dict[str, Dict[str, deque]] = defaultdict(
@@ -225,7 +225,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
 
-    async def _initialize(self):
+    def _initialize(self) -> None:
         """Initialize module with SmartInfoBus integration"""
         try:
             # Set initial execution quality status
@@ -243,10 +243,8 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 thesis="Initial execution quality monitor status"
             )
             
-            return True
         except Exception as e:
             self.logger.error(f"Execution monitor initialization failed: {e}")
-            return False
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process execution quality assessment with enhanced analytics"""
@@ -481,7 +479,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             if self.market_regime != old_regime:
                 self.logger.info(
                     format_operator_message(
-                        "📊", "MARKET_REGIME_CHANGE",
+                        "[STATS]", "MARKET_REGIME_CHANGE",
                         old_regime=old_regime,
                         new_regime=self.market_regime,
                         volatility=self.volatility_regime,
@@ -584,7 +582,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                     
                     self.logger.warning(
                         format_operator_message(
-                            "⚠️", "HIGH_SLIPPAGE",
+                            "[WARN]", "HIGH_SLIPPAGE",
                             instrument=instrument,
                             slippage=f"{slippage:.5f}",
                             limit=f"{adjusted_limit:.5f}",
@@ -619,7 +617,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                     
                     self.logger.warning(
                         format_operator_message(
-                            "⏱️", "HIGH_LATENCY",
+                            "[TIME]", "HIGH_LATENCY",
                             instrument=instrument,
                             latency=f"{latency:.0f}ms",
                             limit=f"{adjusted_limit:.0f}ms",
@@ -1075,7 +1073,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 
                 self.logger.error(
                     format_operator_message(
-                        "🚨", "EXECUTION_QUALITY_DEGRADATION",
+                        "[ALERT]", "EXECUTION_QUALITY_DEGRADATION",
                         quality_score=f"{self.quality_score:.2f}",
                         threshold=f"{self.config.degradation_threshold:.2f}",
                         regime=self.market_regime,
@@ -1093,7 +1091,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                     
                     self.logger.error(
                         format_operator_message(
-                            "🚨", "EXECUTION_QUALITY_ESCALATION",
+                            "[ALERT]", "EXECUTION_QUALITY_ESCALATION",
                             escalation_number=self.escalation_count,
                             quality_score=f"{self.quality_score:.2f}",
                             degraded_executions=self.degraded_executions,
@@ -1175,7 +1173,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 
                 self.logger.info(
                     format_operator_message(
-                        "🔄", "EXECUTION_MODE_CHANGE",
+                        "[RELOAD]", "EXECUTION_MODE_CHANGE",
                         old_mode=old_mode.value,
                         new_mode=new_mode.value,
                         quality_score=f"{self.quality_score:.2f}",
@@ -1352,7 +1350,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         
         self.logger.error(
             format_operator_message(
-                "💥", "EXECUTION_MONITOR_ERROR",
+                "[CRASH]", "EXECUTION_MONITOR_ERROR",
                 error=str(error),
                 details=explanation,
                 processing_time_ms=processing_time,
@@ -1408,7 +1406,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 if effectiveness > 0.8:
                     self.logger.info(
                         format_operator_message(
-                            "🎯", "HIGH_EXECUTION_EFFECTIVENESS",
+                            "[TARGET]", "HIGH_EXECUTION_EFFECTIVENESS",
                             quality_score=f"{effectiveness:.2f}",
                             execution_count=self.execution_count,
                             context="execution_analysis"
@@ -1417,7 +1415,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 elif effectiveness < 0.4:
                     self.logger.warning(
                         format_operator_message(
-                            "⚠️", "LOW_EXECUTION_EFFECTIVENESS",
+                            "[WARN]", "LOW_EXECUTION_EFFECTIVENESS",
                             quality_score=f"{effectiveness:.2f}",
                             degraded_executions=self.degraded_executions,
                             context="execution_analysis"
@@ -1595,70 +1593,70 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         
         # Quality status indicators
         if self.quality_score < 0.5:
-            quality_status = "🚨 Critical"
+            quality_status = "[ALERT] Critical"
         elif self.quality_score < 0.7:
-            quality_status = "⚠️ Poor"
+            quality_status = "[WARN] Poor"
         elif self.quality_score < 0.9:
-            quality_status = "⚡ Good"
+            quality_status = "[FAST] Good"
         else:
-            quality_status = "✅ Excellent"
+            quality_status = "[OK] Excellent"
         
         # Mode status
         mode_emoji = {
             ExecutionMode.TRAINING: "🎓",
-            ExecutionMode.CALIBRATION: "🔧",
-            ExecutionMode.NORMAL: "✅",
-            ExecutionMode.DEGRADED: "⚠️",
-            ExecutionMode.CRITICAL: "🚨",
+            ExecutionMode.CALIBRATION: "[TOOL]",
+            ExecutionMode.NORMAL: "[OK]",
+            ExecutionMode.DEGRADED: "[WARN]",
+            ExecutionMode.CRITICAL: "[ALERT]",
             ExecutionMode.EMERGENCY: "🆘"
         }
         
         mode_status = f"{mode_emoji.get(self.current_mode, '❓')} {self.current_mode.value.upper()}"
         
         # Health status
-        health_emoji = "✅" if self._health_status == 'healthy' else "⚠️"
-        cb_status = "🔴 OPEN" if self.circuit_breaker['state'] == 'OPEN' else "🟢 CLOSED"
+        health_emoji = "[OK]" if self._health_status == 'healthy' else "[WARN]"
+        cb_status = "[RED] OPEN" if self.circuit_breaker['state'] == 'OPEN' else "[GREEN] CLOSED"
         
         # Issue summary
         issue_lines = []
         for issue_type, issues in self.issues.items():
             if issues:
                 count = len(issues)
-                emoji = "🚨" if count > 3 else "⚠️" if count > 1 else "⚡"
+                emoji = "[ALERT]" if count > 3 else "[WARN]" if count > 1 else "[FAST]"
                 issue_lines.append(f"  {emoji} {issue_type.replace('_', ' ').title()}: {count} issues")
         
         return f"""
-⚡ ENHANCED EXECUTION QUALITY MONITOR v4.0
+[FAST] ENHANCED EXECUTION QUALITY MONITOR v4.0
 ═══════════════════════════════════════════════════
-🎯 Quality Status: {quality_status} ({self.quality_score:.1%})
-🔧 Monitor Mode: {mode_status}
-📊 Market Regime: {self.market_regime.title()}
-💥 Volatility Level: {self.volatility_regime.title()}
+[TARGET] Quality Status: {quality_status} ({self.quality_score:.1%})
+[TOOL] Monitor Mode: {mode_status}
+[STATS] Market Regime: {self.market_regime.title()}
+[CRASH] Volatility Level: {self.volatility_regime.title()}
 🕐 Market Session: {self.market_session.title()}
-🎓 Training Mode: {'✅ Active' if self.training_mode else '❌ Inactive'}
+🎓 Training Mode: {'[OK] Active' if self.training_mode else '[FAIL] Inactive'}
 
-🏥 SYSTEM HEALTH
+[HEALTH] SYSTEM HEALTH
 • Status: {health_emoji} {self._health_status.upper()}
 • Circuit Breaker: {cb_status}
 • Execution Count: {self.execution_count:,}
 
-📊 EXECUTION METRICS
+[STATS] EXECUTION METRICS
 • Quality Score: {self.quality_score:.1%}
 • Success Rate: {self.comprehensive_metrics['success_rate']:.1%}
 • Degraded Executions: {self.degraded_executions}
 • Degradation Rate: {self.comprehensive_metrics['degradation_rate']:.1%}
 
-📈 PERFORMANCE STATISTICS
+[CHART] PERFORMANCE STATISTICS
 • Avg Slippage: {self.comprehensive_metrics['avg_slippage']:.5f} (limit: {self.config.slip_limit:.5f})
 • Avg Latency: {self.comprehensive_metrics['avg_latency']:.0f}ms (limit: {self.config.latency_limit}ms)
 • Avg Fill Rate: {self.comprehensive_metrics['avg_fill_rate']:.1%} (min: {self.config.min_fill_rate:.1%})
 • Avg Spread: {self.comprehensive_metrics['avg_spread']:.5f}
 • Quality Trend: {self.comprehensive_metrics['quality_trend']:+.2f}
 
-⚠️ CURRENT ISSUES
-{chr(10).join(issue_lines) if issue_lines else "  ✅ No current execution issues"}
+[WARN] CURRENT ISSUES
+{chr(10).join(issue_lines) if issue_lines else "  [OK] No current execution issues"}
 
-🚨 ESCALATIONS & ALERTS
+[ALERT] ESCALATIONS & ALERTS
 • Escalation Count: {self.escalation_count}
 • Quality Alerts: {len(self.quality_alerts)}
 • Last Escalation: {self.last_escalation.strftime('%H:%M:%S') if self.last_escalation else 'None'}
@@ -1671,7 +1669,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
 • Quality Threshold: {self.config.quality_threshold:.1%}
 • Degradation Threshold: {self.config.degradation_threshold:.1%}
 
-🔧 SYSTEM STATUS
+[TOOL] SYSTEM STATUS
 • Statistics Window: {self.config.stats_window} records
 • History Sizes: S:{len(self.slippage_history)} L:{len(self.latency_history)} F:{len(self.fill_history)} Q:{len(self.quality_history)}
         """
@@ -1761,6 +1759,134 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             'quality_adaptation_confidence': 0.5
         }
         
-        self.logger.info("🔄 Enhanced Execution Quality Monitor reset - all state cleared")
+        self.logger.info("[RELOAD] Enhanced Execution Quality Monitor reset - all state cleared")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # BASEMODULE ABSTRACT METHOD IMPLEMENTATIONS
+    # ═══════════════════════════════════════════════════════════════════
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in execution quality assessment"""
+        try:
+            # Base confidence from execution quality score
+            execution_quality = self.quality_score
+            
+            # Mode adjustment factor
+            mode_confidence = {
+                ExecutionMode.TRAINING: 0.6,
+                ExecutionMode.CALIBRATION: 0.7,
+                ExecutionMode.NORMAL: 1.0,
+                ExecutionMode.DEGRADED: 0.4,
+                ExecutionMode.CRITICAL: 0.2,
+                ExecutionMode.EMERGENCY: 0.1
+            }.get(self.current_mode, 0.5)
+            
+            # Data quality factor
+            latency_count = len(self.latency_history) if hasattr(self, 'latency_history') else 0
+            data_quality = min(latency_count / max(self.config.stats_window, 1), 1.0)
+            
+            # Recent performance consistency
+            if hasattr(self, 'quality_history') and len(self.quality_history) > 2:
+                recent_qualities = list(self.quality_history)[-5:]
+                consistency = 1.0 - (np.std(recent_qualities) / max(np.mean(recent_qualities), 0.1))
+            else:
+                consistency = 0.5
+            
+            # Health status factor
+            health_factor = 1.0 if self._health_status == 'healthy' else 0.3
+            
+            # Combine factors
+            confidence = (
+                execution_quality * 0.4 +
+                mode_confidence * 0.25 +
+                data_quality * 0.2 +
+                consistency * 0.1 +
+                health_factor * 0.05
+            )
+            
+            # Ensure valid range
+            return float(max(0.1, min(0.95, confidence)))
+            
+        except Exception as e:
+            if hasattr(self, 'logger'):
+                self.logger.warning(f"Confidence calculation failed: {e}")
+            return 0.4  # Conservative default
+
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose execution quality action for trading system optimization"""
+        try:
+            # Analyze current execution quality
+            overall_quality = self.quality_score
+            current_mode = self.current_mode
+            alert_count = len(self.quality_alerts)
+            
+            # Get specific quality metrics from comprehensive_metrics
+            slippage_quality = 1.0 - min(1.0, self.comprehensive_metrics.get('avg_slippage', 0.0) / max(self.config.slip_limit, 0.0001))
+            latency_quality = 1.0 - min(1.0, self.comprehensive_metrics.get('avg_latency', 0.0) / max(self.config.latency_limit, 1))
+            fill_rate_quality = self.comprehensive_metrics.get('avg_fill_rate', 1.0)
+            
+            # Determine action based on execution quality
+            if overall_quality < 0.3 or current_mode in [ExecutionMode.CRITICAL, ExecutionMode.EMERGENCY]:
+                action_type = 'emergency_mode'
+                signal_strength = 0.95
+                reasoning = f"Critical execution quality ({overall_quality:.3f}) or emergency mode"
+            elif overall_quality < 0.5 or current_mode == ExecutionMode.DEGRADED:
+                action_type = 'reduce_execution_risk'
+                signal_strength = 0.8
+                reasoning = f"Poor execution quality ({overall_quality:.3f}) requires risk reduction"
+            elif slippage_quality < 0.4:
+                action_type = 'optimize_slippage'
+                signal_strength = 0.7
+                reasoning = f"High slippage detected (quality: {slippage_quality:.3f})"
+            elif latency_quality < 0.4:
+                action_type = 'optimize_latency'
+                signal_strength = 0.6
+                reasoning = f"High latency detected (quality: {latency_quality:.3f})"
+            elif fill_rate_quality < 0.6:
+                action_type = 'improve_fills'
+                signal_strength = 0.5
+                reasoning = f"Poor fill rates (quality: {fill_rate_quality:.3f})"
+            elif alert_count > 3:
+                action_type = 'review_alerts'
+                signal_strength = 0.4
+                reasoning = f"Multiple quality alerts ({alert_count}) require attention"
+            elif overall_quality > 0.8:
+                action_type = 'maintain_quality'
+                signal_strength = 0.3
+                reasoning = f"Excellent execution quality ({overall_quality:.3f})"
+            else:
+                action_type = 'monitor'
+                signal_strength = 0.4
+                reasoning = f"Normal execution quality ({overall_quality:.3f})"
+            
+            return {
+                'action': action_type,
+                'signal_strength': signal_strength,
+                'reasoning': reasoning,
+                'execution_metrics': {
+                    'overall_quality': overall_quality,
+                    'slippage_quality': slippage_quality,
+                    'latency_quality': latency_quality,
+                    'fill_rate_quality': fill_rate_quality,
+                    'current_mode': current_mode.value,
+                    'alert_count': alert_count
+                },
+                'system_status': {
+                    'health_status': self._health_status,
+                    'training_mode': self.training_mode,
+                    'circuit_breaker_state': self.circuit_breaker.get('state', 'UNKNOWN')
+                },
+                'confidence': await self.calculate_confidence({}, **inputs)
+            }
+            
+        except Exception as e:
+            if hasattr(self, 'logger'):
+                self.logger.error(f"Action proposal failed: {e}")
+            return {
+                'action': 'abstain',
+                'signal_strength': 0.0,
+                'reasoning': f'Execution quality error: {str(e)}',
+                'confidence': 0.1
+            }
 
 # End of enhanced ExecutionQualityMonitor class

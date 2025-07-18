@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/meta/ppo_agent.py
-# 🚀 PRODUCTION-READY PPO Agent System
+# [ROCKET] PRODUCTION-READY PPO Agent System
 # Advanced PPO with SmartInfoBus integration and neural networks
 # ─────────────────────────────────────────────────────────────
 
@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Union
 from collections import deque, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -120,14 +120,17 @@ class EnhancedPPONetwork(nn.Module):
     name="PPOAgent",
     version="3.0.0",
     category="meta",
-    provides=["policy_actions", "agent_performance", "training_metrics", "policy_gradients"],
+    provides=[
+        "policy_actions", "agent_performance", "training_metrics", "policy_gradients",
+        "actions", "observations", "rewards", "training_signals", "training_data"
+    ],
     requires=["observations", "rewards", "market_data", "training_signals"],
     description="Advanced PPO agent with SmartInfoBus integration for autonomous trading",
     thesis_required=True,
     health_monitoring=True,
     performance_tracking=True,
     error_handling=True,
-    voting=True
+    is_voting_member=True
 )
 class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
@@ -136,12 +139,20 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
     """
 
     def __init__(self, 
-                 config: Optional[PPOConfig] = None,
+                 config: Optional[Union[PPOConfig, Dict[str, Any]]] = None,
                  genome: Optional[Dict[str, Any]] = None,
                  **kwargs):
         
-        self.config = config or PPOConfig()
-        super().__init__()
+        # Store the custom config to preserve it
+        if isinstance(config, dict):
+            # Convert dict config to PPOConfig
+            custom_config = PPOConfig(**{k: v for k, v in config.items() if k in PPOConfig.__dataclass_fields__})
+        else:
+            custom_config = config or PPOConfig()
+        
+        super().__init__(**kwargs)  # Don't pass config to BaseModule
+        # Restore the custom config after BaseModule initialization
+        self.config = custom_config
         
         # Initialize advanced systems
         self._initialize_advanced_systems()
@@ -157,12 +168,15 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
         
         self.logger.info(
             format_operator_message(
-                "🤖", "PPO_AGENT_INITIALIZED",
+                "[BOT]", "PPO_AGENT_INITIALIZED",
                 details=f"Obs: {self.config.obs_size}, Actions: {self.config.act_size}, Hidden: {self.config.hidden_size}",
                 result="PPO agent ready for training",
                 context="ppo_initialization"
             )
         )
+        
+        # Start monitoring after all initialization is complete
+        self._start_monitoring()
     
     def _initialize_advanced_systems(self):
         """Initialize advanced systems for PPO agent"""
@@ -191,7 +205,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
         # Health monitoring
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        self._start_monitoring()
+        # Note: _start_monitoring() moved to end of initialization
 
     def _initialize_genome_parameters(self, genome: Optional[Dict[str, Any]]):
         """Initialize genome-based parameters"""
@@ -337,7 +351,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
 
-    async def _initialize(self):
+    def _initialize(self):
         """Initialize module"""
         try:
             # Set initial PPO status in SmartInfoBus
@@ -356,10 +370,8 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                 thesis="Initial PPO agent performance status"
             )
             
-            return True
         except Exception as e:
             self.logger.error(f"Initialization failed: {e}")
-            return False
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process PPO agent operations"""
@@ -540,6 +552,8 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             total_policy_loss = 0
             total_value_loss = 0
             total_entropy_loss = 0
+            grad_norm = 0.0  # Initialize grad_norm
+            values = None  # Initialize values
             
             for epoch in range(self.config.ppo_epochs):
                 # Forward pass
@@ -600,8 +614,12 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             
             # Calculate explained variance
             with torch.no_grad():
-                explained_var = 1 - torch.var(returns - values.squeeze()) / torch.var(returns)
-                self.training_stats['explained_variance'] = float(explained_var)
+                if values is not None:
+                    explained_var = 1 - torch.var(returns - values.squeeze()) / torch.var(returns)
+                    self.training_stats['explained_variance'] = float(explained_var)
+                else:
+                    explained_var = 0.0
+                    self.training_stats['explained_variance'] = 0.0
             
             # Update neural performance
             self._neural_performance['backward_passes'] += 1
@@ -864,7 +882,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
         
         self.logger.error(
             format_operator_message(
-                "💥", "PPO_AGENT_ERROR",
+                "[CRASH]", "PPO_AGENT_ERROR",
                 error=str(error),
                 details=explanation,
                 processing_time_ms=processing_time,
@@ -890,6 +908,10 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
     def _update_ppo_health(self):
         """Update PPO health metrics"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, 'episode_rewards') or not hasattr(self, 'training_stats'):
+                return  # Skip if not fully initialized yet
+                
             # Check learning progress
             if len(self.episode_rewards) > 20:
                 recent_performance = np.mean(list(self.episode_rewards)[-10:])
@@ -911,6 +933,10 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
     def _analyze_learning_progress(self):
         """Analyze learning progress"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, 'episode_rewards'):
+                return  # Skip if not fully initialized yet
+                
             if len(self.episode_rewards) >= 20:
                 # Check for learning plateau
                 recent_rewards = list(self.episode_rewards)[-10:]
@@ -924,7 +950,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                 if improvement > 5.0:
                     self.logger.info(
                         format_operator_message(
-                            "📈", "LEARNING_PROGRESS_GOOD",
+                            "[CHART]", "LEARNING_PROGRESS_GOOD",
                             improvement=f"{improvement:.2f}",
                             recent_avg=f"{recent_avg:.2f}",
                             context="learning_analysis"
@@ -1095,15 +1121,110 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
         
         return (performance_confidence + exploration_confidence) / 2
 
-    def propose_action(self, obs: Any = None, **kwargs) -> np.ndarray:
-        """Legacy compatibility for action proposal"""
-        if obs is not None:
-            if isinstance(obs, np.ndarray):
-                obs_tensor = torch.tensor(obs, dtype=torch.float32)
-            else:
-                obs_tensor = torch.tensor([obs], dtype=torch.float32)
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose PPO-based action"""
+        try:
+            # Get observation from inputs
+            obs = inputs.get('observation', inputs.get('observations', inputs.get('market_data')))
             
-            action_tensor = self.select_action(obs_tensor)
-            return action_tensor.numpy()
-        
-        return self.last_action
+            if obs is not None:
+                if isinstance(obs, np.ndarray):
+                    obs_tensor = torch.tensor(obs, dtype=torch.float32)
+                else:
+                    obs_tensor = torch.tensor([obs], dtype=torch.float32)
+                
+                # Use the PPO network to select action
+                with torch.no_grad():
+                    action_mean, _, _ = self.network(obs_tensor.unsqueeze(0))
+                    action = action_mean.squeeze(0).numpy()
+                
+                # Store for next time
+                self.last_action = action
+                
+                return {
+                    'action_type': 'ppo_policy_action',
+                    'action': action.tolist(),
+                    'confidence': 0.8,
+                    'reasoning': f'PPO policy action based on {len(obs)} observations',
+                    'action_stats': {
+                        'mean': float(np.mean(action)),
+                        'std': float(np.std(action)),
+                        'max': float(np.max(action)),
+                        'min': float(np.min(action))
+                    }
+                }
+            else:
+                # Fallback action
+                fallback_action = getattr(self, 'last_action', np.zeros(2, dtype=np.float32))
+                return {
+                    'action_type': 'fallback_action',
+                    'action': fallback_action.tolist() if hasattr(fallback_action, 'tolist') else [0.0, 0.0],
+                    'confidence': 0.3,
+                    'reasoning': 'No observation provided, using fallback action'
+                }
+                
+        except Exception as e:
+            self.logger.error(f"PPO action proposal failed: {e}")
+            return {
+                'action_type': 'no_action',
+                'confidence': 0.0,
+                'reasoning': f'PPO action proposal error: {str(e)}',
+                'error': str(e)
+            }
+    
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in PPO action"""
+        try:
+            if not isinstance(action, dict):
+                return 0.0
+            
+            # Base confidence from training performance
+            base_confidence = max(0, min(1, (self.training_stats['avg_episode_reward'] + 50) / 100))
+            
+            # Action quality assessment
+            if 'action' in action and isinstance(action['action'], (list, np.ndarray)):
+                action_values = np.array(action['action'])
+                
+                # Check for extreme actions (lower confidence)
+                if np.any(np.abs(action_values) > 2.0):
+                    action_confidence = 0.3
+                elif np.any(np.abs(action_values) > 1.0):
+                    action_confidence = 0.6
+                else:
+                    action_confidence = 0.9
+                
+                # Check action variance (too low = overconfident, too high = uncertain)
+                action_std = np.std(action_values)
+                if 0.1 < action_std < 0.8:
+                    variance_confidence = 0.8
+                else:
+                    variance_confidence = 0.5
+            else:
+                action_confidence = 0.5
+                variance_confidence = 0.5
+            
+            # Training stability confidence
+            if len(self.policy_losses) > 10:
+                recent_losses = list(self.policy_losses)[-10:]  # Convert to list for slicing
+                loss_std = np.std(recent_losses)
+                stability_confidence = max(0.2, 1.0 - loss_std)
+            else:
+                stability_confidence = 0.5
+            
+            # Exploration vs exploitation balance
+            exploration_confidence = 1.0 - self.action_statistics.get('exploration_level', 0.5)
+            
+            # Combine confidences
+            combined_confidence = (
+                base_confidence * 0.4 +
+                action_confidence * 0.3 +
+                variance_confidence * 0.1 +
+                stability_confidence * 0.1 +
+                exploration_confidence * 0.1
+            )
+            
+            return float(np.clip(combined_confidence, 0.1, 1.0))
+            
+        except Exception as e:
+            self.logger.error(f"PPO confidence calculation failed: {e}")
+            return 0.5

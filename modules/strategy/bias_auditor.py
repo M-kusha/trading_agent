@@ -193,7 +193,7 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             'timestamp': datetime.datetime.now().isoformat()
         }, module='BiasAuditor', thesis=thesis)
 
-    async def process(self) -> Dict[str, Any]:
+    async def process(self, **inputs) -> Dict[str, Any]:
         """
         Modern async processing with comprehensive bias analysis
         
@@ -557,7 +557,7 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             # Log significant bias detections
             if strength > 0.5:
                 self.logger.warning(format_operator_message(
-                    icon="⚠️",
+                    icon="[WARN]",
                     message=f"Strong {bias_type.title()} bias detected",
                     strength=f"{strength:.1%}",
                     factors=", ".join(factors),
@@ -783,7 +783,7 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
             self.logger.error(format_operator_message(
-                icon="🚨",
+                icon="[ALERT]",
                 message="Bias Auditor disabled due to repeated errors",
                 error_count=self.error_count,
                 threshold=self.circuit_breaker_threshold
@@ -1015,31 +1015,31 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
         return f"""
 🧠 COMPREHENSIVE BIAS ANALYSIS REPORT
 ═══════════════════════════════════════════════════════════════
-📊 Session Overview:
+[STATS] Session Overview:
 • Total Biases Detected: {self.session_stats['total_biases_detected']}
 • Biases Corrected: {self.session_stats['biases_corrected']}
 • Most Common: {self.session_stats['most_common_bias'].title()}
 • Overall Bias Score: {aggregate_metrics.get('total_bias_score', 0):.2f}
 
-🎯 Current Market Context:
+[TARGET] Current Market Context:
 • Regime: {market_context.get('regime', 'Unknown').title()}
 • Volatility: {market_context.get('volatility', 'Unknown').title()}
 
-⚠️ Active Psychological Biases:
+[WARN] Active Psychological Biases:
 {active_biases_str}
 
-🔧 Applied Weight Adjustments:
+[TOOL] Applied Weight Adjustments:
 {adjustment_str}
 
-📈 Performance Impact:
+[CHART] Performance Impact:
 • Correction Effectiveness: €{self.session_stats['correction_effectiveness']:.2f}
 • Total Bias Impact: €{self.session_stats['bias_impact_score']:.2f}
 • Psychological State: {self._classify_psychological_state(aggregate_metrics).title()}
 
-🎯 Intelligent Recommendations:
+[TARGET] Intelligent Recommendations:
 {rec_str}
 
-📊 Session Statistics:
+[STATS] Session Statistics:
 • Session Duration: {self._calculate_session_duration()}
 • Detection Rate: {self._calculate_detection_rate():.1%}
 • Correction Success Rate: {self._calculate_correction_success_rate():.1%}
@@ -1388,7 +1388,7 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             self.bias_categories.update(state.get("bias_categories", {}))
             
             self.logger.info(format_operator_message(
-                icon="🔄",
+                icon="[RELOAD]",
                 message="Bias Auditor state restored",
                 biases_tracked=len(self.bias_history),
                 corrections_applied=sum(self.bias_corrections.values())
@@ -1453,3 +1453,155 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             recommendations.append("BiasAuditor operating within normal parameters")
         
         return recommendations
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence score for the bias analysis action"""
+        try:
+            if not isinstance(action, dict):
+                return 0.5
+            
+            # Base confidence from bias detection quality
+            base_confidence = 0.7
+            
+            # Adjust based on action type
+            action_type = action.get('action_type', 'unknown')
+            if action_type == 'bias_correction':
+                # High confidence for strong bias corrections
+                target_bias = action.get('target_bias', '')
+                correction_strength = action.get('correction_strength', action.get('bias_strength', 0.0))
+                base_confidence = 0.6 + (correction_strength * 0.3)
+            elif action_type == 'bias_mitigation':
+                # Medium confidence for mitigation
+                base_confidence = 0.6
+            elif action_type == 'bias_monitoring':
+                # High confidence for monitoring
+                base_confidence = 0.8
+            
+            # Historical accuracy factor
+            historical_success = self._get_average_correction_success()
+            historical_confidence = 0.7 + (historical_success * 0.3)
+            
+            # Combine factors
+            final_confidence = (base_confidence + historical_confidence) / 2.0
+            
+            # Reduce confidence if system has errors
+            if self.error_count > 0:
+                error_penalty = min(0.3, self.error_count * 0.05)
+                final_confidence -= error_penalty
+            
+            return max(0.1, min(1.0, final_confidence))
+            
+        except Exception as e:
+            self.logger.warning(f"Confidence calculation failed: {e}")
+            return 0.5  # Default neutral confidence
+
+    async def propose_action(self, **context) -> Dict[str, Any]:
+        """Propose action based on current bias analysis and context"""
+        try:
+            # Get current analysis from context or SmartInfoBus
+            bias_analysis = context.get('bias_analysis') or self.smart_bus.get('bias_analysis', 'BiasAuditor')
+            
+            if not bias_analysis:
+                return {
+                    'action_type': 'bias_monitoring',
+                    'action': 'initialize_monitoring',
+                    'confidence': 0.7,
+                    'reasoning': 'Starting bias monitoring - no bias data available'
+                }
+            
+            individual_biases = bias_analysis.get('individual_biases', {})
+            
+            if not individual_biases:
+                return {
+                    'action_type': 'bias_monitoring',
+                    'action': 'continue_monitoring',
+                    'confidence': 0.8,
+                    'reasoning': 'No biases detected - continue monitoring'
+                }
+            
+            # Find the strongest bias
+            strongest_bias = max(individual_biases.items(), key=lambda x: x[1])
+            bias_type, strength = strongest_bias
+            
+            # Only propose action for significant biases
+            if strength < 0.4:
+                return {
+                    'action_type': 'bias_monitoring',
+                    'target_bias': bias_type,
+                    'action': 'light_monitoring',
+                    'confidence': 0.7,
+                    'reasoning': f'Minor {bias_type} bias ({strength:.1%}) - monitoring only'
+                }
+            
+            # Generate action based on bias type and strength
+            action_proposal = {
+                'action_type': 'bias_correction',
+                'target_bias': bias_type,
+                'bias_strength': strength,
+                'urgency': self._calculate_action_urgency(strength),
+                'recommended_adjustments': self._get_action_adjustments(bias_type, strength),
+                'rationale': f"Strong {bias_type} bias ({strength:.1%}) detected requiring immediate correction",
+                'confidence': await self.calculate_confidence({'bias_analysis': bias_analysis}),
+                'timestamp': time.time()
+            }
+            
+            # Add context-specific recommendations
+            market_context = bias_analysis.get('market_context', {})
+            if market_context.get('regime') == 'volatile':
+                action_proposal['additional_caution'] = "High volatility amplifies bias effects"
+            
+            return action_proposal
+            
+        except Exception as e:
+            self.logger.error(f"Action proposal failed: {e}")
+            return {
+                'action_type': 'error_recovery',
+                'action': 'fallback_monitoring',
+                'confidence': 0.3,
+                'reasoning': f'Error in bias analysis: {str(e)}'
+            }
+
+    def _get_average_correction_success(self) -> float:
+        """Get average success rate across all bias corrections"""
+        try:
+            if not self.bias_performance:
+                return 0.5  # Default neutral
+            
+            all_outcomes = []
+            for outcomes in self.bias_performance.values():
+                all_outcomes.extend(outcomes)
+            
+            if not all_outcomes:
+                return 0.5
+            
+            positive_outcomes = sum(1 for outcome in all_outcomes if outcome > 0)
+            return positive_outcomes / len(all_outcomes)
+            
+        except Exception:
+            return 0.5
+
+    def _calculate_action_urgency(self, strength: float) -> str:
+        """Calculate urgency level for action proposal"""
+        if strength > 0.8:
+            return 'critical'
+        elif strength > 0.6:
+            return 'high'
+        elif strength > 0.4:
+            return 'medium'
+        else:
+            return 'low'
+
+    def _get_action_adjustments(self, bias_type: str, strength: float) -> Dict[str, Any]:
+        """Get specific action adjustments for bias type"""
+        base_config = self.bias_categories.get(bias_type, {})
+        base_reduction = base_config.get('weight_reduction', 0.2)
+        
+        # Scale reduction based on strength
+        scaled_reduction = base_reduction * (1.0 + strength)
+        
+        return {
+            'position_size_multiplier': 1.0 - min(0.8, scaled_reduction),
+            'risk_reduction_factor': min(0.5, scaled_reduction * 0.5),
+            'cooldown_period_minutes': int(strength * 30),  # Up to 30 minutes
+            'monitoring_frequency_increase': strength * 2.0
+        }

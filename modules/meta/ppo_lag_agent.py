@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/meta/ppo_lag_agent.py
-# 🚀 PRODUCTION-READY PPO-Lag Agent System
+# [ROCKET] PRODUCTION-READY PPO-Lag Agent System
 # Enhanced with SmartInfoBus integration & advanced market adaptation
 # ─────────────────────────────────────────────────────────────
 
@@ -226,8 +226,11 @@ class PPOLagAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, S
                  genome: Optional[Dict[str, Any]] = None,
                  **kwargs):
         
-        self.config = config or PPOLagConfig()
+        # Store the custom config to preserve it
+        custom_config = config or PPOLagConfig()
         super().__init__()
+        # Restore the custom config after BaseModule initialization
+        self.config = custom_config
         
         # Initialize advanced systems
         self._initialize_advanced_systems()
@@ -238,9 +241,15 @@ class PPOLagAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, S
         # Initialize agent state
         self._initialize_agent_state()
         
+        # Start monitoring after all initialization is complete
+        
+        self._start_monitoring()
+        
+        
+        
         self.logger.info(
             format_operator_message(
-                "🎯", "PPO_LAG_AGENT_INITIALIZED",
+                "[TARGET]", "PPO_LAG_AGENT_INITIALIZED",
                 details=f"Obs size: {self.config.obs_size}, Lag window: {self.config.lag_window}",
                 result="Market-aware PPO agent ready",
                 context="ppo_lag_training"
@@ -274,7 +283,7 @@ class PPOLagAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, S
         # Health monitoring
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        self._start_monitoring()
+        # Note: _start_monitoring() moved to end of initialization
 
     def _initialize_genome_parameters(self, genome: Optional[Dict[str, Any]]):
         """Initialize genome-based parameters"""
@@ -408,7 +417,7 @@ class PPOLagAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, S
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
 
-    async def _initialize(self):
+    def _initialize(self):
         """Initialize module"""
         try:
             # Set initial agent status in SmartInfoBus
@@ -426,10 +435,8 @@ class PPOLagAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, S
                 thesis="Initial PPO-Lag agent status"
             )
             
-            return True
         except Exception as e:
             self.logger.error(f"Initialization failed: {e}")
-            return False
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process PPO-Lag agent operations"""
@@ -1292,7 +1299,7 @@ class PPOLagAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, S
         
         self.logger.error(
             format_operator_message(
-                "💥", "AGENT_OPERATION_ERROR",
+                "[CRASH]", "AGENT_OPERATION_ERROR",
                 error=str(error),
                 details=explanation,
                 processing_time_ms=processing_time,
@@ -1351,7 +1358,7 @@ class PPOLagAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, S
                 if recent_performance > overall_performance * 1.2:
                     self.logger.info(
                         format_operator_message(
-                            "📈", "PERFORMANCE_IMPROVEMENT",
+                            "[CHART]", "PERFORMANCE_IMPROVEMENT",
                             recent_avg=f"{recent_performance:.3f}",
                             overall_avg=f"{overall_performance:.3f}",
                             episodes=len(self.episode_rewards),
@@ -1379,12 +1386,49 @@ class PPOLagAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, S
             'PPOLagAgent', 'agent_cycle', 0, False
         )
 
-    def calculate_confidence(self, obs: Any = None, **kwargs) -> float:
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
         """Calculate confidence in agent recommendations"""
-        base_confidence = 0.5
-        
-        # Confidence from training progress
-        if self.training_stats['episodes_completed'] > 10:
+        try:
+            base_confidence = 0.5
+            
+            # Confidence from training progress
+            if self.training_stats['episodes_completed'] > 10:
+                recent_rewards = list(self.episode_rewards)[-10:]
+                if recent_rewards:
+                    avg_reward = np.mean(recent_rewards)
+                    reward_std = np.std(recent_rewards)
+                    
+                    # Higher average reward increases confidence
+                    if avg_reward > 5:
+                        base_confidence += 0.3
+                    elif avg_reward < -5:
+                        base_confidence -= 0.2
+                    
+                    # Lower variance increases confidence
+                    if reward_std < 10:
+                        base_confidence += 0.2
+            
+            # Confidence from model stability
+            explained_variance = self.training_stats['explained_variance']
+            base_confidence += explained_variance * 0.2
+            
+            # Confidence from position management
+            if self.risk_metrics['risk_adjusted_return'] > 0:
+                base_confidence += 0.1
+            
+            # Action-specific confidence adjustments
+            if isinstance(action, dict):
+                action_magnitude = action.get('magnitude', 0.5)
+                if action_magnitude > 0.8:  # High confidence actions
+                    base_confidence += 0.1
+                elif action_magnitude < 0.3:  # Low confidence actions
+                    base_confidence -= 0.1
+            
+            return float(np.clip(base_confidence, 0.1, 1.0))
+            
+        except Exception as e:
+            self.logger.error(f"Confidence calculation failed: {e}")
+            return 0.5
             recent_rewards = list(self.episode_rewards)[-10:]
             avg_reward = np.mean(recent_rewards)
             reward_std = np.std(recent_rewards)
@@ -1669,10 +1713,62 @@ class PPOLagAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, S
                 gradients[name] = None
         return gradients
 
-    def propose_action(self, obs: Any = None, **kwargs) -> np.ndarray:
-        """Legacy compatibility for action proposal"""
-        return np.zeros(self.genome["act_size"], dtype=np.float32)
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose action based on current agent state"""
+        try:
+            # Extract observation if available
+            obs_vec = inputs.get('obs_vec')
+            if obs_vec is not None:
+                # Convert to tensor
+                obs_tensor = torch.FloatTensor(obs_vec).unsqueeze(0).to(self.device)
+                lag_features = torch.FloatTensor(self.get_lag_features()).unsqueeze(0).to(self.device)
+                
+                # Get action from network
+                with torch.no_grad():
+                    action_mean, action_std, value = self.network(obs_tensor, lag_features)
+                    action = torch.normal(action_mean, action_std)
+                    action = torch.clamp(action, -1.0, 1.0)
+                
+                return {
+                    'action_type': 'trading_signal',
+                    'action_values': action.cpu().numpy().flatten().tolist(),
+                    'confidence': float(torch.mean(1.0 / (1.0 + action_std)).item()),
+                    'value_estimate': float(value.item()),
+                    'reasoning': f"PPO-Lag agent action based on {len(self.price_buffer)} market observations"
+                }
+            else:
+                # Default action when no observation available
+                return {
+                    'action_type': 'no_action',
+                    'action_values': [0.0] * self.genome["act_size"],
+                    'confidence': 0.1,
+                    'value_estimate': 0.0,
+                    'reasoning': 'No observation data available for action selection'
+                }
+                
+        except Exception as e:
+            self.logger.error(f"Action proposal failed: {e}")
+            return {
+                'action_type': 'error',
+                'action_values': [0.0] * self.genome["act_size"],
+                'confidence': 0.0,
+                'value_estimate': 0.0,
+                'reasoning': f'Action proposal error: {str(e)}'
+            }
 
     def confidence(self, obs: Any = None, **kwargs) -> float:
         """Legacy compatibility for confidence"""
-        return self.calculate_confidence(obs, **kwargs)
+        # Since calculate_confidence is now async, return a basic confidence
+        base_confidence = 0.5
+        
+        # Confidence from training progress
+        if hasattr(self, 'training_stats') and self.training_stats['episodes_completed'] > 10:
+            recent_rewards = list(self.episode_rewards)[-10:] if hasattr(self, 'episode_rewards') else []
+            if recent_rewards:
+                avg_reward = np.mean(recent_rewards)
+                if avg_reward > 5:
+                    base_confidence += 0.3
+                elif avg_reward < -5:
+                    base_confidence -= 0.2
+        
+        return float(np.clip(base_confidence, 0.1, 1.0))

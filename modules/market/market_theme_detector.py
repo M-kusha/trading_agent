@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/market/market_theme_detector.py
-# 🚀 PRODUCTION-READY Market Theme Detection with Advanced ML
+# [ROCKET] PRODUCTION-READY Market Theme Detection with Advanced ML
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # ENHANCED: Complete SmartInfoBus integration, neural analysis, thesis generation
 # ─────────────────────────────────────────────────────────────
@@ -13,7 +13,7 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import MiniBatchKMeans
 from collections import deque
-from typing import Any, List, Dict, Tuple, Optional
+from typing import Any, List, Dict, Tuple, Optional, Union
 import pywt
 import random
 import datetime
@@ -53,7 +53,7 @@ class ThemeDetectorConfig:
     
     def __post_init__(self):
         if not self.instruments:
-            self.instruments = ["XAU/USD", "EUR/USD"]
+            self.instruments = ["XAUUSD", "EURUSD"]
         self.batch_size = max(64, self.n_themes * 16)
 
 # ═══════════════════════════════════════════════════════════════════
@@ -64,7 +64,10 @@ class ThemeDetectorConfig:
     name="MarketThemeDetector",
     version="3.0.0",
     category="market",
-    provides=["market_theme", "theme_strength", "theme_confidence", "theme_transition", "theme_analysis"],
+    provides=[
+        "market_theme", "theme_strength", "theme_confidence", "theme_transition", "theme_analysis",
+        "theme_detection", "market_data", "price_data", "technical_indicators", "market_features"
+    ],
     requires=["market_data", "price_data"],
     description="Advanced market theme detection with ML clustering and regime analysis",
     thesis_required=True,
@@ -78,19 +81,45 @@ class MarketThemeDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVoti
     Zero-wiring architecture with comprehensive SmartInfoBus integration.
     """
     
-    def __init__(self, config: Optional[ThemeDetectorConfig] = None, **kwargs):
+    def __init__(self, config: Union[ThemeDetectorConfig, Dict[str, Any], None] = None, **kwargs):
         """Initialize with comprehensive advanced systems"""
-        self.config = config or ThemeDetectorConfig()
-        super().__init__()
+        # Handle dict config from orchestrator
+        if isinstance(config, dict):
+            self.theme_config = ThemeDetectorConfig(**config)
+            config_dict = config.copy()
+        elif config is None:
+            self.theme_config = ThemeDetectorConfig()
+            config_dict = {}
+        else:
+            self.theme_config = config
+            config_dict = {}
+        
+        # Mark as not fully initialized
+        self._fully_initialized = False
+            
+        # Initialize advanced systems first 
         self._initialize_advanced_systems()
+        
+        # Call parent init with dict config
+        super().__init__(config=config_dict)
+        
+        # Keep typed config reference
+        # Note: self.config (from BaseModule) remains a dict for compatibility
+        
         self._initialize_ml_components()
         self._initialize_theme_state()
         self._start_monitoring()
         
+        # Mark as fully initialized
+        self._fully_initialized = True
+        
+        # Now call _initialize properly
+        self._initialize()
+
         self.logger.info(
             format_operator_message(
-                "🎯", "THEME_DETECTOR_INITIALIZED",
-                details=f"{self.config.n_themes} themes, {len(self.config.instruments)} instruments",
+                "[TARGET]", "THEME_DETECTOR_INITIALIZED",
+                details=f"{self.theme_config.n_themes} themes, {len(self.theme_config.instruments)} instruments",
                 result="Production-ready ML clustering active",
                 context="system_startup"
             )
@@ -124,10 +153,10 @@ class MarketThemeDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVoti
         try:
             self.scaler = StandardScaler()
             self.km = MiniBatchKMeans(
-                n_clusters=self.config.n_themes,
-                batch_size=self.config.batch_size,
+                n_clusters=self.theme_config.n_themes,
+                batch_size=self.theme_config.batch_size,
                 random_state=0,
-                max_iter=self.config.max_iter,
+                max_iter=self.theme_config.max_iter,
                 n_init='auto'  # Use modern sklearn parameter
             )
             
@@ -140,10 +169,10 @@ class MarketThemeDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVoti
                 'failures': 0,
                 'last_failure': 0,
                 'state': 'CLOSED',
-                'threshold': self.config.circuit_breaker_threshold
+                'threshold': self.theme_config.circuit_breaker_threshold
             }
             
-            self.logger.info("✅ ML components initialized successfully")
+            self.logger.info("[OK] ML components initialized successfully")
             
         except Exception as e:
             self.logger.error(f"ML initialization failed: {e}")
@@ -152,7 +181,7 @@ class MarketThemeDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVoti
     def _initialize_theme_state(self):
         """Initialize theme detection state"""
         # Theme state
-        self._theme_vec = np.zeros(self.config.n_themes, np.float32)
+        self._theme_vec = np.zeros(self.theme_config.n_themes, np.float32)
         self._theme_profiles = {}
         self._current_theme = 0
         self._theme_momentum = deque(maxlen=10)
@@ -193,17 +222,21 @@ class MarketThemeDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVoti
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
     
-    async def _initialize(self):
+    def _initialize(self):
         """Async initialization"""
-        self.logger.info("🔄 MarketThemeDetector async initialization")
+        # Check if we're fully initialized yet
+        if not getattr(self, '_fully_initialized', False):
+            return
+            
+        self.logger.info("[RELOAD] MarketThemeDetector async initialization")
         
         # Set initial data in SmartInfoBus
         self.smart_bus.set(
             'theme_detector_status',
             {
                 'initialized': True,
-                'themes_available': self.config.n_themes,
-                'instruments': self.config.instruments,
+                'themes_available': self.theme_config.n_themes,
+                'instruments': self.theme_config.instruments,
                 'clustering_ready': False
             },
             module='MarketThemeDetector',
@@ -252,7 +285,7 @@ class MarketThemeDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVoti
         
         # Try individual price data
         price_data = {}
-        for instrument in self.config.instruments:
+        for instrument in self.theme_config.instruments:
             for timeframe in ['H1', 'H4', 'D1']:
                 key = f'market_data_{instrument}_{timeframe}'
                 data = self.smart_bus.get(key, 'MarketThemeDetector')
@@ -282,7 +315,7 @@ class MarketThemeDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVoti
         """Generate synthetic market data for testing/fallback"""
         synthetic_data = {}
         
-        for instrument in self.config.instruments:
+        for instrument in self.theme_config.instruments:
             synthetic_data[instrument] = {}
             
             for timeframe in ['H1', 'H4', 'D1']:
@@ -339,14 +372,14 @@ class MarketThemeDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVoti
         transition_probability = self._calculate_transition_probability()
         
         return {
-            'current_theme': theme_id,
+            'market_theme': theme_id,  # Fixed: Use 'market_theme' to match provides declaration
             'theme_strength': strength,
             'theme_confidence': confidence,
             'theme_stability': stability,
             'transition_probability': transition_probability,
             'clustering_quality': self._clustering_quality,
             'feature_stability': self._feature_stability_score,
-            'themes_total': self.config.n_themes,
+            'themes_total': self.theme_config.n_themes,
             'processing_success': True
         }
     
@@ -356,7 +389,7 @@ class MarketThemeDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVoti
             features = []
             
             # Process each instrument and timeframe
-            for instrument in self.config.instruments:
+            for instrument in self.theme_config.instruments:
                 if instrument not in market_data:
                     continue
                     
@@ -434,7 +467,7 @@ class MarketThemeDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVoti
     
     def _standardize_feature_size(self, features: np.ndarray) -> np.ndarray:
         """Standardize feature vector to expected size"""
-        expected_size = len(self.config.instruments) * 3 * 7 + 3  # instruments * timeframes * features + macro
+        expected_size = len(self.theme_config.instruments) * 3 * 7 + 3  # instruments * timeframes * features + macro
         
         if features.size == expected_size:
             return features
@@ -487,7 +520,7 @@ class MarketThemeDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVoti
     
     def _should_fit_model(self) -> bool:
         """Determine if model should be fitted"""
-        return (len(self._fit_buffer) >= self.config.batch_size and 
+        return (len(self._fit_buffer) >= self.theme_config.batch_size and 
                 self._ml_fit_count % 10 == 0)
     
     async def _fit_model_safe(self):
@@ -496,7 +529,7 @@ class MarketThemeDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVoti
             return
         
         try:
-            if len(self._fit_buffer) < self.config.batch_size:
+            if len(self._fit_buffer) < self.theme_config.batch_size:
                 return
             
             # Prepare training data
@@ -515,7 +548,7 @@ class MarketThemeDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVoti
                 self._convergence_history.append(self.km.inertia_)
                 self._last_inertia = self.km.inertia_
             
-            self.logger.info(f"✅ Model fitted successfully - Quality: {self._clustering_quality:.3f}")
+            self.logger.info(f"[OK] Model fitted successfully - Quality: {self._clustering_quality:.3f}")
             
         except Exception as e:
             self._handle_ml_failure(e)
@@ -542,7 +575,7 @@ class MarketThemeDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVoti
         """Check if model is ready for predictions"""
         return (hasattr(self.km, 'cluster_centers_') and 
                 self.km.cluster_centers_ is not None and
-                self._clustering_quality > self.config.clustering_quality_threshold)
+                self._clustering_quality > self.theme_config.clustering_quality_threshold)
     
     def _detect_current_theme(self, features: np.ndarray) -> Tuple[int, float]:
         """Detect current market theme"""
@@ -605,7 +638,7 @@ class MarketThemeDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVoti
             
             self.logger.info(
                 format_operator_message(
-                    "🎯", "THEME_TRANSITION",
+                    "[TARGET]", "THEME_TRANSITION",
                     instrument=f"Theme {self._current_theme} -> {theme_id}",
                     details=f"Strength: {strength:.3f}",
                     context="theme_detection"
@@ -654,7 +687,7 @@ class MarketThemeDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVoti
         stability = theme_result['theme_stability']
         
         # Market context
-        instruments_analyzed = len([inst for inst in self.config.instruments if inst in market_data])
+        instruments_analyzed = len([inst for inst in self.theme_config.instruments if inst in market_data])
         
         # Theme characteristics
         theme_names = {
@@ -670,19 +703,19 @@ class MarketThemeDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVoti
         thesis = f"""
 MARKET THEME ANALYSIS - {theme_name}
 
-📊 DETECTION RESULTS:
+[STATS] DETECTION RESULTS:
 • Current Theme: {theme_name} (ID: {current_theme})
 • Theme Strength: {strength:.1%} - {'Strong' if strength > 0.7 else 'Moderate' if strength > 0.4 else 'Weak'}
 • Detection Confidence: {confidence:.1%} - {'High' if confidence > 0.7 else 'Medium' if confidence > 0.4 else 'Low'}
 • Theme Stability: {stability:.1%} - {'Stable' if stability > 0.7 else 'Evolving' if stability > 0.4 else 'Volatile'}
 
-🔍 MARKET CONTEXT:
-• Instruments Analyzed: {instruments_analyzed}/{len(self.config.instruments)}
+[SEARCH] MARKET CONTEXT:
+• Instruments Analyzed: {instruments_analyzed}/{len(self.theme_config.instruments)}
 • Clustering Quality: {theme_result['clustering_quality']:.1%}
 • Feature Stability: {theme_result['feature_stability']:.1%}
-• Total Themes Available: {self.config.n_themes}
+• Total Themes Available: {self.theme_config.n_themes}
 
-🎯 THEME CHARACTERISTICS:
+[TARGET] THEME CHARACTERISTICS:
 """
         
         if current_theme == 0:  # Risk-Off
@@ -712,17 +745,17 @@ MARKET THEME ANALYSIS - {theme_name}
         # Add transition analysis
         transition_prob = theme_result['transition_probability']
         if transition_prob > 0.6:
-            thesis += f"\n\n⚠️ HIGH TRANSITION RISK: {transition_prob:.1%} probability of theme change"
+            thesis += f"\n\n[WARN] HIGH TRANSITION RISK: {transition_prob:.1%} probability of theme change"
         elif transition_prob > 0.3:
-            thesis += f"\n\n📈 MODERATE TRANSITION RISK: {transition_prob:.1%} probability of theme change"
+            thesis += f"\n\n[CHART] MODERATE TRANSITION RISK: {transition_prob:.1%} probability of theme change"
         else:
-            thesis += f"\n\n✅ THEME STABLE: Low {transition_prob:.1%} transition probability"
+            thesis += f"\n\n[OK] THEME STABLE: Low {transition_prob:.1%} transition probability"
         
         # Add ML insights
         thesis += f"""
 
-🤖 ML ANALYSIS:
-• Clustering Model: MiniBatchKMeans with {self.config.n_themes} themes
+[BOT] ML ANALYSIS:
+• Clustering Model: MiniBatchKMeans with {self.theme_config.n_themes} themes
 • Training Samples: {len(self._fit_buffer)}/{self._fit_buffer.maxlen}
 • Model Fits: {self._ml_fit_count}
 • Recent Transitions: {self._theme_transitions}
@@ -797,7 +830,7 @@ MARKET THEME ANALYSIS - {theme_name}
             'transition_probability': 0.5,
             'clustering_quality': 0.0,
             'feature_stability': 0.0,
-            'themes_total': self.config.n_themes,
+            'themes_total': self.theme_config.n_themes,
             'processing_success': False,
             'fallback_reason': 'No market data available'
         }
@@ -812,7 +845,7 @@ MARKET THEME ANALYSIS - {theme_name}
             'transition_probability': 0.3,
             'clustering_quality': self._clustering_quality,
             'feature_stability': 0.5,
-            'themes_total': self.config.n_themes,
+            'themes_total': self.theme_config.n_themes,
             'processing_success': False,
             'fallback_reason': reason
         }
@@ -834,7 +867,7 @@ MARKET THEME ANALYSIS - {theme_name}
         
         self.logger.error(
             format_operator_message(
-                "💥", "THEME_DETECTION_ERROR",
+                "[CRASH]", "THEME_DETECTION_ERROR",
                 details=str(error)[:100],
                 explanation=explanation,
                 context="error_handling"
@@ -850,7 +883,7 @@ MARKET THEME ANALYSIS - {theme_name}
         
         if self.ml_circuit_breaker['failures'] >= self.ml_circuit_breaker['threshold']:
             self.ml_circuit_breaker['state'] = 'OPEN'
-            self.logger.error("🚨 ML circuit breaker OPEN - too many failures")
+            self.logger.error("[ALERT] ML circuit breaker OPEN - too many failures")
         
         self.logger.error(f"ML training failed: {error}")
     
@@ -868,8 +901,8 @@ MARKET THEME ANALYSIS - {theme_name}
         self.failure_count += 1
         self.circuit_breaker_failures += 1
         
-        if self.circuit_breaker_failures >= self.config.circuit_breaker_threshold:
-            self.logger.error("🚨 Theme detector circuit breaker triggered")
+        if self.circuit_breaker_failures >= self.theme_config.circuit_breaker_threshold:
+            self.logger.error("[ALERT] Theme detector circuit breaker triggered")
     
     def _update_health_metrics(self):
         """Update health metrics"""
@@ -909,7 +942,7 @@ MARKET THEME ANALYSIS - {theme_name}
             
             self.ml_circuit_breaker['state'] = 'CLOSED'
             self.ml_circuit_breaker['failures'] = 0
-            self.logger.info("✅ ML circuit breaker reset")
+            self.logger.info("[OK] ML circuit breaker reset")
     
     def get_state(self) -> Dict[str, Any]:
         """Get current module state for persistence"""
@@ -923,9 +956,9 @@ MARKET THEME ANALYSIS - {theme_name}
             'failure_count': self.failure_count,
             'last_update': datetime.datetime.now().isoformat(),
             'config': {
-                'n_themes': self.config.n_themes,
-                'window': self.config.window,
-                'instruments': self.config.instruments
+                'n_themes': self.theme_config.n_themes,
+                'window': self.theme_config.window,
+                'instruments': self.theme_config.instruments
             }
         }
     
@@ -947,7 +980,7 @@ MARKET THEME ANALYSIS - {theme_name}
         self.success_count = state.get('success_count', 0)
         self.failure_count = state.get('failure_count', 0)
         
-        self.logger.info("✅ Theme detector state restored successfully")
+        self.logger.info("[OK] Theme detector state restored successfully")
     
     def get_health_status(self) -> Dict[str, Any]:
         """Get comprehensive health status"""
@@ -969,3 +1002,162 @@ MARKET THEME ANALYSIS - {theme_name}
     def stop_monitoring(self):
         """Stop background monitoring"""
         self._monitoring_active = False
+    
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose theme-based action recommendations"""
+        try:
+            # Get current theme analysis
+            current_theme = getattr(self, '_current_theme', 'unknown')
+            theme_confidence = getattr(self, '_theme_confidence', 0.5)
+            clustering_quality = getattr(self, '_clustering_quality', 0.5)
+            
+            # Theme-based action mapping
+            theme_actions = {
+                'bullish_momentum': {
+                    'action': 'buy_aggressive' if theme_confidence > 0.8 else 'buy_moderate',
+                    'rationale': 'Strong bullish momentum theme detected - favorable for long positions',
+                    'risk_level': 'medium'
+                },
+                'bearish_momentum': {
+                    'action': 'sell_aggressive' if theme_confidence > 0.8 else 'sell_moderate',
+                    'rationale': 'Strong bearish momentum theme detected - favorable for short positions',
+                    'risk_level': 'medium'
+                },
+                'range_bound': {
+                    'action': 'range_trade' if theme_confidence > 0.7 else 'reduce_exposure',
+                    'rationale': 'Range-bound theme detected - consider mean reversion strategies',
+                    'risk_level': 'low'
+                },
+                'breakout': {
+                    'action': 'breakout_trade' if theme_confidence > 0.75 else 'monitor',
+                    'rationale': 'Breakout theme detected - monitor for direction confirmation',
+                    'risk_level': 'high'
+                },
+                'volatility_expansion': {
+                    'action': 'defensive' if theme_confidence > 0.7 else 'cautious',
+                    'rationale': 'Volatility expansion theme - protect positions and reduce exposure',
+                    'risk_level': 'high'
+                },
+                'correlation_breakdown': {
+                    'action': 'diversify' if theme_confidence > 0.6 else 'hold',
+                    'rationale': 'Correlation breakdown theme - increase diversification',
+                    'risk_level': 'medium'
+                }
+            }
+            
+            # Get action for current theme
+            if current_theme in theme_actions:
+                action_info = theme_actions[current_theme]
+            else:
+                action_info = {
+                    'action': 'monitor',
+                    'rationale': f'Unknown theme: {current_theme} - monitor market conditions',
+                    'risk_level': 'medium'
+                }
+            
+            # Adjust based on clustering quality
+            if clustering_quality < 0.5:
+                action_info['action'] = 'cautious_' + action_info['action'] if not action_info['action'].startswith('cautious') else action_info['action']
+                action_info['rationale'] += ' (Low clustering quality - proceed cautiously)'
+            
+            return {
+                'action': action_info['action'],
+                'theme_confidence': theme_confidence,
+                'rationale': action_info['rationale'],
+                'risk_level': action_info['risk_level'],
+                'current_theme': current_theme,
+                'clustering_quality': clustering_quality,
+                'theme_stability': self._calculate_theme_stability()
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error in propose_action: {e}")
+            return {
+                'action': 'monitor',
+                'theme_confidence': 0.5,
+                'rationale': f'Error in theme analysis: {str(e)}',
+                'risk_level': 'medium'
+            }
+    
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in the proposed action"""
+        try:
+            # Core confidence factors
+            theme_confidence = getattr(self, '_theme_confidence', 0.5)
+            clustering_quality = getattr(self, '_clustering_quality', 0.5)
+            theme_stability = self._calculate_theme_stability()
+            
+            # ML model health
+            ml_health = 1.0 if getattr(self, 'ml_circuit_breaker', {}).get('state') == 'CLOSED' else 0.3
+            
+            # Data quality factors
+            data_success_rate = getattr(self, '_successful_data_extractions', 1) / max(getattr(self, '_data_access_attempts', 1), 1)
+            feature_buffer = getattr(self, '_feature_buffer', [])
+            feature_completeness = len(feature_buffer) / 100.0  # Normalize to expected buffer size
+            
+            # Theme consistency (how stable has this theme been)
+            theme_transitions = getattr(self, '_theme_transitions', {})
+            current_theme = getattr(self, '_current_theme', 'unknown')
+            if isinstance(theme_transitions, dict) and current_theme in theme_transitions:
+                theme_info = theme_transitions[current_theme]
+                if isinstance(theme_info, dict):
+                    theme_duration = theme_info.get('avg_duration', 1)
+                else:
+                    theme_duration = 1
+            else:
+                theme_duration = 1
+            theme_consistency = min(1.0, theme_duration / 10.0)  # Normalize by expected duration
+            
+            # Combine confidence factors
+            confidence = (
+                theme_confidence * 0.35 +         # Current theme confidence
+                clustering_quality * 0.25 +       # ML clustering quality
+                theme_stability * 0.15 +          # Theme stability over time
+                ml_health * 0.1 +                 # ML circuit breaker state
+                data_success_rate * 0.1 +         # Data extraction success
+                theme_consistency * 0.05          # Theme duration consistency
+            )
+            
+            # Action-specific adjustments
+            action_type = action.get('action', 'monitor')
+            
+            # High confidence for defensive actions during volatility themes
+            if action_type == 'defensive' and isinstance(current_theme, str) and 'volatility' in current_theme:
+                confidence *= 1.15
+            
+            # Lower confidence for aggressive actions with low theme confidence
+            elif 'aggressive' in action_type and theme_confidence < 0.7:
+                confidence *= 0.8
+            
+            # Higher confidence for range trading in range-bound themes
+            elif action_type == 'range_trade' and current_theme == 'range_bound':
+                confidence *= 1.1
+            
+            # Lower confidence for any action with poor clustering quality
+            elif clustering_quality < 0.4:
+                confidence *= 0.7
+            
+            return float(max(0.0, min(1.0, confidence)))
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating confidence: {e}")
+            return 0.5
+    
+    def _calculate_theme_stability(self) -> float:
+        """Calculate how stable the current theme has been"""
+        try:
+            theme_history = getattr(self, '_theme_history', [])
+            current_theme = getattr(self, '_current_theme', 'unknown')
+            
+            if len(theme_history) < 5:
+                return 0.5
+            
+            # Calculate how consistent the theme has been recently
+            recent_themes = list(theme_history)[-10:]  # Last 10 theme detections
+            current_theme_count = recent_themes.count(current_theme)
+            stability = current_theme_count / len(recent_themes)
+            
+            return float(stability)
+            
+        except Exception:
+            return 0.5

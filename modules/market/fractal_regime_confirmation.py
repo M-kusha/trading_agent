@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/market/fractal_regime_confirmation.py
-# 🚀 PRODUCTION-GRADE Fractal Regime Confirmation Module  
+# [ROCKET] PRODUCTION-GRADE Fractal Regime Confirmation Module  
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # ENHANCED: Complete SmartInfoBus integration with all advanced features
 # ─────────────────────────────────────────────────────────────
@@ -31,7 +31,10 @@ from modules.utils.info_bus import InfoBusExtractor, InfoBusUpdater
     name="FractalRegimeConfirmation",
     version="3.0.0",
     category="market",
-    provides=["market_regime", "regime_strength", "trend_direction", "fractal_metrics"],
+    provides=[
+        "market_regime", "regime_strength", "trend_direction", "fractal_metrics",
+        "regime_data", "symbols", "timestamps"
+    ],
     requires=["market_data"],
     description="Fractal analysis for market regime confirmation with advanced pattern recognition",
     thesis_required=True,
@@ -41,7 +44,7 @@ from modules.utils.info_bus import InfoBusExtractor, InfoBusUpdater
 )
 class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVotingMixin):
     """
-    🚀 PRODUCTION-GRADE Fractal Regime Confirmation Module
+    [ROCKET] PRODUCTION-GRADE Fractal Regime Confirmation Module
     
     FEATURES:
     - Advanced fractal analysis with Hurst exponent
@@ -65,7 +68,7 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         
         self.logger.info(
             format_operator_message(
-                "📊", "FRACTAL_REGIME_CONFIRMATION_INITIALIZED",
+                "[STATS]", "FRACTAL_REGIME_CONFIRMATION_INITIALIZED",
                 details=f"Window: {self.window}, Coefficients: H={self.coeff_h:.2f}, VR={self.coeff_vr:.2f}, WE={self.coeff_we:.2f}",
                 result="Fractal regime analysis active",
                 context="fractal_analysis_startup"
@@ -146,12 +149,12 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         self._fractal_metrics_history = deque(maxlen=100)
         self._theme_integration_score = 0.0
         
-        # 🔧 FIX: Add fallback data storage
+        # [TOOL] FIX: Add fallback data storage
         self._last_known_prices = {}
         self._data_access_attempts = 0
         self._successful_data_extractions = 0
         
-        # 🔧 NEW: Add regime metrics tracking
+        # [TOOL] NEW: Add regime metrics tracking
         self._regime_metrics = {
             'transitions': 0,
             'avg_strength': 0.0,
@@ -184,12 +187,12 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         self._forced_label = None
         self._forced_strength = None
         
-        # 🔧 FIX: Reset data tracking
+        # [TOOL] FIX: Reset data tracking
         self._last_known_prices.clear()
         self._data_access_attempts = 0
         self._successful_data_extractions = 0
         
-        # 🔧 NEW: Reset regime metrics
+        # [TOOL] NEW: Reset regime metrics
         self._regime_metrics = {
             'transitions': 0,
             'avg_strength': 0.0,
@@ -201,12 +204,160 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             }
         }
 
+    def _initialize(self):
+        """Initialize module"""
+        try:
+            # Initialize module state using mixins
+            self._initialize_module_state()
+            
+            # Set initial regime status in SmartInfoBus
+            initial_status = {
+                "market_regime": self.label,
+                "regime_strength": self.regime_strength,
+                "trend_direction": self._trend_direction
+            }
+            
+            self.smart_bus.set(
+                'market_regime',
+                initial_status,
+                module='FractalRegimeConfirmation',
+                thesis="Initial fractal regime analysis status"
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Initialization failed: {e}")
+
+    async def process(self, **inputs) -> Dict[str, Any]:
+        """Process fractal regime analysis"""
+        start_time = time.time()
+        
+        try:
+            # Extract market data
+            market_data = self._extract_market_data_comprehensive(None, inputs)
+            
+            if not market_data:
+                return await self._handle_no_data_fallback()
+            
+            # Process regime detection
+            regime, strength = self._process_regime_detection(market_data)
+            
+            # Update regime metrics
+            self._update_regime_metrics(regime, strength)
+            
+            # Update SmartInfoBus
+            await self._update_fractal_smart_bus(regime, strength)
+            
+            # Record success
+            processing_time = (time.time() - start_time) * 1000
+            self._record_success(processing_time)
+            
+            return {
+                'market_regime': regime,
+                'regime_strength': strength,
+                'trend_direction': self._trend_direction,
+                'fractal_metrics': self._fractal_metrics_history[-1] if self._fractal_metrics_history else {},  # Added required output
+                'processing_time_ms': processing_time
+            }
+            
+        except Exception as e:
+            return await self._handle_fractal_error(e, start_time)
+
+    async def _handle_no_data_fallback(self) -> Dict[str, Any]:
+        """Handle case when no market data is available"""
+        self.logger.warning("No market data available - using cached regime state")
+        
+        return {
+            'market_regime': self.label,
+            'regime_strength': self.regime_strength,
+            'trend_direction': self._trend_direction,
+            'fallback_reason': 'no_market_data'
+        }
+
+    async def _update_fractal_smart_bus(self, regime: str, strength: float):
+        """Update SmartInfoBus with fractal analysis results"""
+        try:
+            # Market regime data
+            self.smart_bus.set(
+                'market_regime',
+                regime,
+                module='FractalRegimeConfirmation',
+                thesis=f"Current market regime: {regime} with {strength:.3f} strength"
+            )
+            
+            # Regime strength
+            self.smart_bus.set(
+                'regime_strength',
+                strength,
+                module='FractalRegimeConfirmation',
+                thesis=f"Regime strength based on fractal analysis: {strength:.3f}"
+            )
+            
+            # Trend direction
+            self.smart_bus.set(
+                'trend_direction',
+                self._trend_direction,
+                module='FractalRegimeConfirmation',
+                thesis=f"Market trend direction: {self._trend_direction:.3f}"
+            )
+            
+            # Fractal metrics
+            if self._fractal_metrics_history:
+                latest_metrics = list(self._fractal_metrics_history)[-1] if self._fractal_metrics_history else {}
+                self.smart_bus.set(
+                    'fractal_metrics',
+                    latest_metrics,
+                    module='FractalRegimeConfirmation',
+                    thesis="Latest fractal analysis metrics and indicators"
+                )
+            
+        except Exception as e:
+            self.logger.error(f"Failed to update SmartInfoBus: {e}")
+
+    async def _handle_fractal_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
+        """Handle fractal analysis errors"""
+        processing_time = (time.time() - start_time) * 1000
+        
+        # Update circuit breaker
+        self.fractal_circuit_breaker['failures'] += 1
+        self.fractal_circuit_breaker['last_failure'] = time.time()
+        
+        if self.fractal_circuit_breaker['failures'] >= self.fractal_circuit_breaker['threshold']:
+            self.fractal_circuit_breaker['state'] = 'OPEN'
+        
+        # Log error with context
+        error_context = self.error_pinpointer.analyze_error(error, "FractalRegimeConfirmation")
+        explanation = self.english_explainer.explain_error(
+            "FractalRegimeConfirmation", str(error), "fractal analysis"
+        )
+        
+        self.logger.error(f"Fractal analysis error: {str(error)} - {explanation}")
+        
+        return {
+            'market_regime': self.label,
+            'regime_strength': self.regime_strength,
+            'trend_direction': self._trend_direction,
+            'error': str(error),
+            'processing_time_ms': processing_time,
+            'circuit_breaker_state': self.fractal_circuit_breaker['state']
+        }
+
+    def _record_success(self, processing_time: float):
+        """Record successful processing"""
+        self.performance_tracker.record_metric(
+            'FractalRegimeConfirmation', 'fractal_cycle', processing_time, True
+        )
+        
+        # Reset circuit breaker on success
+        if self.fractal_circuit_breaker['state'] == 'OPEN':
+            self.fractal_circuit_breaker['failures'] = 0
+            self.fractal_circuit_breaker['state'] = 'CLOSED'
+
     def _step_impl(self, info_bus: Optional[Any] = None, **kwargs) -> None:
-        """🔧 FIXED: Enhanced step with comprehensive data extraction"""
+        """[TOOL] FIXED: Enhanced step with comprehensive data extraction"""
         
         self._data_access_attempts += 1
         
-        # 🔧 FIX: Try multiple data extraction methods
+        # [TOOL] FIX: Try multiple data extraction methods
         market_data = self._extract_market_data_comprehensive(info_bus, kwargs)
         
         if market_data:
@@ -219,7 +370,7 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             self.performance_tracker.record_metric('FractalRegimeConfirmation', 'data_extraction_success_rate', success_rate, True)
             
         else:
-            # 🔧 FIX: Use synthetic data as fallback instead of completely failing
+            # [TOOL] FIX: Use synthetic data as fallback instead of completely failing
             synthetic_data = self._create_synthetic_market_data()
             if synthetic_data:
                 self.logger.info("Using synthetic market data as fallback")
@@ -250,11 +401,11 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         )
 
     # ═══════════════════════════════════════════════════════════════════
-    # 🔧 CRITICAL FIX: ADD MISSING _update_regime_metrics METHOD
+    # [TOOL] CRITICAL FIX: ADD MISSING _update_regime_metrics METHOD
     # ═══════════════════════════════════════════════════════════════════
 
     def _update_regime_metrics(self, regime: str, strength: float):
-        """🔧 FIXED: Update regime tracking metrics - MISSING METHOD ADDED"""
+        """[TOOL] FIXED: Update regime tracking metrics - MISSING METHOD ADDED"""
         
         try:
             # Track regime transitions
@@ -304,7 +455,7 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             self.logger.error(f"FIXED Regime metrics update failed: {e}")
 
     def _extract_market_data_comprehensive(self, info_bus: Optional[Any], kwargs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """🔧 FIXED: Comprehensive market data extraction with multiple fallbacks"""
+        """[TOOL] FIXED: Comprehensive market data extraction with multiple fallbacks"""
         
         # Method 1: Try kwargs first (backward compatibility)
         data = self._try_kwargs_extraction(kwargs)
@@ -386,7 +537,7 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         return None
 
     def _try_environment_data_extraction(self, info_bus: Optional[Any]) -> Optional[Dict[str, Any]]:
-        """🔧 NEW: Try extracting data directly from environment"""
+        """[TOOL] NEW: Try extracting data directly from environment"""
         if not info_bus:
             return None
             
@@ -425,7 +576,7 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         return None
 
     def _create_synthetic_market_data(self) -> Optional[Dict[str, Any]]:
-        """🔧 NEW: Create synthetic market data as ultimate fallback"""
+        """[TOOL] NEW: Create synthetic market data as ultimate fallback"""
         
         try:
             # Create synthetic prices for common instruments
@@ -496,7 +647,7 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             return self._forced_label, self._forced_strength or 0.5
 
         try:
-            # 🔧 FIX: Enhanced instrument selection
+            # [TOOL] FIX: Enhanced instrument selection
             available_instruments = list(data_dict.keys())
             if not available_instruments:
                 self.logger.warning("No instruments in data_dict")
@@ -557,7 +708,7 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         return self._process_regime_signals(fractal_metrics, theme_conf)
 
     def _process_prices_format(self, market_data: Dict[str, Any]) -> Tuple[str, float]:
-        """🔧 NEW: Process simple price format data"""
+        """[TOOL] NEW: Process simple price format data"""
         
         prices = market_data['prices']
         current_step = market_data.get('current_step', 0)
@@ -774,20 +925,25 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
                 if not (np.all(np.isfinite(log_lags)) and np.all(np.isfinite(log_tau))):
                     return 0.5
                 
-                linreg_result = linregress(log_lags, log_tau)
-                slope = linreg_result.slope
-                r_value = linreg_result.rvalue
-                
-                # Quality check on regression
-                r_squared = r_value ** 2 if np.isfinite(r_value) else 0
-                
-                if r_squared < 0.1:  # Poor fit
-                    return 0.5
+                try:
+                    # Use numpy polyfit instead of scipy linregress for better type compatibility
+                    coeffs = np.polyfit(log_lags, log_tau, 1)
+                    slope = float(coeffs[0])
                     
-                hurst = slope * 2.0
-                
-                # Bound the result
-                hurst = np.clip(hurst, 0.0, 1.0)
+                    # Calculate correlation coefficient manually for quality check
+                    correlation = np.corrcoef(log_lags, log_tau)[0, 1]
+                    r_squared = float(correlation * correlation) if np.isfinite(correlation) else 0.0
+                    
+                    if r_squared < 0.1:  # Poor fit
+                        return 0.5
+                        
+                    hurst = float(slope * 2.0)
+                    
+                    # Bound the result
+                    hurst = float(np.clip(hurst, 0.0, 1.0))
+                    
+                except Exception:
+                    return 0.5
                 
             return float(hurst) if np.isfinite(hurst) else 0.5
             
@@ -1039,7 +1195,7 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         """Set action dimension for proposal"""
         self._action_dim = int(dim)
 
-    def propose_action(self, obs: Any = None, info_bus: Optional[Any] = None) -> np.ndarray:
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
         """Enhanced action generation based on regime characteristics"""
         
         if not hasattr(self, "_action_dim"):
@@ -1065,7 +1221,15 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             if i + 1 < self._action_dim:
                 action[i + 1] = duration
                 
-        return action
+        return {
+            'action': action.tolist(),
+            'confidence': self.confidence(),
+            'thesis': f'Fractal regime {self.label} with strength {self.regime_strength:.3f}'
+        }
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence for the proposed action"""
+        return self.confidence()
 
     def confidence(self, obs: Any = None, info_bus: Optional[Any] = None) -> float:
         """Enhanced confidence calculation with regime performance tracking"""
@@ -1100,19 +1264,19 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         success_rate = self._successful_data_extractions / max(self._data_access_attempts, 1)
         
         return f"""
-📈 COMPLETE FRACTAL REGIME ANALYSIS (FIXED)
+[CHART] COMPLETE FRACTAL REGIME ANALYSIS (FIXED)
 ═══════════════════════════════════════════════════════════════
-🎯 Current Regime: {self.label.upper()} (Strength: {self.regime_strength:.3f})
-📊 Trend Direction: {self._trend_direction:.3f} ({'📈' if self._trend_direction > 0.1 else '📉' if self._trend_direction < -0.1 else '➡️'})
-⚖️ Stability Score: {self._regime_stability_score:.1f}/100
+[TARGET] Current Regime: {self.label.upper()} (Strength: {self.regime_strength:.3f})
+[STATS] Trend Direction: {self._trend_direction:.3f} ({'[CHART]' if self._trend_direction > 0.1 else '📉' if self._trend_direction < -0.1 else '➡️'})
+[BALANCE] Stability Score: {self._regime_stability_score:.1f}/100
 
-🔍 FRACTAL METRICS
+[SEARCH] FRACTAL METRICS
 • Hurst Coefficient: {self.coeff_h:.2f}
 • Variance Ratio Coeff: {self.coeff_vr:.2f}  
 • Wavelet Energy Coeff: {self.coeff_we:.2f}
 • Buffer Size: {len(self._buf)}/{int(self.window * 0.75)}
 
-📊 RECENT REGIME DISTRIBUTION (Last 10 steps)
+[STATS] RECENT REGIME DISTRIBUTION (Last 10 steps)
 • Noise: {regime_distribution.get('noise', 0):.1%}
 • Volatile: {regime_distribution.get('volatile', 0):.1%}  
 • Trending: {regime_distribution.get('trending', 0):.1%}
@@ -1122,7 +1286,7 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
 • Regime Transitions: {self._regime_metrics['transitions']}
 • Metrics History: {len(self._fractal_metrics_history)} snapshots
 
-🔧 DATA ACCESS STATUS (FIXED)
+[TOOL] DATA ACCESS STATUS (FIXED)
 • Extraction Attempts: {self._data_access_attempts}
 • Successful Extractions: {self._successful_data_extractions}
 • Success Rate: {success_rate:.1%}

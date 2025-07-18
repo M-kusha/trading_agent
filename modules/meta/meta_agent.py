@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/meta/meta_agent.py
-# 🚀 PRODUCTION-READY Meta Agent System
+# [ROCKET] PRODUCTION-READY Meta Agent System
 # Advanced automation with SmartInfoBus integration and intelligent decision making
 # ─────────────────────────────────────────────────────────────
 
@@ -74,7 +74,7 @@ class MetaAgentConfig:
     health_monitoring=True,
     performance_tracking=True,
     error_handling=True,
-    voting=True
+    is_voting_member=True
 )
 class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
@@ -87,10 +87,11 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
                  genome: Optional[Dict[str, Any]] = None,
                  **kwargs):
         
-        self.config = config or MetaAgentConfig()
-        super().__init__()
+        # Store config first (preservation pattern)
+        self.meta_config = config or MetaAgentConfig()
+        self.config = self.meta_config  # Set config early for init methods
         
-        # Initialize advanced systems
+        # Initialize advanced systems before super().__init__()
         self._initialize_advanced_systems()
         
         # Initialize genome parameters
@@ -99,9 +100,17 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
         # Initialize meta agent state
         self._initialize_meta_state()
         
+        super().__init__()
+        
+        # Restore our config after BaseModule initialization (prevents dict conversion)
+        self.config = self.meta_config
+        
+        # Start monitoring after all initialization is complete
+        self._start_monitoring()
+        
         self.logger.info(
             format_operator_message(
-                "🤖", "META_AGENT_INITIALIZED",
+                "[BOT]", "META_AGENT_INITIALIZED",
                 details=f"Modes: {len(MetaMode)}, Profit target: €{self.config.profit_target}",
                 result="Meta agent ready for automation",
                 context="meta_initialization"
@@ -135,7 +144,7 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
         # Health monitoring
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        self._start_monitoring()
+        # Note: _start_monitoring() moved to end of initialization
 
     def _initialize_genome_parameters(self, genome: Optional[Dict[str, Any]]):
         """Initialize genome-based parameters"""
@@ -236,7 +245,7 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
 
-    async def _initialize(self):
+    def _initialize(self):
         """Initialize module"""
         try:
             # Set initial meta agent status in SmartInfoBus
@@ -254,10 +263,8 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
                 thesis="Initial meta agent automation status"
             )
             
-            return True
         except Exception as e:
             self.logger.error(f"Initialization failed: {e}")
-            return False
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process meta agent automation"""
@@ -679,7 +686,7 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
             # Log decision
             self.logger.info(
                 format_operator_message(
-                    "🔄", "AUTOMATION_DECISION",
+                    "[RELOAD]", "AUTOMATION_DECISION",
                     old_mode=self.current_mode.value,
                     new_mode=new_mode.value,
                     reason=reason,
@@ -980,7 +987,7 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
         
         self.logger.error(
             format_operator_message(
-                "💥", "META_AGENT_ERROR",
+                "[CRASH]", "META_AGENT_ERROR",
                 error=str(error),
                 details=explanation,
                 processing_time_ms=processing_time,
@@ -1006,6 +1013,10 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
     def _update_meta_health(self):
         """Update meta agent health metrics"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, 'automation_score') or not hasattr(self, 'system_confidence'):
+                return  # Skip if not fully initialized yet
+                
             # Check automation effectiveness
             if self.automation_score < self.config.min_automation_score:
                 self._health_status = 'warning'
@@ -1038,7 +1049,7 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
                 if effectiveness > 0.8:
                     self.logger.info(
                         format_operator_message(
-                            "🎯", "HIGH_AUTOMATION_EFFECTIVENESS",
+                            "[TARGET]", "HIGH_AUTOMATION_EFFECTIVENESS",
                             effectiveness=f"{effectiveness:.2f}",
                             recent_decisions=len(recent_decisions),
                             context="automation_analysis"
@@ -1047,7 +1058,7 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
                 elif effectiveness < 0.4:
                     self.logger.warning(
                         format_operator_message(
-                            "⚠️", "LOW_AUTOMATION_EFFECTIVENESS",
+                            "[WARN]", "LOW_AUTOMATION_EFFECTIVENESS",
                             effectiveness=f"{effectiveness:.2f}",
                             recent_decisions=len(recent_decisions),
                             context="automation_analysis"
@@ -1100,7 +1111,7 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
             
             self.logger.info(
                 format_operator_message(
-                    "🔧", "FORCED_MODE_TRANSITION",
+                    "[TOOL]", "FORCED_MODE_TRANSITION",
                     new_mode=new_mode,
                     reason=reason,
                     context="manual_override"
@@ -1188,10 +1199,57 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
         """Legacy compatibility for confidence"""
         return float(self.system_confidence)
 
-    def propose_action(self, obs: Any = None, **kwargs) -> np.ndarray:
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
         """Legacy compatibility for action proposal"""
         # Meta agent doesn't propose direct actions, but automation decisions
         automation_signal = 1.0 if self.current_mode == MetaMode.LIVE_TRADING else 0.0
         confidence_signal = self.system_confidence
         
-        return np.array([automation_signal, confidence_signal])
+        return {"action": [automation_signal, confidence_signal], "confidence": 0.5, "thesis": "Module action proposal"}
+    
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in the meta automation decision"""
+        try:
+            if not isinstance(action, dict):
+                return 0.0
+            
+            # Base confidence from system confidence
+            base_confidence = float(self.system_confidence)
+            
+            # Adjust based on current mode
+            if self.current_mode == MetaMode.LIVE_TRADING:
+                # High confidence in live trading mode if performance is good
+                if self.daily_pnl > 0:
+                    mode_confidence = 0.9
+                elif self.daily_pnl > -50:
+                    mode_confidence = 0.7
+                else:
+                    mode_confidence = 0.3
+            elif self.current_mode == MetaMode.TRAINING:
+                # Moderate confidence during training
+                mode_confidence = 0.6
+            elif self.current_mode == MetaMode.EMERGENCY_STOP:
+                # Low confidence during emergency
+                mode_confidence = 0.2
+            else:
+                # Default confidence for other modes
+                mode_confidence = 0.5
+            
+            # Adjust based on circuit breaker state
+            if self.circuit_breaker['state'] == 'OPEN':
+                circuit_confidence = 0.1
+            elif self.circuit_breaker['state'] == 'HALF_OPEN':
+                circuit_confidence = 0.5
+            else:
+                circuit_confidence = 1.0
+            
+            # Combine confidences
+            combined_confidence = (base_confidence * 0.5 + 
+                                 mode_confidence * 0.3 + 
+                                 circuit_confidence * 0.2)
+            
+            return float(np.clip(combined_confidence, 0.0, 1.0))
+            
+        except Exception as e:
+            self.logger.error(f"Meta confidence calculation failed: {e}")
+            return 0.0

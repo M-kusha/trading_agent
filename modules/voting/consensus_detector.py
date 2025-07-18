@@ -297,7 +297,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             }
         }, module='ConsensusDetector', thesis=thesis)
 
-    async def process(self) -> Dict[str, Any]:
+    async def process(self, **inputs) -> Dict[str, Any]:
         """
         Modern async processing with comprehensive consensus analysis
         
@@ -1889,7 +1889,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             self.member_contributions.clear()
             
         self.logger.info(format_operator_message(
-            icon="🔄",
+            icon="[RELOAD]",
             message="Consensus Detector resized",
             old_members=old_members,
             new_members=self.n_members
@@ -1991,32 +1991,32 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
         """Generate comprehensive operator-friendly consensus report"""
         # Consensus level assessment
         if self.last_consensus > 0.8:
-            consensus_level = "🟢 HIGH"
+            consensus_level = "[GREEN] HIGH"
         elif self.last_consensus > 0.6:
-            consensus_level = "🟡 MODERATE"
+            consensus_level = "[YELLOW] MODERATE"
         elif self.last_consensus > 0.4:
             consensus_level = "🟠 LOW-MODERATE"
         elif self.last_consensus > 0.2:
             consensus_level = "🟠 LOW"
         else:
-            consensus_level = "🔴 VERY LOW"
+            consensus_level = "[RED] VERY LOW"
         
         # Quality assessment
         if self.consensus_quality > 0.8:
-            quality_level = "✅ Excellent"
+            quality_level = "[OK] Excellent"
         elif self.consensus_quality > 0.6:
-            quality_level = "⚡ Good"
+            quality_level = "[FAST] Good"
         elif self.consensus_quality > 0.4:
-            quality_level = "⚠️ Fair"
+            quality_level = "[WARN] Fair"
         else:
-            quality_level = "🚨 Poor"
+            quality_level = "[ALERT] Poor"
         
         # Trend analysis
         if len(self.consensus_trends) > 0:
             recent_trend = self.consensus_trends[-1]
             trend_direction = recent_trend.get('trend_direction', 'unknown')
             if trend_direction == 'increasing':
-                trend_status = "📈 Improving"
+                trend_status = "[CHART] Improving"
             elif trend_direction == 'decreasing':
                 trend_status = "📉 Declining"
             else:
@@ -2028,13 +2028,13 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
         component_lines = []
         for method, score in self.consensus_components.items():
             if score > 0.7:
-                emoji = "✅"
+                emoji = "[OK]"
             elif score > 0.5:
-                emoji = "⚡"
+                emoji = "[FAST]"
             elif score > 0.3:
-                emoji = "⚠️"
+                emoji = "[WARN]"
             else:
-                emoji = "🚨"
+                emoji = "[ALERT]"
             component_lines.append(f"  {emoji} {method.replace('_', ' ').title()}: {score:.1%}")
         
         # Member contributions summary
@@ -2050,32 +2050,32 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
         # System effectiveness
         effectiveness = self.quality_metrics.get('overall_effectiveness', 0.0)
         if effectiveness > 0.8:
-            effectiveness_status = "✅ Excellent"
+            effectiveness_status = "[OK] Excellent"
         elif effectiveness > 0.6:
-            effectiveness_status = "⚡ Good"
+            effectiveness_status = "[FAST] Good"
         elif effectiveness > 0.4:
-            effectiveness_status = "⚠️ Fair"
+            effectiveness_status = "[WARN] Fair"
         else:
-            effectiveness_status = "🚨 Poor"
+            effectiveness_status = "[ALERT] Poor"
         
         return f"""
 🤝 CONSENSUS DETECTOR v3.0
 ═══════════════════════════════════════════════════════════════
-📊 Current Consensus: {consensus_level} ({self.last_consensus:.1%})
-🎯 Quality Level: {quality_level} ({self.consensus_quality:.1%})
-📈 Trend: {trend_status}
+[STATS] Current Consensus: {consensus_level} ({self.last_consensus:.1%})
+[TARGET] Quality Level: {quality_level} ({self.consensus_quality:.1%})
+[CHART] Trend: {trend_status}
 
-📊 Consensus Components:
+[STATS] Consensus Components:
 {chr(10).join(component_lines) if component_lines else "  📭 No components available"}
 
-🎯 Advanced Metrics:
+[TARGET] Advanced Metrics:
 • Directional Consensus: {self.directional_consensus:.1%}
 • Magnitude Consensus: {self.magnitude_consensus:.1%}
 • Confidence Consensus: {self.confidence_consensus:.1%}
 • Network Consensus: {self.network_consensus:.1%}
 • Temporal Stability: {self.temporal_stability:.1%}
 
-🎯 Quality Dimensions:
+[TARGET] Quality Dimensions:
 • Coherence: {self.quality_metrics.get('coherence', 0):.1%}
 • Stability: {self.quality_metrics.get('stability', 0):.1%}
 • Diversity: {self.quality_metrics.get('diversity', 0):.1%}
@@ -2083,7 +2083,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
 • Predictive Accuracy: {self.quality_metrics.get('predictive_accuracy', 0):.1%}
 • Temporal Consistency: {self.quality_metrics.get('temporal_consistency', 0):.1%}
 
-📈 Performance Statistics:
+[CHART] Performance Statistics:
 • Total Computations: {self.consensus_stats['total_computations']}
 • High Consensus Events: {self.consensus_stats['high_consensus_count']}
 • Low Consensus Events: {self.consensus_stats['low_consensus_count']}
@@ -2100,26 +2100,26 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
 ⚙️ System Configuration:
 • Consensus Threshold: {self.threshold:.1%}
 • Methods Active: {', '.join(self.consensus_methods)}
-• Quality Weighting: {'✅ Enabled' if self.quality_weighting else '❌ Disabled'}
-• Temporal Smoothing: {'✅ Enabled' if self.temporal_smoothing else '❌ Disabled'}
+• Quality Weighting: {'[OK] Enabled' if self.quality_weighting else '[FAIL] Disabled'}
+• Temporal Smoothing: {'[OK] Enabled' if self.temporal_smoothing else '[FAIL] Disabled'}
 • Smoothing Alpha: {self.consensus_intelligence.get('smoothing_alpha', 0.3):.3f}
 • Stability Window: {self.consensus_intelligence.get('stability_window', 10)} steps
 
-📊 Intelligence Parameters:
+[STATS] Intelligence Parameters:
 • Trend Sensitivity: {self.consensus_intelligence.get('trend_sensitivity', 0.15):.1%}
 • Adaptation Rate: {self.consensus_intelligence.get('adaptation_rate', 0.12):.1%}
 • Confidence Weighting: {self.consensus_intelligence.get('confidence_weighting', 0.8):.1%}
 • Temporal Memory: {self.consensus_intelligence.get('temporal_memory', 0.85):.1%}
 
-📊 Recent Activity:
+[STATS] Recent Activity:
 • Consensus History: {len(self.consensus_history)} entries
 • Trend Data Points: {len(self.consensus_trends)} tracked
 • Regime Patterns: {len(self.regime_consensus_history)} regimes
 • Prediction History: {len(self.prediction_history)} predictions
 
-🔧 System Health:
+[TOOL] System Health:
 • Error Count: {self.error_count}/{self.circuit_breaker_threshold}
-• Status: {'🚨 DISABLED' if self.is_disabled else '✅ OPERATIONAL'}
+• Status: {'[ALERT] DISABLED' if self.is_disabled else '[OK] OPERATIONAL'}
 • Session Duration: {(datetime.datetime.now() - datetime.datetime.fromisoformat(self.consensus_stats['session_start'])).total_seconds() / 3600:.1f} hours
 • Data Quality: {quality_level}
         """
@@ -2240,7 +2240,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
             self.logger.error(format_operator_message(
-                icon="🚨",
+                icon="[ALERT]",
                 message="Consensus Detector disabled due to repeated errors",
                 error_count=self.error_count,
                 threshold=self.circuit_breaker_threshold
@@ -2429,7 +2429,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             self.is_disabled = error_state.get("is_disabled", False)
             
             self.logger.info(format_operator_message(
-                icon="🔄",
+                icon="[RELOAD]",
                 message="Consensus Detector state restored",
                 members=self.n_members,
                 threshold=f"{self.threshold:.3f}",
@@ -2505,7 +2505,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
         self.is_disabled = False
         
         self.logger.info(format_operator_message(
-            icon="🔄",
+            icon="[RELOAD]",
             message="Consensus Detector reset completed",
             status="All consensus state cleared and systems reinitialized"
         ))
@@ -2584,3 +2584,101 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                 ))
         except Exception:
             pass  # Ignore cleanup errors
+
+    # ═══════════════════════════════════════════════════════════════════
+    # BASEMODULE ABSTRACT METHOD IMPLEMENTATIONS
+    # ═══════════════════════════════════════════════════════════════════
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in consensus detection results"""
+        try:
+            # Base confidence from consensus quality
+            consensus_quality = self.consensus_quality
+            
+            # Temporal stability factor
+            stability = self.temporal_stability
+            
+            # Member participation factor
+            participation = len(self.member_contributions) / max(self.n_members, 1)
+            
+            # Recent consensus trend
+            if len(self.consensus_history) > 5:
+                recent_consensus = list(self.consensus_history)[-5:]
+                trend_stability = 1.0 - (np.std(recent_consensus) / max(np.mean(recent_consensus), 0.1))
+            else:
+                trend_stability = 0.5
+            
+            # Combine factors
+            confidence = (
+                consensus_quality * 0.4 +
+                stability * 0.3 +
+                participation * 0.2 +
+                trend_stability * 0.1
+            )
+            
+            # Ensure valid range
+            return float(max(0.1, min(0.95, confidence)))
+            
+        except Exception as e:
+            if hasattr(self, 'logger'):
+                self.logger.warning(f"Confidence calculation failed: {e}")
+            return 0.4  # Conservative default
+
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose consensus-based action for voting coordination"""
+        try:
+            # Analyze current consensus state
+            consensus_score = self.last_consensus
+            consensus_quality = self.consensus_quality
+            directional_consensus = self.directional_consensus
+            
+            # Determine action based on consensus metrics
+            if consensus_score > 0.8 and consensus_quality > 0.7:
+                action_type = 'strong_consensus'
+                signal_strength = min(consensus_score, 0.9)
+                reasoning = f"Strong consensus detected (score: {consensus_score:.3f}, quality: {consensus_quality:.3f})"
+            elif consensus_score > 0.6:
+                action_type = 'moderate_consensus'
+                signal_strength = consensus_score * 0.7
+                reasoning = f"Moderate consensus (score: {consensus_score:.3f})"
+            elif consensus_score < 0.3:
+                action_type = 'low_consensus'
+                signal_strength = 0.8
+                reasoning = f"Low consensus ({consensus_score:.3f}) - need coordination"
+            elif directional_consensus < 0.4:
+                action_type = 'directional_conflict'
+                signal_strength = 0.6
+                reasoning = f"Directional disagreement ({directional_consensus:.3f})"
+            else:
+                action_type = 'monitor'
+                signal_strength = 0.3
+                reasoning = f"Moderate consensus state - continue monitoring"
+            
+            return {
+                'action': action_type,
+                'signal_strength': signal_strength,
+                'reasoning': reasoning,
+                'consensus_metrics': {
+                    'consensus_score': consensus_score,
+                    'consensus_quality': consensus_quality,
+                    'directional_consensus': directional_consensus,
+                    'magnitude_consensus': self.magnitude_consensus,
+                    'confidence_consensus': self.confidence_consensus,
+                    'temporal_stability': self.temporal_stability
+                },
+                'member_stats': {
+                    'active_members': len(self.member_contributions),
+                    'target_members': self.n_members
+                },
+                'confidence': await self.calculate_confidence({}, **inputs)
+            }
+            
+        except Exception as e:
+            if hasattr(self, 'logger'):
+                self.logger.error(f"Action proposal failed: {e}")
+            return {
+                'action': 'abstain',
+                'signal_strength': 0.0,
+                'reasoning': f'Consensus detection error: {str(e)}',
+                'confidence': 0.1
+            }

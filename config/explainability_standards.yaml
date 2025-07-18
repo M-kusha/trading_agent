@@ -133,7 +133,7 @@ thesis_requirements:
         Analysis of {num_factors} market factors indicates {market_assessment}.
         
         CONFIDENCE ASSESSMENT:
-        • Overall confidence: {confidence_percentage}
+        • Overall confidence: {confidence}
         • Key supporting factors: {supporting_factors}
         • Main uncertainties: {uncertainty_factors}
         
@@ -147,7 +147,7 @@ thesis_requirements:
         - "size" 
         - "instrument"
         - "primary_reason"
-        - "confidence_percentage"
+        - "confidence"
         - "risk_assessment"
         
     portfolio_adjustment:
@@ -166,7 +166,18 @@ thesis_requirements:
         • Diversification effect: {diversification_impact}
         
         IMPLEMENTATION:
-        This adjustment will be implemented {implementation_timeline} with {implementation_confidence} confidence.
+        This adjustment will be implemented {implementation_timeline} with {confidence} confidence.
+        
+      required_variables:
+        - "adjustment_type"
+        - "adjustment_description"
+        - "adjustment_reason"
+        - "allocation_analysis"
+        - "risk_impact"
+        - "return_impact"
+        - "diversification_impact"
+        - "implementation_timeline"
+        - "confidence"
         
     risk_limit_breach:
       template: |
@@ -185,6 +196,18 @@ thesis_requirements:
         {mitigation_strategy}
         
         Estimated time to resolution: {resolution_time}
+        
+      required_variables:
+        - "limit_type"
+        - "risk_description"
+        - "limit_value"
+        - "current_level"
+        - "breach_magnitude"
+        - "immediate_action_1"
+        - "immediate_action_2"
+        - "immediate_action_3"
+        - "mitigation_strategy"
+        - "resolution_time"
 
 # ═══════════════════════════════════════════════════════════════════
 # EXPLAINABILITY BY MODULE CATEGORY

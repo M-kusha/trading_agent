@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/features/advanced_feature_engine.py  
-# 🚀 PRODUCTION-GRADE Advanced Feature Engine
+# [ROCKET] PRODUCTION-GRADE Advanced Feature Engine
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # ENHANCED: Complete SmartInfoBus integration with all advanced features
 # ─────────────────────────────────────────────────────────────
@@ -43,7 +43,10 @@ class FeatureEngineConfig:
     name="AdvancedFeatureEngine",
     version="3.0.0",
     category="features",
-    provides=["advanced_features", "feature_analysis", "feature_health", "feature_thesis"],
+    provides=[
+        "advanced_features", "feature_analysis", "feature_health", "feature_thesis",
+        "features", "technical_indicators", "market_features", "price_features"
+    ],
     requires=["market_data", "price_data"],
     description="Advanced feature extraction with comprehensive SmartInfoBus integration",
     thesis_required=True,
@@ -53,7 +56,7 @@ class FeatureEngineConfig:
 )
 class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    🚀 PRODUCTION-GRADE Advanced Feature Engine
+    [ROCKET] PRODUCTION-GRADE Advanced Feature Engine
     
     FEATURES:
     - Complete SmartInfoBus integration with thesis generation
@@ -65,11 +68,18 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
     - Comprehensive validation and auditing
     """
     
-    def __init__(self, config: Optional[FeatureEngineConfig] = None, **kwargs):
-        self.config = config or FeatureEngineConfig()
-        super().__init__(**kwargs)
+    def __init__(self, config: Optional[Union[FeatureEngineConfig, Dict[str, Any]]] = None, **kwargs):
+        # Store config first 
+        if isinstance(config, dict):
+            # Convert dict config to FeatureEngineConfig
+            self.feature_config = FeatureEngineConfig(**{k: v for k, v in config.items() if k in FeatureEngineConfig.__dataclass_fields__})
+        else:
+            self.feature_config = config or FeatureEngineConfig()
         
-        # Initialize all advanced features
+        self.config = self.feature_config  # Set config early for init methods
+        
+        # Initialize all systems before super().__init__() 
+        # because BaseModule calls _initialize() which needs these attributes
         self._initialize_advanced_systems()
         
         # Feature-specific initialization
@@ -83,9 +93,14 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         # Start monitoring
         self._start_monitoring()
         
+        super().__init__(**kwargs)  # Don't pass config to BaseModule
+        
+        # Ensure our config is preserved after BaseModule initialization
+        self.config = self.feature_config
+        
         self.logger.info(
             format_operator_message(
-                "🚀", "ADVANCED_FEATURE_ENGINE_INITIALIZED",
+                "[ROCKET]", "ADVANCED_FEATURE_ENGINE_INITIALIZED",
                 details=f"Windows: {self.window_sizes}, Output dim: {self.out_dim}",
                 result="Production-grade feature engine active",
                 context="feature_engine_startup"
@@ -166,7 +181,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             # No event loop running, monitoring will start when module is initialized
             pass
     
-    async def _initialize(self):
+    def _initialize(self):
         """Initialize module - called by orchestrator"""
         super()._initialize()
         
@@ -177,7 +192,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'window_sizes': self.window_sizes,
                 'output_dimensions': self.out_dim,
                 'max_buffer_size': self.max_buffer_size,
-                'supports_neural_processing': self.config.enable_neural_processing,
+                'supports_neural_processing': self.feature_config.enable_neural_processing,
                 'features_available': ['price_momentum', 'volatility', 'trend_strength', 'volume_profile']
             },
             module='AdvancedFeatureEngine',
@@ -211,7 +226,8 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             
             return {
                 'success': True,
-                'features': features,
+                'advanced_features': features,  # Fixed: Use 'advanced_features' to match provides declaration
+                'features': features,  # Keep for backward compatibility
                 'thesis': thesis,
                 'quality_score': self.feature_quality_score,
                 'processing_time_ms': (time.time() - process_start_time) * 1000
@@ -575,7 +591,7 @@ Recommendation: {'Continue processing' if feature_quality > 60 else 'Review data
             
             self.logger.error(
                 format_operator_message(
-                    "💥", "FEATURE_EXTRACTION_ERROR",
+                    "[CRASH]", "FEATURE_EXTRACTION_ERROR",
                     details=str(error),
                     context="feature_processing",
                     recovery_actions=len(error_context.recovery_actions)
@@ -618,7 +634,7 @@ Recommendation: {'Continue processing' if feature_quality > 60 else 'Review data
             
             self.logger.error(
                 format_operator_message(
-                    "🚨", "CIRCUIT_BREAKER_OPEN",
+                    "[ALERT]", "CIRCUIT_BREAKER_OPEN",
                     details=f"Too many failures ({self.circuit_breaker['failures']})",
                     context="circuit_breaker"
                 )
@@ -719,7 +735,7 @@ Recommendation: {'Continue processing' if feature_quality > 60 else 'Review data
         if issues:
             self.logger.warning(
                 format_operator_message(
-                    "⚠️", "HEALTH_ISSUES_DETECTED",
+                    "[WARN]", "HEALTH_ISSUES_DETECTED",
                     details=f"{len(issues)} issues found",
                     context="health_monitoring"
                 )
@@ -837,3 +853,127 @@ Recommendation: {'Continue processing' if feature_quality > 60 else 'Review data
             )
         except Exception as e:
             return f"Performance report generation failed: {str(e)}"
+    
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose feature-based action"""
+        try:
+            # Process features first
+            result = await self.process(**inputs)
+            
+            if not result.get('success', False):
+                return {
+                    'action_type': 'no_action',
+                    'confidence': 0.0,
+                    'reasoning': 'Feature extraction failed',
+                    'features_available': False
+                }
+            
+            # Analyze features for action proposal
+            features = result['features']['raw_features']
+            quality_score = result['quality_score']
+            
+            # Simple feature-based action logic
+            if len(features) > 0:
+                # Look at recent momentum and volatility
+                momentum_indicators = features[:len(self.window_sizes)]  # First window features
+                avg_momentum = float(np.mean(momentum_indicators)) if len(momentum_indicators) > 0 else 0.0
+                
+                # Propose action based on feature analysis
+                if quality_score > 80:
+                    if avg_momentum > 0.01:  # Positive momentum
+                        action_type = "increase_position"
+                        magnitude = min(abs(avg_momentum) * 10, 1.0)
+                    elif avg_momentum < -0.01:  # Negative momentum  
+                        action_type = "decrease_position"
+                        magnitude = min(abs(avg_momentum) * 10, 1.0)
+                    else:
+                        action_type = "hold_position"
+                        magnitude = 0.0
+                else:
+                    action_type = "reduce_risk"
+                    magnitude = 0.5
+                
+                return {
+                    'action_type': action_type,
+                    'magnitude': magnitude,
+                    'confidence': quality_score / 100.0,
+                    'reasoning': f"Feature analysis: {len(features)} features, {quality_score:.1f}% quality, momentum: {avg_momentum:.4f}",
+                    'features_used': len(features),
+                    'quality_score': quality_score,
+                    'momentum_signal': avg_momentum
+                }
+            else:
+                return {
+                    'action_type': 'no_action',
+                    'confidence': 0.0,
+                    'reasoning': 'No features available',
+                    'features_available': False
+                }
+                
+        except Exception as e:
+            self.logger.error(f"Action proposal failed: {e}")
+            return {
+                'action_type': 'no_action',
+                'confidence': 0.0,
+                'reasoning': f'Action proposal error: {str(e)}',
+                'error': str(e)
+            }
+    
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in the proposed action"""
+        try:
+            if not isinstance(action, dict):
+                return 0.0
+            
+            # Base confidence from feature quality
+            base_confidence = self.feature_quality_score / 100.0
+            
+            # Adjust based on action characteristics
+            action_type = action.get('action_type', 'no_action')
+            magnitude = action.get('magnitude', 0.0)
+            
+            # Higher confidence for well-supported actions
+            if action_type in ['increase_position', 'decrease_position']:
+                # Check if we have sufficient features
+                features_used = action.get('features_used', 0)
+                if features_used >= len(self.window_sizes):
+                    feature_confidence = 1.0
+                elif features_used > 0:
+                    feature_confidence = features_used / len(self.window_sizes)
+                else:
+                    feature_confidence = 0.0
+                
+                # Confidence based on magnitude (higher magnitude needs higher confidence)
+                magnitude_confidence = 1.0 - min(abs(magnitude), 0.5)
+                
+                # Combine confidences
+                combined_confidence = (base_confidence * 0.5 + 
+                                     feature_confidence * 0.3 + 
+                                     magnitude_confidence * 0.2)
+            
+            elif action_type == 'hold_position':
+                # Holding is usually lower risk
+                combined_confidence = base_confidence * 0.8
+            
+            elif action_type == 'reduce_risk':
+                # Risk reduction is conservative
+                combined_confidence = max(base_confidence, 0.6)
+            
+            else:  # no_action
+                combined_confidence = 0.1
+            
+            # Adjust based on health metrics
+            health_adjustment = self.health_metrics['health_score'] / 100.0
+            final_confidence = combined_confidence * health_adjustment
+            
+            # Adjust based on circuit breaker state
+            if self.circuit_breaker['state'] == 'OPEN':
+                final_confidence *= 0.1
+            elif self.circuit_breaker['state'] == 'HALF_OPEN':
+                final_confidence *= 0.5
+            
+            return float(np.clip(final_confidence, 0.0, 1.0))
+            
+        except Exception as e:
+            self.logger.error(f"Confidence calculation failed: {e}")
+            return 0.0

@@ -303,9 +303,12 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             }
         }, module='CurriculumPlannerPlus', thesis=thesis)
 
-    async def process(self) -> Dict[str, Any]:
+    async def process(self, **inputs) -> Dict[str, Any]:
         """
         Modern async processing with comprehensive curriculum management
+        
+        Args:
+            **inputs: Input parameters from the environment and other modules
         
         Returns:
             Dict containing curriculum status, constraints, recommendations, and progression analysis
@@ -360,6 +363,179 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             
         except Exception as e:
             return await self._handle_processing_error(e, start_time)
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """
+        Calculate confidence in curriculum recommendations
+        
+        Args:
+            action: Trading action being evaluated
+            **inputs: Additional context inputs
+            
+        Returns:
+            Confidence score between 0 and 1
+        """
+        try:
+            # Get current learning state
+            overall_competency = self._calculate_weighted_competency()
+            learning_velocity = self.learning_velocity
+            performance_stability = self._assess_performance_stability()
+            
+            # Base confidence from competency
+            base_confidence = overall_competency
+            
+            # Adjust for learning velocity (positive trend increases confidence)
+            velocity_adjustment = np.clip(learning_velocity * 2, -0.3, 0.3)
+            
+            # Adjust for performance stability
+            stability_adjustment = (performance_stability - 0.5) * 0.2
+            
+            # Adjust for stage mastery
+            stage_mastery = self.stage_progress
+            mastery_adjustment = (stage_mastery - 0.5) * 0.1
+            
+            # Calculate final confidence
+            final_confidence = base_confidence + velocity_adjustment + stability_adjustment + mastery_adjustment
+            
+            # Ensure confidence is within bounds
+            final_confidence = np.clip(final_confidence, 0.0, 1.0)
+            
+            # Log confidence calculation if debug enabled
+            if self.debug:
+                self.logger.debug(f"Confidence calculation: base={base_confidence:.3f}, "
+                                f"velocity_adj={velocity_adjustment:.3f}, "
+                                f"stability_adj={stability_adjustment:.3f}, "
+                                f"mastery_adj={mastery_adjustment:.3f}, "
+                                f"final={final_confidence:.3f}")
+            
+            return float(final_confidence)
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "confidence_calculation")
+            self.logger.error(f"Confidence calculation failed: {error_context}")
+            return 0.5  # Default neutral confidence
+
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """
+        Propose curriculum-based learning action
+        
+        Args:
+            **inputs: Context inputs from the environment
+            
+        Returns:
+            Dictionary containing proposed curriculum action
+        """
+        try:
+            # Get current curriculum state
+            current_stage = self.curriculum_stages[self.current_stage]
+            constraints = self._get_current_constraints()
+            competency_assessment = self._get_competency_assessment()
+            
+            # Determine primary learning focus
+            weakest_competency = min(competency_assessment.items(), 
+                                   key=lambda x: x[1]['score'])
+            
+            # Generate learning recommendations
+            learning_recommendations = self._generate_intelligent_learning_recommendations({
+                'competency_scores': {k: v['score'] for k, v in competency_assessment.items()},
+                'learning_velocity': self.learning_velocity,
+                'overall_competency': self._calculate_weighted_competency()
+            })
+            
+            # Create curriculum action
+            curriculum_action = {
+                'action_type': 'curriculum_guidance',
+                'current_stage': current_stage['name'],
+                'stage_difficulty': current_stage['difficulty'],
+                'learning_constraints': constraints,
+                'focus_area': weakest_competency[0],
+                'focus_score': weakest_competency[1]['score'],
+                'recommendations': learning_recommendations[:3],  # Top 3 recommendations
+                'stage_progress': self.stage_progress,
+                'mastery_level': self.learning_stats['mastery_level'],
+                'learning_velocity': self.learning_velocity,
+                'competency_balance': self._calculate_competency_balance(),
+                'performance_stability': self._assess_performance_stability(),
+                'suggested_actions': []
+            }
+            
+            # Add specific suggested actions based on current state
+            if self.stage_progress < 0.3:
+                curriculum_action['suggested_actions'].append({
+                    'type': 'foundation_focus',
+                    'description': f'Focus on {current_stage["name"]} stage fundamentals',
+                    'priority': 'high'
+                })
+            
+            if weakest_competency[1]['score'] < 0.5:
+                curriculum_action['suggested_actions'].append({
+                    'type': 'competency_development',
+                    'description': f'Prioritize {weakest_competency[0].replace("_", " ")} improvement',
+                    'target_area': weakest_competency[0],
+                    'priority': 'high'
+                })
+            
+            if self.learning_velocity < 0:
+                curriculum_action['suggested_actions'].append({
+                    'type': 'performance_review',
+                    'description': 'Review recent performance decline and adjust strategy',
+                    'priority': 'medium'
+                })
+            
+            # Add progression guidance
+            if self.stage_progress > 0.8:
+                curriculum_action['suggested_actions'].append({
+                    'type': 'advancement_preparation',
+                    'description': 'Prepare for advancement to next curriculum stage',
+                    'priority': 'low'
+                })
+            
+            # Generate action thesis
+            action_thesis = self._generate_action_thesis(curriculum_action)
+            curriculum_action['thesis'] = action_thesis
+            
+            return curriculum_action
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "action_proposal")
+            self.logger.error(f"Action proposal failed: {error_context}")
+            return {
+                'action_type': 'curriculum_error',
+                'error': str(error_context),
+                'fallback_action': 'continue_current_stage'
+            }
+
+    def _generate_action_thesis(self, action: Dict[str, Any]) -> str:
+        """Generate thesis explaining the proposed curriculum action"""
+        try:
+            thesis_parts = []
+            
+            # Current state summary
+            thesis_parts.append(f"CURRICULUM ACTION: {action['current_stage']} stage guidance")
+            thesis_parts.append(f"FOCUS AREA: {action['focus_area'].replace('_', ' ').title()}")
+            thesis_parts.append(f"STAGE PROGRESS: {action['stage_progress']:.1%}")
+            
+            # Learning state assessment
+            if action['learning_velocity'] > 0.05:
+                thesis_parts.append("MOMENTUM: Strong learning progress detected")
+            elif action['learning_velocity'] < -0.05:
+                thesis_parts.append("CONCERN: Learning velocity declining, intervention needed")
+            else:
+                thesis_parts.append("STATUS: Stable learning progression")
+            
+            # Priority actions
+            high_priority_actions = [a for a in action['suggested_actions'] if a.get('priority') == 'high']
+            if high_priority_actions:
+                thesis_parts.append(f"PRIORITY: {len(high_priority_actions)} high-priority actions identified")
+            
+            # Competency guidance
+            if action['focus_score'] < 0.5:
+                thesis_parts.append(f"DEVELOPMENT NEEDED: {action['focus_area'].replace('_', ' ').title()} requires immediate attention")
+            
+            return " | ".join(thesis_parts)
+            
+        except Exception as e:
+            return f"Action thesis generation failed: {str(e)}"
 
     async def _get_comprehensive_learning_data(self) -> Dict[str, Any]:
         """Get comprehensive learning data using modern SmartInfoBus patterns"""
@@ -505,7 +681,7 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             score_change = updated_score - current_score
             if abs(score_change) > 0.05:
                 self.logger.info(format_operator_message(
-                    icon="📊",
+                    icon="[STATS]",
                     message=f"{area.replace('_', ' ').title()} competency updated",
                     old_score=f"{current_score:.1%}",
                     new_score=f"{updated_score:.1%}",
@@ -621,10 +797,10 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             
             # Log episode with enhanced details
             self.logger.info(format_operator_message(
-                icon="📈",
+                icon="[CHART]",
                 message="Episode recorded with curriculum analysis",
                 stage=self.curriculum_stages[self.current_stage]['name'],
-                success="✅" if episode_success else "❌",
+                success="[OK]" if episode_success else "[FAIL]",
                 pnl=f"€{enriched_summary.get('pnl', 0):.2f}",
                 competency=f"{self._calculate_weighted_competency():.1%}",
                 velocity=f"{self.learning_velocity:+.2%}"
@@ -753,7 +929,7 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             }, module='CurriculumPlannerPlus', thesis=advancement_thesis)
             
             self.logger.info(format_operator_message(
-                icon="🎯",
+                icon="[TARGET]",
                 message="Curriculum stage advanced with comprehensive analysis",
                 from_stage=old_stage,
                 to_stage=new_stage,
@@ -801,7 +977,7 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             thesis_parts.append("COMPETENCY ANALYSIS:")
             for area, score in competency_scores.items():
                 target = self.competency_areas[area]['target']
-                status = "✅ MASTERED" if score >= target else "🔄 DEVELOPING" if score >= target * 0.7 else "❌ NEEDS FOCUS"
+                status = "[OK] MASTERED" if score >= target else "[RELOAD] DEVELOPING" if score >= target * 0.7 else "[FAIL] NEEDS FOCUS"
                 gap = target - score
                 thesis_parts.append(
                     f"  • {area.replace('_', ' ').title()}: {score:.1%} "
@@ -1268,7 +1444,7 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
             self.logger.error(format_operator_message(
-                icon="🚨",
+                icon="[ALERT]",
                 message="Curriculum Planner disabled due to repeated errors",
                 error_count=self.error_count,
                 threshold=self.circuit_breaker_threshold
@@ -1375,36 +1551,36 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         for area, data in self.competency_areas.items():
             score = data['score']
             target = data['target']
-            status = "✅" if score >= target else "🔄" if score >= target * 0.8 else "❌"
+            status = "[OK]" if score >= target else "[RELOAD]" if score >= target * 0.8 else "[FAIL]"
             competency_summary += f"  • {area.replace('_', ' ').title()}: {score:.1%} (target: {target:.1%}) {status}\n"
         
         # Performance trend analysis
         trend = self._assess_mastery_trend()
         trend_icons = {
-            'rapidly_improving': '📈🚀',
-            'improving': '📈',
+            'rapidly_improving': '[CHART][ROCKET]',
+            'improving': '[CHART]',
             'stable': '➡️',
             'declining': '📉',
-            'rapidly_declining': '📉💥',
-            'insufficient_data': '📊'
+            'rapidly_declining': '📉[CRASH]',
+            'insufficient_data': '[STATS]'
         }
-        trend_display = f"{trend_icons.get(trend, '📊')} {trend.replace('_', ' ').title()}"
+        trend_display = f"{trend_icons.get(trend, '[STATS]')} {trend.replace('_', ' ').title()}"
         
         # Time to next stage
         time_estimate = self._estimate_time_to_next_stage()
         if time_estimate['status'] == 'max_stage_reached':
-            next_stage_info = "🏆 Maximum stage achieved!"
+            next_stage_info = "[TROPHY] Maximum stage achieved!"
         elif time_estimate['status'] == 'no_progress':
-            next_stage_info = "⚠️ No progress detected"
+            next_stage_info = "[WARN] No progress detected"
         else:
-            next_stage_info = f"🎯 ~{time_estimate['episodes_estimated']} episodes to next stage"
+            next_stage_info = f"[TARGET] ~{time_estimate['episodes_estimated']} episodes to next stage"
         
         return f"""
 📚 CURRICULUM PLANNER COMPREHENSIVE REPORT
 ═══════════════════════════════════════════════════════════════
-🎯 Current Stage: {current_stage['name']} (Level {self.current_stage + 1}/{len(self.curriculum_stages)})
-📊 Stage Progress: {self.stage_progress:.1%} | Overall Mastery: {overall_competency:.1%}
-📈 Learning Velocity: {self.learning_velocity:+.1%} | Trend: {trend_display}
+[TARGET] Current Stage: {current_stage['name']} (Level {self.current_stage + 1}/{len(self.curriculum_stages)})
+[STATS] Stage Progress: {self.stage_progress:.1%} | Overall Mastery: {overall_competency:.1%}
+[CHART] Learning Velocity: {self.learning_velocity:+.1%} | Trend: {trend_display}
 
 ⚙️ Current Learning Constraints:
 • Max Position Size: {current_stage['constraints']['max_position_size']}x
@@ -1416,7 +1592,7 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
 📋 Competency Assessment:
 {competency_summary}
 
-📊 Learning Analytics:
+[STATS] Learning Analytics:
 • Total Episodes: {self.learning_stats['total_episodes']}
 • Success Rate: {(self.learning_stats['successful_episodes'] / max(1, self.learning_stats['total_episodes'])):.1%}
 • Adaptation Events: {self.learning_stats['adaptation_events']}
@@ -1424,13 +1600,13 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
 • Performance Stability: {self._assess_performance_stability():.1%}
 • Competency Balance: {self._calculate_competency_balance():.1%}
 
-🎯 Progression Status:
+[TARGET] Progression Status:
 {next_stage_info}
 
-🎯 Learning Recommendations:
+[TARGET] Learning Recommendations:
 {chr(10).join([f'  • {rec}' for rec in self._generate_intelligent_learning_recommendations({'competency_scores': {k: v['score'] for k, v in self.competency_areas.items()}, 'learning_velocity': self.learning_velocity})])}
 
-🔍 Learning Risk Assessment:
+[SEARCH] Learning Risk Assessment:
 {self._assess_learning_risk()}
         """
 
@@ -1512,7 +1688,7 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 self.curriculum_stages = state["curriculum_stages"]
             
             self.logger.info(format_operator_message(
-                icon="🔄",
+                icon="[RELOAD]",
                 message="Curriculum Planner state restored",
                 stage=self.curriculum_stages[self.current_stage]['name'],
                 episodes=len(self.episode_history),

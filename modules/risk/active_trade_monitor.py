@@ -39,14 +39,22 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
     
     def __init__(self, config=None, **kwargs):
         self.config = config or {}
-        super().__init__()
+        self._fully_initialized = False
+        
+        # Initialize advanced systems first
         self._initialize_advanced_systems()
+        
+        # Call parent init
+        super().__init__()
         
         # Configuration with intelligent defaults
         self.max_duration = self.config.get('max_duration', 200)
         self.warning_duration = self.config.get('warning_duration', 50)
         self.critical_duration = self.config.get('critical_duration', 150)
         self.enabled = self.config.get('enabled', True)
+        
+        # Mark as fully initialized
+        self._fully_initialized = True
         
         # Enhanced tracking systems
         self.position_durations: Dict[str, int] = {}
@@ -72,7 +80,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         self.regime_performance: Dict[str, Dict[str, Any]] = defaultdict(lambda: {'durations': [], 'closures': 0})
         
         self.logger.info(format_operator_message(
-            icon="🔍",
+            icon="[SEARCH]",
             message="Enhanced Active Trade Monitor initialized",
             max_duration=f"{self.max_duration} steps",
             warning_threshold=f"{self.warning_duration} steps",
@@ -155,6 +163,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         
         # Process each position with enhanced analytics
         for position in positions:
+            symbol = 'UNKNOWN'  # Initialize symbol to ensure it's always defined
             try:
                 symbol = position.get('symbol', position.get('instrument', 'UNKNOWN'))
                 current_symbols.add(symbol)
@@ -648,3 +657,128 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             'avg_position_duration': np.mean(list(self.position_durations.values())) if self.position_durations else 0,
             'enabled': self.enabled
         }
+
+    def _initialize(self):
+        """Initialize module-specific state (called by BaseModule.__init__)"""
+        # Check if we're fully initialized yet
+        if not getattr(self, '_fully_initialized', False):
+            return
+            
+        self.logger.info("[RELOAD] ActiveTradeMonitor async initialization")
+        
+        # Set initial data in SmartInfoBus
+        self.smart_bus.set(
+            'trade_monitor_status',
+            {
+                'initialized': True,
+                'enabled': self.enabled,
+                'max_duration': self.max_duration,
+                'warning_duration': self.warning_duration,
+                'positions_tracked': 0
+            },
+            module='ActiveTradeMonitor',
+            thesis="Trade monitor initialization status for system awareness"
+        )
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in position duration risk assessment"""
+        try:
+            base_confidence = 0.7  # High confidence in duration monitoring
+            
+            # Adjust confidence based on position tracking accuracy
+            if len(self.position_durations) > 0:
+                # Higher confidence with more tracking data
+                tracking_confidence = min(0.3, len(self.position_durations) / 10 * 0.3)
+                base_confidence += tracking_confidence
+            
+            # Confidence based on risk assessment quality
+            if self.risk_score < 0.3:
+                base_confidence += 0.2  # High confidence in low-risk scenarios
+            elif self.risk_score > 0.7:
+                base_confidence += 0.1  # Moderate confidence in high-risk scenarios
+            
+            # Adjust based on severity level
+            severity_adjustments = {
+                'normal': 0.1,
+                'warning': 0.0,
+                'critical': -0.1,
+                'emergency': -0.2
+            }
+            base_confidence += severity_adjustments.get(self.severity_level, 0.0)
+            
+            return float(np.clip(base_confidence, 0.1, 1.0))
+            
+        except Exception as e:
+            self.logger.warning(f"Calculate confidence failed: {e}")
+            return 0.5
+
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose risk management actions based on position duration analysis"""
+        try:
+            # Get current position data
+            positions = inputs.get('positions', {})
+            if not positions:
+                positions = self.smart_bus.get('positions', 'ActiveTradeMonitor') or {}
+            
+            # Analyze current position durations
+            duration_risks = {}
+            recommendations = []
+            
+            for position_id, position in positions.items():
+                if position_id in self.position_durations:
+                    duration = self.position_durations[position_id]
+                    
+                    # Calculate risk level
+                    if duration > self.critical_duration:
+                        risk_level = 'critical'
+                        recommendations.append({
+                            'position_id': position_id,
+                            'action': 'close_position',
+                            'reason': f'Duration {duration} exceeds critical threshold {self.critical_duration}',
+                            'urgency': 'high'
+                        })
+                    elif duration > self.warning_duration:
+                        risk_level = 'warning'
+                        recommendations.append({
+                            'position_id': position_id,
+                            'action': 'review_position',
+                            'reason': f'Duration {duration} exceeds warning threshold {self.warning_duration}',
+                            'urgency': 'medium'
+                        })
+                    else:
+                        risk_level = 'normal'
+                    
+                    duration_risks[position_id] = {
+                        'duration': duration,
+                        'risk_level': risk_level,
+                        'threshold_ratio': duration / self.max_duration
+                    }
+            
+            # Overall risk assessment
+            overall_action = 'monitor'
+            if self.severity_level == 'emergency':
+                overall_action = 'reduce_exposure'
+            elif self.severity_level == 'critical':
+                overall_action = 'close_risky_positions'
+            elif self.severity_level == 'warning':
+                overall_action = 'increase_monitoring'
+            
+            return {
+                'action_type': 'duration_risk_management',
+                'overall_action': overall_action,
+                'severity_level': self.severity_level,
+                'risk_score': self.risk_score,
+                'position_risks': duration_risks,
+                'recommendations': recommendations,
+                'confidence': await self.calculate_confidence({}, **inputs),
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Propose action failed: {e}")
+            return {
+                'action_type': 'duration_risk_management',
+                'overall_action': 'monitor',
+                'error': str(e),
+                'confidence': 0.1
+            }

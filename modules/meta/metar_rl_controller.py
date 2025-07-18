@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/meta/meta_rl_controller.py
-# 🚀 PRODUCTION-READY Meta RL Controller System
+# [ROCKET] PRODUCTION-READY Meta RL Controller System
 # Enhanced with SmartInfoBus integration & intelligent automation
 # ─────────────────────────────────────────────────────────────
 
@@ -158,7 +158,10 @@ class AgentPerformanceTracker:
     name="MetaRLController",
     version="3.0.0",
     category="meta",
-    provides=["controller_status", "agent_performance", "training_metrics", "automation_status"],
+    provides=[
+        "controller_status", "agent_performance", "training_metrics", "automation_status",
+        "trading_signals", "trading_signal", "meta_signals", "agent_decisions"
+    ],
     requires=["trades", "actions", "market_data", "training_data"],
     description="Advanced meta RL controller with intelligent automation and agent management",
     thesis_required=True,
@@ -177,10 +180,11 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
                  genome: Optional[Dict[str, Any]] = None,
                  **kwargs):
         
-        self.config = config or ControllerConfig()
-        super().__init__()
+        # Store config first (preservation pattern)
+        self.controller_config = config or ControllerConfig()
+        self.config = self.controller_config  # Set config early for init methods
         
-        # Initialize advanced systems
+        # Initialize advanced systems before super().__init__()
         self._initialize_advanced_systems()
         
         # Initialize genome parameters
@@ -189,9 +193,17 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         # Initialize controller state
         self._initialize_controller_state()
         
+        # Start monitoring after all initialization is complete
+        self._start_monitoring()
+        
+        super().__init__()
+        
+        # Restore our config after BaseModule initialization (prevents dict conversion)
+        self.config = self.controller_config
+        
         self.logger.info(
             format_operator_message(
-                "🎯", "META_RL_CONTROLLER_INITIALIZED",
+                "[TARGET]", "META_RL_CONTROLLER_INITIALIZED",
                 details=f"Obs size: {self.config.obs_size}, Method: {self.config.method}",
                 result="Meta RL automation ready",
                 context="meta_rl_control"
@@ -225,7 +237,6 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         # Health monitoring
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        self._start_monitoring()
 
     def _initialize_genome_parameters(self, genome: Optional[Dict[str, Any]]):
         """Initialize genome-based parameters"""
@@ -313,7 +324,6 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
             
             # Try to initialize PPO-Lag agent  
             try:
-                from modules.meta.ppo_lag_agent import PPOLagAgent
                 self._agents["ppo-lag"] = PPOLagAgent()
             except Exception as e:
                 self.logger.warning(f"Failed to initialize PPOLagAgent: {e}")
@@ -330,7 +340,7 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
             
             self.logger.info(
                 format_operator_message(
-                    "🤖", "AGENTS_INITIALIZED",
+                    "[BOT]", "AGENTS_INITIALIZED",
                     agents=list(self._agents.keys()),
                     active_agent=self.active_agent_name,
                     context="agent_management"
@@ -356,7 +366,7 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
 
-    async def _initialize(self):
+    def _initialize(self):
         """Initialize module"""
         try:
             # Set initial controller status in SmartInfoBus
@@ -374,10 +384,8 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
                 thesis="Initial meta RL controller status"
             )
             
-            return True
         except Exception as e:
             self.logger.error(f"Initialization failed: {e}")
-            return False
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process meta RL controller operations"""
@@ -997,7 +1005,7 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
             
             self.logger.info(
                 format_operator_message(
-                    "🔄", "MODE_TRANSITION",
+                    "[RELOAD]", "MODE_TRANSITION",
                     from_mode=old_mode.value,
                     to_mode=target_mode.value,
                     reason=reason,
@@ -1115,7 +1123,7 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         
         self.logger.info(
             format_operator_message(
-                "🔄", "AGENT_SWITCH",
+                "[RELOAD]", "AGENT_SWITCH",
                 from_agent=old_agent,
                 to_agent=new_agent_name,
                 reason=reason,
@@ -1327,7 +1335,7 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         
         self.logger.error(
             format_operator_message(
-                "💥", "CONTROLLER_OPERATION_ERROR",
+                "[CRASH]", "CONTROLLER_OPERATION_ERROR",
                 error=str(error),
                 details=explanation,
                 processing_time_ms=processing_time,
@@ -1353,6 +1361,10 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
     def _update_controller_health(self):
         """Update controller health metrics"""
         try:
+            # Defensive check for initialization race condition
+            if not hasattr(self, 'current_mode') or not hasattr(self, 'live_session_pnl'):
+                return
+                
             # Check performance metrics
             if self.current_mode == ControllerMode.LIVE_TRADING:
                 if self.live_session_pnl < self.config.retraining_trigger_loss:
@@ -1373,12 +1385,16 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
     def _analyze_controller_performance(self):
         """Analyze controller performance metrics"""
         try:
+            # Defensive check for initialization race condition
+            if not hasattr(self, 'automation_metrics') or not hasattr(self, 'decision_history'):
+                return
+                
             # Check automation accuracy
             automation_accuracy = self.automation_metrics['automation_accuracy']
             if automation_accuracy > 0.8:
                 self.logger.info(
                     format_operator_message(
-                        "🎯", "HIGH_AUTOMATION_ACCURACY",
+                        "[TARGET]", "HIGH_AUTOMATION_ACCURACY",
                         accuracy=f"{automation_accuracy:.1%}",
                         total_decisions=len(self.decision_history),
                         context="automation_performance"
@@ -1405,25 +1421,39 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
             'MetaRLController', 'controller_cycle', 0, False
         )
 
-    def calculate_confidence(self, obs: Any = None, **kwargs) -> float:
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
         """Calculate confidence in controller recommendations"""
-        base_confidence = 0.5
-        
-        # Mode-based confidence
-        if self.current_mode == ControllerMode.LIVE_TRADING:
-            if self.live_session_pnl > 0:
-                base_confidence += 0.3
-        elif self.current_mode == ControllerMode.EMERGENCY_STOP:
-            base_confidence = 0.1
-        
-        # Agent performance confidence
-        agent_metrics = self.performance_tracker_agent.agent_metrics[self.active_agent_name]
-        if agent_metrics['episodes'] > 10:
-            convergence_conf = agent_metrics['convergence_score'] * 0.2
-            stability_conf = agent_metrics['stability_score'] * 0.2
-            base_confidence += convergence_conf + stability_conf
-        
-        return float(np.clip(base_confidence, 0.1, 1.0))
+        try:
+            base_confidence = 0.5
+            
+            # Mode-based confidence
+            if self.current_mode == ControllerMode.LIVE_TRADING:
+                if self.live_session_pnl > 0:
+                    base_confidence += 0.3
+            elif self.current_mode == ControllerMode.EMERGENCY_STOP:
+                base_confidence = 0.1
+            
+            # Agent performance confidence
+            if hasattr(self, 'performance_tracker_agent') and self.performance_tracker_agent:
+                agent_metrics = self.performance_tracker_agent.agent_metrics.get(self.active_agent_name, {})
+                if agent_metrics.get('episodes', 0) > 10:
+                    convergence_conf = agent_metrics.get('convergence_score', 0.5) * 0.2
+                    stability_conf = agent_metrics.get('stability_score', 0.5) * 0.2
+                    base_confidence += convergence_conf + stability_conf
+            
+            # Action-specific confidence adjustments
+            if isinstance(action, dict):
+                action_type = action.get('action_type', 'unknown')
+                if action_type in ['agent_switch', 'mode_transition']:
+                    base_confidence += 0.1
+                elif action_type == 'emergency_stop':
+                    base_confidence = max(base_confidence, 0.8)  # High confidence in safety actions
+            
+            return float(np.clip(base_confidence, 0.1, 1.0))
+            
+        except Exception as e:
+            self.logger.error(f"Controller confidence calculation failed: {e}")
+            return 0.5
 
     def get_state(self) -> Dict[str, Any]:
         """Get module state for persistence"""
@@ -1607,13 +1637,68 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         except Exception as e:
             return np.zeros(8, dtype=np.float32)
 
-    def propose_action(self, obs: Any = None, **kwargs) -> np.ndarray:
-        """Legacy compatibility for action proposal"""
-        return np.zeros(self.genome["act_size"], dtype=np.float32)
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose controller-based action"""
+        try:
+            # Controller actions focus on agent switching and mode transitions
+            current_mode = self.current_mode.value
+            active_agent = self.active_agent_name
+            session_pnl = self.live_session_pnl
+            
+            # Propose action based on current controller state
+            if self.current_mode == ControllerMode.LIVE_TRADING:
+                if session_pnl > 100:  # Good performance
+                    action_type = "continue_trading"
+                    magnitude = 0.8
+                elif session_pnl < -50:  # Poor performance
+                    action_type = "agent_switch"
+                    magnitude = 0.7
+                else:
+                    action_type = "monitor_performance"
+                    magnitude = 0.5
+            elif self.current_mode == ControllerMode.TRAINING:
+                action_type = "continue_training"
+                magnitude = 0.6
+            elif self.current_mode == ControllerMode.EMERGENCY_STOP:
+                action_type = "safety_hold"
+                magnitude = 0.9
+            else:
+                action_type = "mode_analysis"
+                magnitude = 0.4
+            
+            return {
+                'action_type': action_type,
+                'magnitude': magnitude,
+                'confidence': 0.7,
+                'reasoning': f"Controller mode: {current_mode}, agent: {active_agent}, PnL: {session_pnl:.2f}",
+                'current_mode': current_mode,
+                'active_agent': active_agent,
+                'session_pnl': session_pnl
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Controller action proposal failed: {e}")
+            return {
+                'action_type': 'no_action',
+                'confidence': 0.0,
+                'reasoning': f'Controller action proposal error: {str(e)}',
+                'error': str(e)
+            }
 
     def confidence(self, obs: Any = None, **kwargs) -> float:
         """Legacy compatibility for confidence"""
-        return self.calculate_confidence(obs, **kwargs)
+        # Since calculate_confidence is now async, return a basic confidence
+        base_confidence = 0.5
+        
+        # Mode-based confidence
+        if hasattr(self, 'current_mode'):
+            if self.current_mode == ControllerMode.LIVE_TRADING:
+                if hasattr(self, 'live_session_pnl') and self.live_session_pnl > 0:
+                    base_confidence += 0.3
+            elif hasattr(self, 'current_mode') and self.current_mode == ControllerMode.EMERGENCY_STOP:
+                base_confidence = 0.1
+        
+        return float(np.clip(base_confidence, 0.1, 1.0))
 
     def set_mode(self, method: str):
         """Legacy method for agent switching"""

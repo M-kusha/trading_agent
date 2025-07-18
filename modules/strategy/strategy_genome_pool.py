@@ -256,9 +256,12 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             }
         }, module='StrategyGenomePool', thesis=thesis)
 
-    async def process(self) -> Dict[str, Any]:
+    async def process(self, **inputs) -> Dict[str, Any]:
         """
         Modern async processing with comprehensive genome evolution analysis
+        
+        Args:
+            **inputs: Variable keyword arguments for processing
         
         Returns:
             Dict containing genome weights, evolution analysis, and recommendations
@@ -726,7 +729,7 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             
             if overall_health == 'poor':
                 self.logger.warning(format_operator_message(
-                    icon="🏥",
+                    icon="[HEALTH]",
                     message="Population health declining",
                     health=overall_health,
                     stagnation=self.generations_without_improvement
@@ -738,7 +741,7 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             
             if target_achievement >= 1.0:
                 self.logger.info(format_operator_message(
-                    icon="🎯",
+                    icon="[TARGET]",
                     message="Profit target achieved",
                     achievement=f"{target_achievement:.1%}",
                     best_fitness=f"€{self.best_fitness:.2f}"
@@ -787,7 +790,7 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 final_fitness = pnl * profit_bonus
                 
                 self.logger.info(format_operator_message(
-                    icon="💰",
+                    icon="[MONEY]",
                     message=f"Genome {genome_idx} achieved target",
                     raw_pnl=f"€{pnl:.2f}",
                     bonus_multiplier=f"{profit_bonus:.2f}x",
@@ -808,7 +811,7 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 self.generations_without_improvement = 0
                 
                 self.logger.info(format_operator_message(
-                    icon="🏆",
+                    icon="[TROPHY]",
                     message="New best genome found",
                     improvement=f"€{improvement:.2f}",
                     new_fitness=f"€{final_fitness:.2f}",
@@ -915,7 +918,7 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 
                 factors = selection_pressure.get('factors', {})
                 self.logger.info(format_operator_message(
-                    icon="🎯",
+                    icon="[TARGET]",
                     message="Selection strategy adapted",
                     from_strategy=adaptation_info['old_strategy'],
                     to_strategy=recommended_strategy,
@@ -1282,7 +1285,7 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             
             if overall_health != self.evolution_analytics['population_health']:
                 self.logger.info(format_operator_message(
-                    icon="🏥",
+                    icon="[HEALTH]",
                     message="Population health changed",
                     from_health=self.evolution_analytics['population_health'],
                     to_health=overall_health,
@@ -1562,7 +1565,7 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
             self.logger.error(format_operator_message(
-                icon="🚨",
+                icon="[ALERT]",
                 message="Strategy Genome Pool disabled due to repeated errors",
                 error_count=self.error_count,
                 threshold=self.circuit_breaker_threshold
@@ -1699,7 +1702,7 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             fit_val = self.fitness[idx]
             genome_str = ", ".join(f"{x:.3f}" for x in selected_genome)
             self.logger.info(format_operator_message(
-                icon="🎯",
+                icon="[TARGET]",
                 message="Genome selected",
                 index=idx,
                 fitness=f"€{fit_val:.2f}",
@@ -1836,11 +1839,11 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             }
             
             # Evolution trend
-            evolution_trend = "📊 Insufficient data"
+            evolution_trend = "[STATS] Insufficient data"
             if len(self.evolution_analytics['fitness_history']) >= 3:
                 recent_fitness = [h['max'] for h in list(self.evolution_analytics['fitness_history'])[-3:]]
                 if recent_fitness[-1] > recent_fitness[0] + 10:
-                    evolution_trend = "📈 Improving"
+                    evolution_trend = "[CHART] Improving"
                 elif recent_fitness[-1] < recent_fitness[0] - 10:
                     evolution_trend = "📉 Declining"
                 else:
@@ -1857,14 +1860,14 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             return f"""
 🧬 STRATEGY GENOME POOL COMPREHENSIVE REPORT
 ═══════════════════════════════════════════════════════════════
-📊 Population Overview:
+[STATS] Population Overview:
 • Generation: {self.epoch}
 • Population Size: {self.population_size}
 • Genome Size: {self.genome_size}
 • Selection Strategy: {self.current_selection_strategy.title()}
 • Population Health: {self.evolution_analytics['population_health'].title()}
 
-🏆 Performance Metrics:
+[TROPHY] Performance Metrics:
 • Best Fitness: €{self.best_fitness:.2f}
 • Target Progress: {(self.best_fitness/self.profit_target)*100:.1f}%
 • Population Mean: €{fitness_stats['mean']:.2f}
@@ -1879,7 +1882,7 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 • Mutation Success Rate: {self.evolution_analytics['mutation_success_rate']:.1%}
 • Crossover Success Rate: {self.evolution_analytics['crossover_success_rate']:.1%}
 
-🎯 Top Performing Genomes:
+[TARGET] Top Performing Genomes:
 {top_genomes if top_genomes else '  📭 No fitness data available yet'}
 
 ⚙️ Technical Details:
@@ -1894,7 +1897,7 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 • Tournament Size: {self.tournament_k}
 • Profit Target: €{self.profit_target}
 
-🔧 System Status:
+[TOOL] System Status:
 • Module Status: {'DISABLED' if self.is_disabled else 'OPERATIONAL'}
 • Circuit Breaker: {'OPEN' if self.error_count >= self.circuit_breaker_threshold else 'CLOSED'}
 • Intelligence Level: Advanced Adaptive Evolution
@@ -2004,7 +2007,7 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             self.genome_bounds.update(state.get("genome_bounds", {}))
             
             self.logger.info(format_operator_message(
-                icon="🔄",
+                icon="[RELOAD]",
                 message="Strategy Genome Pool state restored",
                 generation=self.epoch,
                 best_fitness=f"€{self.best_fitness:.2f}",
@@ -2117,7 +2120,7 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 final_fitness = pnl * profit_bonus
                 
                 self.logger.info(format_operator_message(
-                    icon="💰",
+                    icon="[MONEY]",
                     message=f"Genome {genome_idx} achieved target",
                     raw_pnl=f"€{pnl:.2f}",
                     bonus_multiplier=f"{profit_bonus:.2f}x",
@@ -2136,7 +2139,7 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 self.generations_without_improvement = 0
                 
                 self.logger.info(format_operator_message(
-                    icon="🏆",
+                    icon="[TROPHY]",
                     message="New best genome found",
                     improvement=f"€{improvement:.2f}",
                     new_fitness=f"€{final_fitness:.2f}",
@@ -2347,7 +2350,7 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             self.current_selection_strategy = 'adaptive'
             
             self.logger.info(format_operator_message(
-                icon="🔄",
+                icon="[RELOAD]",
                 message="Strategy Genome Pool reset completed",
                 population_size=self.population_size,
                 generation=self.epoch
@@ -2487,3 +2490,192 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         return (f"StrategyGenomePool(generation={self.epoch}, population_size={self.population_size}, "
                 f"best_fitness={self.best_fitness:.2f}, health='{self.evolution_analytics['population_health']}', "
                 f"stagnant_generations={self.generations_without_improvement})")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # REQUIRED ABSTRACT METHODS FROM BASE MODULE
+    # ═══════════════════════════════════════════════════════════════════
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """
+        Calculate confidence in genetic algorithm decisions and evolution performance
+        
+        Args:
+            action: The action being evaluated
+            **inputs: Additional inputs for confidence calculation
+            
+        Returns:
+            Confidence score between 0.0 and 1.0
+        """
+        try:
+            # Base confidence from population health
+            base_confidence = 0.5
+            
+            # Population diversity factor
+            diversity_score = self._calculate_population_diversity()
+            diversity_factor = min(1.0, diversity_score / 2.0)  # Normalize diversity
+            
+            # Best genome performance factor
+            if self.best_fitness > 0:
+                performance_factor = min(1.0, max(0.1, 1.0 + self.best_fitness / 500))  # Scale based on profit
+            else:
+                performance_factor = max(0.1, 1.0 + self.best_fitness / 500)  # Penalty for losses
+            
+            # Population health factor
+            population_health = self.evolution_analytics.get('population_health', 'moderate')
+            health_factor = {
+                'healthy': 1.0,
+                'moderate': 0.7,
+                'poor': 0.4,
+                'stagnant': 0.3
+            }.get(population_health, 0.5)
+            
+            # Stagnation penalty
+            stagnation_penalty = max(0.3, 1.0 - (self.generations_without_improvement / 20))
+            
+            # Combine factors
+            final_confidence = base_confidence * diversity_factor * performance_factor * health_factor * stagnation_penalty
+            
+            return float(max(0.1, min(1.0, final_confidence)))
+            
+        except Exception as e:
+            self.logger.warning(f"Confidence calculation failed: {e}")
+            return 0.5
+
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """
+        Propose optimal actions based on current genetic algorithm state
+        
+        Args:
+            **inputs: Context inputs for action proposal
+            
+        Returns:
+            Dictionary containing proposed actions and evolution recommendations
+        """
+        try:
+            # Get current market data
+            market_data = await self._get_comprehensive_market_data()
+            
+            # Analyze current evolution state
+            evolution_analysis = await self._analyze_genome_evolution_comprehensive(market_data)
+            
+            # Get current best genome parameters
+            best_genome_params = {
+                'sl_base': float(self.best_genome[0]),
+                'tp_base': float(self.best_genome[1]),
+                'vol_scale': float(self.best_genome[2]),
+                'regime_adapt': float(self.best_genome[3])
+            }
+            
+            # Determine action type based on evolution state
+            population_health = self.evolution_analytics.get('population_health', 'moderate')
+            
+            if population_health == 'poor' or self.generations_without_improvement > 15:
+                action_type = 'exploration'
+                strategy_recommendation = 'increase_diversity'
+            elif self.best_fitness > 100:
+                action_type = 'exploitation'
+                strategy_recommendation = 'exploit_best_genome'
+            else:
+                action_type = 'balanced'
+                strategy_recommendation = 'balanced_evolution'
+            
+            # Calculate position sizing based on genome confidence
+            genome_confidence = await self.calculate_confidence(action={}, **inputs)
+            base_size = 1.0
+            confidence_multiplier = genome_confidence
+            
+            # Risk adjustment based on best genome performance
+            if self.best_fitness < -50:
+                risk_adjustment = 0.5  # Conservative when losing
+            elif self.best_fitness > 100:
+                risk_adjustment = 1.3  # More aggressive when winning
+            else:
+                risk_adjustment = 1.0
+            
+            suggested_size = base_size * confidence_multiplier * risk_adjustment
+            
+            # Generate evolution-specific recommendations
+            evolution_recommendations = []
+            
+            if self.generations_without_improvement > 10:
+                evolution_recommendations.append({
+                    'type': 'diversity_injection',
+                    'reason': 'Long stagnation period detected',
+                    'action': 'Increase mutation rate and inject diverse genomes'
+                })
+            
+            if self._calculate_population_diversity() < 0.5:
+                evolution_recommendations.append({
+                    'type': 'diversity_boost',
+                    'reason': 'Low population diversity',
+                    'action': 'Apply diversity-preserving selection'
+                })
+            
+            if self.best_fitness > self.profit_target:
+                evolution_recommendations.append({
+                    'type': 'exploitation',
+                    'reason': 'Profit target achieved',
+                    'action': 'Focus on best genome parameters'
+                })
+            
+            # Create comprehensive action proposal
+            proposed_action = {
+                'action_type': action_type,
+                'strategy_recommendation': strategy_recommendation,
+                'best_genome_parameters': best_genome_params,
+                'genome_confidence': genome_confidence,
+                'evolution_state': {
+                    'generation': self.epoch,
+                    'population_health': population_health,
+                    'best_fitness': float(self.best_fitness),
+                    'stagnant_generations': self.generations_without_improvement,
+                    'population_diversity': self._calculate_population_diversity()
+                },
+                'position_sizing': {
+                    'base_size': base_size,
+                    'confidence_multiplier': confidence_multiplier,
+                    'risk_adjustment': risk_adjustment,
+                    'final_size': suggested_size
+                },
+                'risk_management': {
+                    'recommended_sl': best_genome_params['sl_base'],
+                    'recommended_tp': best_genome_params['tp_base'],
+                    'volatility_scaling': best_genome_params['vol_scale'],
+                    'regime_adaptation': best_genome_params['regime_adapt'],
+                    'risk_approach': 'conservative' if self.best_fitness < 0 else 'balanced'
+                },
+                'evolution_recommendations': evolution_recommendations,
+                'market_adaptation': {
+                    'current_regime': market_data.get('market_regime', 'unknown'),
+                    'evolution_pressure': evolution_analysis.get('evolution_context', {}).get('evolution_pressure', 0.5),
+                    'market_stress': evolution_analysis.get('evolution_context', {}).get('market_stress_level', 'medium')
+                },
+                'thesis': f"Generation {self.epoch}: Best genome achieving €{self.best_fitness:.2f} fitness. Strategy: {strategy_recommendation} with {len(evolution_recommendations)} evolution adjustments.",
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+            
+            return proposed_action
+            
+        except Exception as e:
+            self.logger.error(f"Action proposal failed: {e}")
+            return {
+                'action_type': 'conservative',
+                'strategy_recommendation': 'safe_fallback',
+                'best_genome_parameters': {
+                    'sl_base': 1.0, 'tp_base': 1.5, 'vol_scale': 1.0, 'regime_adapt': 0.3
+                },
+                'genome_confidence': 0.5,
+                'evolution_state': {
+                    'generation': self.epoch,
+                    'population_health': 'unknown',
+                    'best_fitness': float(self.best_fitness),
+                    'stagnant_generations': self.generations_without_improvement
+                },
+                'position_sizing': {'final_size': 0.5},
+                'risk_management': {'risk_approach': 'conservative'},
+                'evolution_recommendations': [],
+                'market_adaptation': {'current_regime': 'unknown'},
+                'thesis': 'Evolution system error, using conservative genome parameters',
+                'error': str(e),
+                'timestamp': datetime.datetime.now().isoformat()
+            }

@@ -59,6 +59,7 @@ from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
 from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.monitoring.health_monitor import HealthMonitor
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 # Conditional import to handle potential circular dependencies
@@ -202,6 +203,7 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
         self.english_explainer = EnglishExplainer()
         self.system_utilities = SystemUtilities()
         self.performance_tracker = PerformanceTracker()
+        self.health_monitor = HealthMonitor()
 
     def _reset_clustering_models(self) -> None:
         """Reset clustering models and state with enhanced initialization"""
@@ -308,9 +310,12 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             }
         }, module='PlaybookClusterer', thesis=thesis)
 
-    async def process(self) -> Dict[str, Any]:
+    async def process(self, **inputs) -> Dict[str, Any]:
         """
         Modern async processing with comprehensive clustering analysis
+        
+        Args:
+            **inputs: Input parameters from the base module system
         
         Returns:
             Dict containing cluster weights, analysis, and recommendations
@@ -729,6 +734,9 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             # Improved iterative clustering with momentum
             prev_inertia = float('inf')
             inertia_history = []
+            current_inertia = 0.0  # Initialize current_inertia
+            center_movement = 0.0  # Initialize center_movement
+            assignments = np.zeros(len(X), dtype=int)  # Initialize assignments
             
             for iteration in range(50):  # Increased max iterations
                 # Assign points to closest centers
@@ -2579,35 +2587,37 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                 adaptive_clustering = other.adaptive_clustering
             
                             # Create offspring with inherited configuration
-                try:
-                    # Create new instance using the module's configuration pattern
-                    offspring_config = {
-                        'n_clusters': n_clusters,
-                        'pca_dim': pca_dim,
-                        'debug': debug,
-                        'bootstrap_trades': bootstrap_trades,
-                        'exploration_bonus': exploration_bonus,
-                        'adaptive_clustering': adaptive_clustering
-                    }
-                    
-                    offspring = PlaybookClusterer()
-                    offspring._initialize()
-                    
-                    # Set inherited parameters using getattr/setattr for safety
-                    setattr(offspring, 'n_clusters', n_clusters)
-                    setattr(offspring, 'pca_dim', pca_dim)
-                    setattr(offspring, 'debug', debug)
-                    setattr(offspring, 'bootstrap_trades', bootstrap_trades)
-                    setattr(offspring, 'exploration_bonus', exploration_bonus)
-                    setattr(offspring, 'adaptive_clustering', adaptive_clustering)
-                    setattr(offspring, '_min_data_for_clustering', max(n_clusters, 3))
-                    
-                    # Reset models with new parameters
-                    offspring._reset_clustering_models()  # type: ignore
-                    
-                except Exception:
-                    # Fallback: return a copy of self if offspring creation fails
-                    offspring = copy.deepcopy(self)
+            try:
+                # Create new instance using the module's configuration pattern
+                offspring_config = {
+                    'n_clusters': n_clusters,
+                    'pca_dim': pca_dim,
+                    'debug': debug,
+                    'bootstrap_trades': bootstrap_trades,
+                    'exploration_bonus': exploration_bonus,
+                    'adaptive_clustering': adaptive_clustering
+                }
+                
+                offspring = PlaybookClusterer()
+                offspring._initialize()
+                
+                # Set inherited parameters using getattr/setattr for safety
+                setattr(offspring, 'n_clusters', n_clusters)
+                setattr(offspring, 'pca_dim', pca_dim)
+                setattr(offspring, 'debug', debug)
+                setattr(offspring, 'bootstrap_trades', bootstrap_trades)
+                setattr(offspring, 'exploration_bonus', exploration_bonus)
+                setattr(offspring, 'adaptive_clustering', adaptive_clustering)
+                setattr(offspring, '_min_data_for_clustering', max(n_clusters, 3))
+                
+                # Reset models with new parameters - use hasattr for safety
+                if hasattr(offspring, '_reset_clustering_models') and callable(getattr(offspring, '_reset_clustering_models')):
+                    getattr(offspring, '_reset_clustering_models')()
+                
+            except Exception as e:
+                # Fallback: return a copy of self if offspring creation fails
+                self.logger.warning(f"Offspring creation failed, using deepcopy fallback: {e}")
+                offspring = copy.deepcopy(self)
             
             # Record crossover event
             crossover_record = {
@@ -2632,8 +2642,11 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                 }
             }
             
+            # Safely add crossover record if offspring has clustering_history
             if hasattr(offspring, 'clustering_history'):
-                offspring.clustering_history.append(crossover_record)  # type: ignore
+                clustering_history = getattr(offspring, 'clustering_history')
+                if hasattr(clustering_history, 'append'):
+                    clustering_history.append(crossover_record)
             
             return offspring
             
@@ -2911,3 +2924,193 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "reset")
             self.logger.error(f"Clustering reset failed: {error_context}")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # REQUIRED ABSTRACT METHODS FROM BASE MODULE
+    # ═══════════════════════════════════════════════════════════════════
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """
+        Calculate confidence in clustering decisions and pattern recognition
+        
+        Args:
+            action: The action being evaluated
+            **inputs: Additional inputs for confidence calculation
+            
+        Returns:
+            Confidence score between 0.0 and 1.0
+        """
+        try:
+            # Base confidence from clustering quality
+            base_confidence = 0.5
+            
+            if self._ready:
+                # Clustering quality factor
+                silhouette = self.clustering_metrics.get('silhouette_score', 0.0)
+                quality_factor = max(0.0, min(1.0, (silhouette + 1.0) / 2.0))  # Convert from [-1,1] to [0,1]
+                
+                # Cluster stability factor
+                stability_factor = self.clustering_metrics.get('cluster_stability', 0.5)
+                
+                # Data coverage factor
+                coverage_factor = self.clustering_metrics.get('data_coverage', 0.5)
+                
+                # Combine quality factors
+                base_confidence = (quality_factor * 0.4 + stability_factor * 0.3 + coverage_factor * 0.3)
+            
+            # Effectiveness adjustment based on recent cluster performance
+            effectiveness_adjustment = 1.0
+            if self.cluster_effectiveness:
+                recent_effectiveness = []
+                for cluster_data in self.cluster_effectiveness.values():
+                    if cluster_data['total_trades'] > 0:
+                        recent_effectiveness.append(cluster_data['effectiveness_score'])
+                
+                if recent_effectiveness:
+                    avg_effectiveness = float(np.mean(recent_effectiveness))
+                    effectiveness_adjustment = max(0.5, min(1.5, avg_effectiveness))
+            
+            # Bootstrap mode penalty
+            bootstrap_penalty = 0.8 if self.bootstrap_mode else 1.0
+            
+            # Error state penalty
+            error_penalty = max(0.3, 1.0 - (self.error_count / max(1, self.circuit_breaker_threshold)))
+            
+            # Calculate final confidence
+            final_confidence = base_confidence * effectiveness_adjustment * bootstrap_penalty * error_penalty
+            
+            return float(max(0.1, min(1.0, final_confidence)))
+            
+        except Exception as e:
+            self.logger.warning(f"Confidence calculation failed: {e}")
+            return 0.5
+
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """
+        Propose optimal actions based on current clustering analysis
+        
+        Args:
+            **inputs: Context inputs for action proposal
+            
+        Returns:
+            Dictionary containing proposed actions and clustering recommendations
+        """
+        try:
+            # Get current clustering data
+            clustering_data = await self._get_comprehensive_clustering_data()
+            
+            # Perform cluster analysis
+            cluster_analysis = await self._analyze_clusters_comprehensive(clustering_data)
+            
+            # Extract key information
+            cluster_weights = cluster_analysis.get('weights', self._generate_safe_fallback_weights())
+            dominant_cluster = int(np.argmax(cluster_weights)) if cluster_weights is not None else 0
+            confidence = cluster_analysis.get('confidence', 0.5)
+            
+            # Get cluster effectiveness for dominant cluster
+            dominant_effectiveness = self.cluster_effectiveness.get(dominant_cluster, ClusterEffectivenessDict())
+            
+            # Determine action type based on clustering state
+            if self.bootstrap_mode:
+                action_type = 'exploration'
+                strategy_recommendation = 'conservative_exploration'
+            elif confidence > 0.7:
+                action_type = 'exploitation'
+                strategy_recommendation = 'cluster_focused'
+            else:
+                action_type = 'balanced'
+                strategy_recommendation = 'diversified'
+            
+            # Generate cluster-specific recommendations
+            cluster_recommendations = []
+            if cluster_weights is not None:
+                # Top performing clusters
+                top_clusters = sorted(enumerate(cluster_weights), key=lambda x: x[1], reverse=True)[:3]
+                for idx, (cluster_id, weight) in enumerate(top_clusters):
+                    cluster_data = self.cluster_effectiveness.get(cluster_id, ClusterEffectivenessDict())
+                    
+                    if idx == 0:  # Dominant cluster
+                        cluster_recommendations.append({
+                            'cluster_id': cluster_id,
+                            'weight': float(weight),
+                            'role': 'primary',
+                            'effectiveness': cluster_data['effectiveness_score'],
+                            'total_trades': cluster_data['total_trades'],
+                            'recommendation': 'Primary strategy allocation'
+                        })
+                    else:  # Supporting clusters
+                        cluster_recommendations.append({
+                            'cluster_id': cluster_id,
+                            'weight': float(weight),
+                            'role': 'supporting',
+                            'effectiveness': cluster_data['effectiveness_score'],
+                            'total_trades': cluster_data['total_trades'],
+                            'recommendation': f'Secondary allocation for diversification'
+                        })
+            
+            # Calculate risk management parameters
+            risk_adjustment = 1.0
+            if confidence < 0.5:
+                risk_adjustment = 0.7  # Reduce risk when confidence is low
+            elif confidence > 0.8:
+                risk_adjustment = 1.2  # Increase risk when confidence is high
+            
+            # Position sizing recommendations
+            base_size = 1.0
+            confidence_multiplier = confidence
+            effectiveness_multiplier = dominant_effectiveness['effectiveness_score']
+            
+            suggested_size = base_size * confidence_multiplier * effectiveness_multiplier * risk_adjustment
+            
+            # Create comprehensive action proposal
+            proposed_action = {
+                'action_type': action_type,
+                'strategy_recommendation': strategy_recommendation,
+                'dominant_cluster': dominant_cluster,
+                'cluster_confidence': confidence,
+                'cluster_weights': cluster_weights.tolist() if cluster_weights is not None else [],
+                'cluster_recommendations': cluster_recommendations,
+                'position_sizing': {
+                    'base_size': base_size,
+                    'confidence_multiplier': confidence_multiplier,
+                    'effectiveness_multiplier': effectiveness_multiplier,
+                    'risk_adjustment': risk_adjustment,
+                    'final_size': suggested_size
+                },
+                'risk_management': {
+                    'clustering_confidence': confidence,
+                    'pattern_stability': self.clustering_metrics.get('cluster_stability', 0.5),
+                    'data_quality': self.clustering_metrics.get('silhouette_score', 0.0),
+                    'recommended_approach': 'conservative' if confidence < 0.6 else 'aggressive'
+                },
+                'pattern_insights': {
+                    'bootstrap_mode': self.bootstrap_mode,
+                    'clustering_ready': self._ready,
+                    'total_patterns': len(self.cluster_effectiveness),
+                    'best_pattern_effectiveness': max([v['effectiveness_score'] for v in self.cluster_effectiveness.values()], default=0.5),
+                    'pattern_diversity': self.clustering_metrics.get('feature_diversity', 0.5)
+                },
+                'recommendations': self._generate_intelligent_cluster_recommendations(cluster_analysis),
+                'thesis': f"Cluster {dominant_cluster} identified as dominant pattern with {confidence:.1%} confidence. Strategy: {strategy_recommendation} with {len(cluster_recommendations)} supporting patterns.",
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+            
+            return proposed_action
+            
+        except Exception as e:
+            self.logger.error(f"Action proposal failed: {e}")
+            return {
+                'action_type': 'conservative',
+                'strategy_recommendation': 'safe_fallback',
+                'dominant_cluster': 0,
+                'cluster_confidence': 0.5,
+                'cluster_weights': [1.0/self.n_clusters] * self.n_clusters,
+                'cluster_recommendations': [],
+                'position_sizing': {'final_size': 0.5},
+                'risk_management': {'recommended_approach': 'conservative'},
+                'pattern_insights': {'bootstrap_mode': True, 'clustering_ready': False},
+                'recommendations': ['Use conservative approach until clustering improves'],
+                'thesis': 'Clustering system error, using safe fallback approach',
+                'error': str(e),
+                'timestamp': datetime.datetime.now().isoformat()
+            }

@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/monitoring/dependency_visualizer.py
-# 🚀 DEPENDENCY VISUALIZATION SYSTEM
+# [ROCKET] DEPENDENCY VISUALIZATION SYSTEM
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # ─────────────────────────────────────────────────────────────
 
@@ -56,7 +56,7 @@ class DependencyVisualizer:
             
             self.logger.info(
                 format_operator_message(
-                    "📊", "DEPENDENCY GRAPH BUILT",
+                    "[STATS]", "DEPENDENCY GRAPH BUILT",
                     details=f"{len(self.graph.nodes)} nodes, {len(self.graph.edges)} edges",
                     context="visualization"
                 )
@@ -127,7 +127,7 @@ class DependencyVisualizer:
             
             self.logger.info(
                 format_operator_message(
-                    "⚡", "EXECUTION STAGES OPTIMIZED",
+                    "[FAST]", "EXECUTION STAGES OPTIMIZED",
                     details=f"{len(stages)} stages created",
                     context="optimization"
                 )
@@ -171,7 +171,7 @@ class DependencyVisualizer:
             
             self.logger.info(
                 format_operator_message(
-                    "📈", "VISUALIZATION GENERATED",
+                    "[CHART]", "VISUALIZATION GENERATED",
                     details=output_path,
                     context="visualization"
                 )

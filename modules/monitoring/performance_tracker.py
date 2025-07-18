@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/monitoring/performance_tracker.py
-# 🚀 Performance tracking for SmartInfoBus with plain English reports
+# [ROCKET] Performance tracking for SmartInfoBus with plain English reports
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -242,7 +242,7 @@ class PerformanceTracker:
         
         self.logger.warning(
             format_operator_message(
-                "⚠️", "PERFORMANCE WARNING",
+                "[WARN]", "PERFORMANCE WARNING",
                 instrument=module,
                 details=f"Average latency {avg_latency:.0f}ms",
                 context="performance"

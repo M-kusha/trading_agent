@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/utils/audit_utils.py
-# 🚀 PRODUCTION-READY Audit & Logging System
+# [ROCKET] PRODUCTION-READY Audit & Logging System
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # ENHANCED: SmartInfoBus integration, plain English support
 # ─────────────────────────────────────────────────────────────
@@ -139,104 +139,137 @@ class RotatingLogger:
     """
     
     def __init__(
-        self,
-        name: str,
-        log_dir: str = "logs",
-        max_lines: int = 10000,
-        max_files: int = 10,
-        config: Optional[AuditConfiguration] = None,
-        log_path: Optional[str] = None,
-        plain_english: bool = False,
-        operator_mode: bool = False,
-        info_bus_aware: bool = False
-    ):
-        """
-        Initialize enhanced RotatingLogger.
+            self,
+            name: str,
+            log_dir: str = "logs",
+            max_lines: int = 10000,
+            max_files: int = 10,
+            config: Optional[AuditConfiguration] = None,
+            log_path: Optional[str] = None,
+            plain_english: bool = False,
+            operator_mode: bool = False,
+            info_bus_aware: bool = False,
+        ):
+            # ──────────────────────────────────────────────
+            # 1) BOOTSTRAP GUARD
+            #    • Disable SmartInfoBus wiring while the bus
+            #      singleton is still constructing itself.
+            # ──────────────────────────────────────────────
+            if name.startswith("SmartInfoBus"):
+                info_bus_aware = False            # hard-off during bootstrap
+
+            self.name = name
+            self.max_lines = max_lines
+            self.max_files = max_files
+            self.config = config or AuditConfiguration()
+            self.plain_english = plain_english
+            self.operator_mode = operator_mode
+            self.info_bus_aware = info_bus_aware
+
+            # ──────────────────────────────────────────────
+            # 2)  LOG-FILE LOCATION SETUP WITH AUTO-ORGANIZATION
+            # ──────────────────────────────────────────────
+            if log_path:
+                self.log_path = Path(log_path)
+                self.log_dir = self.log_path.parent
+                self.log_dir.mkdir(parents=True, exist_ok=True)
+                self.use_direct_path = True
+            else:
+                # Auto-organize logs into categorized folders
+                base_log_dir = Path(log_dir)
+                category_folder = self._get_log_category(name)
+                self.log_dir = base_log_dir / category_folder
+                self.log_dir.mkdir(parents=True, exist_ok=True)
+                self.log_path = None
+                self.use_direct_path = False
+
+            # Internal sync primitives / state
+            self._lock = threading.RLock()
+            self._buffer_lock = threading.Lock()
+            self.current_file: Optional[Path] = None
+            self.current_lines = 0
+            self.current_handle: Optional[Any] = None
+            self._buffer: deque = deque(maxlen=self.config.buffer_size)
+            self._last_flush = time.time()
+
+            # Session/meta
+            self.session_id = str(uuid.uuid4())[:8]
+            self.start_time = time.time()
+            self.correlation_id = str(uuid.uuid4())[:8]
+            self.total_events = 0
+            self.events_by_level = defaultdict(int)
+            self.last_event_time = 0
+            self.performance_metrics = {
+                "avg_write_time_ms": 0.0,
+                "total_writes": 0,
+                "cache_hits": 0,
+                "buffer_flushes": 0,
+            }
+
+            # ──────────────────────────────────────────────
+            # 3)  SAFE SmartInfoBus ATTACHMENT
+            #    (only if the singleton already exists)
+            # ──────────────────────────────────────────────
+            self.smart_bus: Optional["SmartInfoBus"] = None
+            if self.info_bus_aware and self.config.info_bus_integration:
+                try:
+                    from modules.utils.info_bus import InfoBusManager
+
+                    # Attach only when the singleton is ready
+                    if getattr(InfoBusManager, "_instance", None) is not None:
+                        self.smart_bus = InfoBusManager.get_instance()
+                except ImportError:
+                    # Optional dependency missing – disable integration
+                    self.info_bus_aware = False
+
+            # Plain-English formatter helper
+            self.english_formatter = (
+                PlainEnglishFormatter() if self.plain_english else None
+            )
+
+            # ──────────────────────────────────────────────
+            # 4)  LOG SYSTEM INITIALISATION & WORKERS
+            # ──────────────────────────────────────────────
+            self._initialize_logging()
+
+            if self.config.async_logging:
+                self._start_flush_timer()
+            if self.smart_bus and self.config.publish_to_bus:
+                self._start_bus_publisher()
+
+            # First entry
+            self.info(f"RotatingLogger initialized: {self.name} (session {self.session_id})")
+    
+    def _get_log_category(self, module_name: str) -> str:
+        """Determine the appropriate log folder category based on module name"""
         
-        Args:
-            name: Logger name (typically module name)
-            log_dir: Directory for log files (ignored if log_path is given)
-            max_lines: Maximum lines per file before rotation
-            max_files: Maximum number of files to keep
-            config: Audit configuration
-            log_path: Direct log file path (overrides log_dir)
-            plain_english: If True, log entries are in plain English
-            operator_mode: If True, use operator-friendly formatting
-            info_bus_aware: If True, integrate with SmartInfoBus
-        """
-        self.name = name
-        self.max_lines = max_lines
-        self.max_files = max_files
-        self.config = config or AuditConfiguration()
-        self.plain_english = plain_english
-        self.operator_mode = operator_mode
-        self.info_bus_aware = info_bus_aware
-        
-        # Handle log path
-        if log_path:
-            self.log_path = Path(log_path)
-            self.log_dir = self.log_path.parent
-            self.log_dir.mkdir(parents=True, exist_ok=True)
-            self.use_direct_path = True
-        else:
-            self.log_dir = Path(log_dir)
-            self.log_dir.mkdir(parents=True, exist_ok=True)
-            self.log_path = None
-            self.use_direct_path = False
-        
-        # Thread safety
-        self._lock = threading.RLock()
-        self._buffer_lock = threading.Lock()
-        
-        # File management
-        self.current_file: Optional[Path] = None
-        self.current_lines = 0
-        self.current_handle: Optional[Any] = None
-        
-        # Buffering for performance
-        self._buffer: deque = deque(maxlen=self.config.buffer_size)
-        self._last_flush = time.time()
-        
-        # Session tracking
-        self.session_id = str(uuid.uuid4())[:8]
-        self.start_time = time.time()
-        self.correlation_id = str(uuid.uuid4())[:8]
-        
-        # Statistics
-        self.total_events = 0
-        self.events_by_level = defaultdict(int)
-        self.last_event_time = 0
-        self.performance_metrics = {
-            'avg_write_time_ms': 0.0,
-            'total_writes': 0,
-            'cache_hits': 0,
-            'buffer_flushes': 0
+        # Define module categories for automatic organization within rotate_logger folder
+        categories = {
+            "agents": ["PPOAgent", "PPOLagAgent", "MetaAgent"],
+            "memory": ["MemoryBudgetOptimizer", "MemoryCompressor", "NeuralMemoryArchitect", 
+                      "PlaybookMemory", "MistakeMemory"],
+            "risk": ["PortfolioRiskSystem", "DynamicRiskController", "CorrelatedRiskController", 
+                    "DrawdownRescue", "ActiveTradeMonitor"],
+            "features": ["AdvancedFeatureEngine", "MultiScaleFeatureEngine", "FractalRegimeConfirmation"],
+            "meta": ["MetaRLController", "MetaCognitivePlanner"],
+            "models": ["EnhancedWorldModel", "EnhancedAnomalyDetector"],
+            "environment": ["ModernTradingEnv"],
+            "position": ["PositionManager"],
+            "reward": ["RiskAdjustedReward"],
+            "utils": ["EnglishExplainer", "ErrorPinpointer", "SystemUtilities"],
+            "auditing": ["AuditingCoordinator", "ComplianceModule", "TradeExplanationAuditor"],
+            "analysis": ["HistoricalReplayAnalyzer", "MarketThemeDetector", "RegimePerformanceMatrix"],
+            "trading": ["NewsSentimentModule", "LiquidityHeatmapLayer", "TimeAwareRiskScaling", 
+                       "TradeThesisTracker"]
         }
         
-        # SmartInfoBus integration
-        self.smart_bus: Optional[SmartInfoBus] = None
-        if self.info_bus_aware and self.config.info_bus_integration:
-            try:
-                from modules.utils.info_bus import InfoBusManager
-                self.smart_bus = InfoBusManager.get_instance()
-                self._register_with_smart_bus()
-            except ImportError:
-                self.info_bus_aware = False
+        # Check which category the module belongs to
+        for category, modules in categories.items():
+            if any(module_name.startswith(module) for module in modules):
+                return f"rotate_logger/{category}"
         
-        # Plain English formatter
-        self.english_formatter = PlainEnglishFormatter() if self.plain_english else None
-        
-        # Initialize logging
-        self._initialize_logging()
-        
-        # Start background tasks
-        if self.config.async_logging:
-            self._start_flush_timer()
-        
-        if self.smart_bus and self.config.publish_to_bus:
-            self._start_bus_publisher()
-        
-        self.info(f"RotatingLogger initialized: {name} (session: {self.session_id})")
+        # Default category for unrecognized modules
+        return "rotate_logger/other"
     
     def _register_with_smart_bus(self):
         """Register logger with SmartInfoBus"""
@@ -524,14 +557,14 @@ class RotatingLogger:
     def _format_operator_entry(self, level: str, message: str, entry: Dict[str, Any]) -> str:
         """Format entry for operator consumption"""
         emoji_map = {
-            'DEBUG': '🔍',
-            'INFO': '📝',
-            'WARNING': '⚠️',
-            'ERROR': '❌',
-            'CRITICAL': '🚨'
+            'DEBUG': '[SEARCH]',
+            'INFO': '[LOG]',
+            'WARNING': '[WARN]',
+            'ERROR': '[FAIL]',
+            'CRITICAL': '[ALERT]'
         }
         
-        emoji = emoji_map.get(level, '📝')
+        emoji = emoji_map.get(level, '[LOG]')
         timestamp = datetime.now().strftime('%H:%M:%S')
         
         # Format with context
@@ -881,11 +914,11 @@ class PlainEnglishFormatter:
     
     def __init__(self):
         self.templates = {
-            'DEBUG': "🔍 Debug: {message} at {time}",
-            'INFO': "📝 {message} at {time}",
-            'WARNING': "⚠️ Warning: {message} at {time}",
-            'ERROR': "❌ Error: {message} at {time}",
-            'CRITICAL': "🚨 CRITICAL: {message} at {time}"
+            'DEBUG': "[SEARCH] Debug: {message} at {time}",
+            'INFO': "[LOG] {message} at {time}",
+            'WARNING': "[WARN] Warning: {message} at {time}",
+            'ERROR': "[FAIL] Error: {message} at {time}",
+            'CRITICAL': "[ALERT] CRITICAL: {message} at {time}"
         }
     
     def format(self, level: str, message: str, entry: Dict[str, Any]) -> str:
@@ -933,51 +966,76 @@ class AuditSystem:
     Provides plain English explanations of system behavior.
     """
     
-    def __init__(self, system_name: str = "TradingSystem"):
-        self.system_name = system_name
-        self.events = deque(maxlen=10000)
-        self.theses = deque(maxlen=5000)
-        
-        # Setup specialized loggers
-        self.audit_logger = RotatingLogger(
-            name=f"{system_name}Audit",
-            log_dir=f"logs/audit",
-            max_lines=20000,
-            info_bus_aware=True,
-            plain_english=True
-        )
-        
-        self.operator_logger = RotatingLogger(
-            name=f"{system_name}Operator", 
-            log_dir=f"logs/operator",
-            max_lines=20000,
-            operator_mode=True,
-            info_bus_aware=True
-        )
-        
-        # Performance tracking
-        self.module_call_times = defaultdict(lambda: deque(maxlen=1000))
-        self.module_error_counts = defaultdict(int)
-        self.module_thesis_counts = defaultdict(int)
-        self.module_confidence_scores = defaultdict(lambda: deque(maxlen=100))
-        
-        # SmartInfoBus reference
-        try:
-            from modules.utils.info_bus import InfoBusManager
-            self.smart_bus = InfoBusManager.get_instance()
-            self._register_with_smart_bus()
-        except ImportError:
-            self.smart_bus = None
-        
-        # Real-time monitoring
-        self.alert_thresholds = {
-            'error_rate': 0.1,
-            'avg_latency_ms': 500,
-            'confidence_threshold': 0.3
-        }
-        
-        # Start monitoring
-        self._start_monitoring()
+    def __init__(self, system_name: str = "TradingSystem") -> None:
+            """
+            Build the audit system.
+
+            •  If we’re invoked *during* SmartInfoBus construction
+            (i.e. system_name == "SmartInfoBus") we **defer** attaching to
+            the bus – this prevents the infinite recursive chain:
+            SmartInfoBus → AuditSystem → InfoBusManager → SmartInfoBus …
+            •  Once the SmartInfoBus exists we can safely attach.
+            """
+            self.system_name = system_name
+            self.events: deque = deque(maxlen=10_000)
+            self.theses: deque = deque(maxlen=5_000)
+
+            # ──────────────────────────────────────────────────────────
+            # 1)  CREATE SPECIALISED LOGGERS  (never SmartBus-aware
+            #     when called from inside SmartInfoBus bootstrap)
+            # ──────────────────────────────────────────────────────────
+            is_bus_bootstrap = (system_name == "SmartInfoBus")
+
+            self.audit_logger = RotatingLogger(
+                name=f"{system_name}Audit",
+                log_dir="logs/audit",
+                max_lines=20_000,
+                info_bus_aware=not is_bus_bootstrap,   # <-- key change
+                plain_english=True,
+            )
+
+            self.operator_logger = RotatingLogger(
+                name=f"{system_name}Operator",
+                log_dir="logs/operator",
+                max_lines=20_000,
+                operator_mode=True,
+                info_bus_aware=not is_bus_bootstrap,   # <-- key change
+            )
+
+            # ──────────────────────────────────────────────────────────
+            # 2)  OPTIONAL SmartInfoBus ATTACHMENT
+            #     (only if the singleton is already alive)
+            # ──────────────────────────────────────────────────────────
+            self.smart_bus: Optional["SmartInfoBus"] = None
+            if not is_bus_bootstrap:                # already safe here
+                try:
+                    from modules.utils.info_bus import InfoBusManager
+                    if getattr(InfoBusManager, "_instance", None) is not None:
+                        self.smart_bus = InfoBusManager.get_instance()
+                        self._register_with_smart_bus()
+                except ImportError:
+                    pass
+
+            # ──────────────────────────────────────────────────────────
+            # 3)  PERFORMANCE / STATE TRACKING
+            # ──────────────────────────────────────────────────────────
+            from collections import defaultdict
+            import numpy as np
+
+            self.module_call_times = defaultdict(lambda: deque(maxlen=1_000))
+            self.module_error_counts = defaultdict(int)
+            self.module_thesis_counts = defaultdict(int)
+            self.module_confidence_scores = defaultdict(lambda: deque(maxlen=100))
+
+            # Alert thresholds
+            self.alert_thresholds = {
+                "error_rate": 0.10,
+                "avg_latency_ms": 500,
+                "confidence_threshold": 0.30,
+            }
+
+            # Kick off monitoring thread (non-critical if in bootstrap)
+            self._start_monitoring()
     
     def _register_with_smart_bus(self):
         """Register audit system with SmartInfoBus"""
@@ -1112,7 +1170,7 @@ class AuditSystem:
         self.audit_logger.audit(audit_event)
         
         # Log operator-friendly message
-        confidence_emoji = "🟢" if confidence > 0.8 else "🟡" if confidence > 0.5 else "🔴"
+        confidence_emoji = "[GREEN]" if confidence > 0.8 else "[YELLOW]" if confidence > 0.5 else "[RED]"
         self.operator_logger.info(
             format_operator_message(
                 f"{confidence_emoji}", f"{module} decided: {decision}",
@@ -1177,7 +1235,7 @@ class AuditSystem:
         if duration_ms > 500:  # Slow operation
             self.operator_logger.warning(
                 format_operator_message(
-                    "⚠️", f"Slow operation: {module}",
+                    "[WARN]", f"Slow operation: {module}",
                     details=f"{duration_ms:.1f}ms",
                     context="performance"
                 )
@@ -1186,7 +1244,7 @@ class AuditSystem:
         if not success:
             self.operator_logger.error(
                 format_operator_message(
-                    "❌", f"Module failure: {module}",
+                    "[FAIL]", f"Module failure: {module}",
                     error=error[:100] if error else "Unknown",
                     context="failure"
                 )
@@ -1310,10 +1368,10 @@ PERFORMANCE METRICS
 
 COMPLIANCE CHECKS
 -----------------
-✅ Audit Trail: Complete and tamper-proof
-✅ Decision Rationales: All decisions have explanations
-✅ Performance Monitoring: Real-time tracking active
-✅ Error Handling: All errors logged with context
+[OK] Audit Trail: Complete and tamper-proof
+[OK] Decision Rationales: All decisions have explanations
+[OK] Performance Monitoring: Real-time tracking active
+[OK] Error Handling: All errors logged with context
 """
         
         # Add recommendations
@@ -1450,7 +1508,7 @@ def setup_production_logging(system_name: str,
     # Log initialization
     main_logger.info(
         format_operator_message(
-            "🚀", "SYSTEM STARTUP",
+            "[ROCKET]", "SYSTEM STARTUP",
             details=f"Production logging initialized for {system_name}",
             context="initialization"
         )
@@ -1513,11 +1571,11 @@ class TradingLogger(RotatingLogger):
         
         # Determine emoji based on P&L
         if pnl > 0:
-            emoji = "💰"
+            emoji = "[MONEY]"
         elif pnl < 0:
             emoji = "💸"
         else:
-            emoji = "📊"
+            emoji = "[STATS]"
         
         self.info(
             format_operator_message(
@@ -1558,13 +1616,13 @@ class RiskLogger(RotatingLogger):
         """Log risk alert with context"""
         
         emoji_map = {
-            'INFO': '📊',
-            'WARNING': '⚠️',
-            'ERROR': '🚨',
+            'INFO': '[STATS]',
+            'WARNING': '[WARN]',
+            'ERROR': '[ALERT]',
             'CRITICAL': '🔥'
         }
         
-        emoji = emoji_map.get(severity, '⚠️')
+        emoji = emoji_map.get(severity, '[WARN]')
         
         self._log(
             severity,

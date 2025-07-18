@@ -5,6 +5,7 @@ Monitors correlation risk between positions and instruments
 
 import numpy as np
 import datetime
+import time
 from typing import Dict, Any, List, Optional, Union, Tuple
 from collections import deque, defaultdict
 from scipy.stats import pearsonr
@@ -98,6 +99,167 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
         self.english_explainer = EnglishExplainer()
         self.system_utilities = SystemUtilities()
         self.performance_tracker = PerformanceTracker()
+    
+    def _initialize(self) -> None:
+        """Initialize the correlated risk controller (required by BaseModule)"""
+        try:
+            # Validate configuration
+            if not self.enabled:
+                self.logger.warning("Correlated Risk Controller is disabled")
+                return
+            
+            # Initialize correlation tracking
+            self.correlation_matrix = {}
+            self.correlation_history = deque(maxlen=100)
+            self.price_history = defaultdict(lambda: deque(maxlen=self.lookback_window))
+            self.return_history = defaultdict(lambda: deque(maxlen=self.lookback_window))
+            
+            # Initialize risk metrics
+            self.correlation_risk_score = 0.0
+            self.diversification_score = 1.0
+            self.cluster_risk_score = 0.0
+            self.severity_level = "normal"
+            
+            # Initialize performance tracking
+            self.step_count = 0
+            self.correlation_violations = 0
+            self.diversification_violations = 0
+            
+            self.logger.info("Correlated Risk Controller initialization completed successfully")
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "controller_initialization")
+            self.logger.error(f"Controller initialization failed: {error_context}")
+    
+    async def calculate_confidence(self, action: Dict[str, Any], **kwargs) -> float:
+        """Calculate confidence score for correlation risk assessment"""
+        try:
+            # Base confidence starts high for correlation analysis
+            confidence = 0.9
+            
+            # Factors that affect confidence
+            factors = {}
+            
+            # Check diversification score
+            factors['diversification_score'] = self.diversification_score
+            confidence *= self.diversification_score
+            
+            # Check correlation risk score (inverse relationship)
+            if self.correlation_risk_score > 0:
+                risk_penalty = max(0.3, 1.0 - self.correlation_risk_score)
+                factors['risk_penalty'] = risk_penalty
+                confidence *= risk_penalty
+            
+            # Check data availability - more instruments = higher confidence
+            instruments_count = len(self.price_history)
+            if instruments_count >= 5:
+                data_factor = min(1.0, instruments_count / 10.0)
+            else:
+                data_factor = max(0.3, instruments_count / 5.0)
+            factors['data_availability'] = data_factor
+            confidence *= data_factor
+            
+            # Check severity level
+            severity_penalties = {
+                'normal': 1.0,
+                'warning': 0.8,
+                'critical': 0.6,
+                'error': 0.4,
+                'disabled': 0.1
+            }
+            severity_factor = severity_penalties.get(self.severity_level, 0.5)
+            factors['severity_factor'] = severity_factor
+            confidence *= severity_factor
+            
+            # Ensure confidence is in valid range
+            confidence = max(0.0, min(1.0, confidence))
+            
+            # Log confidence calculation for debugging
+            self.logger.debug(f"Correlation confidence: {confidence:.3f}, factors: {factors}")
+            
+            return float(confidence)
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "confidence_calculation")
+            self.logger.error(f"Confidence calculation failed: {error_context}")
+            return 0.5  # Default medium confidence on error
+    
+    async def propose_action(self, **kwargs) -> Dict[str, Any]:
+        """Propose correlation risk management actions"""
+        try:
+            action_proposal = {
+                'action_type': 'correlation_risk_management',
+                'timestamp': time.time(),
+                'correlation_risk_score': self.correlation_risk_score,
+                'diversification_score': self.diversification_score,
+                'severity_level': self.severity_level,
+                'recommendations': [],
+                'warnings': [],
+                'adjustments': {}
+            }
+            
+            # Generate recommendations based on correlation state
+            if self.correlation_risk_score > 0.7:
+                action_proposal['recommendations'].append({
+                    'type': 'reduce_correlation',
+                    'reason': 'High correlation risk detected',
+                    'suggested_action': 'Reduce position sizes in highly correlated instruments',
+                    'priority': 'high'
+                })
+            
+            if self.diversification_score < self.min_diversification:
+                action_proposal['recommendations'].append({
+                    'type': 'improve_diversification',
+                    'reason': f'Diversification score {self.diversification_score:.2f} below threshold {self.min_diversification}',
+                    'suggested_action': 'Add positions in uncorrelated instruments',
+                    'priority': 'medium'
+                })
+            
+            # Check cluster concentrations
+            if hasattr(self, 'correlation_clusters') and self.correlation_clusters:
+                max_cluster_size = max(len(instruments) for instruments in self.correlation_clusters.values())
+                if max_cluster_size > 5:
+                    action_proposal['warnings'].append({
+                        'type': 'cluster_concentration',
+                        'cluster_size': max_cluster_size,
+                        'threshold': 5,
+                        'risk_level': 'high'
+                    })
+            
+            # Check recent violations
+            if self.correlation_violations > 3:
+                action_proposal['warnings'].append({
+                    'type': 'frequent_violations',
+                    'violation_count': self.correlation_violations,
+                    'risk_level': 'medium'
+                })
+            
+            # Suggest position adjustments based on correlation matrix
+            if hasattr(self, 'correlation_matrix') and self.correlation_matrix:
+                high_corr_pairs = [(pair, corr) for pair, corr in self.correlation_matrix.items() 
+                                 if abs(corr) > self.max_correlation]
+                if high_corr_pairs:
+                    action_proposal['adjustments']['high_correlation_pairs'] = [
+                        {'instruments': pair, 'correlation': corr, 'action': 'reduce_exposure'}
+                        for pair, corr in high_corr_pairs[:3]  # Top 3 most problematic
+                    ]
+            
+            self.logger.debug(f"Correlation action proposed: {len(action_proposal['recommendations'])} recommendations, "
+                            f"{len(action_proposal['warnings'])} warnings")
+            
+            return action_proposal
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "action_proposal")
+            self.logger.error(f"Action proposal failed: {error_context}")
+            return {
+                'action_type': 'correlation_risk_management',
+                'timestamp': time.time(),
+                'error': str(e),
+                'recommendations': [],
+                'warnings': [],
+                'adjustments': {}
+            }
     
     async def process(self, **kwargs) -> Dict[str, Any]:
         """

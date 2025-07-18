@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/core/module_system.py
-# 🚀 PRODUCTION-READY SmartInfoBus Module System & Orchestrator
+# [ROCKET] PRODUCTION-READY SmartInfoBus Module System & Orchestrator
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # FIXED: Emergency mode, circuit breakers, dynamic config
 # ─────────────────────────────────────────────────────────────
@@ -118,7 +118,7 @@ class ModuleConfig:
         
         # Module discovery paths - MODERNIZED MODULES ONLY
         self.module_paths = kwargs.get('module_paths', [
-            # ✅ MODERNIZED MODULES (with @module decorator and BaseModule)
+            # [OK] MODERNIZED MODULES (with @module decorator and BaseModule)
             'modules/auditing',     # AuditingCoordinator, TradeExplanationAuditor, TradeThesisTracker
             'modules/external',     # NewsSentimentModule  
             'modules/features',     # AdvancedFeatureEngine, MultiScaleFeatureEngine
@@ -134,7 +134,7 @@ class ModuleConfig:
             'modules/visualization', # VisualizationInterface, TradeMapVisualizer
             'modules/voting',       # All voting modules modernized
             
-            # 🔄 LEGACY MODULES (commented out until modernized)
+            # [RELOAD] LEGACY MODULES (commented out until modernized)
             # Uncomment these paths after modernizing the modules in them:
             # 'modules/simulation',    # OpponentSimulator, RoleCoach, ShadowSimulator
         ])
@@ -333,7 +333,7 @@ class ModuleOrchestrator:
         
         self.logger.info(
             format_operator_message(
-                "🚀", "ORCHESTRATOR INITIALIZED",
+                "[ROCKET]", "ORCHESTRATOR INITIALIZED",
                 details=f"Config: {len(self.config.module_paths)} paths",
                 context="startup"
             )
@@ -342,11 +342,11 @@ class ModuleOrchestrator:
     def set_health_monitor(self, health_monitor):
         """Set health monitor reference for integration"""
         self.health_monitor = health_monitor
-        self.logger.info("✅ Health monitor integrated with orchestrator")
+        self.logger.info("[OK] Health monitor integrated with orchestrator")
     
     def _on_config_change(self, updates: Dict[str, Any], old_values: Dict[str, Any]):
         """Handle configuration changes dynamically"""
-        self.logger.info(f"📝 Configuration updated: {list(updates.keys())}")
+        self.logger.info(f"[LOG] Configuration updated: {list(updates.keys())}")
         
         # Update executor if worker count changed
         if 'max_parallel_modules' in updates:
@@ -372,7 +372,7 @@ class ModuleOrchestrator:
         try:
             self.logger.info(
                 format_operator_message(
-                    "🔍", "STARTING MODULE DISCOVERY",
+                    "[SEARCH]", "STARTING MODULE DISCOVERY",
                     details="Scanning module directories",
                     context="initialization"
                 )
@@ -406,14 +406,14 @@ class ModuleOrchestrator:
             
             self.logger.info(
                 format_operator_message(
-                    "✅", "ORCHESTRATOR READY",
+                    "[OK]", "ORCHESTRATOR READY",
                     details=f"{len(self.modules)} modules, {len(self.execution_stages)} stages",
                     context="initialization"
                 )
             )
             
         except Exception as e:
-            self.logger.error(f"💥 INITIALIZATION FAILED: {e}")
+            self.logger.error(f"[CRASH] INITIALIZATION FAILED: {e}")
             self.error_pinpointer.analyze_error(e, "ModuleOrchestrator")
             raise
     
@@ -422,7 +422,7 @@ class ModuleOrchestrator:
         for module_name in self.modules:
             self.circuit_breakers[module_name] = CircuitBreakerState()
         
-        self.logger.info(f"⚡ Initialized {len(self.circuit_breakers)} circuit breakers")
+        self.logger.info(f"[FAST] Initialized {len(self.circuit_breakers)} circuit breakers")
     
     def _initialize_emergency_monitoring(self):
         """Initialize emergency mode monitoring systems"""
@@ -439,7 +439,82 @@ class ModuleOrchestrator:
             'health_score_threshold': 0.3  # Overall health below 30%
         }
         
-        self.logger.info("🚨 Emergency monitoring systems initialized")
+        self.logger.info("[ALERT] Emergency monitoring systems initialized")
+
+        # ──────────────────────────────────────────────────────────────
+    # PERF-STATS HELPER
+    # ──────────────────────────────────────────────────────────────
+    def _update_perf_stats(self, module_name: str, dur_ms: float):
+        """
+        Keep the self.module_performance structure up-to-date.
+        Called for every successful run.
+        """
+        perf = self.module_performance.setdefault(
+            module_name,
+            {
+                "total_executions": 0,
+                "total_time_ms": 0.0,
+                "failures": 0,
+                "avg_time_ms": 0.0,
+            },
+        )
+        perf["total_executions"] += 1
+        perf["total_time_ms"] += dur_ms
+        perf["avg_time_ms"] = perf["total_time_ms"] / perf["total_executions"]
+
+
+    # ──────────────────────────────────────────────────────────────
+    # FAILURE-HANDLING HELPER
+    # ──────────────────────────────────────────────────────────────
+    def _handle_module_failure(
+        self,
+        module: BaseModule,
+        module_name: str,
+        cb: "CircuitBreakerState",
+        dur_ms: float,
+        error_msg: str,
+        execution_id: str,
+        tag: str = "CRASH",
+    ):
+        """
+        Centralised error bookkeeping + circuit-breaker update + logging.
+        Used by the timeout and generic-exception branches inside
+        _execute_module_safe().
+        """
+        # 1. Audit trail
+        self.smart_bus.record_module_failure(module_name, error_msg)
+
+        # 2. Module’s own history
+        module.record_execution(dur_ms, False, error_msg)
+
+        # 3. Circuit breaker
+        cb.record_failure()
+        if cb.failure_count >= self.config.circuit_breaker_threshold:
+            cb.trip()
+            self.logger.error(f"[FAST] Circuit breaker TRIPPED for {module_name}")
+
+        # 4. Performance map
+        perf = self.module_performance.setdefault(
+            module_name,
+            {
+                "total_executions": 0,
+                "total_time_ms": 0.0,
+                "failures": 0,
+                "avg_time_ms": 0.0,
+            },
+        )
+        perf["failures"] += 1
+
+        # 5. Human-readable log
+        self.logger.error(
+            format_operator_message(
+                f"[{tag}]", "MODULE FAILED",
+                instrument=module_name,
+                details=error_msg[:100],
+                context=execution_id,
+            )
+        )
+
     
     def _check_emergency_conditions(self) -> Tuple[bool, str]:
         """Check if emergency mode should be activated"""
@@ -498,7 +573,7 @@ class ModuleOrchestrator:
         
         self.logger.critical(
             format_operator_message(
-                "🚨", "EMERGENCY MODE ACTIVATED",
+                "[ALERT]", "EMERGENCY MODE ACTIVATED",
                 details=reason,
                 context="emergency"
             )
@@ -534,7 +609,7 @@ class ModuleOrchestrator:
             thesis=f"Emergency mode activated due to: {reason}"
         )
         
-        self.logger.info(f"🚨 Disabled {disabled_count} non-critical modules")
+        self.logger.info(f"[ALERT] Disabled {disabled_count} non-critical modules")
 
     def disable_module(self, module_name: str, reason: str = "Manual disable"):
         """Disable a module temporarily"""
@@ -551,7 +626,7 @@ class ModuleOrchestrator:
             # Reset circuit breaker
             if module_name in self.circuit_breakers:
                 self.circuit_breakers[module_name] = CircuitBreakerState()
-            self.logger.info(f"✅ Module enabled: {module_name}")
+            self.logger.info(f"[OK] Module enabled: {module_name}")
             return True
         return False
         
@@ -567,7 +642,7 @@ class ModuleOrchestrator:
         time_in_emergency = time.time() - self.emergency_activation_time
         if time_in_emergency < self.config.emergency_cooldown_s:
             remaining = self.config.emergency_cooldown_s - time_in_emergency
-            self.logger.info(f"⏳ Emergency cooldown: {remaining:.0f}s remaining")
+            self.logger.info(f"[WAIT] Emergency cooldown: {remaining:.0f}s remaining")
             return False
         
         # Validate system health before exit
@@ -589,7 +664,7 @@ class ModuleOrchestrator:
         
         if not all_healthy:
             failed_checks = [k for k, v in health_checks.items() if not v]
-            self.logger.warning(f"❌ Cannot exit emergency mode. Failed checks: {failed_checks}")
+            self.logger.warning(f"[FAIL] Cannot exit emergency mode. Failed checks: {failed_checks}")
             return False
         
         # Exit emergency mode
@@ -629,7 +704,7 @@ class ModuleOrchestrator:
         
         self.logger.info(
             format_operator_message(
-                "✅", "EMERGENCY MODE DEACTIVATED",
+                "[OK]", "EMERGENCY MODE DEACTIVATED",
                 details=f"Re-enabled {enabled_count} modules",
                 context="recovery"
             )
@@ -688,36 +763,76 @@ class ModuleOrchestrator:
     
     def _start_config_monitoring(self):
         """Start configuration file monitoring for hot-reload"""
-        async def monitor_config():
-            config_paths = [
-                Path('config/system_config.yaml'),
-                Path('config/module_config.yaml')
-            ]
-            
-            last_mtime = {}
-            
-            while True:
-                try:
-                    for config_path in config_paths:
-                        if config_path.exists():
-                            mtime = config_path.stat().st_mtime
-                            
-                            if config_path not in last_mtime:
-                                last_mtime[config_path] = mtime
-                            elif mtime > last_mtime[config_path]:
-                                # File changed
-                                self.logger.info(f"📝 Config file changed: {config_path}")
-                                self.config.load_from_file(config_path)
-                                last_mtime[config_path] = mtime
-                    
-                    await asyncio.sleep(5)  # Check every 5 seconds
-                    
-                except Exception as e:
-                    self.logger.error(f"Config monitoring error: {e}")
-                    await asyncio.sleep(30)  # Back off on error
+        try:
+            # Only start monitoring if we're in an async context
+            import asyncio
+            try:
+                # Check if we're already in an event loop
+                loop = asyncio.get_running_loop()
+                # If we are in a loop, create the task
+                self.config_monitor_task = loop.create_task(self._monitor_config())
+                self.logger.info("[OK] Configuration monitoring started")
+            except RuntimeError:
+                # No event loop running, skip config monitoring
+                self.config_monitor_task = None
+                self.logger.info("[INFO] No event loop - config monitoring skipped")
+        except Exception as e:
+            self.logger.warning(f"[WARN] Config monitoring setup failed: {e}")
+            self.config_monitor_task = None
+    
+    async def _monitor_config(self):
+        """Monitor configuration files for changes and hot-reload"""
+        import asyncio
+        import os
+        from pathlib import Path
         
-        # Start monitoring task
-        self.config_monitor_task = asyncio.create_task(monitor_config())
+        config_files = []
+        config_mtimes = {}
+        
+        # Find configuration files to monitor
+        try:
+            config_dir = Path("config")
+            if config_dir.exists():
+                for config_file in config_dir.glob("*.yaml"):
+                    config_files.append(config_file)
+                    config_mtimes[str(config_file)] = os.path.getmtime(config_file)
+        except Exception as e:
+            self.logger.warning(f"Config monitoring setup failed: {e}")
+            return
+        
+        self.logger.info(f"[LOG] Monitoring {len(config_files)} config files")
+        
+        while True:
+            try:
+                await asyncio.sleep(5)  # Check every 5 seconds
+                
+                for config_file in config_files:
+                    try:
+                        current_mtime = os.path.getmtime(config_file)
+                        if current_mtime > config_mtimes[str(config_file)]:
+                            self.logger.info(f"[CHANGE] Config file changed: {config_file}")
+                            config_mtimes[str(config_file)] = current_mtime
+                            
+                            # Trigger config reload using proper method
+                            try:
+                                if hasattr(self.config, 'load_from_file'):
+                                    self.config.load_from_file(config_file)
+                                    self.logger.info(f"[OK] Config reloaded: {config_file}")
+                                else:
+                                    # Basic reload - just log the change
+                                    self.logger.info(f"[LOG] Config changed: {config_file} (manual reload needed)")
+                            except Exception as reload_error:
+                                self.logger.warning(f"Config reload failed: {reload_error}")
+                    except (OSError, FileNotFoundError):
+                        # File might have been deleted
+                        continue
+                        
+            except asyncio.CancelledError:
+                self.logger.info("[LOG] Config monitoring stopped")
+                break
+            except Exception as e:
+                self.logger.error(f"Config monitoring error: {e}")
+                await asyncio.sleep(10)  # Wait longer on error
     
     async def execute_step(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -745,7 +860,7 @@ class ModuleOrchestrator:
         
         try:
             with self.execution_lock:
-                self.logger.debug(f"🚀 STARTING EXECUTION: {execution_id}")
+                self.logger.debug(f"[ROCKET] STARTING EXECUTION: {execution_id}")
                 
                 # Store market data in SmartInfoBus
                 self._store_market_data(market_data, execution_id)
@@ -827,7 +942,7 @@ class ModuleOrchestrator:
                 
         except Exception as e:
             execution_time = (time.time() - start_time) * 1000
-            self.logger.error(f"💥 EXECUTION FAILED: {execution_id} ({execution_time:.0f}ms)")
+            self.logger.error(f"[CRASH] EXECUTION FAILED: {execution_id} ({execution_time:.0f}ms)")
             self.error_pinpointer.analyze_error(e, "ModuleOrchestrator")
             
             self.consecutive_system_failures += 1
@@ -857,7 +972,7 @@ class ModuleOrchestrator:
                 # Process alerts
                 for alert in health_report.alerts:
                     if alert.severity == "CRITICAL":
-                        self.logger.critical(f"🚨 Health Alert: {alert.message}")
+                        self.logger.critical(f"[ALERT] Health Alert: {alert.message}")
                         
                         # Take action based on alert type
                         if "memory" in alert.alert_type:
@@ -906,144 +1021,114 @@ class ModuleOrchestrator:
                 cb.failure_count = 0
                 self.logger.info(f"Reset circuit breaker for {module_name}")
     
-    async def _execute_module_safe(self,
-                                 module: BaseModule,
-                                 module_name: str,
-                                 inputs: Dict[str, Any],
-                                 metadata: ModuleMetadata,
-                                 execution_id: str) -> Optional[Dict[str, Any]]:
+    # ═════════════════════════════════════════════════════════════
+    # SAFE MODULE EXECUTION (with optional confidence & voting)
+    # ═════════════════════════════════════════════════════════════
+    async def _execute_module_safe(
+        self,
+        module: BaseModule,
+        module_name: str,
+        inputs: Dict[str, Any],
+        metadata: ModuleMetadata,
+        execution_id: str
+    ) -> Optional[Dict[str, Any]]:
         """
-        Execute module with circuit breaker protection.
-        ENHANCED: Complete circuit breaker implementation.
+        Run one module with timeout, circuit-breaker and optional
+        confidence / voting hooks.  Errors are contained and recorded.
         """
-        
-        cb = self.circuit_breakers.get(module_name)
-        if not cb:
-            cb = CircuitBreakerState()
-            self.circuit_breakers[module_name] = cb
-        
-        # Check circuit breaker
+        cb = self.circuit_breakers.setdefault(module_name, CircuitBreakerState())
+
+        # 1. Circuit-breaker gate
         if not cb.should_allow_request(self.config.recovery_time_s):
-            self.logger.warning(f"⚡ Circuit breaker OPEN for {module_name}")
+            self.logger.warning(f"[FAST] Circuit breaker OPEN for {module_name}")
             return {'error': 'Circuit breaker open', '_circuit_breaker': True}
-        
-        start_time = time.perf_counter()
-        module_name = module.__class__.__name__ 
-        
+
+        start_t = time.perf_counter()
         try:
-            # Pre-execution validation
-            if hasattr(module, 'validate_inputs'):
+            # 2. Validate + run with timeout
+            if hasattr(module, "validate_inputs"):
                 module.validate_inputs(inputs)
-            
-            # Execute with timeout
-            timeout_sec = metadata.timeout_ms / 1000.0
-            
-            result = await asyncio.wait_for(module.process(**inputs), timeout_sec)
-            
-            # Post-execution validation
-            if result and isinstance(result, dict):
-                if hasattr(module, 'validate_outputs'):
-                    module.validate_outputs(result)
-                
-                # Store outputs in SmartInfoBus
-                for output_key in metadata.provides:
-                    if output_key in result:
-                        thesis = result.get('_thesis', f"Output from {module_name}")
-                        confidence = result.get('_confidence', 0.8)
-                        
+
+            result = await asyncio.wait_for(
+                module.process(**inputs),
+                timeout=metadata.timeout_ms / 1000
+            )
+
+            # 3. Validate outputs
+            if isinstance(result, dict) and hasattr(module, "validate_outputs"):
+                module.validate_outputs(result)
+
+            # 4. SmartInfoBus – regular outputs
+            if isinstance(result, dict):
+                for key in metadata.provides:
+                    if key in result:
                         self.smart_bus.set(
-                            output_key,
-                            result[output_key],
+                            key,
+                            result[key],
                             module=module_name,
-                            thesis=thesis,
-                            confidence=confidence
+                            thesis=result.get("_thesis", f"{module_name} output"),
+                            confidence=result.get("_confidence", 0.8),
                         )
-            
-            # Record success
-            duration_ms = (time.perf_counter() - start_time) * 1000
-            self.smart_bus.record_module_timing(module_name, duration_ms)
-            module.record_execution(duration_ms, True)
-            
-            # Update circuit breaker
+
+            # 5. OPTIONAL CAPABILITIES  ✨
+            bm = BaseModule  # shortcut for pointer comparison
+
+            # 5-a Confidence
+            if module.__class__.calculate_confidence is not bm.calculate_confidence:
+                try:
+                    conf_result = module.calculate_confidence(result)
+                    # Handle both sync and async confidence methods
+                    if asyncio.iscoroutine(conf_result):
+                        conf = await conf_result
+                    else:
+                        conf = conf_result
+                    if conf is not None:
+                        result["_confidence"] = conf
+                except Exception as e:
+                    self.logger.warning(f"{module_name}: confidence error – {e}")
+
+            # 5-b Voting
+            if module.__class__.propose_action is not bm.propose_action:
+                try:
+                    voting_context = {"bus": self.smart_bus, **inputs, **(result or {})}
+                    ballot = await module.propose_action(**voting_context)
+                    if ballot:
+                        self.smart_bus.set(
+                            "vote",
+                            ballot,
+                            module=module_name,
+                            thesis=result.get("_thesis", ""),
+                            confidence=result.get("_confidence", 0.0),
+                        )
+                except Exception as e:
+                    self.logger.warning(f"{module_name}: voting error – {e}")
+
+            # 6. Metrics & CB success
+            dur_ms = (time.perf_counter() - start_t) * 1000
+            module.record_execution(dur_ms, True)
             cb.record_success()
-            
-            # Update performance metrics
-            if module_name not in self.module_performance:
-                self.module_performance[module_name] = {
-                    'total_executions': 0,
-                    'total_time_ms': 0,
-                    'failures': 0,
-                    'avg_time_ms': 0
-                }
-            
-            perf = self.module_performance[module_name]
-            perf['total_executions'] += 1
-            perf['total_time_ms'] += duration_ms
-            perf['avg_time_ms'] = perf['total_time_ms'] / perf['total_executions']
-            
+            self._update_perf_stats(module_name, dur_ms)
             return result
-            
+
+        # ── TIMEOUT ───────────────────────────────────────────────
         except asyncio.TimeoutError:
-            duration_ms = metadata.timeout_ms
-            error_msg = f"Timeout after {duration_ms}ms"
-            
-            self.smart_bus.record_module_failure(module_name, error_msg)
-            module.record_execution(duration_ms, False, error_msg)
-            
-            # Update circuit breaker
-            cb.record_failure()
-            if cb.failure_count >= self.config.circuit_breaker_threshold:
-                cb.trip()
-                self.logger.error(f"⚡ Circuit breaker TRIPPED for {module_name}")
-            
-            self.logger.error(
-                format_operator_message(
-                    "⏱️", "MODULE TIMEOUT",
-                    instrument=module_name,
-                    details=f"{duration_ms}ms",
-                    context=execution_id
-                )
-            )
-            
-            raise TimeoutError(error_msg)
-            
+            dur_ms = metadata.timeout_ms
+            msg = f"Timeout after {dur_ms} ms"
+            self._handle_module_failure(module, module_name, cb, dur_ms, msg, execution_id, "TIME")
+            raise TimeoutError(msg)
+
+        # ── GENERIC ERROR ────────────────────────────────────────
         except Exception as e:
-            duration_ms = (time.perf_counter() - start_time) * 1000
-            error_msg = str(e)
-            
-            self.smart_bus.record_module_failure(module_name, error_msg)
-            module.record_execution(duration_ms, False, error_msg)
-            
-            # Update circuit breaker
-            cb.record_failure()
-            if cb.failure_count >= self.config.circuit_breaker_threshold:
-                cb.trip()
-                self.logger.error(f"⚡ Circuit breaker TRIPPED for {module_name}")
-            
-            # Update performance metrics
-            if module_name in self.module_performance:
-                self.module_performance[module_name]['failures'] += 1
-            
-            # Analyze error
-            self.error_pinpointer.analyze_error(e, module_name)
-            
-            self.logger.error(
-                format_operator_message(
-                    "💥", "MODULE FAILED",
-                    instrument=module_name,
-                    details=error_msg[:100],
-                    context=execution_id
-                )
-            )
-            
+            dur_ms = (time.perf_counter() - start_t) * 1000
+            self._handle_module_failure(module, module_name, cb, dur_ms, str(e), execution_id, "CRASH")
             raise
-    
+
     async def _execute_emergency_mode(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute only critical modules in emergency mode.
         ENHANCED: Better error handling and monitoring.
         """
-        self.logger.warning("🚨 Executing in EMERGENCY MODE - critical modules only")
+        self.logger.warning("[ALERT] Executing in EMERGENCY MODE - critical modules only")
         
         execution_id = f"emergency_{int(time.time())}"
         start_time = time.time()
@@ -1151,7 +1236,7 @@ class ModuleOrchestrator:
         """Manually reset a circuit breaker"""
         if module_name in self.circuit_breakers:
             self.circuit_breakers[module_name] = CircuitBreakerState()
-            self.logger.info(f"⚡ Circuit breaker reset for {module_name}")
+            self.logger.info(f"[FAST] Circuit breaker reset for {module_name}")
             return True
         return False
     
@@ -1173,7 +1258,7 @@ class ModuleOrchestrator:
     
     def shutdown(self):
         """Graceful system shutdown with cleanup"""
-        self.logger.info("🛑 Initiating system shutdown...")
+        self.logger.info("[STOP] Initiating system shutdown...")
         
         try:
             # Cancel config monitoring
@@ -1198,7 +1283,7 @@ class ModuleOrchestrator:
             self.modules.clear()
             self.circuit_breakers.clear()
             
-            self.logger.info("✅ System shutdown complete")
+            self.logger.info("[OK] System shutdown complete")
             
         except Exception as e:
             self.logger.error(f"Error during shutdown: {e}")
@@ -1312,7 +1397,7 @@ class ModuleOrchestrator:
             if metadata.critical:
                 self.critical_modules.add(name)
             
-            self.logger.info(f"✅ Registered module: {name}")
+            self.logger.info(f"[OK] Registered module: {name}")
             
         except Exception as e:
             self.logger.error(f"Failed to register {name}: {e}")
@@ -1737,7 +1822,7 @@ class ModuleOrchestrator:
                                   stage_results: List[Dict],
                                   aggregated: Dict[str, Any]) -> str:
         """Generate execution summary"""
-        mode = "🚨 EMERGENCY" if self.emergency_mode else "✅ NORMAL"
+        mode = "[ALERT] EMERGENCY" if self.emergency_mode else "[OK] NORMAL"
         
         lines = [
             f"EXECUTION COMPLETE: {execution_id} [{mode}]",
@@ -1774,7 +1859,7 @@ class ModuleOrchestrator:
             # Store reference to config manager
             self.config_manager = config_manager
             
-            self.logger.info("✅ System configuration loaded from ConfigurationManager")
+            self.logger.info("[OK] System configuration loaded from ConfigurationManager")
             
         except Exception as e:
             self.logger.error(f"Failed to load system configuration: {e}")
@@ -1827,7 +1912,7 @@ class ModuleOrchestrator:
             if 'parallel_stages' in execution_config:
                 self.execution_stages_config = execution_config['parallel_stages']
             
-            self.logger.info("✅ Applied execution configuration")
+            self.logger.info("[OK] Applied execution configuration")
             
         except Exception as e:
             self.logger.error(f"Failed to apply execution configuration: {e}")
@@ -1846,7 +1931,7 @@ class ModuleOrchestrator:
                         self.pending_module_configs = {}
                     self.pending_module_configs[module_name] = module_config
             
-            self.logger.info(f"✅ Applied module registry: {len(module_registry)} modules")
+            self.logger.info(f"[OK] Applied module registry: {len(module_registry)} modules")
             
         except Exception as e:
             self.logger.error(f"Failed to apply module registry: {e}")
@@ -1880,7 +1965,7 @@ class ModuleOrchestrator:
             self.logger.warning(f"INTEGRITY ISSUES:\n" + "\n".join(f"  • {i}" for i in issues))
             return False
         
-        self.logger.info("✅ System integrity validated")
+        self.logger.info("[OK] System integrity validated")
         return True
     
     def _restore_system_state(self):
@@ -1935,7 +2020,7 @@ class ModuleOrchestrator:
         lines = [
             "SMARTINFOBUS SYSTEM STATUS",
             "=" * 50,
-            f"Mode: {'🚨 EMERGENCY' if self.emergency_mode else '✅ NORMAL'}",
+            f"Mode: {'[ALERT] EMERGENCY' if self.emergency_mode else '[OK] NORMAL'}",
             f"Modules: {len(self.modules)} ({len(self.critical_modules)} critical)",
             f"Circuit Breakers: {sum(1 for cb in self.circuit_breakers.values() if cb.state == 'OPEN')} open",
         ]

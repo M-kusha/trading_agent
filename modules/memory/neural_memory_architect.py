@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/memory/neural_memory_architect.py
-# 🚀 PRODUCTION-READY Neural Memory Architecture System
+# [ROCKET] PRODUCTION-READY Neural Memory Architecture System
 # Advanced neural memory with attention mechanisms and SmartInfoBus integration
 # ─────────────────────────────────────────────────────────────
 
@@ -70,8 +70,12 @@ class NeuralMemoryArchitect(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
                  genome: Optional[Dict[str, Any]] = None,
                  **kwargs):
         
-        self.config = config or NeuralMemoryConfig()
+        # Store config first before calling super().__init__()
+        self.neural_config = config or NeuralMemoryConfig()
         super().__init__()
+        
+        # Ensure our config is preserved after BaseModule initialization
+        self.config = self.neural_config
         
         # Initialize advanced systems
         self._initialize_advanced_systems()
@@ -84,6 +88,9 @@ class NeuralMemoryArchitect(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
         
         # Initialize neural components
         self._initialize_neural_components()
+        
+        # Start monitoring after all initialization is complete
+        self._start_monitoring()
         
         self.logger.info(
             format_operator_message(
@@ -121,7 +128,6 @@ class NeuralMemoryArchitect(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
         # Health monitoring
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        self._start_monitoring()
         
         # Set device to CPU
         self.device = torch.device("cpu")
@@ -260,7 +266,7 @@ class NeuralMemoryArchitect(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
 
-    async def _initialize(self):
+    def _initialize(self):
         """Initialize module"""
         try:
             # Set initial neural memory status in SmartInfoBus
@@ -278,10 +284,8 @@ class NeuralMemoryArchitect(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
                 thesis="Initial neural memory architecture status"
             )
             
-            return True
         except Exception as e:
             self.logger.error(f"Initialization failed: {e}")
-            return False
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process neural memory operations"""
@@ -853,7 +857,7 @@ class NeuralMemoryArchitect(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
         
         self.logger.error(
             format_operator_message(
-                "💥", "NEURAL_MEMORY_ERROR",
+                "[CRASH]", "NEURAL_MEMORY_ERROR",
                 error=str(error),
                 details=explanation,
                 processing_time_ms=processing_time,
@@ -879,6 +883,10 @@ class NeuralMemoryArchitect(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
     def _update_neural_health(self):
         """Update neural memory health metrics"""
         try:
+            # Defensive check for initialization race condition
+            if not hasattr(self, '_neural_performance_score') or not hasattr(self, 'buffer'):
+                return
+                
             # Check neural performance
             if self._neural_performance_score < 50:
                 self._health_status = 'warning'
@@ -901,6 +909,10 @@ class NeuralMemoryArchitect(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
     def _analyze_memory_efficiency(self):
         """Analyze memory efficiency"""
         try:
+            # Defensive check for initialization race condition
+            if not hasattr(self, 'buffer') or not hasattr(self, 'importance_scores'):
+                return
+                
             if len(self.buffer) > 10:
                 # Calculate attention efficiency
                 high_importance = torch.sum(self.importance_scores > 0.7).item()
@@ -1008,18 +1020,70 @@ class NeuralMemoryArchitect(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
         finally:
             loop.close()
     
-    def propose_action(self, obs: Any = None, **kwargs) -> np.ndarray:
-        """Legacy compatibility for action proposal"""
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose action based on neural memory"""
         # Use neural memory for action guidance
         if len(self.buffer) > 0:
             # Get most important memory
             max_idx = int(torch.argmax(self.importance_scores).item())
             memory_embedding = self.buffer[max_idx].cpu().numpy()
             
-            # Convert to action space
-            return np.array([memory_embedding[0], memory_embedding[1] if len(memory_embedding) > 1 else 0.0])
+            # Convert to action dictionary format
+            action_values = [
+                float(memory_embedding[0]), 
+                float(memory_embedding[1] if len(memory_embedding) > 1 else 0.0)
+            ]
+            
+            confidence = self._neural_performance_score / 100.0
+            
+            return {
+                "action": action_values,
+                "confidence": confidence,
+                "thesis": f"Neural memory action from most important memory (performance: {self._neural_performance_score:.1f})",
+                "memory_index": int(max_idx),
+                "importance_score": float(self.importance_scores[max_idx].item())
+            }
         
-        return np.array([0.0, 0.0])
+        return {"action": [0.0, 0.0], "confidence": 0.5, "thesis": "Neural memory action proposal - no memories available"}
+    
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in neural memory decisions"""
+        if not isinstance(action, dict):
+            return 0.5
+        
+        # Base confidence from neural performance
+        base_confidence = self._neural_performance_score / 100.0
+        
+        # Memory utilization factor
+        utilization = len(self.buffer) / self.genome["max_len"] if self.genome["max_len"] > 0 else 0.0
+        utilization_factor = min(1.0, utilization + 0.2)  # Some memory is good
+        
+        # Importance quality factor
+        if len(self.importance_scores) > 0:
+            avg_importance = float(torch.mean(self.importance_scores).item())
+            importance_factor = min(1.0, avg_importance + 0.3)
+        else:
+            importance_factor = 0.3
+        
+        # Circuit breaker consideration
+        if self.circuit_breaker['state'] == 'OPEN':
+            cb_factor = 0.5
+        else:
+            cb_factor = 1.0
+        
+        # Health status factor
+        if self._health_status == 'healthy':
+            health_factor = 1.0
+        elif self._health_status == 'warning':
+            health_factor = 0.8
+        else:  # critical
+            health_factor = 0.6
+        
+        # Combine factors
+        confidence = (base_confidence * 0.4 + utilization_factor * 0.2 + 
+                     importance_factor * 0.2 + cb_factor * 0.1 + health_factor * 0.1)
+        
+        return float(max(0.0, min(1.0, confidence)))
     
     def confidence(self, obs: Any = None, **kwargs) -> float:
         """Legacy compatibility for confidence"""

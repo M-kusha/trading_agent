@@ -217,7 +217,7 @@ class OpponentSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
         self.is_disabled = False
         
         self.logger.info(format_operator_message(
-            icon="🔄",
+            icon="[RELOAD]",
             message="Opponent Simulator reset - all state cleared"
         ))
 
@@ -335,7 +335,7 @@ class OpponentSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                 self.simulation_stats["regime_adaptations"] += 1
                 
                 self.logger.info(format_operator_message(
-                    icon="📊",
+                    icon="[STATS]",
                     message=f"Regime change detected: {old_regime} → {self.market_regime}",
                     adaptation="Simulation parameters updated",
                     session=self.market_session
@@ -726,7 +726,7 @@ class OpponentSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
             self.logger.error(format_operator_message(
-                icon="🚨",
+                icon="[ALERT]",
                 message="OpponentSimulator disabled due to repeated errors",
                 error_count=self.error_count,
                 threshold=self.circuit_breaker_threshold
@@ -829,13 +829,13 @@ class OpponentSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
         
         # Status indicators
         if self.simulation_stats['effectiveness_score'] > 0.8:
-            effectiveness_status = "✅ Excellent"
+            effectiveness_status = "[OK] Excellent"
         elif self.simulation_stats['effectiveness_score'] > 0.6:
-            effectiveness_status = "⚡ Good"
+            effectiveness_status = "[FAST] Good"
         elif self.simulation_stats['effectiveness_score'] > 0.4:
-            effectiveness_status = "⚠️ Fair"
+            effectiveness_status = "[WARN] Fair"
         else:
-            effectiveness_status = "🚨 Poor"
+            effectiveness_status = "[ALERT] Poor"
         
         # Mode description
         mode_description = self.SIMULATION_MODES.get(self.mode, "Unknown mode")
@@ -847,41 +847,41 @@ class OpponentSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             timestamp = p['timestamp'][:19]
             instrument = p['instrument']
             magnitude = p['magnitude']
-            perturbation_lines.append(f"  📊 {timestamp}: {instrument} {magnitude:+.5f}")
+            perturbation_lines.append(f"  [STATS] {timestamp}: {instrument} {magnitude:+.5f}")
         
         # Regime adaptations
         adaptation_lines = []
         for adaptation in list(self.regime_adaptations)[-3:]:
             timestamp = adaptation['timestamp'][:19]
             change = f"{adaptation['from_regime']} → {adaptation['to_regime']}"
-            adaptation_lines.append(f"  🔄 {timestamp}: {change}")
+            adaptation_lines.append(f"  [RELOAD] {timestamp}: {change}")
         
         return f"""
 🎮 OPPONENT SIMULATOR
 ═══════════════════════════════════════
-🎯 Mode: {self.mode.title().replace('_', ' ')} - {mode_description}
-📊 Effectiveness: {effectiveness_status} ({self.simulation_stats['effectiveness_score']:.1%})
-⚖️ Intensity: Base {self.intensity:.2f} | Adaptive {self.adaptive_intensity:.2f}
+[TARGET] Mode: {self.mode.title().replace('_', ' ')} - {mode_description}
+[STATS] Effectiveness: {effectiveness_status} ({self.simulation_stats['effectiveness_score']:.1%})
+[BALANCE] Intensity: Base {self.intensity:.2f} | Adaptive {self.adaptive_intensity:.2f}
 🌐 Market Context: {self.market_regime.title()} regime, {self.volatility_regime} volatility
 
-📈 SIMULATION CONFIGURATION
+[CHART] SIMULATION CONFIGURATION
 • Context Sensitivity: {self.context_sensitivity:.1%}
-• Volatility Scaling: {'✅ Enabled' if self.volatility_scaling else '❌ Disabled'}
-• Session Awareness: {'✅ Enabled' if self.session_aware else '❌ Disabled'}
+• Volatility Scaling: {'[OK] Enabled' if self.volatility_scaling else '[FAIL] Disabled'}
+• Session Awareness: {'[OK] Enabled' if self.session_aware else '[FAIL] Disabled'}
 • Max Perturbation: {self.max_perturbation:.1%}
 • Noise Decay: {self.noise_decay:.1%}
 • Regime Multiplier: {self.regime_multiplier:.1f}x
 
-📊 PERFORMANCE STATISTICS
+[STATS] PERFORMANCE STATISTICS
 • Total Simulations: {self.simulation_stats['total_simulations']:,}
 • Perturbations Applied: {self.simulation_stats['perturbations_applied']:,}
 • Avg Perturbation Size: {self.simulation_stats['avg_perturbation_size']:.5f}
 • Regime Adaptations: {self.simulation_stats['regime_adaptations']}
 • Current Volatility: {self.current_volatility:.4f}
 • Error Count: {self.error_count}
-• Status: {'🚨 Disabled' if self.is_disabled else '✅ Healthy'}
+• Status: {'[ALERT] Disabled' if self.is_disabled else '[OK] Healthy'}
 
-🔧 ADAPTIVE PARAMETERS
+[TOOL] ADAPTIVE PARAMETERS
 • Base Intensity: {self.intensity:.2f}
 • Adaptive Intensity: {self.adaptive_intensity:.2f}
 • Adaptation Rate: {self.adaptation_rate:.1%}
@@ -891,7 +891,7 @@ class OpponentSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
 📜 RECENT PERTURBATIONS
 {chr(10).join(perturbation_lines) if perturbation_lines else "  📭 No recent perturbations"}
 
-🔄 REGIME ADAPTATIONS
+[RELOAD] REGIME ADAPTATIONS
 {chr(10).join(adaptation_lines) if adaptation_lines else "  📭 No recent regime changes"}
 
 💡 SIMULATION MODES AVAILABLE
@@ -903,7 +903,7 @@ class OpponentSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
 • News Shock: Event-driven price shocks
 • Regime Shift: Market regime transitions
 
-🎯 EFFECTIVENESS METRICS
+[TARGET] EFFECTIVENESS METRICS
 • Current Score: {self.simulation_stats['effectiveness_score']:.1%}
 • Impact Distribution: {len(self.perturbation_effects)} recorded effects
 • Adaptation Success: {len(self.regime_adaptations)} regime changes handled
@@ -989,7 +989,7 @@ class OpponentSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                 self.regime_adaptations.append(adaptation)
             
             self.logger.info(format_operator_message(
-                icon="🔄",
+                icon="[RELOAD]",
                 message="OpponentSimulator state restored",
                 simulations=self.simulation_stats.get('total_simulations', 0),
                 perturbations=len(self.perturbation_effects)

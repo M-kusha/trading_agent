@@ -9,7 +9,7 @@ import datetime
 from collections import defaultdict, deque
 from typing import Any, Dict, Optional, List
 
-# ✅ FIXED: Proper imports for SmartInfoBus system
+# [OK] FIXED: Proper imports for SmartInfoBus system
 from modules.core.module_base import BaseModule, module
 from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
 from modules.utils.info_bus import InfoBusManager
@@ -84,7 +84,7 @@ class TradeThesisTracker(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         self.best_thesis = None
         self.worst_thesis = None
         
-        self.logger.info("🔄 Trade thesis tracker reset complete")
+        self.logger.info("[RELOAD] Trade thesis tracker reset complete")
     
     async def process(self, **inputs) -> Dict[str, Any]:
         """
@@ -137,7 +137,7 @@ class TradeThesisTracker(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             }
             
         except Exception as e:
-            self.logger.error(f"❌ Thesis tracking failed: {e}")
+            self.logger.error(f"[FAIL] Thesis tracking failed: {e}")
             return {
                 'thesis_analysis': {'error': str(e)},
                 'thesis_performance': dict(self.thesis_performance),
@@ -259,7 +259,7 @@ class TradeThesisTracker(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             return processed_trade
             
         except Exception as e:
-            self.logger.error(f"❌ Failed to process trade with thesis: {e}")
+            self.logger.error(f"[FAIL] Failed to process trade with thesis: {e}")
             return None
     
     def _update_thesis_performance(self, processed_trades: List[Dict[str, Any]]):
@@ -426,24 +426,53 @@ class TradeThesisTracker(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 🧠 TRADE THESIS ANALYSIS REPORT
 ═══════════════════════════════════════
 📅 Session Duration: {analysis['session_duration_hours']:.1f} hours
-🎯 Current Thesis: {analysis['current_thesis']}
-🔄 Thesis Changes: {analysis['thesis_changes']}
+[TARGET] Current Thesis: {analysis['current_thesis']}
+[RELOAD] Thesis Changes: {analysis['thesis_changes']}
 
-📊 PERFORMANCE METRICS
+[STATS] PERFORMANCE METRICS
 • Current P&L: ${analysis['current_performance']['pnl']:.2f}
 • Current Confidence: {analysis['current_confidence']:.1%}
 • Total P&L: ${analysis['total_pnl']:.2f}
 • Total Trades: {analysis['total_trades']}
 
-🏆 BEST/WORST THESIS
+[TROPHY] BEST/WORST THESIS
 • Best: {analysis['best_thesis']} (${self.thesis_performance.get(analysis['best_thesis'], {}).get('pnl', 0):.2f})
 • Worst: {analysis['worst_thesis']} (${self.thesis_performance.get(analysis['worst_thesis'], {}).get('pnl', 0):.2f})
 
-📈 ADAPTATION METRICS
+[CHART] ADAPTATION METRICS
 • Change Frequency: {analysis['change_frequency']:.1f}/hour
 • Thesis Diversity: {analysis['thesis_diversity']:.2f}
 • Active Thesis Count: {analysis['active_thesis_count']}
         """
+    
+    # Required abstract methods for SmartInfoBusTradingMixin
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose thesis tracking action"""
+        return {
+            'action_type': 'thesis_tracking',
+            'priority': 'normal',
+            'tracking_focus': 'thesis_evolution',
+            'target_metrics': ['thesis_changes', 'performance', 'confidence'],
+            '_thesis': 'Tracking thesis evolution and performance patterns'
+        }
+    
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in thesis tracking action"""
+        # Base confidence on thesis stability and performance
+        if not self.thesis_performance:
+            return 0.5
+        
+        # Calculate stability score (fewer changes = more stable)
+        total_theses = len(self.thesis_performance)
+        stability_score = max(0.1, 1.0 - (self.thesis_changes / max(1, total_theses * 10)))
+        
+        # Calculate performance score
+        total_pnl = sum(perf['pnl'] for perf in self.thesis_performance.values())
+        performance_score = min(1.0, max(0.1, (total_pnl + 1000) / 2000))  # Normalize to 0-1
+        
+        # Combine scores
+        confidence = (stability_score + performance_score) / 2
+        return min(0.9, max(0.1, confidence))
 
 
 # ────────────────────────────────────────────────────────────────────────────────

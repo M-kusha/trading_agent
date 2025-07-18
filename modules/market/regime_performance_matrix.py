@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/market/regime_performance_matrix.py
-# 🚀 PRODUCTION-READY Regime Performance Matrix with Advanced Analytics
+# [ROCKET] PRODUCTION-READY Regime Performance Matrix with Advanced Analytics
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # ENHANCED: Complete SmartInfoBus integration, performance tracking, thesis generation
 # ─────────────────────────────────────────────────────────────
@@ -10,7 +10,7 @@ import asyncio
 import time
 import numpy as np
 from collections import deque
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, Tuple, List, Union
 import datetime
 from dataclasses import dataclass
 import threading
@@ -50,7 +50,11 @@ class RegimeMatrixConfig:
     name="RegimePerformanceMatrix",
     version="3.0.0",
     category="market",
-    provides=["regime_performance", "regime_accuracy", "regime_prediction", "stress_test_results"],
+    provides=[
+        "regime_performance", "regime_accuracy", "regime_prediction", "stress_test_results",
+        "market_regime", "regime_data", "regime_analysis", "market_state",
+        "performance_metrics", "backtesting_data", "recent_trades", "trading_signals"
+    ],
     requires=["market_regime", "volatility_data", "pnl_data"],
     description="Advanced regime performance tracking with stress testing and prediction accuracy",
     thesis_required=True,
@@ -64,18 +68,40 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
     Zero-wiring architecture with comprehensive SmartInfoBus integration.
     """
     
-    def __init__(self, config: Optional[RegimeMatrixConfig] = None, **kwargs):
+    def __init__(self, config: Optional[Union[RegimeMatrixConfig, Dict[str, Any]]] = None, **kwargs):
         """Initialize with comprehensive advanced systems"""
-        self.config = config or RegimeMatrixConfig()
-        super().__init__()
+        # Handle both dict and RegimeMatrixConfig
+        if isinstance(config, dict):
+            processed_config = RegimeMatrixConfig(**config)
+        else:
+            processed_config = config or RegimeMatrixConfig()
+        
+        # Set config early for any method that needs it
+        self.config = processed_config
+        self._fully_initialized = False
+        
+        # Initialize advanced systems first
         self._initialize_advanced_systems()
+        
+        # Call parent init 
+        super().__init__(config={})
+        
+        # Restore our processed config after parent init
+        self.config = processed_config
+        
         self._initialize_matrix_state()
         self._initialize_stress_testing()
         self._start_monitoring()
         
+        # Mark as fully initialized
+        self._fully_initialized = True
+        
+        # Now call _initialize properly
+        self._initialize()
+        
         self.logger.info(
             format_operator_message(
-                "📊", "REGIME_MATRIX_INITIALIZED",
+                "[STATS]", "REGIME_MATRIX_INITIALIZED",
                 details=f"{self.config.n_regimes} regimes, decay: {self.config.decay_factor}",
                 result="Production-ready regime performance tracking active",
                 context="system_startup"
@@ -165,9 +191,13 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
     
-    async def _initialize(self):
+    def _initialize(self):
         """Async initialization"""
-        self.logger.info("🔄 RegimePerformanceMatrix async initialization")
+        # Check if we're fully initialized yet
+        if not getattr(self, '_fully_initialized', False):
+            return
+            
+        self.logger.info("[RELOAD] RegimePerformanceMatrix async initialization")
         
         # Set initial data in SmartInfoBus
         self.smart_bus.set(
@@ -362,7 +392,7 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         
         self.logger.info(
             format_operator_message(
-                "🔄", "REGIME_TRANSITION",
+                "[RELOAD]", "REGIME_TRANSITION",
                 instrument=f"Regime {old_regime} -> {new_regime}",
                 details=f"Vol: {volatility:.4f}, PnL: {pnl:.2f}",
                 context="regime_tracking"
@@ -442,19 +472,19 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         thesis = f"""
 REGIME PERFORMANCE MATRIX ANALYSIS
 
-📊 CURRENT STATUS:
+[STATS] CURRENT STATUS:
 • True Regime: {current_name} (ID: {current_regime})
 • Predicted Regime: {predicted_name} (ID: {predicted_regime})
 • Prediction Status: {prediction_status}
 • Overall Accuracy: {overall_accuracy:.1%}
 
-🎯 PERFORMANCE METRICS:
+[TARGET] PERFORMANCE METRICS:
 • Average Performance: ${matrix_result['avg_performance']:.2f}
 • Current Volatility: {matrix_result['current_volatility']:.4f}
 • Volatility Trend: {matrix_result['volatility_trend'].title()}
 • Matrix Decay Factor: {self.config.decay_factor}
 
-📈 REGIME CHARACTERISTICS:
+[CHART] REGIME CHARACTERISTICS:
 """
         
         for regime_id, char in matrix_result['regime_characteristics'].items():
@@ -469,18 +499,18 @@ REGIME PERFORMANCE MATRIX ANALYSIS
         
         # Performance assessment
         if overall_accuracy > 0.8:
-            thesis += "\n\n✅ EXCELLENT PREDICTION ACCURACY: Model performing very well"
+            thesis += "\n\n[OK] EXCELLENT PREDICTION ACCURACY: Model performing very well"
         elif overall_accuracy > 0.6:
-            thesis += "\n\n📈 GOOD PREDICTION ACCURACY: Model showing solid performance"
+            thesis += "\n\n[CHART] GOOD PREDICTION ACCURACY: Model showing solid performance"
         elif overall_accuracy > 0.4:
-            thesis += "\n\n⚠️ MODERATE ACCURACY: Model needs improvement"
+            thesis += "\n\n[WARN] MODERATE ACCURACY: Model needs improvement"
         else:
-            thesis += "\n\n🚨 LOW ACCURACY: Model requires attention"
+            thesis += "\n\n[ALERT] LOW ACCURACY: Model requires attention"
         
         # Matrix insights
         thesis += f"""
 
-🔍 MATRIX INSIGHTS:
+[SEARCH] MATRIX INSIGHTS:
 • Total Regime Transitions: {len(self._regime_transitions)}
 • Performance Window: {len(self._performance_history)}/{self.config.performance_window}
 • Volatility History: {len(self.vol_history)}/{self.config.vol_history_size}
@@ -579,7 +609,7 @@ REGIME PERFORMANCE MATRIX ANALYSIS
         
         self.logger.error(
             format_operator_message(
-                "💥", "REGIME_MATRIX_ERROR",
+                "[CRASH]", "REGIME_MATRIX_ERROR",
                 details=str(error)[:100],
                 explanation=explanation,
                 context="error_handling"
@@ -612,7 +642,7 @@ REGIME PERFORMANCE MATRIX ANALYSIS
         self.circuit_breaker_failures += 1
         
         if self.circuit_breaker_failures >= self.config.circuit_breaker_threshold:
-            self.logger.error("🚨 Regime matrix circuit breaker triggered")
+            self.logger.error("[ALERT] Regime matrix circuit breaker triggered")
     
     def _update_health_metrics(self):
         """Update health metrics"""
@@ -677,7 +707,7 @@ REGIME PERFORMANCE MATRIX ANALYSIS
         self.success_count = state.get('success_count', 0)
         self.failure_count = state.get('failure_count', 0)
         
-        self.logger.info("✅ Regime matrix state restored successfully")
+        self.logger.info("[OK] Regime matrix state restored successfully")
     
     def get_health_status(self) -> Dict[str, Any]:
         """Get comprehensive health status"""
@@ -699,3 +729,104 @@ REGIME PERFORMANCE MATRIX ANALYSIS
     def stop_monitoring(self):
         """Stop background monitoring"""
         self._monitoring_active = False
+    
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose regime-based action recommendations"""
+        try:
+            # Get current regime analysis
+            performance_data = await self._extract_performance_data(**inputs)
+            if not performance_data:
+                return {
+                    'action': 'hold',
+                    'regime_confidence': 0.5,
+                    'rationale': 'Insufficient data for regime analysis',
+                    'risk_level': 'medium'
+                }
+            
+            current_regime = self._current_regime
+            predicted_regime = performance_data['predicted_regime']
+            volatility = performance_data['volatility']
+            overall_accuracy = self._calculate_overall_accuracy()
+            
+            # Determine action based on regime
+            if current_regime == 0:  # Low volatility regime
+                action = 'buy' if predicted_regime == current_regime and overall_accuracy > 0.7 else 'hold'
+                risk_level = 'low'
+            elif current_regime == 1:  # Medium volatility regime
+                action = 'trade' if overall_accuracy > 0.6 else 'reduce_exposure'
+                risk_level = 'medium'
+            else:  # High volatility regime
+                action = 'defensive' if volatility > 0.3 else 'cautious_trade'
+                risk_level = 'high'
+            
+            # Calculate regime confidence
+            regime_confidence = min(1.0, overall_accuracy + (1.0 - volatility) * 0.3)
+            
+            # Generate rationale
+            regime_names = {0: "Low Volatility", 1: "Medium Volatility", 2: "High Volatility"}
+            current_name = regime_names.get(current_regime, f"Regime {current_regime}")
+            
+            rationale = f"Current regime: {current_name}, Prediction accuracy: {overall_accuracy:.1%}, Volatility: {volatility:.3f}"
+            
+            return {
+                'action': action,
+                'regime_confidence': regime_confidence,
+                'rationale': rationale,
+                'risk_level': risk_level,
+                'current_regime': current_regime,
+                'predicted_regime': predicted_regime,
+                'regime_accuracy': overall_accuracy
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error in propose_action: {e}")
+            return {
+                'action': 'hold',
+                'regime_confidence': 0.5,
+                'rationale': f'Error in regime analysis: {str(e)}',
+                'risk_level': 'medium'
+            }
+    
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in the proposed action"""
+        try:
+            # Extract confidence factors
+            overall_accuracy = self._calculate_overall_accuracy()
+            regime_stability = 1.0 - abs(self._current_regime - self._predicted_regime) / max(self.config.n_regimes - 1, 1)
+            
+            # Check data quality
+            data_quality = min(1.0, len(self.vol_history) / self.config.vol_history_size)
+            
+            # Performance consistency
+            if len(self._performance_history) > 10:
+                perf_std = np.std(list(self._performance_history))
+                perf_consistency = max(0.0, 1.0 - perf_std / 100.0)  # Normalize by expected range
+            else:
+                perf_consistency = 0.5
+            
+            # Matrix convergence (how well-populated is our matrix)
+            matrix_coverage = np.count_nonzero(self.matrix) / (self.config.n_regimes * self.config.n_regimes)
+            
+            # Combine confidence factors
+            confidence = (
+                overall_accuracy * 0.4 +           # Prediction accuracy is most important
+                regime_stability * 0.25 +          # Current vs predicted regime alignment
+                data_quality * 0.15 +              # Amount of historical data
+                perf_consistency * 0.1 +           # Performance consistency
+                matrix_coverage * 0.1              # Matrix completeness
+            )
+            
+            # Apply action-specific adjustments
+            action_type = action.get('action', 'hold')
+            if action_type == 'defensive' and self._current_regime == 2:  # High vol regime
+                confidence *= 1.1  # More confident in defensive actions during high vol
+            elif action_type == 'buy' and self._current_regime == 0:  # Low vol regime
+                confidence *= 1.05  # Slightly more confident in buy actions during low vol
+            elif action_type in ['trade', 'cautious_trade'] and overall_accuracy < 0.6:
+                confidence *= 0.8  # Less confident in active trading with low accuracy
+            
+            return float(max(0.0, min(1.0, confidence)))
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating confidence: {e}")
+            return 0.5

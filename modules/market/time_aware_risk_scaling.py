@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/market/time_aware_risk_scaling.py
-# 🚀 PRODUCTION-READY Time-Aware Risk Scaling with Advanced Analytics
+# [ROCKET] PRODUCTION-READY Time-Aware Risk Scaling with Advanced Analytics
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # ENHANCED: Complete SmartInfoBus integration, session analysis, thesis generation
 # ─────────────────────────────────────────────────────────────
@@ -10,7 +10,7 @@ import asyncio
 import time
 import numpy as np
 import pandas as pd
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, List
 from collections import deque
 import datetime
 from dataclasses import dataclass, field
@@ -62,7 +62,10 @@ class TimeAwareRiskConfig:
     name="TimeAwareRiskScaling",
     version="3.0.0",
     category="market",
-    provides=["risk_scaling_factor", "session_risk", "volatility_adjustment", "time_risk_analysis"],
+    provides=[
+        "risk_scaling_factor", "session_risk", "volatility_adjustment", "time_risk_analysis",
+        "volatility_data", "market_conditions", "risk_data"
+    ],
     requires=["market_data", "volatility_data", "timestamp"],
     description="Advanced time-aware risk scaling with session analysis and volatility modeling",
     thesis_required=True,
@@ -78,11 +81,20 @@ class TimeAwareRiskScaling(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradin
     
     def __init__(self, config: Optional[TimeAwareRiskConfig] = None, **kwargs):
         """Initialize with comprehensive advanced systems"""
-        self.config = config or TimeAwareRiskConfig()
-        super().__init__()
+        # Store config first 
+        self.time_aware_risk_config = config or TimeAwareRiskConfig()
+        self.config = self.time_aware_risk_config  # Set config early for init methods
+        
+        # Initialize all systems before super().__init__() 
+        # because BaseModule calls _initialize() which needs these attributes
         self._initialize_advanced_systems()
         self._initialize_risk_state()
         self._initialize_session_tracking()
+        
+        super().__init__()
+        
+        # Ensure our config is preserved after BaseModule initialization
+        self.config = self.time_aware_risk_config
         self._start_monitoring()
         
         self.logger.info(
@@ -183,9 +195,9 @@ class TimeAwareRiskScaling(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradin
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
     
-    async def _initialize(self):
+    def _initialize(self):
         """Async initialization"""
-        self.logger.info("🔄 TimeAwareRiskScaling async initialization")
+        self.logger.info("[RELOAD] TimeAwareRiskScaling async initialization")
         
         # Set initial data in SmartInfoBus
         self.smart_bus.set(
@@ -214,8 +226,27 @@ class TimeAwareRiskScaling(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradin
             # Process time-aware risk scaling
             risk_result = await self._process_time_aware_scaling(time_data)
             
-            # Generate comprehensive thesis
-            thesis = await self._generate_risk_thesis(time_data, risk_result)
+            # Generate comprehensive thesis with mixin format
+            risk_level = "High" if risk_result['risk_level'] > 0.7 else "Medium" if risk_result['risk_level'] > 0.4 else "Low"
+            components = {
+                'time_risk': risk_result['risk_level'],
+                'volatility_risk': min(risk_result['volatility'] * 20, 1.0),
+                'session_risk': 0.3 if risk_result['current_session'] == 'asian' else 0.2,
+                'scaling_risk': min(risk_result['scaling_factor'] / 2.0, 1.0)
+            }
+            alerts = []
+            if risk_result['risk_level'] > 0.8:
+                alerts.append("[ALERT] Critical risk level detected")
+            if risk_result['volatility'] > 0.05:
+                alerts.append("[WARN] High volatility environment")
+            
+            thesis = await self._generate_risk_thesis(
+                risk_level,
+                risk_result['risk_level'],
+                {'time_data': time_data, 'risk_result': risk_result},
+                components,
+                alerts
+            )
             
             # Update SmartInfoBus with results
             await self._update_risk_smart_bus(risk_result, thesis)
@@ -273,7 +304,7 @@ class TimeAwareRiskScaling(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradin
         # Try market data volatility calculation
         market_data = self.smart_bus.get('market_data', 'TimeAwareRiskScaling')
         if market_data and isinstance(market_data, dict):
-            for instrument in ['XAU/USD', 'EUR/USD', 'GBP/USD']:
+            for instrument in ['XAUUSD', 'EURUSD']:
                 if instrument in market_data:
                     inst_data = market_data[instrument]
                     if isinstance(inst_data, dict) and 'close' in inst_data:
@@ -384,7 +415,7 @@ class TimeAwareRiskScaling(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradin
         # Log session change
         self.logger.info(
             format_operator_message(
-                "🔄", "SESSION_TRANSITION",
+                "[RELOAD]", "SESSION_TRANSITION",
                 instrument=f"{old_session} -> {new_session}",
                 details=f"Hour: {hour}, Vol: {self.current_volatility:.4f}",
                 context="session_management"
@@ -562,17 +593,22 @@ class TimeAwareRiskScaling(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradin
             self._session_risk_multipliers[session], 0.3, 2.0
         )
     
-    async def _generate_risk_thesis(self, time_data: Dict[str, Any], risk_result: Dict[str, Any]) -> str:
+    async def _generate_risk_thesis(self, level: str, score: float, 
+                                  context: Dict[str, Any], components: Dict[str, float],
+                                  alerts: List[str]) -> str:
         """Generate comprehensive thesis for risk scaling"""
         
-        session = risk_result['current_session']
-        scaling_factor = risk_result['scaling_factor']
-        risk_level = risk_result['risk_level']
-        volatility = risk_result['volatility']
-        hour = risk_result['hour']
+        # Extract data from context
+        time_data = context.get('time_data', {})
+        risk_result = context.get('risk_result', {})
+        
+        session = risk_result.get('current_session', 'unknown')
+        scaling_factor = risk_result.get('scaling_factor', 1.0)
+        volatility = risk_result.get('volatility', 0.01)
+        hour = risk_result.get('hour', 0)
         
         # Risk assessment
-        risk_assessment = "High" if risk_level > 0.7 else "Medium" if risk_level > 0.4 else "Low"
+        risk_assessment = "High" if score > 0.7 else "Medium" if score > 0.4 else "Low"
         
         # Session characteristics
         session_names = {
@@ -587,73 +623,74 @@ class TimeAwareRiskScaling(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradin
         # Generate thesis
         thesis = f"""
 TIME-AWARE RISK SCALING ANALYSIS - {session_name}
+Trading Focus: XAU/USD (Gold) & EUR/USD
 
 ⏰ CURRENT CONTEXT:
 • Session: {session_name} (Hour: {hour}:00 UTC)
 • Risk Scaling Factor: {scaling_factor:.3f}x
-• Overall Risk Level: {risk_assessment} ({risk_level:.1%})
-• Current Volatility: {volatility:.4f} ({risk_result['volatility_regime']} regime)
+• Overall Risk Level: {risk_assessment} ({score:.1%})
+• Current Volatility: {volatility:.4f} ({risk_result.get('volatility_regime', 'unknown')} regime)
 
-📊 SCALING COMPONENTS:
-• Volatility Adjustment: {risk_result['volatility_adjustment']:.3f}x
-• Session Multiplier: {risk_result['session_multiplier']:.3f}x
-• Hourly Risk Score: {risk_result['hourly_risk_score']:.3f}
-• Risk Trend: {risk_result['risk_trend'].title()}
+[STATS] SCALING COMPONENTS:
+• Volatility Adjustment: {risk_result.get('volatility_adjustment', 1.0):.3f}x
+• Session Multiplier: {risk_result.get('session_multiplier', 1.0):.3f}x
+• Hourly Risk Score: {risk_result.get('hourly_risk_score', 0.5):.3f}
+• Risk Trend: {risk_result.get('risk_trend', 'unknown').title()}
 
-🎯 SESSION ANALYSIS:
+[TARGET] SESSION ANALYSIS FOR GOLD & EUR:
 """
         
         if session == "asian":
-            thesis += """• Early market activity with moderate liquidity
-• Typically lower volatility but higher uncertainty
-• Risk scaling reflects overnight developments
-• Position sizing should be conservative"""
+            thesis += """• Gold typically shows early volatility during Asian session
+• EUR/USD often ranges during low European liquidity
+• Risk scaling reflects overnight developments and sentiment
+• Conservative position sizing recommended for both instruments"""
             
         elif session == "european":
-            thesis += """• High liquidity European session active
-• Major economic releases often occur
-• Baseline risk scaling applied
-• Optimal conditions for standard position sizing"""
+            thesis += """• High liquidity European session - optimal for EUR/USD
+• Gold often reacts to European economic releases
+• Baseline risk scaling applied for standard conditions
+• Prime trading hours for EUR/USD, moderate for Gold"""
             
         elif session == "us":
-            thesis += """• Peak liquidity with US markets open
-• Highest volatility potential
-• Enhanced risk monitoring active
-• Dynamic position sizing based on momentum"""
+            thesis += """• Peak liquidity with US markets open - excellent for Gold
+• EUR/USD shows increased volatility during US overlap
+• Enhanced risk monitoring for Gold momentum moves
+• Dynamic position sizing based on US economic data"""
             
         else:  # closed
-            thesis += """• Markets closed or low liquidity period
-• Minimal trading activity expected
-• Reduced position sizing recommended
-• Focus on risk preservation"""
+            thesis += """• Limited liquidity for both Gold and EUR/USD
+• Overnight gaps possible especially for Gold
+• Reduced position sizing strongly recommended
+• Focus on risk preservation and gap management"""
         
         # Add volatility regime analysis
-        vol_regime = risk_result['volatility_regime']
+        vol_regime = risk_result.get('volatility_regime', 'unknown')
         if vol_regime == "high":
-            thesis += "\n\n⚠️ HIGH VOLATILITY REGIME: Significant market stress detected"
+            thesis += "\n\n[WARN] HIGH VOLATILITY REGIME: Significant market stress detected"
         elif vol_regime == "low":
-            thesis += "\n\n📈 LOW VOLATILITY REGIME: Calm market conditions"
+            thesis += "\n\n[CHART] LOW VOLATILITY REGIME: Calm market conditions"
         else:
-            thesis += f"\n\n✅ {vol_regime.upper()} VOLATILITY REGIME: Standard market conditions"
+            thesis += f"\n\n[OK] {vol_regime.upper()} VOLATILITY REGIME: Standard market conditions"
         
         # Add risk management guidance
-        if risk_level > self.config.risk_threshold_critical:
-            thesis += "\n\n🚨 CRITICAL RISK LEVEL: Emergency risk controls activated"
-        elif risk_level > self.config.risk_threshold_high:
-            thesis += "\n\n⚠️ HIGH RISK LEVEL: Enhanced monitoring and reduced exposure"
+        if score > self.config.risk_threshold_critical:
+            thesis += "\n\n[ALERT] CRITICAL RISK LEVEL: Emergency risk controls activated"
+        elif score > self.config.risk_threshold_high:
+            thesis += "\n\n[WARN] HIGH RISK LEVEL: Enhanced monitoring and reduced exposure"
         else:
-            thesis += "\n\n✅ MANAGEABLE RISK LEVEL: Standard risk management protocols"
+            thesis += "\n\n[OK] MANAGEABLE RISK LEVEL: Standard risk management protocols"
         
         # Add session performance
-        session_efficiency = risk_result['session_efficiency']
+        session_efficiency = risk_result.get('session_efficiency', 0.5)
         thesis += f"""
 
-📈 SESSION PERFORMANCE:
+[CHART] SESSION PERFORMANCE:
 • Session Efficiency: {session_efficiency:.1%}
-• Total Session Transitions: {risk_result['session_transitions']}
+• Total Session Transitions: {risk_result.get('session_transitions', 0)}
 • Performance Trend: {self._get_performance_trend(session)}
 
-🤖 RISK SCALING LOGIC:
+[BOT] RISK SCALING LOGIC:
 • Base Factor: {self.config.base_factor}
 • Decay Applied: {self.config.decay_factor}
 • Memory Window: {self.config.vol_window} periods
@@ -661,6 +698,83 @@ TIME-AWARE RISK SCALING ANALYSIS - {session_name}
 """
         
         return thesis
+    
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose risk scaling action based on current conditions"""
+        
+        # Get current risk analysis
+        result = await self.process(**inputs)
+        
+        scaling_factor = result.get('scaling_factor', 1.0)
+        risk_level = result.get('risk_level', 0.5)
+        session = result.get('current_session', 'unknown')
+        
+        # Determine action based on risk level
+        if risk_level > 0.8:
+            action_type = "reduce_exposure"
+            magnitude = 0.5  # Reduce by 50%
+        elif risk_level > 0.6:
+            action_type = "moderate_caution" 
+            magnitude = 0.75  # Reduce by 25%
+        elif risk_level < 0.3:
+            action_type = "increase_exposure"
+            magnitude = 1.2  # Increase by 20%
+        else:
+            action_type = "maintain_current"
+            magnitude = 1.0
+        
+        return {
+            'action_type': action_type,
+            'scaling_factor': scaling_factor,
+            'magnitude': magnitude,
+            'risk_level': risk_level,
+            'session': session,
+            'reasoning': f"Risk level {risk_level:.1%} in {session} session suggests {action_type}",
+            'confidence': min(0.9, scaling_factor / 2.0),
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+    
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in the proposed risk scaling action"""
+        
+        if not isinstance(action, dict):
+            return 0.5
+        
+        # Base confidence from processing success
+        base_confidence = 0.7 if len(self.processing_times) > 0 else 0.5
+        
+        # Adjust based on data quality
+        if 'scaling_factor' in action and 'risk_level' in action:
+            scaling_factor = action['scaling_factor']
+            risk_level = action['risk_level']
+            
+            # Higher confidence for moderate scaling factors
+            scaling_confidence = 1.0 - abs(scaling_factor - 1.0) * 0.5
+            
+            # Confidence based on risk level clarity
+            if risk_level > 0.8 or risk_level < 0.2:
+                risk_confidence = 0.9  # Clear high/low risk
+            elif 0.4 <= risk_level <= 0.6:
+                risk_confidence = 0.6  # Moderate risk
+            else:
+                risk_confidence = 0.8  # Somewhat clear
+            
+            # Combine confidences
+            combined_confidence = (base_confidence * 0.3 + 
+                                 scaling_confidence * 0.4 + 
+                                 risk_confidence * 0.3)
+        else:
+            combined_confidence = base_confidence * 0.5
+        
+        # Adjust for session data quality
+        if hasattr(self, '_current_session') and self._current_session != 'unknown':
+            session_adjustment = 1.1
+        else:
+            session_adjustment = 0.9
+            
+        final_confidence = combined_confidence * session_adjustment
+        
+        return float(np.clip(final_confidence, 0.0, 1.0))
     
     def _get_performance_trend(self, session: str) -> str:
         """Get performance trend for session"""
@@ -778,7 +892,7 @@ TIME-AWARE RISK SCALING ANALYSIS - {session_name}
         
         self.logger.error(
             format_operator_message(
-                "💥", "RISK_SCALING_ERROR",
+                "[CRASH]", "RISK_SCALING_ERROR",
                 details=str(error)[:100],
                 explanation=explanation,
                 context="error_handling"
@@ -829,7 +943,7 @@ TIME-AWARE RISK SCALING ANALYSIS - {session_name}
         
         self.logger.warning(
             format_operator_message(
-                "🚨", f"RISK_ALERT_{level.upper()}",
+                "[ALERT]", f"RISK_ALERT_{level.upper()}",
                 details=f"Risk level: {risk_value:.1%}",
                 context="risk_management"
             )
@@ -851,7 +965,7 @@ TIME-AWARE RISK SCALING ANALYSIS - {session_name}
         self.circuit_breaker_failures += 1
         
         if self.circuit_breaker_failures >= self.config.circuit_breaker_threshold:
-            self.logger.error("🚨 Risk scaling circuit breaker triggered")
+            self.logger.error("[ALERT] Risk scaling circuit breaker triggered")
     
     def _update_health_metrics(self):
         """Update health metrics"""
@@ -933,7 +1047,7 @@ TIME-AWARE RISK SCALING ANALYSIS - {session_name}
         self.success_count = state.get('success_count', 0)
         self.failure_count = state.get('failure_count', 0)
         
-        self.logger.info("✅ Risk scaling state restored successfully")
+        self.logger.info("[OK] Risk scaling state restored successfully")
     
     def get_health_status(self) -> Dict[str, Any]:
         """Get comprehensive health status"""

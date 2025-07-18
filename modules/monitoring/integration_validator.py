@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/utils/integration_validator.py
-# 🚀 Validates SmartInfoBus integration across all modules
+# [ROCKET] Validates SmartInfoBus integration across all modules
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -58,11 +58,11 @@ class ValidationReport:
         ]
         
         if self.integration_score >= 90:
-            lines.append("✅ Excellent integration - System is well connected")
+            lines.append("[OK] Excellent integration - System is well connected")
         elif self.integration_score >= 70:
-            lines.append("🟡 Good integration - Some improvements needed")
+            lines.append("[YELLOW] Good integration - Some improvements needed")
         else:
-            lines.append("🔴 Poor integration - Significant work required")
+            lines.append("[RED] Poor integration - Significant work required")
         
         # Issues summary
         if self.issues:
@@ -76,21 +76,21 @@ class ValidationReport:
             warnings = [i for i in self.issues if i.severity == 'warning']
             
             if errors:
-                lines.append(f"\n🔴 Errors ({len(errors)}):")
+                lines.append(f"\n[RED] Errors ({len(errors)}):")
                 for issue in errors[:10]:
                     lines.append(f"  • {issue.module}: {issue.message}")
                 if len(errors) > 10:
                     lines.append(f"  ... and {len(errors) - 10} more errors")
             
             if warnings:
-                lines.append(f"\n🟡 Warnings ({len(warnings)}):")
+                lines.append(f"\n[YELLOW] Warnings ({len(warnings)}):")
                 for issue in warnings[:10]:
                     lines.append(f"  • {issue.module}: {issue.message}")
         
         # Specific issues
         if self.missing_decorators:
             lines.extend([
-                "\n❌ MODULES MISSING @module DECORATOR:",
+                "\n[FAIL] MODULES MISSING @module DECORATOR:",
                 "-" * 40
             ])
             for module in self.missing_decorators[:10]:
@@ -99,7 +99,7 @@ class ValidationReport:
         
         if self.missing_thesis:
             lines.extend([
-                "\n📝 MODULES NOT GENERATING THESIS:",
+                "\n[LOG] MODULES NOT GENERATING THESIS:",
                 "-" * 35
             ])
             for module in self.missing_thesis[:10]:
@@ -108,7 +108,7 @@ class ValidationReport:
         
         if self.legacy_modules:
             lines.extend([
-                "\n🔄 LEGACY MODULES NEEDING MIGRATION:",
+                "\n[RELOAD] LEGACY MODULES NEEDING MIGRATION:",
                 "-" * 40
             ])
             for module in self.legacy_modules[:10]:
@@ -183,7 +183,7 @@ class IntegrationValidator:
         """Perform complete system validation"""
         self.logger.info(
             format_operator_message(
-                "🔍", "STARTING VALIDATION",
+                "[SEARCH]", "STARTING VALIDATION",
                 details="SmartInfoBus integration check",
                 context="validation"
             )
@@ -214,7 +214,7 @@ class IntegrationValidator:
         
         self.logger.info(
             format_operator_message(
-                "✅", "VALIDATION COMPLETE",
+                "[OK]", "VALIDATION COMPLETE",
                 details=f"Score: {report.integration_score:.1f}%",
                 context="validation"
             )

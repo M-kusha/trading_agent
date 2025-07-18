@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/external/news_sentiment.py
-# 🚀 PRODUCTION-READY News Sentiment Analysis System
+# [ROCKET] PRODUCTION-READY News Sentiment Analysis System
 # Advanced news sentiment with SmartInfoBus integration
 # ─────────────────────────────────────────────────────────────
 
@@ -63,20 +63,23 @@ class NewsSentimentModule(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRisk
         genome: Optional[Dict[str, Any]] = None,
         **kwargs
     ):
-        self.config = config or SentimentConfig()
-        super().__init__()
+        # Store config first 
+        self.sentiment_config = config or SentimentConfig()
+        self.config = self.sentiment_config  # Set config early for init methods
         
-        # Initialize advanced systems
+        # Initialize all systems before super().__init__() 
+        # because BaseModule calls _initialize() which needs these attributes
         self._initialize_advanced_systems()
-        
-        # Initialize genome parameters
         self._initialize_genome_parameters(genome)
-        
-        # Initialize sentiment state
         self._initialize_sentiment_state()
         
         # API configuration
         self.api_key = os.environ.get("NEWS_API_KEY", "")
+        
+        super().__init__()
+        
+        # Ensure our config is preserved after BaseModule initialization
+        self.config = self.sentiment_config
         
         self.logger.info(
             format_operator_message(
@@ -114,7 +117,7 @@ class NewsSentimentModule(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRisk
         # Health monitoring
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        self._start_monitoring()
+        # Note: _start_monitoring() moved to end of initialization
 
     def _initialize_genome_parameters(self, genome: Optional[Dict[str, Any]]):
         """Initialize genome-based parameters"""
@@ -175,7 +178,7 @@ class NewsSentimentModule(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRisk
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
 
-    async def _initialize(self):
+    def _initialize(self):
         """Initialize module"""
         try:
             # Set initial sentiment status in SmartInfoBus
@@ -193,10 +196,8 @@ class NewsSentimentModule(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRisk
                 thesis="Initial news sentiment analysis status"
             )
             
-            return True
         except Exception as e:
             self.logger.error(f"Initialization failed: {e}")
-            return False
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process news sentiment analysis"""
@@ -576,6 +577,10 @@ class NewsSentimentModule(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRisk
     def _update_sentiment_health(self):
         """Update sentiment health metrics"""
         try:
+                        # Check if all required attributes are initialized
+            if not hasattr(self, '_api_call_count'):
+                return  # Skip if not fully initialized yet
+                
             # Check API failure rate
             if self._api_call_count > 0:
                 failure_rate = self._api_failures / self._api_call_count
@@ -620,7 +625,7 @@ class NewsSentimentModule(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRisk
         
         self.logger.error(
             format_operator_message(
-                "💥", "SENTIMENT_ANALYSIS_ERROR",
+                "[CRASH]", "SENTIMENT_ANALYSIS_ERROR",
                 error=str(error),
                 details=explanation,
                 processing_time_ms=processing_time,
@@ -724,19 +729,33 @@ class NewsSentimentModule(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRisk
         old_sentiment = self.latest_sentiment
         self.latest_sentiment = max(-1.0, min(1.0, float(value)))
         
+        # Start monitoring after all initialization is complete
+        
+        self._start_monitoring()
+        
+        
+        
         self.logger.info(
             format_operator_message(
-                "🔧", "SENTIMENT_MANUAL_OVERRIDE",
+                "[TOOL]", "SENTIMENT_MANUAL_OVERRIDE",
                 old_value=f"{old_sentiment:.3f}",
                 new_value=f"{self.latest_sentiment:.3f}",
                 context="manual_override"
             )
         )
 
-    def propose_action(self, obs: Any = None, **kwargs) -> np.ndarray:
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
         """Legacy compatibility for action proposal"""
         # Return sentiment as action influence
-        return np.array([self.latest_sentiment, 0.0])
+        return {
+            'action': [self.latest_sentiment, 0.0],
+            'confidence': self.sentiment_confidence,
+            'thesis': f'News sentiment influence: {self.latest_sentiment:.3f}'
+        }
+    
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in the sentiment analysis"""
+        return self.sentiment_confidence
     
     def confidence(self, obs: Any = None, **kwargs) -> float:
         """Legacy compatibility for confidence"""

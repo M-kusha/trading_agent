@@ -5,6 +5,7 @@ Intelligent drawdown monitoring and rescue mechanisms
 
 import numpy as np
 import datetime
+import time
 from typing import Dict, Any, List, Optional, Union, Tuple
 from collections import deque, defaultdict
 
@@ -121,6 +122,205 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
         self.system_utilities = SystemUtilities()
         self.performance_tracker = PerformanceTracker()
     
+    def _initialize(self) -> None:
+        """Initialize the drawdown rescue module (required by BaseModule)"""
+        try:
+            # Validate configuration
+            if not self.enabled:
+                self.logger.warning("Drawdown Rescue is disabled")
+                return
+            
+            # Initialize state tracking
+            self.current_dd = 0.0
+            self.max_dd = 0.0
+            self.peak_balance = 0.0
+            self.dd_velocity = 0.0
+            self.dd_acceleration = 0.0
+            self.severity_level = "normal"
+            
+            # Initialize rescue system state
+            self.rescue_mode = False
+            self.rescue_start_time = None
+            self.risk_adjustment_factor = 1.0
+            self.rescue_intervention_count = 0
+            
+            # Initialize performance tracking
+            self.step_count = 0
+            self.successful_recoveries = 0
+            self.false_alarms = 0
+            self.emergency_interventions = 0
+            
+            self.logger.info("Drawdown Rescue module initialization completed successfully")
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "rescue_initialization")
+            self.logger.error(f"Rescue initialization failed: {error_context}")
+    
+    async def calculate_confidence(self, action: Dict[str, Any], **kwargs) -> float:
+        """Calculate confidence score for drawdown rescue assessment"""
+        try:
+            # Base confidence starts high for rescue operations
+            confidence = 0.9
+            
+            # Factors that affect confidence
+            factors = {}
+            
+            # Severity level affects confidence
+            severity_penalties = {
+                'normal': 1.0,
+                'info': 0.9,
+                'warning': 0.8,
+                'critical': 0.6,
+                'error': 0.3,
+                'disabled': 0.1
+            }
+            severity_factor = severity_penalties.get(self.severity_level, 0.5)
+            factors['severity_factor'] = severity_factor
+            confidence *= severity_factor
+            
+            # Rescue mode affects confidence
+            if self.rescue_mode:
+                # Lower confidence during rescue operations (more conservative)
+                rescue_penalty = 0.7
+                factors['rescue_penalty'] = rescue_penalty
+                confidence *= rescue_penalty
+            
+            # Velocity affects confidence (rapid changes reduce confidence)
+            if hasattr(self, 'dd_velocity') and abs(self.dd_velocity) > 0.02:
+                velocity_penalty = max(0.5, 1.0 - abs(self.dd_velocity) * 10)
+                factors['velocity_penalty'] = velocity_penalty
+                confidence *= velocity_penalty
+            
+            # Data availability affects confidence
+            if hasattr(self, 'dd_history') and len(self.dd_history) >= 5:
+                data_factor = min(1.0, len(self.dd_history) / 10.0)
+            else:
+                data_factor = 0.5  # Lower confidence with limited data
+            factors['data_availability'] = data_factor
+            confidence *= data_factor
+            
+            # Recovery track record affects confidence
+            if self.rescue_intervention_count > 0:
+                success_rate = self.successful_recoveries / self.rescue_intervention_count
+                factors['success_rate'] = success_rate
+                confidence *= (0.5 + success_rate * 0.5)  # 50% base + 50% based on success
+            
+            # Ensure confidence is in valid range
+            confidence = max(0.0, min(1.0, confidence))
+            
+            # Log confidence calculation for debugging
+            self.logger.debug(f"Rescue confidence: {confidence:.3f}, factors: {factors}")
+            
+            return float(confidence)
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "confidence_calculation")
+            self.logger.error(f"Confidence calculation failed: {error_context}")
+            return 0.5  # Default medium confidence on error
+    
+    async def propose_action(self, **kwargs) -> Dict[str, Any]:
+        """Propose drawdown rescue actions based on current state"""
+        try:
+            action_proposal = {
+                'action_type': 'drawdown_rescue',
+                'timestamp': time.time(),
+                'current_drawdown': self.current_dd,
+                'severity_level': self.severity_level,
+                'rescue_mode': self.rescue_mode,
+                'risk_adjustment_factor': self.risk_adjustment_factor,
+                'recommendations': [],
+                'warnings': [],
+                'adjustments': {}
+            }
+            
+            # Generate recommendations based on drawdown state
+            if self.severity_level == 'critical':
+                action_proposal['recommendations'].append({
+                    'type': 'emergency_intervention',
+                    'reason': f'Critical drawdown level: {self.current_dd:.1%}',
+                    'suggested_action': 'Immediately reduce position sizes and halt new entries',
+                    'priority': 'critical'
+                })
+                
+                action_proposal['adjustments']['position_reduction'] = 0.5  # Reduce by 50%
+                action_proposal['adjustments']['new_entry_halt'] = True
+            
+            elif self.severity_level == 'warning':
+                action_proposal['recommendations'].append({
+                    'type': 'risk_reduction',
+                    'reason': f'Warning drawdown level: {self.current_dd:.1%}',
+                    'suggested_action': 'Reduce position sizes and increase stop-loss levels',
+                    'priority': 'high'
+                })
+                
+                action_proposal['adjustments']['position_reduction'] = 0.7  # Reduce by 30%
+                action_proposal['adjustments']['tighter_stops'] = True
+            
+            elif self.severity_level == 'info':
+                action_proposal['recommendations'].append({
+                    'type': 'caution',
+                    'reason': f'Elevated drawdown level: {self.current_dd:.1%}',
+                    'suggested_action': 'Monitor closely and prepare for potential action',
+                    'priority': 'medium'
+                })
+            
+            # Velocity-based recommendations
+            if hasattr(self, 'dd_velocity') and self.dd_velocity > 0.02:
+                action_proposal['warnings'].append({
+                    'type': 'rapid_deterioration',
+                    'velocity': self.dd_velocity,
+                    'threshold': 0.02,
+                    'risk_level': 'high'
+                })
+                
+                action_proposal['recommendations'].append({
+                    'type': 'velocity_control',
+                    'reason': f'Rapid drawdown increase detected: {self.dd_velocity:.2%}',
+                    'suggested_action': 'Implement immediate position size reduction',
+                    'priority': 'high'
+                })
+            
+            # Rescue mode specific actions
+            if self.rescue_mode:
+                action_proposal['recommendations'].append({
+                    'type': 'rescue_active',
+                    'reason': 'Rescue mode is active',
+                    'suggested_action': 'Continue conservative risk management until recovery',
+                    'priority': 'ongoing'
+                })
+                
+                # Calculate rescue duration
+                if self.rescue_start_time:
+                    rescue_duration = (datetime.datetime.now() - self.rescue_start_time).total_seconds() / 3600
+                    if rescue_duration > 24:  # More than 24 hours
+                        action_proposal['warnings'].append({
+                            'type': 'prolonged_rescue',
+                            'duration_hours': rescue_duration,
+                            'risk_level': 'medium'
+                        })
+            
+            # Risk adjustment factor recommendations
+            if self.risk_adjustment_factor < 0.8:
+                action_proposal['adjustments']['conservative_mode'] = True
+                action_proposal['adjustments']['risk_factor'] = self.risk_adjustment_factor
+            
+            self.logger.debug(f"Rescue action proposed: {len(action_proposal['recommendations'])} recommendations, "
+                            f"{len(action_proposal['warnings'])} warnings")
+            
+            return action_proposal
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "action_proposal")
+            self.logger.error(f"Action proposal failed: {error_context}")
+            return {
+                'action_type': 'drawdown_rescue',
+                'timestamp': time.time(),
+                'error': str(e),
+                'recommendations': [],
+                'warnings': [],
+                'adjustments': {}
+            }
+    
     async def process(self, **kwargs) -> Dict[str, Any]:
         """
         Enhanced drawdown monitoring with comprehensive rescue mechanisms
@@ -207,7 +407,7 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
                 if self.step_count > 1:  # Avoid logging on first step
                     self.logger.info(format_operator_message(
                         message="New peak balance achieved",
-                        icon="📈",
+                        icon="[CHART]",
                         peak_balance=f"€{self.peak_balance:,.2f}",
                         previous_max_dd=f"{self.max_dd:.1%}"
                     ))
@@ -465,7 +665,7 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
                 
                 self.logger.info(format_operator_message(
                     message="Recovery milestone achieved",
-                    icon="🎯",
+                    icon="[TARGET]",
                     progress=f"{recovery_progress:.1%}",
                     max_dd=f"{self.max_dd:.1%}",
                     current_dd=f"{self.current_dd:.1%}"
@@ -598,7 +798,7 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
                 
                 self.logger.info(format_operator_message(
                     message="Rescue mode DEACTIVATED",
-                    icon="✅",
+                    icon="[OK]",
                     duration=f"{rescue_duration:.1f} minutes",
                     final_dd=f"{self.current_dd:.1%}",
                     recovery=f"{drawdown_analysis['recovery_metrics']['recovery_progress']:.1%}"
@@ -614,7 +814,7 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
                 
                 self.logger.error(format_operator_message(
                     message="EMERGENCY INTERVENTION",
-                    icon="🚨",
+                    icon="[ALERT]",
                     drawdown=f"{self.current_dd:.1%}",
                     velocity=f"{velocity_metrics['velocity']:+.2%}",
                     intervention_number=self.emergency_interventions

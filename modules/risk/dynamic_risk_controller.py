@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/risk/dynamic_risk_controller.py
-# 🚀 PRODUCTION-READY Enhanced Dynamic Risk Controller
+# [ROCKET] PRODUCTION-READY Enhanced Dynamic Risk Controller
 # Advanced risk scaling with SmartInfoBus integration and intelligent automation
 # ─────────────────────────────────────────────────────────────
 
@@ -70,11 +70,11 @@ class DynamicRiskConfig:
     health_monitoring=True,
     performance_tracking=True,
     error_handling=True,
-    voting=True
+    is_voting_member=True
 )
 class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    🚀 Advanced dynamic risk controller with SmartInfoBus integration.
+    [ROCKET] Advanced dynamic risk controller with SmartInfoBus integration.
     Provides intelligent risk scaling based on comprehensive market analysis.
     """
 
@@ -85,11 +85,23 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                  regime_aware: bool = True,
                  **kwargs):
         
-        self.config = config or DynamicRiskConfig()
+        # Handle config properly BEFORE calling super()
+        if config is None:
+            self.config = DynamicRiskConfig()
+        elif isinstance(config, dict):
+            self.config = DynamicRiskConfig(**config)
+        else:
+            self.config = config
+            
         self.action_dim = int(action_dim)
         self.adaptive_scaling = adaptive_scaling
         self.regime_aware = regime_aware
+        
+        # Store original config before super() call
+        original_config = self.config
         super().__init__()
+        # Restore config after super() call in case it was overridden
+        self.config = original_config
         
         # Initialize advanced systems
         self._initialize_advanced_systems()
@@ -132,7 +144,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
         # Health monitoring
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        self._start_monitoring()
+        # Note: Don't start monitoring here, wait until after risk control state init
 
     def _initialize_risk_control_state(self):
         """Initialize risk control state"""
@@ -199,6 +211,9 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
         # Risk quality tracking
         self._risk_quality = 0.5
         self._risk_effectiveness_history = deque(maxlen=50)
+        
+        # Start monitoring after all state is initialized
+        self._start_monitoring()
 
     def _start_monitoring(self):
         """Start background monitoring for risk control"""
@@ -216,7 +231,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
 
-    async def _initialize(self):
+    def _initialize(self) -> None:
         """Initialize module with SmartInfoBus integration"""
         try:
             # Set initial risk scaling status
@@ -235,10 +250,213 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                 thesis="Initial dynamic risk controller status"
             )
             
-            return True
         except Exception as e:
             self.logger.error(f"Risk controller initialization failed: {e}")
-            return False
+
+    async def calculate_confidence(self, action: Dict[str, Any], **kwargs) -> float:
+        """Calculate confidence score for risk scaling decisions"""
+        try:
+            # Base confidence starts high for risk management
+            confidence = 0.9
+            
+            # Factors that affect confidence
+            factors = {}
+            
+            # Risk quality affects confidence
+            factors['risk_quality'] = self._risk_quality
+            confidence *= self._risk_quality
+            
+            # Circuit breaker state affects confidence
+            if self.circuit_breaker['state'] == 'OPEN':
+                factors['circuit_breaker_penalty'] = 0.3
+                confidence *= 0.3
+            else:
+                factors['circuit_breaker_penalty'] = 1.0
+            
+            # Market regime affects confidence
+            regime_confidence_map = {
+                'normal': 1.0,
+                'trending': 0.95,
+                'volatile': 0.8,
+                'ranging': 0.9,
+                'unknown': 0.7
+            }
+            regime_factor = regime_confidence_map.get(self.market_regime, 0.7)
+            factors['regime_factor'] = regime_factor
+            confidence *= regime_factor
+            
+            # Data availability affects confidence
+            data_availability = min(len(self.vol_history) / 10.0, 1.0)
+            factors['data_availability'] = data_availability
+            confidence *= data_availability
+            
+            # Recent performance affects confidence
+            if self._risk_effectiveness_history:
+                recent_effectiveness = sum(list(self._risk_effectiveness_history)[-5:]) / min(5, len(self._risk_effectiveness_history))
+                factors['recent_effectiveness'] = recent_effectiveness
+                confidence *= recent_effectiveness
+            
+            # Risk scale stability affects confidence
+            if len(self.risk_scale_history) >= 5:
+                recent_scales = list(self.risk_scale_history)[-5:]
+                scale_volatility = np.std(recent_scales) if len(recent_scales) > 1 else 0.0
+                stability_factor = max(0.5, 1.0 - scale_volatility * 2)
+                factors['stability_factor'] = stability_factor
+                confidence *= stability_factor
+            
+            # Emergency mode reduces confidence
+            if self.current_mode == RiskControlMode.EMERGENCY:
+                factors['emergency_penalty'] = 0.6
+                confidence *= 0.6
+            
+            # Ensure confidence is in valid range
+            confidence = max(0.0, min(1.0, confidence))
+            
+            # Log confidence calculation for debugging
+            self.logger.debug(f"Risk controller confidence: {confidence:.3f}, factors: {factors}")
+            
+            return float(confidence)
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "confidence_calculation")
+            self.logger.error(f"Confidence calculation failed: {error_context}")
+            return 0.5  # Default medium confidence on error
+
+    async def propose_action(self, **kwargs) -> Dict[str, Any]:
+        """Propose risk scaling actions based on current state"""
+        try:
+            action_proposal = {
+                'action_type': 'risk_scaling',
+                'timestamp': time.time(),
+                'current_risk_scale': self.current_risk_scale,
+                'current_mode': self.current_mode.value,
+                'market_regime': self.market_regime,
+                'recommendations': [],
+                'warnings': [],
+                'adjustments': {}
+            }
+            
+            # Generate recommendations based on current mode
+            if self.current_mode == RiskControlMode.EMERGENCY:
+                action_proposal['recommendations'].append({
+                    'type': 'emergency_risk_reduction',
+                    'reason': 'Emergency mode active',
+                    'suggested_action': 'Maintain minimum risk exposure until conditions improve',
+                    'priority': 'critical'
+                })
+                
+                action_proposal['adjustments']['emergency_mode'] = True
+                action_proposal['adjustments']['risk_scale'] = self.config.min_risk_scale
+                
+            elif self.current_mode == RiskControlMode.AGGRESSIVE_REDUCTION:
+                action_proposal['recommendations'].append({
+                    'type': 'aggressive_risk_reduction',
+                    'reason': 'Multiple risk factors elevated',
+                    'suggested_action': 'Significantly reduce position sizes and avoid new entries',
+                    'priority': 'high'
+                })
+                
+                action_proposal['adjustments']['position_reduction'] = 0.3  # Reduce by 70%
+                
+            elif self.current_mode == RiskControlMode.PROTECTIVE:
+                action_proposal['recommendations'].append({
+                    'type': 'protective_measures',
+                    'reason': 'Risk factors showing warning signals',
+                    'suggested_action': 'Reduce risk exposure and tighten risk management',
+                    'priority': 'medium'
+                })
+                
+                action_proposal['adjustments']['position_reduction'] = 0.7  # Reduce by 30%
+                action_proposal['adjustments']['tighter_stops'] = True
+            
+            # Risk factor specific recommendations
+            critical_factors = [name for name, value in self.risk_factors.items() if value < 0.5]
+            if critical_factors:
+                action_proposal['warnings'].append({
+                    'type': 'critical_risk_factors',
+                    'factors': critical_factors,
+                    'risk_level': 'high'
+                })
+                
+                action_proposal['recommendations'].append({
+                    'type': 'factor_based_adjustment',
+                    'reason': f'Critical risk factors detected: {", ".join(critical_factors)}',
+                    'suggested_action': 'Address specific risk factor causes',
+                    'priority': 'high'
+                })
+            
+            # Volatility regime recommendations
+            if self.volatility_regime == 'extreme':
+                action_proposal['recommendations'].append({
+                    'type': 'volatility_adjustment',
+                    'reason': 'Extreme volatility detected',
+                    'suggested_action': 'Reduce position sizes and increase monitoring frequency',
+                    'priority': 'high'
+                })
+            
+            # Losing streak recommendations
+            if self.consecutive_losses > 5:
+                action_proposal['warnings'].append({
+                    'type': 'losing_streak',
+                    'consecutive_losses': self.consecutive_losses,
+                    'risk_level': 'medium'
+                })
+                
+                action_proposal['recommendations'].append({
+                    'type': 'streak_management',
+                    'reason': f'{self.consecutive_losses} consecutive losses detected',
+                    'suggested_action': 'Consider trading break or strategy review',
+                    'priority': 'medium'
+                })
+            
+            # Circuit breaker recommendations
+            if self.circuit_breaker['state'] == 'OPEN':
+                action_proposal['warnings'].append({
+                    'type': 'circuit_breaker_open',
+                    'failures': self.circuit_breaker['failures'],
+                    'risk_level': 'critical'
+                })
+                
+                action_proposal['recommendations'].append({
+                    'type': 'system_recovery',
+                    'reason': 'Circuit breaker triggered',
+                    'suggested_action': 'System recovery mode - minimal risk until stabilized',
+                    'priority': 'critical'
+                })
+            
+            # External signal recommendations
+            if self.external_signals:
+                low_signals = [name for name, value in self.external_signals.items() if value < 0.5]
+                if low_signals:
+                    action_proposal['recommendations'].append({
+                        'type': 'external_risk_signals',
+                        'reason': f'External risk signals warning: {", ".join(low_signals)}',
+                        'suggested_action': 'Consider external risk factor implications',
+                        'priority': 'medium'
+                    })
+            
+            # Risk scale adjustment suggestions
+            if self.current_risk_scale < 0.3:
+                action_proposal['adjustments']['recovery_readiness'] = True
+            elif self.current_risk_scale > 1.2:
+                action_proposal['adjustments']['risk_monitoring'] = 'increased'
+            
+            self.logger.debug(f"Risk action proposed: {len(action_proposal['recommendations'])} recommendations, "
+                            f"{len(action_proposal['warnings'])} warnings")
+            
+            return action_proposal
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "action_proposal")
+            self.logger.error(f"Action proposal failed: {error_context}")
+            return {
+                'action_type': 'risk_scaling',
+                'timestamp': time.time(),
+                'error': str(e),
+                'recommendations': [],
+                'warnings': [],
+                'adjustments': {}
+            }
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process dynamic risk scaling with enhanced analytics"""
@@ -279,7 +497,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                      **adaptive_result, **emergency_result, **final_result, **mode_result}
             
             # Generate thesis
-            thesis = await self._generate_risk_thesis(risk_data, result)
+            thesis = await self._generate_comprehensive_risk_thesis(risk_data, result)
             
             # Update SmartInfoBus
             await self._update_risk_smart_bus(result, thesis)
@@ -366,7 +584,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                 
                 self.logger.info(format_operator_message(
                     message="Market regime changed",
-                    icon="📊",
+                    icon="[STATS]",
                     old_regime=old_regime,
                     new_regime=self.market_regime,
                     volatility=self.volatility_regime,
@@ -723,6 +941,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
             # Extract position data
             position_data = risk_data.get('position_data', {})
             positions = position_data.get('positions', [])
+            herfindahl = 0.0  # Initialize variable
             
             if not positions:
                 factor = 1.0
@@ -753,7 +972,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
             return {
                 'portfolio_concentration_factor': factor,
                 'position_count': len(positions),
-                'concentration_index': herfindahl if 'herfindahl' in locals() else 0.0,
+                'concentration_index': herfindahl,
                 'severity': severity
             }
                 
@@ -896,7 +1115,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                 self.emergency_interventions += 1
                 self.logger.warning(format_operator_message(
                     message="Emergency risk intervention triggered",
-                    icon="🚨",
+                    icon="[ALERT]",
                     interventions=len(interventions_applied),
                     old_scale=f"{self.current_risk_scale:.2f}",
                     new_scale=f"{emergency_scale:.2f}",
@@ -1014,7 +1233,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                 
                 self.logger.info(format_operator_message(
                     message="Risk mode changed",
-                    icon="🔄",
+                    icon="[RELOAD]",
                     old_mode=old_mode.value,
                     new_mode=new_mode.value,
                     risk_scale=f"{self.current_risk_scale:.2f}",
@@ -1091,7 +1310,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
         except Exception:
             return "unknown"
 
-    async def _generate_risk_thesis(self, risk_data: Dict[str, Any], 
+    async def _generate_comprehensive_risk_thesis(self, risk_data: Dict[str, Any], 
                                   result: Dict[str, Any]) -> str:
         """Generate comprehensive risk thesis"""
         try:
@@ -1251,7 +1470,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
         
         self.logger.error(format_operator_message(
             message="Risk controller error",
-            icon="💥",
+            icon="[CRASH]",
             error=str(error),
             details=explanation,
             processing_time_ms=processing_time,
@@ -1276,6 +1495,10 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
     def _update_risk_health(self):
         """Update risk control health metrics"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, '_risk_quality'):
+                return  # Skip if not fully initialized yet
+                
             # Check risk quality
             if self._risk_quality < self.config.min_risk_quality:
                 self._health_status = 'warning'
@@ -1299,20 +1522,24 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
     def _analyze_risk_effectiveness(self):
         """Analyze risk control effectiveness"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, 'risk_scale_history'):
+                return  # Skip if not fully initialized yet
+                
             if len(self.risk_scale_history) >= 20:
                 effectiveness = self._risk_quality
                 
                 if effectiveness > 0.8:
                     self.logger.info(format_operator_message(
                         message="High risk effectiveness achieved",
-                        icon="🎯",
+                        icon="[TARGET]",
                         quality_score=f"{effectiveness:.2f}",
                         current_scale=f"{self.current_risk_scale:.2f}"
                     ))
                 elif effectiveness < 0.4:
                     self.logger.warning(format_operator_message(
                         message="Low risk effectiveness detected",
-                        icon="⚠️",
+                        icon="[WARN]",
                         quality_score=f"{effectiveness:.2f}",
                         emergency_interventions=self.emergency_interventions
                     ))
@@ -1323,6 +1550,10 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
     def _adapt_risk_parameters(self):
         """Continuous risk parameter adaptation"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, 'market_regime') or not hasattr(self, 'market_regime_history'):
+                return  # Skip if not fully initialized yet
+                
             # Adapt emergency threshold based on market conditions
             if self.market_regime == 'volatile':
                 self._adaptive_params['emergency_threshold_adaptation'] = min(
@@ -1388,7 +1619,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
         
         self.logger.error(format_operator_message(
             message="Emergency mode forced",
-            icon="🚨",
+            icon="[ALERT]",
             reason=reason,
             old_scale=f"{old_scale:.2f}",
             new_scale=f"{self.current_risk_scale:.2f}"
@@ -1435,70 +1666,70 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
         
         # Status indicators
         if self.current_risk_scale < 0.3:
-            risk_status = "🚨 Emergency"
+            risk_status = "[ALERT] Emergency"
         elif self.current_risk_scale < 0.6:
-            risk_status = "⚠️ High Reduction"
+            risk_status = "[WARN] High Reduction"
         elif self.current_risk_scale < 0.8:
-            risk_status = "⚡ Moderate Reduction"
+            risk_status = "[FAST] Moderate Reduction"
         else:
-            risk_status = "✅ Normal"
+            risk_status = "[OK] Normal"
         
         # Mode status
         mode_emoji = {
-            RiskControlMode.INITIALIZATION: "🔄",
-            RiskControlMode.CALIBRATION: "🔧",
-            RiskControlMode.NORMAL: "✅",
-            RiskControlMode.PROTECTIVE: "🛡️",
-            RiskControlMode.AGGRESSIVE_REDUCTION: "⚠️",
+            RiskControlMode.INITIALIZATION: "[RELOAD]",
+            RiskControlMode.CALIBRATION: "[TOOL]",
+            RiskControlMode.NORMAL: "[OK]",
+            RiskControlMode.PROTECTIVE: "[SAFE]",
+            RiskControlMode.AGGRESSIVE_REDUCTION: "[WARN]",
             RiskControlMode.EMERGENCY: "🆘",
-            RiskControlMode.RECOVERY: "📈"
+            RiskControlMode.RECOVERY: "[CHART]"
         }
         
         mode_status = f"{mode_emoji.get(self.current_mode, '❓')} {self.current_mode.value.upper()}"
         
         # Health status
-        health_emoji = "✅" if self._health_status == 'healthy' else "⚠️"
-        cb_status = "🔴 OPEN" if self.circuit_breaker['state'] == 'OPEN' else "🟢 CLOSED"
+        health_emoji = "[OK]" if self._health_status == 'healthy' else "[WARN]"
+        cb_status = "[RED] OPEN" if self.circuit_breaker['state'] == 'OPEN' else "[GREEN] CLOSED"
         
         # Risk factor status
         risk_factor_lines = []
         for factor_name, factor_value in self.risk_factors.items():
             if factor_value < 0.9:
-                emoji = "🚨" if factor_value < 0.5 else "⚠️" if factor_value < 0.7 else "⚡"
+                emoji = "[ALERT]" if factor_value < 0.5 else "[WARN]" if factor_value < 0.7 else "[FAST]"
                 risk_factor_lines.append(f"  {emoji} {factor_name.replace('_', ' ').title()}: {factor_value:.1%}")
         
         return f"""
 ⚙️ ENHANCED DYNAMIC RISK CONTROLLER v4.0
 ═══════════════════════════════════════════════════
-🎯 Risk Status: {risk_status} ({self.current_risk_scale:.1%} scale)
-🔧 Control Mode: {mode_status}
-📊 Market Regime: {self.market_regime.title()}
-💥 Volatility Level: {self.volatility_regime.title()}
+[TARGET] Risk Status: {risk_status} ({self.current_risk_scale:.1%} scale)
+[TOOL] Control Mode: {mode_status}
+[STATS] Market Regime: {self.market_regime.title()}
+[CRASH] Volatility Level: {self.volatility_regime.title()}
 🕐 Market Session: {self.market_session.title()}
 
-🏥 SYSTEM HEALTH
+[HEALTH] SYSTEM HEALTH
 • Status: {health_emoji} {self._health_status.upper()}
 • Circuit Breaker: {cb_status}
 • Risk Quality: {self._risk_quality:.2f}
 
-⚖️ RISK SCALE CONFIGURATION
+[BALANCE] RISK SCALE CONFIGURATION
 • Current Scale: {self.current_risk_scale:.1%}
 • Base Scale: {self.config.base_risk_scale:.1%}
 • Min Scale: {self.config.min_risk_scale:.1%}
 • Max Scale: {self.config.max_risk_scale:.1%}
 • External Scale: {self.external_risk_scale:.1%}
 
-📊 ACTIVE RISK FACTORS
-{chr(10).join(risk_factor_lines) if risk_factor_lines else "  ✅ All risk factors normal"}
+[STATS] ACTIVE RISK FACTORS
+{chr(10).join(risk_factor_lines) if risk_factor_lines else "  [OK] All risk factors normal"}
 
-🔧 CONTROLLER PERFORMANCE
+[TOOL] CONTROLLER PERFORMANCE
 • Risk Adjustments: {self.risk_adjustments_made}
 • Emergency Interventions: {self.emergency_interventions}
 • Consecutive Losses: {self.consecutive_losses}
-• Adaptive Scaling: {'✅ Enabled' if self.adaptive_scaling else '❌ Disabled'}
-• Regime Awareness: {'✅ Enabled' if self.regime_aware else '❌ Disabled'}
+• Adaptive Scaling: {'[OK] Enabled' if self.adaptive_scaling else '[FAIL] Disabled'}
+• Regime Awareness: {'[OK] Enabled' if self.regime_aware else '[FAIL] Disabled'}
 
-📈 ADAPTIVE PARAMETERS
+[CHART] ADAPTIVE PARAMETERS
 • Dynamic Penalty Scaling: {self._adaptive_params['dynamic_penalty_scaling']:.2f}
 • Regime Sensitivity: {self._adaptive_params['regime_sensitivity_multiplier']:.2f}
 • Volatility Tolerance: {self._adaptive_params['volatility_tolerance']:.2f}
@@ -1598,7 +1829,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
         self._risk_quality = 0.5
         self._risk_effectiveness_history.clear()
         
-        self.logger.info("🔄 Enhanced Dynamic Risk Controller reset - all state cleared")
+        self.logger.info("[RELOAD] Enhanced Dynamic Risk Controller reset - all state cleared")
 
     def adjust_risk(self, stats: Dict[str, float]) -> None:
         """Legacy risk adjustment interface"""

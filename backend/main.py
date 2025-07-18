@@ -1149,7 +1149,7 @@ async def broadcast_training_metrics(metrics: Dict[str, Any]):
 async def emergency_stop():
     """Enhanced emergency stop with comprehensive cleanup"""
     try:
-        logger.warning("🚨 EMERGENCY STOP INITIATED")
+        logger.warning("[ALERT] EMERGENCY STOP INITIATED")
         state.add_alert("Emergency stop initiated", "critical", "emergency")
         
         # Close all MT5 positions
@@ -1182,9 +1182,9 @@ async def emergency_stop():
                         
                         result = mt5.order_send(request)
                         if result.retcode == mt5.TRADE_RETCODE_DONE:
-                            logger.info(f"✅ Closed position {position.ticket}")
+                            logger.info(f"[OK] Closed position {position.ticket}")
                         else:
-                            logger.error(f"❌ Failed to close position {position.ticket}: {result.comment}")
+                            logger.error(f"[FAIL] Failed to close position {position.ticket}: {result.comment}")
                             
                     except Exception as e:
                         logger.error(f"Error closing position {position.ticket}: {e}")
@@ -1199,7 +1199,7 @@ async def emergency_stop():
         
         state.system_status = "EMERGENCY_STOPPED"
         state.add_alert("Emergency stop completed", "warning", "emergency")
-        logger.warning("🛑 Emergency stop completed")
+        logger.warning("[STOP] Emergency stop completed")
         
         return {"success": True, "message": "Emergency stop executed"}
         
@@ -1237,13 +1237,13 @@ async def startup_event():
         asyncio.create_task(performance_tracker()),
     ])
     
-    logger.info("🚀 Enhanced Trading Dashboard Backend Started")
+    logger.info("[ROCKET] Enhanced Trading Dashboard Backend Started")
     state.add_alert("System started successfully", "success", "system")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Enhanced system shutdown"""
-    logger.info("🛑 Shutting down trading dashboard...")
+    logger.info("[STOP] Shutting down trading dashboard...")
     
     # Stop training metrics server
     await training_metrics_server.stop()
@@ -1274,7 +1274,7 @@ async def shutdown_event():
     if state.tensorboard_process and state.tensorboard_process.poll() is None:
         state.tensorboard_process.terminate()
     
-    logger.info("✅ Trading Dashboard Backend Shutdown Complete")
+    logger.info("[OK] Trading Dashboard Backend Shutdown Complete")
 
 # Background monitoring tasks
 async def periodic_metrics_collector():
@@ -1934,9 +1934,9 @@ frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
 
 if frontend_dist.exists():
     app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
-    logger.info(f"✅ Frontend served from: {frontend_dist}")
+    logger.info(f"[OK] Frontend served from: {frontend_dist}")
 else:
-    logger.warning("⚠️ Frontend build not found. Run: cd frontend && npm run build")
+    logger.warning("[WARN] Frontend build not found. Run: cd frontend && npm run build")
     
     @app.get("/", response_class=HTMLResponse)
     async def serve_fallback():
@@ -2004,9 +2004,9 @@ else:
         </head>
         <body>
             <div class="container">
-                <h1>🤖 AI Trading Dashboard</h1>
+                <h1>[BOT] AI Trading Dashboard</h1>
                 <div class="status">
-                    ✅ Backend is running successfully!
+                    [OK] Backend is running successfully!
                 </div>
                 <p>The frontend needs to be built to access the full dashboard.</p>
                 <p>To build the frontend, run:</p>
@@ -2014,7 +2014,7 @@ else:
                 <div class="links">
                     <a href="/docs">📚 API Documentation</a>
                     <a href="/health">💚 Health Check</a>
-                    <a href="/api">🔧 API Info</a>
+                    <a href="/api">[TOOL] API Info</a>
                 </div>
             </div>
         </body>

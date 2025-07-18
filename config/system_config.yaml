@@ -209,6 +209,8 @@ modules:
     explainable: true
     hot_reload: true
     timeout_ms: 200
+    config:
+      hidden_dim: 64
     
   FractalRegimeConfirmation:
     category: "market"
@@ -312,6 +314,8 @@ modules:
     explainable: true
     hot_reload: true
     timeout_ms: 150
+    config:
+      n_themes: 4
     
     config:
       memory_capacity: 10000
@@ -338,6 +342,150 @@ modules:
     explainable: true
     hot_reload: true
     timeout_ms: 100
+    config:
+      enable_error_pinpointing: true
+  MultiScaleFeatureEngine:
+    category: "market"
+    priority: 80
+    provides: ["multi_scale_features", "feature_importance"]
+    requires: ["raw_market_data"]
+    explainable: true
+    hot_reload: true
+    timeout_ms: 120
+    config:
+      enable_error_pinpointing: true
+
+  NewsSentimentModule:
+    category: "market"
+    priority: 70
+    provides: ["news_sentiment", "sentiment_score"]
+    requires: ["news_data"]
+    explainable: true
+    hot_reload: true
+    timeout_ms: 80
+    config:
+      circuit_breaker_threshold: 3
+
+  RegimePerformanceMatrix:
+    category: "market"
+    priority: 60
+    provides: ["regime_performance", "performance_matrix"]
+    requires: ["regime_state", "performance_data"]
+    explainable: true
+    hot_reload: true
+    timeout_ms: 100
+    config:
+      n_regimes: 3
+
+  TimeAwareRiskScaling:
+    category: "risk"
+    priority: 70
+    provides: ["risk_scaling", "scaled_risk"]
+    requires: ["risk_score", "volatility_data"]
+    explainable: true
+    hot_reload: true
+    timeout_ms: 60
+    config:
+      vol_window: 20
+
+  HistoricalReplayAnalyzer:
+    category: "memory"
+    priority: 60
+    provides: ["replay_analysis", "historical_patterns"]
+    requires: ["historical_data"]
+    explainable: true
+    hot_reload: true
+    timeout_ms: 120
+    config:
+      circuit_breaker_threshold: 3
+
+  MemoryBudgetOptimizer:
+    category: "memory"
+    priority: 55
+    provides: ["memory_budget", "optimized_memory"]
+    requires: ["memory_usage"]
+    explainable: true
+    hot_reload: true
+    timeout_ms: 100
+    config:
+      circuit_breaker_threshold: 3
+
+  MemoryCompressor:
+    category: "memory"
+    priority: 50
+    provides: ["compressed_memory", "compression_ratio"]
+    requires: ["memory_data"]
+    explainable: true
+    hot_reload: true
+    timeout_ms: 80
+    config:
+      circuit_breaker_threshold: 3
+
+  MistakeMemory:
+    category: "memory"
+    priority: 45
+    provides: ["mistake_patterns", "mistake_thesis"]
+    requires: ["error_data"]
+    explainable: true
+    hot_reload: true
+    timeout_ms: 60
+    config:
+      circuit_breaker_threshold: 3
+
+  NeuralMemoryArchitect:
+    category: "memory"
+    priority: 70
+    provides: ["encoded_state", "memory_retrieval", "neural_thesis"]
+    requires: ["raw_features", "attention_weights"]
+    explainable: false
+    hot_reload: false
+    timeout_ms: 200
+    config:
+      circuit_breaker_threshold: 3
+
+  PlaybookMemory:
+    category: "memory"
+    priority: 75
+    provides: ["historical_patterns", "pattern_match", "memory_thesis"]
+    requires: ["market_state", "strategy_outcome"]
+    explainable: true
+    hot_reload: true
+    timeout_ms: 150
+    config:
+      circuit_breaker_threshold: 3
+
+  MetaCognitivePlanner:
+    category: "meta"
+    priority: 60
+    provides: ["meta_plan", "cognitive_thesis"]
+    requires: ["strategy_outputs"]
+    explainable: true
+    hot_reload: true
+    timeout_ms: 100
+    config:
+      circuit_breaker_threshold: 3
+
+  PPOLagAgent:
+    category: "meta"
+    priority: 55
+    provides: ["ppo_lag_action", "lag_thesis"]
+    requires: ["state_vector", "market_context"]
+    explainable: true
+    hot_reload: true
+    timeout_ms: 120
+    config:
+      circuit_breaker_threshold: 3
+
+  RiskAdjustedReward:
+    category: "reward"
+    priority: 50
+    provides: ["adjusted_reward", "reward_thesis"]
+    requires: ["raw_reward", "risk_score"]
+    explainable: true
+    hot_reload: true
+    timeout_ms: 80
+    config:
+      circuit_breaker_threshold: 3
     
     config:
       voting_method: "weighted_majority"

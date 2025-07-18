@@ -179,9 +179,9 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
         """Initialize advanced explanation templates with enhanced intelligence"""
         return {
             'trade_entry': {
-                'brief': "📈 {instrument} {direction} entry - {reason} (Size: {size})",
-                'detailed': "🎯 Trade Entry: {instrument} {direction} | Rationale: {reason} | Size: {size} | Risk: {risk_level} | Confidence: {confidence}",
-                'comprehensive': """🎯 COMPREHENSIVE TRADE ENTRY ANALYSIS
+                'brief': "[CHART] {instrument} {direction} entry - {reason} (Size: {size})",
+                'detailed': "[TARGET] Trade Entry: {instrument} {direction} | Rationale: {reason} | Size: {size} | Risk: {risk_level} | Confidence: {conviction}",
+                'comprehensive': """[TARGET] COMPREHENSIVE TRADE ENTRY ANALYSIS
 • Instrument: {instrument} ({market_cap} market)
 • Direction: {direction} ({strategy_type} strategy)
 • Entry Rationale: {reason}
@@ -190,12 +190,12 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
 • Technical Setup: {technical_setup}
 • Risk/Reward: {risk_reward_ratio}
 • Exit Strategy: {exit_strategy}
-• Confidence Level: {confidence}
+• Confidence Level: {conviction}
 • Expected Outcome: {expected_outcome}
 • Timeline: {expected_duration}"""
             },
             'trade_exit': {
-                'brief': "📊 {instrument} closed - {exit_reason} | P&L: {pnl}",
+                'brief': "[STATS] {instrument} closed - {exit_reason} | P&L: {pnl}",
                 'detailed': "🏁 Trade Exit: {instrument} | Reason: {exit_reason} | P&L: {pnl} | Duration: {duration} | Performance: {performance_rating}",
                 'comprehensive': """🏁 COMPREHENSIVE TRADE EXIT ANALYSIS
 • Instrument: {instrument}
@@ -211,9 +211,9 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
 • Impact on Session: {session_impact}"""
             },
             'performance_update': {
-                'brief': "💰 Session: {profit_pct}% to target | {trade_count} trades | {performance_trend}",
-                'detailed': "📊 Progress Update: €{profit_today}/€{target} ({profit_pct}%) | Trades: {trade_count} | Win Rate: {win_rate}% | Trend: {performance_trend}",
-                'comprehensive': """📈 COMPREHENSIVE SESSION PERFORMANCE
+                'brief': "[MONEY] Session: {profit_pct}% to target | {trade_count} trades | {performance_trend}",
+                'detailed': "[STATS] Progress Update: €{profit_today}/€{target} ({profit_pct}%) | Trades: {trade_count} | Win Rate: {win_rate}% | Trend: {performance_trend}",
+                'comprehensive': """[CHART] COMPREHENSIVE SESSION PERFORMANCE
 • Current Profit: €{profit_today} ({profit_pct}% of €{target} target)
 • Trade Statistics: {trade_count} trades, {win_rate}% win rate
 • Average Trade: €{avg_trade} | Best: €{best_trade} | Worst: €{worst_trade}
@@ -227,9 +227,9 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
 • Next Actions: {recommended_actions}"""
             },
             'risk_alert': {
-                'brief': "⚠️ Risk Alert: {alert_type} - {severity}",
-                'detailed': "🚨 Risk Management: {alert_type} | Severity: {severity} | Exposure: {exposure} | Action: {immediate_action}",
-                'comprehensive': """🚨 COMPREHENSIVE RISK MANAGEMENT ALERT
+                'brief': "[WARN] Risk Alert: {alert_type} - {severity}",
+                'detailed': "[ALERT] Risk Management: {alert_type} | Severity: {severity} | Exposure: {exposure} | Action: {immediate_action}",
+                'comprehensive': """[ALERT] COMPREHENSIVE RISK MANAGEMENT ALERT
 • Alert Classification: {alert_type} (Severity: {severity})
 • Risk Metrics: {risk_metrics}
 • Current Exposure: {exposure} ({exposure_percentage}% of capital)
@@ -275,7 +275,7 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
 • Estimated Timeline: {progression_timeline}"""
             },
             'system_status': {
-                'brief': "🔧 System: {status} | Health: {health_score}/10 | Alerts: {alert_count}",
+                'brief': "[TOOL] System: {status} | Health: {health_score}/10 | Alerts: {alert_count}",
                 'detailed': "⚙️ System Health: {status} | Score: {health_score}/10 | Performance: {performance_metrics} | Alerts: {alert_summary}",
                 'comprehensive': """⚙️ COMPREHENSIVE SYSTEM STATUS
 • Overall Health: {status} (Score: {health_score}/10)
@@ -357,9 +357,12 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             }
         }, module='ExplanationGenerator', thesis=thesis)
 
-    async def process(self) -> Dict[str, Any]:
+    async def process(self, **inputs) -> Dict[str, Any]:
         """
         Modern async processing with intelligent explanation generation
+        
+        Args:
+            **inputs: Input parameters from the environment and other modules
         
         Returns:
             Dict containing explanations, insights, and system narratives
@@ -409,6 +412,166 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             
         except Exception as e:
             return await self._handle_processing_error(e, start_time)
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """
+        Calculate confidence in explanation quality and relevance
+        
+        Args:
+            action: Action being evaluated for explanation
+            **inputs: Additional context inputs
+            
+        Returns:
+            Confidence score between 0 and 1
+        """
+        try:
+            # Base confidence from explanation quality metrics
+            base_confidence = self.session_metrics.get('explanation_quality_score', 0.5)
+            
+            # Adjust for context accuracy
+            context_accuracy = self.session_metrics.get('context_accuracy', 0.5)
+            context_adjustment = (context_accuracy - 0.5) * 0.2
+            
+            # Adjust for system health
+            health_metrics = self._get_health_metrics()
+            health_score = health_metrics.get('overall_health', 0.5)
+            health_adjustment = (health_score - 0.5) * 0.1
+            
+            # Adjust for data availability
+            explanation_context = inputs.get('explanation_context', {})
+            data_completeness = len([k for k, v in explanation_context.items() if v]) / max(1, len(explanation_context))
+            data_adjustment = (data_completeness - 0.5) * 0.2
+            
+            # Calculate final confidence
+            final_confidence = base_confidence + context_adjustment + health_adjustment + data_adjustment
+            final_confidence = np.clip(final_confidence, 0.0, 1.0)
+            
+            if self.debug:
+                self.logger.debug(f"Explanation confidence: base={base_confidence:.3f}, "
+                                f"context_adj={context_adjustment:.3f}, "
+                                f"health_adj={health_adjustment:.3f}, "
+                                f"data_adj={data_adjustment:.3f}, "
+                                f"final={final_confidence:.3f}")
+            
+            return float(final_confidence)
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "confidence_calculation")
+            self.logger.error(f"Confidence calculation failed: {error_context}")
+            return 0.5  # Default neutral confidence
+
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """
+        Propose explanation-based action or narrative
+        
+        Args:
+            **inputs: Context inputs from the environment
+            
+        Returns:
+            Dictionary containing proposed explanation action
+        """
+        try:
+            # Get current explanation context
+            explanation_context = await self._get_comprehensive_explanation_context()
+            
+            # Analyze explanation requirements
+            analysis = await self._analyze_explanation_requirements(explanation_context)
+            
+            # Determine most important explanation to provide
+            priority_contexts = analysis.get('priority_contexts', [])
+            explanation_triggers = analysis.get('explanation_triggers', [])
+            
+            # Generate explanation action
+            explanation_action = {
+                'action_type': 'explanation_generation',
+                'explanation_depth': self.explanation_depth,
+                'priority_level': 'normal',
+                'explanation_categories': [],
+                'narrative_tone': self.narrative_intelligence.get('emotional_tone', 'neutral'),
+                'urgency_level': self.narrative_intelligence.get('urgency_level', 'normal'),
+                'recommended_explanations': [],
+                'context_summary': {},
+                'explanation_targets': []
+            }
+            
+            # Add high-priority explanations
+            if priority_contexts:
+                explanation_action['priority_level'] = 'high'
+                explanation_action['explanation_categories'].extend([ctx['type'] for ctx in priority_contexts[:3]])
+                explanation_action['context_summary'] = {
+                    'high_priority_contexts': len(priority_contexts),
+                    'most_critical': priority_contexts[0]['type'] if priority_contexts else 'none'
+                }
+            
+            # Add triggered explanations
+            if explanation_triggers:
+                explanation_action['explanation_targets'].extend(explanation_triggers[:5])
+            
+            # Generate specific recommendations
+            recommendations = []
+            
+            if priority_contexts:
+                for ctx in priority_contexts[:3]:
+                    recommendations.append({
+                        'type': 'priority_explanation',
+                        'context_type': ctx['type'],
+                        'priority': ctx['priority'],
+                        'description': f"Generate {self.explanation_depth} explanation for {ctx['type']}"
+                    })
+            
+            if not recommendations:
+                recommendations.append({
+                    'type': 'routine_update',
+                    'description': 'Generate routine performance and status update',
+                    'priority': 3
+                })
+            
+            explanation_action['recommended_explanations'] = recommendations
+            
+            # Generate action thesis
+            action_thesis = self._generate_explanation_action_thesis(explanation_action)
+            explanation_action['thesis'] = action_thesis
+            
+            return explanation_action
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "explanation_action_proposal")
+            self.logger.error(f"Explanation action proposal failed: {error_context}")
+            return {
+                'action_type': 'explanation_error',
+                'error': str(error_context),
+                'fallback_action': 'generate_basic_status_update'
+            }
+
+    def _generate_explanation_action_thesis(self, action: Dict[str, Any]) -> str:
+        """Generate thesis explaining the proposed explanation action"""
+        try:
+            thesis_parts = []
+            
+            # Action overview
+            thesis_parts.append(f"EXPLANATION ACTION: {action['explanation_depth']} level generation")
+            thesis_parts.append(f"PRIORITY: {action['priority_level']} priority level")
+            thesis_parts.append(f"TONE: {action['narrative_tone']} narrative tone")
+            
+            # Context assessment
+            if action['explanation_categories']:
+                thesis_parts.append(f"CATEGORIES: {len(action['explanation_categories'])} explanation types required")
+            
+            # Urgency assessment
+            if action['urgency_level'] == 'high':
+                thesis_parts.append("URGENCY: High-priority explanation needed immediately")
+            elif action['urgency_level'] == 'low':
+                thesis_parts.append("STATUS: Routine explanation generation")
+            
+            # Recommendations
+            rec_count = len(action['recommended_explanations'])
+            if rec_count > 0:
+                thesis_parts.append(f"RECOMMENDATIONS: {rec_count} specific explanations identified")
+            
+            return " | ".join(thesis_parts)
+            
+        except Exception as e:
+            return f"Explanation action thesis generation failed: {str(e)}"
 
     async def _get_comprehensive_explanation_context(self) -> Dict[str, Any]:
         """Get comprehensive context for explanation generation using modern SmartInfoBus"""
@@ -722,15 +885,15 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
         try:
             trigger_explanations = {
                 'time_based_update': f"⏰ Scheduled update: Current session progress and system status",
-                'trade_count_change': f"📊 Trade activity update: New trading activity detected",
-                'new_alerts': f"🚨 System alerts: New notifications require attention",
+                'trade_count_change': f"[STATS] Trade activity update: New trading activity detected",
+                'new_alerts': f"[ALERT] System alerts: New notifications require attention",
                 'regime_change': f"🌊 Market regime change: Trading conditions have shifted",
-                'milestone_25': f"🎯 25% milestone reached: Quarter way to daily target",
-                'milestone_50': f"🎯 50% milestone reached: Halfway to daily target",
-                'milestone_75': f"🎯 75% milestone reached: Three-quarters to daily target",
-                'milestone_100': f"🎯 100% milestone reached: Daily target achieved!",
-                'milestone_125': f"🎯 125% milestone reached: Exceeded daily target!",
-                'error_recovery': f"🔧 Error recovery: System recovering from previous issues"
+                'milestone_25': f"[TARGET] 25% milestone reached: Quarter way to daily target",
+                'milestone_50': f"[TARGET] 50% milestone reached: Halfway to daily target",
+                'milestone_75': f"[TARGET] 75% milestone reached: Three-quarters to daily target",
+                'milestone_100': f"[TARGET] 100% milestone reached: Daily target achieved!",
+                'milestone_125': f"[TARGET] 125% milestone reached: Exceeded daily target!",
+                'error_recovery': f"[TOOL] Error recovery: System recovering from previous issues"
             }
             
             return trigger_explanations.get(trigger, f"System update: {trigger.replace('_', ' ')}")
@@ -759,17 +922,17 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             # Performance narrative
             performance = self.decision_context.get('recent_performance', 'neutral')
             if depth == 'comprehensive':
-                narratives.append(f"📈 Performance Status: Recent trading performance is {performance}, with system continuously adapting to market conditions and optimizing execution quality.")
+                narratives.append(f"[CHART] Performance Status: Recent trading performance is {performance}, with system continuously adapting to market conditions and optimizing execution quality.")
             elif depth == 'detailed':
-                narratives.append(f"📊 Performance: {performance.title()} recent results")
+                narratives.append(f"[STATS] Performance: {performance.title()} recent results")
             
             # Risk narrative
             risk_level = self.decision_context.get('risk_level', 'medium')
             if risk_level in ['high', 'critical']:
                 if depth == 'comprehensive':
-                    narratives.append(f"⚠️ Risk Management: Current risk level is {risk_level}, with enhanced monitoring and protective measures actively engaged.")
+                    narratives.append(f"[WARN] Risk Management: Current risk level is {risk_level}, with enhanced monitoring and protective measures actively engaged.")
                 else:
-                    narratives.append(f"⚠️ Risk: {risk_level.title()} level - monitoring closely")
+                    narratives.append(f"[WARN] Risk: {risk_level.title()} level - monitoring closely")
             
             return narratives
             
@@ -789,27 +952,27 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 priority = context['priority']
                 
                 if context_type == 'high_profit_trade':
-                    rationales.append(f"✅ Trade Success Rationale: High-profit trade validates current strategy effectiveness and market timing accuracy.")
+                    rationales.append(f"[OK] Trade Success Rationale: High-profit trade validates current strategy effectiveness and market timing accuracy.")
                 elif context_type == 'high_loss_trade':
-                    rationales.append(f"⚠️ Loss Analysis Rationale: Significant loss triggers risk management review and strategy adjustment protocols.")
+                    rationales.append(f"[WARN] Loss Analysis Rationale: Significant loss triggers risk management review and strategy adjustment protocols.")
                 elif context_type == 'target_achieved':
-                    rationales.append(f"🎯 Target Achievement Rationale: Daily target reached through systematic execution and risk-controlled trading approach.")
+                    rationales.append(f"[TARGET] Target Achievement Rationale: Daily target reached through systematic execution and risk-controlled trading approach.")
                 elif context_type == 'system_critical_error':
-                    rationales.append(f"🚨 Critical Response Rationale: System error requires immediate attention to maintain trading operation integrity.")
+                    rationales.append(f"[ALERT] Critical Response Rationale: System error requires immediate attention to maintain trading operation integrity.")
                 elif context_type == 'drawdown_alert':
-                    rationales.append(f"🛡️ Risk Protection Rationale: Drawdown threshold breach activates protective measures to preserve capital.")
+                    rationales.append(f"[SAFE] Risk Protection Rationale: Drawdown threshold breach activates protective measures to preserve capital.")
             
             # Context change rationales
             context_changes = analysis.get('context_changes', [])
             for change in context_changes:
                 if change == 'market_regime_change':
-                    rationales.append(f"🔄 Adaptation Rationale: Market regime shift requires strategy recalibration for optimal performance.")
+                    rationales.append(f"[RELOAD] Adaptation Rationale: Market regime shift requires strategy recalibration for optimal performance.")
                 elif change == 'risk_level_change':
-                    rationales.append(f"⚖️ Risk Adjustment Rationale: Risk level change triggers position sizing and exposure adjustments.")
+                    rationales.append(f"[BALANCE] Risk Adjustment Rationale: Risk level change triggers position sizing and exposure adjustments.")
             
             # Default rationale if none specific
             if not rationales:
-                rationales.append(f"📊 Routine Rationale: Standard monitoring and status updates maintain operational transparency.")
+                rationales.append(f"[STATS] Routine Rationale: Standard monitoring and status updates maintain operational transparency.")
             
             return rationales
             
@@ -876,7 +1039,7 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             over_target = ((profit / target) - 1) * 100
             
             if self.explanation_depth == 'comprehensive':
-                return f"""🎯 COMPREHENSIVE TARGET ACHIEVEMENT ANALYSIS
+                return f"""[TARGET] COMPREHENSIVE TARGET ACHIEVEMENT ANALYSIS
 • Achievement Status: Daily profit target of €{target} successfully reached
 • Final Profit: €{profit:.2f} ({over_target:+.1f}% over target)
 • Time to Target: {hours_taken:.1f} hours of {8.0} hour session
@@ -888,9 +1051,9 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
 • Performance Impact: Excellent execution demonstrates system effectiveness
 • Next Phase: Focus on capital preservation for remainder of session"""
             elif self.explanation_depth == 'detailed':
-                return f"🎯 Target Achieved: €{profit:.2f} ({over_target:+.1f}% over €{target} target) in {hours_taken:.1f}h with {self.session_metrics['trade_count']} trades"
+                return f"[TARGET] Target Achieved: €{profit:.2f} ({over_target:+.1f}% over €{target} target) in {hours_taken:.1f}h with {self.session_metrics['trade_count']} trades"
             else:  # brief
-                return f"🎯 Target Achieved: €{profit:.2f} ({over_target:+.1f}% over target)"
+                return f"[TARGET] Target Achieved: €{profit:.2f} ({over_target:+.1f}% over target)"
                 
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "target_achievement_explanation")
@@ -900,7 +1063,7 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
         """Generate explanation for critical system errors"""
         try:
             if not error_data:
-                return "🚨 Critical system alert - no details available"
+                return "[ALERT] Critical system alert - no details available"
             
             error_count = len(error_data)
             latest_error = error_data[-1] if error_data else {}
@@ -908,7 +1071,7 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             error_source = latest_error.get('source', 'System')
             
             if self.explanation_depth == 'comprehensive':
-                return f"""🚨 COMPREHENSIVE CRITICAL ERROR ANALYSIS
+                return f"""[ALERT] COMPREHENSIVE CRITICAL ERROR ANALYSIS
 • Error Classification: Critical system error requiring immediate attention
 • Error Count: {error_count} critical alerts active
 • Primary Error: {error_message}
@@ -926,9 +1089,9 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
 • Monitoring: Continuous error tracking until resolution
 • Escalation: Technical support may be required for complex issues"""
             elif self.explanation_depth == 'detailed':
-                return f"🚨 Critical Error: {error_count} alerts - {error_message} from {error_source}. Immediate attention required."
+                return f"[ALERT] Critical Error: {error_count} alerts - {error_message} from {error_source}. Immediate attention required."
             else:  # brief
-                return f"🚨 Critical Error: {error_count} alerts - {error_message}"
+                return f"[ALERT] Critical Error: {error_count} alerts - {error_message}"
                 
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "critical_error_explanation")
@@ -944,7 +1107,7 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             severity = "CRITICAL" if drawdown > 0.15 else "HIGH" if drawdown > 0.1 else "MODERATE"
             
             if self.explanation_depth == 'comprehensive':
-                return f"""⚠️ COMPREHENSIVE DRAWDOWN RISK ANALYSIS
+                return f"""[WARN] COMPREHENSIVE DRAWDOWN RISK ANALYSIS
 • Drawdown Level: {drawdown_pct:.1f}% - {severity} RISK
 • Risk Classification: Capital preservation measures required
 • Current Exposure: {risk_metrics.get('total_exposure', 'Unknown')}
@@ -963,9 +1126,9 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
 • Risk Tolerance: Reassess risk parameters and position sizing rules
 • Session Adjustment: Prioritize damage control over profit targets"""
             elif self.explanation_depth == 'detailed':
-                return f"⚠️ Drawdown Alert: {drawdown_pct:.1f}% ({severity}) - Reduce positions and implement protective measures"
+                return f"[WARN] Drawdown Alert: {drawdown_pct:.1f}% ({severity}) - Reduce positions and implement protective measures"
             else:  # brief
-                return f"⚠️ Drawdown: {drawdown_pct:.1f}% - Risk management required"
+                return f"[WARN] Drawdown: {drawdown_pct:.1f}% - Risk management required"
                 
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "drawdown_explanation")
@@ -1457,7 +1620,7 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
             self.logger.error(format_operator_message(
-                icon="🚨",
+                icon="[ALERT]",
                 message="Explanation Generator disabled due to repeated errors",
                 error_count=self.error_count,
                 threshold=self.circuit_breaker_threshold
@@ -1589,7 +1752,7 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
         return f"""
 🎤 EXPLANATION GENERATOR COMPREHENSIVE REPORT
 ═══════════════════════════════════════════════════════════════
-📊 Session Overview:
+[STATS] Session Overview:
 • Session Duration: {hours_active:.1f} hours
 • Explanations Generated: {self.session_metrics['explanations_generated']}
 • Current Depth: {self.explanation_depth.title()}
@@ -1597,7 +1760,7 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
 • Quality Score: {quality_score:.1%}
 • Context Accuracy: {context_accuracy:.1%}
 
-💰 Performance Context:
+[MONEY] Performance Context:
 • Current P&L: €{self.session_metrics['profit_today']:.2f}
 • Target Progress: {(self.session_metrics['profit_today']/self.target_daily_profit)*100:.1f}%
 • Trade Count: {self.session_metrics['trade_count']}
@@ -1616,20 +1779,20 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
 • Narrative Tone: {self.narrative_intelligence['emotional_tone'].title()}
 • Technical Depth: {self.narrative_intelligence['technical_depth'].title()}
 
-📝 Recent Explanations:
+[LOG] Recent Explanations:
 {recent_explanations if recent_explanations else '  📭 No recent explanations'}
 
-🎯 Current Focus:
+[TARGET] Current Focus:
 • Explanation Categories: {len(self.explanation_categories)} available
 • Priority Levels: {len(self.context_priorities)} context priorities
 • Circuit Breaker: {'ACTIVE' if self.is_disabled else 'INACTIVE'}
 
-📊 Health Status:
+[STATS] Health Status:
 • Error Count: {self.error_count}/{self.circuit_breaker_threshold}
 • System Status: {'DISABLED' if self.is_disabled else 'OPERATIONAL'}
 • Performance Rating: {self._calculate_performance_rating()}/10
 
-📈 Last Generated Content:
+[CHART] Last Generated Content:
 {self.last_explanation[:300]}{'...' if len(self.last_explanation) > 300 else ''}
         """
 
@@ -1720,7 +1883,7 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             self.context_priorities.update(state.get("priorities", {}))
             
             self.logger.info(format_operator_message(
-                icon="🔄",
+                icon="[RELOAD]",
                 message="Explanation Generator state restored",
                 depth=self.explanation_depth,
                 explanations=len(self.explanation_history),

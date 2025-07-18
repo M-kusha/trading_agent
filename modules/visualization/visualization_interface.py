@@ -130,12 +130,122 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
         self._initialize_advanced_systems()
         
         self.logger.info(format_operator_message(
-            icon="📊",
+            icon="[STATS]",
             message="Visualization Interface initialized",
             max_steps=self.max_steps,
             streaming=self.streaming_enabled,
             performance_window=self.performance_window
         ))
+
+    def _initialize(self):
+        """Initialize module - required by BaseModule"""
+        # Module-specific initialization already done in __init__
+        # This method is required by BaseModule abstract interface
+        pass
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in visualization data quality and completeness."""
+        try:
+            # Base confidence from data availability
+            base_confidence = 0.8  # High confidence in data aggregation capabilities
+            
+            # Adjust based on error count
+            if self.is_disabled:
+                return 0.1
+            elif self.error_count > 0:
+                base_confidence *= max(0.3, 1.0 - self.error_count * 0.2)
+            
+            # Boost confidence based on data quality
+            if self.records:
+                # Recent data availability boosts confidence
+                recent_records = len(self.records) / max(self.max_steps, 1)
+                base_confidence *= (0.5 + recent_records * 0.5)
+            
+            # Dashboard readiness factor
+            if self.dashboard_data:
+                base_confidence *= 1.1  # Small boost for active dashboard
+            
+            # Streaming capability factor
+            if self.streaming_enabled and self.stream_clients:
+                base_confidence *= 1.05  # Small boost for active streaming
+            
+            return max(0.0, min(1.0, base_confidence))
+            
+        except Exception as e:
+            self.logger.warning(f"Error calculating confidence: {e}")
+            return 0.5
+
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose visualization and data management actions."""
+        try:
+            confidence = await self.calculate_confidence({}, **inputs)
+            
+            action = {
+                'type': 'data_management',
+                'confidence': confidence,
+                'recommendations': []
+            }
+            
+            # Data collection recommendations
+            if len(self.records) < self.max_steps * 0.1:
+                action['recommendations'].append({
+                    'action': 'increase_data_collection',
+                    'reason': f'Low data volume: {len(self.records)} records',
+                    'priority': 'medium'
+                })
+            
+            # Dashboard update recommendations
+            current_time = time.time()
+            if (current_time - self.last_dashboard_update) > self.dashboard_update_freq * 2:
+                action['recommendations'].append({
+                    'action': 'update_dashboard',
+                    'reason': f'Dashboard outdated by {current_time - self.last_dashboard_update:.1f}s',
+                    'priority': 'medium'
+                })
+            
+            # Alert management recommendations
+            if len(self.alert_history) > 150:
+                action['recommendations'].append({
+                    'action': 'manage_alert_history',
+                    'reason': f'Alert history size: {len(self.alert_history)}',
+                    'priority': 'low'
+                })
+            
+            # Performance monitoring recommendations
+            if self.performance_metrics['balance'] and len(self.performance_metrics['balance']) > 0:
+                recent_balance = list(self.performance_metrics['balance'])[-1]
+                if recent_balance < 5000:  # Low balance warning
+                    action['recommendations'].append({
+                        'action': 'monitor_balance_risk',
+                        'reason': f'Low balance detected: ${recent_balance:.2f}',
+                        'priority': 'high'
+                    })
+            
+            # Error handling recommendations
+            if self.error_count > 2:
+                action['recommendations'].append({
+                    'action': 'investigate_errors',
+                    'reason': f'High error count: {self.error_count}',
+                    'priority': 'high'
+                })
+            
+            # Streaming optimization recommendations
+            if self.streaming_enabled and not self.stream_clients:
+                action['recommendations'].append({
+                    'action': 'optimize_streaming',
+                    'reason': 'Streaming enabled but no clients connected',
+                    'priority': 'low'
+                })
+            
+            return action
+            
+        except Exception as e:
+            self.logger.warning(f"Error proposing action: {e}")
+            return {
+                'type': 'data_management',
+                'confidence': 0.5,
+                'recommendations': [{'action': 'investigate_error', 'reason': str(e), 'priority': 'high'}]
+            }
 
     def _initialize_advanced_systems(self):
         """Initialize all modern system components"""
@@ -188,11 +298,11 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
         self.is_disabled = False
         
         self.logger.info(format_operator_message(
-            icon="🔄",
+            icon="[RELOAD]",
             message="Visualization Interface reset - all data cleared"
         ))
 
-    async def process(self) -> Dict[str, Any]:
+    async def process(self, **inputs) -> Dict[str, Any]:
         """Modern async processing with comprehensive data aggregation"""
         start_time = time.time()
         
@@ -514,7 +624,7 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
                 # Log critical alerts
                 if alert.get('severity') in ['critical', 'error']:
                     self.logger.warning(format_operator_message(
-                        icon="🚨",
+                        icon="[ALERT]",
                         message=f"Critical alert: {alert.get('message', alert)}",
                         module=alert.get('module', 'unknown'),
                         step=record['step']
@@ -601,7 +711,7 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
                 self.viz_stats['dashboard_updates'] += 1
                 
                 self.logger.info(format_operator_message(
-                    icon="📊",
+                    icon="[STATS]",
                     message="Dashboard updated",
                     records=len(self.records),
                     alerts=len(self.alert_history),
@@ -724,7 +834,7 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
             self.logger.error(format_operator_message(
-                icon="🚨",
+                icon="[ALERT]",
                 message="VisualizationInterface disabled due to repeated errors",
                 error_count=self.error_count,
                 threshold=self.circuit_breaker_threshold
@@ -854,23 +964,23 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
             current = data.get('current', {})
             
             report = f"""
-📊 TRADING PERFORMANCE REPORT
+[STATS] TRADING PERFORMANCE REPORT
 ═══════════════════════════════════════
 Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-💰 FINANCIAL SUMMARY:
+[MONEY] FINANCIAL SUMMARY:
 • Current Balance: ${current.get('balance', 0):,.2f}
 • Total P&L: ${stats.get('total_pnl', 0):+,.2f}
 • Max Drawdown: {stats.get('max_drawdown', 0):.1%}
 • Current Win Rate: {stats.get('current_win_rate', 0):.1%}
 
-📈 TRADING ACTIVITY:
+[CHART] TRADING ACTIVITY:
 • Total Trades: {stats.get('trade_count', 0):,}
 • Active Positions: {current.get('positions', 0)}
 • Current Regime: {current.get('regime', 'unknown').title()}
 • Average Consensus: {stats.get('avg_consensus', 0):.1%}
 
-🚨 RECENT ALERTS:
+[ALERT] RECENT ALERTS:
 """
             
             for alert in stats.get('recent_alerts', [])[-5:]:
@@ -879,13 +989,13 @@ Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 report += f"• [{alert_time}] {alert_msg}\n"
             
             report += f"""
-📊 SYSTEM STATISTICS:
+[STATS] SYSTEM STATISTICS:
 • Data Points Collected: {self.viz_stats['data_points_collected']:,}
 • Dashboard Updates: {self.viz_stats['dashboard_updates']:,}
-• Streaming Enabled: {'✅ Yes' if self.streaming_enabled else '❌ No'}
+• Streaming Enabled: {'[OK] Yes' if self.streaming_enabled else '[FAIL] No'}
 • Data Timespan: {data.get('metadata', {}).get('timespan_hours', 0):.1f} hours
 • Error Count: {self.error_count}
-• Status: {'🚨 Disabled' if self.is_disabled else '✅ Healthy'}
+• Status: {'[ALERT] Disabled' if self.is_disabled else '[OK] Healthy'}
             """
             
             return report
@@ -1019,7 +1129,7 @@ Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             self.is_disabled = system_state.get("is_disabled", False)
             
             self.logger.info(format_operator_message(
-                icon="🔄",
+                icon="[RELOAD]",
                 message="VisualizationInterface state restored",
                 records=len(self.records),
                 alerts=len(self.alert_history),

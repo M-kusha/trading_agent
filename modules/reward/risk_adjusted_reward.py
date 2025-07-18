@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/reward/risk_adjusted_reward.py
-# 🚀 PRODUCTION-READY Enhanced Risk-Adjusted Reward System
+# [ROCKET] PRODUCTION-READY Enhanced Risk-Adjusted Reward System
 # Advanced reward calculation with SmartInfoBus integration and intelligent adaptation
 # ─────────────────────────────────────────────────────────────
 
@@ -90,7 +90,7 @@ class RewardConfig:
 )
 class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
-    🚀 Advanced risk-adjusted reward system with SmartInfoBus integration.
+    [ROCKET] Advanced risk-adjusted reward system with SmartInfoBus integration.
     Provides sophisticated multi-component reward calculation with intelligent adaptation.
     """
     
@@ -100,9 +100,18 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
                  env=None,
                  **kwargs):
         
-        self.config = config or RewardConfig()
         self.env = env
         super().__init__()
+        
+        # Set config after super() call to avoid BaseModule interference
+        self.config = config or RewardConfig()
+        
+        # Ensure config is the right type
+        if not isinstance(self.config, RewardConfig):
+            if isinstance(self.config, dict):
+                self.config = RewardConfig(**self.config)
+            else:
+                self.config = RewardConfig()
         
         # Initialize advanced systems
         self._initialize_advanced_systems()
@@ -115,7 +124,7 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
         
         self.logger.info(
             format_operator_message(
-                "🎯", "REWARD_SYSTEM_INITIALIZED",
+                "[TARGET]", "REWARD_SYSTEM_INITIALIZED",
                 details=f"Balance: €{self.config.initial_balance:,.0f}, History: {self.config.history_size}",
                 result="Enhanced reward system ready for calculation",
                 context="reward_initialization"
@@ -149,7 +158,7 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
         # Health monitoring
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        self._start_monitoring()
+        # Note: Don't start monitoring here, wait until after reward state init
 
     def _initialize_genome_parameters(self, genome: Optional[Dict[str, Any]]):
         """Initialize genome-based parameters with validation"""
@@ -263,6 +272,9 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
         self._volatility_performance = defaultdict(list)
         self._session_analytics = defaultdict(list)
         self._error_recovery_metrics = []
+        
+        # Start monitoring after all state is initialized
+        self._start_monitoring()
 
     def _start_monitoring(self):
         """Start background monitoring for reward system"""
@@ -280,7 +292,7 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
 
-    async def _initialize(self):
+    def _initialize(self):
         """Initialize module with SmartInfoBus integration"""
         try:
             # Set initial reward status
@@ -299,10 +311,8 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
                 thesis="Initial reward system performance metrics"
             )
             
-            return True
         except Exception as e:
             self.logger.error(f"Reward system initialization failed: {e}")
-            return False
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process reward calculation with enhanced analytics"""
@@ -341,6 +351,126 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
             
         except Exception as e:
             return await self._handle_reward_error(e, start_time)
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in reward system calculations"""
+        try:
+            # Base confidence from reward system health
+            base_confidence = 0.8
+            
+            # Adjust based on reward quality
+            if hasattr(self, '_reward_quality'):
+                base_confidence += (self._reward_quality - 0.5) * 0.3
+            
+            # Adjust based on Sharpe ratio stability
+            if hasattr(self, '_sharpe_ratio') and abs(self._sharpe_ratio) < 2.0:
+                base_confidence += 0.1
+            elif hasattr(self, '_sharpe_ratio') and abs(self._sharpe_ratio) > 5.0:
+                base_confidence -= 0.2
+            
+            # Adjust based on historical performance
+            if len(self._reward_history) >= 10:
+                recent_rewards = list(self._reward_history)[-10:]
+                reward_stability = 1.0 - (np.std(recent_rewards) / (abs(np.mean(recent_rewards)) + 0.1))
+                base_confidence += reward_stability * 0.1
+            
+            # Circuit breaker adjustment
+            if self.circuit_breaker['state'] == 'OPEN':
+                base_confidence *= 0.5
+            elif self.circuit_breaker['failures'] > 0:
+                base_confidence *= 0.8
+            
+            # Mode-specific adjustments
+            if self.current_mode == RewardMode.EMERGENCY:
+                base_confidence *= 0.7
+            elif self.current_mode == RewardMode.LIVE_TRADING:
+                base_confidence += 0.1
+            
+            return float(np.clip(base_confidence, 0.1, 1.0))
+            
+        except Exception as e:
+            self.logger.error(f"Confidence calculation failed: {e}")
+            return 0.6  # Moderate default confidence
+
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose reward system actions and recommendations"""
+        try:
+            # Get current reward state
+            current_reward = self._last_reward
+            reward_trend = 'neutral'
+            
+            if len(self._reward_history) >= 5:
+                recent_rewards = list(self._reward_history)[-5:]
+                trend_slope = np.polyfit(range(len(recent_rewards)), recent_rewards, 1)[0]
+                
+                if trend_slope > 0.05:
+                    reward_trend = 'improving'
+                elif trend_slope < -0.05:
+                    reward_trend = 'declining'
+            
+            # Generate recommendations based on reward performance
+            recommendations = []
+            
+            # Performance-based recommendations
+            if self._sharpe_ratio < 0:
+                recommendations.append({
+                    'action': 'reduce_risk_exposure',
+                    'reason': f'Negative Sharpe ratio: {self._sharpe_ratio:.2f}',
+                    'priority': 'high'
+                })
+            
+            if len(self._reward_history) >= 10:
+                recent_avg = np.mean(list(self._reward_history)[-10:])
+                if recent_avg < -0.1:
+                    recommendations.append({
+                        'action': 'review_trading_strategy',
+                        'reason': f'Poor recent performance: {recent_avg:.3f}',
+                        'priority': 'high'
+                    })
+            
+            # Volatility-based recommendations
+            if len(self._reward_history) >= 10:
+                reward_volatility = np.std(list(self._reward_history)[-10:])
+                if reward_volatility > 1.0:
+                    recommendations.append({
+                        'action': 'stabilize_reward_variance',
+                        'reason': f'High reward volatility: {reward_volatility:.3f}',
+                        'priority': 'medium'
+                    })
+            
+            # Adaptive parameter recommendations
+            if hasattr(self, '_adaptive_params'):
+                if self._adaptive_params.get('dynamic_penalty_scaling', 1.0) > 1.5:
+                    recommendations.append({
+                        'action': 'reduce_penalty_scaling',
+                        'reason': 'High penalty scaling detected',
+                        'priority': 'low'
+                    })
+            
+            return {
+                'action_type': 'reward_optimization',
+                'current_reward': current_reward,
+                'reward_trend': reward_trend,
+                'recommendations': recommendations,
+                'sharpe_ratio': getattr(self, '_sharpe_ratio', 0.0),
+                'reward_quality': getattr(self, '_reward_quality', 0.5),
+                'confidence': await self.calculate_confidence({}, **inputs),
+                'timestamp': datetime.datetime.now().isoformat(),
+                'system_health': {
+                    'circuit_breaker': self.circuit_breaker['state'],
+                    'mode': self.current_mode.value,
+                    'health_status': getattr(self, '_health_status', 'unknown')
+                }
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Action proposal failed: {e}")
+            return {
+                'action_type': 'reward_optimization',
+                'error': str(e),
+                'recommendations': [{'action': 'system_check', 'reason': 'Error in reward analysis', 'priority': 'high'}],
+                'confidence': 0.1
+            }
 
     async def _extract_reward_data(self, **inputs) -> Optional[Dict[str, Any]]:
         """Extract reward data from SmartInfoBus and inputs"""
@@ -551,7 +681,7 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
                 self.circuit_breaker['state'] == 'OPEN'):
                 self.logger.info(
                     format_operator_message(
-                        "🎯", "REWARD_CALCULATED",
+                        "[TARGET]", "REWARD_CALCULATED",
                         reward=f"{final_reward:.4f}",
                         pnl=f"€{realised_pnl:.2f}",
                         trades=len(trades),
@@ -1099,7 +1229,7 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
         
         self.logger.error(
             format_operator_message(
-                "💥", "REWARD_CALCULATION_ERROR",
+                "[CRASH]", "REWARD_CALCULATION_ERROR",
                 error=str(error),
                 details=explanation,
                 processing_time_ms=processing_time,
@@ -1139,6 +1269,10 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
     def _update_reward_health(self):
         """Update reward system health metrics"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, '_reward_quality'):
+                return  # Skip if not fully initialized yet
+                
             # Check reward quality
             if self._reward_quality < self.config.min_reward_quality:
                 self._health_status = 'warning'
@@ -1150,7 +1284,7 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
                 self._health_status = 'warning'
             
             # Check for excessive volatility
-            if self._reward_volatility > 2.0:
+            if hasattr(self, '_reward_volatility') and self._reward_volatility > 2.0:
                 self._health_status = 'warning'
             
             self._last_health_check = time.time()
@@ -1162,6 +1296,10 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
     def _analyze_reward_effectiveness(self):
         """Analyze reward calculation effectiveness"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, '_reward_history'):
+                return  # Skip if not fully initialized yet
+                
             if len(self._reward_history) >= 10:
                 recent_rewards = list(self._reward_history)[-10:]
                 
@@ -1171,7 +1309,7 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
                 if positive_ratio > 0.8:
                     self.logger.info(
                         format_operator_message(
-                            "🎯", "HIGH_REWARD_EFFECTIVENESS",
+                            "[TARGET]", "HIGH_REWARD_EFFECTIVENESS",
                             positive_ratio=f"{positive_ratio:.2f}",
                             avg_reward=f"{np.mean(recent_rewards):.4f}",
                             context="reward_analysis"
@@ -1180,7 +1318,7 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
                 elif positive_ratio < 0.2:
                     self.logger.warning(
                         format_operator_message(
-                            "⚠️", "LOW_REWARD_EFFECTIVENESS",
+                            "[WARN]", "LOW_REWARD_EFFECTIVENESS",
                             positive_ratio=f"{positive_ratio:.2f}",
                             avg_reward=f"{np.mean(recent_rewards):.4f}",
                             context="reward_analysis"
@@ -1193,6 +1331,10 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
     def _adapt_parameters(self):
         """Continuous parameter adaptation based on performance"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, '_regime_performance'):
+                return  # Skip if not fully initialized yet
+                
             # Adapt based on regime performance
             if len(self._regime_performance) >= 2:
                 regime_rewards = {}
@@ -1550,56 +1692,56 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
         
         # Performance status
         if self._avg_reward > 0.5:
-            performance_status = "🚀 Excellent"
+            performance_status = "[ROCKET] Excellent"
         elif self._avg_reward > 0.0:
-            performance_status = "✅ Good"
+            performance_status = "[OK] Good"
         elif self._avg_reward > -0.5:
-            performance_status = "⚡ Fair"
+            performance_status = "[FAST] Fair"
         else:
-            performance_status = "⚠️ Poor"
+            performance_status = "[WARN] Poor"
         
         # Quality status
         if self._reward_quality > 0.8:
-            quality_status = "🎯 High"
+            quality_status = "[TARGET] High"
         elif self._reward_quality > 0.6:
-            quality_status = "✅ Good"
+            quality_status = "[OK] Good"
         elif self._reward_quality > 0.4:
-            quality_status = "⚡ Fair"
+            quality_status = "[FAST] Fair"
         else:
-            quality_status = "❌ Low"
+            quality_status = "[FAIL] Low"
         
         # Health status
-        health_emoji = "✅" if self._health_status == 'healthy' else "⚠️"
-        cb_status = "🔴 OPEN" if self.circuit_breaker['state'] == 'OPEN' else "🟢 CLOSED"
+        health_emoji = "[OK]" if self._health_status == 'healthy' else "[WARN]"
+        cb_status = "[RED] OPEN" if self.circuit_breaker['state'] == 'OPEN' else "[GREEN] CLOSED"
         
         return f"""
-🎯 ENHANCED RISK-ADJUSTED REWARD SYSTEM v4.0
+[TARGET] ENHANCED RISK-ADJUSTED REWARD SYSTEM v4.0
 ═══════════════════════════════════════════════════
-📊 Performance: {performance_status} ({self._avg_reward:.4f} avg)
-🎯 Quality: {quality_status} ({self._reward_quality:.3f})
+[STATS] Performance: {performance_status} ({self._avg_reward:.4f} avg)
+[TARGET] Quality: {quality_status} ({self._reward_quality:.3f})
 💎 Consistency: {self._consistency_score:.3f}
-📈 Sharpe Ratio: {self._sharpe_ratio:.3f}
-💰 Win Rate: {self._win_rate:.1%}
+[CHART] Sharpe Ratio: {self._sharpe_ratio:.3f}
+[MONEY] Win Rate: {self._win_rate:.1%}
 
-🏥 SYSTEM HEALTH
+[HEALTH] SYSTEM HEALTH
 • Status: {health_emoji} {self._health_status.upper()}
 • Circuit Breaker: {cb_status}
 • Mode: {self.current_mode.value.upper()}
 • Adaptation Confidence: {self._adaptive_params.get('adaptation_confidence', 0.5):.2f}
 
-⚖️ CONFIGURATION
+[BALANCE] CONFIGURATION
 • Regime Weights: [{', '.join(f'{w:.2f}' for w in self.regime_weights)}]
 • Drawdown Penalty: {self.config.dd_pen_weight:.2f}
 • Win Bonus: {self.config.win_bonus_weight:.2f}
 • Consistency Bonus: {self.config.consistency_bonus_weight:.2f}
 
-🔧 ADAPTIVE PARAMETERS
+[TOOL] ADAPTIVE PARAMETERS
 • Penalty Scaling: {self._adaptive_params['dynamic_penalty_scaling']:.2f}
 • Regime Sensitivity: {self._adaptive_params['regime_sensitivity']:.2f}
 • Activity Threshold: {self._adaptive_params['activity_threshold']:.2f}
 • Risk Tolerance: {self._adaptive_params['risk_tolerance']:.2f}
 
-📊 ACTIVITY METRICS
+[STATS] ACTIVITY METRICS
 • Total Calls: {self._call_count:,}
 • Reward History: {len(self._reward_history)} records
 • Audit Trail: {len(self.audit_trail)} entries

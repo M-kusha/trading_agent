@@ -8,7 +8,7 @@ import numpy as np
 import datetime
 from typing import Dict, Any, List, Optional
 
-# ✅ FIXED: Proper imports for SmartInfoBus system
+# [OK] FIXED: Proper imports for SmartInfoBus system
 from modules.core.module_base import BaseModule, module
 from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
 from modules.utils.info_bus import InfoBusManager
@@ -28,7 +28,7 @@ from modules.utils.audit_utils import format_operator_message
 )
 class AuditingCoordinator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    🎯 PRODUCTION-GRADE Auditing Coordinator
+    [TARGET] PRODUCTION-GRADE Auditing Coordinator
     
     Central coordinator managing all audit operations with:
     - NASA/MILITARY GRADE reliability patterns
@@ -61,7 +61,7 @@ class AuditingCoordinator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStat
         self._discover_audit_modules()
         
         version = getattr(self.metadata, 'version', '2.0.0') if self.metadata else '2.0.0'
-        self.logger.info(f"🎯 {self.__class__.__name__} v{version} initialized")
+        self.logger.info(f"[TARGET] {self.__class__.__name__} v{version} initialized")
         self.logger.info(f"   Discovered {len(self.audit_modules)} audit modules")
     
     def _discover_audit_modules(self):
@@ -74,10 +74,10 @@ class AuditingCoordinator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStat
             # This will be populated automatically when other modules are loaded
             self.discovered_auditors = {}
             
-            self.logger.info("✅ Audit module discovery complete")
+            self.logger.info("[OK] Audit module discovery complete")
             
         except Exception as e:
-            self.logger.error(f"❌ Audit discovery failed: {e}")
+            self.logger.error(f"[FAIL] Audit discovery failed: {e}")
     
     def reset(self) -> None:
         """Reset all audit state with mixin cleanup"""
@@ -93,11 +93,11 @@ class AuditingCoordinator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStat
             'avg_audit_time': 0.0
         }
         
-        self.logger.info("🔄 Auditing coordinator reset complete")
+        self.logger.info("[RELOAD] Auditing coordinator reset complete")
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """
-        🎯 MAIN AUDITING PROCESS
+        [TARGET] MAIN AUDITING PROCESS
         
         Coordinates all audit operations with SmartInfoBus integration:
         1. Extract audit data from inputs
@@ -148,7 +148,7 @@ class AuditingCoordinator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStat
             }
             
         except Exception as e:
-            self.logger.error(f"❌ Audit process failed: {e}")
+            self.logger.error(f"[FAIL] Audit process failed: {e}")
             audit_time = (datetime.datetime.now() - start_time).total_seconds()
             self._update_audit_performance(False, audit_time)
             
@@ -192,7 +192,7 @@ class AuditingCoordinator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStat
             results['overall_status'] = self._determine_overall_audit_status(results)
             
         except Exception as e:
-            self.logger.error(f"❌ Comprehensive audit failed: {e}")
+            self.logger.error(f"[FAIL] Comprehensive audit failed: {e}")
             results['overall_status'] = 'failed'
             results['error'] = str(e)
         
@@ -287,23 +287,23 @@ class AuditingCoordinator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStat
         session_duration = (datetime.datetime.now() - self.audit_session_start).total_seconds() / 3600
         
         report = f"""
-🎯 UNIFIED AUDITING REPORT
+[TARGET] UNIFIED AUDITING REPORT
 ═══════════════════════════════════════
 📅 Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-⏱️  Session Duration: {session_duration:.1f} hours
-🏆 Overall Status: {audit_results.get('overall_status', 'unknown').upper()}
+[TIME]  Session Duration: {session_duration:.1f} hours
+[TROPHY] Overall Status: {audit_results.get('overall_status', 'unknown').upper()}
 
-📊 AUDIT SUMMARY
+[STATS] AUDIT SUMMARY
 • Signal Quality: {audit_results.get('signal_audit', {}).get('quality_score', 0):.1%}
 • Trade Quality: {audit_results.get('trade_audit', {}).get('quality_score', 0):.1%}
 • Cross-Module Consistency: {validation_results.get('consistency_score', 0):.1%}
 
-📈 PERFORMANCE METRICS
+[CHART] PERFORMANCE METRICS
 • Total Audits: {self.audit_performance['total_audits']}
 • Success Rate: {self.audit_performance['successful_audits']/max(1, self.audit_performance['total_audits']):.1%}
 • Avg Audit Time: {self.audit_performance['avg_audit_time']:.3f}s
 
-✅ SYSTEM HEALTH
+[OK] SYSTEM HEALTH
 • Audit modules operational
 • Cross-validation complete
 • Real-time monitoring active
@@ -312,7 +312,7 @@ class AuditingCoordinator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStat
         # Add conflicts if any
         conflicts = validation_results.get('conflicts', [])
         if conflicts:
-            report += f"\n\n⚠️ CONSISTENCY ISSUES ({len(conflicts)}):\n"
+            report += f"\n\n[WARN] CONSISTENCY ISSUES ({len(conflicts)}):\n"
             for conflict in conflicts:
                 report += f"• {conflict['type']}: {conflict}\n"
         
@@ -366,6 +366,27 @@ class AuditingCoordinator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStat
                 (1 - alpha) * self.audit_performance['avg_audit_time']
             )
     
+    # Required abstract methods for SmartInfoBusTradingMixin
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose audit action based on current state"""
+        return {
+            'action_type': 'audit_coordination',
+            'priority': 'normal',
+            'target_modules': list(self.discovered_auditors.keys()),
+            'audit_focus': 'comprehensive',
+            '_thesis': 'Coordinating comprehensive audit across all discovered modules'
+        }
+    
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in audit action"""
+        # Base confidence on audit performance
+        total_audits = self.audit_performance['total_audits']
+        if total_audits == 0:
+            return 0.5
+        
+        success_rate = self.audit_performance['successful_audits'] / total_audits
+        return min(0.9, max(0.1, success_rate))
+    
     def get_comprehensive_status(self) -> Dict[str, Any]:
         """Get comprehensive audit system status"""
         return {
@@ -379,7 +400,7 @@ class AuditingCoordinator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStat
 
 
 # ────────────────────────────────────────────────────────────────────────────────
-# 🎯 MODULE REGISTRATION
+# [TARGET] MODULE REGISTRATION
 # ────────────────────────────────────────────────────────────────────────────────
 # Module is automatically discovered and registered via @module decorator
 # No manual registration needed - SmartInfoBus handles everything!

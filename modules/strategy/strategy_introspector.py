@@ -1,5 +1,5 @@
 """
-🔍 Enhanced Strategy Introspector with SmartInfoBus Integration v3.0
+[SEARCH] Enhanced Strategy Introspector with SmartInfoBus Integration v3.0
 Advanced strategy analysis system with intelligent pattern recognition and adaptation insights
 """
 
@@ -28,7 +28,8 @@ from modules.monitoring.performance_tracker import PerformanceTracker
     category="strategy",
     provides=[
         "strategy_analysis", "performance_insights", "adaptation_recommendations",
-        "strategy_profiles", "introspection_metrics", "behavior_patterns"
+        "strategy_profiles", "introspection_metrics", "behavior_patterns",
+        "trading_performance", "strategy_performance", "strategy_weights", "module_data"
     ],
     requires=[
         "recent_trades", "module_data", "risk_data", "market_regime",
@@ -46,7 +47,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
 )
 class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    🔍 PRODUCTION-GRADE Strategy Introspector v3.0
+    [SEARCH] PRODUCTION-GRADE Strategy Introspector v3.0
     
     Advanced strategy analysis system with:
     - Intelligent pattern recognition and behavioral analysis
@@ -139,7 +140,7 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
         
         version = getattr(self.metadata, 'version', '3.0.0') if self.metadata else '3.0.0'
         self.logger.info(format_operator_message(
-            icon="🔍",
+            icon="[SEARCH]",
             message=f"Strategy Introspector v{version} initialized",
             history_len=self.history_len,
             analysis_depth=self.analysis_depth,
@@ -228,9 +229,12 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             }
         }, module='StrategyIntrospector', thesis=thesis)
 
-    async def process(self) -> Dict[str, Any]:
+    async def process(self, **inputs) -> Dict[str, Any]:
         """
         Modern async processing with comprehensive strategy analysis
+        
+        Args:
+            **inputs: Variable keyword arguments for processing
         
         Returns:
             Dict containing strategy analysis, insights, and recommendations
@@ -1208,7 +1212,7 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 areas = adaptation_analysis.get('adaptation_areas', [])
                 
                 self.logger.warning(format_operator_message(
-                    icon="🚨",
+                    icon="[ALERT]",
                     message=f"Strategy adaptation needed - {urgency} urgency",
                     areas=", ".join(areas[:3]),
                     confidence=f"{adaptation_analysis.get('confidence_level', 0.5):.1%}"
@@ -1660,7 +1664,7 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
             self.logger.error(format_operator_message(
-                icon="🚨",
+                icon="[ALERT]",
                 message="Strategy Introspector disabled due to repeated errors",
                 error_count=self.error_count,
                 threshold=self.circuit_breaker_threshold
@@ -1790,7 +1794,7 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             self.introspection_metrics['total_strategies_analyzed'] += 1
             
             self.logger.info(format_operator_message(
-                icon="📊",
+                icon="[STATS]",
                 message="Strategy recorded",
                 type=strategy_type,
                 win_rate=f"{win_rate:.1%}",
@@ -1939,7 +1943,7 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 self.introspection_metrics['significant_adaptations'] += 1
                 
                 self.logger.info(format_operator_message(
-                    icon="🔄",
+                    icon="[RELOAD]",
                     message="Strategy adaptation detected",
                     adaptations="; ".join(adaptations_detected[:2]),
                     performance_impact=f"€{current['pnl']:+.2f}"
@@ -2041,7 +2045,7 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 if profile['trade_count'] > 0:
                     performance_score = profile.get('performance_score', 0)
                     consistency_score = profile.get('consistency_score', 0)
-                    status = "🟢" if performance_score > 10 else "🔴" if performance_score < -10 else "🟡"
+                    status = "[GREEN]" if performance_score > 10 else "[RED]" if performance_score < -10 else "[YELLOW]"
                     profiles_summary += f"  • {strategy.replace('_', ' ').title()}: {profile['trade_count']} trades, Performance={performance_score:+.1f}, Consistency={consistency_score:.2f} {status}\n"
             
             # Recent adaptations
@@ -2064,30 +2068,30 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             consistency_score = performance_analysis.get('consistency_score', 0.5)
             
             return f"""
-🔍 STRATEGY INTROSPECTOR COMPREHENSIVE REPORT
+[SEARCH] STRATEGY INTROSPECTOR COMPREHENSIVE REPORT
 ═══════════════════════════════════════════════════════════════
-📊 Current Analysis:
+[STATS] Current Analysis:
 • Dominant Strategy: {strategy_type.replace('_', ' ').title()}
 • Performance Trend: {performance_trend.replace('_', ' ').title()}
 • Analysis Confidence: {confidence:.1%}
-• Adaptation Needed: {'✅ Yes' if adaptation_needed else '❌ No'}
+• Adaptation Needed: {'[OK] Yes' if adaptation_needed else '[FAIL] No'}
 • Risk Assessment: {current_analysis.get('risk_assessment', 'Moderate').title()}
 
-📈 Performance Metrics:
+[CHART] Performance Metrics:
 • Win Rate: {win_rate:.1%}
 • Profit Factor: {profit_factor:.2f}
 • Max Drawdown: {max_drawdown:.1%}
 • Sharpe Ratio: {sharpe_ratio:.2f}
 • Consistency Score: {consistency_score:.2f}
 
-🎯 Strategy Profiles:
+[TARGET] Strategy Profiles:
 {profiles_summary if profiles_summary else '  📭 No strategy profiles available yet'}
 
-🔄 Recent Adaptations:
+[RELOAD] Recent Adaptations:
 {recent_adaptations if recent_adaptations else '  📭 No recent adaptations detected'}
 
 💡 Current Recommendations:
-{recommendations_str if recommendations_str else '  ✅ No specific recommendations - continue current approach'}
+{recommendations_str if recommendations_str else '  [OK] No specific recommendations - continue current approach'}
 
 🧠 Behavioral Insights:
 • Trading Style: {behavioral_patterns.get('trading_style', 'Unknown').replace('_', ' ').title()}
@@ -2095,7 +2099,7 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
 • Timing Consistency: {behavioral_patterns.get('timing_patterns', {}).get('timing_consistency', 'Unknown').replace('_', ' ').title()}
 • Adaptation Behavior: {behavioral_patterns.get('adaptation_behavior', 'Unknown').replace('_', ' ').title()}
 
-📊 Analytics Summary:
+[STATS] Analytics Summary:
 • Total Strategies Analyzed: {self.introspection_metrics['total_strategies_analyzed']}
 • Significant Adaptations: {self.introspection_metrics['significant_adaptations']}
 • Performance Improvements: {self.introspection_metrics['performance_improvements']}
@@ -2103,7 +2107,7 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
 • Analysis Depth: {self.analysis_depth.title()}
 • Records Maintained: {len(self._records)}/{self.history_len}
 
-🔧 System Status:
+[TOOL] System Status:
 • Module Status: {'DISABLED' if self.is_disabled else 'OPERATIONAL'}
 • Error Count: {self.error_count}/{self.circuit_breaker_threshold}
 • Circuit Breaker: {'OPEN' if self.error_count >= self.circuit_breaker_threshold else 'CLOSED'}
@@ -2194,7 +2198,7 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             self.strategy_categories.update(state.get("categories", {}))
             
             self.logger.info(format_operator_message(
-                icon="🔄",
+                icon="[RELOAD]",
                 message="Strategy Introspector state restored",
                 records=len(self._records),
                 profiles=len(self.strategy_profiles),
@@ -2446,7 +2450,7 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             self.is_disabled = False
             
             self.logger.info(format_operator_message(
-                icon="🔄",
+                icon="[RELOAD]",
                 message="Strategy Introspector reset completed",
                 analysis_depth=self.analysis_depth,
                 history_capacity=self.history_len
@@ -2704,6 +2708,117 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             
         except Exception:
             return 0.5
+
+    # ═══════════════════════════════════════════════════════════════════
+    # ABSTRACT METHOD IMPLEMENTATIONS (required by BaseModule)
+    # ═══════════════════════════════════════════════════════════════════
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in proposed action based on strategy analysis"""
+        try:
+            # Base confidence from current analysis
+            base_confidence = self.current_analysis.get('confidence_level', 0.5)
+            
+            # Factor in strategy consistency
+            consistency_score = self._calculate_overall_consistency()
+            
+            # Consider pattern strength
+            pattern_strength = 0.5
+            if hasattr(self, 'strategy_profiles') and self.strategy_profiles:
+                active_profiles = [p for p in self.strategy_profiles.values() if p.get('trade_count', 0) > 0]
+                if active_profiles:
+                    pattern_strength = np.mean([p.get('confidence', 0.5) for p in active_profiles])
+            
+            # Weight factors
+            confidence = (
+                base_confidence * 0.4 +
+                consistency_score * 0.3 +
+                pattern_strength * 0.3
+            )
+            
+            return float(np.clip(confidence, 0.0, 1.0))
+            
+        except Exception as e:
+            self.logger.warning(f"Error calculating confidence: {e}")
+            return 0.5
+
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose action based on strategy introspection analysis"""
+        try:
+            # Get current market context
+            market_data = inputs.get('market_data', {})
+            portfolio_state = inputs.get('portfolio_state', {})
+            
+            # Use current analysis for proposal
+            action = {
+                'type': 'strategy_introspection',
+                'analysis': self.current_analysis.copy(),
+                'recommendations': self._generate_strategy_recommendations(market_data, portfolio_state),
+                'confidence': self.current_analysis.get('confidence_level', 0.5),
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+            
+            # Add strategy-specific insights
+            if hasattr(self, 'strategy_profiles') and self.strategy_profiles:
+                dominant_strategy = max(
+                    self.strategy_profiles.items(),
+                    key=lambda x: x[1].get('trade_count', 0),
+                    default=(None, {})
+                )
+                if dominant_strategy[0]:
+                    action['dominant_strategy'] = {
+                        'name': dominant_strategy[0],
+                        'characteristics': dominant_strategy[1].get('characteristics', {}),
+                        'performance': dominant_strategy[1].get('recent_performance', {})
+                    }
+            
+            return action
+            
+        except Exception as e:
+            self.logger.error(f"Error proposing action: {e}")
+            return {
+                'type': 'strategy_introspection',
+                'analysis': {'confidence_level': 0.5},
+                'error': str(e),
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+
+    def _generate_strategy_recommendations(self, market_data: Dict[str, Any], portfolio_state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Generate strategy recommendations based on current analysis"""
+        try:
+            recommendations = []
+            
+            # Base recommendation from current analysis
+            if self.current_analysis.get('confidence_level', 0) > 0.7:
+                recommendations.append({
+                    'type': 'maintain_strategy',
+                    'reason': 'High confidence in current strategy analysis',
+                    'priority': 'medium'
+                })
+            elif self.current_analysis.get('confidence_level', 0) < 0.3:
+                recommendations.append({
+                    'type': 'review_strategy',
+                    'reason': 'Low confidence suggests strategy review needed',
+                    'priority': 'high'
+                })
+            
+            # Pattern-based recommendations
+            dominant_type = self.current_analysis.get('dominant_strategy_type')
+            if dominant_type and hasattr(self, 'strategy_profiles'):
+                profile = self.strategy_profiles.get(dominant_type, {})
+                if profile.get('trade_count', 0) > 10:
+                    recommendations.append({
+                        'type': 'leverage_pattern',
+                        'pattern': dominant_type,
+                        'reason': f'Strong {dominant_type} pattern detected',
+                        'priority': 'medium'
+                    })
+            
+            return recommendations
+            
+        except Exception as e:
+            self.logger.warning(f"Error generating strategy recommendations: {e}")
+            return []
 
     def __str__(self) -> str:
         """String representation of the introspector"""

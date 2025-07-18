@@ -26,7 +26,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
 @module(
     name="TradingModeManager",
     version="3.0.0",
-    category="trading",
+    category="trading_modes",
     provides=[
         "trading_mode", "mode_config", "mode_stats", "mode_effectiveness", "decision_factors",
         "mode_thresholds", "market_context", "mode_recommendations"
@@ -294,7 +294,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             }
         }, module='TradingModeManager', thesis=thesis)
 
-    async def process(self) -> Dict[str, Any]:
+    async def process(self, **inputs) -> Dict[str, Any]:
         """
         Modern async processing with comprehensive mode management
         
@@ -481,7 +481,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     thresholds['performance_threshold'] *= 0.9  # Slightly more lenient
             
             self.logger.info(format_operator_message(
-                icon="⚡",
+                icon="[FAST]",
                 message="Emergency threshold adaptation triggered",
                 adaptation_factor=f"{adaptation_factor:.2f}",
                 volatility_regime=self.volatility_regime,
@@ -866,7 +866,13 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "intelligent_mode_decision")
             self.logger.error(f"Intelligent mode decision failed: {error_context}")
-            decision['reasoning'] = [f'Decision analysis error: {error_context}']
+            # Initialize decision if not already created due to error
+            decision = {
+                'recommended_mode': self.current_mode,
+                'confidence': 0.3,
+                'should_change': False,
+                'reasoning': [f'Decision analysis error: {error_context}']
+            }
             return decision
 
     async def _calculate_decision_factors_comprehensive(self, performance_data: Dict[str, Any], 
@@ -1068,6 +1074,9 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             consensus_score = self.decision_factors['consensus_score']
             market_score = self.decision_factors['market_context_score']
             stability_score = self.decision_factors['stability_score']
+            
+            # Initialize default score
+            score = 0.5
             
             # Mode-specific scoring logic
             if mode == 'safe':
@@ -1519,6 +1528,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             
             # Calculate confidence based on score separation
             sorted_scores = sorted(final_scores.values(), reverse=True)
+            score_separation = 0.0  # Initialize default value
             if len(sorted_scores) >= 2:
                 score_separation = sorted_scores[0] - sorted_scores[1]
                 confidence = min(0.95, 0.5 + score_separation)
@@ -1530,7 +1540,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 'confidence': confidence,
                 'score': best_mode[1],
                 'all_scores': final_scores,
-                'score_separation': score_separation if len(sorted_scores) >= 2 else 0.0
+                'score_separation': score_separation
             }
             
         except Exception as e:
@@ -1762,7 +1772,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
             self.logger.error(format_operator_message(
-                icon="🚨",
+                icon="[ALERT]",
                 message="Trading Mode Manager disabled due to repeated errors",
                 error_count=self.error_count,
                 threshold=self.circuit_breaker_threshold
@@ -1965,7 +1975,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             self.is_disabled = error_state.get("is_disabled", False)
             
             self.logger.info(format_operator_message(
-                icon="🔄",
+                icon="[RELOAD]",
                 message="Trading Mode Manager state restored",
                 current_mode=self.current_mode,
                 auto_mode=self.auto_mode,
@@ -2082,10 +2092,10 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         """Generate comprehensive trading mode report"""
         # Mode status with emoji
         mode_emoji = {
-            'safe': '🛡️',
-            'normal': '⚖️', 
-            'aggressive': '⚡',
-            'extreme': '🚀'
+            'safe': '[SAFE]',
+            'normal': '[BALANCE]', 
+            'aggressive': '[FAST]',
+            'extreme': '[ROCKET]'
         }
         
         current_emoji = mode_emoji.get(self.current_mode, '❓')
@@ -2095,15 +2105,15 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         # Effectiveness status with comprehensive analysis
         effectiveness = self.mode_stats.get('mode_effectiveness', 0.5)
         if effectiveness > 0.8:
-            eff_status = "✅ Excellent"
+            eff_status = "[OK] Excellent"
         elif effectiveness > 0.65:
-            eff_status = "⚡ Good"
+            eff_status = "[FAST] Good"
         elif effectiveness > 0.5:
-            eff_status = "⚠️ Fair"
+            eff_status = "[WARN] Fair"
         elif effectiveness > 0.35:
             eff_status = "🔶 Poor"
         else:
-            eff_status = "🚨 Critical"
+            eff_status = "[ALERT] Critical"
         
         # Recent mode changes with enhanced details
         change_lines = []
@@ -2111,7 +2121,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             timestamp = change['timestamp'][:19].replace('T', ' ')
             from_mode = change['from_mode']
             to_mode = change['to_mode']
-            auto = '🤖' if change['auto'] else '👤'
+            auto = '[BOT]' if change['auto'] else '👤'
             confidence = change.get('confidence', 0.5)
             change_lines.append(f"  {auto} {timestamp}: {from_mode} → {to_mode} ({confidence:.1%})")
         
@@ -2119,15 +2129,15 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         factor_lines = []
         for factor, value in self.decision_factors.items():
             if value > 0.8:
-                emoji = "🟢"
+                emoji = "[GREEN]"
             elif value > 0.6:
-                emoji = "✅"
+                emoji = "[OK]"
             elif value > 0.5:
-                emoji = "⚡"
+                emoji = "[FAST]"
             elif value > 0.3:
-                emoji = "⚠️"
+                emoji = "[WARN]"
             else:
-                emoji = "🚨"
+                emoji = "[ALERT]"
             
             factor_name = factor.replace('_', ' ').title()
             factor_lines.append(f"  {emoji} {factor_name}: {value:.1%}")
@@ -2146,7 +2156,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             mode_performance_lines.append(f"  {emoji} {mode.title()}: {win_rate:.1%} WR, €{avg_pnl:+.1f} avg, {periods} periods")
         
         # Market context with regime analysis
-        market_open_status = '🟢 Open' if self._is_market_open() else '🔴 Closed'
+        market_open_status = '[GREEN] Open' if self._is_market_open() else '[RED] Closed'
         regime_score = self.decision_factors.get('regime_score', 0.5)
         volatility_score = self.decision_factors.get('volatility_score', 0.5)
         
@@ -2157,22 +2167,22 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             if key == 'max_drawdown':
                 threshold_lines.append(f"  📉 Max Drawdown: {value:.1%}")
             elif key == 'min_win_rate':
-                threshold_lines.append(f"  🎯 Min Win Rate: {value:.1%}")
+                threshold_lines.append(f"  [TARGET] Min Win Rate: {value:.1%}")
             elif key == 'min_consensus':
                 threshold_lines.append(f"  🤝 Min Consensus: {value:.1%}")
             elif key == 'max_exposure':
-                threshold_lines.append(f"  📊 Max Exposure: {value:.1%}")
+                threshold_lines.append(f"  [STATS] Max Exposure: {value:.1%}")
         
         return f"""
 ⚙️ TRADING MODE MANAGER v3.0
 ═══════════════════════════════════════════════════════════════
 {current_emoji} Current Mode: {self.current_mode.upper()} - {mode_description}
-🎯 Mode Effectiveness: {eff_status} ({effectiveness:.1%})
-🤖 Auto Mode: {'✅ Enabled' if self.auto_mode else '❌ Disabled'}
-⏱️ Mode Persistence: {self.mode_persistence}/{self.min_persistence} periods
-🔄 Total Switches: {self.mode_stats.get('total_switches', 0)} (Auto: {self.mode_stats.get('auto_switches', 0)}, Manual: {self.mode_stats.get('manual_switches', 0)})
+[TARGET] Mode Effectiveness: {eff_status} ({effectiveness:.1%})
+[BOT] Auto Mode: {'[OK] Enabled' if self.auto_mode else '[FAIL] Disabled'}
+[TIME] Mode Persistence: {self.mode_persistence}/{self.min_persistence} periods
+[RELOAD] Total Switches: {self.mode_stats.get('total_switches', 0)} (Auto: {self.mode_stats.get('auto_switches', 0)}, Manual: {self.mode_stats.get('manual_switches', 0)})
 
-📊 CURRENT MODE CONFIGURATION
+[STATS] CURRENT MODE CONFIGURATION
 • Risk Multiplier: {mode_config.get('risk_multiplier', 1.0):.1f}x
 • Max Exposure: {mode_config.get('max_exposure', 0.5):.1%}
 • Win Rate Threshold: {mode_config.get('win_rate_threshold', 0.5):.1%}
@@ -2187,7 +2197,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 • Market Context Weight: {self.market_context_weight:.1%}
 • Context Sensitivity: {self.context_sensitivity:.1%}
 
-📈 ROLLING STATISTICS (Last {self.window} periods)
+[CHART] ROLLING STATISTICS (Last {self.window} periods)
 • Win Rate: {rolling_stats['win_rate']:.1%}
 • Average PnL: €{rolling_stats['avg_pnl']:+.2f}
 • Total PnL: €{rolling_stats['total_pnl']:+.2f}
@@ -2198,22 +2208,22 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 • Sharpe Ratio: {rolling_stats['sharpe']:.2f}
 • Profit Factor: {rolling_stats['profit_factor']:.2f}
 
-🎯 DECISION FACTORS (Current Analysis)
+[TARGET] DECISION FACTORS (Current Analysis)
 {chr(10).join(factor_lines) if factor_lines else "  📭 No decision factors available"}
 
-📊 MARKET CONTEXT & REGIME ANALYSIS
+[STATS] MARKET CONTEXT & REGIME ANALYSIS
 • Market Regime: {self.market_regime.title()} (Score: {regime_score:.1%})
 • Volatility Level: {self.volatility_regime.title()} (Score: {volatility_score:.1%})
 • Trading Session: {self.market_session.title()}
 • Market Status: {market_open_status}
-• Regime Awareness: {'✅ Enabled' if self.regime_awareness else '❌ Disabled'}
-• Session Awareness: {'✅ Enabled' if self.session_awareness else '❌ Disabled'}
-• Volatility Scaling: {'✅ Enabled' if self.volatility_scaling else '❌ Disabled'}
+• Regime Awareness: {'[OK] Enabled' if self.regime_awareness else '[FAIL] Disabled'}
+• Session Awareness: {'[OK] Enabled' if self.session_awareness else '[FAIL] Disabled'}
+• Volatility Scaling: {'[OK] Enabled' if self.volatility_scaling else '[FAIL] Disabled'}
 
-🎯 CURRENT MODE THRESHOLDS
+[TARGET] CURRENT MODE THRESHOLDS
 {chr(10).join(threshold_lines) if threshold_lines else "  📭 No thresholds configured"}
 
-📊 MODE PERFORMANCE ANALYTICS
+[STATS] MODE PERFORMANCE ANALYTICS
 {chr(10).join(mode_performance_lines) if mode_performance_lines else "  📭 No mode performance data available"}
 
 📜 RECENT MODE CHANGES
@@ -2228,20 +2238,20 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 • Threshold Adaptations: {len(self.threshold_adaptations)}
 
 💡 MODE DESCRIPTIONS
-• 🛡️ Safe: {self.TRADING_MODES['safe']['description']}
-• ⚖️ Normal: {self.TRADING_MODES['normal']['description']}
-• ⚡ Aggressive: {self.TRADING_MODES['aggressive']['description']}
-• 🚀 Extreme: {self.TRADING_MODES['extreme']['description']}
+• [SAFE] Safe: {self.TRADING_MODES['safe']['description']}
+• [BALANCE] Normal: {self.TRADING_MODES['normal']['description']}
+• [FAST] Aggressive: {self.TRADING_MODES['aggressive']['description']}
+• [ROCKET] Extreme: {self.TRADING_MODES['extreme']['description']}
 
-🎯 LAST DECISION CONTEXT
+[TARGET] LAST DECISION CONTEXT
 • Change Reason: {self.last_change_reason or 'No recent changes'}
 • Last Change Time: {self.last_mode_change[:19].replace('T', ' ') if self.last_mode_change else 'Never'}
 • Current Duration: {self.mode_stats.get('current_mode_duration', 0)} periods
 • System Uptime: {self.mode_stats.get('total_uptime', 0)} periods
 
-🔧 HEALTH & STATUS
+[TOOL] HEALTH & STATUS
 • Error Count: {self.error_count}/{self.circuit_breaker_threshold}
-• Status: {'🚨 DISABLED' if self.is_disabled else '✅ OPERATIONAL'}
+• Status: {'[ALERT] DISABLED' if self.is_disabled else '[OK] OPERATIONAL'}
 • Session Duration: {(datetime.datetime.now() - datetime.datetime.fromisoformat(self.mode_stats['session_start'])).total_seconds() / 3600:.1f} hours
         """
 
@@ -2458,3 +2468,124 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             recommendations.append("TradingModeManager operating within normal parameters")
         
         return recommendations
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in current trading mode decision."""
+        try:
+            # Base confidence from mode effectiveness
+            base_confidence = self.mode_stats.get('mode_effectiveness', 0.5)
+            
+            # Adjust for stability
+            stability_score = self._calculate_stability_score(self.mode_stats)
+            
+            # Market alignment boost - using safe access to class attributes
+            current_regime = getattr(self, 'smart_info_bus', {}).get('market_regime', 'unknown')
+            current_vol = getattr(self, 'smart_info_bus', {}).get('volatility_regime', 'medium')
+            current_session = getattr(self, 'smart_info_bus', {}).get('trading_session', 'asian')
+            
+            regime_alignment = self._score_regime_alignment(self.current_mode, current_regime)
+            vol_alignment = self._score_volatility_alignment(
+                self.TRADING_MODES.get(self.current_mode, {}).get('volatility_tolerance', 'medium'), 
+                current_vol
+            )
+            session_alignment = self._score_session_alignment(self.current_mode, current_session)
+            
+            # Combine factors
+            confidence = (
+                base_confidence * 0.4 +
+                stability_score * 0.3 + 
+                (regime_alignment + vol_alignment + session_alignment) / 3 * 0.3
+            )
+            
+            # Reduce confidence if errors or disabled
+            if self.is_disabled:
+                confidence *= 0.2
+            elif self.error_count > 0:
+                confidence *= max(0.5, 1.0 - self.error_count * 0.1)
+            
+            return max(0.0, min(1.0, confidence))
+            
+        except Exception as e:
+            self.logger.warning(f"Error calculating confidence: {e}")
+            return 0.5
+
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose actions based on current trading mode analysis."""
+        try:
+            current_mode = self.current_mode
+            confidence = await self.calculate_confidence({}, **inputs)
+            
+            # Get market context safely
+            market_data = {
+                'regime': getattr(self, 'smart_info_bus', {}).get('market_regime', 'unknown'),
+                'volatility': getattr(self, 'smart_info_bus', {}).get('volatility_regime', 'medium'),
+                'session': getattr(self, 'smart_info_bus', {}).get('trading_session', 'asian'),
+                'risk_score': getattr(self, 'smart_info_bus', {}).get('risk_score', 0.5)
+            }
+            
+            # Analyze if mode change is needed
+            mode_scores = {}
+            for mode in self.TRADING_MODES.keys():
+                regime_score = self._score_regime_alignment(mode, market_data['regime'])
+                vol_score = self._score_volatility_alignment(
+                    self.TRADING_MODES.get(mode, {}).get('volatility_tolerance', 'medium'),
+                    market_data['volatility']
+                )
+                session_score = self._score_session_alignment(mode, market_data['session'])
+                mode_scores[mode] = (regime_score + vol_score + session_score) / 3
+            
+            # Find best mode safely
+            best_mode = max(mode_scores.keys(), key=lambda k: mode_scores[k]) if mode_scores else current_mode
+            best_score = mode_scores.get(best_mode, 0.5)
+            
+            action = {
+                'type': 'trading_mode_management',
+                'current_mode': current_mode,
+                'confidence': confidence,
+                'recommendations': []
+            }
+            
+            # Mode change recommendation
+            if best_mode != current_mode and best_score > mode_scores.get(current_mode, 0.0) + 0.15:
+                action['recommendations'].append({
+                    'action': 'consider_mode_change',
+                    'target_mode': best_mode,
+                    'reason': f'Better market alignment (score: {best_score:.2f} vs {mode_scores.get(current_mode, 0.0):.2f})',
+                    'priority': 'medium' if confidence < 0.7 else 'low'
+                })
+            
+            # Risk management recommendations
+            if market_data['risk_score'] > 0.7:
+                action['recommendations'].append({
+                    'action': 'reduce_position_sizing',
+                    'reason': 'High market risk detected',
+                    'priority': 'high'
+                })
+            
+            # Performance improvement recommendations
+            effectiveness = self.mode_stats.get('mode_effectiveness', 0.5)
+            if effectiveness < 0.4:
+                action['recommendations'].append({
+                    'action': 'review_mode_thresholds',
+                    'reason': f'Low mode effectiveness: {effectiveness:.1%}',
+                    'priority': 'medium'
+                })
+            
+            # Auto-mode recommendation
+            if not self.auto_mode and confidence > 0.8:
+                action['recommendations'].append({
+                    'action': 'enable_auto_mode',
+                    'reason': 'High confidence in automated decisions',
+                    'priority': 'low'
+                })
+            
+            return action
+            
+        except Exception as e:
+            self.logger.warning(f"Error proposing action: {e}")
+            return {
+                'type': 'trading_mode_management',
+                'current_mode': self.current_mode,
+                'confidence': 0.5,
+                'recommendations': [{'action': 'investigate_error', 'reason': str(e), 'priority': 'high'}]
+            }

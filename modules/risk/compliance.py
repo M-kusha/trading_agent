@@ -5,6 +5,7 @@ Comprehensive trade validation and regulatory compliance monitoring
 
 import numpy as np
 import datetime
+import time
 import os
 from typing import Dict, Any, List, Optional, Union, Tuple, Set
 from collections import deque, defaultdict
@@ -102,13 +103,161 @@ class ComplianceModule(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin
         
         self.logger.info(format_operator_message(
             message="Enhanced Compliance Module initialized",
-            icon="🛡️",
+            icon="[SAFE]",
             max_leverage=f"{self.max_leverage:.1f}x",
             position_risk_limit=f"{self.max_position_risk:.1%}",
             allowed_instruments=len(self.allowed_instruments),
             dynamic_limits=self.dynamic_limits,
             enabled=self.enabled
         ))
+    
+    def _initialize(self) -> None:
+        """Initialize the compliance module (required by BaseModule)"""
+        try:
+            # Validate configuration
+            if not self.enabled:
+                self.logger.warning("Compliance module is disabled")
+                return
+            
+            # Initialize risk tracking
+            self.daily_trade_count = 0
+            self.last_trade_date = None
+            self.total_exposure = 0.0
+            self.current_leverage = 0.0
+            self.risk_budget_usage = 0.0
+            self.compliance_score = 1.0
+            
+            # Reset validation stats
+            self.validation_stats = {
+                'total_validations': 0,
+                'approved': 0,
+                'rejected': 0,
+                'violations': defaultdict(int)
+            }
+            
+            self.logger.info("Compliance module initialization completed successfully")
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "compliance_initialization")
+            self.logger.error(f"Compliance initialization failed: {error_context}")
+    
+    async def calculate_confidence(self, action: Dict[str, Any], **kwargs) -> float:
+        """Calculate confidence score for compliance validation"""
+        try:
+            # Base confidence starts high for compliance
+            confidence = 0.9
+            
+            # Factors that affect confidence
+            factors = {}
+            
+            # Check compliance score
+            factors['compliance_score'] = self.compliance_score
+            confidence *= self.compliance_score
+            
+            # Check recent validation history
+            if self.approval_rate_history:
+                avg_approval_rate = sum(self.approval_rate_history) / len(self.approval_rate_history)
+                factors['approval_rate'] = avg_approval_rate
+                confidence *= avg_approval_rate
+            
+            # Check if we have recent violations
+            recent_violations = len([v for v in self.compliance_violations if v.get('timestamp', 0) > time.time() - 3600])
+            if recent_violations > 0:
+                violation_penalty = max(0.5, 1.0 - (recent_violations * 0.1))
+                factors['violation_penalty'] = violation_penalty
+                confidence *= violation_penalty
+            
+            # Check system load and performance (simplified check)
+            if hasattr(self, 'performance_tracker') and self.performance_tracker:
+                # Use a simple performance metric instead of unknown method
+                perf_score = 0.9  # Default good performance
+                factors['performance'] = perf_score
+                confidence *= perf_score
+            
+            # Ensure confidence is in valid range
+            confidence = max(0.0, min(1.0, confidence))
+            
+            # Log confidence calculation for debugging
+            self.logger.debug(f"Compliance confidence: {confidence:.3f}, factors: {factors}")
+            
+            return confidence
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "confidence_calculation")
+            self.logger.error(f"Confidence calculation failed: {error_context}")
+            return 0.5  # Default medium confidence on error
+    
+    async def propose_action(self, **kwargs) -> Dict[str, Any]:
+        """Propose compliance actions based on current state"""
+        try:
+            action_proposal = {
+                'action_type': 'compliance_check',
+                'timestamp': time.time(),
+                'compliance_score': self.compliance_score,
+                'recommendations': [],
+                'warnings': [],
+                'adjustments': {}
+            }
+            
+            # Check current risk levels with simple analysis
+            risk_analysis = {
+                'total_exposure': self.total_exposure,
+                'current_leverage': self.current_leverage,
+                'risk_budget_usage': self.risk_budget_usage,
+                'compliance_score': self.compliance_score,
+                'daily_trades': self.daily_trade_count
+            }
+            action_proposal['risk_analysis'] = risk_analysis
+            
+            # Generate recommendations based on compliance state
+            if self.compliance_score < 0.8:
+                action_proposal['recommendations'].append({
+                    'type': 'reduce_risk',
+                    'reason': 'Low compliance score detected',
+                    'suggested_action': 'Reduce position sizes or close risky positions'
+                })
+            
+            # Check for position limit violations
+            current_positions = kwargs.get('positions', [])
+            for pos in current_positions:
+                instrument = pos.get('instrument', 'Unknown')
+                size = abs(pos.get('size', 0))
+                risk_ratio = size * pos.get('price', 1) / kwargs.get('balance', 10000)
+                
+                if risk_ratio > self.max_position_risk:
+                    action_proposal['warnings'].append({
+                        'type': 'position_risk_violation',
+                        'instrument': instrument,
+                        'current_risk': risk_ratio,
+                        'max_allowed': self.max_position_risk
+                    })
+            
+            # Suggest dynamic limit adjustments
+            market_regime = kwargs.get('market_regime', 'normal')
+            if market_regime in self.regime_adjustments:
+                adjustments = self.regime_adjustments[market_regime]
+                action_proposal['adjustments'] = {
+                    'leverage_multiplier': adjustments.get('leverage', 1.0),
+                    'position_risk_multiplier': adjustments.get('position_risk', 1.0),
+                    'trade_frequency_multiplier': adjustments.get('daily_trades', 1.0)
+                }
+            
+            self.logger.debug(f"Compliance action proposed: {len(action_proposal['recommendations'])} recommendations, "
+                            f"{len(action_proposal['warnings'])} warnings")
+            
+            return action_proposal
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "action_proposal")
+            self.logger.error(f"Action proposal failed: {error_context}")
+            return {
+                'action_type': 'compliance_check',
+                'timestamp': time.time(),
+                'error': str(e),
+                'recommendations': [],
+                'warnings': [],
+                'adjustments': {}
+            }
     
     def _initialize_advanced_systems(self):
         """Initialize advanced monitoring and error handling systems"""
@@ -231,7 +380,7 @@ class ComplianceModule(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin
                 if self.last_trade_date and self.daily_trade_count > 0:
                     self.logger.info(format_operator_message(
                         message="Daily trading summary",
-                        icon="📊",
+                        icon="[STATS]",
                         date=str(self.last_trade_date),
                         trades=self.daily_trade_count,
                         limit=self.max_daily_trades
@@ -360,6 +509,14 @@ class ComplianceModule(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin
                                     balance: float, market_context: Dict[str, Any],
                                     current_limits: Dict[str, float]) -> Dict[str, Any]:
         """Validate a single order with comprehensive checks"""
+        # Initialize order_details with defaults to ensure it's always defined
+        order_details = {
+            'instrument': 'UNKNOWN',
+            'size': 0.0,
+            'side': 'UNKNOWN',
+            'price': 1.0
+        }
+        
         try:
             violations = []
             order_details = {

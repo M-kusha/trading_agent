@@ -40,7 +40,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
     health_monitoring=True,
     performance_tracking=True,
     error_handling=True,
-    voting=True,
+    is_voting_member=True,
     timeout_ms=200,
     priority=5,
     explainable=True,
@@ -270,7 +270,7 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         """Initialize comprehensive thesis generation templates"""
         return {
             'market_structure': [
-                "Market displays {pattern} structure across {timeframe} suggesting {direction} bias with {confidence} probability",
+                "Market displays {pattern} structure across {timeframe} suggesting {direction} bias with {probability} probability",
                 "Price action reveals {support_resistance} dynamics at {level} creating {opportunity} setup",
                 "Volume analysis indicates {accumulation_distribution} pattern developing with {strength} conviction",
                 "Market microstructure shows {buyer_seller} dominance in {session} with {continuation} potential"
@@ -291,7 +291,7 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 "Cross-asset correlation shifts indicate {portfolio_adjustment} strategy with {sector_focus}",
                 "Currency strength rotation suggests {pair_selection} preference in {session_timing}",
                 "Risk sentiment evolution creates {risk_on_off} opportunity with {duration} perspective",
-                "Intermarket relationships signal {asset_class} outperformance with {confidence} conviction"
+                "Intermarket relationships signal {asset_class} outperformance with {conviction} conviction"
             ],
             'regime_adaptation': [
                 "Current {regime_type} regime favors {strategy_approach} with {position_sizing} methodology",
@@ -398,7 +398,7 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             categories=len(set(perf.get('category', 'general') for perf in self.thesis_performance.values()))
         ))
 
-    async def process(self) -> Dict[str, Any]:
+    async def process(self, **inputs) -> Dict[str, Any]:
         """
         Modern async processing with comprehensive thesis evolution
         
@@ -854,7 +854,7 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             
             # Log the adaptation trigger
             self.logger.info(format_operator_message(
-                icon="⚡",
+                icon="[FAST]",
                 message="Regime adaptation triggered",
                 target_regime=to_regime,
                 strategy=regime_adaptation['adaptation_strategy'],
@@ -1594,7 +1594,7 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             self.thesis_templates.update(state.get("thesis_templates", {}))
             
             self.logger.info(format_operator_message(
-                icon="🔄",
+                icon="[RELOAD]",
                 message="Thesis Evolution Engine state restored",
                 theses=len(self.theses),
                 total_created=self.evolution_analytics.get('total_theses_created', 0),
@@ -1676,7 +1676,7 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
             self.logger.error(format_operator_message(
-                icon="🚨",
+                icon="[ALERT]",
                 message="Thesis Evolution Engine disabled due to repeated errors",
                 error_count=self.error_count,
                 threshold=self.circuit_breaker_threshold
@@ -1794,3 +1794,204 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "thesis_removal")
             self.logger.warning(f"Thesis removal failed: {error_context}")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # REQUIRED ABSTRACT METHOD IMPLEMENTATIONS
+    # ═══════════════════════════════════════════════════════════════════
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """
+        Calculate confidence score for thesis evolution decisions
+        
+        Args:
+            action: The thesis evolution action/decision
+            **inputs: Additional context inputs
+            
+        Returns:
+            float: Confidence score between 0.0 and 1.0
+        """
+        try:
+            base_confidence = 0.7  # Base confidence for thesis evolution
+            
+            # Adjust based on thesis portfolio quality
+            if self.theses:
+                diversity_score = self._calculate_thesis_diversity_comprehensive()
+                performance_scores = []
+                
+                for thesis in self.theses:
+                    perf = self.thesis_performance.get(thesis, {})
+                    trade_count = self._safe_int_conversion(perf.get('trade_count', 0))
+                    if trade_count >= 3:
+                        total_pnl = self._safe_float_conversion(perf.get('total_pnl', 0))
+                        avg_pnl = total_pnl / trade_count
+                        performance_scores.append(avg_pnl)
+                
+                # Adjust confidence based on portfolio quality
+                if performance_scores:
+                    avg_performance = np.mean(performance_scores)
+                    if avg_performance > 10:
+                        base_confidence += 0.15  # Good performance increases confidence
+                    elif avg_performance < -10:
+                        base_confidence -= 0.15  # Poor performance decreases confidence
+                
+                # Adjust confidence based on diversity
+                base_confidence += diversity_score * 0.1
+                
+                # Adjust based on recent evolution success
+                recent_successes = len([e for e in self.evolution_history 
+                                      if e.get('theses_evolved', 0) > 0])
+                if recent_successes > 5:
+                    base_confidence += 0.1
+            
+            # Adjust based on market conditions
+            market_data = inputs.get('market_data', {})
+            if market_data:
+                market_regime = inputs.get('market_regime', 'unknown')
+                if market_regime != 'unknown':
+                    base_confidence += 0.05  # Known regime increases confidence
+                
+                volatility_level = market_data.get('volatility_level', 'medium')
+                if volatility_level in ['low', 'medium']:
+                    base_confidence += 0.05  # Stable conditions increase confidence
+                elif volatility_level in ['high', 'extreme']:
+                    base_confidence -= 0.05  # High volatility decreases confidence
+            
+            # Ensure confidence is within valid range
+            return max(0.0, min(1.0, base_confidence))
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "confidence_calculation")
+            self.logger.warning(f"Confidence calculation failed: {error_context}")
+            return 0.5  # Default moderate confidence
+
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """
+        Propose thesis evolution actions based on current market conditions
+        
+        Args:
+            **inputs: Context inputs including market data, performance metrics
+            
+        Returns:
+            Dict containing proposed action with confidence and reasoning
+        """
+        try:
+            # Extract context for action proposal
+            market_data = inputs.get('market_data', {})
+            recent_trades = inputs.get('recent_trades', [])
+            market_regime = inputs.get('market_regime', 'unknown')
+            
+            # Calculate innovation pressure
+            innovation_pressure = self._calculate_innovation_pressure_comprehensive()
+            
+            # Determine recommended action
+            if innovation_pressure > 0.8:
+                action_type = 'high_innovation'
+                action_details = {
+                    'strategy': 'aggressive_mutation_and_diversification',
+                    'priority': 'high',
+                    'target_mutations': min(5, len(self.theses)),
+                    'diversification_focus': True
+                }
+                confidence = 0.85
+                reasoning = f"High innovation pressure ({innovation_pressure:.2f}) indicates need for aggressive thesis evolution"
+                
+            elif len(self.theses) < self.capacity * 0.7:
+                action_type = 'thesis_generation'
+                action_details = {
+                    'strategy': 'generate_new_theses',
+                    'priority': 'medium',
+                    'target_count': min(3, self.capacity - len(self.theses)),
+                    'focus_regime': market_regime
+                }
+                confidence = 0.75
+                reasoning = f"Low thesis count ({len(self.theses)}) suggests need for new thesis generation"
+                
+            elif self._calculate_diversity_gap_comprehensive() > 0.3:
+                action_type = 'diversification'
+                action_details = {
+                    'strategy': 'enhance_diversity',
+                    'priority': 'medium',
+                    'target_categories': self._identify_underrepresented_categories(),
+                    'crossover_focus': True
+                }
+                confidence = 0.70
+                reasoning = f"Diversity gap indicates need for portfolio diversification"
+                
+            elif len(recent_trades) > 0 and self._calculate_recent_win_rate(recent_trades) < 0.4:
+                action_type = 'performance_improvement'
+                action_details = {
+                    'strategy': 'refine_underperforming_theses',
+                    'priority': 'high',
+                    'target_refinements': 2,
+                    'focus_on_losses': True
+                }
+                confidence = 0.80
+                reasoning = f"Poor recent performance indicates need for thesis refinement"
+                
+            else:
+                action_type = 'maintenance'
+                action_details = {
+                    'strategy': 'periodic_optimization',
+                    'priority': 'low',
+                    'maintenance_type': 'gradual_improvement',
+                    'target_optimizations': 1
+                }
+                confidence = 0.60
+                reasoning = "Normal conditions suggest maintenance-level evolution"
+            
+            # Calculate final confidence using the confidence calculation method
+            final_confidence = await self.calculate_confidence(action_details, **inputs)
+            
+            proposal = {
+                'action_type': action_type,
+                'action_details': action_details,
+                'confidence': final_confidence,
+                'reasoning': reasoning,
+                'market_context': {
+                    'regime': market_regime,
+                    'thesis_count': len(self.theses),
+                    'innovation_pressure': innovation_pressure,
+                    'diversity_score': self._calculate_thesis_diversity_comprehensive()
+                },
+                'timestamp': datetime.datetime.now().isoformat(),
+                'module': 'ThesisEvolutionEngine'
+            }
+            
+            return proposal
+            
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "action_proposal")
+            self.logger.warning(f"Action proposal failed: {error_context}")
+            
+            # Return safe fallback proposal
+            return {
+                'action_type': 'maintenance',
+                'action_details': {'strategy': 'safe_monitoring', 'priority': 'low'},
+                'confidence': 0.5,
+                'reasoning': 'Fallback action due to proposal generation error',
+                'timestamp': datetime.datetime.now().isoformat(),
+                'module': 'ThesisEvolutionEngine'
+            }
+
+    def _identify_underrepresented_categories(self) -> List[str]:
+        """Identify thesis categories that are underrepresented"""
+        try:
+            category_counts = {}
+            
+            # Count current category representation
+            for thesis in self.theses:
+                category = self._categorize_thesis_comprehensive(thesis)
+                category_counts[category] = category_counts.get(category, 0) + 1
+            
+            # Find underrepresented categories
+            target_per_category = max(1, len(self.theses) // len(self.thesis_categories))
+            underrepresented = []
+            
+            for category in self.thesis_categories:
+                if category_counts.get(category, 0) < target_per_category:
+                    underrepresented.append(category)
+            
+            return underrepresented
+            
+        except Exception:
+            return list(self.thesis_categories.keys())[:3]  # Return first 3 categories as fallback

@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/core/persistence.py
-# 🚀 PRODUCTION-READY SmartInfoBus Persistence & Replay System
+# [ROCKET] PRODUCTION-READY SmartInfoBus Persistence & Replay System
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # FIXED: State validation, health checks, version compatibility
 # ─────────────────────────────────────────────────────────────
@@ -11,7 +11,12 @@ import json
 import asyncio
 import importlib
 import time
-import numpy as np
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    NUMPY_AVAILABLE = False
+    np = None          # type: ignore
 import zlib
 import shutil
 import tempfile
@@ -185,7 +190,7 @@ class ReplaySession:
             'total_events': self.event_count,
             'event_types': dict(event_types),
             'module_activity': dict(module_activity),
-            'avg_event_interval': np.mean(durations) if durations else 0,
+            'avg_event_interval': float(np.mean(durations)) if durations and NUMPY_AVAILABLE and np is not None else (sum(durations) / len(durations) if durations else 0),
             'max_event_interval': max(durations) if durations else 0,
             'unique_modules': len(module_activity),
             'unique_event_types': len(event_types),
@@ -257,7 +262,7 @@ class StateManager:
         
         self.logger.info(
             format_operator_message(
-                "💾", "STATE MANAGER INITIALIZED",
+                "[SAVE]", "STATE MANAGER INITIALIZED",
                 details=f"Dir: {self.state_dir}",
                 context="startup"
             )
@@ -340,14 +345,14 @@ class StateManager:
                 self.state_cache[module_name] = state_with_metadata
                 
                 # Serialize with compression
-                serialized = self._serialize_state(state_with_metadata)
+                serialized, method = self._serialize_state(state_with_metadata)
                 
                 # Save to disk with backup
                 self._save_to_disk_with_backup(module_name, state_with_metadata)
                 
                 self.logger.info(
                     format_operator_message(
-                        "💾", "STATE SAVED",
+                        "[SAVE]", "STATE SAVED",
                         instrument=module_name,
                         details=f"v{version} ({len(serialized)} bytes)",
                         context="state_management"
@@ -357,7 +362,7 @@ class StateManager:
                 return serialized
                 
             except Exception as e:
-                self.logger.error(f"💥 Failed to save state for {module_name}: {e}")
+                self.logger.error(f"[CRASH] Failed to save state for {module_name}: {e}")
                 raise RuntimeError(f"State save failed for {module_name}: {e}")
     
     def _validate_state_for_save(self, state: Dict[str, Any], module: 'BaseModule') -> StateValidation:
@@ -436,7 +441,7 @@ class StateManager:
                 module_path = module_class.__module__
                 
                 # Reload module code
-                self.logger.info(f"🔄 Reloading module code for {module_name}")
+                self.logger.info(f"[RELOAD] Reloading module code for {module_name}")
                 
                 try:
                     module_ref = importlib.import_module(module_path)
@@ -531,7 +536,7 @@ class StateManager:
                 
                 self.logger.info(
                     format_operator_message(
-                        "✅", "MODULE RELOADED",
+                        "[OK]", "MODULE RELOADED",
                         instrument=module_name,
                         details=f"v{old_version} -> v{new_version}",
                         context="hot_reload"
@@ -541,7 +546,7 @@ class StateManager:
                 return True
                 
             except Exception as e:
-                self.logger.error(f"💥 Failed to reload {module_name}: {e}")
+                self.logger.error(f"[CRASH] Failed to reload {module_name}: {e}")
                 self.logger.error(f"Traceback: {traceback.format_exc()}")
                 return False
     
@@ -765,25 +770,17 @@ class StateManager:
         except Exception:
             return {'save_time': datetime.now().isoformat()}
     
-    def _serialize_state(self, state_data: Dict[str, Any]) -> bytes:
-        """Serialize state with optional compression"""
+    def _serialize_state(self, state_data: Dict[str, Any]) -> Tuple[bytes, str]:
+        """
+        Serialise without compression; return (blob, method).
+        """
         try:
-            # Try pickle first
-            serialized = pickle.dumps(state_data)
-            serialization_method = 'pickle'
+            blob = pickle.dumps(state_data)
+            return blob, "pickle"
         except Exception:
-            # Fallback to JSON
-            json_str = json.dumps(state_data, default=str)
-            serialized = json_str.encode('utf-8')
-            serialization_method = 'json'
-        
-        # Apply compression if enabled
-        if self.compression_enabled:
-            compressed = zlib.compress(serialized, level=self.compression_level)
-            if len(compressed) < len(serialized) * 0.9:  # Only use if >10% savings
-                return compressed
-        
-        return serialized
+            blob = json.dumps(state_data, default=str).encode("utf-8")
+            return blob, "json"
+
     
     def _extract_safe_attributes(self, module: 'BaseModule') -> Dict[str, Any]:
         """Extract safe attributes from module"""
@@ -854,6 +851,8 @@ class StateManager:
     
     def _cleanup_old_backups(self, module_name: str):
         """Clean up old backup files"""
+        # Use a default of 7 days for backup retention
+        cutoff_time = time.time() - (7 * 24 * 3600)  # Default 7 days
         backup_patterns = [
             f"{module_name}_state_*.pkl",
             f"{module_name}_state_*.pkl.gz",
@@ -977,7 +976,7 @@ class StateManager:
                         results[module_name] = True
                         
                         self.logger.info(
-                            f"✅ Restored state for {module_name} "
+                            f"[OK] Restored state for {module_name} "
                             f"(v{state_data.get('version', 0)}, "
                             f"compatibility: {validation.compatibility_score:.1%})"
                         )
@@ -986,14 +985,14 @@ class StateManager:
                         results[module_name] = False
                         
                 except Exception as e:
-                    self.logger.error(f"💥 Failed to restore {module_name}: {e}")
+                    self.logger.error(f"[CRASH] Failed to restore {module_name}: {e}")
                     results[module_name] = False
             
             # Summary
             success_count = sum(1 for v in results.values() if v)
             self.logger.info(
                 format_operator_message(
-                    "📂", "STATE RESTORATION COMPLETE",
+                    "[FOLDER]", "STATE RESTORATION COMPLETE",
                     details=f"Restored {success_count}/{len(results)} modules",
                     context="startup"
                 )
@@ -1103,7 +1102,7 @@ class StateManager:
                 return success_count > 0
                 
             except Exception as e:
-                self.logger.error(f"💥 Failed to create checkpoint {checkpoint_name}: {e}")
+                self.logger.error(f"[CRASH] Failed to create checkpoint {checkpoint_name}: {e}")
                 # Cleanup failed checkpoint
                 if checkpoint_path.exists():
                     shutil.rmtree(checkpoint_path, ignore_errors=True)
@@ -1154,7 +1153,7 @@ class StateManager:
                         return False
                 
                 self.logger.info(
-                    f"🔄 Restoring checkpoint '{checkpoint_id}' from {checkpoint_data['timestamp']}"
+                    f"[RELOAD] Restoring checkpoint '{checkpoint_id}' from {checkpoint_data['timestamp']}"
                 )
                 
                 # Check if system state has diverged significantly
@@ -1225,7 +1224,7 @@ class StateManager:
                 
                 self.logger.info(
                     format_operator_message(
-                        "✅", "CHECKPOINT RESTORED",
+                        "[OK]", "CHECKPOINT RESTORED",
                         instrument=checkpoint_id,
                         details=f"Restored {success_count} modules, {len(failed_modules)} failed",
                         context="state_management"
@@ -1235,7 +1234,7 @@ class StateManager:
                 return success_count > 0
                 
             except Exception as e:
-                self.logger.error(f"💥 Failed to restore checkpoint {checkpoint_id}: {e}")
+                self.logger.error(f"[CRASH] Failed to restore checkpoint {checkpoint_id}: {e}")
                 return False
     
     def list_checkpoints(self) -> List[Dict[str, Any]]:
@@ -1461,7 +1460,7 @@ class ReplayEngine:
             
             self.logger.info(
                 format_operator_message(
-                    "🔴", "RECORDING STARTED",
+                    "[RED]", "RECORDING STARTED",
                     instrument=session_id,
                     context="replay_recording"
                 )
@@ -1552,7 +1551,7 @@ class ReplayEngine:
                 return session
                 
             except Exception as e:
-                self.logger.error(f"💥 Failed to stop recording: {e}")
+                self.logger.error(f"[CRASH] Failed to stop recording: {e}")
                 self.is_recording = False
                 return None
     
@@ -1639,10 +1638,10 @@ class ReplayEngine:
         
         analysis = {
             'snapshot_count': len(self.health_snapshots),
-            'avg_health_score': np.mean([h.get('overall_score', 0) for h in self.health_snapshots]),
-            'min_health_score': min(h.get('overall_score', 1) for h in self.health_snapshots),
-            'max_memory_mb': max(h.get('memory_usage_mb', 0) for h in self.health_snapshots),
-            'avg_cpu_percent': np.mean([h.get('cpu_percent', 0) for h in self.health_snapshots]),
+            'avg_health_score': float(np.mean([h.get('overall_score', 0) for h in self.health_snapshots])) if self.health_snapshots and NUMPY_AVAILABLE and np is not None else (sum([h.get('overall_score', 0) for h in self.health_snapshots]) / len(self.health_snapshots) if self.health_snapshots else 0),
+            'min_health_score': min(h.get('overall_score', 1) for h in self.health_snapshots) if self.health_snapshots else 0,
+            'max_memory_mb': max(h.get('memory_usage_mb', 0) for h in self.health_snapshots) if self.health_snapshots else 0,
+            'avg_cpu_percent': float(np.mean([h.get('cpu_percent', 0) for h in self.health_snapshots])) if self.health_snapshots and NUMPY_AVAILABLE and np is not None else (sum([h.get('cpu_percent', 0) for h in self.health_snapshots]) / len(self.health_snapshots) if self.health_snapshots else 0),
             'emergency_mode_activations': sum(1 for h in self.health_snapshots if h.get('emergency_mode')),
             'health_degradation_events': 0
         }
@@ -1657,20 +1656,181 @@ class ReplayEngine:
         return analysis
     
     def _get_performance_summary(self) -> Dict[str, Any]:
-        """Get performance summary from metrics"""
-        summary = {}
-        
-        for metric_name, values in self.performance_metrics.items():
-            if values:
-                summary[metric_name] = {
-                    'avg': np.mean(values),
-                    'min': min(values),
-                    'max': max(values),
-                    'std': np.std(values)
+        """
+        Robust statistics helper – safe when NumPy is missing or data is absent.
+        """
+        if not self.performance_metrics:
+            return {
+                "status": "no_data",
+                "message": "No performance metrics collected",
+                "metrics_available": False
+            }
+
+        # ---------- helpers ----------
+        def _mean(vals):
+            if not vals:
+                return 0.0
+            return float(np.mean(vals)) if NUMPY_AVAILABLE and np is not None else sum(vals) / len(vals)
+
+        def _std(vals):
+            if not vals or len(vals) < 2:
+                return 0.0
+            return float(np.std(vals)) if NUMPY_AVAILABLE and np is not None else 0.0
+
+        def _p95(vals):
+            if not vals:
+                return 0.0
+            if NUMPY_AVAILABLE and np is not None and len(vals) >= 5:
+                return float(np.percentile(vals, 95))
+            if len(vals) >= 5:
+                v = sorted(vals)
+                return float(v[int(len(v) * 0.95)])
+            return max(vals)
+
+        # ---------- scaffold ----------
+        summary: Dict[str, Any] = {
+            "status": "data_available",
+            "metrics_available": True,
+            "collection_period": {
+                "recording_duration_seconds":
+                    time.time() - self.recording_start_time if self.recording_start_time else 0,
+                "total_samples":
+                    sum(len(v) for v in self.performance_metrics.values()),
+                "metric_types": list(self.performance_metrics.keys())
+            },
+            "aggregated_metrics": {},
+            "module_breakdown": {},
+            "health_indicators": {}
+        }
+
+        # ---------- aggregate ----------
+        for m_name, values in self.performance_metrics.items():
+            if not values:
+                continue
+            summary["aggregated_metrics"][m_name] = {
+                "avg": _mean(values),
+                "min": float(min(values)),
+                "max": float(max(values)),
+                "std": _std(values),
+                "p95": _p95(values),
+                "sample_count": len(values),
+                "total": float(sum(values)) if m_name.endswith("_count") else None
+            }
+
+        exec_times       = self.performance_metrics.get("execution_time", [])
+        replay_exec      = self.performance_metrics.get("replayed_execution_time", [])
+
+        # ---------- module split ----------
+        if exec_times or replay_exec:
+            summary["module_breakdown"] = {
+                "original_execution": {
+                    "count": len(exec_times),
+                    "avg_time_ms": _mean(exec_times),
+                    "total_time_ms": float(sum(exec_times)) if exec_times else 0.0
+                },
+                "replayed_execution": {
+                    "count": len(replay_exec),
+                    "avg_time_ms": _mean(replay_exec),
+                    "total_time_ms": float(sum(replay_exec)) if replay_exec else 0.0
                 }
-        
+            }
+
+        # ---------- health indicators ----------
+        error_rate: float = 0.0
+        avg_latency: float = _mean(exec_times)
+
+        try:
+            total_ops   = sum(len(v) for k, v in self.performance_metrics.items()
+                            if not k.startswith("error"))
+            total_errs  = sum(len(v) for k, v in self.performance_metrics.items()
+                            if k.startswith("error"))
+            error_rate  = total_errs / max(total_ops, 1)
+
+            latency_status = (
+                "excellent" if avg_latency < 50 else
+                "good"      if avg_latency < 100 else
+                "acceptable"if avg_latency < 200 else
+                "poor"
+            ) if exec_times else "no_data"
+
+            health_score = 100.0
+            if error_rate > 0.10:   health_score -= 50
+            elif error_rate > 0.05: health_score -= 25
+            elif error_rate > 0.01: health_score -= 10
+
+            if avg_latency > 500:      health_score -= 30
+            elif avg_latency > 200:    health_score -= 15
+            elif avg_latency > 100:    health_score -= 5
+
+            summary["health_indicators"] = {
+                "overall_health_score": max(0.0, health_score),
+                "overall_status": (
+                    "healthy"  if health_score > 80 else
+                    "degraded" if health_score > 50 else
+                    "critical"
+                ),
+                "error_analysis": {
+                    "total_operations": total_ops,
+                    "total_errors": total_errs,
+                    "error_rate": error_rate,
+                    "error_status": (
+                        "good"     if error_rate < 0.01 else
+                        "warning"  if error_rate < 0.05 else
+                        "critical"
+                    )
+                },
+                "latency_analysis": {
+                    "avg_latency_ms": avg_latency,
+                    "latency_status": latency_status,
+                    "samples": len(exec_times)
+                },
+                "data_quality": {
+                    "metrics_collected": len(self.performance_metrics),
+                    "total_samples": sum(len(v) for v in self.performance_metrics.values()),
+                    "completeness_score":
+                        min(100.0, len(self.performance_metrics) * 20.0)   # 5 types → 100 %
+                }
+            }
+
+        except Exception as e:
+            summary["health_indicators"] = {
+                "overall_status": "unknown",
+                "error": f"indicator calc failed: {e}"
+            }
+
+        # ---------- trends ----------
+        try:
+            if exec_times and len(exec_times) >= 10 and NUMPY_AVAILABLE and np is not None:
+                recent = exec_times[-10:]
+                slope  = float(np.polyfit(np.arange(len(recent)), recent, 1)[0])
+                summary["health_indicators"]["performance_trend"] = {  # type: ignore
+                    "direction": ("improving" if slope < -1
+                                else "degrading" if slope > 1
+                                else "stable"),
+                    "slope_ms_per_sample": float(slope),
+                    "samples_analyzed": len(recent)
+                }
+        except Exception:
+            pass  # non-critical
+
+        # ---------- actionable tips ----------
+        rec_actions = []
+        if error_rate > 0.05:
+            rec_actions.append("Investigate high error rate")
+        if avg_latency > 200:
+            rec_actions.append("Optimize performance – high latency")
+        if len(self.performance_metrics) < 2:
+            rec_actions.append("Collect more performance metrics")
+
+        summary["summary"] = {
+            "recording_active": self.is_recording,
+            "has_data": True,
+            "data_quality": "good" if len(self.performance_metrics) >= 3 else "limited",
+            "recommended_actions": rec_actions
+        }
+
         return summary
-    
+
     def _record_data_update(self, event_data: Dict[str, Any]):
         """Record data update event during recording"""
         if not self.is_recording:
@@ -1847,7 +2007,7 @@ class ReplayEngine:
                 # Check breakpoints
                 for bp_name, bp_condition in self.breakpoints:
                     if bp_condition(modified_event):
-                        self.logger.info(f"🔍 Breakpoint hit: {bp_name} at position {self.replay_position}")
+                        self.logger.info(f"[SEARCH] Breakpoint hit: {bp_name} at position {self.replay_position}")
                         await self.pause()
                         break
                 
@@ -1899,7 +2059,7 @@ class ReplayEngine:
             
             self.logger.info(
                 format_operator_message(
-                    "✅", "REPLAY COMPLETED",
+                    "[OK]", "REPLAY COMPLETED",
                     details=f"{events_replayed} events in {replay_duration:.1f}s{health_summary}",
                     context="replay_playback"
                 )
@@ -1907,7 +2067,7 @@ class ReplayEngine:
             
         except Exception as e:
             self.is_playing = False
-            self.logger.error(f"💥 Replay failed: {e}")
+            self.logger.error(f"[CRASH] Replay failed: {e}")
             raise
     
     # Rest of the ReplayEngine methods remain the same but with thread safety...
@@ -2063,7 +2223,7 @@ class ReplayEngine:
             
             self.logger.info(
                 format_operator_message(
-                    "📂", "SESSION LOADED",
+                    "[FOLDER]", "SESSION LOADED",
                     instrument=session_id,
                     details=f"{session.event_count} events, {session.duration_seconds:.1f}s",
                     context="replay_loading"
@@ -2268,7 +2428,7 @@ class PersistenceManager:
         
         self.logger.info(
             format_operator_message(
-                "💾", "PERSISTENCE MANAGER INITIALIZED",
+                "[SAVE]", "PERSISTENCE MANAGER INITIALIZED",
                 context="startup"
             )
         )
@@ -2288,7 +2448,7 @@ class PersistenceManager:
                                 self.orchestrator, 
                                 f"auto_{int(time.time())}"
                             )
-                            self.logger.info("🔄 Auto-checkpoint created")
+                            self.logger.info("[RELOAD] Auto-checkpoint created")
                         else:
                             self.logger.warning("Skipped auto-checkpoint due to poor system health")
                 except asyncio.CancelledError:
@@ -2347,7 +2507,7 @@ class PersistenceManager:
     
     async def shutdown(self):
         """Graceful shutdown of persistence manager"""
-        self.logger.info("🛑 Shutting down persistence manager...")
+        self.logger.info("[STOP] Shutting down persistence manager...")
         
         # Signal shutdown
         self._shutdown_event.set()
@@ -2367,7 +2527,7 @@ class PersistenceManager:
             except Exception as e:
                 self.logger.error(f"Final checkpoint failed: {e}")
         
-        self.logger.info("✅ Persistence manager shutdown complete")
+        self.logger.info("[OK] Persistence manager shutdown complete")
     
     def get_status_report(self) -> str:
         """Get comprehensive status report"""
@@ -2458,7 +2618,7 @@ class PersistenceManager:
             # Remove uncompressed directory
             shutil.rmtree(backup_dir)
             
-            self.logger.info(f"✅ System backup created: {archive_path}")
+            self.logger.info(f"[OK] System backup created: {archive_path}")
             return True
             
         except Exception as e:
@@ -2502,7 +2662,7 @@ class PersistenceManager:
                 if self.orchestrator:
                     self.state_manager.restore_all_states(self.orchestrator)
                 
-                self.logger.info(f"✅ System restored from backup: {backup_id}")
+                self.logger.info(f"[OK] System restored from backup: {backup_id}")
                 return True
                 
         except Exception as e:
@@ -2561,7 +2721,7 @@ class PersistenceManager:
             with open(diag_dir / "configuration.json", 'w') as f:
                 json.dump(config_data, f, indent=2)
             
-            self.logger.info(f"📊 Diagnostics exported to {diag_dir}")
+            self.logger.info(f"[STATS] Diagnostics exported to {diag_dir}")
             
         except Exception as e:
             self.logger.error(f"Failed to export diagnostics: {e}")

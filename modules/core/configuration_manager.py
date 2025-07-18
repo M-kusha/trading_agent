@@ -206,8 +206,27 @@ class ConfigurationManager:
                 self.configs[name] = {}
                 return
             
-            with open(path, 'r') as f:
-                config_data = yaml.safe_load(f)
+            # Try different encodings to handle encoding issues
+            encodings_to_try = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252']
+            config_data = None
+            
+            for encoding in encodings_to_try:
+                try:
+                    with open(path, 'r', encoding=encoding) as f:
+                        config_data = yaml.safe_load(f)
+                    self.logger.debug(f"Successfully loaded {name} with {encoding} encoding")
+                    break
+                except UnicodeDecodeError as e:
+                    self.logger.debug(f"Failed to load {name} with {encoding}: {e}")
+                    continue
+                except Exception as e:
+                    self.logger.debug(f"Failed to load {name} with {encoding}: {e}")
+                    continue
+            
+            if config_data is None:
+                self.logger.error(f"Failed to load configuration {name} with any encoding")
+                self.configs[name] = {}
+                return
             
             self.configs[name] = config_data or {}
             self.file_timestamps[name] = path.stat().st_mtime
@@ -379,31 +398,35 @@ class ConfigurationManager:
             old_config = self.configs.get(config_name, {}).copy()
             self._load_configuration_file(config_name, config_path)
             
-            # Rebuild module configurations
-            old_module_configs = self.module_configs.copy()
-            self._build_module_configurations()
-            
-            # Notify watchers
-            for callback in self.config_watchers:
-                try:
-                    callback(config_name, old_config, self.configs[config_name])
-                except Exception as e:
-                    self.logger.error(f"Error in config watcher: {e}")
-            
-            # Notify module-specific watchers
-            for module_name, callbacks in self.module_watchers.items():
-                if module_name in old_module_configs and module_name in self.module_configs:
-                    old_module_config = old_module_configs[module_name]
-                    new_module_config = self.module_configs[module_name]
-                    
-                    if old_module_config != new_module_config:
-                        for callback in callbacks:
-                            try:
-                                callback(module_name, old_module_config, new_module_config)
-                            except Exception as e:
-                                self.logger.error(f"Error in module watcher for {module_name}: {e}")
-            
-            self.logger.info(f"Successfully reloaded configuration: {config_name}")
+            # Only rebuild if we actually loaded new data
+            if self.configs[config_name]:
+                # Rebuild module configurations
+                old_module_configs = self.module_configs.copy()
+                self._build_module_configurations()
+                
+                # Notify watchers
+                for callback in self.config_watchers:
+                    try:
+                        callback(config_name, old_config, self.configs[config_name])
+                    except Exception as e:
+                        self.logger.error(f"Error in config watcher: {e}")
+                
+                # Notify module-specific watchers
+                for module_name, callbacks in self.module_watchers.items():
+                    if module_name in old_module_configs and module_name in self.module_configs:
+                        old_module_config = old_module_configs[module_name]
+                        new_module_config = self.module_configs[module_name]
+                        
+                        if old_module_config != new_module_config:
+                            for callback in callbacks:
+                                try:
+                                    callback(module_name, old_module_config, new_module_config)
+                                except Exception as e:
+                                    self.logger.error(f"Error in module watcher for {module_name}: {e}")
+                
+                self.logger.info(f"Successfully reloaded configuration: {config_name}")
+            else:
+                self.logger.warning(f"Failed to load configuration {config_name} - keeping old config")
             
         except Exception as e:
             self.logger.error(f"Failed to reload configuration {config_name}: {e}")

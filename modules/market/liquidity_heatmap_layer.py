@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/market/liquidity_heatmap_layer.py  
-# 🚀 PRODUCTION-GRADE Liquidity Heatmap Analysis with Neural Networks
+# [ROCKET] PRODUCTION-GRADE Liquidity Heatmap Analysis with Neural Networks
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # MODERNIZED: Complete SmartInfoBus integration with PyTorch neural networks
 # ─────────────────────────────────────────────────────────────
@@ -11,7 +11,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Union
 from collections import deque
 from dataclasses import dataclass
 
@@ -83,7 +83,10 @@ class LiquidityLSTM(nn.Module):
     name="LiquidityHeatmapLayer",
     version="3.0.0",
     category="market",
-    provides=["liquidity_score", "market_depth", "spread_analysis", "liquidity_prediction"],
+    provides=[
+        "liquidity_score", "market_depth", "spread_analysis", "liquidity_prediction",
+        "trading_sessions", "session_data"
+    ],
     requires=["market_data", "price_data"],
     description="Advanced liquidity heatmap analysis with neural network predictions",
     thesis_required=True,
@@ -93,7 +96,7 @@ class LiquidityLSTM(nn.Module):
 )
 class LiquidityHeatmapLayer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    🚀 PRODUCTION-GRADE Liquidity Heatmap Analysis with Neural Networks
+    [ROCKET] PRODUCTION-GRADE Liquidity Heatmap Analysis with Neural Networks
     
     FEATURES:
     - PyTorch LSTM with attention mechanism for liquidity prediction
@@ -106,13 +109,26 @@ class LiquidityHeatmapLayer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
     - Circuit breaker protection
     """
 
-    def __init__(self, config: Optional[LiquidityConfig] = None, **kwargs):
+    def __init__(self, config: Optional[Union[LiquidityConfig, Dict[str, Any]]] = None, **kwargs):
         
-        self.config = config or LiquidityConfig()
-        super().__init__()
+        # Handle both dict and LiquidityConfig
+        if isinstance(config, dict):
+            processed_config = LiquidityConfig(**config)
+        else:
+            processed_config = config or LiquidityConfig()
         
-        # Initialize all advanced systems
+        # Set config early and mark as not fully initialized
+        self.config = processed_config
+        self._fully_initialized = False
+            
+        # Initialize advanced systems first
         self._initialize_advanced_systems()
+        
+        # Call parent init first
+        super().__init__(config={})
+        
+        # Then override with our processed config
+        self.config = processed_config
         
         # Initialize neural networks
         self._initialize_neural_networks()
@@ -122,6 +138,12 @@ class LiquidityHeatmapLayer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         
         # Start monitoring
         self._start_monitoring()
+        
+        # Mark as fully initialized
+        self._fully_initialized = True
+        
+        # Now call _initialize properly
+        self._initialize()
         
         self.logger.info(
             format_operator_message(
@@ -240,8 +262,12 @@ class LiquidityHeatmapLayer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             # No event loop running
             pass
     
-    async def _initialize(self):
+    def _initialize(self):
         """Initialize module - called by orchestrator"""
+        # Check if we're fully initialized yet
+        if not getattr(self, '_fully_initialized', False):
+            return
+            
         super()._initialize()
         
         # Store liquidity capabilities
@@ -291,7 +317,8 @@ class LiquidityHeatmapLayer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'liquidity_score': liquidity_metrics['liquidity_score'],
                 'market_depth': liquidity_metrics['depth_analysis'],
                 'spread_analysis': liquidity_metrics['spread_analysis'],
-                'predictions': prediction_result,
+                'liquidity_prediction': prediction_result,  # Fixed: Use 'liquidity_prediction' to match provides declaration
+                'predictions': prediction_result,  # Keep for backward compatibility
                 'thesis': thesis,
                 'processing_time_ms': (time.time() - process_start_time) * 1000
             }
@@ -735,7 +762,7 @@ Trading Implications:
         
         self.logger.error(
             format_operator_message(
-                "💧💥", "LIQUIDITY_ANALYSIS_ERROR",
+                "💧[CRASH]", "LIQUIDITY_ANALYSIS_ERROR",
                 details=str(error),
                 context="liquidity_processing"
             )
@@ -755,7 +782,7 @@ Trading Implications:
             
             self.logger.error(
                 format_operator_message(
-                    "💧🚨", "LIQUIDITY_CIRCUIT_BREAKER_OPEN",
+                    "💧[ALERT]", "LIQUIDITY_CIRCUIT_BREAKER_OPEN",
                     details=f"Too many liquidity failures ({self.neural_circuit_breaker['failures']})",
                     context="liquidity_circuit_breaker"
                 )
@@ -831,7 +858,7 @@ Trading Implications:
         if anomalies:
             self.logger.warning(
                 format_operator_message(
-                    "💧⚠️", "LIQUIDITY_ANOMALIES",
+                    "💧[WARN]", "LIQUIDITY_ANOMALIES",
                     details=f"{len(anomalies)} anomalies detected",
                     context="liquidity_monitoring"
                 )
@@ -932,3 +959,101 @@ Trading Implications:
             )
         except Exception as e:
             return f"Liquidity performance report generation failed: {str(e)}"
+    
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose liquidity-based action recommendations"""
+        try:
+            # Get current liquidity analysis
+            liquidity_score = self.current_liquidity_score
+            prediction_accuracy = self.liquidity_stats['avg_prediction_accuracy']
+            
+            # Determine action based on liquidity conditions
+            if liquidity_score > self.config.high_liquidity_threshold:
+                if prediction_accuracy > 0.8:
+                    action = 'aggressive_trade'
+                    rationale = 'High liquidity with strong prediction accuracy - favorable for aggressive trading'
+                else:
+                    action = 'moderate_trade'
+                    rationale = 'High liquidity but lower prediction accuracy - proceed with moderate trading'
+                risk_level = 'low'
+                
+            elif liquidity_score < self.config.low_liquidity_threshold:
+                action = 'reduce_size'
+                rationale = 'Low liquidity detected - reduce position sizes to minimize market impact'
+                risk_level = 'high'
+                
+            else:  # Medium liquidity
+                if prediction_accuracy > 0.7:
+                    action = 'normal_trade'
+                    rationale = 'Medium liquidity with good prediction accuracy - normal trading conditions'
+                else:
+                    action = 'cautious_trade'
+                    rationale = 'Medium liquidity with lower prediction accuracy - trade cautiously'
+                risk_level = 'medium'
+            
+            # Calculate liquidity confidence
+            liquidity_confidence = min(1.0, (liquidity_score + prediction_accuracy) / 2.0)
+            
+            return {
+                'action': action,
+                'liquidity_confidence': liquidity_confidence,
+                'rationale': rationale,
+                'risk_level': risk_level,
+                'current_liquidity_score': liquidity_score,
+                'prediction_accuracy': prediction_accuracy,
+                'neural_health': self.liquidity_health['model_health_score']
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error in propose_action: {e}")
+            return {
+                'action': 'hold',
+                'liquidity_confidence': 0.5,
+                'rationale': f'Error in liquidity analysis: {str(e)}',
+                'risk_level': 'medium'
+            }
+    
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in the proposed action"""
+        try:
+            # Core confidence factors
+            liquidity_score = self.current_liquidity_score
+            prediction_accuracy = self.liquidity_stats['avg_prediction_accuracy']
+            model_health = self.liquidity_health['model_health_score']
+            data_quality = self.liquidity_health['data_quality_score']
+            
+            # Neural network confidence
+            neural_confidence = 1.0 if self.neural_circuit_breaker['state'] == 'CLOSED' else 0.3
+            
+            # Data freshness (how recent is our liquidity data)
+            last_pred_time = getattr(self, 'last_prediction_time', None)
+            if last_pred_time:
+                time_since_prediction = time.time() - last_pred_time
+                freshness = max(0.0, 1.0 - time_since_prediction / 300.0)  # 5 minute decay
+            else:
+                freshness = 0.5
+            
+            # Combine confidence factors
+            confidence = (
+                liquidity_score * 0.3 +           # Current liquidity conditions
+                prediction_accuracy * 0.25 +      # Model prediction accuracy
+                model_health * 0.2 +              # Neural network health
+                data_quality * 0.15 +             # Input data quality
+                neural_confidence * 0.05 +        # Circuit breaker state
+                freshness * 0.05                  # Data freshness
+            )
+            
+            # Action-specific adjustments
+            action_type = action.get('action', 'hold')
+            if action_type == 'aggressive_trade' and liquidity_score < 0.8:
+                confidence *= 0.7  # Less confident in aggressive trades without high liquidity
+            elif action_type == 'reduce_size' and liquidity_score < 0.3:
+                confidence *= 1.2  # More confident in size reduction during low liquidity
+            elif action_type == 'hold' and prediction_accuracy < 0.5:
+                confidence *= 1.1  # More confident in holding when predictions are uncertain
+            
+            return float(max(0.0, min(1.0, confidence)))
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating confidence: {e}")
+            return 0.5

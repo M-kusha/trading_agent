@@ -232,7 +232,7 @@ class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
         self.is_disabled = False
         
         self.logger.info(format_operator_message(
-            icon="🔄",
+            icon="[RELOAD]",
             message="Shadow Simulator reset - all state cleared"
         ))
 
@@ -366,7 +366,7 @@ class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
                 self._adapt_simulation_for_regime(old_regime, self.market_regime)
                 
                 self.logger.info(format_operator_message(
-                    icon="📊",
+                    icon="[STATS]",
                     message=f"Regime change detected: {old_regime} → {self.market_regime}",
                     adaptation="Simulation parameters updated",
                     session=self.market_session
@@ -1041,7 +1041,7 @@ class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
         
         try:
             if not scenario_results:
-                recommendations.append("⚠️ No simulation results available for recommendations.")
+                recommendations.append("[WARN] No simulation results available for recommendations.")
                 return recommendations
             
             # Find best performing scenario
@@ -1051,11 +1051,11 @@ class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
             
             # Overall recommendation
             if best_score > 0.5:
-                recommendations.append(f"✅ Strong signal: {best_strategy} strategy shows {best_score:.1%} confidence")
+                recommendations.append(f"[OK] Strong signal: {best_strategy} strategy shows {best_score:.1%} confidence")
             elif best_score > 0.2:
-                recommendations.append(f"⚡ Moderate signal: {best_strategy} strategy shows potential")
+                recommendations.append(f"[FAST] Moderate signal: {best_strategy} strategy shows potential")
             elif best_score > 0:
-                recommendations.append(f"⚠️ Weak signal: Consider {best_strategy} strategy with caution")
+                recommendations.append(f"[WARN] Weak signal: Consider {best_strategy} strategy with caution")
             else:
                 recommendations.append("🚫 No positive scenarios identified - consider staying neutral")
             
@@ -1064,18 +1064,18 @@ class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
             max_dd = best_risk.get('max_drawdown', 0)
             
             if abs(max_dd) > 0.1:
-                recommendations.append(f"⚠️ High risk detected: {abs(max_dd):.1%} drawdown expected")
+                recommendations.append(f"[WARN] High risk detected: {abs(max_dd):.1%} drawdown expected")
             elif abs(max_dd) > 0.05:
-                recommendations.append(f"⚡ Moderate risk: {abs(max_dd):.1%} drawdown possible")
+                recommendations.append(f"[FAST] Moderate risk: {abs(max_dd):.1%} drawdown possible")
             
             # Context-specific recommendations
             regime = simulation_data.get('regime', 'unknown')
             vol_level = simulation_data.get('volatility_level', 'medium')
             
             if regime == 'volatile' and best_strategy in ['greedy', 'momentum']:
-                recommendations.append("💥 Volatile market: Consider more conservative approach despite signal")
+                recommendations.append("[CRASH] Volatile market: Consider more conservative approach despite signal")
             elif regime == 'trending' and best_strategy == 'contrarian':
-                recommendations.append("📈 Trending market: Contrarian signal may be premature")
+                recommendations.append("[CHART] Trending market: Contrarian signal may be premature")
             
             if vol_level == 'extreme':
                 recommendations.append("🌪️ Extreme volatility: Reduce position sizes regardless of strategy")
@@ -1091,11 +1091,11 @@ class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
             
             if len(top_strategies) > 1:
                 top_names = [strategy.replace('_', ' ').title() for strategy, _ in top_strategies]
-                recommendations.append(f"📊 Top strategies: {', '.join(top_names)}")
+                recommendations.append(f"[STATS] Top strategies: {', '.join(top_names)}")
             
         except Exception as e:
             self.logger.warning(f"Recommendation generation failed: {e}")
-            recommendations.append("⚠️ Unable to generate specific recommendations")
+            recommendations.append("[WARN] Unable to generate specific recommendations")
         
         return recommendations[:5]  # Limit to top 5
 
@@ -1230,7 +1230,7 @@ class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
             self.logger.error(format_operator_message(
-                icon="🚨",
+                icon="[ALERT]",
                 message="ShadowSimulator disabled due to repeated errors",
                 error_count=self.error_count,
                 threshold=self.circuit_breaker_threshold
@@ -1321,13 +1321,13 @@ class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
         
         # Confidence status
         if self.confidence_score > 0.8:
-            confidence_status = "✅ High"
+            confidence_status = "[OK] High"
         elif self.confidence_score > 0.6:
-            confidence_status = "⚡ Good"
+            confidence_status = "[FAST] Good"
         elif self.confidence_score > 0.4:
-            confidence_status = "⚠️ Moderate"
+            confidence_status = "[WARN] Moderate"
         else:
-            confidence_status = "🚨 Low"
+            confidence_status = "[ALERT] Low"
         
         # Strategy weights (top 3)
         top_strategies = sorted(
@@ -1339,7 +1339,7 @@ class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
         strategy_lines = []
         for strategy, weight in top_strategies:
             strategy_name = strategy.replace('_', ' ').title()
-            strategy_lines.append(f"  📊 {strategy_name}: {weight:.1%}")
+            strategy_lines.append(f"  [STATS] {strategy_name}: {weight:.1%}")
         
         # Recent learning progress
         learning_lines = []
@@ -1347,7 +1347,7 @@ class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
             timestamp = entry['timestamp'][:19]
             avg_score = entry['avg_score']
             confidence = entry['confidence']
-            learning_lines.append(f"  📈 {timestamp}: Score {avg_score:.1%}, Confidence {confidence:.1%}")
+            learning_lines.append(f"  [CHART] {timestamp}: Score {avg_score:.1%}, Confidence {confidence:.1%}")
         
         # Recent scenarios
         scenario_lines = []
@@ -1360,22 +1360,22 @@ class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
         return f"""
 🔮 SHADOW SIMULATOR
 ═══════════════════════════════════════
-🎯 Strategy: {self.strategy.title().replace('_', ' ')}
-📊 Confidence: {confidence_status} ({self.confidence_score:.1%})
+[TARGET] Strategy: {self.strategy.title().replace('_', ' ')}
+[STATS] Confidence: {confidence_status} ({self.confidence_score:.1%})
 🔭 Horizon: Base {self.horizon} | Adaptive {self.adaptive_horizon}
 ⚙️ Scenarios: {self.scenario_count} per simulation
-🔧 Status: {'🚨 Disabled' if self.is_disabled else '✅ Healthy'}
+[TOOL] Status: {'[ALERT] Disabled' if self.is_disabled else '[OK] Healthy'}
 
-📈 SIMULATION CONFIGURATION
+[CHART] SIMULATION CONFIGURATION
 • Confidence Threshold: {self.confidence_threshold:.1%}
-• Risk Scaling: {'✅ Enabled' if self.risk_scaling else '❌ Disabled'}
-• Regime Awareness: {'✅ Enabled' if self.regime_awareness else '❌ Disabled'}
-• Volatility Adjustment: {'✅ Enabled' if self.volatility_adjustment else '❌ Disabled'}
+• Risk Scaling: {'[OK] Enabled' if self.risk_scaling else '[FAIL] Disabled'}
+• Regime Awareness: {'[OK] Enabled' if self.regime_awareness else '[FAIL] Disabled'}
+• Volatility Adjustment: {'[OK] Enabled' if self.volatility_adjustment else '[FAIL] Disabled'}
 • Session Sensitivity: {self.session_sensitivity:.1%}
 • Learning Rate: {self.learning_rate:.1%}
 • Simulation Depth: {self.simulation_depth}
 
-📊 PERFORMANCE STATISTICS
+[STATS] PERFORMANCE STATISTICS
 • Total Simulations: {self.simulation_stats['total_simulations']:,}
 • Scenarios Evaluated: {self.simulation_stats['scenarios_evaluated']:,}
 • Prediction Accuracy: {self.simulation_stats['prediction_accuracy']:.1%}
@@ -1383,10 +1383,10 @@ class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
 • Avg Scenario Score: {self.simulation_stats['avg_scenario_score']:.1%}
 • Error Count: {self.error_count}
 
-🎯 STRATEGY PERFORMANCE (Top 3)
+[TARGET] STRATEGY PERFORMANCE (Top 3)
 {chr(10).join(strategy_lines) if strategy_lines else "  📭 No strategy data available"}
 
-🔧 ADAPTIVE PARAMETERS
+[TOOL] ADAPTIVE PARAMETERS
 • Current Strategy: {self.strategy.title().replace('_', ' ')}
 • Adaptive Horizon: {self.adaptive_horizon} steps
 • Confidence Score: {self.confidence_score:.1%}
@@ -1410,7 +1410,7 @@ class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
 • Volatility Play: Volatility exploitation
 • Regime Specific: Market regime optimized
 
-🎯 EFFECTIVENESS METRICS
+[TARGET] EFFECTIVENESS METRICS
 • Prediction Accuracy: {self.simulation_stats['prediction_accuracy']:.1%}
 • Strategy Effectiveness: {self.simulation_stats['strategy_effectiveness']:.1%}
 • Learning Progress: {len(self.learning_history)} sessions tracked
@@ -1511,7 +1511,7 @@ class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
                 self.prediction_accuracy.append(accuracy)
             
             self.logger.info(format_operator_message(
-                icon="🔄",
+                icon="[RELOAD]",
                 message="ShadowSimulator state restored",
                 simulations=self.simulation_stats.get('total_simulations', 0),
                 scenarios=len(self.scenario_results),

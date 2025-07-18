@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/risk/portfolio_risk_system.py
-# 🚀 PRODUCTION-READY Enhanced Portfolio Risk System
+# [ROCKET] PRODUCTION-READY Enhanced Portfolio Risk System
 # Advanced portfolio risk management with SmartInfoBus integration and intelligent automation
 # ─────────────────────────────────────────────────────────────
 
@@ -63,18 +63,21 @@ class PortfolioRiskConfig:
     name="PortfolioRiskSystem",
     version="4.0.0",
     category="risk",
-    provides=["portfolio_risk", "risk_metrics", "position_limits", "risk_analytics"],
+    provides=[
+        "portfolio_risk", "risk_metrics", "position_limits", "risk_analytics",
+        "risk_data", "risk_signals", "risk_score", "trade_data", "trading_data"
+    ],
     requires=["trade_data", "position_data", "market_data", "risk_signals"],
     description="Advanced portfolio risk management with comprehensive VaR analysis and dynamic position limits",
     thesis_required=True,
     health_monitoring=True,
     performance_tracking=True,
     error_handling=True,
-    voting=True
+    is_voting_member=True
 )
 class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    🚀 Advanced portfolio risk system with SmartInfoBus integration.
+    [ROCKET] Advanced portfolio risk system with SmartInfoBus integration.
     Provides comprehensive portfolio-level risk management including VaR, 
     correlation analysis, and dynamic position limits.
     """
@@ -84,9 +87,13 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                  instruments: Optional[List[str]] = None,
                  **kwargs):
         
-        self.config = config or PortfolioRiskConfig()
+        # Store original config before super().__init__()
+        original_config = config or PortfolioRiskConfig()
         self.instruments = instruments or ["EUR/USD", "XAU/USD"]
         super().__init__()
+        
+        # Restore our config after BaseModule init
+        self.config = original_config
         
         # Initialize advanced systems
         self._initialize_advanced_systems()
@@ -124,13 +131,13 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             'failures': 0,
             'last_failure': 0,
             'state': 'CLOSED',
-            'threshold': self.config.circuit_breaker_threshold
+            'threshold': getattr(self.config, 'circuit_breaker_threshold', 5)
         }
         
         # Health monitoring
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        self._start_monitoring()
+        # Note: Don't start monitoring here, wait until after portfolio state init
 
     def _initialize_portfolio_state(self):
         """Initialize portfolio risk state"""
@@ -209,6 +216,9 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             'volatility_tolerance': 1.0,
             'risk_adaptation_confidence': 0.5
         }
+        
+        # Start monitoring after all state is initialized
+        self._start_monitoring()
 
     def _start_monitoring(self):
         """Start background monitoring for portfolio risk"""
@@ -226,7 +236,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
 
-    async def _initialize(self):
+    def _initialize(self) -> None:
         """Initialize module with SmartInfoBus integration"""
         try:
             # Set initial portfolio risk status
@@ -245,10 +255,8 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 thesis="Initial portfolio risk system status"
             )
             
-            return True
         except Exception as e:
             self.logger.error(f"Portfolio risk initialization failed: {e}")
-            return False
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process portfolio risk assessment with enhanced analytics"""
@@ -352,7 +360,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             if self.market_regime != old_regime:
                 self.logger.info(
                     format_operator_message(
-                        "📊", "MARKET_REGIME_CHANGE",
+                        "[STATS]", "MARKET_REGIME_CHANGE",
                         old_regime=old_regime,
                         new_regime=self.market_regime,
                         volatility=self.volatility_regime,
@@ -401,7 +409,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                     self.bootstrap_mode = False
                     self.logger.info(
                         format_operator_message(
-                            "📈", "BOOTSTRAP_COMPLETE",
+                            "[CHART]", "BOOTSTRAP_COMPLETE",
                             trade_count=self.trade_count,
                             threshold=self.config.bootstrap_trades,
                             context="bootstrap"
@@ -868,7 +876,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             if violations:
                 self.logger.warning(
                     format_operator_message(
-                        "🚨", "PORTFOLIO_RISK_VIOLATIONS",
+                        "[ALERT]", "PORTFOLIO_RISK_VIOLATIONS",
                         violation_count=len(violations),
                         violations="; ".join(violations[:3]),
                         context="risk_violations"
@@ -926,7 +934,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 
                 self.logger.info(
                     format_operator_message(
-                        "🔄", "RISK_MODE_CHANGE",
+                        "[RELOAD]", "RISK_MODE_CHANGE",
                         old_mode=old_mode.value,
                         new_mode=new_mode.value,
                         var=f"{self.current_var:.2%}",
@@ -1099,7 +1107,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         
         self.logger.error(
             format_operator_message(
-                "💥", "PORTFOLIO_RISK_ERROR",
+                "[CRASH]", "PORTFOLIO_RISK_ERROR",
                 error=str(error),
                 details=explanation,
                 processing_time_ms=processing_time,
@@ -1127,6 +1135,10 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
     def _update_portfolio_health(self):
         """Update portfolio health metrics"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, 'performance_metrics'):
+                return  # Skip if not fully initialized yet
+                
             # Check risk quality
             if self.performance_metrics["risk_quality"] < self.config.min_risk_quality:
                 self._health_status = 'warning'
@@ -1150,13 +1162,17 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
     def _analyze_risk_effectiveness(self):
         """Analyze risk management effectiveness"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, 'position_history') or not hasattr(self, 'performance_metrics'):
+                return  # Skip if not fully initialized yet
+                
             if len(self.position_history) >= 10:
                 recent_performance = self.performance_metrics.get("risk_quality", 0.5)
                 
                 if recent_performance > 0.8:
                     self.logger.info(
                         format_operator_message(
-                            "🎯", "HIGH_RISK_EFFECTIVENESS",
+                            "[TARGET]", "HIGH_RISK_EFFECTIVENESS",
                             quality_score=f"{recent_performance:.2f}",
                             var=f"{self.current_var:.2%}",
                             context="risk_analysis"
@@ -1165,7 +1181,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 elif recent_performance < 0.3:
                     self.logger.warning(
                         format_operator_message(
-                            "⚠️", "LOW_RISK_EFFECTIVENESS",
+                            "[WARN]", "LOW_RISK_EFFECTIVENESS",
                             quality_score=f"{recent_performance:.2f}",
                             violations=self.limit_violations,
                             context="risk_analysis"
@@ -1178,6 +1194,10 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
     def _adapt_risk_parameters(self):
         """Continuous risk parameter adaptation"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, 'market_regime') or not hasattr(self, '_adaptive_params') or not hasattr(self, 'performance_metrics'):
+                return  # Skip if not fully initialized yet
+                
             # Adapt correlation sensitivity based on market conditions
             if self.market_regime == 'volatile':
                 self._adaptive_params['correlation_sensitivity'] = min(
@@ -1317,50 +1337,50 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         
         # Risk status indicators
         if self.current_var > 0.05:
-            var_status = "🚨 High Risk"
+            var_status = "[ALERT] High Risk"
         elif self.current_var > 0.03:
-            var_status = "⚠️ Elevated"
+            var_status = "[WARN] Elevated"
         else:
-            var_status = "✅ Normal"
+            var_status = "[OK] Normal"
         
         # Correlation status
         if self.max_correlation > 0.8:
-            corr_status = "🚨 High"
+            corr_status = "[ALERT] High"
         elif self.max_correlation > 0.6:
-            corr_status = "⚠️ Moderate"
+            corr_status = "[WARN] Moderate"
         else:
-            corr_status = "✅ Low"
+            corr_status = "[OK] Low"
         
         # Mode status
         mode_emoji = {
-            RiskMode.INITIALIZATION: "🔄",
+            RiskMode.INITIALIZATION: "[RELOAD]",
             RiskMode.BOOTSTRAP: "🏗️",
-            RiskMode.NORMAL: "✅",
-            RiskMode.ELEVATED: "⚠️",
-            RiskMode.CRITICAL: "🚨",
+            RiskMode.NORMAL: "[OK]",
+            RiskMode.ELEVATED: "[WARN]",
+            RiskMode.CRITICAL: "[ALERT]",
             RiskMode.EMERGENCY: "🆘"
         }
         
         mode_status = f"{mode_emoji.get(self.current_mode, '❓')} {self.current_mode.value.upper()}"
         
         # Health status
-        health_emoji = "✅" if self._health_status == 'healthy' else "⚠️"
-        cb_status = "🔴 OPEN" if self.circuit_breaker['state'] == 'OPEN' else "🟢 CLOSED"
+        health_emoji = "[OK]" if self._health_status == 'healthy' else "[WARN]"
+        cb_status = "[RED] OPEN" if self.circuit_breaker['state'] == 'OPEN' else "[GREEN] CLOSED"
         
         return f"""
 💼 ENHANCED PORTFOLIO RISK SYSTEM v4.0
 ═══════════════════════════════════════════════════
-🎯 Risk Mode: {mode_status}
-📊 VaR Status: {var_status} ({self.current_var:.2%})
+[TARGET] Risk Mode: {mode_status}
+[STATS] VaR Status: {var_status} ({self.current_var:.2%})
 🔗 Correlation: {corr_status} ({self.max_correlation:.2f})
-🏗️ Bootstrap Mode: {'✅ Active' if self.bootstrap_mode else '❌ Inactive'}
+🏗️ Bootstrap Mode: {'[OK] Active' if self.bootstrap_mode else '[FAIL] Inactive'}
 
-🏥 SYSTEM HEALTH
+[HEALTH] SYSTEM HEALTH
 • Status: {health_emoji} {self._health_status.upper()}
 • Circuit Breaker: {cb_status}
 • Risk Quality: {self.performance_metrics['risk_quality']:.2f}
 
-📊 PORTFOLIO METRICS
+[STATS] PORTFOLIO METRICS
 • Current VaR (95%): {self.current_var:.2%}
 • Portfolio Volatility: {self.performance_metrics["volatility"]:.1%}
 • Max Correlation: {self.max_correlation:.2f}
@@ -1368,24 +1388,24 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
 • Sharpe Ratio: {self.performance_metrics["sharpe"]:.2f}
 • Max Drawdown: {self.performance_metrics["max_dd"]:.1%}
 
-💰 RISK BUDGET
+[MONEY] RISK BUDGET
 • Daily Budget: {self.config.risk_budget_daily:.1%}
 • Used Today: {self.daily_risk_used:.1%}
 • Available: {max(0, self.config.risk_budget_daily - self.daily_risk_used):.1%}
 • Budget Violations: {self.risk_budget_violations}
 
-⚖️ RISK ADJUSTMENT
+[BALANCE] RISK ADJUSTMENT
 • Current Factor: {self.risk_adjustment:.1%}
 • Base Position Limit: {self.config.max_position_pct:.1%}
 • Adjusted Limit Range: {self.config.min_position_pct:.1%} - {self.config.max_position_pct:.1%}
 
-🔧 SYSTEM PERFORMANCE
+[TOOL] SYSTEM PERFORMANCE
 • Trade Count: {self.trade_count}
 • Limit Violations: {self.limit_violations}
 • Correlation Alerts: {self.correlation_alerts}
 • Recent Risk Events: {len(self.risk_events)}
 
-📈 PORTFOLIO PERFORMANCE
+[CHART] PORTFOLIO PERFORMANCE
 • Total PnL: {self.performance_metrics["total_pnl"]:.2f}
 • Recent PnL: {self.performance_metrics["recent_pnl"]:.2f}
 • Win Rate: {self.performance_metrics["win_rate"]:.1%}
@@ -1484,6 +1504,145 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             'risk_adaptation_confidence': 0.5
         }
         
-        self.logger.info("🔄 Enhanced Portfolio Risk System reset - all state cleared")
+        self.logger.info("[RELOAD] Enhanced Portfolio Risk System reset - all state cleared")
+
+    async def calculate_confidence(self, action: Dict[str, Any], **kwargs) -> float:
+        """Calculate confidence level based on portfolio risk metrics"""
+        try:
+            confidence_factors = []
+            
+            # VaR confidence (lower VaR = higher confidence)
+            if self.current_var > 0:
+                var_confidence = max(0.0, 1.0 - (self.current_var / 0.05))  # Normalize to 5% max
+                confidence_factors.append(var_confidence * 0.3)
+            
+            # Correlation confidence (lower max correlation = higher confidence)
+            correlation_confidence = max(0.0, 1.0 - self.max_correlation)
+            confidence_factors.append(correlation_confidence * 0.3)
+            
+            # Mode-based confidence
+            mode_confidence = {
+                RiskMode.NORMAL: 0.9,
+                RiskMode.ELEVATED: 0.7,
+                RiskMode.CRITICAL: 0.5,
+                RiskMode.EMERGENCY: 0.2,
+                RiskMode.BOOTSTRAP: 0.6,
+                RiskMode.INITIALIZATION: 0.3
+            }.get(self.current_mode, 0.5)
+            confidence_factors.append(mode_confidence * 0.4)
+            
+            # Calculate weighted average
+            total_confidence = sum(confidence_factors)
+            
+            # Apply risk adjustment penalty
+            if self.risk_adjustment < 1.0:
+                total_confidence *= self.risk_adjustment
+            
+            return max(0.0, min(1.0, total_confidence))
+            
+        except Exception as e:
+            self.logger.error(f"Confidence calculation failed: {e}")
+            return 0.5
+
+    async def propose_action(self, **kwargs) -> Dict[str, Any]:
+        """Propose portfolio risk management actions based on current state"""
+        try:
+            # Get current portfolio status
+            status = self.get_current_risk_status()
+            actions = []
+            
+            # Check for emergency conditions
+            if self.current_mode == RiskMode.EMERGENCY:
+                actions.append({
+                    "type": "emergency_stop",
+                    "priority": "critical",
+                    "message": "Emergency mode active - recommend immediate position review"
+                })
+            
+            # VaR-based actions
+            if self.current_var > 0.03:  # 3% VaR threshold
+                actions.append({
+                    "type": "risk_reduction",
+                    "priority": "high",
+                    "message": f"High VaR detected: {self.current_var:.3f}",
+                    "recommendation": "Consider reducing position sizes"
+                })
+            
+            # Correlation risk actions
+            if self.max_correlation > 0.8:
+                actions.append({
+                    "type": "diversification",
+                    "priority": "medium",
+                    "message": f"High correlation detected: {self.max_correlation:.3f}",
+                    "recommendation": "Consider diversifying portfolio"
+                })
+            
+            # Risk adjustment actions
+            if self.risk_adjustment < 0.8:
+                actions.append({
+                    "type": "risk_scaling",
+                    "priority": "medium",
+                    "message": f"Risk scaling active: {self.risk_adjustment:.3f}",
+                    "recommendation": "Position sizes are being scaled down"
+                })
+            
+            # Mode change recommendations
+            if len(self.portfolio_returns) > 10:
+                # Use list slicing properly
+                recent_returns = list(self.portfolio_returns)[-10:]
+                recent_volatility = np.std(recent_returns) if recent_returns else 0.0
+                if recent_volatility > 0.02 and self.current_mode == RiskMode.NORMAL:
+                    actions.append({
+                        "type": "mode_change",
+                        "priority": "medium",
+                        "message": f"High volatility detected: {recent_volatility:.4f}",
+                        "recommendation": "Consider switching to elevated risk mode"
+                    })
+            
+            # Update SmartInfoBus with proposal
+            proposal = {
+                "timestamp": time.time(),
+                "confidence": await self.calculate_confidence({}, **kwargs),
+                "actions": actions,
+                "status": status,
+                "risk_metrics": {
+                    "var_95": self.current_var,
+                    "max_correlation": self.max_correlation,
+                    "risk_adjustment": self.risk_adjustment
+                }
+            }
+            
+            self.smart_bus.set(
+                'portfolio_risk_proposal',
+                proposal,
+                module='PortfolioRiskSystem',
+                thesis=f"Portfolio risk analysis with {len(actions)} recommendations"
+            )
+            
+            return proposal
+            
+        except Exception as e:
+            self.logger.error(f"Action proposal failed: {e}")
+            return {
+                "timestamp": time.time(),
+                "confidence": 0.0,
+                "actions": [],
+                "error": str(e)
+            }
+
+    def get_current_risk_status(self) -> Dict[str, Any]:
+        """Get comprehensive portfolio risk status"""
+        try:
+            return {
+                "mode": self.current_mode.value,
+                "risk_adjustment": self.risk_adjustment,
+                "current_var": self.current_var,
+                "max_correlation": self.max_correlation,
+                "bootstrap_mode": self.bootstrap_mode,
+                "rebalance_trigger": getattr(self.config, 'correlation_threshold', 0.8)
+            }
+        except Exception as e:
+            self.logger.error(f"Risk status retrieval failed: {e}")
+            return {}
 
 # End of enhanced PortfolioRiskSystem class

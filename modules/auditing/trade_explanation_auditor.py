@@ -8,7 +8,7 @@ import datetime
 from typing import Dict, Any, List, Optional
 from collections import deque
 
-# ✅ FIXED: Proper imports for SmartInfoBus system
+# [OK] FIXED: Proper imports for SmartInfoBus system
 from modules.core.module_base import BaseModule, module
 from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusRiskMixin
 from modules.utils.info_bus import InfoBusManager
@@ -28,7 +28,7 @@ from modules.utils.audit_utils import format_operator_message
 )
 class TradeExplanationAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin):
     """
-    🔍 PRODUCTION-GRADE Trade Explanation Auditor
+    [SEARCH] PRODUCTION-GRADE Trade Explanation Auditor
     
     Advanced trade auditing with:
     - Real-time explanation validation
@@ -63,7 +63,7 @@ class TradeExplanationAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             'pattern_violation_rate': 0.15  # Alert if >15% pattern violations
         }
         
-        self.logger.info(f"🔍 {self.__class__.__name__} initialized with explanation auditing")
+        self.logger.info(f"[SEARCH] {self.__class__.__name__} initialized with explanation auditing")
     
     def reset(self) -> None:
         """Reset with automatic infrastructure cleanup"""
@@ -81,11 +81,11 @@ class TradeExplanationAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             'pattern_violations': 0
         }
         
-        self.logger.info("🔄 Trade explanation auditor reset complete")
+        self.logger.info("[RELOAD] Trade explanation auditor reset complete")
     
     async def process(self, **inputs) -> Dict[str, Any]:
         """
-        🔍 MAIN AUDITING PROCESS
+        [SEARCH] MAIN AUDITING PROCESS
         
         Audits trade explanations and generates quality metrics:
         1. Extract trade and explanation data
@@ -130,7 +130,7 @@ class TradeExplanationAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             }
             
         except Exception as e:
-            self.logger.error(f"❌ Explanation audit failed: {e}")
+            self.logger.error(f"[FAIL] Explanation audit failed: {e}")
             return {
                 'trade_explanations': {'error': str(e)},
                 'audit_alerts': [{'type': 'audit_failure', 'message': str(e)}],
@@ -184,8 +184,8 @@ class TradeExplanationAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             
             # Log significant trades automatically
             if abs(trade_explanation['pnl']) > 50 or trade_explanation['explanation_quality'] < 0.5:
-                emoji = "🎉" if trade_explanation['pnl'] > 0 else "⚠️"
-                quality_emoji = "✅" if trade_explanation['explanation_quality'] > 0.7 else "❌"
+                emoji = "[PARTY]" if trade_explanation['pnl'] > 0 else "[WARN]"
+                quality_emoji = "[OK]" if trade_explanation['explanation_quality'] > 0.7 else "[FAIL]"
                 
                 self.logger.info(
                     format_operator_message(
@@ -200,7 +200,7 @@ class TradeExplanationAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             return trade_explanation
             
         except Exception as e:
-            self.logger.error(f"❌ Failed to audit trade explanation: {e}")
+            self.logger.error(f"[FAIL] Failed to audit trade explanation: {e}")
             return None
     
     def _validate_explanation_quality(self, trade_explanation: Dict[str, Any], trade: Dict[str, Any]):
@@ -382,22 +382,22 @@ class TradeExplanationAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
         violation_rate = self.quality_metrics['pattern_violations'] / total_audited
         
         return f"""
-🔍 TRADE EXPLANATION AUDIT REPORT
+[SEARCH] TRADE EXPLANATION AUDIT REPORT
 ═══════════════════════════════════════
 📅 Session Duration: {session_duration:.1f} hours
-📊 Total Trades Audited: {total_audited}
+[STATS] Total Trades Audited: {total_audited}
 
-📈 EXPLANATION QUALITY METRICS
+[CHART] EXPLANATION QUALITY METRICS
 • High Confidence Rate: {high_conf_rate:.1%}
 • Missing Explanations: {missing_rate:.1%}
 • Pattern Violations: {violation_rate:.1%}
 
-⚠️ QUALITY ALERTS
+[WARN] QUALITY ALERTS
 • Low Confidence: {self.quality_metrics['low_confidence_trades']}
 • Missing Explanations: {self.quality_metrics['missing_explanations']}
 • Pattern Violations: {self.quality_metrics['pattern_violations']}
 
-🎯 RECOMMENDATIONS
+[TARGET] RECOMMENDATIONS
 • Target explanation completeness >90%
 • Maintain confidence levels >70%
 • Monitor pattern violations <10%
@@ -421,10 +421,36 @@ class TradeExplanationAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             'quality_metrics': self.quality_metrics,
             'session_duration_hours': (datetime.datetime.now() - self.session_start).total_seconds() / 3600
         }
+    
+    # Required abstract methods for SmartInfoBusTradingMixin
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose trade explanation audit action"""
+        return {
+            'action_type': 'explanation_audit',
+            'priority': 'normal',
+            'audit_focus': 'trade_explanations',
+            'target_metrics': ['confidence', 'quality', 'completeness'],
+            '_thesis': 'Auditing trade explanations for quality and completeness'
+        }
+    
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in explanation audit action"""
+        # Base confidence on quality metrics
+        total_trades = self.quality_metrics['total_trades_audited']
+        if total_trades == 0:
+            return 0.5
+        
+        # Calculate quality score
+        high_confidence_rate = self.quality_metrics['high_confidence_trades'] / total_trades
+        missing_explanation_rate = self.quality_metrics['missing_explanations'] / total_trades
+        
+        # Higher confidence if more high-confidence trades and fewer missing explanations
+        quality_score = high_confidence_rate * (1 - missing_explanation_rate)
+        return min(0.9, max(0.1, quality_score))
 
 
 # ────────────────────────────────────────────────────────────────────────────────
-# 🔍 MODULE REGISTRATION
+# [SEARCH] MODULE REGISTRATION
 # ────────────────────────────────────────────────────────────────────────────────
 # Module is automatically discovered and registered via @module decorator
 # No manual registration needed - SmartInfoBus handles everything!

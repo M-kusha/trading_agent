@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/core/error_pinpointer.py
-# 🚀 PRODUCTION-READY Error Analysis & Debugging System
+# [ROCKET] PRODUCTION-READY Error Analysis & Debugging System
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # FIXED: Recovery integration, error correlation, action automation
 # ─────────────────────────────────────────────────────────────
@@ -152,8 +152,92 @@ class ErrorPinpointer:
         self._recovery_executor = None
         self._recovery_queue = asyncio.Queue(maxsize=100)
         self._recovery_task = None
+        self._recovery_executor = None
+        self._recovery_queue = asyncio.Queue(maxsize=100)
+        self._recovery_task = None
         
-        self.logger.info("✅ ErrorPinpointer initialized with advanced debugging and recovery")
+        # ADD THIS - Start the recovery system
+        self._start_recovery_system()
+        
+        self.logger.info("[OK] ErrorPinpointer initialized with advanced debugging and recovery")
+
+    def _start_recovery_system(self) -> None:
+        """Spin-up the thread-pool & async worker that handle recovery tasks."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        # Only create once
+        if getattr(self, "_recovery_executor", None):
+            return
+
+        self._recovery_executor = ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="ErrorRecovery",
+        )
+        self._recovery_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+
+        # Try to run the worker inside an existing event-loop; otherwise we’ll defer
+        try:
+            loop = asyncio.get_running_loop()
+            self._recovery_task = loop.create_task(self._recovery_worker())
+        except RuntimeError:
+            # No loop in this thread → worker will be launched on-demand
+            self._recovery_task = None
+
+        self.logger.info("[TOOL] Recovery system initialized")
+
+
+    async def _recovery_worker(self) -> None:
+        """Background coroutine that pulls work off _recovery_queue."""
+        self.logger.info("[BOT] Recovery worker started")
+
+        while True:
+            try:
+                item = await asyncio.wait_for(self._recovery_queue.get(), timeout=30.0)
+            except asyncio.TimeoutError:
+                # Periodic wake-up – continue listening
+                continue
+
+            if item is None:                     # graceful shutdown token
+                self.logger.info("[STOP] Recovery worker exiting")
+                break
+
+            ctx = item.get("context")
+            if not ctx:
+                self._recovery_queue.task_done()
+                continue
+
+            self.logger.info(f"[TOOL] Processing recovery for {ctx.module_name}:{ctx.error_type}")
+
+            success = False
+            for act in ctx.recovery_actions:
+                try:
+                    success = await self._execute_recovery_action(
+                        act.get("action"), act.get("params", {}), ctx
+                    )
+                    if success:
+                        self.logger.info(f"[OK] Recovery succeeded via {act['action']}")
+                        break
+                except Exception as exc:
+                    self.logger.error(f"[FAIL] Recovery action {act['action']} failed: {exc}")
+
+            key = f"{ctx.module_name}:{ctx.error_type}"
+            if success:
+                self.successful_recoveries[key] += 1
+                ctx.action_taken, ctx.action_result = True, "Automatic recovery successful"
+            else:
+                ctx.action_result = "Automatic recovery failed"
+
+            self.recovery_history.append(
+                {
+                    "timestamp": datetime.now(),
+                    "module": ctx.module_name,
+                    "error_type": ctx.error_type,
+                    "success": success,
+                    "actions_attempted": len(ctx.recovery_actions),
+                }
+            )
+            self._recovery_queue.task_done()
+
     
     def _initialize_error_patterns(self) -> List[ErrorPattern]:
         """Initialize known error patterns with recovery actions"""
@@ -463,11 +547,19 @@ class ErrorPinpointer:
             self._correlate_error(context)
             
             # ═══════════════════════════════════════════════════════════
-            # Attempt Automatic Recovery if Enabled
+            # Attempt Automatic Recovery if Enabled - FIXED
             # ═══════════════════════════════════════════════════════════
             
             if context.recovery_actions and self._should_attempt_recovery(context):
-                asyncio.create_task(self._attempt_recovery(context))
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(self._attempt_recovery(context))
+                except RuntimeError:
+                    # No event loop - use thread pool
+                    if self._recovery_executor:
+                        self._recovery_executor.submit(self._sync_recovery, context)
+                    else:
+                        self.logger.warning(f"[WARN] No recovery system available for {context.module_name}")
             
             # ═══════════════════════════════════════════════════════════
             # Performance Tracking
@@ -481,7 +573,7 @@ class ErrorPinpointer:
             # ═══════════════════════════════════════════════════════════
             
             self.logger.error(format_operator_message(
-                "💥",
+                "[CRASH]",
                 message=f"ERROR ANALYZED: {error_type} in {module_name}::{function_name}:{line_number}",
                 severity=context.severity,
                 category=context.category,
@@ -550,39 +642,91 @@ class ErrorPinpointer:
         return False
     
     async def _attempt_recovery(self, context: ErrorContext):
-        """Attempt automatic recovery based on error context"""
+        """Queue recovery attempt for background processing"""
         recovery_key = f"{context.module_name}:{context.error_type}"
         self.recovery_attempts[recovery_key] += 1
         
         try:
+            # Ensure recovery worker is running
+            if not self._recovery_task or self._recovery_task.done():
+                try:
+                    loop = asyncio.get_running_loop()
+                    self._recovery_task = loop.create_task(self._recovery_worker())
+                except RuntimeError:
+                    # No event loop - use thread pool for recovery
+                    if self._recovery_executor:
+                        self._recovery_executor.submit(self._sync_recovery, context)
+                    return
+            
+            # Queue recovery for async processing
+            recovery_item = {'context': context, 'timestamp': time.time()}
+            
+            try:
+                await asyncio.wait_for(
+                    self._recovery_queue.put(recovery_item), 
+                    timeout=1.0
+                )
+                self.logger.info(f"📋 Queued recovery for {context.module_name}")
+            except asyncio.TimeoutError:
+                self.logger.warning(f"[WARN] Recovery queue full for {context.module_name}")
+            
+        except Exception as e:
+            self.logger.error(f"[CRASH] Failed to queue recovery: {e}")
+            
+            
+    def shutdown(self) -> None:
+        """Graceful, idempotent shutdown of ErrorPinpointer infrastructure."""
+        self.logger.info("[STOP] Shutting down ErrorPinpointer …")
+
+        # Tell the async worker to stop
+        if getattr(self, "_recovery_queue", None):
+            try:
+                # Works whether or not an event-loop is running
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(self._recovery_queue.put(None))
+                except RuntimeError:
+                    self._recovery_queue.put_nowait(None)
+            except Exception as exc:
+                self.logger.debug(f"Failed to enqueue shutdown token: {exc}")
+
+        # Wait a moment so the coroutine can exit
+        if getattr(self, "_recovery_task", None) and self._recovery_task:
+            try:
+                # Use asyncio.run() to handle the async call in sync context
+                asyncio.run(asyncio.wait_for(self._recovery_task, timeout=1.0))
+            except Exception:
+                pass
+
+        # Tear down the thread-pool
+        if getattr(self, "_recovery_executor", None) and self._recovery_executor:
+            self._recovery_executor.shutdown(wait=True)
+
+        self.logger.info("[OK] ErrorPinpointer shutdown complete")
+
+    def _sync_recovery(self, context: ErrorContext):
+        """Synchronous recovery fallback when no event loop available"""
+        try:
+            self.logger.info(f"[TOOL] Sync recovery for {context.module_name}")
+            
+            # Simple synchronous recovery actions
             for action in context.recovery_actions:
                 action_type = action.get('action')
-                params = action.get('params', {})
-                if not action_type:
-                    continue  # Skip if action_type is None
-                self.logger.info(f"🔧 Attempting recovery action: {action_type} for {context.module_name}")
                 
-                success = await self._execute_recovery_action(action_type, params, context)
-                
-                if success:
-                    self.successful_recoveries[recovery_key] += 1
-                    context.action_taken = True
-                    context.action_result = f"Recovery successful: {action_type}"
-                    
-                    self.recovery_history.append({
-                        'timestamp': datetime.now(),
-                        'module': context.module_name,
-                        'error_type': context.error_type,
-                        'action': action_type,
-                        'success': True
-                    })
-                    
-                    self.logger.info(f"✅ Recovery successful: {action_type} for {context.module_name}")
-                    break
-                    
-        except Exception as recovery_error:
-            self.logger.error(f"Recovery attempt failed: {recovery_error}")
-            context.action_result = f"Recovery failed: {str(recovery_error)}"
+                if action_type == 'force_garbage_collection':
+                    import gc
+                    gc.collect()
+                    return True
+                elif action_type == 'enter_emergency_mode' and self.orchestrator:
+                    reason = action.get('params', {}).get('reason', 'Error recovery')
+                    self.orchestrator.trigger_emergency_mode_manually(reason)
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Sync recovery failed: {e}")
+            return False
     
     async def _execute_recovery_action(self, action_type: str, params: Dict[str, Any], context: ErrorContext) -> bool:
         """Execute specific recovery action"""
@@ -736,77 +880,66 @@ class ErrorPinpointer:
     
     def correlate_errors(self, timeframe_minutes: int = 10) -> List[ErrorPattern]:
         """
-        Identify error patterns and correlations across system.
-        ENHANCED: Returns actionable patterns for orchestrator.
+        Cluster recent errors and return dynamic ErrorPattern objects.
+        Includes safe handling when dependency sets are empty.
         """
-        patterns = []
-        cutoff_time = datetime.now().timestamp() - (timeframe_minutes * 60)
-        
-        # Group errors by type and module
-        error_groups = defaultdict(list)
-        
-        for error in self.error_history:
-            if error.timestamp.timestamp() < cutoff_time:
+        patterns: List[ErrorPattern] = []
+        cutoff = datetime.now().timestamp() - timeframe_minutes * 60
+        groups: Dict[str, List[ErrorContext]] = defaultdict(list)
+
+        for err in self.error_history:
+            if err.timestamp.timestamp() >= cutoff:
+                groups[f"{err.error_type}:{err.module_name}"].append(err)
+
+        for key, errs in groups.items():
+            if len(errs) < 2:
                 continue
-            
-            key = f"{error.error_type}:{error.module_name}"
-            error_groups[key].append(error)
-        
-        # Analyze patterns
-        for key, errors in error_groups.items():
-            if len(errors) < 2:
-                continue
-            
-            # Calculate frequency
-            time_span = (errors[-1].timestamp - errors[0].timestamp).total_seconds()
-            frequency = len(errors) / max(time_span / 60, 1)  # errors per minute
-            
-            # Find common factors
-            common_dependencies = set.intersection(*[set(e.module_state.get('dependencies', [])) for e in errors])
-            
-            # Create pattern report
-            pattern_report = ErrorPattern(
-                pattern_id=f"dynamic_{key}_{int(time.time())}",
-                error_pattern=key,
-                category=errors[0].category,
-                severity="critical" if frequency > 1 else "high",
-                description=f"Recurring {errors[0].error_type} in {errors[0].module_name}",
-                common_causes=[f"Frequency: {frequency:.2f} errors/minute"],
-                fix_suggestions=[
-                    f"Review module {errors[0].module_name} implementation",
-                    "Check system resources",
-                    "Verify dependencies"
-                ],
-                prevention_tips=[
-                    "Add better error handling",
-                    "Implement circuit breaker",
-                    "Add input validation"
-                ],
-                recovery_actions=[
-                    {
-                        'action': 'disable_module_temporarily',
-                        'params': {'duration': 300}
-                    }
-                ],
-                auto_recovery=True
+
+            span = (errs[-1].timestamp - errs[0].timestamp).total_seconds()
+            freq = len(errs) / max(span / 60.0, 1)
+
+            # Robust intersection of dependency lists
+            dep_sets = [set(e.module_state.get("dependencies", [])) for e in errs]
+            common_deps = set.intersection(*dep_sets) if dep_sets and all(dep_sets) else set()
+
+            patterns.append(
+                ErrorPattern(
+                    pattern_id=f"dynamic_{key}_{int(time.time())}",
+                    error_pattern=key,
+                    category=errs[0].category,
+                    severity="critical" if freq > 1 else "high",
+                    description=f"Recurring {errs[0].error_type} in {errs[0].module_name}",
+                    common_causes=[f"Frequency ≈ {freq:.2f}/min", f"Common deps: {', '.join(common_deps) or 'None'}"],
+                    fix_suggestions=[
+                        f"Profile {errs[0].module_name}",
+                        "Inspect shared dependencies",
+                        "Review recent commits",
+                    ],
+                    prevention_tips=[
+                        "Improve input validation",
+                        "Add back-pressure / throttling",
+                    ],
+                    recovery_actions=[
+                        {"action": "disable_module_temporarily", "params": {"duration": 300}}
+                    ],
+                    auto_recovery=True,
+                )
             )
-            
-            patterns.append(pattern_report)
-        
-        # Store patterns for orchestrator
-        if self.orchestrator and patterns:
-            smart_bus = InfoBusManager.get_instance()
-            smart_bus.set(
-                'error_patterns',
+
+        # Push into SmartInfoBus (unchanged behaviour)
+        if patterns:
+            bus = InfoBusManager.get_instance()
+            bus.set(
+                "error_patterns",
                 {
-                    'timestamp': datetime.now().isoformat(),
-                    'patterns': [p.__dict__ for p in patterns],
-                    'action_required': len(patterns) > 5
+                    "timestamp": datetime.now().isoformat(),
+                    "patterns": [p.__dict__ for p in patterns],
+                    "action_required": len(patterns) > 5,
                 },
-                module='ErrorPinpointer',
-                thesis=f"Detected {len(patterns)} error patterns requiring attention"
+                module="ErrorPinpointer",
+                thesis=f"Detected {len(patterns)} error patterns",
             )
-        
+
         return patterns
     
     def create_debugging_guide(self, context: ErrorContext) -> str:
@@ -815,7 +948,7 @@ class ErrorPinpointer:
         ENHANCED: Integration with system state.
         """
         guide = f"""
-🔍 DEBUGGING GUIDE: {context.error_type}
+[SEARCH] DEBUGGING GUIDE: {context.error_type}
 {'=' * 60}
 
 📍 ERROR LOCATION:
@@ -824,13 +957,13 @@ class ErrorPinpointer:
   File: {Path(context.file_path).name}
   Line: {context.line_number}
 
-⚠️ ERROR DETAILS:
+[WARN] ERROR DETAILS:
   Type: {context.error_type}
   Message: {context.error_message}
   Severity: {context.severity.upper()}
   Category: {context.category}
 
-📊 SYSTEM STATE:
+[STATS] SYSTEM STATE:
   Timestamp: {context.timestamp.strftime('%Y-%m-%d %H:%M:%S')}
   Module Errors: {self.module_error_counts.get(context.module_name, 0)}
   Related Errors: {len(context.related_errors)}
@@ -841,13 +974,13 @@ class ErrorPinpointer:
         for i, fix in enumerate(context.suggested_fixes, 1):
             guide += f"  {i}. {fix}\n"
         
-        guide += "\n🔄 REPRODUCTION STEPS:\n"
+        guide += "\n[RELOAD] REPRODUCTION STEPS:\n"
         for i, step in enumerate(context.reproduction_steps, 1):
             guide += f"  {i}. {step}\n"
         
         # Add recovery actions if available
         if context.recovery_actions:
-            guide += "\n🔧 AUTOMATED RECOVERY:\n"
+            guide += "\n[TOOL] AUTOMATED RECOVERY:\n"
             for action in context.recovery_actions:
                 guide += f"  • {action['action']} "
                 if action.get('params'):
@@ -856,7 +989,7 @@ class ErrorPinpointer:
         
         # Add code context
         if context.source_lines:
-            guide += "\n📝 CODE CONTEXT:\n"
+            guide += "\n[LOG] CODE CONTEXT:\n"
             guide += "```python\n"
             guide += "\n".join(context.source_lines[:10])
             guide += "\n```\n"
@@ -872,7 +1005,7 @@ class ErrorPinpointer:
             guide += "\n🚦 ORCHESTRATOR STATUS:\n"
             emergency_status = self.orchestrator.get_emergency_mode_status()
             if emergency_status['active']:
-                guide += f"  ⚠️ EMERGENCY MODE ACTIVE: {emergency_status['reason']}\n"
+                guide += f"  [WARN] EMERGENCY MODE ACTIVE: {emergency_status['reason']}\n"
             
             cb_status = self.orchestrator.get_circuit_breaker_status()
             if context.module_name in cb_status:
@@ -1269,13 +1402,13 @@ class ErrorPinpointer:
         with open(filepath, 'w') as f:
             json.dump(report, f, indent=2, default=str)
         
-        self.logger.info(f"📊 Error report exported to {filepath}")
+        self.logger.info(f"[STATS] Error report exported to {filepath}")
     
     def get_debugging_guide(self, error_type: Optional[str] = None, module_name: Optional[str] = None) -> str:
         """Generate comprehensive debugging guide"""
         
         guide = f"""
-🔍 SMARTINFOBUS DEBUGGING GUIDE
+[SEARCH] SMARTINFOBUS DEBUGGING GUIDE
 {'=' * 50}
 
 Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
@@ -1283,14 +1416,14 @@ Target: {error_type or 'All'} errors in {module_name or 'All'} modules
 
 📋 QUICK DEBUGGING CHECKLIST
 {'─' * 30}
-1. ✅ Check module execution order
-2. ✅ Verify InfoBus data availability  
-3. ✅ Validate input parameters
-4. ✅ Review error context and local variables
-5. ✅ Check for related errors in other modules
-6. ✅ Examine system resource usage
-7. ✅ Verify circuit breaker states
-8. ✅ Check for emergency mode activation
+1. [OK] Check module execution order
+2. [OK] Verify InfoBus data availability  
+3. [OK] Validate input parameters
+4. [OK] Review error context and local variables
+5. [OK] Check for related errors in other modules
+6. [OK] Examine system resource usage
+7. [OK] Verify circuit breaker states
+8. [OK] Check for emergency mode activation
 
 🛠️ COMMON ERROR PATTERNS
 {'─' * 30}
@@ -1313,11 +1446,11 @@ Target: {error_type or 'All'} errors in {module_name or 'All'} modules
             error_count = self.module_error_counts[module_name]
             guide += f"""
 
-🎯 MODULE-SPECIFIC INSIGHTS: {module_name}
+[TARGET] MODULE-SPECIFIC INSIGHTS: {module_name}
 {'─' * 30}
 - Total errors: {error_count}
 - Most common: {self._get_most_common_error_for_module(module_name)}
-- Status: {'⚠️ High error rate' if error_count > 10 else '✅ Normal'}
+- Status: {'[WARN] High error rate' if error_count > 10 else '[OK] Normal'}
 - Recovery success rate: {self._get_recovery_rate_for_module(module_name):.1%}
 """
         
@@ -1335,7 +1468,7 @@ Target: {error_type or 'All'} errors in {module_name or 'All'} modules
         
         guide += """
 
-🚀 ADVANCED DEBUGGING TOOLS
+[ROCKET] ADVANCED DEBUGGING TOOLS
 ─────────────────────────────
 1. error_pinpointer.create_debug_snapshot(module_name)
 2. error_pinpointer.correlate_errors(timeframe_minutes)
@@ -1343,7 +1476,7 @@ Target: {error_type or 'All'} errors in {module_name or 'All'} modules
 4. orchestrator.get_system_status_report()
 5. smart_bus.get_performance_metrics()
 
-🔧 RECOVERY TOOLS
+[TOOL] RECOVERY TOOLS
 ─────────────────
 1. orchestrator.reset_circuit_breaker(module_name)
 2. orchestrator.exit_emergency_mode()

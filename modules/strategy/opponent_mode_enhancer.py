@@ -1,5 +1,5 @@
 """
-🎯 Enhanced Opponent Mode Enhancer with SmartInfoBus Integration v3.0
+[TARGET] Enhanced Opponent Mode Enhancer with SmartInfoBus Integration v3.0
 Advanced market mode detection and adaptation system with intelligent strategy weighting
 """
 
@@ -46,7 +46,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
 )
 class OpponentModeEnhancer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    🎯 PRODUCTION-GRADE Opponent Mode Enhancer v3.0
+    [TARGET] PRODUCTION-GRADE Opponent Mode Enhancer v3.0
     
     Advanced market mode detection and adaptation system with:
     - Intelligent market condition detection across multiple modes
@@ -130,7 +130,7 @@ class OpponentModeEnhancer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
         
         version = getattr(self.metadata, 'version', '3.0.0') if self.metadata else '3.0.0'
         self.logger.info(format_operator_message(
-            icon="🎯",
+            icon="[TARGET]",
             message=f"Opponent Mode Enhancer v{version} initialized",
             modes=len(self.modes),
             adaptation_rate=f"{self.adaptation_rate:.1%}",
@@ -255,10 +255,13 @@ class OpponentModeEnhancer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             }
         }, module='OpponentModeEnhancer', thesis=thesis)
 
-    async def process(self) -> Dict[str, Any]:
+    async def process(self, **inputs) -> Dict[str, Any]:
         """
         Modern async processing with comprehensive mode analysis
         
+        Args:
+            **inputs: Variable keyword arguments for processing
+            
         Returns:
             Dict containing mode weights, analysis, and recommendations
         """
@@ -818,7 +821,7 @@ class OpponentModeEnhancer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             if dominant_mode[1] > self.confidence_threshold:
                 factors = analysis.get('detection_factors', {}).get(dominant_mode[0], [])
                 self.logger.info(format_operator_message(
-                    icon="🎯",
+                    icon="[TARGET]",
                     message=f"Strong {dominant_mode[0]} mode detected",
                     confidence=f"{dominant_mode[1]:.1%}",
                     factors=", ".join(factors[:3])
@@ -883,7 +886,7 @@ class OpponentModeEnhancer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             # Log significant results
             if abs(pnl) > 25 or confidence > 0.8:
                 self.logger.info(format_operator_message(
-                    icon="🎯",
+                    icon="[TARGET]",
                     message=f"{mode.title()} mode result recorded",
                     pnl=f"€{pnl:+.2f}",
                     confidence=f"{confidence:.1%}",
@@ -1092,7 +1095,7 @@ class OpponentModeEnhancer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 ])
                 
                 self.logger.info(format_operator_message(
-                    icon="⚖️",
+                    icon="[BALANCE]",
                     message="Significant mode weight adaptations",
                     changes=change_summary
                 ))
@@ -1335,7 +1338,7 @@ class OpponentModeEnhancer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
             self.logger.error(format_operator_message(
-                icon="🚨",
+                icon="[ALERT]",
                 message="Opponent Mode Enhancer disabled due to repeated errors",
                 error_count=self.error_count,
                 threshold=self.circuit_breaker_threshold
@@ -1425,7 +1428,7 @@ class OpponentModeEnhancer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             if count > 0:
                 profit = performance_summary['mode_performance_breakdown'][mode]['profit']
                 win_rate = performance_summary['mode_performance_breakdown'][mode]['win_rate']
-                status = "🟢" if profit > 0 else "🔴" if profit < -25 else "🟡"
+                status = "[GREEN]" if profit > 0 else "[RED]" if profit < -25 else "[YELLOW]"
                 mode_breakdown += f"  • {mode.title()}: {weight:.1%} weight, €{profit:+.0f} P&L, {win_rate:.1%} win rate, {count} trades {status}\n"
             else:
                 mode_breakdown += f"  • {mode.title()}: {weight:.1%} weight, No performance data yet ⚪\n"
@@ -1445,12 +1448,12 @@ class OpponentModeEnhancer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
         dominant_mode = max(self.current_mode_weights.items(), key=lambda x: x[1])
         
         return f"""
-🎯 OPPONENT MODE ENHANCER COMPREHENSIVE REPORT
+[TARGET] OPPONENT MODE ENHANCER COMPREHENSIVE REPORT
 ═══════════════════════════════════════════════════════════════
-🏆 Current Dominant Mode: {dominant_mode[0].title()} ({dominant_mode[1]:.1%} weight)
-📊 Best Performing Mode: {performance_summary.get('best_performing_mode', 'N/A')} (€{performance_summary.get('best_performance', 0):+.0f})
-💰 Total Profit Across Modes: €{performance_summary.get('total_profit', 0):+.0f}
-🎯 Overall Win Rate: {performance_summary.get('overall_win_rate', 0):.1%}
+[TROPHY] Current Dominant Mode: {dominant_mode[0].title()} ({dominant_mode[1]:.1%} weight)
+[STATS] Best Performing Mode: {performance_summary.get('best_performing_mode', 'N/A')} (€{performance_summary.get('best_performance', 0):+.0f})
+[MONEY] Total Profit Across Modes: €{performance_summary.get('total_profit', 0):+.0f}
+[TARGET] Overall Win Rate: {performance_summary.get('overall_win_rate', 0):.1%}
 
 ⚙️ System Configuration:
 • Modes Tracked: {len(self.modes)} ({performance_summary.get('active_modes', 0)} with data)
@@ -1458,22 +1461,22 @@ class OpponentModeEnhancer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
 • Confidence Threshold: {self.confidence_threshold:.1%}
 • Switch Cooldown: {self.mode_switch_cooldown} periods
 
-📈 Mode Performance Breakdown:
+[CHART] Mode Performance Breakdown:
 {mode_breakdown}
 
-🔄 Recent Mode Activity:
+[RELOAD] Recent Mode Activity:
 {recent_activity if recent_activity else '  📭 No recent mode activity'}
 
-📊 Advanced Analytics:
+[STATS] Advanced Analytics:
 • Mode Switches: {self.mode_analytics.get('switches_since_reset', 0)}
 • Detection Quality: {np.mean([self.mode_analytics['mode_confidence_scores'].get(m, 0.5) for m in self.modes]):.1%} avg confidence
 • System Health: {'DISABLED' if self.is_disabled else 'OPERATIONAL'}
 • Error Count: {self.error_count}/{self.circuit_breaker_threshold}
 
-🎯 Mode Definitions:
+[TARGET] Mode Definitions:
 {chr(10).join([f'  • {mode.title()}: {self.mode_definitions[mode].get("description", "No description")}' for mode in self.modes])}
 
-🔧 Current Intelligence Settings:
+[TOOL] Current Intelligence Settings:
 • Detection Sensitivity: {self.mode_intelligence['detection_sensitivity']:.1%}
 • Adaptation Momentum: {self.mode_intelligence['adaptation_momentum']:.1%}
 • Confidence Decay: {self.mode_intelligence['confidence_decay']:.1%}
@@ -1554,7 +1557,7 @@ class OpponentModeEnhancer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             self.mode_definitions.update(state.get("mode_definitions", {}))
             
             self.logger.info(format_operator_message(
-                icon="🔄",
+                icon="[RELOAD]",
                 message="Opponent Mode Enhancer state restored",
                 modes=len(self.modes),
                 active_modes=len([m for m in self.modes if self.mode_counts.get(m, 0) > 0]),
@@ -1725,3 +1728,124 @@ class OpponentModeEnhancer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             error_context = self.error_pinpointer.analyze_error(e, "recommendations_generation")
             self.logger.warning(f"Mode recommendations generation failed: {error_context}")
             return {'primary_mode': self.modes[0], 'primary_weight': 1.0/len(self.modes)}
+
+    # ═══════════════════════════════════════════════════════════════════
+    # REQUIRED ABSTRACT METHODS FROM BASE MODULE
+    # ═══════════════════════════════════════════════════════════════════
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """
+        Calculate confidence in mode detection and adaptation decisions
+        
+        Args:
+            action: The action being evaluated
+            **inputs: Additional inputs for confidence calculation
+            
+        Returns:
+            Confidence score between 0.0 and 1.0
+        """
+        try:
+            # Get current mode analysis
+            market_data = await self._get_comprehensive_market_data()
+            mode_analysis = await self._analyze_market_modes_comprehensive(market_data)
+            
+            # Calculate confidence based on mode detection quality
+            detection_confidences = mode_analysis.get('confidence_scores', {})
+            overall_confidence = float(np.mean(list(detection_confidences.values()))) if detection_confidences else 0.5
+            
+            # Adjust confidence based on recent performance
+            performance_summary = self._get_performance_summary()
+            performance_factor = min(1.0, max(0.1, 1.0 + performance_summary.get('total_profit', 0) / 1000))
+            
+            # Consider mode stability (less switching = higher confidence)
+            stability_factor = max(0.3, 1.0 - (self.mode_analytics.get('switches_since_reset', 0) / 100))
+            
+            # Calculate final confidence
+            final_confidence = overall_confidence * performance_factor * stability_factor
+            
+            return float(max(0.1, min(1.0, final_confidence)))
+            
+        except Exception as e:
+            self.logger.warning(f"Confidence calculation failed: {e}")
+            return 0.5
+
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """
+        Propose optimal actions based on current mode analysis
+        
+        Args:
+            **inputs: Context inputs for action proposal
+            
+        Returns:
+            Dictionary containing proposed actions and strategy adjustments
+        """
+        try:
+            # Get current market data and mode analysis
+            market_data = await self._get_comprehensive_market_data()
+            mode_analysis = await self._analyze_market_modes_comprehensive(market_data)
+            
+            # Identify dominant mode
+            detected_modes = mode_analysis.get('detected_modes', {})
+            dominant_mode = max(detected_modes.items(), key=lambda x: x[1]) if detected_modes else ('trending', 0.5)
+            mode_name, mode_confidence = dominant_mode
+            
+            # Get mode-specific strategy recommendations
+            mode_def = self.mode_definitions.get(mode_name, {})
+            optimal_strategies = mode_def.get('optimal_strategies', ['conservative'])
+            risk_factors = mode_def.get('risk_factors', ['unknown_risks'])
+            
+            # Calculate position sizing based on confidence and volatility
+            base_size = 1.0
+            confidence_multiplier = mode_confidence
+            volatility_adjustment = 1.0 - (market_data.get('market_context', {}).get('volatility_level') == 'high') * 0.3
+            suggested_size = base_size * confidence_multiplier * volatility_adjustment
+            
+            # Generate strategy weights based on mode analysis
+            strategy_weights = {}
+            for mode, weight in self.current_mode_weights.items():
+                mode_strategies = self.mode_definitions.get(mode, {}).get('optimal_strategies', [])
+                for strategy in mode_strategies:
+                    strategy_weights[strategy] = strategy_weights.get(strategy, 0.0) + weight
+            
+            # Create comprehensive action proposal
+            proposed_action = {
+                'action_type': 'mode_adaptation',
+                'dominant_mode': mode_name,
+                'mode_confidence': mode_confidence,
+                'suggested_strategies': optimal_strategies[:3],  # Top 3 strategies
+                'strategy_weights': strategy_weights,
+                'position_sizing': {
+                    'base_size': base_size,
+                    'confidence_multiplier': confidence_multiplier,
+                    'volatility_adjustment': volatility_adjustment,
+                    'final_size': suggested_size
+                },
+                'risk_management': {
+                    'primary_risks': risk_factors[:3],
+                    'stop_loss_adjustment': 'tight' if mode_name == 'volatile' else 'normal',
+                    'take_profit_adjustment': 'extended' if mode_name == 'trending' else 'normal'
+                },
+                'mode_weights': self.current_mode_weights.copy(),
+                'recommendations': self._generate_intelligent_recommendations(mode_analysis),
+                'thesis': f"Dominant {mode_name} mode detected with {mode_confidence:.1%} confidence. Recommended strategies: {', '.join(optimal_strategies[:2])}",
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+            
+            return proposed_action
+            
+        except Exception as e:
+            self.logger.error(f"Action proposal failed: {e}")
+            return {
+                'action_type': 'conservative',
+                'dominant_mode': 'unknown',
+                'mode_confidence': 0.5,
+                'suggested_strategies': ['conservative'],
+                'strategy_weights': {'conservative': 1.0},
+                'position_sizing': {'final_size': 0.5},
+                'risk_management': {'primary_risks': ['unknown'], 'stop_loss_adjustment': 'tight'},
+                'mode_weights': {mode: 1.0/len(self.modes) for mode in self.modes},
+                'recommendations': ['Use conservative approach until mode detection improves'],
+                'thesis': 'Mode detection failed, using conservative fallback',
+                'error': str(e),
+                'timestamp': datetime.datetime.now().isoformat()
+            }

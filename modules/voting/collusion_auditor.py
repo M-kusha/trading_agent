@@ -282,7 +282,7 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             }
         }, module='CollusionAuditor', thesis=thesis)
 
-    async def process(self) -> Dict[str, Any]:
+    async def process(self, **inputs) -> Dict[str, Any]:
         """
         Modern async processing with comprehensive collusion analysis
         
@@ -444,7 +444,7 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
                 
                 # Log significant adaptation
                 self.logger.info(format_operator_message(
-                    icon="🎯",
+                    icon="[TARGET]",
                     message="Detection threshold adapted",
                     old_threshold=f"{old_threshold:.4f}",
                     new_threshold=f"{self.current_threshold:.4f}",
@@ -993,10 +993,10 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             
             # Generate human-readable alert message
             if severity == 'critical':
-                icon = "🚨"
+                icon = "[ALERT]"
                 message = f"CRITICAL: High coordination detected between members {member_i} and {member_j}"
             elif severity == 'warning':
-                icon = "⚠️"
+                icon = "[WARN]"
                 message = f"WARNING: Suspicious coordination between members {member_i} and {member_j}"
             else:
                 icon = "ℹ️"
@@ -1950,13 +1950,13 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
         """Generate comprehensive operator-friendly collusion report"""
         # Risk assessment
         if self.collusion_score > 0.8:
-            risk_level = "🚨 CRITICAL RISK"
+            risk_level = "[ALERT] CRITICAL RISK"
         elif self.collusion_score > 0.5:
-            risk_level = "⚠️ HIGH RISK"
+            risk_level = "[WARN] HIGH RISK"
         elif self.collusion_score > 0.2:
-            risk_level = "🟡 MODERATE RISK"
+            risk_level = "[YELLOW] MODERATE RISK"
         else:
-            risk_level = "✅ LOW RISK"
+            risk_level = "[OK] LOW RISK"
         
         # Recent activity
         recent_alerts = len([e for e in self.coordination_events if 
@@ -1970,7 +1970,7 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             history = self.pair_agreement_history.get(pair, [])
             if history:
                 avg_sim = np.mean(list(history))
-                suspicious_details.append(f"  🔍 Members {i}-{j}: {avg_sim:.1%} similarity")
+                suspicious_details.append(f"  [SEARCH] Members {i}-{j}: {avg_sim:.1%} similarity")
         
         # Member independence summary
         independence_summary = []
@@ -1978,74 +1978,74 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             independence = profile.get('independence_score', 1.0)
             anomaly_score = profile.get('anomaly_score', 0.0)
             if independence < 0.7 or anomaly_score > 0.5:
-                status = "🚨" if anomaly_score > 0.7 else "⚠️"
+                status = "[ALERT]" if anomaly_score > 0.7 else "[WARN]"
                 independence_summary.append(f"  {status} Member {member_id}: {independence:.1%} independence, {anomaly_score:.1%} anomaly")
         
         # System effectiveness
         effectiveness = self.quality_metrics.get('overall_effectiveness', 0.0)
         if effectiveness > 0.8:
-            effectiveness_status = "✅ Excellent"
+            effectiveness_status = "[OK] Excellent"
         elif effectiveness > 0.6:
-            effectiveness_status = "⚡ Good"
+            effectiveness_status = "[FAST] Good"
         elif effectiveness > 0.4:
-            effectiveness_status = "⚠️ Fair"
+            effectiveness_status = "[WARN] Fair"
         else:
-            effectiveness_status = "🚨 Poor"
+            effectiveness_status = "[ALERT] Poor"
         
         return f"""
 🕵️ COLLUSION AUDITOR v3.0
 ═══════════════════════════════════════════════════════════════
-🎯 Current Status: {risk_level}
-📊 Collusion Score: {self.collusion_score:.1%}
+[TARGET] Current Status: {risk_level}
+[STATS] Collusion Score: {self.collusion_score:.1%}
 🎚️ Detection Threshold: {self.current_threshold:.1%} (Base: {self.base_threshold:.1%})
 
-📈 Detection Performance:
+[CHART] Detection Performance:
 • Total Checks: {self.detection_stats['total_checks']}
 • Alerts Raised: {self.detection_stats['alerts_raised']}
 • Recent Alerts (10min): {recent_alerts}
 • Alert Frequency: {self.detection_stats.get('alert_frequency', 0.0):.1%}
 • Average Pair Similarity: {self.detection_stats.get('avg_pair_similarity', 0):.1%}
 
-🔍 Current Surveillance:
+[SEARCH] Current Surveillance:
 • Committee Size: {self.n_members} members
 • Suspicious Pairs: {len(self.suspicious_pairs)}
 • Coordination Events: {len(self.coordination_events)}
 • Members Under Watch: {len(self.alert_system['last_alerts'])}
 • Behavioral Profiles: {len(self.member_behavior_profiles)}
 
-📊 System Configuration:
+[STATS] System Configuration:
 • Analysis Window: {self.window} votes
 • Similarity Methods: {', '.join(self.similarity_methods)}
-• Adaptive Threshold: {'✅ Enabled' if self.adaptive_threshold else '❌ Disabled'}
+• Adaptive Threshold: {'[OK] Enabled' if self.adaptive_threshold else '[FAIL] Disabled'}
 • Alert Cooldown: {self.alert_system['cooldown_period']} steps
 • Detection Methods: {len(self.detection_methods)} active
 
-🔍 Suspicious Pairs:
-{chr(10).join(suspicious_details) if suspicious_details else "  ✅ No suspicious pairs detected"}
+[SEARCH] Suspicious Pairs:
+{chr(10).join(suspicious_details) if suspicious_details else "  [OK] No suspicious pairs detected"}
 
-⚠️ Member Alerts:
-{chr(10).join(independence_summary) if independence_summary else "  ✅ All members showing normal behavior"}
+[WARN] Member Alerts:
+{chr(10).join(independence_summary) if independence_summary else "  [OK] All members showing normal behavior"}
 
-📊 Quality Metrics:
+[STATS] Quality Metrics:
 • Detection Precision: {self.quality_metrics.get('detection_precision', 0.0):.1%}
 • Detection Recall: {self.quality_metrics.get('detection_recall', 0.0):.1%}
 • Behavioral Accuracy: {self.quality_metrics.get('behavioral_accuracy', 0.0):.1%}
 • Temporal Consistency: {self.quality_metrics.get('temporal_consistency', 0.0):.1%}
 • Overall Effectiveness: {effectiveness_status} ({effectiveness:.1%})
 
-📊 Recent Activity:
+[STATS] Recent Activity:
 • Vote History: {len(self.vote_history)} entries
 • Collusion History: {len(self.collusion_history)} events
 • Coordination Events: {len(self.coordination_events)} recorded
 • Alert History: {len(self.alert_system.get('alert_history', []))} alerts
 
-🔧 System Health:
+[TOOL] System Health:
 • Error Count: {self.error_count}/{self.circuit_breaker_threshold}
-• Status: {'🚨 DISABLED' if self.is_disabled else '✅ OPERATIONAL'}
+• Status: {'[ALERT] DISABLED' if self.is_disabled else '[OK] OPERATIONAL'}
 • Session Duration: {(datetime.datetime.now() - datetime.datetime.fromisoformat(self.detection_stats['session_start'])).total_seconds() / 3600:.1f} hours
 • Detection Trend: {self._calculate_recent_collusion_trend().title()}
 
-🎯 Intelligence Metrics:
+[TARGET] Intelligence Metrics:
 • Adaptation Rate: {self.detection_intelligence.get('adaptation_rate', 0.15):.1%}
 • Sensitivity Target: {self.detection_intelligence.get('sensitivity_target', 0.85):.1%}
 • False Positive Threshold: {self.detection_intelligence.get('false_positive_threshold', 0.1):.1%}
@@ -2158,7 +2158,7 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
             self.logger.error(format_operator_message(
-                icon="🚨",
+                icon="[ALERT]",
                 message="Collusion Auditor disabled due to repeated errors",
                 error_count=self.error_count,
                 threshold=self.circuit_breaker_threshold
@@ -2348,7 +2348,7 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             self.is_disabled = error_state.get("is_disabled", False)
             
             self.logger.info(format_operator_message(
-                icon="🔄",
+                icon="[RELOAD]",
                 message="Collusion Auditor state restored",
                 members=self.n_members,
                 threshold=f"{self.current_threshold:.3f}",
@@ -2416,7 +2416,7 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
         self.is_disabled = False
         
         self.logger.info(format_operator_message(
-            icon="🔄",
+            icon="[RELOAD]",
             message="Collusion Auditor reset completed",
             status="All detection state cleared and systems reinitialized"
         ))
@@ -2433,3 +2433,107 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
                 ))
         except Exception:
             pass  # Ignore cleanup errors
+
+    # ═══════════════════════════════════════════════════════════════════
+    # BASEMODULE ABSTRACT METHOD IMPLEMENTATIONS
+    # ═══════════════════════════════════════════════════════════════════
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in collusion detection results"""
+        try:
+            # Base confidence from detection reliability
+            detection_reliability = 1.0 - self.collusion_score  # Lower collusion = higher confidence
+            
+            # Data quality factor
+            data_quality = min(len(self.vote_history) / max(self.window, 1), 1.0)
+            
+            # Member participation factor
+            expected_pairs = self.n_members * (self.n_members - 1) // 2
+            actual_pairs = len(self.pair_agreement_history)
+            participation = actual_pairs / max(expected_pairs, 1)
+            
+            # Recent detection consistency
+            if len(self.collusion_history) > 3:
+                recent_scores = list(self.collusion_history)[-5:]
+                consistency = 1.0 - (np.std(recent_scores) / max(np.mean(recent_scores), 0.1))
+            else:
+                consistency = 0.5
+            
+            # Combine factors
+            confidence = (
+                detection_reliability * 0.4 +
+                data_quality * 0.3 +
+                participation * 0.2 +
+                consistency * 0.1
+            )
+            
+            # Ensure valid range
+            return float(max(0.1, min(0.95, confidence)))
+            
+        except Exception as e:
+            if hasattr(self, 'logger'):
+                self.logger.warning(f"Confidence calculation failed: {e}")
+            return 0.4  # Conservative default
+
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose collusion detection action for voting system integrity"""
+        try:
+            # Analyze current collusion state
+            collusion_score = self.collusion_score
+            suspicious_pairs_count = len(self.suspicious_pairs)
+            recent_alerts = len([a for a in self.alert_system.get('last_alerts', []) 
+                               if a.get('severity') in ['HIGH', 'CRITICAL']])
+            
+            # Determine action based on collusion metrics
+            if collusion_score > 0.8:
+                action_type = 'emergency_intervention'
+                signal_strength = 0.95
+                reasoning = f"Critical collusion detected (score: {collusion_score:.3f}) - immediate intervention required"
+            elif collusion_score > 0.6:
+                action_type = 'increase_monitoring'
+                signal_strength = 0.8
+                reasoning = f"High collusion risk (score: {collusion_score:.3f})"
+            elif suspicious_pairs_count > self.n_members // 2:
+                action_type = 'investigate_pairs'
+                signal_strength = 0.7
+                reasoning = f"Multiple suspicious pairs detected ({suspicious_pairs_count})"
+            elif recent_alerts > 0:
+                action_type = 'review_alerts'
+                signal_strength = 0.6
+                reasoning = f"Recent high-severity alerts ({recent_alerts}) require review"
+            elif collusion_score < 0.2:
+                action_type = 'normal_monitoring'
+                signal_strength = 0.2
+                reasoning = f"Low collusion risk (score: {collusion_score:.3f}) - normal operations"
+            else:
+                action_type = 'monitor'
+                signal_strength = 0.4
+                reasoning = f"Moderate collusion metrics - continue monitoring"
+            
+            return {
+                'action': action_type,
+                'signal_strength': signal_strength,
+                'reasoning': reasoning,
+                'collusion_metrics': {
+                    'collusion_score': collusion_score,
+                    'suspicious_pairs_count': suspicious_pairs_count,
+                    'recent_alerts': recent_alerts,
+                    'total_members': self.n_members,
+                    'detection_quality': self.quality_metrics.get('detection_quality', 0.5)
+                },
+                'alert_summary': {
+                    'total_alerts': self.detection_stats.get('alerts_raised', 0),
+                    'recent_high_severity': recent_alerts
+                },
+                'confidence': await self.calculate_confidence({}, **inputs)
+            }
+            
+        except Exception as e:
+            if hasattr(self, 'logger'):
+                self.logger.error(f"Action proposal failed: {e}")
+            return {
+                'action': 'abstain',
+                'signal_strength': 0.0,
+                'reasoning': f'Collusion detection error: {str(e)}',
+                'confidence': 0.1
+            }

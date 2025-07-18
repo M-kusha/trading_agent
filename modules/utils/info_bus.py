@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/utils/info_bus.py
-# 🚀 PRODUCTION-READY SmartInfoBus - Zero-Wiring Architecture
+# [ROCKET] PRODUCTION-READY SmartInfoBus - Zero-Wiring Architecture
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # ENHANCED: Complete production patterns, advanced monitoring, predictive analytics
 # ─────────────────────────────────────────────────────────────
@@ -496,7 +496,14 @@ class CircuitBreakerState:
             return False
         
         else:  # HALF_OPEN
-            # Allow limited requests to test recovery
+            # -----------------------------------------------------------------
+            # Idle-recovery: if no new failure for 2× recovery_time → close CB
+            # -----------------------------------------------------------------
+            current_time = time.time()
+            if (current_time - self.last_failure_time > recovery_time * 2
+                    and self.consecutive_failures == 0):
+                self.state = "CLOSED"
+                return True
             return True
     
     def trip(self):
@@ -582,6 +589,12 @@ class SmartInfoBus:
         self._data_history: Dict[str, deque] = defaultdict(
             lambda: deque(maxlen=self.config.max_history_versions)
         )
+        # ADD THESE NEW LINES FOR MEMORY MANAGEMENT:
+        self._data_timestamps: Dict[str, float] = {}  # Track insertion times
+        self._cleanup_thread: Optional[threading.Thread] = None
+        self._cleanup_shutdown = threading.Event()
+        self._cleanup_interval = 60  # Cleanup every 60 seconds
+        
         self._access_lock = threading.RLock()
         self._write_lock = threading.Lock()  # Separate write lock for better performance
         
@@ -673,6 +686,9 @@ class SmartInfoBus:
         # Start enhanced background services
         self._start_background_services()
         
+        # ADD THIS LINE AT THE END - START MEMORY CLEANUP:
+        self._start_cleanup_thread()
+        
         # Initialize system
         self._initialization_time = time.time()
         self._initialize_system_monitoring()
@@ -687,13 +703,13 @@ class SmartInfoBus:
         
         self.logger.info(
             format_operator_message(
-                "🚀", "SMARTINFOBUS INITIALIZED - PRODUCTION MODE",
+                "[ROCKET]", "SMARTINFOBUS INITIALIZED - PRODUCTION MODE",
                 details=f"Zero-wiring architecture ready with {len(self._get_enabled_features())} features",
                 context="startup",
                 performance=f"Startup time: {(time.time() - self._initialization_time)*1000:.1f}ms"
             )
         )
-    
+        
     def _get_enabled_features(self) -> List[str]:
         """Get list of enabled features"""
         features = ["core_operations", "thread_safety", "performance_monitoring"]
@@ -745,7 +761,7 @@ class SmartInfoBus:
                     'quality_score_threshold': 50.0
                 }
             }
-            self.logger.info("🔍 Anomaly detection system initialized")
+            self.logger.info("[SEARCH] Anomaly detection system initialized")
         except Exception as e:
             self.logger.error(f"Failed to initialize anomaly detection: {e}")
     
@@ -781,7 +797,7 @@ class SmartInfoBus:
                 quality_thread.start()
                 self._maintenance_threads.append(quality_thread)
             
-            self.logger.info(f"✅ Started {len(self._maintenance_threads)} background services")
+            self.logger.info(f"[OK] Started {len(self._maintenance_threads)} background services")
             
         except Exception as e:
             self.logger.error(f"Failed to start background services: {e}")
@@ -834,9 +850,64 @@ class SmartInfoBus:
         except Exception as e:
             self.logger.error(f"Failed to initialize performance baselines: {e}")
 
+    def _start_cleanup_thread(self) -> None:
+            """Start background cleanup thread for TTL/LRU management"""
+            if self._cleanup_thread and self._cleanup_thread.is_alive():
+                return
+            
+            self._cleanup_shutdown.clear()
+            self._cleanup_thread = threading.Thread(
+                target=self._cleanup_worker,
+                name="InfoBus-MemoryCleanup",
+                daemon=True
+            )
+            self._cleanup_thread.start()
+            self.logger.info("🧹 Memory cleanup thread started")
+
+    def _cleanup_worker(self) -> None:
+        """Background worker for memory management"""
+        while not self._cleanup_shutdown.wait(self._cleanup_interval):
+            try:
+                self._cleanup_expired_and_lru()
+            except Exception as e:
+                self.logger.error(f"Memory cleanup error: {e}")
+
+    # ──────────────────────────────────────────────────────────────
+# 1.  Memory-cleanup with safe logging & writer lock
+# ──────────────────────────────────────────────────────────────
+    def _cleanup_expired_and_lru(self) -> None:
+        """Remove expired items and enforce max_cache_size using an LRU policy."""
+        with self._write_lock:                     # writers own this lock
+            expired_keys: list[str] = [
+                k for k, v in self._data_store.items()
+                if v.age_seconds() > self.config.cache_ttl_seconds
+            ]
+
+            for k in expired_keys:
+                self._data_store.pop(k, None)
+                self._data_timestamps.pop(k, None)
+
+            # LRU pass (only if still over limit)
+            keys_to_remove: int = 0
+            if len(self._data_store) > self.config.max_cache_size:
+                oldest = sorted(
+                    self._data_store.items(),
+                    key=lambda kv: kv[1].last_access_time
+                )
+                keys_to_remove = len(self._data_store) - self.config.max_cache_size
+                for i in range(keys_to_remove):
+                    key = oldest[i][0]
+                    self._data_store.pop(key, None)
+                    self._data_timestamps.pop(key, None)
+
+        if expired_keys or keys_to_remove:
+            self.logger.debug(
+                f"🗑️ Cleaned: {len(expired_keys)} expired, {keys_to_remove} LRU"
+            )
+
     def _background_performance_monitoring(self):
         """Background performance monitoring thread"""
-        self.logger.info("📊 Performance monitoring started")
+        self.logger.info("[STATS] Performance monitoring started")
         
         while self._maintenance_running:
             try:
@@ -847,12 +918,12 @@ class SmartInfoBus:
                 time.sleep(self.config.health_check_interval_ms / 1000.0)
                 
             except Exception as e:
-                self.logger.error(f"💥 Performance monitoring error: {e}")
+                self.logger.error(f"[CRASH] Performance monitoring error: {e}")
                 time.sleep(10)  # Back off on error
 
     def _background_quality_monitoring(self):
         """Background quality monitoring thread"""
-        self.logger.info("🔍 Quality monitoring started")
+        self.logger.info("[SEARCH] Quality monitoring started")
         
         while self._maintenance_running:
             try:
@@ -860,131 +931,108 @@ class SmartInfoBus:
                 time.sleep(self.config.health_check_interval_ms / 1000.0)
                 
             except Exception as e:
-                self.logger.error(f"💥 Quality monitoring error: {e}")
+                self.logger.error(f"[CRASH] Quality monitoring error: {e}")
                 time.sleep(10)  # Back off on error
 
     # ═══════════════════════════════════════════════════════════════════
     # CORE DATA OPERATIONS
     # ═══════════════════════════════════════════════════════════════════
     
-    def set(self, 
-            key: str, 
-            value: Any, 
-            module: str, 
-            thesis: Optional[str] = None, 
-            confidence: float = 1.0,
-            dependencies: Optional[List[str]] = None,
-            processing_time_ms: float = 0.0):
-        """
-        Set data with comprehensive validation and tracking.
-        
-        Args:
-            key: Data key identifier
-            value: Data value to store
-            module: Source module name
-            thesis: Plain English explanation (optional)
-            confidence: Confidence score 0-1
-            dependencies: List of data keys this depends on
-            processing_time_ms: Time taken to compute this value
-            
-        Raises:
-            ValueError: If parameters are invalid
-            RuntimeError: If operation fails
-        """
-        # Validate inputs
-        if not isinstance(key, str) or not key:
+ # ──────────────────────────────────────────────────────────────
+# 3.  Writer-locked set() method
+# ──────────────────────────────────────────────────────────────
+    def set(
+        self,
+        key: str,
+        value: Any,
+        module: str,
+        thesis: str | None = None,
+        confidence: float = 1.0,
+        dependencies: list[str] | None = None,
+        processing_time_ms: float = 0.0,
+    ) -> None:
+        """Store a value in the bus with versioning, TTL and safety checks."""
+
+        # ---------- validation ----------
+        if not key or not isinstance(key, str):
             raise ValueError("Key must be a non-empty string")
-        
-        if not isinstance(module, str) or not module:
+        if not module or not isinstance(module, str):
             raise ValueError("Module must be a non-empty string")
-        
-        if not 0 <= confidence <= 1:
+        if not 0.0 <= confidence <= 1.0:
             raise ValueError("Confidence must be between 0 and 1")
-        
-        if value is None:
-            self.logger.warning(f"Setting None value for key '{key}' from {module}")
-        
+
         try:
-            with self._access_lock:
-                # Get previous version
+            # ---------- mutate core state (writer lock) ----------
+            with self._write_lock:
                 prev = self._data_store.get(key)
                 version = prev.version + 1 if prev else 1
-                
-                # Create versioned data with validation
+
                 data = DataVersion(
                     value=value,
                     timestamp=time.time(),
                     source_module=module,
                     version=version,
-                    confidence=max(0.0, min(1.0, confidence)),
+                    confidence=confidence,
                     thesis=thesis,
                     dependencies=dependencies or [],
-                    processing_time_ms=max(0.0, processing_time_ms)
+                    processing_time_ms=max(0.0, processing_time_ms),
                 )
-                
-                # Validate data integrity if enabled
-                if self._validation_enabled:
-                    if not data.validate_integrity():
-                        raise RuntimeError(f"Data integrity validation failed for {key}")
-                
-                # Store current version
+
+                if self._validation_enabled and not data.validate_integrity():
+                    raise RuntimeError(f"Integrity check failed for '{key}'")
+
                 self._data_store[key] = data
-                
-                # Store in history
                 self._data_history[key].append(data)
-                
-                # Update registry
-                with self._registry_lock:
-                    self._providers[key].add(module)
-                
-                # Update dependency graph
+                self._data_timestamps[key] = data.timestamp
+
+                # Enforce soft limit immediately
+                if len(self._data_store) > self.config.max_cache_size:
+                    self._cleanup_expired_and_lru()
+
+            # ---------- registry & graph updates (own locks) ----------
+            with self._registry_lock:
+                self._providers[key].add(module)
                 if dependencies:
                     for dep in dependencies:
                         provider = self._get_primary_provider(dep)
                         if provider and provider != module:
                             self._module_graph[module].add(provider)
-                
-                # Check cache size and cleanup if needed
-                if len(self._data_store) > self.config.max_cache_size:
-                    self._cleanup_old_data()
-                
-                # Log event for replay
-                self._log_event({
-                    'type': 'set',
-                    'key': key,
-                    'module': module,
-                    'timestamp': data.timestamp,
-                    'version': version,
-                    'has_thesis': thesis is not None,
-                    'confidence': confidence,
-                    'data_size': len(str(value))
-                })
-                
-                # Emit event for subscribers
-                self._emit('data_updated', {
-                    'key': key,
-                    'module': module,
-                    'version': version,
-                    'confidence': confidence,
-                    'has_thesis': thesis is not None
-                })
-                
-                # Check pending requests
-                self._check_pending_requests(key)
-                
-                # Update performance metrics
-                with self._performance_lock:
-                    self._access_patterns[module][f'write:{key}'] += 1
-                
-                self.logger.debug(f"✅ {module} set '{key}' v{version} (conf: {confidence:.2f})")
-                
-        except Exception as e:
-            self.logger.error(f"💥 Failed to set {key} from {module}: {e}")
-            
-            # Record failure for circuit breaker
-            self.record_module_failure(module, f"Data set failed: {str(e)}")
-            raise RuntimeError(f"Failed to set data for key '{key}': {e}")
-    
+
+            # ---------- performance counters ----------
+            with self._performance_lock:
+                self._access_patterns[module][f"write:{key}"] += 1
+
+            # ---------- event & audit ----------
+            self._log_event(
+                {
+                    "type": "set",
+                    "key": key,
+                    "module": module,
+                    "timestamp": data.timestamp,
+                    "version": version,
+                    "has_thesis": thesis is not None,
+                    "confidence": confidence,
+                }
+            )
+            self._emit(
+                "data_updated",
+                {
+                    "key": key,
+                    "module": module,
+                    "version": version,
+                    "confidence": confidence,
+                    "has_thesis": thesis is not None,
+                },
+            )
+            self._check_pending_requests(key)
+
+            self.logger.debug(f"[OK] {module} set '{key}' v{version} (conf={confidence:0.2f})")
+
+        except Exception as exc:
+            self.logger.error(f"[CRASH] Failed to set {key}: {exc}")
+            self.record_module_failure(module, f"set failed: {exc}")
+            raise
+
     def get(self, 
             key: str, 
             module: str, 
@@ -1058,7 +1106,7 @@ class SmartInfoBus:
                 return data.value
                 
         except Exception as e:
-            self.logger.error(f"💥 Failed to get {key} for {module}: {e}")
+            self.logger.error(f"[CRASH] Failed to get {key} for {module}: {e}")
             
             # Record failure
             self.record_module_failure(module, f"Data get failed: {str(e)}")
@@ -1102,7 +1150,7 @@ class SmartInfoBus:
                 return data
                 
         except Exception as e:
-            self.logger.error(f"💥 Failed to get metadata for {key}: {e}")
+            self.logger.error(f"[CRASH] Failed to get metadata for {key}: {e}")
             return None
     
     def get_with_thesis(self, key: str, module: str) -> Optional[Tuple[Any, str]]:
@@ -1174,7 +1222,7 @@ class SmartInfoBus:
             self.logger.debug(f"📋 {module} requested '{key}' (priority: {priority})")
             
         except Exception as e:
-            self.logger.error(f"💥 Failed to create data request: {e}")
+            self.logger.error(f"[CRASH] Failed to create data request: {e}")
     
     # ═══════════════════════════════════════════════════════════════════
     # MODULE REGISTRY & DISCOVERY
@@ -1202,7 +1250,7 @@ class SmartInfoBus:
             self.logger.info(f"📦 Registered {module} providing: {provides}")
             
         except Exception as e:
-            self.logger.error(f"💥 Failed to register provider {module}: {e}")
+            self.logger.error(f"[CRASH] Failed to register provider {module}: {e}")
     
     def register_consumer(self, module: str, requires: List[str]):
         """
@@ -1226,7 +1274,7 @@ class SmartInfoBus:
             self.logger.info(f"📨 Registered {module} requiring: {requires}")
             
         except Exception as e:
-            self.logger.error(f"💥 Failed to register consumer {module}: {e}")
+            self.logger.error(f"[CRASH] Failed to register consumer {module}: {e}")
     
     def get_providers(self, key: str) -> Set[str]:
         """Get all modules that can provide a data key"""
@@ -1276,7 +1324,7 @@ class SmartInfoBus:
                 return graph
                 
         except Exception as e:
-            self.logger.error(f"💥 Failed to build dependency graph: {e}")
+            self.logger.error(f"[CRASH] Failed to build dependency graph: {e}")
             return {}
     
     def find_circular_dependencies(self) -> List[List[str]]:
@@ -1319,7 +1367,7 @@ class SmartInfoBus:
             return unique_cycles
             
         except Exception as e:
-            self.logger.error(f"💥 Failed to find circular dependencies: {e}")
+            self.logger.error(f"[CRASH] Failed to find circular dependencies: {e}")
             return []
     
     # ═══════════════════════════════════════════════════════════════════
@@ -1348,7 +1396,7 @@ class SmartInfoBus:
                     })
                     
         except Exception as e:
-            self.logger.error(f"💥 Failed to record timing for {module}: {e}")
+            self.logger.error(f"[CRASH] Failed to record timing for {module}: {e}")
     
     def record_module_failure(self, module: str, error: str):
         """Record module failure for enhanced circuit breaker"""
@@ -1384,7 +1432,7 @@ class SmartInfoBus:
                     )
                     
         except Exception as e:
-            self.logger.error(f"💥 Failed to record failure for {module}: {e}")
+            self.logger.error(f"[CRASH] Failed to record failure for {module}: {e}")
     
     def is_module_enabled(self, module: str) -> bool:
         """Check if module is enabled using enhanced circuit breaker"""
@@ -1407,7 +1455,7 @@ class SmartInfoBus:
                 return is_allowed
                 
         except Exception as e:
-            self.logger.error(f"💥 Failed to check module status for {module}: {e}")
+            self.logger.error(f"[CRASH] Failed to check module status for {module}: {e}")
             return True  # Fail open for safety
     
     def reset_module_failures(self, module: str):
@@ -1426,7 +1474,7 @@ class SmartInfoBus:
             
             self.logger.info(
                 format_operator_message(
-                    "✅", "MODULE ENABLED",
+                    "[OK]", "MODULE ENABLED",
                     instrument=module,
                     details="Circuit breaker reset",
                     context="circuit_breaker_recovery"
@@ -1434,7 +1482,7 @@ class SmartInfoBus:
             )
             
         except Exception as e:
-            self.logger.error(f"💥 Failed to reset failures for {module}: {e}")
+            self.logger.error(f"[CRASH] Failed to reset failures for {module}: {e}")
     
     def get_module_health(self, module: str) -> Dict[str, Any]:
         """Get comprehensive module health information with enhanced circuit breaker data"""
@@ -1476,7 +1524,7 @@ class SmartInfoBus:
             }
             
         except Exception as e:
-            self.logger.error(f"💥 Failed to get health for {module}: {e}")
+            self.logger.error(f"[CRASH] Failed to get health for {module}: {e}")
             return {'error': str(e)}
     
     def _calculate_health_score(self, enabled: bool, failures: int, avg_latency: float) -> float:
@@ -1547,7 +1595,7 @@ class SmartInfoBus:
             }
             
         except Exception as e:
-            self.logger.error(f"💥 Failed to get performance metrics: {e}")
+            self.logger.error(f"[CRASH] Failed to get performance metrics: {e}")
             return {'error': str(e)}
     
     def _estimate_data_size(self) -> float:
@@ -1599,7 +1647,7 @@ class SmartInfoBus:
             self.logger.debug(f"📡 Subscribed to '{event_type}' events")
             
         except Exception as e:
-            self.logger.error(f"💥 Failed to subscribe to {event_type}: {e}")
+            self.logger.error(f"[CRASH] Failed to subscribe to {event_type}: {e}")
     
     def unsubscribe(self, event_type: str, callback: Callable):
         """Unsubscribe from bus events"""
@@ -1609,27 +1657,38 @@ class SmartInfoBus:
                     self._subscribers[event_type].remove(callback)
                     
         except Exception as e:
-            self.logger.error(f"💥 Failed to unsubscribe from {event_type}: {e}")
+            self.logger.error(f"[CRASH] Failed to unsubscribe from {event_type}: {e}")
     
-    def _emit(self, event_type: str, data: Dict[str, Any]):
-        """Emit event to all subscribers with error handling"""
+    # ──────────────────────────────────────────────────────────────
+# 2.  Safe event emitter (works with/without running loop)
+# ──────────────────────────────────────────────────────────────
+    def _emit(self, event_type: str, data: dict[str, Any]) -> None:
+        """Emit an event to subscribers without blocking bus locks."""
+        # Copy callbacks while holding the subscription lock
         try:
             with self._subscription_lock:
-                subscribers = self._subscribers[event_type].copy()
-            
-            for callback in subscribers:
-                try:
-                    if asyncio.iscoroutinefunction(callback):
-                        # Handle async callbacks
-                        asyncio.create_task(callback(data))
-                    else:
-                        callback(data)
-                except Exception as e:
-                    self.logger.error(f"💥 Event callback error for {event_type}: {e}")
-                    
-        except Exception as e:
-            self.logger.error(f"💥 Failed to emit event {event_type}: {e}")
-    
+                callbacks = list(self._subscribers.get(event_type, []))
+        except Exception as exc:                   # unlikely, but defensive
+            self.logger.error(f"Emit failed ({event_type}): {exc}")
+            return
+
+        # Run callbacks outside the lock
+        for cb in callbacks:
+            try:
+                if asyncio.iscoroutinefunction(cb):
+                    try:
+                        asyncio.get_running_loop().create_task(cb(data))
+                    except RuntimeError:
+                        # No event-loop in current thread – off-load to shared pool
+                        self._thread_pool.submit(lambda: asyncio.run(cb(data)))
+                else:
+                    # Regular callable → non-blocking via thread-pool
+                    self._thread_pool.submit(cb, data)
+            except Exception as exc:
+                self.logger.error(
+                    f"[CRASH] Event callback error for '{event_type}': {exc}"
+                )
+
     def _log_event(self, event: Dict[str, Any]):
         """Log event for replay with size management"""
         try:
@@ -1640,7 +1699,7 @@ class SmartInfoBus:
             self._emit('event_logged', event)
             
         except Exception as e:
-            self.logger.error(f"💥 Failed to log event: {e}")
+            self.logger.error(f"[CRASH] Failed to log event: {e}")
     
     def _log_miss(self, key: str, module: str):
         """Log data miss for analysis"""
@@ -1663,7 +1722,7 @@ class SmartInfoBus:
             })
             
         except Exception as e:
-            self.logger.error(f"💥 Failed to log miss: {e}")
+            self.logger.error(f"[CRASH] Failed to log miss: {e}")
     
     def _check_pending_requests(self, key: str):
         """Check if any pending requests can be fulfilled"""
@@ -1698,7 +1757,7 @@ class SmartInfoBus:
                     self._pending_requests.pop(i)
                     
         except Exception as e:
-            self.logger.error(f"💥 Failed to check pending requests: {e}")
+            self.logger.error(f"[CRASH] Failed to check pending requests: {e}")
     
     # ═══════════════════════════════════════════════════════════════════
     # DATA QUALITY & MAINTENANCE
@@ -1706,7 +1765,7 @@ class SmartInfoBus:
     
     def _background_maintenance(self):
         """Background maintenance thread"""
-        self.logger.info("🔧 Background maintenance started")
+        self.logger.info("[TOOL] Background maintenance started")
         
         while self._maintenance_running:
             try:
@@ -1725,46 +1784,42 @@ class SmartInfoBus:
                 time.sleep(self.config.cleanup_interval_seconds)
                 
             except Exception as e:
-                self.logger.error(f"💥 Background maintenance error: {e}")
+                self.logger.error(f"[CRASH] Background maintenance error: {e}")
                 time.sleep(10)  # Back off on error
     
-    def _cleanup_old_data(self):
-        """Cleanup old data based on age and access patterns"""
-        try:
-            current_time = time.time()
-            max_age = self.config.max_data_age_seconds
-            keys_to_remove = []
-            
-            with self._access_lock:
-                for key, data in self._data_store.items():
-                    # Remove if too old and not frequently accessed
-                    if (data.age_seconds() > max_age and 
-                        data.access_count < 5):
-                        keys_to_remove.append(key)
-                
-                # Remove old data
-                for key in keys_to_remove:
-                    del self._data_store[key]
-                    
-                    # Also cleanup history
-                    if key in self._data_history:
-                        # Keep only recent versions in history
-                        recent_versions = []
-                        for version in self._data_history[key]:
-                            if current_time - version.timestamp < max_age * 2:
-                                recent_versions.append(version)
-                        
-                        if recent_versions:
-                            self._data_history[key] = deque(recent_versions, maxlen=self.config.max_history_versions)
+    # ──────────────────────────────────────────────────────────────
+# 4.  Old-data cleanup with writer lock
+# ──────────────────────────────────────────────────────────────
+    def _cleanup_old_data(self) -> None:
+        """Remove aged entries and trim history."""
+        max_age = self.config.max_data_age_seconds
+        now = time.time()
+        removed: list[str] = []
+
+        with self._write_lock:
+            for key, dv in list(self._data_store.items()):
+                if dv.age_seconds() > max_age and dv.access_count < 5:
+                    self._data_store.pop(key, None)
+                    removed.append(key)
+
+                    # shrink history for the key
+                    hist = self._data_history.get(key)
+                    if hist:
+                        recent = [
+                            ver
+                            for ver in hist
+                            if now - ver.timestamp < max_age * 2
+                        ]
+                        if recent:
+                            self._data_history[key] = deque(
+                                recent, maxlen=self.config.max_history_versions
+                            )
                         else:
-                            del self._data_history[key]
-            
-            if keys_to_remove:
-                self.logger.debug(f"🧹 Cleaned up {len(keys_to_remove)} old data entries")
-                
-        except Exception as e:
-            self.logger.error(f"💥 Data cleanup failed: {e}")
-    
+                            self._data_history.pop(key, None)
+
+        if removed:
+            self.logger.debug(f"🧹 Removed {len(removed)} aged keys")
+
     def _cleanup_expired_requests(self):
         """Remove expired pending requests"""
         try:
@@ -1784,7 +1839,7 @@ class SmartInfoBus:
                     self.logger.debug(f"🕒 Removed {expired_count} expired requests")
                     
         except Exception as e:
-            self.logger.error(f"💥 Request cleanup failed: {e}")
+            self.logger.error(f"[CRASH] Request cleanup failed: {e}")
     
     def _validate_data_integrity(self):
         """Validate integrity of stored data"""
@@ -1800,7 +1855,7 @@ class SmartInfoBus:
                         corruption_count += 1
             
             if corruption_count > 0:
-                self.logger.warning(f"🚨 Removed {corruption_count} corrupted data entries")
+                self.logger.warning(f"[ALERT] Removed {corruption_count} corrupted data entries")
                 
                 # Emit corruption alert
                 self._emit('data_corruption_detected', {
@@ -1809,7 +1864,7 @@ class SmartInfoBus:
                 })
                 
         except Exception as e:
-            self.logger.error(f"💥 Data integrity validation failed: {e}")
+            self.logger.error(f"[CRASH] Data integrity validation failed: {e}")
     
     # ═══════════════════════════════════════════════════════════════════
     # ANALYSIS & REPORTING
@@ -1836,7 +1891,7 @@ class SmartInfoBus:
             return report
             
         except Exception as e:
-            self.logger.error(f"💥 Failed to generate freshness report: {e}")
+            self.logger.error(f"[CRASH] Failed to generate freshness report: {e}")
             return {}
     
     def explain_data_flow(self, key: str) -> str:
@@ -1853,7 +1908,7 @@ class SmartInfoBus:
             ]
             
             if not providers and not consumers:
-                lines.append(f"❌ No modules interact with '{key}'")
+                lines.append(f"[FAIL] No modules interact with '{key}'")
                 return "\n".join(lines)
             
             if providers:
@@ -1861,7 +1916,7 @@ class SmartInfoBus:
                     f"📤 PROVIDERS ({len(providers)}):"
                 ])
                 for provider in providers:
-                    enabled = "✅" if self.is_module_enabled(provider) else "❌"
+                    enabled = "[OK]" if self.is_module_enabled(provider) else "[FAIL]"
                     health = self.get_module_health(provider)
                     health_score = health.get('health_score', 0)
                     lines.append(f"  {enabled} {provider} (health: {health_score:.0f}%)")
@@ -1872,13 +1927,13 @@ class SmartInfoBus:
                     f"📥 CONSUMERS ({len(consumers)}):"
                 ])
                 for consumer in consumers:
-                    enabled = "✅" if self.is_module_enabled(consumer) else "❌"
+                    enabled = "[OK]" if self.is_module_enabled(consumer) else "[FAIL]"
                     lines.append(f"  {enabled} {consumer}")
             
             if data:
                 lines.extend([
                     "",
-                    "📊 CURRENT STATE:",
+                    "[STATS] CURRENT STATE:",
                     f"  Version: {data.version}",
                     f"  Age: {data.age_seconds():.1f} seconds",
                     f"  Source: {data.source_module}",
@@ -1896,7 +1951,7 @@ class SmartInfoBus:
             else:
                 lines.extend([
                     "",
-                    "❌ NO DATA AVAILABLE"
+                    "[FAIL] NO DATA AVAILABLE"
                 ])
             
             # Access statistics
@@ -1909,14 +1964,14 @@ class SmartInfoBus:
             if total_reads > 0:
                 lines.extend([
                     "",
-                    "📈 ACCESS STATISTICS:",
+                    "[CHART] ACCESS STATISTICS:",
                     f"  Total Reads: {total_reads}"
                 ])
             
             return "\n".join(lines)
             
         except Exception as e:
-            self.logger.error(f"💥 Failed to explain data flow for {key}: {e}")
+            self.logger.error(f"[CRASH] Failed to explain data flow for {key}: {e}")
             return f"Error explaining data flow: {e}"
     
     def export_session(self, filepath: str):
@@ -1940,7 +1995,7 @@ class SmartInfoBus:
             self.logger.info(f"📁 Session exported to {filepath}")
             
         except Exception as e:
-            self.logger.error(f"💥 Failed to export session: {e}")
+            self.logger.error(f"[CRASH] Failed to export session: {e}")
             raise
     
     def import_session(self, filepath: str):
@@ -1951,47 +2006,52 @@ class SmartInfoBus:
             
             self._event_log = deque(session_data['events'], maxlen=self.config.max_event_log_size)
             
-            self.logger.info(f"📂 Imported session with {len(self._event_log)} events")
+            self.logger.info(f"[FOLDER] Imported session with {len(self._event_log)} events")
             
         except Exception as e:
-            self.logger.error(f"💥 Failed to import session: {e}")
+            self.logger.error(f"[CRASH] Failed to import session: {e}")
             raise
-    
-    def shutdown(self):
-        """Graceful shutdown of SmartInfoBus"""
+ # ──────────────────────────────────────────────────────────────
+# 5.  Graceful shutdown (thread-safe & idempotent)
+# ──────────────────────────────────────────────────────────────
+    def shutdown(self) -> None:
+        """Stop background workers, flush logs and clear state."""
+        self.logger.info("[STOP] Shutting down SmartInfoBus …")
+
+        # -- stop cleanup thread first
+        if getattr(self, "_cleanup_thread", None) and self._cleanup_thread and self._cleanup_thread.is_alive():
+            self._cleanup_shutdown.set()
+            self._cleanup_thread.join(timeout=5)
+
+        # -- stop maintenance & perf threads
+        self._maintenance_running = False
+        for t in list(getattr(self, "_maintenance_threads", [])):
+            if t.is_alive():
+                t.join(timeout=5)
+
+        # -- drain thread-pool
+        if getattr(self, "_thread_pool", None):
+            self._thread_pool.shutdown(wait=True)
+
+        # -- final metrics
         try:
-            self.logger.info("🛑 Shutting down SmartInfoBus...")
-            
-            # Stop background maintenance
-            self._maintenance_running = False
-            
-            # Wait for maintenance thread to finish
-            if self._maintenance_threads:
-                for thread in self._maintenance_threads:
-                    if thread.is_alive():
-                        thread.join(timeout=5)
-            
-            # Shutdown thread pool
-            if self._thread_pool:
-                self._thread_pool.shutdown(wait=True)
-            
-            # Log final statistics
-            metrics = self.get_performance_metrics()
+            m = self.get_performance_metrics()
             self.logger.info(
-                f"📊 Final stats: {metrics['total_requests']} requests, "
-                f"{metrics['cache_hit_rate']:.1%} hit rate, "
-                f"{metrics['active_data_keys']} active keys"
+                f"[STATS] Final: {m['total_requests']} req, "
+                f"{m['cache_hit_rate']*100:0.1f}% hits, "
+                f"{m['active_data_keys']} keys in store"
             )
-            
-            # Clear all data
-            with self._access_lock:
-                self._data_store.clear()
-                self._data_history.clear()
-            
-            self.logger.info("✅ SmartInfoBus shutdown complete")
-            
-        except Exception as e:
-            self.logger.error(f"💥 Shutdown error: {e}")
+        except Exception:
+            pass
+
+        # -- wipe data
+        with self._write_lock, self._access_lock:
+            self._data_store.clear()
+            self._data_history.clear()
+            self._data_timestamps.clear()
+
+        self.logger.info("[OK] SmartInfoBus shutdown complete")
+
 
 # ═══════════════════════════════════════════════════════════════════
 # SINGLETON MANAGER
@@ -2002,31 +2062,22 @@ class InfoBusManager:
     Thread-safe singleton manager for SmartInfoBus.
     Provides global access to the unified information bus.
     """
-    
+
     _instance: Optional[SmartInfoBus] = None
-    _lock = threading.Lock()
-    
+    _lock = threading.RLock()          # ← was threading.Lock(), now re-entrant
+
     @classmethod
     def get_instance(cls) -> SmartInfoBus:
-        """Get SmartInfoBus singleton instance with thread safety"""
+        """Get SmartInfoBus singleton instance with thread safety."""
         if cls._instance is None:
             with cls._lock:
-                if cls._instance is None:
+                if cls._instance is None:          # double-checked locking
                     cls._instance = SmartInfoBus()
         return cls._instance
-    
+
     @classmethod
     def create_info_bus(cls, env: Any, step: int = 0) -> Dict[str, Any]:
-        """
-        Create legacy InfoBus structure backed by SmartInfoBus.
-        
-        Args:
-            env: Environment object
-            step: Current step number
-            
-        Returns:
-            Legacy InfoBus dictionary structure
-        """
+        """Create legacy InfoBus structure backed by SmartInfoBus."""
         smart_bus = cls.get_instance()
         
         # Create legacy structure

@@ -1,27 +1,18 @@
-# envs/__init__.py
 """
-Enhanced Trading Environment Package
-
-A state-of-the-art PPO trading environment with modular architecture.
-Clean separation of concerns for better maintainability and testing.
+Modern Trading Environment Package
+Clean, zero-legacy architecture with SmartInfoBus v4.0
 """
 
+from .modern_env import ModernTradingEnv
 from .config import TradingConfig, MarketState, EpisodeMetrics
-from .env import EnhancedTradingEnv
 
-
-__version__ = "1.0.0"
-__author__ = "AI Trading Team"
-
+# Main exports - no legacy aliases
 __all__ = [
-    "EnhancedTradingEnv",
-    "TradingConfig", 
-    "MarketState",
-    "EpisodeMetrics",
-
-    
+    'ModernTradingEnv',
+    'TradingConfig', 
+    'MarketState',
+    'EpisodeMetrics'
 ]
 
-# Package-level constants
-DEFAULT_INSTRUMENTS = ["EUR/USD", "XAU/USD"]
-DEFAULT_TIMEFRAMES = ["H1", "H4", "D1"]
+# Version info
+__version__ = "4.0.0"

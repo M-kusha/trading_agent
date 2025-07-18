@@ -166,7 +166,7 @@ class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
         self._initialize_advanced_systems()
         
         self.logger.info(format_operator_message(
-            icon="🎯",
+            icon="[TARGET]",
             message="Enhanced Role Coach initialized",
             max_trades=self.max_trades,
             penalty_multiplier=f"{self.penalty_multiplier:.2f}",
@@ -236,7 +236,7 @@ class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
         self.is_disabled = False
         
         self.logger.info(format_operator_message(
-            icon="🔄",
+            icon="[RELOAD]",
             message="Role Coach reset - all state cleared"
         ))
 
@@ -407,7 +407,7 @@ class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
                 self._adapt_coaching_for_regime_change(old_regime, self.market_regime)
                 
                 self.logger.info(format_operator_message(
-                    icon="📊",
+                    icon="[STATS]",
                     message=f"Regime change detected: {old_regime} → {self.market_regime}",
                     coaching_adaptation="Trade limits adjusted",
                     session=self.market_session
@@ -785,27 +785,27 @@ class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             # Intensity recommendations
             intensity_level = trade_analysis.get('intensity_level', 'low')
             if intensity_level == 'excessive':
-                recommendations.append("⚡ Excessive trading intensity detected. Take a break and reassess your strategy.")
+                recommendations.append("[FAST] Excessive trading intensity detected. Take a break and reassess your strategy.")
             elif intensity_level == 'high':
-                recommendations.append("⚠️ High trading intensity. Consider reducing frequency to improve decision quality.")
+                recommendations.append("[WARN] High trading intensity. Consider reducing frequency to improve decision quality.")
             
             # Timing recommendations
             timing_issues = trade_analysis.get('timing_issues', [])
             if 'rapid_clustering' in timing_issues:
                 recommendations.append("⏰ Rapid trade clustering detected. Allow more time between trades for better analysis.")
             if 'high_frequency' in timing_issues:
-                recommendations.append("📊 High-frequency trading pattern. Consider longer-term setups for better risk-reward.")
+                recommendations.append("[STATS] High-frequency trading pattern. Consider longer-term setups for better risk-reward.")
             
             # Context-specific recommendations
             regime = trading_activity.get('regime', 'unknown')
             vol_level = trading_activity.get('volatility_level', 'medium')
             
             if regime == 'volatile' and trade_analysis.get('trade_count', 0) > 1:
-                recommendations.append("💥 Volatile market conditions. Consider reducing trade frequency and increasing caution.")
+                recommendations.append("[CRASH] Volatile market conditions. Consider reducing trade frequency and increasing caution.")
             elif regime == 'ranging' and trade_analysis.get('trade_count', 0) > 2:
                 recommendations.append("↔️ Ranging market. Focus on breakout trades rather than frequent small moves.")
             elif regime == 'trending' and trade_analysis.get('trade_count', 0) == 0:
-                recommendations.append("📈 Trending market opportunity. Consider capturing trend momentum with disciplined entries.")
+                recommendations.append("[CHART] Trending market opportunity. Consider capturing trend momentum with disciplined entries.")
             
             if vol_level == 'extreme':
                 recommendations.append("🌪️ Extreme volatility. Reduce position sizes and consider wider stops.")
@@ -815,20 +815,20 @@ class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             if recent_pnl < -100:
                 recommendations.append("📉 Recent losses detected. Consider taking a break to reassess strategy.")
             elif recent_pnl > 100:
-                recommendations.append("📈 Good performance! Maintain discipline to protect gains.")
+                recommendations.append("[CHART] Good performance! Maintain discipline to protect gains.")
             
             # Discipline improvement recommendations
             if overall_score < 0.6:
-                recommendations.append("🎯 Discipline needs improvement. Focus on quality over quantity in trade selection.")
+                recommendations.append("[TARGET] Discipline needs improvement. Focus on quality over quantity in trade selection.")
             elif overall_score > 0.8:
-                recommendations.append("✅ Excellent discipline! Continue following your trading plan.")
+                recommendations.append("[OK] Excellent discipline! Continue following your trading plan.")
             
             # Session-specific recommendations
             session = trading_activity.get('session', 'unknown')
             if session == 'asian' and trade_analysis.get('trade_count', 0) > 1:
                 recommendations.append("🌏 Asian session - lower liquidity. Be extra selective with trades.")
             elif session == 'rollover':
-                recommendations.append("🔄 Rollover period. Avoid trading due to potential spread widening.")
+                recommendations.append("[RELOAD] Rollover period. Avoid trading due to potential spread widening.")
             
             # Learning recommendations
             if len(self.penalty_history) > 3 and all(p > 0 for p in list(self.penalty_history)[-3:]):
@@ -836,7 +836,7 @@ class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             
         except Exception as e:
             self.logger.warning(f"Recommendation generation failed: {e}")
-            recommendations.append("⚠️ Unable to generate specific recommendations at this time.")
+            recommendations.append("[WARN] Unable to generate specific recommendations at this time.")
         
         return recommendations[:5]  # Limit to top 5 recommendations
 
@@ -967,7 +967,7 @@ class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
             self.logger.error(format_operator_message(
-                icon="🚨",
+                icon="[ALERT]",
                 message="RoleCoach disabled due to repeated errors",
                 error_count=self.error_count,
                 threshold=self.circuit_breaker_threshold
@@ -1035,13 +1035,13 @@ class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
         # Performance status
         discipline_score = self.coaching_stats.get('discipline_score', 1.0)
         if discipline_score > 0.8:
-            discipline_status = "✅ Excellent"
+            discipline_status = "[OK] Excellent"
         elif discipline_score > 0.6:
-            discipline_status = "⚡ Good"
+            discipline_status = "[FAST] Good"
         elif discipline_score > 0.4:
-            discipline_status = "⚠️ Needs Improvement"
+            discipline_status = "[WARN] Needs Improvement"
         else:
-            discipline_status = "🚨 Poor"
+            discipline_status = "[ALERT] Poor"
         
         # Recent coaching sessions
         session_lines = []
@@ -1052,10 +1052,10 @@ class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             violations = session.get('discipline_assessment', {}).get('violations', 0)
             
             if penalty > 0:
-                emoji = "🚨" if violations > 2 else "⚠️"
+                emoji = "[ALERT]" if violations > 2 else "[WARN]"
                 session_lines.append(f"  {emoji} {timestamp}: {violations} violations, penalty {penalty:.2f}")
             else:
-                session_lines.append(f"  ✅ {timestamp}: No violations, good discipline")
+                session_lines.append(f"  [OK] {timestamp}: No violations, good discipline")
         
         # Recent recommendations
         latest_session = list(self.coaching_sessions)[-1] if self.coaching_sessions else {}
@@ -1063,23 +1063,23 @@ class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
         rec_lines = [f"  • {rec}" for rec in recommendations[:3]]
         
         return f"""
-🎯 ROLE COACH
+[TARGET] ROLE COACH
 ═══════════════════════════════════════
-🏆 Discipline Status: {discipline_status} ({discipline_score:.1%})
-📊 Coaching Mode: {self.coaching_mode.title().replace('_', ' ')}
-🎯 Trade Limits: Base {self.max_trades} | Adaptive {self.adaptive_max_trades}
-⚖️ Penalty Scale: Base {self.penalty_multiplier:.1f} | Adaptive {self.adaptive_penalty:.1f}
-🔧 Status: {'🚨 Disabled' if self.is_disabled else '✅ Healthy'}
+[TROPHY] Discipline Status: {discipline_status} ({discipline_score:.1%})
+[STATS] Coaching Mode: {self.coaching_mode.title().replace('_', ' ')}
+[TARGET] Trade Limits: Base {self.max_trades} | Adaptive {self.adaptive_max_trades}
+[BALANCE] Penalty Scale: Base {self.penalty_multiplier:.1f} | Adaptive {self.adaptive_penalty:.1f}
+[TOOL] Status: {'[ALERT] Disabled' if self.is_disabled else '[OK] Healthy'}
 
-📈 COACHING CONFIGURATION
+[CHART] COACHING CONFIGURATION
 • Regime Sensitivity: {self.regime_sensitivity:.1%}
-• Performance Adjustment: {'✅ Enabled' if self.performance_adjustment else '❌ Disabled'}
-• Session Awareness: {'✅ Enabled' if self.session_aware else '❌ Disabled'}
-• Volatility Scaling: {'✅ Enabled' if self.volatility_scaling else '❌ Disabled'}
+• Performance Adjustment: {'[OK] Enabled' if self.performance_adjustment else '[FAIL] Disabled'}
+• Session Awareness: {'[OK] Enabled' if self.session_aware else '[FAIL] Disabled'}
+• Volatility Scaling: {'[OK] Enabled' if self.volatility_scaling else '[FAIL] Disabled'}
 • Learning Rate: {self.learning_rate:.1%}
 • Penalty Decay: {self.penalty_decay:.1%}
 
-📊 PERFORMANCE STATISTICS
+[STATS] PERFORMANCE STATISTICS
 • Total Sessions: {self.coaching_stats['total_sessions']:,}
 • Penalties Applied: {self.coaching_stats['penalties_applied']:,}
 • Total Penalty Amount: {self.coaching_stats['total_penalty_amount']:.2f}
@@ -1088,7 +1088,7 @@ class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
 • Improvement Rate: {self.coaching_stats['improvement_rate']:+.1%}
 • Error Count: {self.error_count}
 
-🔧 ADAPTIVE PARAMETERS
+[TOOL] ADAPTIVE PARAMETERS
 • Current Performance Score: {self.current_performance_score:.1%}
 • Market Regime: {self.market_regime.title()}
 • Volatility Level: {self.volatility_regime.title()}
@@ -1113,7 +1113,7 @@ class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
 • Performance Based: Performance-driven limits
 • Regime Aware: Market regime specific rules
 
-🎯 DISCIPLINE METRICS
+[TARGET] DISCIPLINE METRICS
 • Current Score: {discipline_score:.1%}
 • Compliance Rate: {self.coaching_stats['compliance_rate']:.1%}
 • Effectiveness: {list(self.effectiveness_scores)[-1]:.1%} if self.effectiveness_scores else 'N/A'
@@ -1212,7 +1212,7 @@ class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
                 self.learning_history.append(entry)
             
             self.logger.info(format_operator_message(
-                icon="🔄",
+                icon="[RELOAD]",
                 message="RoleCoach state restored",
                 sessions=self.coaching_stats.get('total_sessions', 0),
                 penalties=len(self.penalty_history),
@@ -1260,7 +1260,7 @@ class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             # Log coaching result
             if over_limit > 0:
                 self.logger.warning(format_operator_message(
-                    icon="🎯",
+                    icon="[TARGET]",
                     message="Trade discipline violation",
                     trades=f"{trade_count}/{self.max_trades}",
                     penalty=f"{penalty:.2f}",
@@ -1268,7 +1268,7 @@ class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
                 ))
             else:
                 self.logger.info(format_operator_message(
-                    icon="✅",
+                    icon="[OK]",
                     message="Trade discipline maintained",
                     trades=f"{trade_count}/{self.max_trades}",
                     penalty="none"

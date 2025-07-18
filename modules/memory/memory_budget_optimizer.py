@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/memory/memory_budget_optimizer.py
-# 🚀 PRODUCTION-READY Memory Budget Optimization System
+# [ROCKET] PRODUCTION-READY Memory Budget Optimization System
 # Advanced memory allocation with SmartInfoBus integration
 # ─────────────────────────────────────────────────────────────
 
@@ -12,6 +12,8 @@ from typing import Dict, Any, List, Optional
 from collections import deque, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
+import time
+import threading
 
 from modules.core.module_base import BaseModule, module
 from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin
@@ -66,8 +68,12 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
                  genome: Optional[Dict[str, Any]] = None,
                  **kwargs):
         
-        self.config = config or MemoryBudgetConfig()
+        # Store config first before calling super().__init__()
+        self.memory_budget_config = config or MemoryBudgetConfig()
         super().__init__()
+        
+        # Ensure our config is preserved after BaseModule initialization
+        self.config = self.memory_budget_config
         
         # Initialize advanced systems
         self._initialize_advanced_systems()
@@ -77,6 +83,9 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
         
         # Initialize memory budget state
         self._initialize_memory_state()
+        
+        # Start monitoring after all initialization is complete
+        self._start_monitoring()
         
         self.logger.info(
             format_operator_message(
@@ -114,7 +123,7 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
         # Health monitoring
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        self._start_monitoring()
+        # Note: _start_monitoring() moved to end of initialization
 
     def _initialize_genome_parameters(self, genome: Optional[Dict[str, Any]]):
         """Initialize genome-based parameters"""
@@ -204,7 +213,7 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
 
-    async def _initialize(self):
+    def _initialize(self):
         """Initialize module"""
         try:
             # Set initial allocation in SmartInfoBus
@@ -221,10 +230,8 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
                 thesis="Initial memory allocation based on configuration"
             )
             
-            return True
         except Exception as e:
             self.logger.error(f"Initialization failed: {e}")
-            return False
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process memory budget optimization"""
@@ -684,7 +691,7 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
         
         self.logger.error(
             format_operator_message(
-                "💥", "MEMORY_OPTIMIZATION_ERROR",
+                "[CRASH]", "MEMORY_OPTIMIZATION_ERROR",
                 error=str(error),
                 details=explanation,
                 processing_time_ms=processing_time,
@@ -712,6 +719,10 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
     def _update_memory_health(self):
         """Update memory allocation health metrics"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, 'memory_performance') or not hasattr(self, 'total_profit'):
+                return  # Skip if not fully initialized yet
+                
             # Check for memory leaks or inefficiencies
             total_hits = sum(perf['hits'] for perf in self.memory_performance.values())
             total_profit = self.total_profit
@@ -740,7 +751,7 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
                 if utilization < 0.1:  # Very low utilization
                     self.logger.warning(
                         format_operator_message(
-                            "⚠️", "LOW_MEMORY_UTILIZATION",
+                            "[WARN]", "LOW_MEMORY_UTILIZATION",
                             memory_type=mem_type,
                             utilization=f"{utilization:.1%}",
                             suggestion="Consider reducing allocation size",
@@ -750,7 +761,7 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
                 elif utilization > 0.95:  # Very high utilization
                     self.logger.warning(
                         format_operator_message(
-                            "⚠️", "HIGH_MEMORY_UTILIZATION",
+                            "[WARN]", "HIGH_MEMORY_UTILIZATION",
                             memory_type=mem_type,
                             utilization=f"{utilization:.1%}",
                             suggestion="Consider increasing allocation size",
@@ -835,9 +846,35 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
         self._monitoring_active = False
 
     # Legacy compatibility methods
-    def propose_action(self, obs: Any = None, **kwargs) -> np.ndarray:
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
         """Legacy compatibility for action proposal"""
-        return np.array([0.0])
+        return {"action": [0.0], "confidence": 0.5, "thesis": "Module action proposal"}
+    
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in memory allocation decisions"""
+        if not isinstance(action, dict):
+            return 0.5
+        
+        # Base confidence from allocation optimality
+        optimality = self._calculate_allocation_optimality()
+        
+        # Adjust based on recent performance
+        if self._health_status == 'healthy':
+            health_factor = 1.1
+        elif self._health_status == 'warning':
+            health_factor = 0.9
+        else:  # critical
+            health_factor = 0.7
+        
+        # Consider circuit breaker state
+        if self.circuit_breaker['state'] == 'OPEN':
+            cb_factor = 0.5
+        else:
+            cb_factor = 1.0
+        
+        # Calculate final confidence
+        confidence = optimality * health_factor * cb_factor
+        return float(max(0.0, min(1.0, confidence)))
     
     def confidence(self, obs: Any = None, **kwargs) -> float:
         """Legacy compatibility for confidence"""

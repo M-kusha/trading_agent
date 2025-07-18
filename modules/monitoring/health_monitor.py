@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/monitoring/health_monitor.py
-# 🚀 Production-Grade Lazy Health Monitor for SmartInfoBus
+# [ROCKET] Production-Grade Lazy Health Monitor for SmartInfoBus
 # ─────────────────────────────────────────────────────────────
 
 import time
@@ -237,16 +237,37 @@ class HealthMonitor:
         return logger
     
     def _create_dummy_bus(self) -> Any:
-        """Create a dummy SmartInfoBus for fallback"""
+        """Create a dummy SmartInfoBus for fallback with critical logging"""
+        
         class DummyBus:
+            def __init__(self):
+                self._logger = logging.getLogger("DummyBus")
+                self._logger.critical("[ALERT] USING DUMMY BUS - SMARTINFOBUS INSTRUMENTATION FAILED")
+                self._call_count = 0
+                self._logged_critical = False
+            
             def get(self, key: str, module: Optional[str] = None) -> Any:
+                self._call_count += 1
+                if self._call_count == 1:  # Log only first call
+                    self._logger.error(f"[FAIL] DummyBus.get() called - data unavailable for '{key}' (module: {module})")
                 return None
             
             def set(self, key: str, value: Any, module: Optional[str] = None, thesis: Optional[str] = None) -> None:
-                pass
+                self._call_count += 1
+                if self._call_count <= 5:  # Log first 5 calls
+                    self._logger.warning(f"[WARN] DummyBus.set() called - data LOST for '{key}' (module: {module})")
+                elif self._call_count == 6:
+                    self._logger.error("[ALERT] DummyBus receiving more calls - further data loss not logged")
             
             def get_performance_metrics(self) -> Dict[str, Any]:
-                return {}
+                if not self._logged_critical:
+                    self._logger.critical("[CRASH] Performance metrics unavailable - DummyBus active")
+                    self._logged_critical = True
+                return {
+                    'dummy_bus_active': True,
+                    'data_loss_calls': self._call_count,
+                    'status': 'INSTRUMENTATION_FAILED'
+                }
             
             @property
             def _circuit_breakers(self) -> Dict:
@@ -305,21 +326,20 @@ class HealthMonitor:
                 self.logger.error(f"Failed to start health monitor: {e}")
                 self.logger.debug(traceback.format_exc())
                 return False
-    
     def stop(self, timeout: float = 5.0) -> bool:
         """
-        Stop health monitoring gracefully.
+        Stop health monitoring with guaranteed thread termination.
         
         Args:
             timeout: Maximum time to wait for thread to stop
             
         Returns:
-            bool: True if stopped successfully, False if timeout
+            bool: True if stopped successfully, False if thread leaked
         """
         if not self._started:
             return True
         
-        self.logger.info("Stopping health monitor...")
+        self.logger.info("[STOP] Stopping health monitor...")
         
         # Signal shutdown
         self._shutdown_event.set()
@@ -329,11 +349,71 @@ class HealthMonitor:
             self._monitor_thread.join(timeout)
             
             if self._monitor_thread.is_alive():
-                self.logger.warning("Health monitor thread did not stop within timeout")
+                # ENHANCED: Escalate thread leak to orchestrator
+                self.logger.critical(
+                    f"[ALERT] THREAD LEAK DETECTED: Health monitor thread survived {timeout}s timeout"
+                )
+                
+                # Report to orchestrator if available
+                if self.orchestrator and hasattr(self.orchestrator, '_report_thread_leak'):
+                    try:
+                        self.orchestrator._report_thread_leak('HealthMonitor', self._monitor_thread)
+                    except Exception as e:
+                        self.logger.error(f"Failed to report thread leak: {e}")
+                
+                # Mark thread as zombie
+                self._monitor_thread = None
+                self._started = False
+                
+                # Set alert for operators
+                with self._alerts_lock:
+                    leak_alert = {
+                        'type': 'thread_leak',
+                        'component': 'HealthMonitor',
+                        'severity': 'critical',
+                        'timestamp': time.time(),
+                        'message': f'Monitor thread survived {timeout}s shutdown timeout'
+                    }
+                    self.active_alerts['thread_leak_health_monitor'] = leak_alert
+                    self.alert_history.append(leak_alert)
+                
                 return False
         
         self._started = False
-        self.logger.info("Health monitor stopped")
+        self.logger.info("[OK] Health monitor stopped gracefully")
+        return True
+
+    def force_shutdown(self) -> bool:
+        """
+        Force shutdown with aggressive thread termination.
+        Use only as last resort when normal stop() fails.
+        
+        Returns:
+            bool: True if forced shutdown completed
+        """
+        self.logger.warning("[WARN] Forcing health monitor shutdown...")
+        
+        # Set shutdown flag
+        self._shutdown_event.set()
+        self._started = False
+        
+        # Abandon the thread (mark as zombie)
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            self.logger.critical(
+                f"🧟 Abandoning zombie thread: {self._monitor_thread.name} "
+                f"(ID: {self._monitor_thread.ident})"
+            )
+            self._monitor_thread = None
+        
+        # Clear all state
+        with self._alerts_lock:
+            self.active_alerts.clear()
+        
+        with self._module_health_lock:
+            self.module_health_scores.clear()
+            self.unhealthy_modules.clear()
+        
+        self.logger.warning("[WARN] Health monitor force shutdown complete")
         return True
     
     def _initialize_components(self) -> None:
@@ -440,8 +520,11 @@ class HealthMonitor:
             return {'error': 'psutil not available'}
         
         try:
-            # Non-blocking CPU check
-            cpu_percent = psutil.cpu_percent(interval=0)  # type: ignore
+            if not PSUTIL_AVAILABLE or psutil is None:
+                return {'error': 'psutil not available'}
+            
+            # FIX: CPU check with proper interval
+            cpu_percent = psutil.cpu_percent(interval=0.1)  # 0.1s interval instead of 0
             
             memory = psutil.virtual_memory()  # type: ignore
             disk = psutil.disk_usage('/')  # type: ignore
@@ -792,7 +875,7 @@ class HealthMonitor:
         
         # Log alert
         self.logger.warning(
-            f"🚨 HEALTH ALERT: {alert['type']} - "
+            f"[ALERT] HEALTH ALERT: {alert['type']} - "
             f"{alert.get('metric') or alert.get('module', 'unknown')} - "
             f"Status: {alert.get('status', 'unknown')}"
         )

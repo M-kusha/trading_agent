@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/meta/metacognitive_planner.py
-# 🚀 PRODUCTION-READY Metacognitive Planning System
+# [ROCKET] PRODUCTION-READY Metacognitive Planning System
 # Enhanced with SmartInfoBus integration & intelligent automation
 # ─────────────────────────────────────────────────────────────
 
@@ -77,10 +77,11 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
                  genome: Optional[Dict[str, Any]] = None,
                  **kwargs):
         
-        self.config = config or PlanningConfig()
-        super().__init__()
+        # Store config first (preservation pattern)
+        self.planning_config = config or PlanningConfig()
+        self.config = self.planning_config  # Set config early for init methods
         
-        # Initialize advanced systems
+        # Initialize advanced systems before super().__init__()
         self._initialize_advanced_systems()
         
         # Initialize genome parameters
@@ -88,6 +89,17 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
         
         # Initialize planning state
         self._initialize_planning_state()
+        
+        super().__init__()
+        
+        # Restore our config after BaseModule initialization (prevents dict conversion)
+        self.config = self.planning_config
+        
+        # Start monitoring after all initialization is complete
+        
+        self._start_monitoring()
+        
+        
         
         self.logger.info(
             format_operator_message(
@@ -125,7 +137,7 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
         # Health monitoring
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        self._start_monitoring()
+        # Note: _start_monitoring() moved to end of initialization
 
     def _initialize_genome_parameters(self, genome: Optional[Dict[str, Any]]):
         """Initialize genome-based parameters"""
@@ -206,7 +218,7 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
 
-    async def _initialize(self):
+    def _initialize(self):
         """Initialize module"""
         try:
             # Set initial planning status in SmartInfoBus
@@ -224,10 +236,8 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
                 thesis="Initial metacognitive planning status"
             )
             
-            return True
         except Exception as e:
             self.logger.error(f"Initialization failed: {e}")
-            return False
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process metacognitive planning operations"""
@@ -626,9 +636,15 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
             self.current_phase = next_phase
             self.phase_start_time = datetime.now()
             
+            # Start monitoring after all initialization is complete
+            
+            self._start_monitoring()
+            
+            
+            
             self.logger.info(
                 format_operator_message(
-                    "🔄", "PLANNING_PHASE_TRANSITION",
+                    "[RELOAD]", "PLANNING_PHASE_TRANSITION",
                     from_phase=old_phase.value,
                     to_phase=next_phase.value,
                     reason=reason,
@@ -1093,7 +1109,7 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
         
         self.logger.error(
             format_operator_message(
-                "💥", "PLANNING_OPERATION_ERROR",
+                "[CRASH]", "PLANNING_OPERATION_ERROR",
                 error=str(error),
                 details=explanation,
                 processing_time_ms=processing_time,
@@ -1146,7 +1162,7 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
                 if avg_performance > 20:
                     self.logger.info(
                         format_operator_message(
-                            "🎯", "HIGH_PERFORMANCE_DETECTED",
+                            "[TARGET]", "HIGH_PERFORMANCE_DETECTED",
                             avg_performance=f"{avg_performance:.2f}",
                             episodes_analyzed=len(recent_performance),
                             context="planning_performance"
@@ -1173,22 +1189,37 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
             'MetaCognitivePlanner', 'planning_cycle', 0, False
         )
 
-    def calculate_confidence(self, obs: Any = None, **kwargs) -> float:
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
         """Calculate confidence in planning recommendations"""
-        base_confidence = self.planning_confidence
-        
-        # Adjust based on cognitive load
-        load_adjustment = (1.0 - self.cognitive_load) * 0.2
-        
-        # Adjust based on strategy coherence
-        coherence_adjustment = self.strategy_coherence * 0.2
-        
-        # Adjust based on phase
-        phase_adjustment = 0.1 if self.current_phase == PlanningPhase.EXECUTION else 0.0
-        
-        confidence = base_confidence + load_adjustment + coherence_adjustment + phase_adjustment
-        
-        return float(np.clip(confidence, 0.1, 1.0))
+        try:
+            base_confidence = self.planning_confidence
+            
+            # Adjust based on cognitive load
+            load_adjustment = (1.0 - self.cognitive_load) * 0.2
+            
+            # Adjust based on strategy coherence
+            coherence_adjustment = self.strategy_coherence * 0.2
+            
+            # Adjust based on phase
+            phase_adjustment = 0.1 if self.current_phase == PlanningPhase.EXECUTION else 0.0
+            
+            # Action-specific adjustments
+            if isinstance(action, dict):
+                action_type = action.get('action_type', 'unknown')
+                if action_type in ['strategic_plan', 'tactical_recommendation']:
+                    action_adjustment = 0.1
+                else:
+                    action_adjustment = 0.0
+            else:
+                action_adjustment = 0.0
+            
+            confidence = base_confidence + load_adjustment + coherence_adjustment + phase_adjustment + action_adjustment
+            
+            return float(np.clip(confidence, 0.1, 1.0))
+            
+        except Exception as e:
+            self.logger.error(f"Planning confidence calculation failed: {e}")
+            return 0.5
 
     def get_state(self) -> Dict[str, Any]:
         """Get module state for persistence"""
@@ -1365,10 +1396,51 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
         except Exception as e:
             return np.zeros(13, dtype=np.float32)
 
-    def propose_action(self, obs: Any = None, **kwargs) -> np.ndarray:
-        """Legacy compatibility for action proposal"""
-        return np.zeros(2, dtype=np.float32)
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose planning-based action"""
+        try:
+            # Planning actions focus on strategic and tactical recommendations
+            current_phase = self.current_phase.value
+            cognitive_load = self.cognitive_load
+            planning_confidence = self.planning_confidence
+            
+            # Propose action based on current planning phase
+            if self.current_phase == PlanningPhase.PLANNING:
+                action_type = "strategic_plan"
+                magnitude = min(planning_confidence * 1.5, 1.0)
+            elif self.current_phase == PlanningPhase.EXECUTION:
+                action_type = "execution_adjustment"
+                magnitude = max(0.5, planning_confidence)
+            elif self.current_phase == PlanningPhase.ANALYSIS:
+                action_type = "tactical_recommendation" 
+                magnitude = planning_confidence
+            elif self.current_phase == PlanningPhase.REFLECTION:
+                action_type = "planning_analysis"
+                magnitude = planning_confidence * 0.8
+            else:  # ADAPTATION
+                action_type = "adaptation_plan"
+                magnitude = 0.6
+            
+            return {
+                'action_type': action_type,
+                'magnitude': magnitude,
+                'confidence': planning_confidence,
+                'reasoning': f"Planning phase: {current_phase}, cognitive load: {cognitive_load:.2f}",
+                'current_phase': current_phase,
+                'cognitive_load': cognitive_load,
+                'planning_cycle': self.planning_cycle
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Planning action proposal failed: {e}")
+            return {
+                'action_type': 'no_action',
+                'confidence': 0.0,
+                'reasoning': f'Planning action proposal error: {str(e)}',
+                'error': str(e)
+            }
 
     def confidence(self, obs: Any = None, **kwargs) -> float:
         """Legacy compatibility for confidence"""
-        return self.calculate_confidence(obs, **kwargs)
+        # Since calculate_confidence is now async, we need to return a basic confidence
+        return float(self.planning_confidence)

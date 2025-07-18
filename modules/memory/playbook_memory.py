@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/memory/playbook_memory.py
-# 🚀 PRODUCTION-READY Playbook Memory System
+# [ROCKET] PRODUCTION-READY Playbook Memory System
 # Enhanced with SmartInfoBus integration & advanced pattern recognition
 # ─────────────────────────────────────────────────────────────
 
@@ -72,8 +72,12 @@ class PlaybookMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin
                  genome: Optional[Dict[str, Any]] = None,
                  **kwargs):
         
-        self.config = config or PlaybookConfig()
+        # Store config first before calling super().__init__()
+        self.playbook_config = config or PlaybookConfig()
         super().__init__()
+        
+        # Ensure our config is preserved after BaseModule initialization
+        self.config = self.playbook_config
         
         # Initialize advanced systems
         self._initialize_advanced_systems()
@@ -83,6 +87,12 @@ class PlaybookMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin
         
         # Initialize playbook state
         self._initialize_playbook_state()
+        
+        # Start monitoring after all initialization is complete
+        
+        self._start_monitoring()
+        
+        
         
         self.logger.info(
             format_operator_message(
@@ -120,7 +130,7 @@ class PlaybookMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin
         # Health monitoring
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        self._start_monitoring()
+        # Note: _start_monitoring() moved to end of initialization
 
     def _initialize_genome_parameters(self, genome: Optional[Dict[str, Any]]):
         """Initialize genome-based parameters"""
@@ -197,7 +207,7 @@ class PlaybookMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
 
-    async def _initialize(self):
+    def _initialize(self):
         """Initialize module"""
         try:
             # Set initial memory status in SmartInfoBus
@@ -215,10 +225,8 @@ class PlaybookMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin
                 thesis="Initial playbook memory status"
             )
             
-            return True
         except Exception as e:
             self.logger.error(f"Initialization failed: {e}")
-            return False
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process playbook memory operations"""
@@ -715,7 +723,7 @@ class PlaybookMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin
         
         self.logger.error(
             format_operator_message(
-                "💥", "MEMORY_OPERATION_ERROR",
+                "[CRASH]", "MEMORY_OPERATION_ERROR",
                 error=str(error),
                 details=explanation,
                 processing_time_ms=processing_time,
@@ -769,7 +777,7 @@ class PlaybookMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin
                 if recent_quality > 0.7:
                     self.logger.info(
                         format_operator_message(
-                            "🎯", "HIGH_QUALITY_RECALLS",
+                            "[TARGET]", "HIGH_QUALITY_RECALLS",
                             avg_confidence=f"{recent_quality:.2f}",
                             recent_recalls=len(list(self._recall_history)[-10:]),
                             context="memory_performance"
@@ -796,8 +804,11 @@ class PlaybookMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin
             'PlaybookMemory', 'memory_cycle', 0, False
         )
 
-    def calculate_confidence(self, obs: Any = None, **kwargs) -> float:
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
         """Calculate confidence in memory recommendations"""
+        if not isinstance(action, dict):
+            return 0.5
+            
         base_confidence = 0.5
         
         # Confidence from memory quality
@@ -806,6 +817,26 @@ class PlaybookMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin
             base_confidence += memory_quality * 0.3
         
         # Confidence from pattern effectiveness
+        if self._pattern_effectiveness:
+            avg_effectiveness = np.mean([
+                p['total_pnl'] / max(p['wins'] + p['losses'], 1)
+                for p in self._pattern_effectiveness.values()
+            ])
+            if avg_effectiveness > 0:
+                base_confidence += min(0.3, avg_effectiveness / 100.0)
+        
+        # Confidence from recall efficiency
+        base_confidence += self._recall_efficiency * 0.2
+        
+        # Circuit breaker consideration
+        if self.circuit_breaker['state'] == 'OPEN':
+            base_confidence *= 0.5
+        
+        # Memory size factor
+        memory_factor = min(1.0, len(self._features) / 100.0)
+        base_confidence += memory_factor * 0.1
+        
+        return float(max(0.0, min(1.0, base_confidence)))
         base_confidence += self._prediction_accuracy * 0.3
         
         # Confidence from recall efficiency
@@ -925,10 +956,23 @@ class PlaybookMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin
         finally:
             loop.close()
 
-    def propose_action(self, obs: Any = None, **kwargs) -> np.ndarray:
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
         """Legacy compatibility for action proposal"""
-        return np.zeros(2, dtype=np.float32)
+        return {
+            'action': [0.0, 0.0],
+            'memory_confidence': 0.5,
+            'pattern_match': None,
+            'reason': 'legacy_default'
+        }
 
     def confidence(self, obs: Any = None, **kwargs) -> float:
         """Legacy compatibility for confidence"""
-        return self.calculate_confidence(obs, **kwargs)
+        # Run async calculate_confidence synchronously for compatibility
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            action = kwargs.get('action', {'action': [0.0, 0.0]})
+            result = loop.run_until_complete(self.calculate_confidence(action, obs=obs, **kwargs))
+            return result
+        finally:
+            loop.close()

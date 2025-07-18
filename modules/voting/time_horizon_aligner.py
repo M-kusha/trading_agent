@@ -178,6 +178,11 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         # Circuit breaker and error handling
         self.error_count = 0
         self.circuit_breaker_threshold = 5
+        
+        # Missing analytics attributes
+        self.alignment_analytics = {'overall_alignment_quality': 0.5}
+        self.regime_analytics = {'regime_alignment_score': 0.5, 'regime_stability_score': 0.5}
+        self.performance_analytics = {'recent_alignment_performance': 0.5}
         self.is_disabled = False
         
         # Generate initialization thesis
@@ -259,7 +264,7 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             }
         }, module='TimeHorizonAligner', thesis=thesis)
 
-    async def process(self) -> Dict[str, Any]:
+    async def process(self, **inputs) -> Dict[str, Any]:
         """
         Modern async processing with comprehensive horizon alignment
         
@@ -364,7 +369,7 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             if old_regime != self.current_regime and old_regime != 'unknown':
                 self.alignment_stats['regime_switches'] += 1
                 self.logger.info(format_operator_message(
-                    icon="📊",
+                    icon="[STATS]",
                     message="Market regime changed",
                     old_regime=old_regime,
                     new_regime=self.current_regime,
@@ -448,7 +453,7 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             
             # Track alignment impact and quality
             impact = np.linalg.norm(aligned_weights - weights)
-            await self._track_alignment_impact(weights, aligned_weights, impact)
+            await self._track_alignment_impact(weights.tolist(), aligned_weights.tolist(), {'impact_score': float(impact)})
             
             # Record alignment event
             await self._record_alignment_event_comprehensive(
@@ -466,7 +471,7 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         """Handle dimension mismatch between weights and horizons"""
         try:
             self.logger.warning(format_operator_message(
-                icon="🔧",
+                icon="[TOOL]",
                 message="Dimension mismatch detected",
                 weights_dim=len(weights),
                 horizons_dim=len(self.horizons),
@@ -603,7 +608,7 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     alpha * multipliers + (1 - alpha) * old_multipliers
                 )
             else:
-                self.regime_multipliers[regime] = multipliers
+                self.regime_multipliers[regime] = multipliers.astype(np.float32)
             
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "regime_multipliers_update")
@@ -633,13 +638,13 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             if len(self.performance_history) >= 10:
                 recent_performance = [p.get('improvement', 0.0) for p in list(self.performance_history)[-10:]]
                 effectiveness = np.mean(recent_performance) if recent_performance else 0.5
-                self.alignment_quality['effectiveness'] = effectiveness
+                self.alignment_quality['effectiveness'] = float(effectiveness)
             
             # Consistency (stability of alignment decisions)
             if len(self.alignment_history) >= 5:
                 recent_impacts = [a.get('impact', 0.0) for a in list(self.alignment_history)[-10:]]
                 consistency = 1.0 - np.std(recent_impacts) if recent_impacts else 0.5
-                self.alignment_quality['consistency'] = max(0.0, min(1.0, consistency))
+                self.alignment_quality['consistency'] = float(max(0.0, min(1.0, consistency)))
             
             # Adaptability (responsiveness to market changes)
             adaptation_score = min(1.0, self.alignment_stats['significant_adaptations'] / max(1, self.alignment_stats['total_alignments']))
@@ -678,7 +683,7 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             
             # Calculate similarity
             similarity = 1.0 - np.mean(np.abs(expected_multipliers - current_combined)) / 2.0
-            return max(0.0, min(1.0, similarity))
+            return float(max(0.0, min(1.0, similarity)))
             
         except Exception:
             return 0.5
@@ -858,7 +863,7 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             self.session_patterns[session] = np.ones_like(self.horizons)
         
         self.logger.info(format_operator_message(
-            icon="🔄",
+            icon="[RELOAD]",
             message="Time Horizon Aligner resized",
             old_horizons=old_horizons.tolist(),
             new_horizons=self.horizons.tolist()
@@ -965,7 +970,7 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
             self.logger.error(format_operator_message(
-                icon="🚨",
+                icon="[ALERT]",
                 message="Time Horizon Aligner disabled due to repeated errors",
                 error_count=self.error_count,
                 threshold=self.circuit_breaker_threshold
@@ -1049,7 +1054,259 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         self.is_disabled = False
         
         self.logger.info(format_operator_message(
-            icon="🔄",
+            icon="[RELOAD]",
             message="Time Horizon Aligner reset completed",
             status="All alignment state cleared and systems reinitialized"
         ))
+
+    # ═══════════════════════════════════════════════════════════════════
+    # BASEMODULE ABSTRACT METHOD IMPLEMENTATIONS
+    # ═══════════════════════════════════════════════════════════════════
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in time horizon alignment recommendations"""
+        try:
+            # Base confidence from alignment quality
+            alignment_quality = self.alignment_analytics.get('overall_alignment_quality', 0.5)
+            
+            # Adjust for regime stability
+            regime_alignment = self.regime_analytics.get('regime_alignment_score', 0.5)
+            
+            # Consider recent performance
+            recent_performance = self.performance_analytics.get('recent_alignment_performance', 0.5)
+            
+            # Market uncertainty factor
+            volatility_level = self._determine_volatility_level()
+            volatility_confidence = {
+                'very_low': 0.9,
+                'low': 0.8,
+                'medium': 0.7,
+                'high': 0.5,
+                'extreme': 0.3
+            }.get(volatility_level, 0.6)
+            
+            # Combine factors
+            confidence = (
+                alignment_quality * 0.4 +
+                regime_alignment * 0.3 +
+                recent_performance * 0.2 +
+                volatility_confidence * 0.1
+            )
+            
+            # Ensure valid range
+            return max(0.1, min(0.95, confidence))
+            
+        except Exception as e:
+            self.logger.warning(f"Confidence calculation failed: {e}")
+            return 0.4  # Conservative default
+
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose horizon alignment action for time-based weight optimization"""
+        try:
+            # Get current alignment data
+            alignment_data = await self._get_comprehensive_alignment_data()
+            
+            # Analyze current alignment quality
+            alignment_quality = self.alignment_analytics.get('overall_alignment_quality', 0.5)
+            regime_stability = self.regime_analytics.get('regime_stability_score', 0.5)
+            
+            # Determine action based on alignment state
+            if alignment_quality < 0.4:
+                action_type = 'realign'
+                signal_strength = 0.8
+                reasoning = f"Poor alignment quality ({alignment_quality:.3f}) requires immediate realignment"
+            elif regime_stability < 0.3:
+                action_type = 'adapt'
+                signal_strength = 0.6
+                reasoning = f"Low regime stability ({regime_stability:.3f}) suggests need for adaptation"
+            elif alignment_quality > 0.8 and regime_stability > 0.7:
+                action_type = 'maintain'
+                signal_strength = 0.4
+                reasoning = f"Excellent alignment (quality: {alignment_quality:.3f}, stability: {regime_stability:.3f})"
+            else:
+                action_type = 'optimize'
+                signal_strength = 0.5
+                reasoning = f"Moderate alignment metrics suggest optimization opportunity"
+            
+            return {
+                'action': action_type,
+                'signal_strength': signal_strength,
+                'reasoning': reasoning,
+                'alignment_metrics': {
+                    'alignment_quality': alignment_quality,
+                    'regime_stability': regime_stability,
+                    'volatility_level': self._determine_volatility_level(),
+                    'current_horizons': len(self.horizons)
+                },
+                'confidence': await self.calculate_confidence({}, **inputs)
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Action proposal failed: {e}")
+            return {
+                'action': 'abstain',
+                'signal_strength': 0.0,
+                'reasoning': f'Alignment error: {str(e)}',
+                'confidence': 0.1
+            }
+
+    # ═══════════════════════════════════════════════════════════════════
+    # MISSING METHOD IMPLEMENTATIONS (STUBS)
+    # ═══════════════════════════════════════════════════════════════════
+    
+    def _generate_disabled_response(self) -> Dict[str, Any]:
+        """Generate response when module is disabled"""
+        return {
+            'alignment_weights': [1.0] * len(getattr(self, 'horizon_weights', [1.0])),
+            'quality_score': 0.5,
+            'disabled': True,
+            'reason': 'Module disabled'
+        }
+    
+    async def _update_horizon_performance_comprehensive(self, alignment_data: Dict[str, Any]) -> None:
+        """Update horizon performance metrics"""
+        try:
+            # Stub implementation - just log for now
+            self.logger.debug("Horizon performance update called")
+        except Exception as e:
+            self.logger.warning(f"Horizon performance update failed: {e}")
+    
+    async def _update_session_patterns_comprehensive(self, alignment_data: Dict[str, Any]) -> None:
+        """Update session pattern analysis"""
+        try:
+            # Stub implementation - just log for now
+            self.logger.debug("Session pattern update called")
+        except Exception as e:
+            self.logger.warning(f"Session pattern update failed: {e}")
+    
+    async def _update_cyclical_patterns_comprehensive(self, alignment_data: Dict[str, Any]) -> None:
+        """Update cyclical pattern analysis"""
+        try:
+            # Stub implementation - just log for now
+            self.logger.debug("Cyclical pattern update called")
+        except Exception as e:
+            self.logger.warning(f"Cyclical pattern update failed: {e}")
+    
+    async def _generate_intelligent_alignment_recommendations(self, quality_analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate intelligent alignment recommendations"""
+        try:
+            quality_score = quality_analysis.get('quality_score', 0.5)
+            
+            if quality_score < 0.4:
+                recommendation = 'increase_short_term_weight'
+                priority = 'high'
+            elif quality_score > 0.8:
+                recommendation = 'balance_horizons'
+                priority = 'low'
+            else:
+                recommendation = 'maintain_current_alignment'
+                priority = 'medium'
+            
+            return {
+                'recommendation': recommendation,
+                'priority': priority,
+                'confidence': quality_score,
+                'reasoning': f'Based on quality score: {quality_score:.3f}'
+            }
+        except Exception as e:
+            self.logger.warning(f"Recommendation generation failed: {e}")
+            return {'recommendation': 'maintain_current_alignment', 'priority': 'medium', 'confidence': 0.5}
+    
+    def _get_health_metrics(self) -> Dict[str, Any]:
+        """Get health metrics for the module"""
+        return {
+            'status': getattr(self, '_health_status', 'healthy'),
+            'last_update': datetime.datetime.now().isoformat(),
+            'alignment_quality': getattr(self, 'quality_score', 0.5),
+            'processing_count': getattr(self, 'clock', 0)
+        }
+    
+    async def _calculate_distance_factors(self) -> Dict[str, float]:
+        """Calculate distance-based weighting factors"""
+        return {
+            'short_term': 1.0,
+            'medium_term': 0.8,
+            'long_term': 0.6
+        }
+    
+    async def _get_regime_factors(self) -> Dict[str, float]:
+        """Get regime-based adjustment factors"""
+        return {
+            'volatile': 1.2,
+            'trending': 0.9,
+            'ranging': 1.1,
+            'normal': 1.0
+        }
+    
+    async def _get_session_factors(self) -> Dict[str, float]:
+        """Get session-based adjustment factors"""
+        current_hour = datetime.datetime.now().hour
+        if 8 <= current_hour <= 17:  # Business hours
+            return {'session_factor': 1.0}
+        else:
+            return {'session_factor': 0.8}
+    
+    async def _get_performance_factors(self) -> Dict[str, float]:
+        """Get performance-based adjustment factors"""
+        return {
+            'performance_consistency': getattr(self, 'quality_score', 0.5),
+            'adaptation_success': 0.7
+        }
+    
+    async def _get_volatility_factors(self) -> Dict[str, float]:
+        """Get volatility-based adjustment factors"""
+        volatility_regime = getattr(self, 'volatility_regime', 'medium')
+        volatility_map = {
+            'low': 0.8,
+            'medium': 1.0,
+            'high': 1.3,
+            'extreme': 1.5
+        }
+        return {'volatility_factor': volatility_map.get(volatility_regime, 1.0)}
+    
+    async def _combine_alignment_factors(self, distance_factors: Dict[str, float], 
+                                       regime_factors: Dict[str, float],
+                                       session_factors: Dict[str, float],
+                                       performance_factors: Dict[str, float],
+                                       volatility_factors: Dict[str, float]) -> Dict[str, float]:
+        """Combine all alignment factors"""
+        combined = {}
+        
+        # Simple combination of factors
+        base_weight = 1.0
+        for factor_dict in [regime_factors, session_factors, performance_factors, volatility_factors]:
+            for key, value in factor_dict.items():
+                base_weight *= value
+        
+        combined['combined_factor'] = base_weight
+        return combined
+    
+    async def _track_alignment_impact(self, original_weights: List[float], 
+                                    aligned_weights: List[float], 
+                                    impact: Dict[str, Any]) -> None:
+        """Track the impact of alignment adjustments"""
+        try:
+            if hasattr(self, 'alignment_history'):
+                self.alignment_history.append({
+                    'timestamp': datetime.datetime.now(),
+                    'original_weights': original_weights,
+                    'aligned_weights': aligned_weights,
+                    'impact': impact
+                })
+        except Exception as e:
+            self.logger.warning(f"Alignment impact tracking failed: {e}")
+    
+    async def _record_alignment_event_comprehensive(self, *args, **kwargs) -> None:
+        """Record alignment event (stub implementation)"""
+        try:
+            self.logger.debug("Alignment event recorded")
+        except Exception as e:
+            self.logger.warning(f"Alignment event recording failed: {e}")
+    
+    def _determine_quality_trend(self) -> str:
+        """Determine quality trend (stub implementation)"""
+        return "stable"
+    
+    def _identify_improvement_areas(self) -> List[str]:
+        """Identify improvement areas (stub implementation)"""
+        return ["horizon_balance", "regime_adaptation"]

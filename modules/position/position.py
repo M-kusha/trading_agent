@@ -108,16 +108,71 @@ class PositionDecisionResult:
     name="PositionManager",
     version="3.0.0",
     category="position",
-    provides=["position_decisions", "portfolio_state", "risk_metrics", "position_analysis"],
+    provides=[
+        "position_decisions", "portfolio_state", "risk_metrics", "position_analysis",
+        "positions", "pending_orders", "position_data", "trades", "recent_trades",
+        "current_pnl", "balance", "equity"
+    ],
     requires=["market_data", "trading_signals", "risk_score"],
     description="Advanced position management with dynamic risk scaling and portfolio optimization",
     thesis_required=True,
     health_monitoring=True,
     performance_tracking=True,
     error_handling=True,
-    voting=True
+    is_voting_member=True
 )
 class PositionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
+
+    def _initialize(self, **kwargs):
+        """
+        Real implementation of the required _initialize method for module system compatibility.
+        Initializes advanced systems, genome parameters, position state, and tracking.
+        Accepts optional config, instruments, genome, and env from kwargs for flexible hot-reload and orchestration.
+        """
+        config = kwargs.get('config', None)
+        instruments = kwargs.get('instruments', None)
+        genome = kwargs.get('genome', None)
+        env = kwargs.get('env', None)
+
+        # Ensure config is properly initialized
+        if not hasattr(self, 'config') or self.config is None:
+            self.config = config or PositionConfig()
+        elif config is not None:
+            self.config = config
+            
+        # Ensure config is the right type
+        if not isinstance(self.config, PositionConfig):
+            if isinstance(self.config, dict):
+                self.config = PositionConfig(**self.config)
+            else:
+                self.config = PositionConfig()
+        
+        if not hasattr(self, 'instruments') or self.instruments is None:
+            self.instruments = instruments or ["XAU/USD", "EUR/USD"]
+        elif instruments is not None:
+            self.instruments = instruments
+            
+        if not hasattr(self, 'genome') or self.genome is None:
+            self.genome = genome or {}
+        elif genome is not None:
+            self.genome = genome
+            
+        if env is not None:
+            self.env = env
+
+        self._initialize_advanced_systems()
+        self._initialize_genome_parameters(self.genome)
+        self._initialize_position_state()
+        self._initialize_position_tracking()
+        self.logger.info(
+            format_operator_message(
+                "[INIT]", "POSITION_MANAGER_REINITIALIZED",
+                instruments_count=len(self.instruments),
+                initial_balance=f"€{self.config.initial_balance:,.0f}",
+                max_position_pct=f"{self.config.max_pct:.1%}",
+                details=f"PositionManager _initialize called"
+            )
+        )
 
     def __init__(
         self,
@@ -126,14 +181,27 @@ class PositionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixi
         genome: Optional[Dict[str, Any]] = None,
         **kwargs
     ):
-        self.config = config or PositionConfig()
         self.instruments = instruments or ["XAU/USD", "EUR/USD", ]
         
         super().__init__()
+        
+        # Set config after super() call to avoid BaseModule interference
+        self.config = config or PositionConfig()
+        
+        # Ensure config is the right type
+        if not isinstance(self.config, PositionConfig):
+            if isinstance(self.config, dict):
+                self.config = PositionConfig(**self.config)
+            else:
+                self.config = PositionConfig()
+        
         self._initialize_advanced_systems()
         self._initialize_genome_parameters(genome)
         self._initialize_position_state()
         self._initialize_position_tracking()
+        
+        # Start monitoring after all initialization is complete
+        self._start_monitoring()
         
         self.env = None
         
@@ -170,9 +238,6 @@ class PositionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixi
             'state': 'CLOSED',
             'threshold': self.config.circuit_breaker_threshold
         }
-        
-        # Start monitoring
-        self._start_monitoring()
 
     def _start_monitoring(self):
         """Start background monitoring for position management"""
@@ -438,7 +503,7 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
         if self.config.max_pct < 1e-5:
             self.logger.warning(
                 format_operator_message(
-                    "⚠️", "MAX_PCT_TOO_LOW",
+                    "[WARN]", "MAX_PCT_TOO_LOW",
                     current=f"{self.config.max_pct:.6f}",
                     default=f"{self.default_max_pct:.4f}",
                     action="Restoring to default"
@@ -468,7 +533,7 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
         
         self.logger.info(
             format_operator_message(
-                "📊", "PORTFOLIO_ASSESSMENT",
+                "[STATS]", "PORTFOLIO_ASSESSMENT",
                 health_score=f"{portfolio_health['overall_health']:.3f}",
                 market_regime=market_regime,
                 exposure_ratio=f"{portfolio_health['exposure_ratio']:.2%}",
@@ -498,7 +563,7 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
             if decision_result.decision != PositionDecision.HOLD:
                 self.logger.info(
                     format_operator_message(
-                        "💰", "POSITION_DECISION",
+                        "[MONEY]", "POSITION_DECISION",
                         instrument=instrument,
                         decision=decision_result.decision.value,
                         intensity=f"{decision_result.intensity:.3f}",
@@ -695,7 +760,7 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
                 
                 self.logger.warning(
                     format_operator_message(
-                        "🚨", "EMERGENCY_CLOSE",
+                        "[ALERT]", "EMERGENCY_CLOSE",
                         instrument=instrument,
                         drawdown=f"{context.drawdown:.1%}",
                         consecutive_losses=self.consecutive_losses,
@@ -963,7 +1028,7 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
         if self._adaptive_params['dynamic_max_pct'] < min_cap:
             self.logger.warning(
                 format_operator_message(
-                    "⚠️", "DYNAMIC_MAX_PCT_LOW",
+                    "[WARN]", "DYNAMIC_MAX_PCT_LOW",
                     current=f"{self._adaptive_params['dynamic_max_pct']:.6f}",
                     minimum=f"{min_cap:.4f}",
                     action="Resetting to default"
@@ -983,6 +1048,10 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
     def _update_position_health(self) -> None:
         """Update position health metrics"""
         try:
+            # Defensive check for initialization race condition
+            if not hasattr(self, 'open_positions') or not hasattr(self, '_exposure_history'):
+                return
+                
             # Calculate current exposure
             current_exposure = self._calculate_current_exposure_ratio()
             self._total_exposure_ratio = current_exposure
@@ -1116,7 +1185,7 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
         
         self.logger.info(
             format_operator_message(
-                "🔄", "POSITIONS_SYNCED",
+                "[RELOAD]", "POSITIONS_SYNCED",
                 position_count=len(self.open_positions),
                 timestamp=self._last_sync_time.isoformat()
             )
@@ -1153,7 +1222,7 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
             if ok:
                 self.logger.info(
                     format_operator_message(
-                        "🔴", "POSITION_CLOSED",
+                        "[RED]", "POSITION_CLOSED",
                         instrument=inst,
                         reason=reason,
                         via="broker"
@@ -1191,7 +1260,7 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
             if res and getattr(res, 'retcode', -1) == getattr(mt5, 'TRADE_RETCODE_DONE', 10009):
                 self.logger.info(
                     format_operator_message(
-                        "🔴", "POSITION_CLOSED_MT5",
+                        "[RED]", "POSITION_CLOSED_MT5",
                         instrument=inst,
                         ticket=data["ticket"],
                         reason=reason
@@ -1205,7 +1274,7 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
         # backtest fallback
         self.logger.info(
             format_operator_message(
-                "🔴", "POSITION_CLOSED_SIM",
+                "[RED]", "POSITION_CLOSED_SIM",
                 instrument=inst,
                 reason=reason,
                 mode="simulation"
@@ -1553,21 +1622,21 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
         
         # Portfolio status
         if self._portfolio_health_score > 0.8:
-            portfolio_status = "🚀 Excellent"
+            portfolio_status = "[ROCKET] Excellent"
         elif self._portfolio_health_score > 0.6:
-            portfolio_status = "✅ Good"
+            portfolio_status = "[OK] Good"
         elif self._portfolio_health_score > 0.4:
-            portfolio_status = "⚡ Fair"
+            portfolio_status = "[FAST] Fair"
         else:
-            portfolio_status = "⚠️ Poor"
+            portfolio_status = "[WARN] Poor"
         
         # Risk status
         if self.consecutive_losses == 0:
-            risk_status = "🟢 Safe"
+            risk_status = "[GREEN] Safe"
         elif self.consecutive_losses < self.config.max_consecutive_losses // 2:
-            risk_status = "🟡 Caution"
+            risk_status = "[YELLOW] Caution"
         else:
-            risk_status = "🔴 High Risk"
+            risk_status = "[RED] High Risk"
         
         # Active decisions
         active_decisions = len([d for d in self.last_decisions.values() if d.decision != PositionDecision.HOLD])
@@ -1584,27 +1653,27 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
             recent_avg_confidence = np.mean(all_confidences) if all_confidences else 0.0
         
         return f"""
-📊 ENHANCED POSITION MANAGER
+[STATS] ENHANCED POSITION MANAGER
 ═══════════════════════════════════════
 💼 Portfolio: {portfolio_status} ({self._portfolio_health_score:.3f})
-⚠️ Risk Status: {risk_status}
-📈 Exposure: {self._total_exposure_ratio:.1%}
+[WARN] Risk Status: {risk_status}
+[CHART] Exposure: {self._total_exposure_ratio:.1%}
 📍 Open Positions: {len(self.open_positions)}
 
-🔧 RISK PARAMETERS
+[TOOL] RISK PARAMETERS
 • Max Position %: {self.config.max_pct:.1%} (dynamic: {self._adaptive_params['dynamic_max_pct']:.1%})
 • Hard Loss Limit: €{self.config.hard_loss_eur:.0f}
 • Trail Stop: {self.config.trail_pct:.1%} / €{self.config.trail_abs_eur:.0f}
 • Signal Threshold: {self.config.min_signal_threshold:.2f}
 • Consecutive Losses: {self.consecutive_losses}/{self.config.max_consecutive_losses}
 
-📊 PERFORMANCE METRICS
+[STATS] PERFORMANCE METRICS
 • Decision Quality: {self._decision_quality_score:.3f}
 • Risk Management: {self._risk_management_score:.3f}
 • Signal Quality: {self._assess_signal_quality():.3f}
 • Recent Confidence: {recent_avg_confidence:.3f}
 
-🎯 ADAPTIVE PARAMETERS
+[TARGET] ADAPTIVE PARAMETERS
 • Signal Sensitivity: {self._adaptive_params['signal_sensitivity']:.2f}
 • Risk Tolerance: {self._adaptive_params['risk_tolerance']:.2f}
 • Confidence Threshold: {self._adaptive_params['confidence_threshold']:.2f}
@@ -1615,7 +1684,7 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
 • Portfolio Health Trend: {len([h for h in self._portfolio_health_history if h['health_score'] > 0.7])} good periods
 • Circuit Breaker: {self.circuit_breaker['state']}
 
-🔄 INSTRUMENTS ({len(self.instruments)})
+[RELOAD] INSTRUMENTS ({len(self.instruments)})
 {chr(10).join([f"• {inst}: {len(self.signal_history.get(inst, []))} signals, confidence: {self.position_confidence.get(inst, 0.5):.2f}" for inst in self.instruments[:5]])}
         """
 
@@ -1685,58 +1754,165 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
             self.logger.error(f"Observation generation failed: {e}")
             return np.zeros(12, dtype=np.float32)
 
-    def propose_action(self, obs: Any = None) -> np.ndarray:
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
         """
         Propose trading actions based on independent signal interpretation.
         
         This method uses the hierarchical decision making process with SmartInfoBus.
         """
-        if self._forced_action is not None:
-            return np.array(
-                [self._forced_action] * len(self.instruments) * 2, dtype=np.float32
-            )
-        
-        signals: List[float] = []
-        
-        # Extract market data from SmartInfoBus
-        market_data = self._extract_market_data_from_smartbus()
-        
-        if not market_data:
-            # Fallback: generate neutral signals
-            return np.zeros(len(self.instruments) * 2, dtype=np.float32)
-        
-        # Process signals through hierarchical decision making
-        decisions = self.process_market_signals(market_data)
-        
-        # Convert decisions to action signals
-        for inst in self.instruments:
-            decision_result = decisions.get(inst, None)
+        try:
+            obs = inputs.get('obs', None)
             
-            if decision_result is None:
-                # Fallback: use basic signal extraction
-                intensity = 0.0
-                duration = 1.0
-            else:
-                # Map decision to intensity
-                intensity = self._map_decision_to_intensity(decision_result)
-                duration = 1.0  # Standard duration
-                
-                # Update position confidence tracking
-                self.position_confidence[inst] = decision_result.confidence
-            
-            self.logger.info(
-                format_operator_message(
-                    "📡", "ACTION_PROPOSAL",
-                    instrument=inst,
-                    intensity=f"{intensity:.3f}",
-                    duration=f"{duration:.1f}",
-                    decision=decision_result.decision.value if decision_result else "hold"
+            if self._forced_action is not None:
+                action_array = np.array(
+                    [self._forced_action] * len(self.instruments) * 2, dtype=np.float32
                 )
-            )
+                return {
+                    'action_type': 'position_management',
+                    'action_array': action_array.tolist(),
+                    'forced': True,
+                    'confidence': self._forced_conf or 0.8
+                }
             
-            signals.extend([intensity, duration])
-        
-        return np.array(signals, dtype=np.float32)
+            signals: List[float] = []
+            
+            # Extract market data from SmartInfoBus
+            market_data = self._extract_market_data_from_smartbus()
+            
+            if not market_data:
+                # Fallback: generate neutral signals
+                action_array = np.zeros(len(self.instruments) * 2, dtype=np.float32)
+                return {
+                    'action_type': 'position_management',
+                    'action_array': action_array.tolist(),
+                    'fallback_reason': 'no_market_data',
+                    'confidence': 0.1
+                }
+            
+            # Process signals through hierarchical decision making
+            decisions = self.process_market_signals(market_data)
+            
+            # Convert decisions to action signals
+            action_details = []
+            for inst in self.instruments:
+                decision_result = decisions.get(inst, None)
+                
+                if decision_result is None:
+                    # Fallback: use basic signal extraction
+                    intensity = 0.0
+                    duration = 1.0
+                else:
+                    # Map decision to intensity
+                    intensity = self._map_decision_to_intensity(decision_result)
+                    duration = 1.0  # Standard duration
+                    
+                    # Update position confidence tracking
+                    self.position_confidence[inst] = decision_result.confidence
+                
+                action_details.append({
+                    'instrument': inst,
+                    'intensity': intensity,
+                    'duration': duration,
+                    'decision': decision_result.decision.value if decision_result else 'hold',
+                    'confidence': decision_result.confidence if decision_result else 0.5
+                })
+                
+                self.logger.info(
+                    format_operator_message(
+                        "📡", "ACTION_PROPOSAL",
+                        instrument=inst,
+                        intensity=f"{intensity:.3f}",
+                        duration=f"{duration:.1f}",
+                        decision=decision_result.decision.value if decision_result else "hold"
+                    )
+                )
+                
+                signals.extend([intensity, duration])
+            
+            action_array = np.array(signals, dtype=np.float32)
+            overall_confidence = self.confidence() if hasattr(self, 'confidence') else 0.5
+            
+            return {
+                'action_type': 'position_management',
+                'action_array': action_array.tolist(),
+                'action_details': action_details,
+                'confidence': overall_confidence,
+                'market_data_available': True,
+                'decisions_count': len(decisions),
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Action proposal failed: {e}")
+            action_array = np.zeros(len(self.instruments) * 2, dtype=np.float32)
+            return {
+                'action_type': 'position_management',
+                'action_array': action_array.tolist(),
+                'error': str(e),
+                'confidence': 0.1
+            }
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in position management decisions"""
+        try:
+            # Use the existing confidence calculation logic
+            if self._forced_conf is not None:
+                return float(self._forced_conf)
+
+            # Calculate confidence components
+            confidence_components = []
+            
+            # Portfolio health confidence
+            confidence_components.append(self._portfolio_health_score)
+            
+            # Position-specific confidence
+            if self.position_confidence:
+                avg_position_conf = np.mean(list(self.position_confidence.values()))
+                confidence_components.append(avg_position_conf)
+            else:
+                confidence_components.append(0.5)  # Neutral when no positions
+            
+            # Signal quality confidence
+            signal_quality = self._assess_signal_quality()
+            confidence_components.append(signal_quality)
+            
+            # Risk management confidence
+            confidence_components.append(self._risk_management_score)
+            
+            # Circuit breaker confidence
+            circuit_confidence = 1.0 if self.circuit_breaker['state'] == 'CLOSED' else 0.2
+            confidence_components.append(circuit_confidence)
+            
+            # Decision quality confidence
+            confidence_components.append(self._decision_quality_score)
+            
+            # Calculate weighted average
+            weights = [0.25, 0.2, 0.2, 0.15, 0.1, 0.1]  # Portfolio, positions, signals, risk, circuit, decisions
+            final_confidence = np.average(confidence_components, weights=weights)
+            
+            return float(np.clip(final_confidence, 0.1, 1.0))
+            
+        except Exception as e:
+            self.logger.error(f"Confidence calculation failed: {e}")
+            return 0.5  # Default moderate confidence
+
+    # Legacy method for backward compatibility
+    def propose_action_legacy(self, obs: Any = None) -> np.ndarray:
+        """Legacy propose_action method that returns numpy array"""
+        try:
+            # Try to run async method
+            result = asyncio.run(self.propose_action(obs=obs))
+            return np.array(result.get('action_array', []), dtype=np.float32)
+        except RuntimeError:
+            # If we're already in an event loop, create a task instead
+            try:
+                loop = asyncio.get_running_loop()
+                task = loop.create_task(self.propose_action(obs=obs))
+                # For this legacy method, we'll provide a simple fallback
+                return np.zeros(len(self.instruments) * 2, dtype=np.float32)
+            except Exception:
+                # Final fallback
+                return np.zeros(len(self.instruments) * 2, dtype=np.float32)
 
     def _map_decision_to_intensity(self, decision_result: PositionDecisionResult) -> float:
         """Map position decision to trading intensity"""

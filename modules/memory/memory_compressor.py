@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/memory/memory_compressor.py
-# 🚀 PRODUCTION-READY Memory Compression System
+# [ROCKET] PRODUCTION-READY Memory Compression System
 # Advanced experience compression with SmartInfoBus integration
 # ─────────────────────────────────────────────────────────────
 
@@ -71,8 +71,12 @@ class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
                  genome: Optional[Dict[str, Any]] = None,
                  **kwargs):
         
-        self.config = config or CompressorConfig()
+        # Store config first before calling super().__init__()
+        self.compressor_config = config or CompressorConfig()
         super().__init__()
+        
+        # Ensure our config is preserved after BaseModule initialization
+        self.config = self.compressor_config
         
         # Initialize advanced systems
         self._initialize_advanced_systems()
@@ -82,6 +86,9 @@ class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         
         # Initialize compression state
         self._initialize_compression_state()
+        
+        # Start monitoring after all initialization is complete
+        self._start_monitoring()
         
         self.logger.info(
             format_operator_message(
@@ -119,7 +126,6 @@ class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         # Health monitoring
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        self._start_monitoring()
 
     def _initialize_genome_parameters(self, genome: Optional[Dict[str, Any]]):
         """Initialize genome-based parameters"""
@@ -201,7 +207,7 @@ class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
 
-    async def _initialize(self):
+    def _initialize(self):
         """Initialize module"""
         try:
             # Set initial compression status in SmartInfoBus
@@ -219,10 +225,8 @@ class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
                 thesis="Initial memory compression status"
             )
             
-            return True
         except Exception as e:
             self.logger.error(f"Initialization failed: {e}")
-            return False
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process memory compression"""
@@ -780,7 +784,7 @@ class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         
         self.logger.error(
             format_operator_message(
-                "💥", "MEMORY_COMPRESSION_ERROR",
+                "[CRASH]", "MEMORY_COMPRESSION_ERROR",
                 error=str(error),
                 details=explanation,
                 processing_time_ms=processing_time,
@@ -806,6 +810,10 @@ class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
     def _update_compression_health(self):
         """Update compression health metrics"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, '_compression_quality_scores') or not hasattr(self, '_compression_performance'):
+                return  # Skip if not fully initialized yet
+                
             # Check compression quality
             if self._compression_quality_scores:
                 avg_quality = np.mean(list(self._compression_quality_scores)[-5:])
@@ -838,7 +846,7 @@ class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
                     if trend > 0.1:  # Improving intuition
                         self.logger.info(
                             format_operator_message(
-                                "📈", "COMPRESSION_EFFICIENCY_IMPROVING",
+                                "[CHART]", "COMPRESSION_EFFICIENCY_IMPROVING",
                                 trend=f"{trend:.4f}",
                                 recent_strength=f"{intuition_strengths[-1]:.4f}",
                                 context="efficiency_analysis"
@@ -937,13 +945,52 @@ class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         self._monitoring_active = False
 
     # Legacy compatibility methods
-    def propose_action(self, obs: Any = None, **kwargs) -> np.ndarray:
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
         """Legacy compatibility for action proposal"""
         # Return intuition vector as action guidance
         if np.linalg.norm(self.intuition_vector) > 0:
-            # Convert to 2D action space
-            return np.array([self.intuition_vector[0], self.intuition_vector[1] if len(self.intuition_vector) > 1 else 0.0])
-        return np.array([0.0, 0.0])
+            # Convert to action dictionary format
+            action_values = [
+                float(self.intuition_vector[0]), 
+                float(self.intuition_vector[1] if len(self.intuition_vector) > 1 else 0.0)
+            ]
+            return {
+                "action": action_values,
+                "confidence": float(np.linalg.norm(self.intuition_vector)),
+                "thesis": f"Memory compression intuition with strength {np.linalg.norm(self.intuition_vector):.3f}"
+            }
+        return {"action": [0.0, 0.0], "confidence": 0.5, "thesis": "Module action proposal"}
+    
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in memory compression insights"""
+        if not isinstance(action, dict):
+            return 0.5
+        
+        # Base confidence from intuition vector strength
+        intuition_strength = float(np.linalg.norm(self.intuition_vector))
+        
+        # Adjust based on compression quality
+        if self._compression_quality_scores:
+            avg_quality = np.mean(list(self._compression_quality_scores))
+            quality_factor = avg_quality
+        else:
+            quality_factor = 0.5
+        
+        # Consider memory utilization
+        memory_util = self._compression_performance.get('memory_utilization', 0.0)
+        utilization_factor = min(1.0, memory_util + 0.3)  # Some memory is good
+        
+        # Circuit breaker consideration
+        if self.circuit_breaker['state'] == 'OPEN':
+            cb_factor = 0.5
+        else:
+            cb_factor = 1.0
+        
+        # Combine factors
+        confidence = (intuition_strength * 0.4 + quality_factor * 0.3 + 
+                     utilization_factor * 0.2 + cb_factor * 0.1)
+        
+        return float(max(0.0, min(1.0, confidence)))
     
     def confidence(self, obs: Any = None, **kwargs) -> float:
         """Legacy compatibility for confidence"""

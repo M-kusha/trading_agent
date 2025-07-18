@@ -268,7 +268,7 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             }
         }, module='AlternativeRealitySampler', thesis=thesis)
 
-    async def process(self) -> Dict[str, Any]:
+    async def process(self, **inputs) -> Dict[str, Any]:
         """
         Modern async processing with comprehensive sampling analysis
         
@@ -429,7 +429,7 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
                 
                 # Log significant adaptation
                 self.logger.info(format_operator_message(
-                    icon="📊",
+                    icon="[STATS]",
                     message="Sampling sigma adapted",
                     old_sigma=f"{old_sigma:.4f}",
                     new_sigma=f"{self.current_sigma:.4f}",
@@ -1167,7 +1167,7 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             weights = np.asarray(weights, dtype=np.float32).flatten()
             if weights.size != self.dim:
                 self.logger.warning(format_operator_message(
-                    icon="⚠️",
+                    icon="[WARN]",
                     message="Weight dimension mismatch detected",
                     expected=self.dim,
                     received=weights.size,
@@ -1611,7 +1611,7 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
             self.logger.error(format_operator_message(
-                icon="🚨",
+                icon="[ALERT]",
                 message="Alternative Reality Sampler disabled due to repeated errors",
                 error_count=self.error_count,
                 threshold=self.circuit_breaker_threshold
@@ -1757,7 +1757,7 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             self.is_disabled = error_state.get("is_disabled", False)
             
             self.logger.info(format_operator_message(
-                icon="🔄",
+                icon="[RELOAD]",
                 message="Alternative Reality Sampler state restored",
                 dimensions=self.dim,
                 samples=self.n_samples,
@@ -1866,9 +1866,9 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         # Sigma adaptation status
         sigma_change = (self.current_sigma - self.base_sigma) / self.base_sigma * 100
         if abs(sigma_change) < 5:
-            sigma_status = "⚖️ Stable"
+            sigma_status = "[BALANCE] Stable"
         elif sigma_change > 0:
-            sigma_status = f"📈 Increased ({sigma_change:+.1f}%)"
+            sigma_status = f"[CHART] Increased ({sigma_change:+.1f}%)"
         else:
             sigma_status = f"📉 Decreased ({sigma_change:+.1f}%)"
         
@@ -1879,33 +1879,33 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         # Quality assessment
         overall_quality = self.quality_metrics.get('overall_quality_score', 0.5)
         if overall_quality > 0.8:
-            quality_status = "✅ Excellent"
+            quality_status = "[OK] Excellent"
         elif overall_quality > 0.6:
-            quality_status = "⚡ Good"
+            quality_status = "[FAST] Good"
         elif overall_quality > 0.4:
-            quality_status = "⚠️ Fair"
+            quality_status = "[WARN] Fair"
         else:
-            quality_status = "🚨 Poor"
+            quality_status = "[ALERT] Poor"
         
         return f"""
 🎲 ALTERNATIVE REALITY SAMPLER v3.0
 ═══════════════════════════════════════════════════════════════
-📊 Current Configuration:
+[STATS] Current Configuration:
 • Dimensions: {self.dim}
 • Samples per Iteration: {self.n_samples}
 • Base Sigma: {self.base_sigma:.4f}
 • Current Sigma: {self.current_sigma:.4f}
-• Adaptive Sampling: {'✅ Enabled' if self.adaptive_sigma else '❌ Disabled'}
+• Adaptive Sampling: {'[OK] Enabled' if self.adaptive_sigma else '[FAIL] Disabled'}
 • Uncertainty Threshold: {self.uncertainty_threshold:.1%}
 
-🎯 Sampling Performance:
+[TARGET] Sampling Performance:
 • Total Samples Generated: {self.sampling_stats.get('samples_generated', 0)}
 • Total Sample Points: {self.sampling_stats.get('total_samples_created', 0)}
 • Effective Samples: {self.sampling_stats.get('effective_samples', 0)}
 • Exploration Efficiency: {self.sampling_stats.get('exploration_efficiency', 0.0):.1%}
 • Diversity Score: {self.sampling_stats.get('diversity_score', 0.0):.3f}
 
-📈 Current Status:
+[CHART] Current Status:
 • Sigma Status: {sigma_status}
 • Recent Uncertainty: {recent_uncertainty:.3f}
 • Uncertainty Trend: {uncertainty_trend.title()}
@@ -1918,25 +1918,25 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
 • Uncertainty Sensitivity: {self.sampling_intelligence.get('uncertainty_sensitivity', 0.7):.1%}
 • Exploration Momentum: {self.sampling_intelligence.get('exploration_momentum', 0.85):.1%}
 
-📊 Sampling Strategies:
-{chr(10).join([f'  • {name.replace("_", " ").title()}: {"✅" if config["active"] else "❌"} (Weight: {config["weight"]:.1%})' for name, config in self.sampling_strategies.items()])}
+[STATS] Sampling Strategies:
+{chr(10).join([f'  • {name.replace("_", " ").title()}: {"[OK]" if config["active"] else "[FAIL]"} (Weight: {config["weight"]:.1%})' for name, config in self.sampling_strategies.items()])}
 
-🎯 Quality Metrics:
+[TARGET] Quality Metrics:
 • Sample Diversity: {self.quality_metrics.get('sample_diversity', 0.0):.3f}
 • Coverage Efficiency: {self.quality_metrics.get('coverage_efficiency', 0.0):.1%}
 • Uncertainty Accuracy: {self.quality_metrics.get('uncertainty_accuracy', 0.0):.1%}
 • Adaptation Success Rate: {self.quality_metrics.get('adaptation_success_rate', 0.0):.1%}
 • Exploration Completeness: {self.quality_metrics.get('exploration_completeness', 0.0):.1%}
 
-📊 Recent Activity:
+[STATS] Recent Activity:
 • Sampling History: {len(self.sampling_history)} entries
 • Uncertainty History: {len(self.uncertainty_history)} entries
 • Effectiveness History: {len(self.effectiveness_history)} entries
 • Sigma Adaptations: {self.sampling_stats.get('sigma_adaptations', 0)}
 
-🔧 System Health:
+[TOOL] System Health:
 • Error Count: {self.error_count}/{self.circuit_breaker_threshold}
-• Status: {'🚨 DISABLED' if self.is_disabled else '✅ OPERATIONAL'}
+• Status: {'[ALERT] DISABLED' if self.is_disabled else '[OK] OPERATIONAL'}
 • Session Duration: {(datetime.datetime.now() - datetime.datetime.fromisoformat(self.sampling_stats['session_start'])).total_seconds() / 3600:.1f} hours
         """
 
@@ -2006,3 +2006,85 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             recommendations.append("AlternativeRealitySampler operating within normal parameters")
         
         return recommendations
+
+    # ═══════════════════════════════════════════════════════════════════
+    # BASEMODULE ABSTRACT METHOD IMPLEMENTATIONS
+    # ═══════════════════════════════════════════════════════════════════
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in sampling-based action recommendations"""
+        try:
+            # For sampling modules, confidence is based on sampling quality and uncertainty
+            diversity_score = self.sampling_stats.get('diversity_score', 0.5)
+            uncertainty = self.sampling_stats.get('current_uncertainty', 0.5)
+            exploration_efficiency = self.sampling_stats.get('exploration_efficiency', 0.5)
+            
+            # Base confidence from sampling quality
+            base_confidence = (diversity_score + exploration_efficiency) / 2.0
+            
+            # Adjust for uncertainty (lower uncertainty = higher confidence)
+            uncertainty_adjustment = 1.0 - min(uncertainty, 0.8)
+            
+            # Final confidence calculation
+            confidence = base_confidence * uncertainty_adjustment
+            
+            # Ensure valid range
+            return max(0.1, min(0.95, confidence))
+            
+        except Exception as e:
+            self.logger.warning(f"Confidence calculation failed: {e}")
+            return 0.4  # Conservative default
+
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose sampling-based action for robustness testing"""
+        try:
+            # Get current market data
+            market_data = await self._get_comprehensive_voting_data()
+            
+            # Extract current weights if available
+            weights = market_data.get('strategy_arbiter_weights')
+            if weights is None or len(weights) == 0:
+                weights = np.ones(4) / 4  # Default equal weights
+            
+            # Generate alternative samples
+            samples = await self.sample_comprehensive(weights, market_data)
+            
+            # Calculate sampling statistics
+            uncertainty = np.std(samples, axis=0).mean() if len(samples) > 1 else 0.3
+            diversity = self._calculate_sample_diversity(samples) if len(samples) > 1 else 0.5
+            
+            # Propose action based on sampling results
+            if uncertainty > self.uncertainty_threshold:
+                action_type = 'conservative'
+                signal_strength = 0.3
+                reasoning = f"High uncertainty ({uncertainty:.3f}) detected in sampling"
+            elif diversity < 0.3:
+                action_type = 'diversify'
+                signal_strength = 0.6
+                reasoning = f"Low diversity ({diversity:.3f}) suggests need for exploration"
+            else:
+                action_type = 'normal'
+                signal_strength = 0.7
+                reasoning = f"Balanced sampling metrics (uncertainty: {uncertainty:.3f}, diversity: {diversity:.3f})"
+            
+            return {
+                'action': action_type,
+                'signal_strength': signal_strength,
+                'reasoning': reasoning,
+                'sampling_metrics': {
+                    'uncertainty': uncertainty,
+                    'diversity': diversity,
+                    'n_samples': len(samples),
+                    'effective_samples': self.sampling_stats.get('effective_samples', len(samples))
+                },
+                'confidence': await self.calculate_confidence({}, **inputs)
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Action proposal failed: {e}")
+            return {
+                'action': 'abstain',
+                'signal_strength': 0.0,
+                'reasoning': f'Sampling error: {str(e)}',
+                'confidence': 0.1
+            }

@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/core/mixins.py
-# 🚀 PRODUCTION-GRADE SmartInfoBus Core Mixins
+# [ROCKET] PRODUCTION-GRADE SmartInfoBus Core Mixins
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # ENHANCED: Complete integration with ModuleOrchestrator, ErrorPinpointer, StateManager
 # ─────────────────────────────────────────────────────────────
@@ -132,7 +132,7 @@ def with_mixin_error_handling(operation_name: str):
                 if hasattr(self, 'logger') and self.logger:
                     self.logger.error(
                         format_operator_message(
-                            "💥", f"MIXIN ERROR: {operation_name}",
+                            "[CRASH]", f"MIXIN ERROR: {operation_name}",
                             details=str(e),
                             context="mixin_operation"
                         )
@@ -223,15 +223,12 @@ class SmartInfoBusTradingMixin(ABC):
     
     @abstractmethod
     async def propose_action(self, **inputs) -> Dict[str, Any]:
-        """
-        Propose trading action based on inputs.
-        Must return dict with 'action', 'confidence', 'reasoning'
-        """
+        """ASYNC trading action proposal - different from BaseModule sync version"""
         pass
     
-    @abstractmethod
+    @abstractmethod  
     async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
-        """Calculate confidence level for proposed action"""
+        """ASYNC confidence calc - different from BaseModule sync version"""
         pass
     
     @with_mixin_error_handling("process_trades")
@@ -355,14 +352,14 @@ EXECUTION RATIONALE:
         
         if pnl > 0:
             thesis += f"""
-- ✅ PROFITABLE TRADE: Generated ${pnl:.2f} profit
+- [OK] PROFITABLE TRADE: Generated ${pnl:.2f} profit
 - Market conditions were favorable for {side} position
 - Risk level of {risk_score:.1%} was within acceptable parameters
 - Trade aligned with current {regime} market regime
 """
         else:
             thesis += f"""
-- ⚠️ LOSING TRADE: Loss of ${abs(pnl):.2f}
+- [WARN] LOSING TRADE: Loss of ${abs(pnl):.2f}
 - Market moved against {side} position
 - Risk controls properly limited downside exposure
 - Trade execution was disciplined despite unfavorable outcome
@@ -370,13 +367,13 @@ EXECUTION RATIONALE:
         
         # Add risk assessment
         if risk_score > 0.7:
-            thesis += "\n- ⚠️ HIGH RISK ENVIRONMENT: Extra caution warranted"
+            thesis += "\n- [WARN] HIGH RISK ENVIRONMENT: Extra caution warranted"
         elif risk_score < 0.3:
-            thesis += "\n- ✅ LOW RISK ENVIRONMENT: Favorable conditions"
+            thesis += "\n- [OK] LOW RISK ENVIRONMENT: Favorable conditions"
         
         # Add portfolio context
         if portfolio_exposure > 0.8:
-            thesis += "\n- ⚠️ HIGH PORTFOLIO EXPOSURE: Consider reducing positions"
+            thesis += "\n- [WARN] HIGH PORTFOLIO EXPOSURE: Consider reducing positions"
         
         thesis += f"\n\nTRADE QUALITY: {'EXCELLENT' if pnl > 0 and risk_score < 0.5 else 'ACCEPTABLE' if pnl > 0 else 'MONITORED'}"
         
@@ -412,7 +409,7 @@ EXECUTION RATIONALE:
         if abs(processed['pnl']) > 100:
             self.logger.info(
                 format_operator_message(
-                    '💰' if processed['pnl'] > 0 else '💸',
+                    '[MONEY]' if processed['pnl'] > 0 else '💸',
                     "SIGNIFICANT TRADE",
                     instrument=processed['symbol'],
                     details=f"P&L: ${processed['pnl']:+.2f}, Risk: {risk_score:.1%}",
@@ -504,19 +501,19 @@ EXECUTION QUALITY:
 """
         
         if not errors:
-            thesis += "- ✅ CLEAN EXECUTION: No processing errors"
+            thesis += "- [OK] CLEAN EXECUTION: No processing errors"
         else:
-            thesis += f"- ⚠️ EXECUTION ISSUES: {len(errors)} errors encountered"
+            thesis += f"- [WARN] EXECUTION ISSUES: {len(errors)} errors encountered"
         
         # Performance assessment
         if total_pnl > 0 and not errors:
-            thesis += "\n- ✅ EXCELLENT SESSION: Profitable with clean execution"
+            thesis += "\n- [OK] EXCELLENT SESSION: Profitable with clean execution"
         elif total_pnl > 0:
-            thesis += "\n- ⚠️ MIXED SESSION: Profitable but with execution issues"
+            thesis += "\n- [WARN] MIXED SESSION: Profitable but with execution issues"
         elif not errors:
-            thesis += "\n- ⚠️ CHALLENGING SESSION: Clean execution but losses"
+            thesis += "\n- [WARN] CHALLENGING SESSION: Clean execution but losses"
         else:
-            thesis += "\n- 🚨 POOR SESSION: Losses with execution issues"
+            thesis += "\n- [ALERT] POOR SESSION: Losses with execution issues"
         
         # Add circuit breaker status
         cb_state = self._trading_circuit_breaker['state']
@@ -577,7 +574,7 @@ EXECUTION QUALITY:
             cb['state'] = 'OPEN'
             self.logger.warning(
                 format_operator_message(
-                    "🚨", "TRADING CIRCUIT BREAKER OPENED",
+                    "[ALERT]", "TRADING CIRCUIT BREAKER OPENED",
                     details=f"Failures: {cb['failures']}, Error: {error}",
                     context="circuit_breaker"
                 )
@@ -722,7 +719,7 @@ class SmartInfoBusRiskMixin(ABC):
         
         self.logger.info(
             format_operator_message(
-                "🛡️", "RISK MIXIN INITIALIZED",
+                "[SAFE]", "RISK MIXIN INITIALIZED",
                 context="mixin_init"
             )
         )
@@ -918,25 +915,25 @@ class SmartInfoBusRiskMixin(ABC):
         # Drawdown alerts
         drawdown_pct = context.get('drawdown_pct', 0)
         if drawdown_pct > self._risk_limits['max_drawdown'] * 100:
-            alerts.append(f"🚨 Drawdown exceeds limit: {drawdown_pct:.1f}% > {self._risk_limits['max_drawdown']*100:.1f}%")
+            alerts.append(f"[ALERT] Drawdown exceeds limit: {drawdown_pct:.1f}% > {self._risk_limits['max_drawdown']*100:.1f}%")
         
         # Exposure alerts
         exposure_pct = context.get('exposure_pct', 0)
         if exposure_pct > 90:
-            alerts.append(f"⚠️ High portfolio exposure: {exposure_pct:.1f}%")
+            alerts.append(f"[WARN] High portfolio exposure: {exposure_pct:.1f}%")
         
         # Leverage alerts
         leverage = context.get('leverage', 0)
         if leverage > self._risk_limits['max_leverage']:
-            alerts.append(f"🚨 Leverage exceeds limit: {leverage:.1f}x > {self._risk_limits['max_leverage']:.1f}x")
+            alerts.append(f"[ALERT] Leverage exceeds limit: {leverage:.1f}x > {self._risk_limits['max_leverage']:.1f}x")
         
         # Concentration alerts
         if components.get('concentration_risk', 0) > 0.7:
-            alerts.append("⚠️ High position concentration detected")
+            alerts.append("[WARN] High position concentration detected")
         
         # Market risk alerts
         if components.get('market_risk', 0) > 0.8:
-            alerts.append("🚨 Extreme market volatility detected")
+            alerts.append("[ALERT] Extreme market volatility detected")
         
         return alerts
     
@@ -963,14 +960,14 @@ RISK COMPONENT ANALYSIS:
 """
         
         for component, value in components.items():
-            status = "🚨" if value > 0.8 else "⚠️" if value > 0.6 else "✅"
+            status = "[ALERT]" if value > 0.8 else "[WARN]" if value > 0.6 else "[OK]"
             thesis += f"- {component.replace('_', ' ').title()}: {status} {value:.1%}\n"
         
         thesis += f"\nRISK ASSESSMENT:\n"
         
         if level == "CRITICAL":
             thesis += """
-🚨 CRITICAL RISK LEVEL:
+[ALERT] CRITICAL RISK LEVEL:
 - Immediate action required to reduce exposure
 - Consider halting new positions
 - Review and close high-risk positions
@@ -978,7 +975,7 @@ RISK COMPONENT ANALYSIS:
 """
         elif level == "HIGH":
             thesis += """
-⚠️ HIGH RISK LEVEL:
+[WARN] HIGH RISK LEVEL:
 - Elevated caution required
 - Limit new position sizes
 - Monitor positions closely
@@ -986,7 +983,7 @@ RISK COMPONENT ANALYSIS:
 """
         elif level == "MEDIUM":
             thesis += """
-⚖️ MEDIUM RISK LEVEL:
+[BALANCE] MEDIUM RISK LEVEL:
 - Standard risk management protocols
 - Monitor key risk metrics
 - Maintain diversification
@@ -994,7 +991,7 @@ RISK COMPONENT ANALYSIS:
 """
         else:
             thesis += """
-✅ LOW RISK LEVEL:
+[OK] LOW RISK LEVEL:
 - Risk levels within acceptable parameters
 - Normal trading operations can continue
 - Maintain current risk controls
@@ -1067,7 +1064,7 @@ RISK COMPONENT ANALYSIS:
         """Trigger emergency risk response procedures"""
         self.logger.critical(
             format_operator_message(
-                "🚨", "EMERGENCY RISK RESPONSE TRIGGERED",
+                "[ALERT]", "EMERGENCY RISK RESPONSE TRIGGERED",
                 details=f"Risk Level: {risk_assessment['level']}, Score: {risk_assessment['score']:.1%}",
                 context="emergency_risk"
             )
@@ -1115,7 +1112,7 @@ RISK COMPONENT ANALYSIS:
             cb['state'] = 'OPEN'
             self.logger.warning(
                 format_operator_message(
-                    "🚨", "RISK CIRCUIT BREAKER OPENED",
+                    "[ALERT]", "RISK CIRCUIT BREAKER OPENED",
                     details=f"Failures: {cb['failures']}, Error: {error}",
                     context="circuit_breaker"
                 )
@@ -1409,14 +1406,14 @@ CONSENSUS ANALYSIS:
         
         if consensus_analysis['consensus_exists']:
             thesis += f"""
-- ✅ CONSENSUS PRESENT: {consensus_analysis['alignment_score']:.1%} agreement
+- [OK] CONSENSUS PRESENT: {consensus_analysis['alignment_score']:.1%} agreement
 - Dominant Action: {consensus_analysis['dominant_action']}
 - Conflict Level: {consensus_analysis['conflict_level']}
 - My Position: {'ALIGNED' if consensus_analysis['alignment_score'] > 0.6 else 'CONTRARIAN'}
 """
         else:
             thesis += """
-- ⚠️ NO CONSENSUS: First vote or highly divided opinions
+- [WARN] NO CONSENSUS: First vote or highly divided opinions
 - Vote Weight: Higher due to early position
 - Market Leadership: Taking initiative in uncertain conditions
 """
@@ -1433,7 +1430,7 @@ CONSENSUS ANALYSIS:
 """
         elif confidence > 0.5:
             thesis += f"""
-⚖️ MODERATE CONFIDENCE VOTE:
+[BALANCE] MODERATE CONFIDENCE VOTE:
 - Balanced view with mixed signals
 - Acceptable risk/reward trade-off
 - Following systematic approach
@@ -1453,14 +1450,14 @@ CONSENSUS ANALYSIS:
         if alignment > 0.8:
             thesis += "\n\n🤝 STRONG CONSENSUS: Vote aligns with majority view"
         elif alignment < 0.3:
-            thesis += "\n\n⚡ CONTRARIAN POSITION: Vote differs significantly from consensus"
+            thesis += "\n\n[FAST] CONTRARIAN POSITION: Vote differs significantly from consensus"
         else:
-            thesis += "\n\n⚖️ MIXED CONSENSUS: Moderate alignment with existing votes"
+            thesis += "\n\n[BALANCE] MIXED CONSENSUS: Moderate alignment with existing votes"
         
         # Add risk considerations
         risk_score = context.get('risk_score', 0)
         if risk_score > 0.7:
-            thesis += f"\n\n⚠️ HIGH RISK ENVIRONMENT: Vote considers elevated risk level of {risk_score:.1%}"
+            thesis += f"\n\n[WARN] HIGH RISK ENVIRONMENT: Vote considers elevated risk level of {risk_score:.1%}"
         
         thesis += f"\n\nVOTE QUALITY: {await self._get_vote_quality_description(confidence, consensus_analysis)}"
         
@@ -1596,7 +1593,7 @@ CONSENSUS ANALYSIS:
             cb['state'] = 'OPEN'
             self.logger.warning(
                 format_operator_message(
-                    "🚨", "VOTING CIRCUIT BREAKER OPENED",
+                    "[ALERT]", "VOTING CIRCUIT BREAKER OPENED",
                     details=f"Failures: {cb['failures']}, Error: {error}",
                     context="circuit_breaker"
                 )
@@ -1757,7 +1754,7 @@ class SmartInfoBusStateMixin(ABC):
             
             self.logger.info(
                 format_operator_message(
-                    "💾", "STATE RESTORED",
+                    "[SAVE]", "STATE RESTORED",
                     details=f"Version: {state.get('state_version')}, Timestamp: {state.get('timestamp')}",
                     context="state_management"
                 )
@@ -1878,7 +1875,7 @@ class InfoBusFullIntegrationMixin(
         
         self.logger.info(
             format_operator_message(
-                "🚀", "FULL INTEGRATION MIXIN INITIALIZED",
+                "[ROCKET]", "FULL INTEGRATION MIXIN INITIALIZED",
                 details="Trading, Risk, Voting, and State management active",
                 context="mixin_init"
             )
@@ -1951,7 +1948,7 @@ INTEGRATED ANALYSIS:
         
         if risk_level == 'CRITICAL':
             thesis += """
-🚨 DEFENSIVE POSTURE:
+[ALERT] DEFENSIVE POSTURE:
 - Critical risk conditions detected
 - Trading operations suspended
 - Focus on risk reduction and protection
@@ -1959,7 +1956,7 @@ INTEGRATED ANALYSIS:
 """
         elif risk_level == 'HIGH':
             thesis += """
-⚠️ CAUTIOUS APPROACH:
+[WARN] CAUTIOUS APPROACH:
 - Elevated risk environment
 - Limited trading activity
 - Careful position management
@@ -1967,7 +1964,7 @@ INTEGRATED ANALYSIS:
 """
         else:
             thesis += """
-✅ NORMAL OPERATIONS:
+[OK] NORMAL OPERATIONS:
 - Risk levels acceptable
 - Trading operations proceeding
 - Standard voting participation

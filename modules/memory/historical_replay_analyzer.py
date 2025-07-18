@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/memory/historical_replay_analyzer.py
-# 🚀 PRODUCTION-READY Historical Replay Analysis System
+# [ROCKET] PRODUCTION-READY Historical Replay Analysis System
 # Advanced sequence analysis with SmartInfoBus integration
 # ─────────────────────────────────────────────────────────────
 
@@ -66,8 +66,12 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
                  genome: Optional[Dict[str, Any]] = None,
                  **kwargs):
         
-        self.config = config or ReplayConfig()
+        # Store config first before calling super().__init__()
+        self.replay_config = config or ReplayConfig()
         super().__init__()
+        
+        # Ensure our config is preserved after BaseModule initialization
+        self.config = self.replay_config
         
         # Initialize advanced systems
         self._initialize_advanced_systems()
@@ -77,6 +81,9 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
         
         # Initialize replay analysis state
         self._initialize_replay_state()
+        
+        # Start monitoring after all initialization is complete
+        self._start_monitoring()
         
         self.logger.info(
             format_operator_message(
@@ -114,7 +121,7 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
         # Health monitoring
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        self._start_monitoring()
+        # Note: _start_monitoring() moved to end of initialization
 
     def _initialize_genome_parameters(self, genome: Optional[Dict[str, Any]]):
         """Initialize genome-based parameters"""
@@ -186,7 +193,7 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
 
-    async def _initialize(self):
+    def _initialize(self):
         """Initialize module"""
         try:
             # Set initial replay status in SmartInfoBus
@@ -204,10 +211,8 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
                 thesis="Initial historical replay analysis status"
             )
             
-            return True
         except Exception as e:
             self.logger.error(f"Initialization failed: {e}")
-            return False
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process historical replay analysis"""
@@ -410,7 +415,7 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
                 
             self.logger.info(
                 format_operator_message(
-                    "💰", "PROFITABLE_SEQUENCE_IDENTIFIED",
+                    "[MONEY]", "PROFITABLE_SEQUENCE_IDENTIFIED",
                     pnl=f"{pnl:.2f}",
                     sequence_length=len(sequence),
                     quality_score=f"{sequence_entry['quality_score']:.3f}",
@@ -709,7 +714,7 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
         
         self.logger.error(
             format_operator_message(
-                "💥", "REPLAY_ANALYSIS_ERROR",
+                "[CRASH]", "REPLAY_ANALYSIS_ERROR",
                 error=str(error),
                 details=explanation,
                 processing_time_ms=processing_time,
@@ -736,6 +741,10 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
     def _update_replay_health(self):
         """Update replay analysis health metrics"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, '_episode_count') or not hasattr(self, '_sequence_quality_scores'):
+                return  # Skip if not fully initialized yet
+                
             # Check pattern discovery rate
             if self._episode_count > 0:
                 pattern_rate = len(self.sequence_patterns) / self._episode_count
@@ -766,7 +775,7 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
                     if effectiveness > 10.0:  # Highly effective pattern
                         self.logger.info(
                             format_operator_message(
-                                "🎯", "EFFECTIVE_PATTERN_IDENTIFIED",
+                                "[TARGET]", "EFFECTIVE_PATTERN_IDENTIFIED",
                                 pattern=pattern,
                                 avg_pnl=f"{data['avg_pnl']:.2f}",
                                 confidence=f"{data['confidence']:.2f}",
@@ -854,12 +863,36 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
         self._monitoring_active = False
 
     # Legacy compatibility methods
-    def propose_action(self, obs: Any = None, **kwargs) -> np.ndarray:
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
         """Legacy compatibility for action proposal"""
-        return np.array([0.0, 0.0])
+        return {
+            'action': [0.0, 0.0],
+            'confidence': 0.5,
+            'thesis': 'Historical replay analyzer does not propose trading actions'
+        }
     
     def confidence(self, obs: Any = None, **kwargs) -> float:
         """Legacy compatibility for confidence"""
         if self._sequence_quality_scores:
             return float(np.mean(list(self._sequence_quality_scores)[-5:]))
         return 0.5
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in the proposed action based on recent sequence quality and pattern confidence."""
+        # Use the most recent sequence quality as the base confidence
+        if self._sequence_quality_scores:
+            base_confidence = float(np.mean(list(self._sequence_quality_scores)[-5:]))
+        else:
+            base_confidence = 0.5
+
+        # Optionally, boost confidence if the action matches a high-confidence pattern
+        pattern = self._extract_sequence_pattern(self.current_sequence + [{"action": action}])
+        if pattern and pattern in self.sequence_patterns:
+            pattern_conf = self.sequence_patterns[pattern].get('confidence', 0.0)
+            # Weighted average: 70% sequence quality, 30% pattern confidence
+            confidence = 0.7 * base_confidence + 0.3 * pattern_conf
+        else:
+            confidence = base_confidence
+
+        # Clamp between 0 and 1
+        return float(max(0.0, min(1.0, confidence)))

@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/features/multiscale_feature_engine.py  
-# 🚀 PRODUCTION-GRADE MultiScale Feature Engine with Neural Networks
+# [ROCKET] PRODUCTION-GRADE MultiScale Feature Engine with Neural Networks
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # ENHANCED: Complete SmartInfoBus integration with PyTorch neural networks
 # ─────────────────────────────────────────────────────────────
@@ -98,7 +98,7 @@ class AttentionFeatureFusion(nn.Module):
 )
 class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    🚀 PRODUCTION-GRADE MultiScale Feature Engine with Neural Networks
+    [ROCKET] PRODUCTION-GRADE MultiScale Feature Engine with Neural Networks
     
     FEATURES:
     - PyTorch neural networks with attention mechanisms
@@ -116,8 +116,9 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
                  config: Optional[MultiScaleConfig] = None, 
                  **kwargs):
         
-        self.config = config or MultiScaleConfig()
-        super().__init__()
+        # Store config first 
+        self.multiscale_config = config or MultiScaleConfig()
+        self.config = self.multiscale_config  # Set config early for init methods
         
         # Initialize advanced feature engine
         if advanced_feature_engine is None:
@@ -129,17 +130,17 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
         self.input_dim = getattr(self.afe, 'out_dim', 256)  # Safe attribute access
         self.output_dim = self.config.embed_dim
         
-        # Initialize all advanced systems
+        # Initialize all systems before super().__init__() 
+        # because BaseModule calls _initialize() which needs these attributes
         self._initialize_advanced_systems()
-        
-        # Initialize neural networks
         self._initialize_neural_networks()
-        
-        # Initialize state
         self._initialize_multiscale_state()
-        
-        # Start monitoring
         self._start_monitoring()
+        
+        super().__init__()
+        
+        # Restore our config after BaseModule initialization (prevents dict conversion)
+        self.config = self.multiscale_config
         
         self.logger.info(
             format_operator_message(
@@ -279,9 +280,14 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             # No event loop running, monitoring will start when module is initialized
             pass
     
-    async def _initialize(self):
+    def _initialize(self):
         """Initialize module - called by orchestrator"""
         super()._initialize()
+        
+        # Ensure we have our config object (not dict)
+        if not hasattr(self.config, 'embed_dim'):
+            # Config was converted to dict by BaseModule, restore our object
+            self.config = self.multiscale_config
         
         # Initialize AFE if needed
         if hasattr(self.afe, '_initialize'):
@@ -729,7 +735,7 @@ Recommendation: {'Continue neural processing' if embedding_quality > 60 else 'Re
         
         self.logger.error(
             format_operator_message(
-                "🧠💥", "NEURAL_PROCESSING_ERROR",
+                "🧠[CRASH]", "NEURAL_PROCESSING_ERROR",
                 details=str(error),
                 context="neural_processing",
                 recovery_actions=len(error_context.recovery_actions)
@@ -750,7 +756,7 @@ Recommendation: {'Continue neural processing' if embedding_quality > 60 else 'Re
             
             self.logger.error(
                 format_operator_message(
-                    "🧠🚨", "NEURAL_CIRCUIT_BREAKER_OPEN",
+                    "🧠[ALERT]", "NEURAL_CIRCUIT_BREAKER_OPEN",
                     details=f"Too many neural failures ({self.neural_circuit_breaker['failures']})",
                     context="neural_circuit_breaker"
                 )
@@ -841,7 +847,7 @@ Recommendation: {'Continue neural processing' if embedding_quality > 60 else 'Re
         if issues:
             self.logger.warning(
                 format_operator_message(
-                    "🧠⚠️", "NEURAL_HEALTH_ISSUES",
+                    "🧠[WARN]", "NEURAL_HEALTH_ISSUES",
                     details=f"{len(issues)} issues detected",
                     context="neural_health_monitoring"
                 )
@@ -867,7 +873,7 @@ Recommendation: {'Continue neural processing' if embedding_quality > 60 else 'Re
                 if memory_allocated > 1500:  # >1.5GB
                     self.logger.warning(
                         format_operator_message(
-                            "🖥️⚠️", "HIGH_GPU_MEMORY_USAGE",
+                            "🖥️[WARN]", "HIGH_GPU_MEMORY_USAGE",
                             details=f"Allocated: {memory_allocated:.1f}MB, Reserved: {memory_reserved:.1f}MB",
                             context="gpu_monitoring"
                         )
@@ -968,3 +974,142 @@ Recommendation: {'Continue neural processing' if embedding_quality > 60 else 'Re
             )
         except Exception as e:
             return f"Neural performance report generation failed: {str(e)}"
+    
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose neural network-based action"""
+        try:
+            # Process neural features first
+            result = await self.process(**inputs)
+            
+            if not result.get('success', False):
+                return {
+                    'action_type': 'no_action',
+                    'confidence': 0.0,
+                    'reasoning': 'Neural processing failed',
+                    'neural_available': False
+                }
+            
+            # Analyze neural embeddings for action proposal
+            embeddings = result['embeddings'].flatten()
+            attention_weights = result['attention_weights']
+            
+            # Simple neural-based action logic
+            if len(embeddings) > 0:
+                # Calculate embedding strength and direction
+                embedding_magnitude = float(np.linalg.norm(embeddings))
+                embedding_mean = float(np.mean(embeddings))
+                attention_entropy = result.get('attention_entropy', 0.0)
+                
+                # Analyze attention patterns
+                attention_focus = float(np.max(attention_weights)) if attention_weights.size > 0 else 0.0
+                
+                # Propose action based on neural analysis
+                if self.neural_health['model_health_score'] > 80:
+                    if embedding_mean > 0.1 and attention_focus > 0.5:  # Strong positive signal
+                        action_type = "increase_neural_exposure"
+                        magnitude = min(embedding_magnitude * 0.5, 1.0)
+                    elif embedding_mean < -0.1 and attention_focus > 0.5:  # Strong negative signal
+                        action_type = "decrease_neural_exposure"
+                        magnitude = min(embedding_magnitude * 0.5, 1.0)
+                    elif attention_entropy > 2.0:  # High uncertainty
+                        action_type = "reduce_neural_risk"
+                        magnitude = 0.3
+                    else:
+                        action_type = "hold_neural_position"
+                        magnitude = 0.0
+                else:
+                    action_type = "reduce_neural_risk"
+                    magnitude = 0.7
+                
+                return {
+                    'action_type': action_type,
+                    'magnitude': magnitude,
+                    'confidence': min(self.neural_health['model_health_score'] / 100.0, 1.0),
+                    'reasoning': f"Neural analysis: {len(embeddings)} embeddings, magnitude: {embedding_magnitude:.3f}, attention: {attention_focus:.3f}",
+                    'embedding_magnitude': embedding_magnitude,
+                    'embedding_mean': embedding_mean,
+                    'attention_entropy': attention_entropy,
+                    'attention_focus': attention_focus,
+                    'neural_health': self.neural_health['model_health_score']
+                }
+            else:
+                return {
+                    'action_type': 'no_action',
+                    'confidence': 0.0,
+                    'reasoning': 'No neural embeddings available',
+                    'neural_available': False
+                }
+                
+        except Exception as e:
+            self.logger.error(f"Neural action proposal failed: {e}")
+            return {
+                'action_type': 'no_action',
+                'confidence': 0.0,
+                'reasoning': f'Neural action proposal error: {str(e)}',
+                'error': str(e)
+            }
+    
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in the neural-proposed action"""
+        try:
+            if not isinstance(action, dict):
+                return 0.0
+            
+            # Base confidence from neural health
+            base_confidence = self.neural_health['model_health_score'] / 100.0
+            
+            # Adjust based on action characteristics
+            action_type = action.get('action_type', 'no_action')
+            magnitude = action.get('magnitude', 0.0)
+            
+            # Neural-specific confidence factors
+            if action_type in ['increase_neural_exposure', 'decrease_neural_exposure']:
+                # Check neural quality indicators
+                embedding_magnitude = action.get('embedding_magnitude', 0.0)
+                attention_focus = action.get('attention_focus', 0.0)
+                attention_entropy = action.get('attention_entropy', 0.0)
+                
+                # Confidence based on signal strength
+                signal_confidence = min(embedding_magnitude * 2.0, 1.0)
+                
+                # Confidence based on attention quality
+                attention_confidence = attention_focus if attention_entropy < 3.0 else attention_focus * 0.5
+                
+                # Magnitude confidence (lower magnitude = higher confidence for neural)
+                magnitude_confidence = 1.0 - (magnitude * 0.3)
+                
+                # Combine confidences
+                combined_confidence = (base_confidence * 0.4 + 
+                                     signal_confidence * 0.3 + 
+                                     attention_confidence * 0.2 + 
+                                     magnitude_confidence * 0.1)
+            
+            elif action_type == 'hold_neural_position':
+                # Holding with neural analysis is moderate confidence
+                combined_confidence = base_confidence * 0.7
+            
+            elif action_type == 'reduce_neural_risk':
+                # Risk reduction is conservative, higher confidence
+                combined_confidence = max(base_confidence, 0.7)
+            
+            else:  # no_action
+                combined_confidence = 0.1
+            
+            # Adjust based on neural circuit breaker state
+            if self.neural_circuit_breaker['state'] == 'OPEN':
+                combined_confidence *= 0.1
+            elif self.neural_circuit_breaker['state'] == 'HALF_OPEN':
+                combined_confidence *= 0.5
+            
+            # Adjust based on recent neural performance
+            if hasattr(self, 'neural_stats'):
+                total_passes = self.neural_stats['total_forward_passes']
+                if total_passes > 0:
+                    success_rate = self.neural_stats['successful_passes'] / total_passes
+                    combined_confidence *= success_rate
+            
+            return float(np.clip(combined_confidence, 0.0, 1.0))
+            
+        except Exception as e:
+            self.logger.error(f"Neural confidence calculation failed: {e}")
+            return 0.0

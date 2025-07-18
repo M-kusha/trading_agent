@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/memory/mistake_memory.py
-# 🚀 PRODUCTION-READY Mistake Memory System
+# [ROCKET] PRODUCTION-READY Mistake Memory System
 # Advanced loss avoidance with clustering and SmartInfoBus integration
 # ─────────────────────────────────────────────────────────────
 
@@ -70,8 +70,12 @@ class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                  genome: Optional[Dict[str, Any]] = None,
                  **kwargs):
         
-        self.config = config or MistakeConfig()
+        # Store config first before calling super().__init__()
+        self.mistake_config = config or MistakeConfig()
         super().__init__()
+        
+        # Ensure our config is preserved after BaseModule initialization
+        self.config = self.mistake_config
         
         # Initialize advanced systems
         self._initialize_advanced_systems()
@@ -81,6 +85,12 @@ class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         
         # Initialize mistake memory state
         self._initialize_mistake_state()
+        
+        # Start monitoring after all initialization is complete
+        
+        self._start_monitoring()
+        
+        
         
         self.logger.info(
             format_operator_message(
@@ -118,7 +128,7 @@ class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         # Health monitoring
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        self._start_monitoring()
+        # Note: _start_monitoring() moved to end of initialization
 
     def _initialize_genome_parameters(self, genome: Optional[Dict[str, Any]]):
         """Initialize genome-based parameters"""
@@ -202,7 +212,7 @@ class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
 
-    async def _initialize(self):
+    def _initialize(self):
         """Initialize module"""
         try:
             # Set initial mistake memory status in SmartInfoBus
@@ -221,10 +231,8 @@ class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                 thesis="Initial mistake memory and avoidance status"
             )
             
-            return True
         except Exception as e:
             self.logger.error(f"Initialization failed: {e}")
-            return False
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process mistake memory and learning"""
@@ -856,7 +864,7 @@ class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         
         self.logger.error(
             format_operator_message(
-                "💥", "MISTAKE_MEMORY_ERROR",
+                "[CRASH]", "MISTAKE_MEMORY_ERROR",
                 error=str(error),
                 details=explanation,
                 processing_time_ms=processing_time,
@@ -883,6 +891,10 @@ class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
     def _update_mistake_health(self):
         """Update mistake memory health metrics"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, '_cluster_quality_scores') or not hasattr(self, '_consecutive_losses'):
+                return  # Skip if not fully initialized yet
+                
             # Check clustering quality
             if self._cluster_quality_scores:
                 avg_quality = np.mean(list(self._cluster_quality_scores)[-3:])
@@ -914,7 +926,7 @@ class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                 if avg_effectiveness > 0.7:
                     self.logger.info(
                         format_operator_message(
-                            "🛡️", "HIGH_AVOIDANCE_EFFECTIVENESS",
+                            "[SAFE]", "HIGH_AVOIDANCE_EFFECTIVENESS",
                             effectiveness=f"{avg_effectiveness:.2f}",
                             danger_zones=len(self._danger_zones),
                             context="avoidance_analysis"
@@ -1016,10 +1028,53 @@ class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         """Legacy compatibility for mistake similarity check"""
         return self._calculate_danger_similarity(features)
     
-    def propose_action(self, obs: Any = None, **kwargs) -> np.ndarray:
-        """Legacy compatibility for action proposal"""
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """Propose action based on mistake avoidance"""
         # Return avoidance signal as action modification
-        return np.array([-self._avoidance_signal, 0.0])
+        avoidance_action = [-self._avoidance_signal, 0.0]
+        confidence = max(0.0, 1.0 - self._avoidance_signal)
+        
+        return {
+            "action": avoidance_action,
+            "confidence": confidence,
+            "thesis": f"Mistake avoidance action with {self._avoidance_signal:.3f} avoidance signal",
+            "avoidance_signal": self._avoidance_signal,
+            "consecutive_losses": self._consecutive_losses
+        }
+    
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in mistake avoidance decisions"""
+        if not isinstance(action, dict):
+            return 0.5
+        
+        # Base confidence from avoidance effectiveness
+        base_confidence = max(0.0, 1.0 - self._avoidance_signal)
+        
+        # Adjust based on clustering quality
+        if self._cluster_quality_scores:
+            avg_quality = np.mean(list(self._cluster_quality_scores))
+            quality_factor = avg_quality
+        else:
+            quality_factor = 0.5
+        
+        # Penalty for consecutive losses
+        consecutive_penalty = min(0.3, self._consecutive_losses * 0.05)
+        
+        # Memory quality factor
+        memory_count = len(self._loss_buf) + len(self._win_buf)
+        memory_factor = min(1.0, memory_count / 100)  # More data = higher confidence
+        
+        # Circuit breaker consideration
+        if self.circuit_breaker['state'] == 'OPEN':
+            cb_factor = 0.5
+        else:
+            cb_factor = 1.0
+        
+        # Combine factors
+        confidence = (base_confidence * 0.4 + quality_factor * 0.3 + 
+                     memory_factor * 0.2 + cb_factor * 0.1) - consecutive_penalty
+        
+        return float(max(0.0, min(1.0, confidence)))
     
     def confidence(self, obs: Any = None, **kwargs) -> float:
         """Legacy compatibility for confidence"""

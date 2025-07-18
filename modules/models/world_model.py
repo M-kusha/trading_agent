@@ -1,12 +1,13 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/models/world_model.py
-# 🚀 PRODUCTION-READY Enhanced World Model
+# [ROCKET] PRODUCTION-READY Enhanced World Model
 # Advanced market simulation with SmartInfoBus integration and intelligent automation
 # ─────────────────────────────────────────────────────────────
 
 import asyncio
 import time
 import threading
+import copy
 import numpy as np
 import torch
 import torch.nn as nn
@@ -107,7 +108,7 @@ class WorldModelConfig:
 )
 class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin, nn.Module):
     """
-    🚀 Advanced world model for market simulation with SmartInfoBus integration.
+    [ROCKET] Advanced world model for market simulation with SmartInfoBus integration.
     Provides intelligent market predictions, scenario generation, and comprehensive analytics.
     """
 
@@ -147,6 +148,9 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         
         # Initialize neural components
         self._initialize_neural_components_async()
+        
+        # Start monitoring after all initialization is complete
+        self._start_monitoring()
         
         self.logger.info(format_operator_message(
             message="Enhanced world model ready",
@@ -191,7 +195,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         # Health monitoring
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        self._start_monitoring()
+        # Note: _start_monitoring() moved to end of initialization
 
     def _initialize_world_model_state(self, genome: Optional[Dict[str, Any]]):
         """Initialize world model state"""
@@ -1098,8 +1102,10 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             self.train()
             training_losses = []
             validation_losses = []
+            epochs_completed = 0
             
             for epoch in range(epochs):
+                epochs_completed = epoch + 1
                 # Training phase
                 epoch_train_loss = 0.0
                 num_batches = 0
@@ -1167,8 +1173,8 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 self.training_curves['accuracy'].append(1.0 / (1.0 + val_loss))
                 
                 self.logger.info(format_operator_message(
-                    message=f"Training epoch {epoch+1}/{epochs}",
-                    icon="🎯",
+                    message=f"Training epoch {epochs_completed}/{epochs}",
+                    icon="[TARGET]",
                     train_loss=f"{avg_train_loss:.6f}",
                     val_loss=f"{val_loss:.6f}",
                     best_val=f"{best_val_loss:.6f}",
@@ -1188,7 +1194,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             # Record training session
             training_record = {
                 'timestamp': datetime.datetime.now().isoformat(),
-                'epochs_completed': epoch + 1,
+                'epochs_completed': epochs_completed,
                 'final_train_loss': training_losses[-1] if training_losses else float('inf'),
                 'best_val_loss': best_val_loss,
                 'training_samples': len(train_X),
@@ -1200,8 +1206,8 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             
             self.logger.info(format_operator_message(
                 message="Model training completed",
-                icon="✅",
-                epochs=epoch + 1,
+                icon="[OK]",
+                epochs=epochs_completed,
                 final_loss=f"{training_losses[-1]:.6f}",
                 val_loss=f"{best_val_loss:.6f}",
                 quality=f"{self.training_quality:.3f}",
@@ -1212,7 +1218,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             
             return {
                 'training_completed': True,
-                'epochs_completed': epoch + 1,
+                'epochs_completed': epochs_completed,
                 'final_train_loss': training_losses[-1] if training_losses else float('inf'),
                 'best_val_loss': best_val_loss,
                 'training_quality': self.training_quality,
@@ -1693,7 +1699,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 
                 self.logger.info(format_operator_message(
                     message="World model mode changed",
-                    icon="🔄",
+                    icon="[RELOAD]",
                     old_mode=old_mode.value,
                     new_mode=new_mode.value,
                     confidence=f"{self.model_confidence:.3f}",
@@ -1715,6 +1721,10 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
     def _update_model_health(self):
         """Update world model health metrics"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, 'is_trained') or not hasattr(self, 'training_quality') or not hasattr(self, 'prediction_quality'):
+                return  # Skip if not fully initialized yet
+                
             # Check model state
             if self.circuit_breaker['state'] == 'OPEN':
                 self._health_status = 'warning'
@@ -1746,6 +1756,10 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
     def _analyze_prediction_effectiveness(self):
         """Analyze prediction effectiveness"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, 'prediction_errors'):
+                return  # Skip if not fully initialized yet
+                
             if len(self.prediction_errors) >= 20:
                 recent_errors = list(self.prediction_errors)[-20:]
                 avg_error = np.mean(recent_errors)
@@ -1753,14 +1767,14 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 if avg_error < 0.05:  # Very good predictions
                     self.logger.info(format_operator_message(
                         message="Excellent prediction accuracy achieved",
-                        icon="🎯",
+                        icon="[TARGET]",
                         avg_error=f"{avg_error:.4f}",
                         confidence=f"{self.model_confidence:.3f}"
                     ))
                 elif avg_error > 0.2:  # Poor predictions
                     self.logger.warning(format_operator_message(
                         message="Poor prediction accuracy detected",
-                        icon="⚠️",
+                        icon="[WARN]",
                         avg_error=f"{avg_error:.4f}",
                         mode=self.current_mode.value
                     ))
@@ -1771,6 +1785,10 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
     def _adapt_model_parameters(self):
         """Continuous model parameter adaptation"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, 'is_trained') or not hasattr(self, 'training_curves'):
+                return  # Skip if not fully initialized yet
+                
             # Adapt learning rate based on training progress
             if self.is_trained and len(self.training_curves['val_loss']) >= 10:
                 recent_val_losses = list(self.training_curves['val_loss'])[-10:]
@@ -1793,6 +1811,10 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
     def _cleanup_old_data(self):
         """Cleanup old data to maintain performance"""
         try:
+            # Check if all required attributes are initialized
+            if not hasattr(self, 'attention_patterns'):
+                return  # Skip if not fully initialized yet
+                
             # Cleanup scenario cache if too old
             if (hasattr(self, '_last_scenario_time') and 
                 (datetime.datetime.now() - self._last_scenario_time).total_seconds() > 7200):
@@ -2043,7 +2065,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         
         self.logger.error(format_operator_message(
             message="World model error",
-            icon="💥",
+            icon="[CRASH]",
             error=str(error),
             details=explanation,
             processing_time_ms=processing_time,
@@ -2151,8 +2173,69 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             self.logger.error(f"Observation generation failed: {e}")
             return np.zeros(12, dtype=np.float32)
 
-    def propose_action(self, obs: Any = None, info_bus: Optional[Any] = None) -> np.ndarray:
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
         """Propose actions based on world model predictions"""
+        try:
+            if not self.is_trained or not self.prediction_history:
+                return {
+                    'action_type': 'no_action',
+                    'action_values': [0.0, 0.0, 0.0, 0.0],
+                    'confidence': 0.0,
+                    'reasoning': 'Model not trained or no predictions available'
+                }
+            
+            # Get latest prediction
+            latest_prediction = self.prediction_history[-1]
+            
+            # Extract predicted price changes and confidence
+            price_changes = latest_prediction['price_changes']
+            confidence = latest_prediction['confidence']
+            regime_probs = latest_prediction['regime_probabilities']
+            
+            # Scale actions by confidence and predicted magnitude
+            action_scaling = confidence * 0.7  # Conservative scaling
+            
+            # Adjust scaling based on regime
+            if len(regime_probs) >= 4:
+                if regime_probs[1] > 0.5:  # Volatile regime
+                    action_scaling *= 0.7
+                elif regime_probs[0] > 0.5:  # Trending regime
+                    action_scaling *= 1.2
+            
+            # Convert price changes to trading actions
+            actions = price_changes * action_scaling
+            
+            # Apply additional risk constraints
+            actions = np.clip(actions, -1.0, 1.0)
+            
+            # Ensure we return exactly 4 actions
+            if len(actions) < 4:
+                padded_actions = np.zeros(4)
+                padded_actions[:len(actions)] = actions
+                actions = padded_actions
+            
+            return {
+                'action_type': 'world_model_prediction',
+                'action_values': actions[:4].tolist(),
+                'confidence': float(confidence),
+                'reasoning': f'World model prediction with {confidence:.2%} confidence',
+                'regime_probabilities': regime_probs.tolist() if hasattr(regime_probs, 'tolist') else list(regime_probs),
+                'prediction_mode': self.current_mode.value,
+                'model_trained': self.is_trained
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Action proposal failed: {e}")
+            return {
+                'action_type': 'error',
+                'action_values': [0.0, 0.0, 0.0, 0.0],
+                'confidence': 0.0,
+                'reasoning': f'Action proposal error: {str(e)}',
+                'error': str(e)
+            }
+
+    def propose_action_legacy(self, obs: Any = None, info_bus: Optional[Any] = None) -> np.ndarray:
+        """Legacy propose action method that returns numpy array"""
         try:
             if not self.is_trained or not self.prediction_history:
                 return np.zeros(4, dtype=np.float32)
@@ -2190,7 +2273,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             return actions[:4].astype(np.float32)
             
         except Exception as e:
-            self.logger.error(f"Action proposal failed: {e}")
+            self.logger.error(f"Legacy action proposal failed: {e}")
             return np.zeros(4, dtype=np.float32)
 
     def confidence(self, obs: Any = None, info_bus: Optional[Any] = None) -> float:
@@ -2227,6 +2310,114 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             
         except Exception:
             return 0.3
+
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        """Calculate confidence in world model predictions for given action"""
+        try:
+            # Base confidence from the existing confidence method
+            base_confidence = self.confidence()
+            
+            # Action-specific confidence adjustments
+            action_confidence = base_confidence
+            
+            # If action is provided, analyze its alignment with model predictions
+            if action and isinstance(action, dict):
+                # Get latest predictions from SmartInfoBus or internal state
+                latest_predictions = self.smart_bus.get('market_predictions', 'EnhancedWorldModel')
+                
+                if latest_predictions and isinstance(latest_predictions, dict):
+                    # Check alignment between action and predictions
+                    prediction_alignment = self._calculate_prediction_alignment(action, latest_predictions)
+                    action_confidence *= (0.7 + prediction_alignment * 0.3)  # 0.7 to 1.0 multiplier
+                
+                # Confidence boost for actions during high model certainty
+                if 'confidence' in action:
+                    model_certainty = min(1.0, float(action.get('confidence', 0.5)))
+                    action_confidence *= (0.8 + model_certainty * 0.2)
+            
+            # Market context adjustments from inputs
+            if inputs:
+                market_data = inputs.get('market_data')
+                if market_data and isinstance(market_data, dict):
+                    # Higher confidence in familiar market conditions
+                    market_familiarity = self._assess_market_familiarity(market_data)
+                    action_confidence *= (0.85 + market_familiarity * 0.15)
+            
+            # Penalty for recent errors or low prediction quality
+            if self.prediction_errors and len(self.prediction_errors) > 5:
+                recent_errors = list(self.prediction_errors)[-5:]
+                avg_error = np.mean(recent_errors)
+                if avg_error > 0.3:  # High error threshold
+                    action_confidence *= 0.8
+            
+            # Boost for stable prediction patterns
+            if len(self.confidence_history) > 10:
+                confidence_stability = 1.0 - np.std(list(self.confidence_history)[-10:])
+                action_confidence += confidence_stability * 0.1
+            
+            return float(np.clip(action_confidence, 0.1, 1.0))
+            
+        except Exception as e:
+            self.logger.warning(f"Calculate confidence failed: {e}")
+            return 0.3
+
+    def _calculate_prediction_alignment(self, action: Dict[str, Any], predictions: Dict[str, Any]) -> float:
+        """Calculate how well an action aligns with model predictions"""
+        try:
+            alignment_score = 0.5  # Neutral baseline
+            
+            # Check price direction alignment
+            if 'direction' in action and 'price_direction' in predictions:
+                action_direction = action['direction']
+                predicted_direction = predictions['price_direction']
+                if action_direction == predicted_direction:
+                    alignment_score += 0.3
+                elif abs(action_direction - predicted_direction) < 0.1:
+                    alignment_score += 0.1
+            
+            # Check volatility alignment
+            if 'volatility_expectation' in action and 'volatility_prediction' in predictions:
+                vol_diff = abs(action['volatility_expectation'] - predictions['volatility_prediction'])
+                if vol_diff < 0.1:
+                    alignment_score += 0.2
+                elif vol_diff < 0.2:
+                    alignment_score += 0.1
+            
+            return np.clip(alignment_score, 0.0, 1.0)
+            
+        except Exception:
+            return 0.5
+
+    def _assess_market_familiarity(self, market_data: Dict[str, Any]) -> float:
+        """Assess how familiar the model is with current market conditions"""
+        try:
+            familiarity = 0.5  # Baseline
+            
+            # Check if we have sufficient historical data for these conditions
+            if len(self.market_history) > self.config.sequence_length:
+                # Simple heuristic: more data = more familiarity
+                data_sufficiency = min(1.0, len(self.market_history) / self.config.history_size)
+                familiarity += data_sufficiency * 0.3
+            
+            # Check volatility familiarity
+            if 'volatility' in market_data and self.feature_importance.get('volatility_level'):
+                current_vol = market_data['volatility']
+                vol_history = self.feature_importance['volatility_level']['values']
+                if vol_history and len(vol_history) > 5:
+                    vol_mean = np.mean(vol_history)
+                    vol_std = np.std(vol_history)
+                    if vol_std > 0:
+                        # Familiarity based on how close current vol is to historical range
+                        z_score = abs((current_vol - vol_mean) / vol_std)
+                        if z_score < 1.0:  # Within 1 std dev
+                            familiarity += 0.2
+                        elif z_score < 2.0:  # Within 2 std dev  
+                            familiarity += 0.1
+            
+            return np.clip(familiarity, 0.0, 1.0)
+            
+        except Exception:
+            return 0.5
 
     # ================== EVOLUTIONARY METHODS ==================
 
@@ -2517,7 +2708,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         self.external_model_sources.clear()
         self.ensemble_weights.clear()
         
-        self.logger.info("🔄 Enhanced World Model reset - all state cleared")
+        self.logger.info("[RELOAD] Enhanced World Model reset - all state cleared")
 
     def stop_monitoring(self):
         """Stop background monitoring"""
@@ -2544,45 +2735,45 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         # Model status indicators
         if self.is_trained:
             if self.model_confidence > 0.8:
-                model_status = "🚀 Excellent"
+                model_status = "[ROCKET] Excellent"
             elif self.model_confidence > 0.6:
-                model_status = "✅ Good"
+                model_status = "[OK] Good"
             elif self.model_confidence > 0.4:
-                model_status = "⚡ Fair"
+                model_status = "[FAST] Fair"
             else:
-                model_status = "⚠️ Poor"
+                model_status = "[WARN] Poor"
         else:
-            model_status = "❌ Untrained"
+            model_status = "[FAIL] Untrained"
         
         # Mode status
         mode_emoji = {
-            WorldModelMode.INITIALIZATION: "🔄",
-            WorldModelMode.DATA_COLLECTION: "📊",
-            WorldModelMode.TRAINING: "🎯",
-            WorldModelMode.CALIBRATION: "🔧",
+            WorldModelMode.INITIALIZATION: "[RELOAD]",
+            WorldModelMode.DATA_COLLECTION: "[STATS]",
+            WorldModelMode.TRAINING: "[TARGET]",
+            WorldModelMode.CALIBRATION: "[TOOL]",
             WorldModelMode.ACTIVE_PREDICTION: "🔮",
             WorldModelMode.SCENARIO_GENERATION: "🎭",
-            WorldModelMode.OPTIMIZATION: "⚡",
-            WorldModelMode.MAINTENANCE: "🔧",
+            WorldModelMode.OPTIMIZATION: "[FAST]",
+            WorldModelMode.MAINTENANCE: "[TOOL]",
             WorldModelMode.ERROR_RECOVERY: "🆘"
         }
         
         mode_status = f"{mode_emoji.get(self.current_mode, '❓')} {self.current_mode.value.upper()}"
         
         # Health status
-        health_emoji = "✅" if self._health_status == 'healthy' else "⚠️" if self._health_status == 'warning' else "🚨"
-        cb_status = "🔴 OPEN" if self.circuit_breaker['state'] == 'OPEN' else "🟢 CLOSED"
+        health_emoji = "[OK]" if self._health_status == 'healthy' else "[WARN]" if self._health_status == 'warning' else "[ALERT]"
+        cb_status = "[RED] OPEN" if self.circuit_breaker['state'] == 'OPEN' else "[GREEN] CLOSED"
         
         # Data sufficiency
         data_sufficiency = len(self.market_history) / self.config.history_size
         if data_sufficiency > 0.8:
-            data_status = "✅ Excellent"
+            data_status = "[OK] Excellent"
         elif data_sufficiency > 0.5:
-            data_status = "⚡ Good"
+            data_status = "[FAST] Good"
         elif data_sufficiency > 0.2:
-            data_status = "⚠️ Limited"
+            data_status = "[WARN] Limited"
         else:
-            data_status = "❌ Insufficient"
+            data_status = "[FAIL] Insufficient"
         
         # Training status
         training_status = "No training"
@@ -2598,28 +2789,28 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 training_status = f"Stale ({time_ago.days}d ago)"
         
         # Prediction trend
-        prediction_trend = "📊 No data"
+        prediction_trend = "[STATS] No data"
         if len(self.prediction_history) >= 3:
             recent_confidences = [p['confidence'] for p in list(self.prediction_history)[-3:]]
             if len(recent_confidences) >= 2:
                 trend = recent_confidences[-1] - recent_confidences[0]
                 if trend > 0.1:
-                    prediction_trend = "📈 Improving"
+                    prediction_trend = "[CHART] Improving"
                 elif trend < -0.1:
                     prediction_trend = "📉 Declining"
                 else:
-                    prediction_trend = "📊 Stable"
+                    prediction_trend = "[STATS] Stable"
         
         return f"""
 🌍 ENHANCED WORLD MODEL v4.0
 ═══════════════════════════════════════════════════
 🧠 Model Status: {model_status} ({self.model_confidence:.3f})
-🔧 Current Mode: {mode_status}
-📈 Predictions: {prediction_trend}
-🎯 Stability: {self.stability_score:.3f}
+[TOOL] Current Mode: {mode_status}
+[CHART] Predictions: {prediction_trend}
+[TARGET] Stability: {self.stability_score:.3f}
 ⏰ Training: {training_status}
 
-🏥 SYSTEM HEALTH
+[HEALTH] SYSTEM HEALTH
 • Status: {health_emoji} {self._health_status.upper()}
 • Circuit Breaker: {cb_status}
 • Data Quality: {data_status} ({data_sufficiency:.1%})
@@ -2632,27 +2823,27 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
 • Sequence Length: {self.config.sequence_length}
 • Dropout Rate: {self.config.dropout:.2f}
 
-📊 PERFORMANCE METRICS
+[STATS] PERFORMANCE METRICS
 • Model Confidence: {self.model_confidence:.3f}
 • Prediction Quality: {self.prediction_quality:.3f}
 • Training Quality: {self.training_quality:.3f}
 • Stability Score: {self.stability_score:.3f}
 
-💾 DATA STATUS
+[SAVE] DATA STATUS
 • Market History: {len(self.market_history)}/{self.config.history_size}
 • Feature History: {len(self.feature_history)}
 • Prediction History: {len(self.prediction_history)}
 • Training Sessions: {len(self.training_history)}
 • Attention Patterns: {len(self.attention_patterns)}
 
-🔧 TRAINING CONFIGURATION
+[TOOL] TRAINING CONFIGURATION
 • Learning Rate: {self.config.learning_rate:.1e}
 • Batch Size: {self.config.batch_size}
 • Weight Decay: {self.config.weight_decay:.1e}
 • Gradient Clip: {self.config.gradient_clip}
 • Device: {self.device}
 
-📈 RECENT ACTIVITY
+[CHART] RECENT ACTIVITY
 • Predictions (last hour): {len([p for p in self.prediction_history if (datetime.datetime.now() - datetime.datetime.fromisoformat(p['timestamp'])).total_seconds() < 3600])}
 • High-confidence predictions: {len([p for p in self.prediction_history if p['confidence'] > 0.7])}
 • Scenario cache: {'Available' if self.scenario_cache else 'Empty'}
@@ -2685,7 +2876,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         
         self.logger.warning(format_operator_message(
             message="Training mode forced",
-            icon="🎯",
+            icon="[TARGET]",
             reason=reason,
             old_mode=old_mode.value
         ))
