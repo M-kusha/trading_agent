@@ -14,9 +14,9 @@ from pathlib import Path
 class TradingConfig:
     """Centralized configuration for InfoBus-integrated trading environment"""
     
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # Core Environment Parameters
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     initial_balance: float = 3000.0
     max_steps: int = 200
     debug: bool = True
@@ -28,24 +28,24 @@ class TradingConfig:
     info_bus_audit_level: str = "INFO"  # DEBUG, INFO, WARNING, ERROR
     info_bus_validation: bool = True
     
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # Data and Instruments
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     data_dir: str = "data/processed"
     instruments: List[str] = field(default_factory=lambda: ["EUR/USD", "XAU/USD"])
     timeframes: List[str] = field(default_factory=lambda: ["H1", "H4", "D1"])
     
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # Trading Parameters  
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     no_trade_penalty: float = 0.3
     consensus_min: float = 0.30
     consensus_max: float = 0.70
     max_episodes: int = 10000
     
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # Risk Management
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     min_intensity: float = 0.25
     min_inst_confidence: float = 0.60
     rotation_gap: int = 5
@@ -54,14 +54,33 @@ class TradingConfig:
     max_drawdown: float = 0.20
     max_correlation: float = 0.8
     
+    # Position Management Specific
+    max_consecutive_losses: int = 5
+    loss_reduction: float = 0.2
+    max_instrument_concentration: float = 0.25
+    min_volatility: float = 0.015
+    hard_loss_eur: float = 30.0
+    trail_pct: float = 0.10
+    trail_abs_eur: float = 10.0
+    pips_tolerance: int = 20
+    min_size_pct: float = 0.01
+    min_signal_threshold: float = 0.15
+    position_scale_threshold: float = 0.30
+    emergency_close_threshold: float = 0.85
+    confidence_decay: float = 0.95
+    
+    # Performance thresholds for Position Manager
+    position_max_processing_time_ms: float = 100
+    position_circuit_breaker_threshold: int = 3
+    
     # Enhanced Risk Parameters for InfoBus
     risk_check_frequency: int = 1  # Steps between risk checks
     risk_alert_cooldown: int = 5   # Steps between similar alerts
     max_concurrent_alerts: int = 10
     
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # Training Environment
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     num_envs: int = 1
     test_mode: bool = False
     live_mode: bool = False
@@ -75,9 +94,9 @@ class TradingConfig:
     enable_risk_monitoring: bool = True
     enable_visualization: bool = True
     
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # PPO Hyperparameters
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     learning_rate: float = 3e-4
     n_steps: int = 2048
     batch_size: int = 64
@@ -91,24 +110,24 @@ class TradingConfig:
     max_grad_norm: float = 0.5
     target_kl: Optional[float] = 0.01
     
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # Network Architecture
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     policy_hidden_size: int = 256
     value_hidden_size: int = 256
     
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # Training Schedule
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     final_training_steps: int = 100000
     log_interval: int = 10
     checkpoint_freq: int = 10000
     eval_freq: int = 5000
     n_eval_episodes: int = 5
     
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # Enhanced Directory Structure with Rotation
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     log_dir: str = "logs"
     log_level: str = "INFO"
     log_rotation_lines: int = 2000  # Mandatory 2000-line rotation
@@ -461,9 +480,9 @@ class ConfigFactory:
         return config
 
 
-# ═══════════════════════════════════════════════════════════════════
+# ===================================================================
 # Configuration Validation with InfoBus Checks
-# ═══════════════════════════════════════════════════════════════════
+# ===================================================================
 
 def validate_config(config: TradingConfig) -> List[str]:
     """Enhanced validation with InfoBus compatibility checks"""
@@ -501,9 +520,9 @@ def validate_config(config: TradingConfig) -> List[str]:
     return warnings
 
 
-# ═══════════════════════════════════════════════════════════════════
+# ===================================================================
 # Example Usage
-# ═══════════════════════════════════════════════════════════════════
+# ===================================================================
 
 if __name__ == "__main__":
     print("🔧 Enhanced Trading Configuration System with InfoBus")

@@ -1,7 +1,7 @@
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # File: modules/position/position_manager.py
 # Enhanced with SmartInfoBus infrastructure integration
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 
 import numpy as np
 import copy
@@ -28,31 +28,10 @@ from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
+from envs.config import TradingConfig
 
 
-@dataclass
-class PositionConfig:
-    """Configuration for Position Manager"""
-    initial_balance: float = 10000.0
-    max_pct: float = 0.10
-    max_consecutive_losses: int = 5
-    loss_reduction: float = 0.2
-    max_instrument_concentration: float = 0.25
-    min_volatility: float = 0.015
-    hard_loss_eur: float = 30.0
-    trail_pct: float = 0.10
-    trail_abs_eur: float = 10.0
-    pips_tolerance: int = 20
-    min_size_pct: float = 0.01
-    min_signal_threshold: float = 0.15
-    position_scale_threshold: float = 0.30
-    emergency_close_threshold: float = 0.85
-    confidence_decay: float = 0.95
-    debug: bool = True
-    
-    # Performance thresholds
-    max_processing_time_ms: float = 100
-    circuit_breaker_threshold: int = 3
+# Remove the PositionConfig dataclass since we'll use TradingConfig instead
 
 
 class PositionDecision(Enum):
@@ -136,16 +115,18 @@ class PositionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixi
 
         # Ensure config is properly initialized
         if not hasattr(self, 'config') or self.config is None:
-            self.config = config or PositionConfig()
+            self.config = config or TradingConfig()
         elif config is not None:
             self.config = config
             
         # Ensure config is the right type
-        if not isinstance(self.config, PositionConfig):
+        if not isinstance(self.config, TradingConfig):
             if isinstance(self.config, dict):
-                self.config = PositionConfig(**self.config)
+                self.config = TradingConfig(**self.config)
             else:
-                self.config = PositionConfig()
+                self.config = TradingConfig()
+        
+        # No need to update initial_balance from environment config since we're using TradingConfig directly
         
         if not hasattr(self, 'instruments') or self.instruments is None:
             self.instruments = instruments or ["XAU/USD", "EUR/USD"]
@@ -169,14 +150,14 @@ class PositionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixi
                 "[INIT]", "POSITION_MANAGER_REINITIALIZED",
                 instruments_count=len(self.instruments),
                 initial_balance=f"€{self.config.initial_balance:,.0f}",
-                max_position_pct=f"{self.config.max_pct:.1%}",
+                max_position_pct=f"{self.config.max_position_pct:.1%}",
                 details=f"PositionManager _initialize called"
             )
         )
 
     def __init__(
         self,
-        config: Optional[PositionConfig] = None,
+        config: Optional[TradingConfig] = None,
         instruments: Optional[List[str]] = None,
         genome: Optional[Dict[str, Any]] = None,
         **kwargs
@@ -186,14 +167,16 @@ class PositionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixi
         super().__init__()
         
         # Set config after super() call to avoid BaseModule interference
-        self.config = config or PositionConfig()
+        self.config = config or TradingConfig()
         
         # Ensure config is the right type
-        if not isinstance(self.config, PositionConfig):
+        if not isinstance(self.config, TradingConfig):
             if isinstance(self.config, dict):
-                self.config = PositionConfig(**self.config)
+                self.config = TradingConfig(**self.config)
             else:
-                self.config = PositionConfig()
+                self.config = TradingConfig()
+        
+        # No need to update initial_balance from environment config since we're using TradingConfig directly
         
         self._initialize_advanced_systems()
         self._initialize_genome_parameters(genome)
@@ -210,7 +193,7 @@ class PositionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixi
                 "🏦", "POSITION_MANAGER_INITIALIZED",
                 instruments_count=len(self.instruments),
                 initial_balance=f"€{self.config.initial_balance:,.0f}",
-                max_position_pct=f"{self.config.max_pct:.1%}",
+                max_position_pct=f"{self.config.max_position_pct:.1%}",
                 details=f"Smart position management active"
             )
         )
@@ -236,7 +219,7 @@ class PositionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixi
             'failures': 0,
             'last_failure': 0,
             'state': 'CLOSED',
-            'threshold': self.config.circuit_breaker_threshold
+            'threshold': self.config.position_circuit_breaker_threshold
         }
 
     def _start_monitoring(self):
@@ -269,7 +252,7 @@ class PositionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixi
         self.correlation_threshold = self.genome.get("correlation_threshold", 0.7)
         
         # Dynamic parameters (reset on each episode)  
-        self.default_max_pct = self.config.max_pct
+        self.default_max_pct = self.config.max_position_pct
 
     def _initialize_position_state(self):
         """Initialize position management state"""
@@ -296,7 +279,7 @@ class PositionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixi
         
         # Adaptive parameters
         self._adaptive_params = {
-            'dynamic_max_pct': self.config.max_pct,
+            'dynamic_max_pct': self.config.max_position_pct,
             'signal_sensitivity': 1.0,
             'risk_tolerance': 1.0,
             'confidence_threshold': 0.5
@@ -460,7 +443,7 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
         super().reset()
         
         # Reset position manager state
-        self.config.max_pct = self.default_max_pct
+        self.config.max_position_pct = self.default_max_pct
         self.consecutive_losses = 0
         self.open_positions.clear()
         self.last_decisions.clear()
@@ -493,23 +476,23 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
         
         # Reset adaptive parameters
         self._adaptive_params = {
-            'dynamic_max_pct': self.config.max_pct,
+            'dynamic_max_pct': self.config.max_position_pct,
             'signal_sensitivity': 1.0,
             'risk_tolerance': 1.0,
             'confidence_threshold': 0.5
         }
         
         # Ensure minimum allocation capability
-        if self.config.max_pct < 1e-5:
+        if self.config.max_position_pct < 1e-5:
             self.logger.warning(
                 format_operator_message(
-                    "[WARN]", "MAX_PCT_TOO_LOW",
-                    current=f"{self.config.max_pct:.6f}",
+                    "[WARN]", "MAX_POSITION_PCT_TOO_LOW",
+                    current=f"{self.config.max_position_pct:.6f}",
                     default=f"{self.default_max_pct:.4f}",
                     action="Restoring to default"
                 )
             )
-            self.config.max_pct = self.default_max_pct
+            self.config.max_position_pct = self.default_max_pct
 
     def set_env(self, env: Any):
         """Set environment reference"""
@@ -582,14 +565,27 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
         balance = self.config.initial_balance
         drawdown = 0.0
         
-        # Try to get from SmartInfoBus
-        portfolio_metrics = self.smart_bus.get('portfolio_metrics', 'PositionManager')
-        if portfolio_metrics:
-            balance = portfolio_metrics.get('balance', self.config.initial_balance)
-            drawdown = portfolio_metrics.get('drawdown', 0.0)
-        elif self.env:
-            balance = getattr(self.env, 'balance', self.config.initial_balance)
-            drawdown = getattr(self.env, 'current_drawdown', 0.0)
+        # Try to get from SmartInfoBus - check multiple sources
+        # 1. First try market_state from environment
+        market_state = self.smart_bus.get('market_state', 'PositionManager')
+        if market_state:
+            balance = market_state.get('balance', self.config.initial_balance)
+            drawdown = market_state.get('drawdown', 0.0)
+        else:
+            # 2. Fallback to portfolio_metrics
+            portfolio_metrics = self.smart_bus.get('portfolio_metrics', 'PositionManager')
+            if portfolio_metrics:
+                balance = portfolio_metrics.get('balance', self.config.initial_balance)
+                drawdown = portfolio_metrics.get('drawdown', 0.0)
+            # 3. Last resort - try environment config
+            elif hasattr(self, 'env') and self.env:
+                balance = getattr(self.env, 'balance', self.config.initial_balance)
+                drawdown = getattr(self.env, 'current_drawdown', 0.0)
+            else:
+                # 4. Get from environment configuration in SmartInfoBus
+                env_config = self.smart_bus.get('environment_config', 'PositionManager')
+                if env_config:
+                    balance = env_config.get('initial_balance', self.config.initial_balance)
         
         # Calculate total exposure
         total_exposure = 0.0
@@ -1100,21 +1096,21 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
                 
                 if avg_portfolio_health > 0.8:
                     # Good performance, slightly increase risk tolerance
-                    self._adaptive_params['dynamic_max_pct'] = min(
-                        self.config.max_pct * 1.1, 
-                        self.config.max_pct * 1.5
+                    self._adaptive_params['dynamic_max_position_pct'] = min(
+                        self.config.max_position_pct * 1.1,
+                        self.config.max_position_pct * 1.5
                     )
                 elif avg_portfolio_health < 0.4:
                     # Poor performance, reduce risk
-                    self._adaptive_params['dynamic_max_pct'] = max(
-                        self.config.max_pct * 0.7,
-                        self.config.max_pct * 0.3
+                    self._adaptive_params['dynamic_max_position_pct'] = max(
+                        self.config.max_position_pct * 0.7,
+                        self.config.max_position_pct * 0.3
                     )
                 else:
                     # Neutral performance, gradual return to default
-                    current = self._adaptive_params['dynamic_max_pct']
-                    self._adaptive_params['dynamic_max_pct'] = current * 0.95 + self.config.max_pct * 0.05
-            
+                    current = self._adaptive_params['dynamic_max_position_pct']
+                    self._adaptive_params['dynamic_max_position_pct'] = current * 0.95 + self.config.max_position_pct * 0.05
+
             # Adapt signal sensitivity based on decision success
             if len(self._decision_history) >= 5:
                 recent_confidences = []
@@ -1354,9 +1350,9 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
         
         return float(np.mean(quality_scores)) if quality_scores else 0.5
 
-    # ════════════════════════════════════════════════════════════════
+    # ================================================================
     # ENHANCED STATE MANAGEMENT
-    # ════════════════════════════════════════════════════════════════
+    # ================================================================
 
     def get_state(self) -> Dict[str, Any]:
         """Get current state for persistence"""
@@ -1442,9 +1438,9 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
         if 'failure_count' in state:
             self.failure_count = state['failure_count']
 
-    # ════════════════════════════════════════════════════════════════
+    # ================================================================
     # EVOLUTIONARY METHODS
-    # ════════════════════════════════════════════════════════════════
+    # ================================================================
 
     def get_genome(self) -> Dict[str, Any]:
         """Get evolutionary genome"""
@@ -1452,7 +1448,7 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
         
     def set_genome(self, genome: Dict[str, Any]):
         """Set evolutionary genome"""
-        self.config.max_pct = float(np.clip(genome.get("max_pct", self.config.max_pct), 0.01, 0.25))
+        self.config.max_position_pct = float(np.clip(genome.get("max_position_pct", self.config.max_position_pct), 0.01, 0.25))
         self.config.max_consecutive_losses = int(np.clip(genome.get("max_consecutive_losses", self.config.max_consecutive_losses), 1, 20))
         self.config.loss_reduction = float(np.clip(genome.get("loss_reduction", self.config.loss_reduction), 0.05, 1.0))
         self.config.max_instrument_concentration = float(np.clip(genome.get("max_instrument_concentration", self.config.max_instrument_concentration), 0.05, 0.5))
@@ -1468,7 +1464,7 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
         self.correlation_threshold = float(np.clip(genome.get("correlation_threshold", self.correlation_threshold), 0.3, 0.9))
         
         self.genome = {
-            "max_pct": self.config.max_pct,
+            "max_position_pct": self.config.max_position_pct,
             "max_consecutive_losses": self.config.max_consecutive_losses,
             "loss_reduction": self.config.loss_reduction,
             "max_instrument_concentration": self.config.max_instrument_concentration,
@@ -1492,27 +1488,27 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
         if np.random.rand() < mutation_rate:
             old_val = g["max_pct"]
             g["max_pct"] = float(np.clip(old_val + np.random.uniform(-0.02, 0.02), 0.01, 0.25))
-            mutations.append(f"max_pct: {old_val:.3f} → {g['max_pct']:.3f}")
+            mutations.append(f"max_pct: {old_val:.3f} -> {g['max_pct']:.3f}")
             
         if np.random.rand() < mutation_rate:
             old_val = g["max_consecutive_losses"]
             g["max_consecutive_losses"] = int(np.clip(old_val + np.random.choice([-1, 0, 1]), 1, 20))
-            mutations.append(f"max_losses: {old_val} → {g['max_consecutive_losses']}")
+            mutations.append(f"max_losses: {old_val} -> {g['max_consecutive_losses']}")
             
         if np.random.rand() < mutation_rate:
             old_val = g["loss_reduction"]
             g["loss_reduction"] = float(np.clip(old_val + np.random.uniform(-0.1, 0.1), 0.05, 1.0))
-            mutations.append(f"loss_reduction: {old_val:.2f} → {g['loss_reduction']:.2f}")
+            mutations.append(f"loss_reduction: {old_val:.2f} -> {g['loss_reduction']:.2f}")
             
         if np.random.rand() < mutation_rate:
             old_val = g["min_signal_threshold"]
             g["min_signal_threshold"] = float(np.clip(old_val + np.random.uniform(-0.05, 0.05), 0.05, 0.5))
-            mutations.append(f"signal_threshold: {old_val:.2f} → {g['min_signal_threshold']:.2f}")
+            mutations.append(f"signal_threshold: {old_val:.2f} -> {g['min_signal_threshold']:.2f}")
             
         if np.random.rand() < mutation_rate:
             old_val = g["hard_loss_eur"]
             g["hard_loss_eur"] = float(np.clip(old_val + np.random.uniform(-5, 5), 10.0, 100.0))
-            mutations.append(f"hard_loss: €{old_val:.0f} → €{g['hard_loss_eur']:.0f}")
+            mutations.append(f"hard_loss: €{old_val:.0f} -> €{g['hard_loss_eur']:.0f}")
         
         if mutations:
             self.logger.info(
@@ -1562,9 +1558,9 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
         
         return child
 
-    # ════════════════════════════════════════════════════════════════
+    # ================================================================
     # API AND INTERFACE METHODS
-    # ════════════════════════════════════════════════════════════════
+    # ================================================================
 
     def force_action(self, value: float):
         """Force a specific action value for testing/debugging"""
@@ -1654,38 +1650,38 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
         
         return f"""
 [STATS] ENHANCED POSITION MANAGER
-═══════════════════════════════════════
+=======================================
 💼 Portfolio: {portfolio_status} ({self._portfolio_health_score:.3f})
 [WARN] Risk Status: {risk_status}
 [CHART] Exposure: {self._total_exposure_ratio:.1%}
 📍 Open Positions: {len(self.open_positions)}
 
 [TOOL] RISK PARAMETERS
-• Max Position %: {self.config.max_pct:.1%} (dynamic: {self._adaptive_params['dynamic_max_pct']:.1%})
-• Hard Loss Limit: €{self.config.hard_loss_eur:.0f}
-• Trail Stop: {self.config.trail_pct:.1%} / €{self.config.trail_abs_eur:.0f}
-• Signal Threshold: {self.config.min_signal_threshold:.2f}
-• Consecutive Losses: {self.consecutive_losses}/{self.config.max_consecutive_losses}
+* Max Position %: {self.config.max_position_pct:.1%} (dynamic: {self._adaptive_params['dynamic_max_position_pct']:.1%})
+* Hard Loss Limit: €{self.config.hard_loss_eur:.0f}
+* Trail Stop: {self.config.trail_pct:.1%} / €{self.config.trail_abs_eur:.0f}
+* Signal Threshold: {self.config.min_signal_threshold:.2f}
+* Consecutive Losses: {self.consecutive_losses}/{self.config.max_consecutive_losses}
 
 [STATS] PERFORMANCE METRICS
-• Decision Quality: {self._decision_quality_score:.3f}
-• Risk Management: {self._risk_management_score:.3f}
-• Signal Quality: {self._assess_signal_quality():.3f}
-• Recent Confidence: {recent_avg_confidence:.3f}
+* Decision Quality: {self._decision_quality_score:.3f}
+* Risk Management: {self._risk_management_score:.3f}
+* Signal Quality: {self._assess_signal_quality():.3f}
+* Recent Confidence: {recent_avg_confidence:.3f}
 
 [TARGET] ADAPTIVE PARAMETERS
-• Signal Sensitivity: {self._adaptive_params['signal_sensitivity']:.2f}
-• Risk Tolerance: {self._adaptive_params['risk_tolerance']:.2f}
-• Confidence Threshold: {self._adaptive_params['confidence_threshold']:.2f}
+* Signal Sensitivity: {self._adaptive_params['signal_sensitivity']:.2f}
+* Risk Tolerance: {self._adaptive_params['risk_tolerance']:.2f}
+* Confidence Threshold: {self._adaptive_params['confidence_threshold']:.2f}
 
 💡 RECENT ACTIVITY
-• Active Decisions: {active_decisions}
-• Decision History: {len(self._decision_history)} records
-• Portfolio Health Trend: {len([h for h in self._portfolio_health_history if h['health_score'] > 0.7])} good periods
-• Circuit Breaker: {self.circuit_breaker['state']}
+* Active Decisions: {active_decisions}
+* Decision History: {len(self._decision_history)} records
+* Portfolio Health Trend: {len([h for h in self._portfolio_health_history if h['health_score'] > 0.7])} good periods
+* Circuit Breaker: {self.circuit_breaker['state']}
 
 [RELOAD] INSTRUMENTS ({len(self.instruments)})
-{chr(10).join([f"• {inst}: {len(self.signal_history.get(inst, []))} signals, confidence: {self.position_confidence.get(inst, 0.5):.2f}" for inst in self.instruments[:5]])}
+{chr(10).join([f"* {inst}: {len(self.signal_history.get(inst, []))} signals, confidence: {self.position_confidence.get(inst, 0.5):.2f}" for inst in self.instruments[:5]])}
         """
 
     def get_observation_components(self) -> np.ndarray:
@@ -1706,7 +1702,7 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
             risk_management_score = self._risk_management_score
             
             # Adaptive parameters
-            dynamic_risk_ratio = self._adaptive_params['dynamic_max_pct'] / self.config.max_pct
+            dynamic_risk_ratio = self._adaptive_params['dynamic_max_position_pct'] / self.config.max_position_pct
             signal_sensitivity = self._adaptive_params['signal_sensitivity']
             
             # Recent performance indicators
