@@ -570,7 +570,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 performance_data['consensus'] = np.mean(confidences)
                 performance_data['vote_agreement'] = 1.0 - np.std(confidences) if len(confidences) > 1 else 1.0
                 performance_data['vote_count'] = len(votes)
-                performance_data['consensus_strength'] = min(performance_data['consensus'], performance_data['vote_agreement'])
+                performance_data['consensus_strength'] = min(float(performance_data['consensus']), float(performance_data['vote_agreement']))
             else:
                 performance_data.update({
                     'consensus': 0.5, 'vote_agreement': 0.5, 'vote_count': 0, 'consensus_strength': 0.5
@@ -1006,7 +1006,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             if len(self.stats_history) >= 5:
                 recent_pnls = [s.get('avg_pnl', 0) for s in list(self.stats_history)[-5:]]
                 pnl_stability = 1.0 - (np.std(recent_pnls) / (abs(np.mean(recent_pnls)) + 10))
-                factors.append(max(0.0, min(1.0, pnl_stability)))
+                factors.append(max(0.0, min(1.0, float(pnl_stability))))
             
             # Drawdown stability
             drawdown = performance_data.get('drawdown', 0.0)

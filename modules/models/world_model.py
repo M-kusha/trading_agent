@@ -381,8 +381,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 self.optimizer,
                 mode='min',
                 factor=0.8,
-                patience=5,
-                verbose=False
+                patience=5
             )
             
             # Loss functions
@@ -1020,7 +1019,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                             if len(self.prediction_errors) >= 20:
                                 recent_errors = list(self.prediction_errors)[-20:]
                                 avg_recent_error = np.mean(recent_errors)
-                                self.prediction_quality = max(0.0, 1.0 - avg_recent_error * 20)
+                                self.prediction_quality = max(0.0, float(1.0 - avg_recent_error * 20))
             
         except Exception as e:
             self.logger.warning(f"Prediction performance tracking failed: {e}")
@@ -1607,7 +1606,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 all_returns = [s['total_returns'] for s in summaries]
                 if all_returns:
                     returns_std = np.std([np.mean(returns) for returns in all_returns])
-                    returns_diversity = min(1.0, returns_std * 10)
+                    returns_diversity = min(1.0, float(returns_std) * 10)
             
             # Calculate average confidence
             avg_confidence = 0.0
@@ -2665,10 +2664,14 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         """Enhanced reset with comprehensive state cleanup"""
         super().reset()
         
-        # Reset mixin states
-        self._reset_risk_state()
-        self._reset_trading_state()
-        self._reset_analysis_state()
+        # Reset mixin states (reset components directly)
+        # Clear trading state
+        if hasattr(self, '_trading_state'):
+            self._trading_state = {}
+        if hasattr(self, '_risk_metrics'):
+            self._risk_metrics = {}
+        if hasattr(self, '_analysis_state'):
+            self._analysis_state = {}
         
         # Clear world model state
         self.market_history.clear()

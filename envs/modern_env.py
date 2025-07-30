@@ -26,6 +26,8 @@ try:
     from modules.utils.audit_utils import RotatingLogger
     SMARTINFOBUS_AVAILABLE = True
 except ImportError:
+    InfoBusManager = None
+    RotatingLogger = None
     SMARTINFOBUS_AVAILABLE = False
 
 # Core module system
@@ -33,6 +35,7 @@ try:
     from modules.core.module_system import ModuleOrchestrator
     MODULE_SYSTEM_AVAILABLE = True
 except ImportError:
+    ModuleOrchestrator = None
     MODULE_SYSTEM_AVAILABLE = False
 
 # Suppress warnings for cleaner logs
@@ -60,9 +63,6 @@ class ModernTradingEnv(gym.Env):
         # ═══════════════════════════════════════════════════════════
         self.config = config or TradingConfig()
         self.current_step = 0
-        
-        # Random number generator for Gymnasium compatibility
-        self._np_random: Optional[np.random.RandomState] = None
         
         # ═══════════════════════════════════════════════════════════
         # Logging (Initialize first to avoid circular dependencies)
@@ -128,7 +128,7 @@ class ModernTradingEnv(gym.Env):
     def _create_logger(self):
         """Create logger with fallback"""
         try:
-            if SMARTINFOBUS_AVAILABLE:
+            if SMARTINFOBUS_AVAILABLE and RotatingLogger:
                 return RotatingLogger(
                     name="ModernTradingEnv",
                     log_path="logs/modern_env.log",
@@ -160,12 +160,16 @@ class ModernTradingEnv(gym.Env):
         """Initialize SmartInfoBus and Module systems with timeout protection"""
         
         # Try to initialize SmartInfoBus with timeout
-        if SMARTINFOBUS_AVAILABLE:
+        if SMARTINFOBUS_AVAILABLE and InfoBusManager:
             try:
                 def init_smart_bus():
                     try:
-                        self.smart_bus = InfoBusManager.get_instance()
-                        self.smart_bus_enabled = True
+                        if InfoBusManager is not None:
+                            self.smart_bus = InfoBusManager.get_instance()
+                            self.smart_bus_enabled = True
+                        else:
+                            self.smart_bus = None
+                            self.smart_bus_enabled = False
                     except Exception as e:
                         self.logger.warning(f"SmartInfoBus initialization failed: {e}")
                         self.smart_bus = None
@@ -192,13 +196,17 @@ class ModernTradingEnv(gym.Env):
             self.smart_bus_enabled = True
         
         # Try to initialize ModuleOrchestrator with timeout
-        if MODULE_SYSTEM_AVAILABLE:
+        if MODULE_SYSTEM_AVAILABLE and ModuleOrchestrator:
             try:
                 def init_orchestrator():
                     try:
-                        self.orchestrator = ModuleOrchestrator()
-                        self.orchestrator.initialize()
-                        self.orchestrator_enabled = True
+                        if ModuleOrchestrator is not None:
+                            self.orchestrator = ModuleOrchestrator()
+                            self.orchestrator.initialize()
+                            self.orchestrator_enabled = True
+                        else:
+                            self.orchestrator = None
+                            self.orchestrator_enabled = False
                     except Exception as e:
                         self.logger.warning(f"ModuleOrchestrator initialization failed: {e}")
                         self.orchestrator = None
@@ -316,7 +324,7 @@ class ModernTradingEnv(gym.Env):
         
         # Handle seeding for Gymnasium compatibility
         if seed is not None:
-            self._np_random = np.random.RandomState(seed)
+            np.random.seed(seed)
         
         self.logger.info(
             f"🔄 ENVIRONMENT_RESET: Episode {self.episode_count + 1}"
@@ -452,10 +460,7 @@ class ModernTradingEnv(gym.Env):
         # Random start between 50 and (length - max_steps - 50)
         max_start = max(50, int(min_length) - self.config.max_steps - 50)
         
-        if self._np_random is not None:
-            return self._np_random.randint(50, int(max_start))
-        else:
-            return np.random.randint(50, int(max_start))
+        return np.random.randint(50, int(max_start))
     
     def _get_observation(self) -> np.ndarray:
         """Get observation from SmartInfoBus"""
@@ -614,7 +619,7 @@ class ModernTradingEnv(gym.Env):
         This is deprecated in favor of passing seed to reset().
         """
         if seed is not None:
-            self._np_random = np.random.RandomState(seed)
+            np.random.seed(seed)
         return [seed]
     
     @property

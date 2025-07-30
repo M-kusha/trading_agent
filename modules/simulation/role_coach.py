@@ -240,7 +240,7 @@ class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             message="Role Coach reset - all state cleared"
         ))
 
-    async def process(self) -> Dict[str, Any]:
+    async def process(self, **inputs) -> Dict[str, Any]:
         """Modern async processing with comprehensive coaching"""
         start_time = time.time()
         
@@ -512,14 +512,15 @@ class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
                 base_limit = session_limit
             
             # Apply volatility adjustments
+            vol_adjustments = {
+                'low': 1.2,
+                'medium': 1.0,
+                'high': 0.8,
+                'extreme': 0.6
+            }
+            
             if self.volatility_scaling:
                 vol_level = trading_activity.get('volatility_level', 'medium')
-                vol_adjustments = {
-                    'low': 1.2,
-                    'medium': 1.0,
-                    'high': 0.8,
-                    'extreme': 0.6
-                }
                 base_limit = int(base_limit * vol_adjustments.get(vol_level, 1.0))
             
             # Apply performance adjustments

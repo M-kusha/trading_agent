@@ -486,7 +486,7 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
                 recent_pnls = [t.get('pnl', 0) for t in recent_trades[-5:]]
                 if recent_pnls:
                     pnl_volatility = np.std(recent_pnls) / (abs(np.mean(recent_pnls)) + 0.01)
-                    performance_uncertainty = min(1.0, pnl_volatility)
+                    performance_uncertainty = min(1.0, float(pnl_volatility))
                     uncertainty_components.append(performance_uncertainty)
             
             # Weighted combination
@@ -727,7 +727,7 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
                 historical_avg = np.mean(list(pair_history))
                 recent_avg = np.mean(list(pair_history)[-3:]) if len(pair_history) >= 3 else historical_avg
                 trend = recent_avg - historical_avg
-                consistency = 1.0 - (np.std(list(pair_history)) / max(historical_avg, 0.1))
+                consistency = 1.0 - (np.std(list(pair_history)) / max(float(historical_avg), 0.1))
                 
                 # Detect coordination based on multiple criteria
                 is_coordinated = (
@@ -821,7 +821,7 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             z_scores = [(val - mean_val) / std_val for val in recent_values]
             
             # Anomaly score based on how many standard deviations from normal
-            max_z_score = max(abs(z) for z in z_scores)
+            max_z_score = max(float(abs(z)) for z in z_scores)
             anomaly_score = min(1.0, max_z_score / 3.0)  # Normalize to [0, 1]
             
             return float(anomaly_score)
@@ -1066,7 +1066,7 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             # Apply temporal consistency factor
             if len(self.collusion_history) >= 3:
                 recent_scores = [event.get('collusion_score', 0.0) for event in list(self.collusion_history)[-3:]]
-                consistency_factor = 1.0 - (np.std(recent_scores) / max(np.mean(recent_scores), 0.1))
+                consistency_factor = 1.0 - (np.std(recent_scores) / max(float(np.mean(recent_scores)), 0.1))
                 overall_score *= (0.8 + 0.2 * consistency_factor)
             
             return float(np.clip(overall_score, 0.0, 1.0))
@@ -1096,7 +1096,7 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
                 
                 if member_similarities:
                     avg_similarity = np.mean(member_similarities)
-                    independence_score = max(0.0, 1.0 - avg_similarity)
+                    independence_score = max(0.0, 1.0 - float(avg_similarity))
                     self.detection_stats['member_independence_scores'][f'member_{member_id}'] = independence_score
             
             # Update alert frequency
@@ -1538,8 +1538,8 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             # Update behavioral accuracy (consistency of behavioral profiling)
             if len(self.collusion_history) >= 5:
                 recent_scores = [event.get('collusion_score', 0.0) for event in list(self.collusion_history)[-5:]]
-                behavioral_consistency = 1.0 - (np.std(recent_scores) / max(np.mean(recent_scores), 0.1))
-                quality_metrics['behavioral_accuracy'] = float(max(0.0, behavioral_consistency))
+                behavioral_consistency = 1.0 - (np.std(recent_scores) / max(float(np.mean(recent_scores)), 0.1))
+                quality_metrics['behavioral_accuracy'] = float(max(0.0, float(behavioral_consistency)))
             
             # Update temporal consistency
             if self.pair_agreement_history:
@@ -2454,8 +2454,8 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             
             # Recent detection consistency
             if len(self.collusion_history) > 3:
-                recent_scores = list(self.collusion_history)[-5:]
-                consistency = 1.0 - (np.std(recent_scores) / max(np.mean(recent_scores), 0.1))
+                recent_scores = [event.get('collusion_score', 0.0) for event in list(self.collusion_history)[-5:]]
+                consistency = 1.0 - (np.std(recent_scores) / max(float(np.mean(recent_scores)), 0.1))
             else:
                 consistency = 0.5
             
@@ -2468,7 +2468,7 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             )
             
             # Ensure valid range
-            return float(max(0.1, min(0.95, confidence)))
+            return float(max(0.1, min(0.95, float(confidence))))
             
         except Exception as e:
             if hasattr(self, 'logger'):

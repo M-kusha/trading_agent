@@ -383,7 +383,7 @@ class StrategyArbiter(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
             if volatility_data:
                 if isinstance(volatility_data, dict):
                     volatilities = list(volatility_data.values())
-                    self.curr_vol = max(0.001, np.mean(volatilities))
+                    self.curr_vol = max(0.001, float(np.mean(volatilities)))
                 else:
                     self.curr_vol = max(0.001, float(volatility_data))
             
@@ -561,7 +561,7 @@ class StrategyArbiter(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
             
             # Factor 1: Signal strength
             signal_strength = np.linalg.norm(proposal)
-            normalized_strength = min(1.0, signal_strength / 2.0)  # Normalize to reasonable range
+            normalized_strength = min(1.0, float(signal_strength / 2.0))  # Normalize to reasonable range
             quality_factors.append(normalized_strength)
             
             # Factor 2: Confidence alignment
@@ -614,7 +614,7 @@ class StrategyArbiter(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
             if distances:
                 avg_distance = np.mean(distances)
                 # Normalize to 0-1 range (higher distance = more specialized)
-                specialization = min(1.0, avg_distance / 2.0)
+                specialization = min(1.0, float(avg_distance / 2.0))
                 return float(specialization)
             
             return 0.5
@@ -678,7 +678,7 @@ class StrategyArbiter(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
             
             # Calculate diversity (standard deviation of contributions)
             contribution_diversity = np.std(contribution_scores) if len(contribution_scores) > 1 else 0.0
-            normalized_diversity = min(1.0, contribution_diversity * 2.0)
+            normalized_diversity = min(1.0, float(contribution_diversity * 2.0))
             
             # Calculate specialization spread
             specialization_scores = [update.get('specialization', 0.5) for update in member_updates.values()]
@@ -731,7 +731,7 @@ class StrategyArbiter(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
                 contribution_scores = [p.get('contribution_score', 0.5) for p in self.member_performance.values()]
                 if len(contribution_scores) > 1:
                     diversity = np.std(contribution_scores)
-                    self.voting_quality['member_diversity'] = float(min(1.0, diversity * 2.0))
+                    self.voting_quality['member_diversity'] = float(min(1.0, float(diversity * 2.0)))
             
             # Update learning efficiency
             if len(self.learning_history) >= 10:
@@ -1815,7 +1815,7 @@ class StrategyArbiter(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
             )
             
             # Ensure valid range
-            return float(max(0.1, min(0.95, confidence)))
+            return float(max(0.1, min(0.95, float(confidence))))
             
         except Exception as e:
             self.logger.warning(f"Confidence calculation failed: {e}")
@@ -1856,7 +1856,7 @@ class StrategyArbiter(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
                 reasoning = f"Low member coordination ({member_coordination:.3f}) needs attention"
             elif proposal_strength > 0.7:
                 action_type = 'execute_proposal'
-                signal_strength = min(proposal_strength, 0.9)
+                signal_strength = min(float(proposal_strength), 0.9)
                 reasoning = f"Strong blended proposal (strength: {proposal_strength:.3f})"
             else:
                 action_type = 'monitor'

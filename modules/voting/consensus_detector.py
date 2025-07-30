@@ -585,7 +585,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                 actions = [base_action]
                 for i in range(min(self.n_members - 1, 4)):
                     noise = np.random.randn(*base_action.shape) * 0.1
-                    actions.append(base_action + noise)
+                    actions.append((base_action + noise).astype(np.float32))
                 return actions
             
             # Final fallback to votes
@@ -789,7 +789,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             conf_mean = np.mean(confidences)
             if conf_mean > 0:
                 relative_variance = conf_variance / (conf_mean ** 2)
-                variance_consensus = max(0.0, 1.0 - relative_variance * 1.5)
+                variance_consensus = max(0.0, 1.0 - float(relative_variance) * 1.5)
                 confidence_metrics.append(variance_consensus)
             
             # 2. High-confidence agreement (focus on confident members)
@@ -870,7 +870,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             if mean_magnitude > 1e-6:
                 std_magnitude = np.std(weighted_magnitudes)
                 cv = std_magnitude / mean_magnitude
-                cv_consensus = max(0.0, 1.0 - cv)
+                cv_consensus = max(0.0, 1.0 - float(cv))
                 magnitude_metrics.append(cv_consensus)
             
             # 2. Outlier-robust consensus (using median absolute deviation)
@@ -888,7 +888,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                 avg_magnitude = np.mean(magnitudes)
                 if avg_magnitude > 1e-6:
                     relative_range = mag_range / avg_magnitude
-                    range_consensus = max(0.0, 1.0 - relative_range / 2.0)
+                    range_consensus = max(0.0, 1.0 - float(relative_range) / 2.0)
                     magnitude_metrics.append(range_consensus)
             
             if magnitude_metrics:
@@ -984,7 +984,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             consensus_mean = np.mean(recent_consensus)
             if consensus_mean > 0:
                 relative_variance = consensus_variance / (consensus_mean ** 2)
-                stability_consensus = max(0.0, 1.0 - relative_variance)
+                stability_consensus = max(0.0, 1.0 - float(relative_variance))
                 temporal_metrics.append(stability_consensus)
             
             # 2. Trend consistency
@@ -1136,7 +1136,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                     for event in list(self.consensus_history)[-self.consensus_intelligence['stability_window']:]
                 ]
                 self.temporal_stability = 1.0 - np.std(recent_consensus)
-                self.temporal_stability = max(0.0, min(1.0, self.temporal_stability))
+                self.temporal_stability = max(0.0, min(1.0, float(self.temporal_stability)))
             
             # Update statistics
             await self._update_consensus_statistics_comprehensive(consensus, consensus_components)
@@ -1246,7 +1246,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             magnitudes = [np.linalg.norm(action) for action in actions]
             if len(magnitudes) > 1 and np.mean(magnitudes) > 0:
                 magnitude_cv = np.std(magnitudes) / np.mean(magnitudes)
-                magnitude_diversity = min(1.0, magnitude_cv)
+                magnitude_diversity = min(1.0, float(magnitude_cv))
                 diversity_metrics.append(magnitude_diversity)
             
             if diversity_metrics:
@@ -1273,7 +1273,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             
             if errors:
                 avg_error = np.mean(errors)
-                accuracy = max(0.0, 1.0 - avg_error * 2)  # Scale error to accuracy
+                accuracy = max(0.0, 1.0 - float(avg_error) * 2)  # Scale error to accuracy
                 return float(accuracy)
             else:
                 return 0.5
@@ -2603,8 +2603,8 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             
             # Recent consensus trend
             if len(self.consensus_history) > 5:
-                recent_consensus = list(self.consensus_history)[-5:]
-                trend_stability = 1.0 - (np.std(recent_consensus) / max(np.mean(recent_consensus), 0.1))
+                recent_consensus = [event.get('consensus', 0.5) for event in list(self.consensus_history)[-5:]]
+                trend_stability = 1.0 - (np.std(recent_consensus) / max(float(np.mean(recent_consensus)), 0.1))
             else:
                 trend_stability = 0.5
             
@@ -2617,7 +2617,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             )
             
             # Ensure valid range
-            return float(max(0.1, min(0.95, confidence)))
+            return float(max(0.1, min(0.95, float(confidence))))
             
         except Exception as e:
             if hasattr(self, 'logger'):

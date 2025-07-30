@@ -436,7 +436,7 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
                 recent_performance = [p['pnl'] for p in list(self._performance_history)[-10:]]
                 if recent_performance:
                     avg_performance = np.mean(recent_performance)
-                    performance_confidence = max(0, min(1, (avg_performance + 50) / 100))
+                    performance_confidence = max(0, min(1, float(avg_performance + 50) / 100))
                 else:
                     performance_confidence = 0.5
             else:

@@ -172,7 +172,7 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             confidence *= severity_factor
             
             # Ensure confidence is in valid range
-            confidence = max(0.0, min(1.0, confidence))
+            confidence = max(0.0, min(1.0, float(confidence)))
             
             # Log confidence calculation for debugging
             self.logger.debug(f"Correlation confidence: {confidence:.3f}, factors: {factors}")

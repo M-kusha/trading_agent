@@ -1074,7 +1074,7 @@ class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         confidence = (base_confidence * 0.4 + quality_factor * 0.3 + 
                      memory_factor * 0.2 + cb_factor * 0.1) - consecutive_penalty
         
-        return float(max(0.0, min(1.0, confidence)))
+        return float(max(0.0, min(1.0, float(confidence))))
     
     def confidence(self, obs: Any = None, **kwargs) -> float:
         """Legacy compatibility for confidence"""

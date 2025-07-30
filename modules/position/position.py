@@ -1345,7 +1345,7 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
                 recent_signals = history[-5:]
                 signal_strength = np.mean(np.abs(recent_signals))
                 signal_consistency = 1.0 - np.std(recent_signals)
-                inst_quality = (signal_strength + max(0, signal_consistency)) / 2.0
+                inst_quality = (signal_strength + max(0, float(signal_consistency))) / 2.0
                 quality_scores.append(inst_quality)
         
         return float(np.mean(quality_scores)) if quality_scores else 0.5

@@ -800,7 +800,7 @@ REGIME PERFORMANCE MATRIX ANALYSIS
             # Performance consistency
             if len(self._performance_history) > 10:
                 perf_std = np.std(list(self._performance_history))
-                perf_consistency = max(0.0, 1.0 - perf_std / 100.0)  # Normalize by expected range
+                perf_consistency = max(0.0, 1.0 - float(perf_std) / 100.0)  # Normalize by expected range
             else:
                 perf_consistency = 0.5
             
@@ -825,7 +825,7 @@ REGIME PERFORMANCE MATRIX ANALYSIS
             elif action_type in ['trade', 'cautious_trade'] and overall_accuracy < 0.6:
                 confidence *= 0.8  # Less confident in active trading with low accuracy
             
-            return float(max(0.0, min(1.0, confidence)))
+            return float(max(0.0, min(1.0, float(confidence))))
             
         except Exception as e:
             self.logger.error(f"Error calculating confidence: {e}")

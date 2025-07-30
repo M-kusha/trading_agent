@@ -609,7 +609,7 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 return 0.8
             
             avg_performance = np.mean(recent_performance_scores)
-            performance_pressure = max(0.0, min(1.0, (-avg_performance + 20) / 40))
+            performance_pressure = max(0.0, min(1.0, float((-avg_performance + 20) / 40)))
             
             # Thesis age pressure
             current_time = datetime.datetime.now()
@@ -684,7 +684,7 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 performance_std = np.std(performances)
                 performance_mean = abs(np.mean(performances))
                 if performance_mean > 0:
-                    performance_diversity = min(1.0, performance_std / performance_mean)
+                    performance_diversity = min(1.0, float(performance_std / performance_mean))
             
             # Source diversity (different evolution sources)
             sources = [self.thesis_performance.get(thesis, {}).get('source', 'unknown') for thesis in self.theses]

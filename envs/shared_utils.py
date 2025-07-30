@@ -175,8 +175,8 @@ def get_system_status() -> SystemHealth:
                 # Type assertion to help type checker
                 if hasattr(InfoBusManager, 'get_instance'):
                     smart_bus = InfoBusManager.get_instance()  # type: ignore
-                health.smartinfobus_active = True
-                health.modules_active = len(getattr(smart_bus, '_data_store', {}))
+                    health.smartinfobus_active = True
+                    health.modules_active = len(getattr(smart_bus, '_data_store', {}))
             except Exception as e:
                 health.errors.append(f"SmartInfoBus error: {e}")
         

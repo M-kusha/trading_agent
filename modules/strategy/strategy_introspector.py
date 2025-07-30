@@ -404,7 +404,7 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 time_gaps = [(recent_times[i] - recent_times[i-1]).total_seconds() / 60 
                            for i in range(1, len(recent_times))]
                 avg_gap = np.mean(time_gaps) if time_gaps else 60
-                activity_intensity = max(0.0, min(1.0, 60 / (avg_gap + 1)))
+                activity_intensity = max(0.0, min(1.0, float(60 / (avg_gap + 1))))
             else:
                 activity_intensity = 0.5
             
@@ -1111,7 +1111,7 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 older_avg = np.mean(pnls[-6:-3])
                 
                 trend_strength = abs(recent_avg - older_avg) / (abs(older_avg) + 1e-6)
-                trend_analysis['trend_strength'] = min(1.0, trend_strength)
+                trend_analysis['trend_strength'] = min(1.0, float(trend_strength))
                 
                 if recent_avg > older_avg + 5:
                     trend_analysis['short_term_trend'] = 'improving'
@@ -1866,7 +1866,7 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 ])
                 
                 adaptation_distance = np.linalg.norm(recent_metrics - older_metrics)
-                profile['adaptation_score'] = min(1.0, adaptation_distance)
+                profile['adaptation_score'] = min(1.0, float(adaptation_distance))
             else:
                 profile['adaptation_score'] = 0.0
                 
@@ -2636,7 +2636,7 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             cv = std_pnl / abs(mean_pnl)
             consistency = 1.0 / (1.0 + cv)
             
-            return float(min(1.0, max(0.0, consistency)))
+            return float(min(1.0, max(0.0, float(consistency))))
             
         except Exception:
             return 0.5
@@ -2688,7 +2688,7 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             
             if win_rates:
                 wr_stability = 1.0 - np.std(win_rates)
-                factors.append(max(0.0, wr_stability))
+                factors.append(max(0.0, float(wr_stability)))
             
             # Risk-reward stability
             risk_rewards = [r.get('risk_reward_ratio', 1.5) for r in self._records]

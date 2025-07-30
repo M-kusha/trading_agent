@@ -823,7 +823,7 @@ class PlaybookMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin
                 for p in self._pattern_effectiveness.values()
             ])
             if avg_effectiveness > 0:
-                base_confidence += min(0.3, avg_effectiveness / 100.0)
+                base_confidence += min(0.3, float(avg_effectiveness) / 100.0)
         
         # Confidence from recall efficiency
         base_confidence += self._recall_efficiency * 0.2
@@ -836,7 +836,7 @@ class PlaybookMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin
         memory_factor = min(1.0, len(self._features) / 100.0)
         base_confidence += memory_factor * 0.1
         
-        return float(max(0.0, min(1.0, base_confidence)))
+        return float(max(0.0, min(1.0, float(base_confidence))))
         base_confidence += self._prediction_accuracy * 0.3
         
         # Confidence from recall efficiency

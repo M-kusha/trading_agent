@@ -472,7 +472,7 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
                 recent_pnls = [t.get('pnl', 0) for t in recent_trades[-5:]]
                 if recent_pnls:
                     pnl_volatility = np.std(recent_pnls) / (abs(np.mean(recent_pnls)) + 10)
-                    performance_uncertainty = min(1.0, pnl_volatility)
+                    performance_uncertainty = min(1.0, float(pnl_volatility))
                     uncertainty_components.append(performance_uncertainty)
             
             # Weighted combination
@@ -621,14 +621,14 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             for i, sample in enumerate(samples):
                 distances = [np.linalg.norm(sample - other) for j, other in enumerate(samples) if i != j]
                 if distances:
-                    min_distances.append(min(distances))
+                    min_distances.append(min([float(d) for d in distances]))
             
             if not min_distances:
                 return 0.0
             
             # Coverage score based on uniformity of minimum distances
             coverage = 1.0 - (np.std(min_distances) / (np.mean(min_distances) + 1e-8))
-            return float(max(0.0, min(1.0, coverage)))
+            return float(max(0.0, min(1.0, float(coverage))))
             
         except Exception:
             return 0.0
@@ -704,7 +704,7 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
                 return 1.0 if recent_std < 0.01 else 0.5
             
             improvement = (earlier_std - recent_std) / earlier_std
-            convergence_rate = max(0.0, min(1.0, 0.5 + improvement))
+            convergence_rate = max(0.0, min(1.0, 0.5 + float(improvement)))
             
             return float(convergence_rate)
             
@@ -719,7 +719,7 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             
             # Stability based on variance in recent uncertainties
             variance = np.var(uncertainties)
-            stability = max(0.0, 1.0 - variance * 10)  # Scale variance appropriately
+            stability = max(0.0, 1.0 - float(variance) * 10)  # Scale variance appropriately
             
             return float(min(1.0, stability))
             
@@ -817,9 +817,9 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             
             # Calculate alignment between estimated and expected uncertainty
             avg_estimated_uncertainty = np.mean(recent_uncertainties)
-            alignment = 1.0 - abs(avg_estimated_uncertainty - market_uncertainty)
+            alignment = 1.0 - abs(float(avg_estimated_uncertainty) - market_uncertainty)
             
-            return float(max(0.0, min(1.0, alignment)))
+            return float(max(0.0, min(1.0, float(alignment))))
             
         except Exception:
             return 0.5
@@ -988,7 +988,7 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             expected_distance = np.sqrt(self.dim) * self.current_sigma
             normalized_diversity = avg_distance / max(expected_distance, 1e-8)
             
-            return float(min(1.0, normalized_diversity))
+            return float(min(1.0, float(normalized_diversity)))
             
         except Exception:
             return 0.0
@@ -1376,7 +1376,7 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
                 uncertainty_regions = context['uncertainty_regions']
                 for region in uncertainty_regions[:n_samples]:
                     direction = np.array(region.get('direction', np.random.randn(self.dim)))
-                    direction = direction / max(np.linalg.norm(direction), 1e-8)
+                    direction = direction / max(float(np.linalg.norm(direction)), 1e-8)
                     
                     magnitude = sigma * uncertainty_scaling * region.get('uncertainty', 1.0)
                     perturbed = weights + magnitude * direction

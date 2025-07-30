@@ -605,7 +605,7 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                 pnls = [t.get('pnl', 0) for t in recent_trades[-10:]]
                 if len(pnls) > 1:
                     pnl_volatility = np.std(pnls) / (abs(np.mean(pnls)) + 1e-6)
-                    volatility_factor = min(1.0, pnl_volatility / 5.0)
+                    volatility_factor = min(1.0, float(pnl_volatility / 5.0))
                     score += volatility_factor * 0.25
             
             # Market regime change score (20% weight)
@@ -619,7 +619,7 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                 if len(effectiveness_scores) > 1:
                     effectiveness_variance = np.var(effectiveness_scores)
                     if effectiveness_variance > 0.1:
-                        score += min(0.15, effectiveness_variance * 1.5)
+                        score += min(0.15, float(effectiveness_variance * 1.5))
             
             # Quality degradation score (10% weight)
             current_quality = self.clustering_metrics.get('silhouette_score', 0.5)
@@ -714,7 +714,7 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                 for _ in range(1, actual_clusters):
                     distances = []
                     for point in X:
-                        min_dist = min(np.linalg.norm(point - center) for center in centers)
+                        min_dist = min(float(np.linalg.norm(point - center)) for center in centers)
                         distances.append(min_dist)
                     
                     # Choose point with maximum distance (weighted by squared distance)
@@ -872,7 +872,7 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                 if synthetic_centers:
                     self._kmeans.cluster_centers_ = np.vstack([existing_centers] + synthetic_centers)
                 
-                self._kmeans.n_clusters = self.n_clusters
+                # Note: n_clusters is a read-only property in KMeans, we track it separately
             
             if self._kmeans is not None:
                 inertia_value = self._kmeans.inertia_ if self._kmeans.inertia_ is not None else 0.0
@@ -1010,14 +1010,14 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                         other_cluster_points = X[labels == cluster_id]
                         if len(other_cluster_points) > 0:
                             avg_dist = np.mean([np.linalg.norm(point - other) for other in other_cluster_points])
-                            b = min(b, avg_dist)
+                            b = min(b, float(avg_dist))
                 
                 if b == float('inf'):
                     b = a
                 
                 # Calculate silhouette score for this point
-                if max(a, b) > 0:
-                    silhouette_scores.append((b - a) / max(a, b))
+                if max(float(a), float(b)) > 0:
+                    silhouette_scores.append((b - a) / max(float(a), float(b)))
                 else:
                     silhouette_scores.append(0)
             
@@ -2103,7 +2103,7 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                         "pca_components_": self._pca.components_.tolist(),
                         "pca_explained_variance_ratio_": self._pca.explained_variance_ratio_.tolist(),
                         "kmeans_centers_": self._kmeans.cluster_centers_.tolist(),
-                        "kmeans_n_clusters": self._kmeans.n_clusters,
+                        "kmeans_n_clusters_tracked": self.n_clusters,  # Track separately since n_clusters is read-only
                         "kmeans_inertia_": float(self._kmeans.inertia_ if self._kmeans.inertia_ is not None else 0.0)
                     }
             
@@ -2252,7 +2252,8 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                     # Restore KMeans
                     self._kmeans = KMeans(n_clusters=self.n_clusters, random_state=42)
                     self._kmeans.cluster_centers_ = np.array(model_state["kmeans_centers_"], dtype=np.float32)
-                    self._kmeans.n_clusters = model_state.get("kmeans_n_clusters", self.n_clusters)
+                    # Note: n_clusters is read-only in KMeans, we use our tracked value
+                    tracked_clusters = model_state.get("kmeans_n_clusters_tracked", self.n_clusters)
                     
                     if "kmeans_inertia_" in model_state:
                         self._kmeans.inertia_ = float(model_state["kmeans_inertia_"])

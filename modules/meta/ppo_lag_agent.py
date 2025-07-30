@@ -1080,7 +1080,7 @@ class PPOLagAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, S
             
             if np.var(returns_np) > 1e-6:
                 explained_var = 1 - np.var(returns_np - values_np) / np.var(returns_np)
-                self.training_stats['explained_variance'] = max(0, explained_var)
+                self.training_stats['explained_variance'] = max(0, float(explained_var))
 
     def _update_risk_metrics(self):
         """Update position and risk metrics"""

@@ -582,7 +582,7 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
                 
             # 2. Enhanced risk penalty with volatility adjustment
             if actions is not None:
-                risk_penalty = min(np.linalg.norm(actions) * self.config.risk_pen_weight, 0.2)
+                risk_penalty = min(float(np.linalg.norm(actions) * self.config.risk_pen_weight), 0.2)
                 
                 # Adjust based on volatility
                 vol_multiplier = {'low': 1.2, 'medium': 1.0, 'high': 0.8, 'extreme': 0.6}
@@ -960,7 +960,7 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
                 recent_rewards = list(self._reward_history)[-10:]
                 positive_ratio = sum(1 for r in recent_rewards if r > 0) / len(recent_rewards)
                 stability = 1.0 - (np.std(recent_rewards) / (abs(np.mean(recent_rewards)) + 1e-8))
-                self._reward_quality = (positive_ratio + max(0, stability)) / 2
+                self._reward_quality = (positive_ratio + max(0, float(stability))) / 2
             
         except Exception as e:
             self.logger.warning(f"Performance metrics update failed: {e}")
@@ -1414,7 +1414,7 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
             mutations.append(f"regime_weights: {old_weights} → {g['regime_weights']}")
         
         # Mutate weights with adaptive rates based on performance
-        performance_factor = max(0.5, min(2.0, 1.0 + (self._avg_reward - 0.0) * 2.0))
+        performance_factor = max(0.5, min(2.0, 1.0 + (float(self._avg_reward) - 0.0) * 2.0))
         
         weight_params = [
             ("dd_pen_weight", 0.2, 5.0),
@@ -1749,7 +1749,7 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
 
 🧬 EVOLUTION
 • Genome Parameters: {len(self.genome)} configured
-• Performance Factor: {max(0.5, min(2.0, 1.0 + self._avg_reward * 2.0)):.2f}
+• Performance Factor: {max(0.5, min(2.0, 1.0 + float(self._avg_reward) * 2.0)):.2f}
         """
 
 # End of enhanced RiskAdjustedReward class

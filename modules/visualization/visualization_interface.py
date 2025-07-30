@@ -793,9 +793,16 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
         # Placeholder for actual streaming logic
         if self.stream_url:
             try:
-                import aiohttp
-                async with aiohttp.ClientSession() as session:
-                    await session.post(self.stream_url, json=data, timeout=0.5)
+                # Import aiohttp only when needed for streaming
+                try:
+                    import aiohttp
+                except ImportError:
+                    self.logger.warning("aiohttp not available - streaming disabled")
+                    return
+                
+                timeout = aiohttp.ClientTimeout(total=0.5)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    await session.post(self.stream_url, json=data)
             except Exception:
                 pass  # Don't let streaming errors affect trading
 

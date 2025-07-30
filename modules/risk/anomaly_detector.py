@@ -929,7 +929,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                         "average_time_ms": float(recent_avg_time),
                         "threshold_ms": self.config.max_processing_time_ms,
                         "severity": AnomalySeverity.WARNING.value,
-                        "confidence": min(0.8, recent_avg_time / self.config.max_processing_time_ms / 2),
+                        "confidence": min(0.8, float(recent_avg_time / self.config.max_processing_time_ms / 2)),
                         "timestamp": detection_data.get('timestamp')
                     })
                     
@@ -1112,7 +1112,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 pnl_95th = np.percentile(np.abs(pnl_array), 95)
                 pnl_std = np.std(pnl_array)
                 
-                adaptive_threshold = max(pnl_95th, 3 * pnl_std)
+                adaptive_threshold = max(float(pnl_95th), float(3 * pnl_std))
                 adaptive_threshold = np.clip(
                     adaptive_threshold,
                     self.base_thresholds['pnl_limit'] * 0.5,
@@ -2900,7 +2900,7 @@ class PatternAnomalyDetector:
                     'type': 'regular_timing_pattern',
                     'interval_mean': float(interval_mean),
                     'interval_std': float(interval_std),
-                    'regularity_score': float(interval_mean / max(interval_std, 0.001)),
+                    'regularity_score': float(interval_mean / max(float(interval_std), 0.001)),
                     'severity': AnomalySeverity.INFO.value,
                     'confidence': 0.7,
                     'timestamp': context.get('timestamp')

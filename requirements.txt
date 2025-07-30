@@ -79,6 +79,7 @@ toml>=0.10.0
 # ═══════════════════════════════════════════════════════════════════
 # Network & Security
 # ═══════════════════════════════════════════════════════════════════
+aiohttp>=3.8.0  # Async HTTP client for streaming
 httpx>=0.24.0  # Async HTTP client
 cryptography>=41.0.0  # Security utilities
 

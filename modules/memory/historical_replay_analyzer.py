@@ -328,12 +328,12 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
             
             # Calculate action variance (lower is more consistent)
             action_variance = np.var([np.linalg.norm(action) for action in actions])
-            consistency_score = max(0, 1.0 - action_variance)
+            consistency_score = max(0.0, 1.0 - float(action_variance))
             
             # Check temporal spacing
             timestamps = [step.get('timestamp', 0) for step in sequence]
             time_diffs = np.diff(timestamps)
-            temporal_score = 1.0 if len(time_diffs) == 0 else max(0, 1.0 - np.std(time_diffs) / 100)
+            temporal_score = 1.0 if len(time_diffs) == 0 else max(0.0, 1.0 - float(np.std(time_diffs)) / 100)
             
             # Market context consistency
             context_score = 0.8  # Default if no market context

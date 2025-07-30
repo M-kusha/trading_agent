@@ -438,19 +438,19 @@ class LiquidityHeatmapLayer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         # Spread component (lower spread = higher liquidity)
         if self.spread_history:
             avg_spread = np.mean(list(self.spread_history)[-20:])
-            spread_score = 1.0 - min(avg_spread / 0.001, 1.0)  # Normalize to typical forex spread
+            spread_score = 1.0 - min(float(avg_spread) / 0.001, 1.0)  # Normalize to typical forex spread
             score_components.append(spread_score * 0.4)
         
         # Depth component (higher depth = higher liquidity)
         if self.depth_history:
             avg_depth = np.mean(list(self.depth_history)[-20:])
-            depth_score = min(avg_depth / 10000, 1.0)  # Normalize to typical depth
+            depth_score = min(float(avg_depth) / 10000, 1.0)  # Normalize to typical depth
             score_components.append(depth_score * 0.4)
         
         # Volatility component (stable prices = higher liquidity)
         if len(self.price_history) > 10:
             price_volatility = np.std(list(self.price_history)[-20:])
-            volatility_score = 1.0 - min(price_volatility / 0.01, 1.0)
+            volatility_score = 1.0 - min(float(price_volatility) / 0.01, 1.0)
             score_components.append(volatility_score * 0.2)
         
         # Calculate final score
@@ -513,7 +513,7 @@ class LiquidityHeatmapLayer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         
         depths = list(self.depth_history)
         avg_depth = np.mean(depths)
-        depth_stability = 1.0 - (np.std(depths) / max(avg_depth, 1))
+        depth_stability = 1.0 - (float(np.std(depths)) / max(float(avg_depth), 1.0))
         
         # Classify depth condition
         if avg_depth > 50000:

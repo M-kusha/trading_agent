@@ -679,7 +679,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             
             # VaR quality (lower is better)
             if self.current_var > 0:
-                var_quality = max(0, 1.0 - (self.current_var / 0.05))  # 5% VaR threshold
+                var_quality = max(0, float(1.0 - (self.current_var / 0.05)))  # 5% VaR threshold
                 quality_factors.append(var_quality)
             
             # Correlation quality (lower correlation is better)
@@ -777,7 +777,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             current_exposure = self.performance_metrics.get("total_exposure", 0.0)
             var_usage = self.current_var
             
-            self.daily_risk_used = max(current_exposure * 0.5, var_usage)
+            self.daily_risk_used = max(current_exposure * 0.5, float(var_usage))
             
             # Check for budget violations
             budget_violation = False
@@ -1513,7 +1513,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             
             # VaR confidence (lower VaR = higher confidence)
             if self.current_var > 0:
-                var_confidence = max(0.0, 1.0 - (self.current_var / 0.05))  # Normalize to 5% max
+                var_confidence = max(0.0, float(1.0 - (self.current_var / 0.05)))  # Normalize to 5% max
                 confidence_factors.append(var_confidence * 0.3)
             
             # Correlation confidence (lower max correlation = higher confidence)

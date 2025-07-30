@@ -644,7 +644,7 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             if len(self.alignment_history) >= 5:
                 recent_impacts = [a.get('impact', 0.0) for a in list(self.alignment_history)[-10:]]
                 consistency = 1.0 - np.std(recent_impacts) if recent_impacts else 0.5
-                self.alignment_quality['consistency'] = float(max(0.0, min(1.0, consistency)))
+                self.alignment_quality['consistency'] = float(max(0.0, min(1.0, float(consistency))))
             
             # Adaptability (responsiveness to market changes)
             adaptation_score = min(1.0, self.alignment_stats['significant_adaptations'] / max(1, self.alignment_stats['total_alignments']))
@@ -683,7 +683,7 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             
             # Calculate similarity
             similarity = 1.0 - np.mean(np.abs(expected_multipliers - current_combined)) / 2.0
-            return float(max(0.0, min(1.0, similarity)))
+            return float(max(0.0, min(1.0, float(similarity))))
             
         except Exception:
             return 0.5

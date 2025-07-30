@@ -103,11 +103,11 @@ class AgentPerformanceTracker:
                 recent_avg = np.mean(recent_rewards)
                 older_avg = np.mean(older_rewards)
                 improvement = (recent_avg - older_avg) / (abs(older_avg) + 1e-8)
-                metrics['convergence_score'] = max(0, min(1, improvement + 0.5))
+                metrics['convergence_score'] = max(0, min(1, float(improvement) + 0.5))
             
             # Calculate stability score
             reward_std = np.std(recent_rewards)
-            metrics['stability_score'] = max(0, 1 - reward_std / 100.0)
+            metrics['stability_score'] = max(0, float(1 - reward_std / 100.0))
     
     def get_best_agent(self) -> str:
         """Get the name of the best performing agent"""

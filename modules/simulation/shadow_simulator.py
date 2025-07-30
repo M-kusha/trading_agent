@@ -236,7 +236,7 @@ class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
             message="Shadow Simulator reset - all state cleared"
         ))
 
-    async def process(self) -> Dict[str, Any]:
+    async def process(self, **inputs) -> Dict[str, Any]:
         """Modern async processing with comprehensive simulation"""
         start_time = time.time()
         
@@ -1016,7 +1016,7 @@ class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
             score_std = np.std(scores)
             
             # Higher confidence if scores are consistently good and low variance
-            consistency_factor = max(0.0, 1.0 - score_std * 2.0)
+            consistency_factor = max(0.0, float(1.0 - score_std * 2.0))
             magnitude_factor = (1.0 + np.tanh(score_mean)) / 2.0  # 0 to 1
             
             confidence = (consistency_factor + magnitude_factor) / 2.0

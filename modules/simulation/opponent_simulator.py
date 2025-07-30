@@ -221,7 +221,7 @@ class OpponentSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             message="Opponent Simulator reset - all state cleared"
         ))
 
-    async def process(self) -> Dict[str, Any]:
+    async def process(self, **inputs) -> Dict[str, Any]:
         """Modern async processing with comprehensive simulation"""
         start_time = time.time()
         
@@ -658,9 +658,11 @@ class OpponentSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             if perturbations:
                 impact_variance = np.var([abs(p.get('magnitude', 0)) for p in perturbations])
                 coverage = len(effects.get('instruments_affected', [])) / max(len(perturbations), 1)
-                effectiveness = min(1.0, impact_variance * 10 + coverage * 0.5)
+                effectiveness = min(1.0, float(impact_variance * 10 + coverage * 0.5))
             else:
                 effectiveness = 0.0
+                impact_variance = 0.0
+                coverage = 0.0
             
             # Update effectiveness tracking
             self.simulation_stats["effectiveness_score"] = float(effectiveness)

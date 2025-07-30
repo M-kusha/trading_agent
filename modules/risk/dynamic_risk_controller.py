@@ -300,7 +300,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
             if len(self.risk_scale_history) >= 5:
                 recent_scales = list(self.risk_scale_history)[-5:]
                 scale_volatility = np.std(recent_scales) if len(recent_scales) > 1 else 0.0
-                stability_factor = max(0.5, 1.0 - scale_volatility * 2)
+                stability_factor = max(0.5, float(1.0 - scale_volatility * 2))
                 factors['stability_factor'] = stability_factor
                 confidence *= stability_factor
             
@@ -796,7 +796,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
             
             # Apply adaptive volatility tolerance
             tolerance = self._adaptive_params['volatility_tolerance']
-            factor = min(1.0, factor * tolerance)
+            factor = min(1.0, float(factor * tolerance))
             
             self.risk_factors["volatility"] = float(factor)
             
@@ -1068,7 +1068,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
             # Consider volatility in performance assessment
             if len(self.vol_history) >= 5:
                 recent_vol = np.mean(list(self.vol_history)[-5:])
-                vol_adjustment = 1.0 - min(0.3, recent_vol * 10)  # Penalize high volatility
+                vol_adjustment = 1.0 - min(0.3, float(recent_vol * 10))  # Penalize high volatility
             else:
                 vol_adjustment = 1.0
             
@@ -1189,7 +1189,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
             if len(self.risk_scale_history) >= 10:
                 recent_scales = list(self.risk_scale_history)[-10:]
                 scale_stability = 1.0 - np.std(recent_scales)
-                quality_factors.append(max(0, scale_stability))
+                quality_factors.append(max(0, float(scale_stability)))
             
             # Adaptation effectiveness
             adaptation_confidence = self._adaptive_params.get('risk_adaptation_confidence', 0.5)

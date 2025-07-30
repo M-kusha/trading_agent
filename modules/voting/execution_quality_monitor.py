@@ -980,7 +980,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             if self.slippage_history:
                 avg_slippage = np.mean(list(self.slippage_history)[-20:])
                 percentile_slippage = np.percentile(list(self.slippage_history), self.config.slippage_percentile)
-                slippage_score = max(0, 1.0 - (percentile_slippage / (self.config.slip_limit * 2)))
+                slippage_score = max(0.0, 1.0 - (float(percentile_slippage) / (self.config.slip_limit * 2)))
                 scores.append(slippage_score)
                 weights.append(0.3)
             
@@ -988,7 +988,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             if self.latency_history:
                 avg_latency = np.mean(list(self.latency_history)[-20:])
                 percentile_latency = np.percentile(list(self.latency_history), self.config.latency_percentile)
-                latency_score = max(0, 1.0 - (percentile_latency / (self.config.latency_limit * 2)))
+                latency_score = max(0.0, 1.0 - (float(percentile_latency) / (self.config.latency_limit * 2)))
                 scores.append(latency_score)
                 weights.append(0.3)
             
@@ -1002,7 +1002,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             # Spread score
             if self.spread_history:
                 avg_spread = np.mean(list(self.spread_history)[-20:])
-                spread_score = max(0, 1.0 - (avg_spread / (self.config.spread_threshold * 2)))
+                spread_score = max(0.0, 1.0 - (float(avg_spread) / (self.config.spread_threshold * 2)))
                 scores.append(spread_score)
                 weights.append(0.15)
             
@@ -1788,7 +1788,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             # Recent performance consistency
             if hasattr(self, 'quality_history') and len(self.quality_history) > 2:
                 recent_qualities = list(self.quality_history)[-5:]
-                consistency = 1.0 - (np.std(recent_qualities) / max(np.mean(recent_qualities), 0.1))
+                consistency = 1.0 - (float(np.std(recent_qualities)) / max(float(np.mean(recent_qualities)), 0.1))
             else:
                 consistency = 0.5
             
@@ -1805,7 +1805,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             )
             
             # Ensure valid range
-            return float(max(0.1, min(0.95, confidence)))
+            return float(max(0.1, min(0.95, float(confidence))))
             
         except Exception as e:
             if hasattr(self, 'logger'):

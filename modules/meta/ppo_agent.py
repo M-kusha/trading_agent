@@ -326,8 +326,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                 self.optimizer, 
                 mode='max', 
                 factor=0.8, 
-                patience=self.config.lr_decay_patience,
-                verbose=False
+                patience=self.config.lr_decay_patience
             )
             
             self.logger.info("Neural components initialized successfully")
@@ -692,7 +691,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             # Calculate performance score
             if len(self.episode_rewards) > 0:
                 avg_reward = np.mean(list(self.episode_rewards)[-10:])
-                performance_score = max(0, min(1, (avg_reward + 100) / 200))  # Normalize to 0-1
+                performance_score = max(0, min(1, float(avg_reward + 100) / 200))  # Normalize to 0-1
             else:
                 avg_reward = 0.0
                 performance_score = 0.0
@@ -1207,7 +1206,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             if len(self.policy_losses) > 10:
                 recent_losses = list(self.policy_losses)[-10:]  # Convert to list for slicing
                 loss_std = np.std(recent_losses)
-                stability_confidence = max(0.2, 1.0 - loss_std)
+                stability_confidence = max(0.2, float(1.0 - loss_std))
             else:
                 stability_confidence = 0.5
             
