@@ -162,7 +162,7 @@ class AgentPerformanceTracker:
         "controller_status", "agent_performance", "training_metrics", "automation_status",
         "trading_signals", "trading_signal", "meta_signals", "agent_decisions"
     ],
-    requires=["trades", "actions", "market_data", "training_data"],
+    requires=["market_data"],  # Removed "trades", "actions", "training_data" to break circular deps
     description="Advanced meta RL controller with intelligent automation and agent management",
     thesis_required=True,
     health_monitoring=True,

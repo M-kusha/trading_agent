@@ -1325,7 +1325,13 @@ def create_enhanced_voting_experts(config: Dict[str, Any]) -> List[EnhancedVotin
     name="EnhancedVotingCommitteeCoordinator",
     version="4.0.0",
     category="voting",
-    provides=["committee_decision", "voting_consensus", "committee_confidence"],
+    provides=[
+        "committee_decision", "voting_consensus", "committee_confidence",
+        "voting_summary", "strategy_arbiter_weights", "consensus_direction", 
+        "agreement_score", "raw_proposals", "member_confidences", "votes",
+        "member_proposals", "voting_weights", "time_of_day", "performance_feedback",
+        "horizon_alignment"
+    ],
     requires=["expert_votes", "market_context", "system_health"],
     description="Enhanced voting committee coordinator with modern InfoBus integration",
     thesis_required=True,

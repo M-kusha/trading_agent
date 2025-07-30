@@ -23,6 +23,18 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
+class SimpleAnalyzer:
+    """Simple fallback analyzer when main analyzers are not available"""
+    
+    async def analyze_async(self, *args, **kwargs):
+        """Simple fallback analysis"""
+        return {'anomalies': [], 'analysis_completed': False, 'fallback': True}
+    
+    async def detect_async(self, *args, **kwargs):
+        """Simple fallback detection"""
+        return {'anomalies': [], 'detection_completed': False, 'fallback': True}
+
+
 class AnomalyDetectionMode(Enum):
     """Anomaly detection operational modes"""
     INITIALIZATION = "initialization"
@@ -227,10 +239,10 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         self.volatility_regime = "medium"
         self.market_stress_level = 0.0
         
-        # Advanced detection features
-        self.sequence_analyzer = SequenceAnomalyAnalyzer()
-        self.correlation_analyzer = CorrelationAnomalyAnalyzer()
-        self.pattern_detector = PatternAnomalyDetector()
+        # Advanced detection features - use lazy initialization
+        self.sequence_analyzer = None
+        self.correlation_analyzer = None
+        self.pattern_detector = None
         
         # Training and adaptation
         self.training_progress = 0
@@ -268,6 +280,25 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         self._monitoring_active = True
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
+
+    def _ensure_analyzers_initialized(self):
+        """Lazy initialization of analyzer components"""
+        try:
+            if self.sequence_analyzer is None:
+                self.sequence_analyzer = SequenceAnomalyAnalyzer()
+            if self.correlation_analyzer is None:
+                self.correlation_analyzer = CorrelationAnomalyAnalyzer()
+            if self.pattern_detector is None:
+                self.pattern_detector = PatternAnomalyDetector()
+        except NameError as e:
+            # Classes not yet defined, will initialize later
+            self.logger.warning(f"Analyzer classes not yet available: {e}")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize analyzers: {e}")
+            # Create simple fallback analyzers
+            self.sequence_analyzer = SimpleAnalyzer()
+            self.correlation_analyzer = SimpleAnalyzer()
+            self.pattern_detector = SimpleAnalyzer()
 
     def _initialize(self):
         """Initialize module with SmartInfoBus integration"""
@@ -1054,10 +1085,13 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
     async def _analyze_patterns_async(self, detection_data: Dict[str, Any]) -> Dict[str, Any]:
         """Analyze patterns and sequences for anomalies"""
         try:
+            # Ensure analyzers are initialized
+            self._ensure_analyzers_initialized()
+            
             pattern_results = {}
             
             # 1. Sequence analysis
-            if len(self.pnl_history) >= 10:
+            if len(self.pnl_history) >= 10 and self.sequence_analyzer is not None:
                 sequence_result = await self.sequence_analyzer.analyze_async(
                     list(self.pnl_history), detection_data
                 )
@@ -1067,7 +1101,8 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                     self.anomalies["sequence"].extend(sequence_result['anomalies'])
             
             # 2. Correlation analysis
-            if len(self.price_history) >= 20 and len(self.volume_history) >= 20:
+            if (len(self.price_history) >= 20 and len(self.volume_history) >= 20 
+                and self.correlation_analyzer is not None):
                 correlation_result = await self.correlation_analyzer.analyze_async(
                     list(self.price_history), list(self.volume_history), detection_data
                 )
@@ -1078,7 +1113,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             
             # 3. Pattern detection
             trades = detection_data.get('trades', [])
-            if trades:
+            if trades and self.pattern_detector is not None:
                 pattern_result = await self.pattern_detector.detect_async(trades, detection_data)
                 pattern_results['pattern'] = pattern_result
                 

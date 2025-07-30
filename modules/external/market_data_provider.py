@@ -48,7 +48,7 @@ class MarketDataConfig:
     provides=[
         "market_data", "price_data", "technical_indicators", "volatility_data", 
         "symbols", "timestamp", "prices", "trading_session", "session_type",
-        "market_conditions", "ohlcv_data", "bid_ask_data"
+        "market_conditions", "ohlcv_data", "bid_ask_data", "market_regime", "market_context"
     ],
     requires=[],  # Root data provider - no dependencies
     description="Offline market data provider for backtesting and simulation with comprehensive data feeds",

@@ -67,7 +67,7 @@ class PortfolioRiskConfig:
         "portfolio_risk", "risk_metrics", "position_limits", "risk_analytics",
         "risk_data", "risk_signals", "risk_score", "trade_data", "trading_data"
     ],
-    requires=["trade_data", "position_data", "market_data", "risk_signals"],
+    requires=["market_data"],  # Removed "trade_data", "position_data", "risk_signals" to break circular deps
     description="Advanced portfolio risk management with comprehensive VaR analysis and dynamic position limits",
     thesis_required=True,
     health_monitoring=True,

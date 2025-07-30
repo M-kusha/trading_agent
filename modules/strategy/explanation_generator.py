@@ -25,7 +25,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
 @module(
     name="ExplanationGenerator",
     version="3.0.0",
-    category="interface",
+    category="utils",
     provides=[
         "trading_explanations", "system_explanations", "performance_insights",
         "contextual_narratives", "operator_updates", "decision_rationales"

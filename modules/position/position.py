@@ -90,9 +90,9 @@ class PositionDecisionResult:
     provides=[
         "position_decisions", "portfolio_state", "risk_metrics", "position_analysis",
         "positions", "pending_orders", "position_data", "trades", "recent_trades",
-        "current_pnl", "balance", "equity"
+        "current_pnl", "balance", "equity", "current_positions"
     ],
-    requires=["market_data", "trading_signals", "risk_score"],
+    requires=["market_data"],  # Removed "trading_signals" and "risk_score" to break circular deps
     description="Advanced position management with dynamic risk scaling and portfolio optimization",
     thesis_required=True,
     health_monitoring=True,

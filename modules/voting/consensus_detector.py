@@ -34,7 +34,8 @@ from modules.monitoring.performance_tracker import PerformanceTracker
     ],
     requires=[
         "votes", "raw_proposals", "member_confidences", "voting_summary", "alpha_weights",
-        "blended_action", "market_context", "agreement_score", "consensus_direction"
+        "blended_action", "market_context", "agreement_score"
+        # Removed "consensus_direction" to break circular dependency
     ],
     description="Advanced consensus analysis and agreement measurement for voting committees",
     thesis_required=True,

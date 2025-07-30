@@ -38,7 +38,8 @@ class SessionConfig:
         "episode_summary", "performance_data", "system_performance", "system_health",
         "session_type", "pnl_data", "memory_usage", "playbook_entries", "mistakes",
         "playbook_memory", "consensus_data", "module_performance", "system_alerts",
-        "votes", "expert_votes", "market_conditions", "time_risk_data", "theme_detection"
+        "votes", "expert_votes", "market_conditions", "time_risk_data", "theme_detection",
+        "time_of_day", "performance_feedback"
     ],
     requires=[],  # Root provider - no dependencies
     description="Session and performance management system providing comprehensive session data and metrics",

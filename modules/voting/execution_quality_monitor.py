@@ -34,6 +34,7 @@ class ExecutionMode(Enum):
 
 
 @dataclass
+@dataclass
 class ExecutionQualityConfig:
     """Configuration for Execution Quality Monitor"""
     slip_limit: float = 0.002
@@ -82,7 +83,15 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                  training_mode: bool = True,
                  **kwargs):
         
-        self.config = config or ExecutionQualityConfig()
+        # Handle config parameter - can be dict or ExecutionQualityConfig object
+        if config is None:
+            self.config = ExecutionQualityConfig()
+        elif isinstance(config, dict):
+            # Create ExecutionQualityConfig from dictionary
+            self.config = ExecutionQualityConfig(**config)
+        else:
+            self.config = config
+            
         self.training_mode = training_mode
         super().__init__()
         
@@ -121,7 +130,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             'failures': 0,
             'last_failure': 0,
             'state': 'CLOSED',
-            'threshold': getattr(self.config, 'circuit_breaker_threshold', 5)
+            'threshold': self.config.circuit_breaker_threshold
         }
         
         # Health monitoring
@@ -141,11 +150,11 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         self.mode_start_time = datetime.datetime.now()
         
         # Enhanced histories
-        self.slippage_history = deque(maxlen=getattr(self.config, 'stats_window', 50))
-        self.latency_history = deque(maxlen=getattr(self.config, 'stats_window', 50))
-        self.fill_history = deque(maxlen=getattr(self.config, 'stats_window', 50))
-        self.spread_history = deque(maxlen=getattr(self.config, 'stats_window', 50))
-        self.quality_history = deque(maxlen=getattr(self.config, 'stats_window', 50))
+        self.slippage_history = deque(maxlen=self.config.stats_window)
+        self.latency_history = deque(maxlen=self.config.stats_window)
+        self.fill_history = deque(maxlen=self.config.stats_window)
+        self.spread_history = deque(maxlen=self.config.stats_window)
+        self.quality_history = deque(maxlen=self.config.stats_window)
         
         # Instrument-specific tracking
         self.instrument_metrics: Dict[str, Dict[str, deque]] = defaultdict(

@@ -29,11 +29,12 @@ from modules.monitoring.performance_tracker import PerformanceTracker
     category="voting",
     provides=[
         "aligned_weights", "horizon_distances", "horizon_multipliers", "regime_adjustments",
-        "session_patterns", "alignment_quality", "performance_metrics", "adaptation_status"
+        "session_patterns", "alignment_quality", "performance_metrics", "adaptation_status",
+        "horizon_alignment"
     ],
     requires=[
-        "voting_weights", "market_regime", "session_type", "volatility_data", "market_context",
-        "time_of_day", "performance_feedback", "member_confidences"
+        "market_regime", "session_type", "volatility_data", "market_context"
+        # Removed "voting_weights", "time_of_day", "performance_feedback", "member_confidences" to break circular deps
     ],
     description="Advanced time-based weight scaling for voting committees with market adaptation",
     thesis_required=True,
