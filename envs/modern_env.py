@@ -485,7 +485,7 @@ class ModernTradingEnv(gym.Env):
         return self._create_fallback_observation()
     
     def _create_fallback_observation(self) -> np.ndarray:
-        """Create fallback observation if modules don't provide one"""
+        """Create MULTI-TIMEFRAME observation if modules don't provide one"""
         features = []
         
         # Market state features
@@ -495,20 +495,76 @@ class ModernTradingEnv(gym.Env):
             float(self.current_step) / 1000.0,   # Normalized step
         ])
         
-        # Price features for each instrument
+        # Multi-timeframe price features for each instrument
         for instrument in self.instruments:
-            if 'H1' in self.data[instrument]:
-                df = self.data[instrument]['H1']
-                if self.current_step < len(df):
-                    close_price = df['close'].iloc[self.current_step]
-                    features.extend([
-                        close_price / 10000.0,  # Normalized price
-                        df['volume'].iloc[self.current_step] / 1000.0,  # Normalized volume
-                    ])
+            # Add features from ALL timeframes for comprehensive analysis
+            for timeframe in ['H1', 'H4', 'D1']:
+                if timeframe in self.data[instrument]:
+                    df = self.data[instrument][timeframe]
+                    if self.current_step < len(df):
+                        current_bar = {
+                            'open': df['open'].iloc[self.current_step],
+                            'high': df['high'].iloc[self.current_step],
+                            'low': df['low'].iloc[self.current_step],
+                            'close': df['close'].iloc[self.current_step],
+                            'volume': df['volume'].iloc[self.current_step]
+                        }
+                        
+                        # Add normalized OHLCV features
+                        base_price = current_bar['close']
+                        features.extend([
+                            current_bar['close'] / 10000.0,  # Normalized close
+                            (current_bar['high'] - current_bar['low']) / base_price if base_price > 0 else 0,  # HL range %
+                            (current_bar['close'] - current_bar['open']) / base_price if base_price > 0 else 0,  # OC change %
+                            current_bar['volume'] / 1000.0,  # Normalized volume
+                        ])
+                        
+                        # Add momentum features (if enough history)
+                        if self.current_step >= 5:
+                            prev_close = df['close'].iloc[self.current_step - 5]
+                            momentum = (current_bar['close'] - prev_close) / prev_close if prev_close > 0 else 0
+                            features.append(momentum)
+                        else:
+                            features.append(0.0)
+                            
+                        # Add volatility feature (20-period if available)
+                        if self.current_step >= 20:
+                            recent_closes = df['close'].iloc[self.current_step-19:self.current_step+1]
+                            volatility = recent_closes.std() / recent_closes.mean() if recent_closes.mean() > 0 else 0
+                            features.append(volatility)
+                        else:
+                            features.append(0.01)  # Default volatility
+                            
+                    else:
+                        # Fill with zeros if no data
+                        features.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
                 else:
-                    features.extend([0.0, 0.0])
-            else:
-                features.extend([0.0, 0.0])
+                    # Fill with zeros if timeframe not available
+                    features.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        
+        # Add cross-timeframe analysis features
+        # Compare H1 vs H4 vs D1 trends for each instrument
+        for instrument in self.instruments:
+            h1_trend = h4_trend = d1_trend = 0.0
+            
+            # Calculate simple trend for each timeframe
+            for tf_name, trend_var in [('H1', 'h1_trend'), ('H4', 'h4_trend'), ('D1', 'd1_trend')]:
+                if tf_name in self.data[instrument] and self.current_step >= 5:
+                    df = self.data[instrument][tf_name]
+                    if self.current_step < len(df):
+                        current_price = df['close'].iloc[self.current_step]
+                        past_price = df['close'].iloc[max(0, self.current_step - 5)]
+                        trend = (current_price - past_price) / past_price if past_price > 0 else 0
+                        locals()[trend_var] = trend
+            
+            # Add trend alignment features
+            features.extend([
+                h1_trend,
+                h4_trend, 
+                d1_trend,
+                1.0 if (h1_trend > 0 and h4_trend > 0 and d1_trend > 0) else 0.0,  # All timeframes bullish
+                1.0 if (h1_trend < 0 and h4_trend < 0 and d1_trend < 0) else 0.0,  # All timeframes bearish
+            ])
         
         # Pad to expected size
         obs_array = np.array(features, dtype=np.float32)
@@ -518,6 +574,10 @@ class ModernTradingEnv(gym.Env):
             padded_obs = np.zeros(expected_size, dtype=np.float32)
             padded_obs[:obs_array.size] = obs_array
             return padded_obs
+        elif obs_array.size > expected_size:
+            return obs_array[:expected_size]
+        else:
+            return obs_array
         
         return obs_array[:expected_size]
     

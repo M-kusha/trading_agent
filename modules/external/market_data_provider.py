@@ -31,6 +31,8 @@ class MarketDataConfig:
     """Configuration for Offline Market Data Provider"""
     data_directory: str = "data/processed"
     supported_symbols: List[str] = field(default_factory=lambda: ["XAUUSD", "EURUSD"])
+    supported_timeframes: List[str] = field(default_factory=lambda: ["H1", "H4", "D1"])
+    primary_timeframe: str = "H4"  # Primary timeframe for trading decisions
     update_frequency: float = 1.0  # seconds
     buffer_size: int = 10000
     enable_technical_indicators: bool = True
@@ -133,7 +135,7 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             raise
 
     async def _load_data_files(self) -> None:
-        """Load offline data files from the data directory"""
+        """Load offline data files from the data directory for all timeframes"""
         try:
             data_dir = self.config.data_directory
             if not os.path.exists(data_dir):
@@ -141,32 +143,64 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 await self._create_mock_data()
                 return
             
-            # Load CSV files for each symbol
+            # Load CSV files for each symbol and timeframe combination
             for symbol in self.config.supported_symbols:
-                file_pattern = os.path.join(data_dir, f"{symbol}*.csv")
-                files = glob.glob(file_pattern)
+                symbol_data = {}
                 
-                if files:
-                    # Load the most recent file
-                    latest_file = max(files, key=os.path.getctime)
-                    try:
-                        df = pd.read_csv(latest_file)
-                        # Ensure required columns exist
-                        required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
-                        if all(col in df.columns for col in required_cols):
-                            self.data_files[symbol] = df
-                            self.data_iterators[symbol] = df.iterrows()
-                            self._logger.info(f"[OK] Loaded data for {symbol}: {len(df)} bars")
-                        else:
-                            self._logger.warning(f"[WARN] Invalid format for {symbol} - missing columns")
-                    except Exception as e:
-                        self._logger.error(f"[FAIL] Error loading {symbol}: {e}")
-                else:
-                    self._logger.warning(f"[WARN] No data files found for {symbol}")
+                for timeframe in self.config.supported_timeframes:
+                    # Look for files matching: SYMBOL_TIMEFRAME_*.csv
+                    file_pattern = os.path.join(data_dir, f"{symbol}_{timeframe}_*.csv")
+                    files = glob.glob(file_pattern)
+                    
+                    if files:
+                        # Load the most recent file for this timeframe
+                        latest_file = max(files, key=os.path.getctime)
+                        try:
+                            df = pd.read_csv(latest_file)
+                            # Ensure required columns exist (handle both 'time' and 'timestamp')
+                            required_cols = ['open', 'high', 'low', 'close', 'volume']
+                            time_col = 'timestamp' if 'timestamp' in df.columns else ('time' if 'time' in df.columns else None)
+                            
+                            if time_col and all(col in df.columns for col in required_cols):
+                                # Standardize the time column name
+                                if time_col == 'time':
+                                    df = df.rename(columns={'time': 'timestamp'})
+                                
+                                symbol_data[timeframe] = df
+                                self._logger.info(f"[OK] Loaded {symbol}/{timeframe}: {len(df)} bars from {os.path.basename(latest_file)}")
+                            else:
+                                missing_cols = [col for col in required_cols if col not in df.columns]
+                                self._logger.warning(f"[WARN] Invalid format for {symbol}/{timeframe} - missing columns: {missing_cols}")
+                                if not time_col:
+                                    self._logger.warning(f"[WARN] {symbol}/{timeframe}: No time/timestamp column found")
+                        except Exception as e:
+                            self._logger.error(f"[FAIL] Error loading {symbol}/{timeframe}: {e}")
+                    else:
+                        self._logger.warning(f"[WARN] No data files found for {symbol}/{timeframe}")
+                
+                # Store symbol data if any timeframes were loaded
+                if symbol_data:
+                    self.data_files[symbol] = symbol_data
+                    # Create iterator for primary timeframe
+                    if self.config.primary_timeframe in symbol_data:
+                        self.data_iterators[symbol] = symbol_data[self.config.primary_timeframe].iterrows()
+                        self._logger.info(f"[PRIMARY] Using {symbol}/{self.config.primary_timeframe} as primary timeframe")
+                    else:
+                        # Fallback to first available timeframe
+                        first_tf = list(symbol_data.keys())[0]
+                        self.data_iterators[symbol] = symbol_data[first_tf].iterrows()
+                        self._logger.info(f"[FALLBACK] Using {symbol}/{first_tf} as primary timeframe")
             
             if not self.data_files:
                 self._logger.warning("[WARN] No valid data files found - creating mock data")
                 await self._create_mock_data()
+            else:
+                # Print summary
+                total_symbols = len(self.data_files)
+                total_timeframes = sum(len(tf_data) for tf_data in self.data_files.values())
+                total_bars = sum(len(df) for symbol_data in self.data_files.values() 
+                               for df in symbol_data.values())
+                self._logger.info(f"[SUMMARY] Loaded {total_symbols} symbols, {total_timeframes} timeframes, {total_bars:,} total bars")
                 
         except Exception as e:
             self._logger.error(f"[FAIL] Error loading data files: {e}")
@@ -185,7 +219,7 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             base_price = base_prices.get(symbol, 1.0000)
             
             # Generate 1000 bars of realistic data
-            timestamps = pd.date_range(start='2024-01-01', periods=1000, freq='1H')
+            timestamps = pd.date_range(start='2024-01-01', periods=1000, freq='1h')
             data = []
             
             current_price = base_price
@@ -246,7 +280,7 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             await self._advance_symbol_data(symbol)
 
     async def _advance_symbol_data(self, symbol: str) -> bool:
-        """Advance to the next data point for a symbol"""
+        """Advance to the next data point for a symbol (using primary timeframe)"""
         try:
             if symbol not in self.data_iterators:
                 return False
@@ -278,9 +312,17 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 return True
                 
             except StopIteration:
-                # Restart iterator for continuous simulation
-                self.data_iterators[symbol] = self.data_files[symbol].iterrows()
-                return await self._advance_symbol_data(symbol)
+                # Restart iterator for continuous simulation (using primary timeframe)
+                if symbol in self.data_files:
+                    if self.config.primary_timeframe in self.data_files[symbol]:
+                        self.data_iterators[symbol] = self.data_files[symbol][self.config.primary_timeframe].iterrows()
+                    else:
+                        # Use first available timeframe
+                        first_tf = list(self.data_files[symbol].keys())[0]
+                        self.data_iterators[symbol] = self.data_files[symbol][first_tf].iterrows()
+                    return await self._advance_symbol_data(symbol)
+                else:
+                    return False
                 
         except Exception as e:
             self._logger.error(f"[FAIL] Error advancing data for {symbol}: {e}")
@@ -441,14 +483,60 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             return {"error": str(e), "data_provider_status": "error"}
 
     async def _get_current_data_snapshot(self) -> Dict[str, Any]:
-        """Get current complete data snapshot for all provided data types"""
+        """Get current complete data snapshot for all provided data types with MULTI-TIMEFRAME support"""
         try:
             # If no current bars, create minimal fallback data
             if not self.current_bars:
                 return await self._create_fallback_data()
             
+            # Prepare multi-timeframe data for AI analysis
+            multi_timeframe_data = {}
+            for symbol in self.config.supported_symbols:
+                if symbol in self.data_files:
+                    multi_timeframe_data[symbol] = {}
+                    
+                    # Get current position in primary timeframe
+                    primary_df = None
+                    if self.config.primary_timeframe in self.data_files[symbol]:
+                        primary_df = self.data_files[symbol][self.config.primary_timeframe]
+                    
+                    # For each timeframe, get the current bar and recent history
+                    for timeframe in self.config.supported_timeframes:
+                        if timeframe in self.data_files[symbol]:
+                            df = self.data_files[symbol][timeframe]
+                            
+                            # Find current bar index (synchronize timeframes if needed)
+                            current_idx = len(df) // 2  # Default to middle for demo
+                            if primary_df is not None and len(df) > 10:
+                                # Simple sync: use proportional position
+                                primary_progress = 0.5  # This would be calculated from actual position
+                                current_idx = min(len(df) - 1, max(10, int(len(df) * primary_progress)))
+                            
+                            # Get current and recent bars (last 20 bars for context)
+                            start_idx = max(0, current_idx - 19)
+                            end_idx = current_idx + 1
+                            
+                            recent_data = {
+                                'open': df['open'].iloc[start_idx:end_idx].values,
+                                'high': df['high'].iloc[start_idx:end_idx].values,
+                                'low': df['low'].iloc[start_idx:end_idx].values,
+                                'close': df['close'].iloc[start_idx:end_idx].values,
+                                'volume': df['volume'].iloc[start_idx:end_idx].values,
+                                'current_bar': {
+                                    'open': float(df['open'].iloc[current_idx]),
+                                    'high': float(df['high'].iloc[current_idx]),
+                                    'low': float(df['low'].iloc[current_idx]),
+                                    'close': float(df['close'].iloc[current_idx]),
+                                    'volume': int(df['volume'].iloc[current_idx])
+                                },
+                                'timeframe': timeframe,
+                                'bars_available': len(df)
+                            }
+                            
+                            multi_timeframe_data[symbol][timeframe] = recent_data
+            
             return {
-                # Core market data
+                # Core market data (primary timeframe for backward compatibility)
                 "market_data": dict(self.current_bars),
                 "price_data": {symbol: {
                     "close": bar["close"],
@@ -457,10 +545,13 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     "low": bar["low"]
                 } for symbol, bar in self.current_bars.items()},
                 
-                # Technical indicators
+                # ENHANCED: Multi-timeframe market data for AI analysis
+                "multi_timeframe_data": multi_timeframe_data,
+                
+                # Technical indicators (basic ones only - advanced analysis handled by market modules)
                 "technical_indicators": dict(self.technical_indicators),
                 
-                # Volatility and risk data
+                # Volatility and risk data (basic calculations)
                 "volatility_data": {symbol: {
                     "atr": self.technical_indicators[symbol]["atr"],
                     "volatility": self.technical_indicators[symbol]["atr"] / bar["close"] if bar["close"] > 0 else 0.0
@@ -472,7 +563,7 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 "trading_session": self.trading_session,
                 "session_type": self.session_type,
                 
-                # Market conditions
+                # Basic market conditions (detailed analysis handled by market modules)
                 "market_conditions": {
                     "volatility_regime": self._assess_volatility_regime(),
                     "market_hours": self._is_market_hours(),

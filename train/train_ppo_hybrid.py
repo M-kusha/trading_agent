@@ -40,6 +40,9 @@ from datetime import datetime
 from typing import Dict, Any, Optional, Union
 from pathlib import Path
 
+# Add parent directory to Python path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import numpy as np
 import pandas as pd
 import torch
@@ -205,7 +208,7 @@ except Exception:
 # ═══════════════════════════════════════════════════════════════════
 
 def load_data(data_dir: str = "data/processed") -> Dict[str, Dict[str, pd.DataFrame]]:
-    """Enhanced data loader with validation"""
+    """Enhanced multi-timeframe data loader with validation"""
     data = {}
     
     if not os.path.exists(data_dir):
@@ -215,12 +218,28 @@ def load_data(data_dir: str = "data/processed") -> Dict[str, Dict[str, pd.DataFr
     for file in os.listdir(data_dir):
         if file.endswith('.csv'):
             try:
-                instrument = file.replace('.csv', '').replace('_', '/')
+                # Parse filename: SYMBOL_TIMEFRAME_features.csv
+                # Example: EURUSD_H1_features.csv -> instrument=EURUSD, timeframe=H1
+                file_base = file.replace('.csv', '').replace('_features', '')
+                parts = file_base.split('_')
+                
+                if len(parts) >= 2:
+                    instrument = parts[0]
+                    timeframe = parts[1]
+                else:
+                    # Fallback for simple naming
+                    instrument = file_base.replace('_', '/')
+                    timeframe = 'H1'
+                
                 df = pd.read_csv(os.path.join(data_dir, file))
                 
-                # Validate required columns
+                # Validate required columns (handle both 'time' and 'timestamp')
                 required_cols = ['open', 'high', 'low', 'close']
                 if all(col in df.columns for col in required_cols):
+                    # Standardize time column
+                    if 'time' in df.columns and 'timestamp' not in df.columns:
+                        df = df.rename(columns={'time': 'timestamp'})
+                    
                     # Add volume if missing
                     if 'volume' not in df.columns:
                         df['volume'] = 1.0
@@ -236,13 +255,25 @@ def load_data(data_dir: str = "data/processed") -> Dict[str, Dict[str, pd.DataFr
                             # Convert to numeric and handle NaN values
                             df[col] = df[col].astype(float).fillna(0).astype(np.float32)
                     
-                    data[instrument] = {'H1': df}
-                    print(f"[OK] Loaded {instrument}: {len(df)} bars")
+                    # Initialize instrument if not exists
+                    if instrument not in data:
+                        data[instrument] = {}
+                    
+                    # Store data by timeframe
+                    data[instrument][timeframe] = df
+                    print(f"[OK] Loaded {instrument}/{timeframe}: {len(df)} bars")
                 else:
                     print(f"[WARN]  Skipping {file}: missing required columns")
                     
             except Exception as e:
                 print(f"[FAIL] Error loading {file}: {e}")
+    
+    # Print summary
+    total_bars = sum(len(df) for inst_data in data.values() for df in inst_data.values())
+    print(f"[SUMMARY] Loaded {len(data)} instruments, {total_bars:,} total bars")
+    for instrument, timeframes in data.items():
+        for tf, df in timeframes.items():
+            print(f"  {instrument}/{tf}: {len(df):,} bars")
     
     return data
 

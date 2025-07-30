@@ -4,14 +4,16 @@ Clean, zero-legacy architecture with SmartInfoBus v4.0
 """
 
 from .modern_env import ModernTradingEnv
-from .config import TradingConfig, MarketState, EpisodeMetrics
+from .config import TradingConfig, MarketState, EpisodeMetrics, ConfigPresets, ConfigFactory
 
 # Main exports - no legacy aliases
 __all__ = [
     'ModernTradingEnv',
     'TradingConfig', 
     'MarketState',
-    'EpisodeMetrics'
+    'EpisodeMetrics',
+    'ConfigPresets',
+    'ConfigFactory'
 ]
 
 # Version info
