@@ -77,6 +77,9 @@ class ModernTradingEnv(gym.Env):
         self.smart_bus_enabled = False
         self.orchestrator = None
         self.orchestrator_enabled = False
+        # New: readiness events
+        self._bus_ready = threading.Event()
+        self._orch_ready = threading.Event()
         
         # Initialize systems with timeout protection
         self._initialize_systems()
@@ -122,7 +125,7 @@ class ModernTradingEnv(gym.Env):
         module_count = len(self.orchestrator.modules) if self.orchestrator else 0
         self.logger.info(
             f"🚀 MODERN_ENV_INITIALIZED: {len(self.instruments)} instruments, {module_count} modules - "
-            f"{'Zero-wiring architecture active' if self.orchestrator_enabled else 'Fallback mode active'}"
+            f"{'Zero-wiring architecture active' if self.orchestrator_enabled else 'Async init/fallback mode active'}"
         )
 
     def _create_logger(self):
@@ -167,6 +170,7 @@ class ModernTradingEnv(gym.Env):
                         if InfoBusManager is not None:
                             self.smart_bus = InfoBusManager.get_instance()
                             self.smart_bus_enabled = True
+                            self._bus_ready.set()
                         else:
                             self.smart_bus = None
                             self.smart_bus_enabled = False
@@ -178,10 +182,10 @@ class ModernTradingEnv(gym.Env):
                 # Start SmartInfoBus initialization in background
                 bus_thread = threading.Thread(target=init_smart_bus, daemon=True)
                 bus_thread.start()
-                bus_thread.join(timeout=1.0)  # 1 second timeout
+                bus_thread.join(timeout=self.config.info_bus_init_timeout)
                 
                 if bus_thread.is_alive():
-                    self.logger.warning("SmartInfoBus initialization taking too long - using fallback mode")
+                    self.logger.warning("SmartInfoBus initialization taking too long - using fallback until ready (async)")
                     self.smart_bus = None
                     self.smart_bus_enabled = False
                 
@@ -201,9 +205,11 @@ class ModernTradingEnv(gym.Env):
                 def init_orchestrator():
                     try:
                         if ModuleOrchestrator is not None:
-                            self.orchestrator = ModuleOrchestrator()
-                            self.orchestrator.initialize()
+                            orchestrator = ModuleOrchestrator()
+                            orchestrator.initialize()
+                            self.orchestrator = orchestrator
                             self.orchestrator_enabled = True
+                            self._orch_ready.set()
                         else:
                             self.orchestrator = None
                             self.orchestrator_enabled = False
@@ -215,17 +221,24 @@ class ModernTradingEnv(gym.Env):
                 # Start orchestrator initialization in background
                 orchestrator_thread = threading.Thread(target=init_orchestrator, daemon=True)
                 orchestrator_thread.start()
-                orchestrator_thread.join(timeout=2.0)  # 2 second timeout
+                orchestrator_thread.join(timeout=self.config.orchestrator_init_timeout)
                 
                 if orchestrator_thread.is_alive():
-                    self.logger.warning("ModuleOrchestrator initialization taking too long - continuing without it")
-                    self.orchestrator = None
-                    self.orchestrator_enabled = False
+                    # Async init path: do not disable, just wait in background
+                    if self.config.orchestrator_async_init:
+                        self.logger.info("ModuleOrchestrator still initializing - continuing in fallback; will enable when ready")
+                    else:
+                        self.logger.warning("ModuleOrchestrator initialization taking too long - continuing without it")
+                        self.orchestrator = None
+                        self.orchestrator_enabled = False
                 
             except Exception as e:
                 self.logger.warning(f"Failed to start ModuleOrchestrator: {e}")
                 self.orchestrator = None
                 self.orchestrator_enabled = False
+        
+        # Start a background monitor to switch from fallback to real systems when ready
+        self._start_post_init_monitor()
 
     def _validate_data(self):
         """Validate market data"""
@@ -628,6 +641,7 @@ class ModernTradingEnv(gym.Env):
                 self._data = {}
                 self._module_disabled = set()
                 self._data_store = {}
+                self._is_fallback = True
             
             def set(self, key, value, module=None, thesis=None):
                 self._data[key] = value
@@ -646,6 +660,36 @@ class ModernTradingEnv(gym.Env):
                 return {}
         
         return FallbackSmartBus()
+    
+    def _start_post_init_monitor(self):
+        """Background monitor to switch from fallback bus and enable orchestrator when ready"""
+        def monitor():
+            try:
+                # Wait for real SmartInfoBus to become ready
+                if not self._bus_ready.is_set():
+                    self._bus_ready.wait(timeout=max(1.0, self.config.info_bus_init_timeout * 5))
+                if self._bus_ready.is_set() and getattr(self.smart_bus, '_is_fallback', False):
+                    try:
+                        real_bus = InfoBusManager.get_instance() if (SMARTINFOBUS_AVAILABLE and InfoBusManager) else None
+                        if real_bus is not None:
+                            self.smart_bus = real_bus
+                            self.logger.info("SmartInfoBus is ready - switched from fallback to real bus")
+                    except Exception as e:
+                        self.logger.warning(f"Failed switching to real SmartInfoBus: {e}")
+                
+                # Wait for orchestrator readiness
+                if not self._orch_ready.is_set():
+                    # If async init is enabled, wait longer in background
+                    wait_time = self.config.orchestrator_init_timeout * (3 if self.config.orchestrator_async_init else 1)
+                    self._orch_ready.wait(timeout=max(2.0, wait_time))
+                if self._orch_ready.is_set() and self.orchestrator and not self.orchestrator_enabled:
+                    self.orchestrator_enabled = True
+                    self.logger.info("ModuleOrchestrator is ready - enabling orchestrator execution")
+            except Exception as e:
+                self.logger.warning(f"Post-init monitor encountered an error: {e}")
+        
+        t = threading.Thread(target=monitor, daemon=True)
+        t.start()
     
     def get_smartinfobus_status(self) -> Dict[str, Any]:
         """Get SmartInfoBus system status"""

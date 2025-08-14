@@ -564,12 +564,29 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             performance_data['risk_score'] = float(risk_metrics.get('risk_score', 0.5))
             
             # Committee consensus analysis
-            votes = market_data.get('votes', [])
-            if votes:
-                confidences = [vote.get('confidence', 0.5) for vote in votes]
-                performance_data['consensus'] = np.mean(confidences)
-                performance_data['vote_agreement'] = 1.0 - np.std(confidences) if len(confidences) > 1 else 1.0
-                performance_data['vote_count'] = len(votes)
+            votes_data = market_data.get('votes', [])
+            confidences: List[float] = []
+            if isinstance(votes_data, list):
+                for vote in votes_data:
+                    if isinstance(vote, dict):
+                        confidences.append(float(vote.get('confidence', vote.get('score', 0.5))))
+                    elif isinstance(vote, (int, float)):
+                        confidences.append(float(vote))
+                    else:
+                        continue
+            elif isinstance(votes_data, dict):
+                for v in votes_data.values():
+                    if isinstance(v, dict):
+                        confidences.append(float(v.get('confidence', v.get('score', 0.5))))
+                    elif isinstance(v, (int, float)):
+                        confidences.append(float(v))
+                    else:
+                        continue
+            
+            if confidences:
+                performance_data['consensus'] = float(np.mean(confidences))
+                performance_data['vote_agreement'] = float(1.0 - (np.std(confidences) if len(confidences) > 1 else 0.0))
+                performance_data['vote_count'] = int(len(confidences))
                 performance_data['consensus_strength'] = min(float(performance_data['consensus']), float(performance_data['vote_agreement']))
             else:
                 performance_data.update({

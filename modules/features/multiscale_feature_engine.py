@@ -308,44 +308,154 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             thesis="Neural processing capabilities for advanced feature analysis"
         )
     
+    def _format_declared_outputs(
+        self,
+        *,
+        multiscale_features: Optional[Dict[str, Any]] = None,
+        neural_embeddings: Optional[Any] = None,
+        attention_weights: Optional[Any] = None,
+        feature_fusion: Optional[Dict[str, Any]] = None,
+        thesis: Optional[str] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Strictly format and validate declared outputs.
+        Ensures all required outputs are present with safe defaults, adds '_thesis',
+        and merges optional extra metadata (e.g., timing, device).
+        """
+        outputs: Dict[str, Any] = {}
+
+        # multiscale_features
+        if multiscale_features is None or not isinstance(multiscale_features, dict):
+            self.logger.warning("Output 'multiscale_features' missing or invalid; defaulting to {}")
+            outputs["multiscale_features"] = {}
+        else:
+            outputs["multiscale_features"] = multiscale_features
+
+        # neural_embeddings (convert to list for safety)
+        if neural_embeddings is None:
+            # use last known embedding or zeros
+            emb = getattr(self, "last_embedding", None)
+            if emb is None or (hasattr(emb, "size") and int(np.size(emb)) == 0):
+                emb = np.zeros(getattr(self, "output_dim", 64), dtype=np.float32)
+            neural_embeddings = emb
+        try:
+            if isinstance(neural_embeddings, np.ndarray):
+                outputs["neural_embeddings"] = neural_embeddings.flatten().tolist()
+            elif isinstance(neural_embeddings, (list, tuple)):
+                outputs["neural_embeddings"] = [float(x) for x in neural_embeddings]
+            else:
+                # best-effort conversion if not None
+                if neural_embeddings is not None:
+                    outputs["neural_embeddings"] = [float(neural_embeddings)]
+                else:
+                    outputs["neural_embeddings"] = []
+        except Exception:
+            outputs["neural_embeddings"] = []
+
+        # attention_weights (convert to list)
+        if attention_weights is None:
+            tfs = self.config.timeframes or ["H1", "H4", "D1"]
+            tf_len = len(tfs)
+            aw = np.zeros((self.config.num_attention_heads, tf_len, tf_len))
+        else:
+            aw = attention_weights
+        try:
+            if isinstance(aw, np.ndarray):
+                outputs["attention_weights"] = aw.tolist()
+            elif isinstance(aw, (list, tuple)):
+                outputs["attention_weights"] = list(aw)
+            else:
+                outputs["attention_weights"] = []
+        except Exception:
+            outputs["attention_weights"] = []
+
+        # feature_fusion block
+        if feature_fusion is None or not isinstance(feature_fusion, dict):
+            outputs["feature_fusion"] = {
+                "processed_features": {},
+                "fusion_method": getattr(self.config, "feature_fusion_method", "attention"),
+                "processing_time_ms": 0.0,
+            }
+        else:
+            # ensure required subkeys
+            processed = feature_fusion.get("processed_features", {})
+            try:
+                # make numpy safe
+                if isinstance(processed, dict):
+                    processed = {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in processed.items()}
+            except Exception:
+                processed = {}
+            outputs["feature_fusion"] = {
+                "processed_features": processed,
+                "fusion_method": feature_fusion.get("fusion_method", getattr(self.config, "feature_fusion_method", "attention")),
+                "processing_time_ms": float(feature_fusion.get("processing_time_ms", 0.0)),
+            }
+
+        # thesis
+        safe_thesis = thesis or "Neural multiscale feature processing completed."
+        outputs["_thesis"] = safe_thesis
+
+        # merge extras (non-declared metadata)
+        if extra:
+            try:
+                outputs.update(extra)
+            except Exception:
+                # ignore merge issues
+                pass
+
+        # Fail-fast validation
+        for key in ["multiscale_features", "neural_embeddings", "attention_weights", "feature_fusion"]:
+            if key not in outputs:
+                raise ValueError(f"Critical output '{key}' missing in MultiScaleFeatureEngine")
+
+        return outputs
+
     async def process(self, **inputs) -> Dict[str, Any]:
         """Main processing function with neural networks"""
-        
         process_start_time = time.time()
-        
+
         # Check circuit breaker
         if not self._check_neural_circuit_breaker():
             return self._create_neural_fallback_response("Neural circuit breaker open")
-        
+
         try:
             # Get advanced features from AFE
             afe_result = await self._get_advanced_features(**inputs)
-            
+
             # Process multi-timeframe features
             multiscale_result = await self._process_multiscale_features(afe_result)
-            
+
             # Neural network processing
             neural_result = await self._neural_network_processing(multiscale_result)
-            
+
             # Generate comprehensive thesis
             thesis = await self._generate_neural_thesis(afe_result, multiscale_result, neural_result)
-            
+
             # Update SmartInfoBus
             await self._update_neural_smart_bus(neural_result, thesis)
-            
+
             # Record success
             self._record_neural_success(time.time() - process_start_time)
-            
-            return {
-                'success': True,
-                'embeddings': neural_result['embeddings'],
-                'attention_weights': neural_result['attention_weights'],
-                'multiscale_features': multiscale_result,
-                'thesis': thesis,
-                'processing_time_ms': (time.time() - process_start_time) * 1000,
-                'device_used': str(self.device)
-            }
-            
+
+            # Format declared outputs strictly
+            return self._format_declared_outputs(
+                multiscale_features=multiscale_result,
+                neural_embeddings=neural_result.get("embeddings"),
+                attention_weights=neural_result.get("attention_weights"),
+                feature_fusion={
+                    "processed_features": neural_result.get("processed_features", {}),
+                    "fusion_method": self.config.feature_fusion_method,
+                    "processing_time_ms": neural_result.get("forward_time_ms", 0.0),
+                },
+                thesis=thesis,
+                extra={
+                    "processing_time_ms": (time.time() - process_start_time) * 1000,
+                    "device_used": str(self.device),
+                    "success": True,
+                },
+            )
+
         except Exception as e:
             return await self._handle_neural_error(e, process_start_time)
     
@@ -767,22 +877,31 @@ Recommendation: {'Continue neural processing' if embedding_quality > 60 else 'Re
     
     def _create_neural_fallback_response(self, reason: str) -> Dict[str, Any]:
         """Create fallback response for neural failures"""
-        
         # Use last successful embedding if available
         fallback_embedding = (
-            self.last_embedding if len(self.last_embedding) > 0 
-            else np.zeros(self.output_dim, dtype=np.float32)
+            self.last_embedding if len(self.last_embedding) > 0 else np.zeros(self.output_dim, dtype=np.float32)
         )
-        
-        return {
-            'success': False,
-            'reason': reason,
-            'embeddings': fallback_embedding,
-            'attention_weights': np.zeros((self.config.num_attention_heads, len(self.config.timeframes or ["H1", "H4", "D1"]), len(self.config.timeframes or ["H1", "H4", "D1"]))),
-            'thesis': f"Neural processing unavailable: {reason}. Using fallback embeddings.",
-            'processing_time_ms': 0.0,
-            'device_used': str(self.device)
-        }
+        # Construct minimal attention weights tensor shape: heads x T x T
+        tf_len = len(self.config.timeframes or ["H1", "H4", "D1"])
+        fallback_attention = np.zeros((self.config.num_attention_heads, tf_len, tf_len))
+
+        return self._format_declared_outputs(
+            multiscale_features={},
+            neural_embeddings=fallback_embedding,
+            attention_weights=fallback_attention,
+            feature_fusion={
+                "processed_features": {},
+                "fusion_method": getattr(self.config, "feature_fusion_method", "attention"),
+                "processing_time_ms": 0.0,
+            },
+            thesis=f"Neural processing unavailable: {reason}. Using fallback embeddings.",
+            extra={
+                "processing_time_ms": 0.0,
+                "device_used": str(self.device),
+                "success": False,
+                "reason": reason,
+            },
+        )
     
     async def _neural_health_monitoring_loop(self):
         """Background neural health monitoring"""

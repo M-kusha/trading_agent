@@ -27,6 +27,10 @@ class TradingConfig:
     info_bus_enabled: bool = True
     info_bus_audit_level: str = "INFO"  # DEBUG, INFO, WARNING, ERROR
     info_bus_validation: bool = True
+    # New: Initialization behavior
+    info_bus_init_timeout: float = 2.0
+    orchestrator_init_timeout: float = 10.0
+    orchestrator_async_init: bool = True
     
     # ===================================================================
     # Data and Instruments

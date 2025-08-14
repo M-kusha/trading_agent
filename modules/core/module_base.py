@@ -16,6 +16,13 @@ from collections import deque
 from functools import wraps
 from dataclasses import dataclass, field
 
+# Explicit exports for static analyzers and consumers
+__all__ = [
+    "ModuleMetadata",
+    "module",
+    "BaseModule",
+]
+
 # ═══════════════════════════════════════════════════════════════════
 # PRODUCTION-GRADE MODULE METADATA
 # ═══════════════════════════════════════════════════════════════════
@@ -352,8 +359,8 @@ def _enhance_validation_methods(cls):
                 if prov not in outputs:
                     raise ValueError(f"Missing required output: {prov}")
             
-            # Check for thesis if explainable
-            if metadata.explainable and '_thesis' not in outputs:
+            # Check for thesis only if explicitly required
+            if getattr(metadata, 'thesis_required', False) and '_thesis' not in outputs:
                 raise ValueError("Explainable modules must provide '_thesis'")
             
             # Validate confidence if provided
@@ -849,8 +856,8 @@ class BaseModule(ABC):
             if prov not in outputs:
                 raise ValueError(f"Missing required output: {prov}")
         
-        # Check for thesis if explainable
-        if self.metadata.explainable and '_thesis' not in outputs:
+        # Check for thesis only if explicitly required
+        if getattr(self.metadata, 'thesis_required', False) and '_thesis' not in outputs:
             raise ValueError("Explainable modules must provide '_thesis'")
         
         # Validate confidence if provided

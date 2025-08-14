@@ -106,6 +106,133 @@ class TimeAwareRiskScaling(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradin
             )
         )
     
+    # Enforce declared provides with strict, serializable outputs and thesis
+    def _format_declared_outputs(
+        self,
+        risk_result: Dict[str, Any],
+        time_data: Optional[Dict[str, Any]] = None,
+        thesis: Optional[str] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Map internal results to declared provides, ensure types and defaults."""
+        try:
+            # Safe primitives
+            scaling_factor = float(risk_result.get('scaling_factor', getattr(self.config, 'base_factor', 1.0)))
+            session = str(risk_result.get('current_session', 'unknown'))
+            risk_level = float(risk_result.get('risk_level', 0.0))
+            hour = int(risk_result.get('hour', (time_data or {}).get('hour', datetime.datetime.now().hour)))
+            volatility = float(risk_result.get('volatility', 0.01))
+            vol_adj = float(risk_result.get('volatility_adjustment', 1.0))
+            session_multiplier = float(risk_result.get('session_multiplier', 1.0))
+            vol_regime = str(risk_result.get('volatility_regime', 'unknown'))
+            risk_trend = str(risk_result.get('risk_trend', 'unknown'))
+
+            # Convert numpy arrays if present
+            vol_profile = self.vol_profile.tolist() if hasattr(self, 'vol_profile') else []
+            risk_profile = self.risk_profile.tolist() if hasattr(self, 'risk_profile') else []
+            hourly_risk_scores = (
+                self._hourly_risk_scores.tolist() if hasattr(self, '_hourly_risk_scores') else []
+            )
+
+            time_risk_analysis = {
+                'risk_level': risk_level,
+                'current_session': session,
+                'hour': hour,
+                'risk_trend': risk_trend,
+                'session_efficiency': float(risk_result.get('session_efficiency', 0.5)),
+                'hourly_risk_score': float(risk_result.get('hourly_risk_score', 0.5)),
+                'session_transitions': int(risk_result.get('session_transitions', 0)),
+                'processing_success': bool(risk_result.get('processing_success', False)),
+                'recent_transitions': list(getattr(self, '_session_transitions', []))[-5:],
+                'hourly_patterns': {
+                    'volatility_profile': vol_profile,
+                    'risk_profile': risk_profile,
+                    'hourly_risk_scores': hourly_risk_scores,
+                },
+                'last_update': datetime.datetime.now().isoformat(),
+            }
+            if isinstance(extra, dict):
+                time_risk_analysis['extra'] = extra
+
+            outputs = {
+                'risk_scaling_factor': scaling_factor,
+                'session_risk': {
+                    'current_session': session,
+                    'risk_level': risk_level,
+                    'session_multiplier': session_multiplier,
+                    'hour': hour,
+                },
+                'volatility_adjustment': {
+                    'adjustment_factor': vol_adj,
+                    'current_volatility': volatility,
+                    'volatility_regime': vol_regime,
+                },
+                'time_risk_analysis': time_risk_analysis,
+                'volatility_data': volatility,
+                'market_conditions': {
+                    'session': session,
+                    'hour': hour,
+                    'volatility_regime': vol_regime,
+                    'risk_trend': risk_trend,
+                },
+                'risk_data': {
+                    'scaling_factor': scaling_factor,
+                    'risk_level': risk_level,
+                    'session_multiplier': session_multiplier,
+                    'volatility': volatility,
+                },
+                '_thesis': thesis or "Time-aware risk scaling analysis generated.",
+            }
+            return outputs
+        except Exception as e:
+            # Absolute fallback to prevent orchestrator failure
+            return {
+                'risk_scaling_factor': float(getattr(self.config, 'base_factor', 1.0)),
+                'session_risk': {
+                    'current_session': 'unknown',
+                    'risk_level': 0.5,
+                    'session_multiplier': 1.0,
+                    'hour': int(datetime.datetime.now().hour),
+                },
+                'volatility_adjustment': {
+                    'adjustment_factor': 1.0,
+                    'current_volatility': 0.01,
+                    'volatility_regime': 'unknown',
+                },
+                'time_risk_analysis': {
+                    'risk_level': 0.5,
+                    'current_session': 'unknown',
+                    'hour': int(datetime.datetime.now().hour),
+                    'risk_trend': 'unknown',
+                    'session_efficiency': 0.5,
+                    'hourly_risk_score': 0.5,
+                    'session_transitions': 0,
+                    'processing_success': False,
+                    'recent_transitions': [],
+                    'hourly_patterns': {
+                        'volatility_profile': [],
+                        'risk_profile': [],
+                        'hourly_risk_scores': [],
+                    },
+                    'last_update': datetime.datetime.now().isoformat(),
+                    'extra': {'formatter_error': str(e)[:200]},
+                },
+                'volatility_data': 0.01,
+                'market_conditions': {
+                    'session': 'unknown',
+                    'hour': int(datetime.datetime.now().hour),
+                    'volatility_regime': 'unknown',
+                    'risk_trend': 'unknown',
+                },
+                'risk_data': {
+                    'scaling_factor': float(getattr(self.config, 'base_factor', 1.0)),
+                    'risk_level': 0.5,
+                    'session_multiplier': 1.0,
+                    'volatility': 0.01,
+                },
+                '_thesis': "Time-aware risk scaling (safe fallback)",
+            }
+    
     def _initialize_advanced_systems(self):
         """Initialize all advanced SmartInfoBus systems"""
         self.smart_bus = InfoBusManager.get_instance()
@@ -255,7 +382,8 @@ class TimeAwareRiskScaling(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradin
             processing_time = (time.time() - start_time) * 1000
             self._record_success(processing_time)
             
-            return risk_result
+            # Return strictly formatted outputs matching 'provides'
+            return self._format_declared_outputs(risk_result, time_data=time_data, thesis=thesis)
             
         except Exception as e:
             return await self._handle_risk_error(e, start_time)
@@ -370,18 +498,18 @@ class TimeAwareRiskScaling(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradin
         session_efficiency = self._calculate_session_efficiency(session)
         
         return {
-            'scaling_factor': scaling_factor,
-            'risk_level': risk_level,
+            'scaling_factor': float(scaling_factor),
+            'risk_level': float(risk_level),
             'current_session': session,
-            'hour': hour,
-            'volatility': volatility,
-            'volatility_adjustment': vol_adjustment,
-            'session_multiplier': session_multiplier,
-            'risk_trend': risk_trend,
-            'volatility_regime': volatility_regime,
-            'session_efficiency': session_efficiency,
-            'hourly_risk_score': self._hourly_risk_scores[hour],
-            'session_transitions': self._session_changes,
+            'hour': int(hour),
+            'volatility': float(volatility),
+            'volatility_adjustment': float(vol_adjustment),
+            'session_multiplier': float(session_multiplier),
+            'risk_trend': str(risk_trend),
+            'volatility_regime': str(volatility_regime),
+            'session_efficiency': float(session_efficiency),
+            'hourly_risk_score': float(self._hourly_risk_scores[hour]),
+            'session_transitions': int(self._session_changes),
             'processing_success': True
         }
     
@@ -705,9 +833,9 @@ Trading Focus: XAU/USD (Gold) & EUR/USD
         # Get current risk analysis
         result = await self.process(**inputs)
         
-        scaling_factor = result.get('scaling_factor', 1.0)
-        risk_level = result.get('risk_level', 0.5)
-        session = result.get('current_session', 'unknown')
+        scaling_factor = result.get('risk_scaling_factor', result.get('scaling_factor', 1.0))
+        risk_level = result.get('session_risk', {}).get('risk_level', result.get('risk_level', 0.5))
+        session = result.get('session_risk', {}).get('current_session', result.get('current_session', 'unknown'))
         
         # Determine action based on risk level
         if risk_level > 0.8:
@@ -730,7 +858,7 @@ Trading Focus: XAU/USD (Gold) & EUR/USD
             'risk_level': risk_level,
             'session': session,
             'reasoning': f"Risk level {risk_level:.1%} in {session} session suggests {action_type}",
-            'confidence': min(0.9, scaling_factor / 2.0),
+            'confidence': min(0.9, float(scaling_factor) / 2.0 if isinstance(scaling_factor, (int, float)) else 0.5),
             'timestamp': datetime.datetime.now().isoformat()
         }
     
@@ -749,7 +877,7 @@ Trading Focus: XAU/USD (Gold) & EUR/USD
             risk_level = action['risk_level']
             
             # Higher confidence for moderate scaling factors
-            scaling_confidence = 1.0 - abs(scaling_factor - 1.0) * 0.5
+            scaling_confidence = 1.0 - abs(scaling_factor - 1.0) * 0.5 if isinstance(scaling_factor, (int, float)) else 0.5
             
             # Confidence based on risk level clarity
             if risk_level > 0.8 or risk_level < 0.2:
@@ -825,6 +953,40 @@ Trading Focus: XAU/USD (Gold) & EUR/USD
             thesis=f"Volatility adjustment: {risk_result['volatility_adjustment']:.3f}x for {risk_result['volatility_regime']} regime"
         )
         
+        # Publish volatility data scalar for consumers expecting numeric
+        self.smart_bus.set(
+            'volatility_data',
+            float(risk_result.get('volatility', 0.01)),
+            module='TimeAwareRiskScaling',
+            thesis="Current volatility estimate for downstream consumers"
+        )
+        
+        # Publish concise market conditions view
+        self.smart_bus.set(
+            'market_conditions',
+            {
+                'session': risk_result.get('current_session', 'unknown'),
+                'hour': risk_result.get('hour', 0),
+                'volatility_regime': risk_result.get('volatility_regime', 'unknown'),
+                'risk_trend': risk_result.get('risk_trend', 'unknown')
+            },
+            module='TimeAwareRiskScaling',
+            thesis="Current market session conditions derived from time-aware risk analysis"
+        )
+        
+        # Publish a compact risk data object
+        self.smart_bus.set(
+            'risk_data',
+            {
+                'scaling_factor': risk_result.get('scaling_factor', 1.0),
+                'risk_level': risk_result.get('risk_level', 0.5),
+                'session_multiplier': risk_result.get('session_multiplier', 1.0),
+                'volatility': risk_result.get('volatility', 0.01),
+            },
+            module='TimeAwareRiskScaling',
+            thesis="Compact risk data snapshot for cross-module use"
+        )
+        
         # Comprehensive analysis
         self.smart_bus.set(
             'time_risk_analysis',
@@ -858,11 +1020,11 @@ Trading Focus: XAU/USD (Gold) & EUR/USD
         current_hour = datetime.datetime.now().hour
         fallback_session = self._get_session(current_hour)
         
-        return {
-            'scaling_factor': self.config.base_factor,
+        risk_result = {
+            'scaling_factor': float(self.config.base_factor),
             'risk_level': 0.5,
             'current_session': fallback_session,
-            'hour': current_hour,
+            'hour': int(current_hour),
             'volatility': 0.01,
             'volatility_adjustment': 1.0,
             'session_multiplier': 1.0,
@@ -870,10 +1032,12 @@ Trading Focus: XAU/USD (Gold) & EUR/USD
             'volatility_regime': 'unknown',
             'session_efficiency': 0.5,
             'hourly_risk_score': 0.5,
-            'session_transitions': self._session_changes,
+            'session_transitions': int(self._session_changes),
             'processing_success': False,
             'fallback_reason': 'No time data available'
         }
+        thesis = "Fallback: No time data available; using safe defaults for risk scaling."
+        return self._format_declared_outputs(risk_result, time_data={'hour': current_hour}, thesis=thesis)
     
     async def _handle_risk_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
         """Handle risk scaling errors"""
@@ -899,7 +1063,7 @@ Trading Focus: XAU/USD (Gold) & EUR/USD
             )
         )
         
-        # Return safe fallback
+        # Return safe fallback via formatter
         return await self._handle_no_data_fallback()
     
     def _analyze_session_patterns(self):

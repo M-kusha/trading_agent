@@ -2001,7 +2001,7 @@ class SmartInfoBus:
     def import_session(self, filepath: str):
         """Import session for replay"""
         try:
-            with open(filepath, 'r') as f:
+            with open(filepath, 'r', encoding='utf-8') as f:
                 session_data = json.load(f)
             
             self._event_log = deque(session_data['events'], maxlen=self.config.max_event_log_size)

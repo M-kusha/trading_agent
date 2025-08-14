@@ -1,0 +1,107 @@
+category: models
+description: Configuration for models modules
+modules:
+  EnhancedWorldModel:
+    config_class: WorldModelConfig
+    configuration:
+      attention_heads:
+        default: '4'
+        description: Configuration parameter for attention_heads
+        type: int
+      batch_size:
+        default: '64'
+        description: Configuration parameter for batch_size
+        type: int
+      circuit_breaker_threshold:
+        default: '5'
+        description: Configuration parameter for circuit_breaker_threshold
+        type: int
+      compile_model:
+        default: 'False'
+        description: Configuration parameter for compile_model
+        type: bool
+      confidence_threshold:
+        default: '0.5'
+        description: Configuration parameter for confidence_threshold
+        type: float
+      device:
+        default: '''cpu'''
+        description: Configuration parameter for device
+        type: str
+      dropout:
+        default: '0.1'
+        description: Configuration parameter for dropout
+        type: float
+      gradient_clip:
+        default: '1.0'
+        description: Configuration parameter for gradient_clip
+        type: float
+      health_check_interval:
+        default: '60'
+        description: Configuration parameter for health_check_interval
+        type: int
+      hidden_size:
+        default: '64'
+        description: Configuration parameter for hidden_size
+        type: int
+      history_size:
+        default: '1000'
+        description: Configuration parameter for history_size
+        type: int
+      input_size:
+        default: '16'
+        description: Configuration parameter for input_size
+        type: int
+      learning_rate:
+        default: '0.001'
+        description: Configuration parameter for learning_rate
+        type: float
+      max_processing_time_ms:
+        default: '200'
+        description: Configuration parameter for max_processing_time_ms
+        type: float
+      min_prediction_quality:
+        default: '0.6'
+        description: Configuration parameter for min_prediction_quality
+        type: float
+      min_training_quality:
+        default: '0.7'
+        description: Configuration parameter for min_training_quality
+        type: float
+      min_training_samples:
+        default: '100'
+        description: Configuration parameter for min_training_samples
+        type: int
+      num_layers:
+        default: '2'
+        description: Configuration parameter for num_layers
+        type: int
+      performance_window:
+        default: '100'
+        description: Configuration parameter for performance_window
+        type: int
+      prediction_horizon:
+        default: '10'
+        description: Configuration parameter for prediction_horizon
+        type: int
+      scenario_steps:
+        default: '20'
+        description: Configuration parameter for scenario_steps
+        type: int
+      sequence_length:
+        default: '50'
+        description: Configuration parameter for sequence_length
+        type: int
+      use_mixed_precision:
+        default: 'False'
+        description: Configuration parameter for use_mixed_precision
+        type: bool
+      validation_split:
+        default: '0.2'
+        description: Configuration parameter for validation_split
+        type: float
+      weight_decay:
+        default: 1e-05
+        description: Configuration parameter for weight_decay
+        type: float
+    description: Configuration for EnhancedWorldModel module

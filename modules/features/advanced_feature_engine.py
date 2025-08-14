@@ -199,40 +199,156 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             thesis="Advanced feature engine capabilities for system optimization"
         )
     
+    def _format_declared_outputs(
+        self,
+        *,
+        features_payload: Optional[Dict[str, Any]] = None,
+        thesis: Optional[str] = None,
+        analysis: Optional[Dict[str, Any]] = None,
+        health: Optional[Dict[str, Any]] = None,
+        technical_indicators: Optional[Dict[str, Any]] = None,
+        market_features: Optional[Dict[str, Any]] = None,
+        price_features: Optional[Dict[str, Any]] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Strictly format and validate declared outputs.
+        - advanced_features: dict with keys like raw_features (list), quality_score, etc.
+        - features: alias/back-compat pointing to advanced_features
+        - feature_analysis: dict with explanation and statistics
+        - feature_health: dict with health/circuit breaker state
+        - feature_thesis: thesis string
+        Also adds '_thesis' for explainability enforcement.
+        """
+        out: Dict[str, Any] = {}
+
+        # Advanced/features payload
+        fp = features_payload or {}
+        if isinstance(fp, dict):
+            # Convert numpy arrays to lists
+            rf = fp.get("raw_features")
+            if isinstance(rf, np.ndarray):
+                rf_safe = rf.tolist()
+            else:
+                rf_safe = rf if isinstance(rf, list) else []
+            out_payload = {
+                "raw_features": rf_safe,
+                "quality_score": float(fp.get("quality_score", 0.0)),
+                "extraction_time_ms": float(fp.get("extraction_time_ms", 0.0)),
+                "buffer_size": int(fp.get("buffer_size", 0)),
+                "feature_count": int(fp.get("feature_count", len(rf_safe) if isinstance(rf_safe, list) else 0)),
+            }
+        else:
+            out_payload = {
+                "raw_features": [],
+                "quality_score": 0.0,
+                "extraction_time_ms": 0.0,
+                "buffer_size": 0,
+                "feature_count": 0,
+            }
+        out["advanced_features"] = out_payload
+        out["features"] = out_payload  # backward compatibility
+
+        # feature_analysis block
+        ana = analysis or {}
+        if not isinstance(ana, dict):
+            ana = {}
+        out["feature_analysis"] = {
+            "explanation": ana.get("explanation", fp.get("explanation") if isinstance(fp, dict) else None),
+            "statistics": ana.get("statistics", {}),
+            "buffer_status": ana.get("buffer_status", {}),
+        }
+
+        # feature_health block
+        hl = health or {}
+        if not isinstance(hl, dict):
+            hl = {}
+        out["feature_health"] = {
+            "health_score": float(hl.get("health_score", self.health_metrics.get("health_score", 100.0))),
+            "circuit_breaker_state": self.circuit_breaker.get("state", "CLOSED"),
+            "issues_detected": hl.get("issues_detected", self.health_metrics.get("issues_detected", [])),
+            "performance_trend": hl.get("performance_trend", self.health_metrics.get("performance_trend", "stable")),
+        }
+
+        # Optional detailed mappings (safe defaults)
+        out["technical_indicators"] = technical_indicators or {}
+        out["market_features"] = market_features or {}
+        out["price_features"] = price_features or {}
+
+        # thesis strings
+        ft = thesis or "Advanced feature extraction completed."
+        out["feature_thesis"] = ft
+        out["_thesis"] = ft
+
+        # merge extras
+        if extra:
+            try:
+                out.update(extra)
+            except Exception:
+                pass
+
+        # Validate presence of declared outputs
+        for key in [
+            "advanced_features",
+            "feature_analysis",
+            "feature_health",
+            "feature_thesis",
+            "features",
+            "technical_indicators",
+            "market_features",
+            "price_features",
+        ]:
+            if key not in out:
+                raise ValueError(f"Critical output '{key}' missing in AdvancedFeatureEngine")
+
+        return out
+
     async def process(self, **inputs) -> Dict[str, Any]:
         """Main processing function with full error handling and monitoring"""
-        
         process_start_time = time.time()
-        
+
         # Check circuit breaker
         if not self._check_circuit_breaker():
             return self._create_fallback_response("Circuit breaker open")
-        
+
         try:
             # Extract market data
             market_data = await self._extract_market_data(**inputs)
-            
+
             # Process features with monitoring
             features = await self._process_features_with_monitoring(market_data)
-            
+
             # Generate thesis
             thesis = await self._generate_feature_thesis(features, market_data)
-            
+
             # Update SmartInfoBus
             await self._update_smart_bus(features, thesis)
-            
+
             # Record success
             self._record_success(time.time() - process_start_time)
-            
-            return {
-                'success': True,
-                'advanced_features': features,  # Fixed: Use 'advanced_features' to match provides declaration
-                'features': features,  # Keep for backward compatibility
-                'thesis': thesis,
-                'quality_score': self.feature_quality_score,
-                'processing_time_ms': (time.time() - process_start_time) * 1000
-            }
-            
+
+            return self._format_declared_outputs(
+                features_payload=features,
+                thesis=thesis,
+                analysis={
+                    "explanation": features.get("explanation"),
+                    "statistics": self.feature_stats,
+                    "buffer_status": {
+                        "current_size": len(self.price_buffer),
+                        "max_size": self.max_buffer_size,
+                        "utilization": len(self.price_buffer) / max(self.max_buffer_size, 1),
+                    },
+                },
+                health=self.health_metrics,
+                technical_indicators={},
+                market_features={},
+                price_features={},
+                extra={
+                    "success": True,
+                    "processing_time_ms": (time.time() - process_start_time) * 1000,
+                },
+            )
+
         except Exception as e:
             return await self._handle_processing_error(e, process_start_time)
     
@@ -576,19 +692,13 @@ Recommendation: {'Continue processing' if feature_quality > 60 else 'Review data
     
     async def _handle_processing_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
         """Handle processing errors with comprehensive analysis"""
-        
         processing_time = time.time() - start_time
-        
         # Record failure
         self._record_failure(error)
-        
         # Error analysis
         if hasattr(self, 'error_pinpointer'):
             error_context = self.error_pinpointer.analyze_error(error, "AdvancedFeatureEngine")
-            
-            # Generate debugging guide
             debug_guide = self.error_pinpointer.create_debugging_guide(error_context)
-            
             self.logger.error(
                 format_operator_message(
                     "[CRASH]", "FEATURE_EXTRACTION_ERROR",
@@ -597,12 +707,9 @@ Recommendation: {'Continue processing' if feature_quality > 60 else 'Review data
                     recovery_actions=len(error_context.recovery_actions)
                 )
             )
-        
-        # Generate fallback response
+        # Generate fallback response (formatted)
         fallback_features = self._get_fallback_features()
         fallback_thesis = f"Feature extraction failed: {str(error)}. Using fallback features."
-        
-        # Update SmartInfoBus with error info
         self.smart_bus.set(
             'feature_error',
             {
@@ -614,14 +721,35 @@ Recommendation: {'Continue processing' if feature_quality > 60 else 'Review data
             module='AdvancedFeatureEngine',
             thesis=fallback_thesis
         )
-        
-        return {
-            'success': False,
-            'error': str(error),
-            'fallback_features': fallback_features,
-            'thesis': fallback_thesis,
-            'processing_time_ms': processing_time * 1000
-        }
+        return self._format_declared_outputs(
+            features_payload={
+                'raw_features': fallback_features,
+                'quality_score': 0.0,
+                'extraction_time_ms': processing_time * 1000,
+                'buffer_size': len(self.price_buffer),
+                'feature_count': int(getattr(fallback_features, 'size', 0) if isinstance(fallback_features, np.ndarray) else len(fallback_features)),
+                'explanation': None,
+            },
+            thesis=fallback_thesis,
+            analysis={
+                'explanation': None,
+                'statistics': self.feature_stats,
+                'buffer_status': {
+                    'current_size': len(self.price_buffer),
+                    'max_size': self.max_buffer_size,
+                    'utilization': len(self.price_buffer) / max(self.max_buffer_size, 1),
+                },
+            },
+            health=self.health_metrics,
+            technical_indicators={},
+            market_features={},
+            price_features={},
+            extra={
+                'success': False,
+                'error': str(error),
+                'processing_time_ms': processing_time * 1000,
+            },
+        )
     
     def _record_failure(self, error: Exception):
         """Record failure for circuit breaker"""
@@ -660,15 +788,35 @@ Recommendation: {'Continue processing' if feature_quality > 60 else 'Review data
     
     def _create_fallback_response(self, reason: str) -> Dict[str, Any]:
         """Create fallback response"""
-        
-        return {
-            'success': False,
-            'reason': reason,
-            'fallback_features': self._get_fallback_features(),
-            'thesis': f"Feature extraction unavailable: {reason}",
-            'quality_score': 0.0,
-            'processing_time_ms': 0.0
-        }
+        return self._format_declared_outputs(
+            features_payload={
+                'raw_features': self._get_fallback_features(),
+                'quality_score': 0.0,
+                'extraction_time_ms': 0.0,
+                'buffer_size': len(self.price_buffer),
+                'feature_count': 0,
+                'explanation': None,
+            },
+            thesis=f"Feature extraction unavailable: {reason}",
+            analysis={
+                'explanation': None,
+                'statistics': self.feature_stats,
+                'buffer_status': {
+                    'current_size': len(self.price_buffer),
+                    'max_size': self.max_buffer_size,
+                    'utilization': len(self.price_buffer) / max(self.max_buffer_size, 1),
+                },
+            },
+            health=self.health_metrics,
+            technical_indicators={},
+            market_features={},
+            price_features={},
+            extra={
+                'success': False,
+                'reason': reason,
+                'processing_time_ms': 0.0,
+            },
+        )
     
     async def _health_monitoring_loop(self):
         """Background health monitoring"""

@@ -863,7 +863,10 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             progression_assessment['stability_score'] = stability_score
             
             # Final progression decision
-            criteria_met_ratio = len([c for c in progression_assessment['criteria_met'].values() if c['met']]) / len(progression_assessment['criteria_met'])
+            criteria_dict = progression_assessment['criteria_met']
+            met_count = len([c for c in criteria_dict.values() if c['met']])
+            total_criteria = len(criteria_dict)
+            criteria_met_ratio = (met_count / total_criteria) if total_criteria > 0 else 0.0
             
             if (criteria_met_ratio >= 0.8 and 
                 progression_assessment['confidence_score'] >= 0.75 and 
@@ -1043,7 +1046,9 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                              module='CurriculumPlannerPlus', thesis=thesis)
             
             # Learning constraints for trading system
-            constraints_thesis = f"Learning constraints for {results['curriculum_stage']['name']} stage"
+            stage_info = results.get('curriculum_stage', {})
+            stage_name = stage_info.get('stage_name') or stage_info.get('name') or self.curriculum_stages[self.current_stage]['name']
+            constraints_thesis = f"Learning constraints for {stage_name} stage"
             self.smart_bus.set('learning_constraints', results['learning_constraints'],
                              module='CurriculumPlannerPlus', thesis=constraints_thesis)
             

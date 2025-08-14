@@ -365,7 +365,7 @@ class ModernEnhancedTrainingCallback(BaseCallback):
         """Enhanced step with comprehensive monitoring"""
         
         try:
-            step_start = time.time()
+            step_start = time.perf_counter()
             
             # Progress reporting
             current_time = datetime.now()
@@ -408,7 +408,7 @@ class ModernEnhancedTrainingCallback(BaseCallback):
                 return False
             
             # ENHANCED: Record performance metrics
-            step_duration = time.time() - step_start
+            step_duration = time.perf_counter() - step_start
             if MONITORING_AVAILABLE:
                 self.performance_tracker.record_metric(
                     'EnhancedCallback', 'step_processing', step_duration * 1000, True

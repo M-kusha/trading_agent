@@ -1,0 +1,95 @@
+category: reward
+description: Configuration for reward modules
+modules:
+  RiskAdjustedReward:
+    config_class: RewardConfig
+    configuration:
+      adaptive_learning_rate:
+        default: '0.01'
+        description: Configuration parameter for adaptive_learning_rate
+        type: float
+      circuit_breaker_threshold:
+        default: '5'
+        description: Configuration parameter for circuit_breaker_threshold
+        type: int
+      confidence_decay:
+        default: '0.98'
+        description: Configuration parameter for confidence_decay
+        type: float
+      consistency_bonus_weight:
+        default: '0.5'
+        description: Configuration parameter for consistency_bonus_weight
+        type: float
+      dd_pen_weight:
+        default: '2.0'
+        description: Configuration parameter for dd_pen_weight
+        type: float
+      history_size:
+        default: '50'
+        description: Configuration parameter for history_size
+        type: int
+      initial_balance:
+        default: '10000.0'
+        description: Configuration parameter for initial_balance
+        type: float
+      max_processing_time_ms:
+        default: '100'
+        description: Configuration parameter for max_processing_time_ms
+        type: float
+      min_reward_quality:
+        default: '0.3'
+        description: Configuration parameter for min_reward_quality
+        type: float
+      min_trade_bonus:
+        default: '0.5'
+        description: Configuration parameter for min_trade_bonus
+        type: float
+      mistake_pen_weight:
+        default: '0.3'
+        description: Configuration parameter for mistake_pen_weight
+        type: float
+      momentum_bonus_weight:
+        default: '0.1'
+        description: Configuration parameter for momentum_bonus_weight
+        type: float
+      no_trade_penalty_weight:
+        default: '0.05'
+        description: Configuration parameter for no_trade_penalty_weight
+        type: float
+      performance_smoothing:
+        default: '0.95'
+        description: Configuration parameter for performance_smoothing
+        type: float
+      regime_bonus_weight:
+        default: '0.2'
+        description: Configuration parameter for regime_bonus_weight
+        type: float
+      regime_weights:
+        default: 'field(default_factory=lambda: [0.3, 0.4, 0.3])'
+        description: Configuration parameter for regime_weights
+        type: List[float]
+      risk_pen_weight:
+        default: '0.1'
+        description: Configuration parameter for risk_pen_weight
+        type: float
+      sharpe_bonus_weight:
+        default: '0.3'
+        description: Configuration parameter for sharpe_bonus_weight
+        type: float
+      tail_pen_weight:
+        default: '0.5'
+        description: Configuration parameter for tail_pen_weight
+        type: float
+      trade_frequency_bonus:
+        default: '0.2'
+        description: Configuration parameter for trade_frequency_bonus
+        type: float
+      volatility_adjustment:
+        default: '1.0'
+        description: Configuration parameter for volatility_adjustment
+        type: float
+      win_bonus_weight:
+        default: '1.0'
+        description: Configuration parameter for win_bonus_weight
+        type: float
+    description: Configuration for RiskAdjustedReward module

@@ -93,7 +93,11 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             self.config = config
             
         self.training_mode = training_mode
+        
+        # Preserve typed config across BaseModule initialization
+        _original_config = self.config
         super().__init__()
+        self.config = _original_config
         
         # Initialize advanced systems
         self._initialize_advanced_systems()
@@ -1897,5 +1901,3 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 'reasoning': f'Execution quality error: {str(e)}',
                 'confidence': 0.1
             }
-
-# End of enhanced ExecutionQualityMonitor class

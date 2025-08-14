@@ -1,0 +1,307 @@
+category: risk
+description: Configuration for risk modules
+modules:
+  DynamicRiskController:
+    config_class: DynamicRiskConfig
+    configuration:
+      adaptive_learning_rate:
+        default: '0.02'
+        description: Configuration parameter for adaptive_learning_rate
+        type: float
+      adaptive_scaling:
+        default: 'True'
+        description: Configuration parameter for adaptive_scaling
+        type: bool
+      base_risk_scale:
+        default: '1.0'
+        description: Configuration parameter for base_risk_scale
+        type: float
+      circuit_breaker_threshold:
+        default: '5'
+        description: Configuration parameter for circuit_breaker_threshold
+        type: int
+      correlation_sensitivity:
+        default: '0.8'
+        description: Configuration parameter for correlation_sensitivity
+        type: float
+      dd_threshold:
+        default: '0.15'
+        description: Configuration parameter for dd_threshold
+        type: float
+      max_processing_time_ms:
+        default: '100'
+        description: Configuration parameter for max_processing_time_ms
+        type: float
+      max_risk_scale:
+        default: '1.5'
+        description: Configuration parameter for max_risk_scale
+        type: float
+      min_risk_quality:
+        default: '0.3'
+        description: Configuration parameter for min_risk_quality
+        type: float
+      min_risk_scale:
+        default: '0.1'
+        description: Configuration parameter for min_risk_scale
+        type: float
+      recovery_speed:
+        default: '0.15'
+        description: Configuration parameter for recovery_speed
+        type: float
+      regime_sensitivity:
+        default: '1.0'
+        description: Configuration parameter for regime_sensitivity
+        type: float
+      risk_adaptation_speed:
+        default: '1.0'
+        description: Configuration parameter for risk_adaptation_speed
+        type: float
+      risk_decay:
+        default: '0.95'
+        description: Configuration parameter for risk_decay
+        type: float
+      vol_history_len:
+        default: '30'
+        description: Configuration parameter for vol_history_len
+        type: int
+      vol_ratio_threshold:
+        default: '2.0'
+        description: Configuration parameter for vol_ratio_threshold
+        type: float
+    description: Configuration for DynamicRiskController module
+  EnhancedAnomalyDetector:
+    config_class: AnomalyDetectorConfig
+    configuration:
+      adaptive_thresholds:
+        default: 'True'
+        description: Configuration parameter for adaptive_thresholds
+        type: bool
+      circuit_breaker_threshold:
+        default: '5'
+        description: Configuration parameter for circuit_breaker_threshold
+        type: int
+      correlation_window:
+        default: '50'
+        description: Configuration parameter for correlation_window
+        type: int
+      critical_threshold:
+        default: '0.8'
+        description: Configuration parameter for critical_threshold
+        type: float
+      emergency_threshold:
+        default: '0.9'
+        description: Configuration parameter for emergency_threshold
+        type: float
+      false_positive_threshold:
+        default: '0.3'
+        description: Configuration parameter for false_positive_threshold
+        type: float
+      health_check_interval:
+        default: '30'
+        description: Configuration parameter for health_check_interval
+        type: int
+      history_size:
+        default: '100'
+        description: Configuration parameter for history_size
+        type: int
+      learning_rate:
+        default: '0.05'
+        description: Configuration parameter for learning_rate
+        type: float
+      max_processing_time_ms:
+        default: '50'
+        description: Configuration parameter for max_processing_time_ms
+        type: float
+      min_detection_quality:
+        default: '0.7'
+        description: Configuration parameter for min_detection_quality
+        type: float
+      min_history_for_stats:
+        default: '20'
+        description: Configuration parameter for min_history_for_stats
+        type: int
+      observation_zscore:
+        default: '4.0'
+        description: Configuration parameter for observation_zscore
+        type: float
+      performance_window:
+        default: '100'
+        description: Configuration parameter for performance_window
+        type: int
+      pnl_limit:
+        default: '1000.0'
+        description: Configuration parameter for pnl_limit
+        type: float
+      price_zscore:
+        default: '3.0'
+        description: Configuration parameter for price_zscore
+        type: float
+      regime_awareness:
+        default: 'True'
+        description: Configuration parameter for regime_awareness
+        type: bool
+      synthetic_data_ratio:
+        default: '0.3'
+        description: Configuration parameter for synthetic_data_ratio
+        type: float
+      threshold_smoothing:
+        default: '0.8'
+        description: Configuration parameter for threshold_smoothing
+        type: float
+      training_duration_steps:
+        default: '200'
+        description: Configuration parameter for training_duration_steps
+        type: int
+      training_mode:
+        default: 'True'
+        description: Configuration parameter for training_mode
+        type: bool
+      volatility_window:
+        default: '30'
+        description: Configuration parameter for volatility_window
+        type: int
+      volume_zscore:
+        default: '3.0'
+        description: Configuration parameter for volume_zscore
+        type: float
+      warning_threshold:
+        default: '0.5'
+        description: Configuration parameter for warning_threshold
+        type: float
+    description: Configuration for EnhancedAnomalyDetector module
+  ExecutionQualityMonitor:
+    config_class: ExecutionQualityConfig
+    configuration:
+      adaptive_learning_rate:
+        default: '0.02'
+        description: Configuration parameter for adaptive_learning_rate
+        type: float
+      circuit_breaker_threshold:
+        default: '5'
+        description: Configuration parameter for circuit_breaker_threshold
+        type: int
+      degradation_threshold:
+        default: '0.5'
+        description: Configuration parameter for degradation_threshold
+        type: float
+      execution_timeout:
+        default: '5000'
+        description: Configuration parameter for execution_timeout
+        type: int
+      latency_limit:
+        default: '1000'
+        description: Configuration parameter for latency_limit
+        type: int
+      latency_percentile:
+        default: '95'
+        description: Configuration parameter for latency_percentile
+        type: int
+      max_processing_time_ms:
+        default: '150'
+        description: Configuration parameter for max_processing_time_ms
+        type: float
+      min_execution_quality:
+        default: '0.3'
+        description: Configuration parameter for min_execution_quality
+        type: float
+      min_fill_rate:
+        default: '0.95'
+        description: Configuration parameter for min_fill_rate
+        type: float
+      quality_sensitivity:
+        default: '1.0'
+        description: Configuration parameter for quality_sensitivity
+        type: float
+      quality_threshold:
+        default: '0.7'
+        description: Configuration parameter for quality_threshold
+        type: float
+      slip_limit:
+        default: '0.002'
+        description: Configuration parameter for slip_limit
+        type: float
+      slippage_percentile:
+        default: '95'
+        description: Configuration parameter for slippage_percentile
+        type: int
+      spread_threshold:
+        default: '0.01'
+        description: Configuration parameter for spread_threshold
+        type: float
+      stats_window:
+        default: '50'
+        description: Configuration parameter for stats_window
+        type: int
+    description: Configuration for ExecutionQualityMonitor module
+  PortfolioRiskSystem:
+    config_class: PortfolioRiskConfig
+    configuration:
+      adaptive_learning_rate:
+        default: '0.01'
+        description: Configuration parameter for adaptive_learning_rate
+        type: float
+      bootstrap_trades:
+        default: '10'
+        description: Configuration parameter for bootstrap_trades
+        type: int
+      circuit_breaker_threshold:
+        default: '5'
+        description: Configuration parameter for circuit_breaker_threshold
+        type: int
+      correlation_threshold:
+        default: '0.8'
+        description: Configuration parameter for correlation_threshold
+        type: float
+      correlation_window:
+        default: '50'
+        description: Configuration parameter for correlation_window
+        type: int
+      dd_limit:
+        default: '0.2'
+        description: Configuration parameter for dd_limit
+        type: float
+      max_portfolio_exposure:
+        default: '1.0'
+        description: Configuration parameter for max_portfolio_exposure
+        type: float
+      max_position_pct:
+        default: '0.25'
+        description: Configuration parameter for max_position_pct
+        type: float
+      max_processing_time_ms:
+        default: '200'
+        description: Configuration parameter for max_processing_time_ms
+        type: float
+      min_position_pct:
+        default: '0.01'
+        description: Configuration parameter for min_position_pct
+        type: float
+      min_risk_quality:
+        default: '0.3'
+        description: Configuration parameter for min_risk_quality
+        type: float
+      risk_budget_daily:
+        default: '0.02'
+        description: Configuration parameter for risk_budget_daily
+        type: float
+      risk_mult:
+        default: '2.0'
+        description: Configuration parameter for risk_mult
+        type: float
+      risk_sensitivity:
+        default: '1.0'
+        description: Configuration parameter for risk_sensitivity
+        type: float
+      var_confidence:
+        default: '0.95'
+        description: Configuration parameter for var_confidence
+        type: float
+      var_window:
+        default: '20'
+        description: Configuration parameter for var_window
+        type: int
+      volatility_lookback:
+        default: '30'
+        description: Configuration parameter for volatility_lookback
+        type: int
+    description: Configuration for PortfolioRiskSystem module

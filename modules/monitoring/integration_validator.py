@@ -238,7 +238,7 @@ class IntegrationValidator:
                 
                 # Parse AST to check for classes
                 try:
-                    with open(py_file, 'r') as f:
+                    with open(py_file, 'r', encoding='utf-8') as f:
                         tree = ast.parse(f.read())
                     
                     for node in ast.walk(tree):
@@ -453,7 +453,7 @@ class IntegrationValidator:
             
             # Validate YAML
             try:
-                with open(path, 'r') as f:
+                with open(path, 'r', encoding='utf-8') as f:
                     config = yaml.safe_load(f)
                 
                 # Validate structure based on file
@@ -551,7 +551,7 @@ class IntegrationValidator:
         
         for module_name, module_info in self.discovered_modules.items():
             try:
-                with open(module_info['file_path'], 'r') as f:
+                with open(module_info['file_path'], 'r', encoding='utf-8') as f:
                     content = f.read()
                 
                 if 'SmartInfoBus' in content or 'smart_bus' in content:

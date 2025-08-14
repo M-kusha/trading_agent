@@ -119,6 +119,9 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
         # Initialize genome parameters
         self._initialize_genome_parameters(genome)
         
+        # Try to align initial_balance with environment (if available on the bus)
+        self._sync_initial_balance_from_env()
+        
         # Initialize reward state
         self._initialize_reward_state()
         
@@ -159,6 +162,17 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
         self._health_status = 'healthy'
         self._last_health_check = time.time()
         # Note: Don't start monitoring here, wait until after reward state init
+
+    def _sync_initial_balance_from_env(self):
+        """Attempt to sync initial_balance from environment via SmartInfoBus."""
+        try:
+            if hasattr(self, 'smart_bus') and self.smart_bus is not None:
+                env_cfg = self.smart_bus.get('environment_config', 'RiskAdjustedReward')
+                if isinstance(env_cfg, dict) and 'initial_balance' in env_cfg:
+                    self.config.initial_balance = float(env_cfg['initial_balance'])
+        except Exception as e:
+            # Keep silent in production logs; mismatch will just use config default
+            self.logger.debug(f"Initial balance sync not available yet: {e}")
 
     def _initialize_genome_parameters(self, genome: Optional[Dict[str, Any]]):
         """Initialize genome-based parameters with validation"""
@@ -295,6 +309,9 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
     def _initialize(self):
         """Initialize module with SmartInfoBus integration"""
         try:
+            # Ensure we reflect the environment's initial balance if available now
+            self._sync_initial_balance_from_env()
+            
             # Set initial reward status
             initial_status = {
                 "current_mode": self.current_mode.value,
@@ -317,7 +334,9 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process reward calculation with enhanced analytics"""
         start_time = time.time()
-        
+        # Ensure balance matches environment if it becomes available later
+        if getattr(self, '_call_count', 0) == 0:
+            self._sync_initial_balance_from_env()
         try:
             # Extract reward data from SmartInfoBus
             reward_data = await self._extract_reward_data(**inputs)

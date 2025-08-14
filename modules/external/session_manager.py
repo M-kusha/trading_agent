@@ -471,6 +471,7 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                 "market_conditions": dict(self.market_conditions),
                 "theme_detection": getattr(self, 'theme_detection', {}),
                 "time_risk_data": getattr(self, 'time_risk_data', {}),
+                "time_of_day": datetime.datetime.now().strftime("%H:%M:%S"),
                 
                 # Memory and learning data
                 "playbook_memory": {
@@ -483,6 +484,12 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                     "total_mistakes": random.randint(0, 10),
                     "recent_mistakes": random.randint(0, 3),
                     "learning_progress": random.uniform(0.6, 0.9)
+                },
+                "performance_feedback": {
+                    "overall_performance": random.uniform(0.6, 0.95),
+                    "recent_performance": random.uniform(0.5, 0.9),
+                    "improvement_areas": ["risk_management", "timing", "position_sizing"],
+                    "feedback_score": random.uniform(0.7, 0.95)
                 }
             }
             

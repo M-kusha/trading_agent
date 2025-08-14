@@ -227,7 +227,8 @@ class NewsSentimentModule(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRisk
             processing_time = (time.time() - start_time) * 1000
             self._record_success(processing_time)
             
-            return sentiment_result
+            # Map internal results to declared output format
+            return self._format_declared_outputs(sentiment_result, thesis)
             
         except Exception as e:
             return await self._handle_sentiment_error(e, start_time)
@@ -292,7 +293,6 @@ class NewsSentimentModule(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRisk
                     'sentiment_processed': True,
                     'sentiment_value': self.latest_sentiment,
                     'confidence': self.sentiment_confidence,
-                    'source': 'cache',
                     'cache_age': time.time() - cached_sentiment['timestamp']
                 }
             
@@ -324,7 +324,13 @@ class NewsSentimentModule(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRisk
             
         except Exception as e:
             self.logger.error(f"Sentiment analysis failed: {e}")
-            return self._create_fallback_response(f"error: {str(e)}")
+            # Return internal error format - will be reformatted by main process method
+            return {
+                'sentiment_value': self.genome["default_sentiment"],
+                'confidence': 0.0,
+                'source': 'error',
+                'error_reason': str(e)
+            }
 
     def _get_cached_sentiment(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Get cached sentiment for symbol"""
@@ -595,16 +601,48 @@ class NewsSentimentModule(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRisk
             self.logger.error(f"Health check failed: {e}")
             self._health_status = 'warning'
 
+
+    def _format_declared_outputs(self, sentiment_result: Dict[str, Any], thesis: str) -> Dict[str, Any]:
+        """
+        Strictly format and validate all declared outputs, logging and raising on missing/invalid outputs.
+        """
+        outputs = {}
+        # Map and type-check each declared output
+        outputs['news_sentiment'] = sentiment_result.get('sentiment_value', getattr(self, 'latest_sentiment', None))
+        outputs['sentiment_confidence'] = sentiment_result.get('confidence', getattr(self, 'sentiment_confidence', None))
+        outputs['news_summary'] = {
+            'total_requests': self._sentiment_performance.get('total_requests', 0),
+            'cache_hits': self._sentiment_performance.get('cache_hits', 0),
+            'api_successes': self._sentiment_performance.get('api_successes', 0),
+            'api_failures': getattr(self, '_api_failures', 0),
+            'enabled': self.genome.get('enabled', False),
+            'api_configured': bool(getattr(self, 'api_key', None))
+        }
+        outputs['sentiment_trend'] = sentiment_result.get('sentiment_trend', 'stable')
+        outputs['_thesis'] = thesis
+        # Fail fast if critical outputs are missing
+        for key in ['news_sentiment', 'sentiment_confidence', 'news_summary', 'sentiment_trend']:
+            if outputs[key] is None:
+                raise ValueError(f"Critical output '{key}' is missing in NewsSentimentAnalyzer!")
+        return outputs
+
     async def _handle_no_data_fallback(self) -> Dict[str, Any]:
         """Handle case when no sentiment data is available"""
         self.logger.warning("No sentiment data available - using default")
         
-        return {
+        # Create fallback result in internal format
+        fallback_result = {
             'sentiment_value': self.genome["default_sentiment"],
             'confidence': 0.0,
             'source': 'fallback',
-            'fallback_reason': 'no_sentiment_data'
+            'fallback_reason': 'no_sentiment_data',
+            'sentiment_trend': 'stable'
         }
+        
+        thesis = "No sentiment data available - using default neutral sentiment"
+        
+        # Format to declared outputs
+        return self._format_declared_outputs(fallback_result, thesis)
 
     async def _handle_sentiment_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
         """Handle sentiment analysis errors"""
@@ -636,17 +674,18 @@ class NewsSentimentModule(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRisk
         # Record failure
         self._record_failure(error)
         
-        return self._create_fallback_response(f"error: {str(error)}")
-
-    def _create_fallback_response(self, reason: str) -> Dict[str, Any]:
-        """Create fallback response for error cases"""
-        return {
+        # Create error result in internal format then format to declared outputs
+        error_result = {
             'sentiment_value': self.genome["default_sentiment"],
             'confidence': 0.0,
             'source': 'fallback',
-            'circuit_breaker_state': self.circuit_breaker['state'],
-            'fallback_reason': reason
+            'sentiment_trend': 'stable',
+            'fallback_reason': f"error: {str(error)}"
         }
+        
+        thesis = f"Sentiment analysis encountered error: {str(error)[:100]}. Using default neutral sentiment."
+        
+        return self._format_declared_outputs(error_result, thesis)
 
     def _record_success(self, processing_time: float):
         """Record successful processing"""

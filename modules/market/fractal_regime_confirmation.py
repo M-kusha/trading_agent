@@ -43,6 +43,45 @@ from modules.utils.info_bus import InfoBusExtractor, InfoBusUpdater
     error_handling=True
 )
 class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVotingMixin):
+    def _format_declared_outputs(self, regime=None, strength=None, trend_direction=None, fractal_metrics=None, regime_data=None, symbols=None, timestamps=None, extra: Optional[dict] = None) -> Dict[str, Any]:
+        """
+        Ensures all declared outputs are present and mapped from internal state/results.
+        Logs a warning if any output is missing or defaulted. Raises if critical outputs are missing.
+        """
+        outputs = {}
+        # Map each declared output, log if missing, and type-check
+        outputs['market_regime'] = regime if regime is not None else getattr(self, 'label', None)
+        if outputs['market_regime'] is None:
+            self.logger.warning("Output 'market_regime' is missing, defaulting to None.")
+        outputs['regime_strength'] = strength if strength is not None else getattr(self, 'regime_strength', None)
+        if outputs['regime_strength'] is None:
+            self.logger.warning("Output 'regime_strength' is missing, defaulting to None.")
+        outputs['trend_direction'] = trend_direction if trend_direction is not None else getattr(self, '_trend_direction', None)
+        if outputs['trend_direction'] is None:
+            self.logger.warning("Output 'trend_direction' is missing, defaulting to None.")
+        outputs['fractal_metrics'] = fractal_metrics if fractal_metrics is not None else (self._fractal_metrics_history[-1] if hasattr(self, '_fractal_metrics_history') and self._fractal_metrics_history else {})
+        if not isinstance(outputs['fractal_metrics'], dict):
+            self.logger.error("Output 'fractal_metrics' is not a dict!")
+            outputs['fractal_metrics'] = {}
+        outputs['regime_data'] = regime_data if regime_data is not None else {}
+        if not isinstance(outputs['regime_data'], dict):
+            self.logger.error("Output 'regime_data' is not a dict!")
+            outputs['regime_data'] = {}
+        outputs['symbols'] = symbols if symbols is not None else []
+        if not isinstance(outputs['symbols'], list):
+            self.logger.error("Output 'symbols' is not a list!")
+            outputs['symbols'] = []
+        outputs['timestamps'] = timestamps if timestamps is not None else []
+        if not isinstance(outputs['timestamps'], list):
+            self.logger.error("Output 'timestamps' is not a list!")
+            outputs['timestamps'] = []
+        if extra is not None:
+            outputs.update(extra)
+        # Fail fast if critical outputs are missing
+        for key in ['market_regime', 'regime_strength', 'trend_direction']:
+            if outputs[key] is None:
+                raise ValueError(f"Critical output '{key}' is missing in FractalRegimeConfirmation!")
+        return outputs
     """
     [ROCKET] PRODUCTION-GRADE Fractal Regime Confirmation Module
     
@@ -234,31 +273,24 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         try:
             # Extract market data
             market_data = self._extract_market_data_comprehensive(None, inputs)
-            
             if not market_data:
                 return await self._handle_no_data_fallback()
-            
             # Process regime detection
             regime, strength = self._process_regime_detection(market_data)
-            
             # Update regime metrics
             self._update_regime_metrics(regime, strength)
-            
             # Update SmartInfoBus
             await self._update_fractal_smart_bus(regime, strength)
-            
             # Record success
             processing_time = (time.time() - start_time) * 1000
             self._record_success(processing_time)
-            
-            return {
-                'market_regime': regime,
-                'regime_strength': strength,
-                'trend_direction': self._trend_direction,
-                'fractal_metrics': self._fractal_metrics_history[-1] if self._fractal_metrics_history else {},  # Added required output
-                'processing_time_ms': processing_time
-            }
-            
+            return self._format_declared_outputs(
+                regime=regime,
+                strength=strength,
+                trend_direction=self._trend_direction,
+                fractal_metrics=self._fractal_metrics_history[-1] if self._fractal_metrics_history else {},
+                extra={'processing_time_ms': processing_time}
+            )
         except Exception as e:
             return await self._handle_fractal_error(e, start_time)
 
@@ -266,12 +298,9 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         """Handle case when no market data is available"""
         self.logger.warning("No market data available - using cached regime state")
         
-        return {
-            'market_regime': self.label,
-            'regime_strength': self.regime_strength,
-            'trend_direction': self._trend_direction,
-            'fallback_reason': 'no_market_data'
-        }
+        return self._format_declared_outputs(
+            extra={'fallback_reason': 'no_market_data'}
+        )
 
     async def _update_fractal_smart_bus(self, regime: str, strength: float):
         """Update SmartInfoBus with fractal analysis results"""
@@ -332,14 +361,13 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         
         self.logger.error(f"Fractal analysis error: {str(error)} - {explanation}")
         
-        return {
-            'market_regime': self.label,
-            'regime_strength': self.regime_strength,
-            'trend_direction': self._trend_direction,
-            'error': str(error),
-            'processing_time_ms': processing_time,
-            'circuit_breaker_state': self.fractal_circuit_breaker['state']
-        }
+        return self._format_declared_outputs(
+            extra={
+                'error': str(error),
+                'processing_time_ms': processing_time,
+                'circuit_breaker_state': self.fractal_circuit_breaker['state']
+            }
+        )
 
     def _record_success(self, processing_time: float):
         """Record successful processing"""

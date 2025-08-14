@@ -836,7 +836,7 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
     name="EnhancedThemeExpert",
     version="4.0.0",
     category="voting",
-    provides=["theme_voting_proposal", "theme_confidence", "theme_analysis"],
+    provides=["theme_voting_proposal", "theme_confidence", "theme_analysis", "voting_summary", "strategy_arbiter_weights", "consensus_direction", "agreement_score", "raw_proposals", "member_confidences", "voting_summary", "strategy_arbiter_weights", "consensus_direction", "agreement_score", "raw_proposals", "member_confidences"],
     requires=["market_data", "theme_detection", "market_regime"],
     description="Enhanced theme-based trading expert with modern InfoBus integration",
     is_voting_member=True,

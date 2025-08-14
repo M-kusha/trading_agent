@@ -107,6 +107,144 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 context="system_startup"
             )
         )
+
+    # Enforce declared provides with strict, serializable outputs and thesis
+    def _format_declared_outputs(
+        self,
+        matrix_result: Dict[str, Any],
+        thesis: Optional[str] = None,
+        performance_data: Optional[Dict[str, Any]] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Map internal results to declared provides, ensure types and defaults."""
+        try:
+            current_regime = int(matrix_result.get('current_regime', getattr(self, '_current_regime', 0)))
+            predicted_regime = int(matrix_result.get('predicted_regime', getattr(self, '_predicted_regime', 0)))
+            matrix_list = matrix_result.get('matrix', getattr(self, 'matrix', np.zeros((self.config.n_regimes, self.config.n_regimes)))).tolist()
+            overall_accuracy = float(matrix_result.get('overall_accuracy', 0.5))
+            regime_accuracy = float(matrix_result.get('regime_accuracy', 0.5))
+            avg_performance = float(matrix_result.get('avg_performance', 0.0))
+            current_volatility = float(matrix_result.get('current_volatility', getattr(self, 'last_volatility', 0.01)))
+            volatility_trend = str(matrix_result.get('volatility_trend', 'stable'))
+            regime_characteristics = matrix_result.get('regime_characteristics', getattr(self, '_regime_characteristics', {}))
+            processing_success = bool(matrix_result.get('processing_success', False))
+
+            # Safe stress tests snapshot
+            stress_results = getattr(self, '_stress_test_results', {}) or {}
+
+            # Build provides
+            regime_performance = {
+                'matrix': matrix_list,
+                'current_regime': current_regime,
+                'predicted_regime': predicted_regime,
+                'avg_performance': avg_performance,
+            }
+            regime_prediction = {
+                'predicted': predicted_regime,
+                'actual': current_regime,
+                'correct': current_regime == predicted_regime,
+            }
+            market_state = {
+                'regime': current_regime,
+                'volatility': current_volatility,
+                'trend': volatility_trend,
+            }
+            performance_metrics = {
+                'overall_accuracy': overall_accuracy,
+                'regime_accuracy': regime_accuracy,
+                'avg_performance': avg_performance,
+                'processing_success': processing_success,
+            }
+            backtesting_data = {
+                'window': len(getattr(self, '_performance_history', [])),
+                'volatility_history': list(getattr(self, 'vol_history', []))[-50:],
+                'timestamp': datetime.datetime.now().isoformat(),
+            }
+            # passthrough recent trades if available from performance_data or bus
+            recent_trades = []
+            if performance_data and 'recent_trades' in performance_data:
+                recent_trades = list(performance_data['recent_trades'])
+            else:
+                try:
+                    bus_trades = self.smart_bus.get('recent_trades', 'RegimePerformanceMatrix')
+                    if isinstance(bus_trades, list):
+                        recent_trades = bus_trades
+                except Exception:
+                    recent_trades = []
+
+            # simple derived signal
+            signal = 'hold'
+            if overall_accuracy > max(0.6, self.config.accuracy_threshold):
+                if current_regime == predicted_regime:
+                    signal = 'trade'
+                else:
+                    signal = 'reduce_exposure'
+            trading_signals = {
+                'signal': signal,
+                'confidence': min(1.0, overall_accuracy + (1.0 - current_volatility) * 0.2),
+                'timestamp': datetime.datetime.now().isoformat(),
+            }
+
+            outputs = {
+                'regime_performance': regime_performance,
+                'regime_accuracy': overall_accuracy,
+                'regime_prediction': regime_prediction,
+                'stress_test_results': stress_results,
+                'market_regime': current_regime,
+                'regime_data': {
+                    'matrix': matrix_list,
+                    'characteristics': regime_characteristics,
+                    'volatility_regimes': getattr(self, 'volatility_regimes', np.array([0.1, 0.3, 0.5])).tolist(),
+                },
+                'regime_analysis': {
+                    **matrix_result,
+                    'last_update': datetime.datetime.now().isoformat(),
+                },
+                'market_state': market_state,
+                'performance_metrics': performance_metrics,
+                'backtesting_data': backtesting_data,
+                'recent_trades': recent_trades,
+                'trading_signals': trading_signals,
+                '_thesis': thesis or "Regime performance matrix analysis generated.",
+            }
+            if isinstance(extra, dict):
+                outputs['regime_analysis']['extra'] = extra
+            return outputs
+        except Exception as e:
+            # Safe fallback to ensure all provides are set
+            now = datetime.datetime.now().isoformat()
+            return {
+                'regime_performance': {
+                    'matrix': getattr(self, 'matrix', np.zeros((self.config.n_regimes, self.config.n_regimes))).tolist(),
+                    'current_regime': int(getattr(self, '_current_regime', 0)),
+                    'predicted_regime': int(getattr(self, '_predicted_regime', 0)),
+                    'avg_performance': 0.0,
+                },
+                'regime_accuracy': 0.5,
+                'regime_prediction': {
+                    'predicted': int(getattr(self, '_predicted_regime', 0)),
+                    'actual': int(getattr(self, '_current_regime', 0)),
+                    'correct': False,
+                },
+                'stress_test_results': getattr(self, '_stress_test_results', {}),
+                'market_regime': int(getattr(self, '_current_regime', 0)),
+                'regime_data': {
+                    'matrix': getattr(self, 'matrix', np.zeros((self.config.n_regimes, self.config.n_regimes))).tolist(),
+                    'characteristics': getattr(self, '_regime_characteristics', {}),
+                    'volatility_regimes': getattr(self, 'volatility_regimes', np.array([0.1, 0.3, 0.5])).tolist(),
+                },
+                'regime_analysis': {
+                    'error': str(e)[:200],
+                    'processing_success': False,
+                    'last_update': now,
+                },
+                'market_state': {'regime': int(getattr(self, '_current_regime', 0)), 'volatility': float(getattr(self, 'last_volatility', 0.01)), 'trend': 'unknown'},
+                'performance_metrics': {'overall_accuracy': 0.5, 'regime_accuracy': 0.5, 'avg_performance': 0.0, 'processing_success': False},
+                'backtesting_data': {'window': 0, 'volatility_history': [], 'timestamp': now},
+                'recent_trades': [],
+                'trading_signals': {'signal': 'hold', 'confidence': 0.5, 'timestamp': now},
+                '_thesis': "Regime performance matrix (safe fallback)",
+            }
     
     def _initialize_advanced_systems(self):
         """Initialize all advanced SmartInfoBus systems"""
@@ -236,7 +374,8 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             processing_time = (time.time() - start_time) * 1000
             self._record_success(processing_time)
             
-            return matrix_result
+            # Return strictly formatted outputs matching 'provides'
+            return self._format_declared_outputs(matrix_result, thesis=thesis, performance_data=performance_data)
             
         except Exception as e:
             return await self._handle_matrix_error(e, start_time)
@@ -342,14 +481,14 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         volatility_trend = self._calculate_volatility_trend()
         
         return {
-            'current_regime': true_regime,
-            'predicted_regime': predicted_regime,
+            'current_regime': int(true_regime),
+            'predicted_regime': int(predicted_regime),
             'matrix': self.matrix.tolist(),
-            'overall_accuracy': overall_accuracy,
-            'regime_accuracy': regime_accuracy,
-            'avg_performance': avg_performance,
-            'current_volatility': volatility,
-            'volatility_trend': volatility_trend,
+            'overall_accuracy': float(overall_accuracy),
+            'regime_accuracy': float(regime_accuracy),
+            'avg_performance': float(avg_performance),
+            'current_volatility': float(volatility),
+            'volatility_trend': str(volatility_trend),
             'regime_characteristics': self._regime_characteristics,
             'processing_success': True
         }
@@ -553,17 +692,111 @@ REGIME PERFORMANCE MATRIX ANALYSIS
             thesis=f"Regime prediction: {matrix_result['predicted_regime']} vs actual {matrix_result['current_regime']}"
         )
         
-        # Comprehensive analysis
+        # Additional provided keys
         self.smart_bus.set(
-            'regime_matrix_analysis',
+            'market_regime',
+            matrix_result['current_regime'],
+            module='RegimePerformanceMatrix',
+            thesis="Current market regime id based on volatility clustering"
+        )
+        
+        self.smart_bus.set(
+            'regime_data',
             {
-                **matrix_result,
-                'regime_transitions': self._regime_transitions,
+                'matrix': matrix_result['matrix'],
+                'characteristics': matrix_result['regime_characteristics'],
                 'volatility_regimes': self.volatility_regimes.tolist(),
-                'last_update': datetime.datetime.now().isoformat()
             },
             module='RegimePerformanceMatrix',
+            thesis="Regime data snapshot including matrix and characteristics"
+        )
+        
+        # Use 'regime_analysis' to match provides (keep legacy key for compatibility)
+        analysis_payload = {
+            **matrix_result,
+            'regime_transitions': self._regime_transitions,
+            'volatility_regimes': self.volatility_regimes.tolist(),
+            'last_update': datetime.datetime.now().isoformat()
+        }
+        self.smart_bus.set(
+            'regime_analysis',
+            analysis_payload,
+            module='RegimePerformanceMatrix',
             thesis=thesis
+        )
+        self.smart_bus.set(
+            'regime_matrix_analysis',  # legacy/compat
+            analysis_payload,
+            module='RegimePerformanceMatrix',
+            thesis=thesis
+        )
+        
+        self.smart_bus.set(
+            'market_state',
+            {
+                'regime': matrix_result['current_regime'],
+                'volatility': matrix_result['current_volatility'],
+                'trend': matrix_result['volatility_trend']
+            },
+            module='RegimePerformanceMatrix',
+            thesis="Compact market state derived from regime analysis"
+        )
+        
+        self.smart_bus.set(
+            'performance_metrics',
+            {
+                'overall_accuracy': matrix_result['overall_accuracy'],
+                'regime_accuracy': matrix_result['regime_accuracy'],
+                'avg_performance': matrix_result['avg_performance'],
+                'processing_success': matrix_result['processing_success']
+            },
+            module='RegimePerformanceMatrix',
+            thesis="Performance metrics for regime matrix module"
+        )
+        
+        self.smart_bus.set(
+            'backtesting_data',
+            {
+                'window': len(self._performance_history),
+                'volatility_history': list(self.vol_history)[-50:],
+                'timestamp': datetime.datetime.now().isoformat(),
+            },
+            module='RegimePerformanceMatrix',
+            thesis="Backtesting context for regime analysis consumers"
+        )
+        
+        # Pass through trades and derive basic signals if possible
+        recent_trades = self.smart_bus.get('recent_trades', 'RegimePerformanceMatrix') or []
+        self.smart_bus.set(
+            'recent_trades',
+            recent_trades,
+            module='RegimePerformanceMatrix',
+            thesis="Recent trades passthrough for regime consumers"
+        )
+        
+        signal = 'hold'
+        if matrix_result['overall_accuracy'] > max(0.6, self.config.accuracy_threshold):
+            if matrix_result['current_regime'] == matrix_result['predicted_regime']:
+                signal = 'trade'
+            else:
+                signal = 'reduce_exposure'
+        self.smart_bus.set(
+            'trading_signals',
+            {
+                'signal': signal,
+                'confidence': min(1.0, matrix_result['overall_accuracy'] + (1.0 - matrix_result['current_volatility']) * 0.2),
+                'timestamp': datetime.datetime.now().isoformat(),
+            },
+            module='RegimePerformanceMatrix',
+            thesis="Basic trading signal derived from regime accuracy and state"
+        )
+        
+        # Stress test results if any
+        self.smart_bus.set(
+            'stress_test_results',
+            getattr(self, '_stress_test_results', {}),
+            module='RegimePerformanceMatrix',
+            thesis="Most recent regime stress test results"
         )
         
         # Performance tracking
@@ -578,19 +811,21 @@ REGIME PERFORMANCE MATRIX ANALYSIS
         """Handle case when no performance data is available"""
         self.logger.warning("No performance data available - using fallback regime matrix")
         
-        return {
-            'current_regime': self._current_regime,
-            'predicted_regime': self._predicted_regime,
-            'matrix': self.matrix.tolist(),
+        matrix_result = {
+            'current_regime': int(getattr(self, '_current_regime', 0)),
+            'predicted_regime': int(getattr(self, '_predicted_regime', 0)),
+            'matrix': getattr(self, 'matrix', np.zeros((self.config.n_regimes, self.config.n_regimes))).tolist(),
             'overall_accuracy': 0.5,
             'regime_accuracy': 0.5,
             'avg_performance': 0.0,
-            'current_volatility': self.last_volatility,
+            'current_volatility': float(getattr(self, 'last_volatility', 0.01)),
             'volatility_trend': 'unknown',
-            'regime_characteristics': self._regime_characteristics,
+            'regime_characteristics': getattr(self, '_regime_characteristics', {}),
             'processing_success': False,
             'fallback_reason': 'No performance data available'
         }
+        thesis = "Fallback: No performance data; using safe defaults for regime matrix."
+        return self._format_declared_outputs(matrix_result, thesis=thesis)
     
     async def _handle_matrix_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
         """Handle matrix processing errors"""

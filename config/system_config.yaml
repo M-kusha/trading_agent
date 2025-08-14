@@ -168,6 +168,72 @@ execution:
 modules:
   
   # ─────────────────────────────────────────────────────────────
+  # EXTERNAL DATA PROVIDERS
+  # ─────────────────────────────────────────────────────────────
+  MarketDataProvider:
+    category: "external"
+    priority: 200  # Highest priority - foundational data provider
+    provides: [
+      "market_data", "price_data", "technical_indicators", "volatility_data", 
+      "symbols", "timestamp", "prices", "trading_session", "session_type",
+      "market_conditions", "ohlcv_data", "bid_ask_data", "market_regime", 
+      "market_context", "historical_prices", "volatility"
+    ]
+    requires: []  # Root data provider - no dependencies
+    explainable: false
+    hot_reload: true
+    critical: true  # Critical for system operation
+    timeout_ms: 50  # Fast data updates required
+    dependencies: []
+    
+    config:
+      data_directory: "data/processed"
+      supported_symbols: ["XAUUSD", "EURUSD"]
+      supported_timeframes: ["H1", "H4", "D1"]
+      primary_timeframe: "H4"
+      update_frequency: 1.0
+      buffer_size: 10000
+      enable_technical_indicators: true
+      enable_health_monitoring: true
+      enable_performance_tracking: true
+      enable_error_pinpointing: true
+  
+  SessionManager:
+    category: "external"
+    priority: 190
+    provides: ["session_data", "session_state", "connection_status", "broker_data"]
+    requires: []  # Independent session management
+    explainable: false
+    hot_reload: true
+    critical: true
+    timeout_ms: 100
+    dependencies: []
+    
+    config:
+      session_timeout: 3600
+      reconnect_attempts: 5
+      health_check_interval: 30
+  
+  PositionManager:
+    category: "position"
+    priority: 180
+    provides: [
+      "positions", "position_data", "position_summary", "open_positions",
+      "position_metrics", "execution_data", "order_data"
+    ]
+    requires: ["market_data", "session_data"]
+    explainable: true
+    hot_reload: true
+    critical: true
+    timeout_ms: 75
+    dependencies: []
+    
+    config:
+      max_positions: 10
+      position_sizing: "fixed"
+      risk_per_trade: 0.02
+  
+  # ─────────────────────────────────────────────────────────────
   # MARKET ANALYSIS MODULES
   # ─────────────────────────────────────────────────────────────
   MarketThemeDetector:
@@ -344,6 +410,23 @@ modules:
     timeout_ms: 100
     config:
       enable_error_pinpointing: true
+      
+  EnhancedVotingCommitteeCoordinator:
+    category: "voting"
+    priority: 85
+    provides: [
+      "voting_summary", "strategy_arbiter_weights", "consensus_direction",
+      "agreement_score", "raw_proposals", "member_confidences"
+    ]
+    requires: ["market_data", "strategy_signals"]
+    explainable: true
+    hot_reload: true
+    critical: true
+    timeout_ms: 150
+    config:
+      min_voting_members: 3
+      consensus_threshold: 0.6
+      enable_weighted_voting: true
   MultiScaleFeatureEngine:
     category: "market"
     priority: 80

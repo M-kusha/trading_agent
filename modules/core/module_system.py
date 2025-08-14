@@ -219,7 +219,7 @@ class ModuleConfig:
         self._config_file_path = config_path
         
         if config_path.exists():
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding='utf-8') as f:
                 config_data = yaml.safe_load(f)
             
             if 'module_config' in config_data:

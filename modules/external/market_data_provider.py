@@ -48,8 +48,7 @@ class MarketDataConfig:
     provides=[
         "market_data", "price_data", "technical_indicators", "volatility_data", 
         "symbols", "timestamp", "prices", "trading_session", "session_type",
-        "market_conditions", "ohlcv_data", "bid_ask_data", "market_regime", "market_context"
-    ],
+        "market_conditions", "ohlcv_data", "bid_ask_data", "market_regime", "market_context", "historical_prices", "volatility", "historical_prices", "volatility"],
     requires=[],  # Root data provider - no dependencies
     description="Offline market data provider for backtesting and simulation with comprehensive data feeds",
     thesis_required=False,
@@ -587,7 +586,20 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     "bid": bar["bid"],
                     "ask": bar["ask"],
                     "spread": bar["ask"] - bar["bid"]
-                } for symbol, bar in self.current_bars.items()}
+                } for symbol, bar in self.current_bars.items()},
+                
+                # Market regime data
+                "market_regime": self._assess_volatility_regime(),
+                "market_context": {
+                    "volatility_regime": self._assess_volatility_regime(),
+                    "market_hours": self._is_market_hours(),
+                    "liquidity_condition": self._assess_liquidity(),
+                    "session": self.trading_session
+                },
+                
+                # Historical prices for lookback analysis
+                "historical_prices": multi_timeframe_data,
+                "volatility": {symbol: self.technical_indicators[symbol]["atr"] for symbol in self.current_bars.keys()}
             }
             
         except Exception as e:
@@ -653,7 +665,16 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     "bid": data["bid"],
                     "ask": data["ask"],
                     "spread": data["ask"] - data["bid"]
-                } for symbol, data in fallback_data.items()}
+                } for symbol, data in fallback_data.items()},
+                "market_regime": "normal",
+                "market_context": {
+                    "volatility_regime": "normal",
+                    "market_hours": True,
+                    "liquidity_condition": "medium",
+                    "session": "london"
+                },
+                "historical_prices": {symbol: {"H4": fallback_data} for symbol in self.config.supported_symbols},
+                "volatility": {symbol: 0.01 for symbol in self.config.supported_symbols}
             }
             
         except Exception as e:
