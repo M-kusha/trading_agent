@@ -367,18 +367,26 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
                 drawdown_analysis.get('processing_time_ms', 0), True
             )
             
-            return {
-                'current_drawdown': self.current_dd,
-                'severity_level': self.severity_level,
-                'rescue_mode': self.rescue_mode,
-                'risk_adjustment_factor': self.risk_adjustment_factor,
-                'drawdown_analysis': drawdown_analysis,
-                'rescue_status': rescue_status,
-                'risk_adjustment': risk_adjustment,
-                'drawdown_metrics': drawdown_metrics,
-                'thesis': thesis,
-                'recommendations': self._generate_recommendations(drawdown_analysis, rescue_status)
+            # Conform to provides contract
+            provides_payload = {
+                'drawdown_risk': {
+                    'current_drawdown': self.current_dd,
+                    'severity_level': self.severity_level,
+                    'drawdown_analysis': drawdown_analysis,
+                    'rescue_status': rescue_status,
+                    'risk_adjustment': risk_adjustment,
+                    'thesis': thesis
+                },
+                'rescue_status': {
+                    'rescue_mode': self.rescue_mode,
+                    'rescue_duration': rescue_status.get('rescue_duration_minutes', 0.0),
+                    'intervention_count': self.rescue_intervention_count,
+                    'emergency_active': rescue_status.get('emergency_intervention', False)
+                },
+                'risk_adjustment': self.risk_adjustment_factor,
+                '_thesis': thesis
             }
+            return provides_payload
             
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "DrawdownRescue")
@@ -1138,32 +1146,36 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
     
     def _generate_disabled_response(self) -> Dict[str, Any]:
         """Generate response when module is disabled"""
+        thesis = "Drawdown Rescue is disabled"
         return {
-            'current_drawdown': 0.0,
-            'severity_level': 'disabled',
-            'rescue_mode': False,
-            'risk_adjustment_factor': 1.0,
-            'drawdown_analysis': {},
+            'drawdown_risk': {
+                'current_drawdown': 0.0,
+                'severity_level': 'disabled',
+                'drawdown_analysis': {},
+                'rescue_status': {'rescue_mode': False},
+                'risk_adjustment': {'risk_adjustment_factor': 1.0},
+                'thesis': thesis
+            },
             'rescue_status': {'rescue_mode': False},
-            'risk_adjustment': {'risk_adjustment_factor': 1.0},
-            'drawdown_metrics': {},
-            'thesis': "Drawdown Rescue is disabled",
-            'recommendations': ["Enable Drawdown Rescue for portfolio protection"]
+            'risk_adjustment': 1.0,
+            '_thesis': thesis
         }
     
     def _generate_error_response(self, error_context: str) -> Dict[str, Any]:
         """Generate response when processing fails"""
+        thesis = f"Drawdown analysis failed: {error_context}"
         return {
-            'current_drawdown': 0.0,
-            'severity_level': 'error',
-            'rescue_mode': False,
-            'risk_adjustment_factor': 0.5,
-            'drawdown_analysis': {'error': error_context},
+            'drawdown_risk': {
+                'current_drawdown': 0.0,
+                'severity_level': 'error',
+                'drawdown_analysis': {'error': error_context},
+                'rescue_status': {'error': error_context},
+                'risk_adjustment': {'risk_adjustment_factor': 0.5, 'error': error_context},
+                'thesis': thesis
+            },
             'rescue_status': {'error': error_context},
-            'risk_adjustment': {'risk_adjustment_factor': 0.5, 'error': error_context},
-            'drawdown_metrics': {'error': error_context},
-            'thesis': f"Drawdown analysis failed: {error_context}",
-            'recommendations': ["Investigate drawdown analysis system errors"]
+            'risk_adjustment': 0.5,
+            '_thesis': thesis
         }
     
     def _generate_analysis_error_response(self, error_context: str) -> Dict[str, Any]:

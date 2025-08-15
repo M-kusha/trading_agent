@@ -79,48 +79,55 @@ class ModuleMetadata:
     def __post_init__(self):
         """CRITICAL: Validate metadata integrity"""
         errors = []
-        
+
         # Name validation
         if not self.name or not isinstance(self.name, str):
             errors.append("Module name must be non-empty string")
-        
+
         if not self.name.replace('_', '').replace('-', '').isalnum():
             errors.append("Module name must be alphanumeric with underscores/hyphens only")
-        
+
         # Provides validation
         if not self.provides or not isinstance(self.provides, list):
             errors.append("Module must provide at least one output")
-        
-        for output in self.provides:
-            if not isinstance(output, str) or not output:
-                errors.append(f"Invalid output specification: {output}")
-        
+        else:
+            for output in self.provides:
+                if not isinstance(output, str) or not output:
+                    errors.append(f"Invalid output specification: {output}")
+
         # Requires validation
         if not isinstance(self.requires, list):
             errors.append("Requires must be a list")
-        
-        for req in self.requires:
-            if not isinstance(req, str) or not req:
-                errors.append(f"Invalid requirement specification: {req}")
-        
+        else:
+            for req in self.requires:
+                if not isinstance(req, str) or not req:
+                    errors.append(f"Invalid requirement specification: {req}")
+
+        # ✅ Dedupe while preserving order (after type/content checks)
+        self.provides = list(dict.fromkeys(self.provides))
+        self.requires = list(dict.fromkeys(self.requires))
+        # (optional) also dedupe explicit module dependencies:
+        self.dependencies = list(dict.fromkeys(self.dependencies))
+
         # Timeout validation
         if self.timeout_ms <= 0 or self.timeout_ms > 30000:
             errors.append("Timeout must be between 1ms and 30000ms")
-        
+
         # Confidence validation
         if not 0 <= self.min_confidence <= 1:
             errors.append("Min confidence must be between 0 and 1")
-        
+
         # Category validation
         if self.category not in self.VALID_CATEGORIES:
             errors.append(f"Category must be one of: {self.VALID_CATEGORIES}")
-        
+
         # Version validation
         if not self._validate_version(self.version):
             errors.append(f"Invalid version format: {self.version} (use semantic versioning)")
-        
+
         if errors:
             raise ValueError(f"Module metadata validation failed for {self.name}: {errors}")
+
     
     def _validate_version(self, version: str) -> bool:
         """Validate semantic version format"""
@@ -133,20 +140,20 @@ class ModuleMetadata:
             return False
     
     def validate_compatibility(self, other: 'ModuleMetadata') -> List[str]:
-        """Validate compatibility with another module"""
+        """Validate compatibility with another module."""
         issues = []
-        
-        # Check for output conflicts
+
+        # Output conflicts
         common_outputs = set(self.provides) & set(other.provides)
         if common_outputs:
-            issues.append(f"Output conflict with {other.name}: {common_outputs}")
-        
-        # Check circular dependencies
-        if (self.name in other.requires and other.name in self.requires):
-            issues.append(f"Circular dependency with {other.name}")
-        
+            issues.append(f"Output conflict with {other.name}: {sorted(common_outputs)}")
+
+        # Circular module dependency via explicit dependencies (module names)
+        if (self.name in other.dependencies) and (other.name in self.dependencies):
+            issues.append(f"Circular dependency between {self.name} and {other.name}")
+
         return issues
-    
+        
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization"""
         return {
@@ -178,96 +185,63 @@ class ModuleMetadata:
 def module(**kwargs):
     """
     PRODUCTION-GRADE decorator for self-registering SmartInfoBus modules.
-    
-    Usage:
-        @module(
-            provides=['output1', 'output2'],
-            requires=['input1', 'input2'],
-            category='market',
-            explainable=True,
-            hot_reload=True,
-            timeout_ms=100,
-            priority=10
-        )
-        class MyModule(BaseModule):
-            pass
-    
-    Args:
-        provides: List of data keys this module produces
-        requires: List of data keys this module needs
-        category: Module category (market, strategy, risk, etc.)
-        explainable: Whether module must provide thesis
-        hot_reload: Whether module supports hot-reload
-        timeout_ms: Maximum execution time
-        priority: Execution priority (higher = earlier)
-        critical: Whether module is critical to system operation
-
-        thesis_required: Whether module requires thesis generation
-        health_monitoring: Whether module supports health monitoring
-        performance_tracking: Whether module supports performance tracking
-        error_handling: Whether module supports error handling
     """
     def decorator(cls):
-        # Validate class inheritance
+        # Validate base class
         if not issubclass(cls, BaseModule):
             raise TypeError(f"Module {cls.__name__} must inherit from BaseModule")
-        
-        # Create and validate metadata
+
+        # Build metadata safely
         try:
-            # Filter out decorator-specific arguments that aren't metadata fields
             metadata_kwargs = kwargs.copy()
             name = metadata_kwargs.pop('name', cls.__name__)
-            
-            # Remove decorator-specific arguments that aren't part of ModuleMetadata
-            decorator_args = ['thesis_required', 'health_monitoring', 'performance_tracking', 'error_handling']
-            for arg in decorator_args:
-                metadata_kwargs.pop(arg, None)
-            
+
+            # Ensure required fields exist
+            if 'provides' not in metadata_kwargs or 'requires' not in metadata_kwargs:
+                raise ValueError("Decorator requires 'provides' and 'requires' lists")
+
+            # Do NOT drop fields that exist on ModuleMetadata.
+            # Only strip unknown decorator-only args if any (none for now).
             metadata = ModuleMetadata(
                 name=name,
                 **metadata_kwargs
             )
-        except ValueError as e:
+        except Exception as e:
             raise ValueError(f"Module {cls.__name__} metadata validation failed: {e}")
-        
+
         # Attach metadata
         setattr(cls, '__module_metadata__', metadata)
         setattr(cls, '__is_smartinfobus_module__', True)
-        
-        # Validate required methods are properly implemented
+
+        # Validate required methods are implemented
         _validate_module_implementation(cls, metadata)
-        
-        # Add enhanced state management if not present
+
+        # Add optional enhancements (only if missing)
         _enhance_state_management(cls)
-        
-        # Add validation methods if not present
         _enhance_validation_methods(cls)
-        
-        # Add explanation capability if explainable
         if metadata.explainable:
             _enhance_explanation_capability(cls)
-        
-        # Auto-register with orchestrator
+
+        # Try to auto-register with orchestrator (best-effort)
         try:
             from modules.core.module_system import ModuleOrchestrator
             ModuleOrchestrator.register_class(cls)
-        except ImportError:
-            # Orchestrator not available yet - will be registered during discovery
+        except Exception:
             pass
-        
-        # Register with SmartInfoBus
+
+        # Best-effort InfoBus registration — guard against duplicate/early registration
         try:
             from modules.utils.info_bus import InfoBusManager
             smart_bus = InfoBusManager.get_instance()
+            # These calls should be idempotent on the bus side; if not, add guards there.
             smart_bus.register_provider(cls.__name__, metadata.provides)
             smart_bus.register_consumer(cls.__name__, metadata.requires)
-        except ImportError:
-            # InfoBus not available yet - will be registered during orchestration
+        except Exception:
             pass
-        
+
         return cls
-    
     return decorator
+
 
 def _validate_module_implementation(cls, metadata: ModuleMetadata):
     """Validate that module properly implements required methods"""
@@ -396,41 +370,55 @@ def _enhance_explanation_capability(cls):
 
 def requires(*fields):
     """
-    Decorator to validate required inputs.
-    
-    Args:
-        *fields: Required input field names
-        
-    Example:
-        @requires('market_data', 'risk_score')
-        async def process(self, inputs):
-            # inputs guaranteed to have market_data and risk_score
+    Decorator to validate required inputs (supports both dict and **kwargs styles).
     """
     def decorator(func):
         @wraps(func)
-        async def async_wrapper(self, inputs: Dict[str, Any], *args, **kwargs):
-            missing = [f for f in fields if f not in inputs or inputs[f] is None]
+        async def async_wrapper(self, *args, **kwargs):
+            # Determine the inputs to validate without mutating call
+            if 'inputs' in kwargs and isinstance(kwargs['inputs'], dict):
+                inputs_for_check = kwargs['inputs']
+            elif args and isinstance(args[0], dict):
+                inputs_for_check = args[0]
+            else:
+                inputs_for_check = kwargs  # **inputs style
+
+            missing = [f for f in fields if f not in inputs_for_check or inputs_for_check[f] is None]
             if missing:
-                from modules.core.error_pinpointer import ErrorPinpointer
                 error = ValueError(f"Missing required inputs: {missing}")
-                if hasattr(self, 'error_pinpointer'):
-                    self.error_pinpointer.analyze_error(error, self.__class__.__name__)
+                if hasattr(self, 'error_pinpointer') and self.error_pinpointer:
+                    try:
+                        self.error_pinpointer.analyze_error(error, self.__class__.__name__)
+                    except Exception:
+                        pass
                 raise error
-            return await func(self, inputs, *args, **kwargs)
-        
+
+            return await func(self, *args, **kwargs)
+
         @wraps(func)
-        def sync_wrapper(self, inputs: Dict[str, Any], *args, **kwargs):
-            missing = [f for f in fields if f not in inputs or inputs[f] is None]
+        def sync_wrapper(self, *args, **kwargs):
+            if 'inputs' in kwargs and isinstance(kwargs['inputs'], dict):
+                inputs_for_check = kwargs['inputs']
+            elif args and isinstance(args[0], dict):
+                inputs_for_check = args[0]
+            else:
+                inputs_for_check = kwargs
+
+            missing = [f for f in fields if f not in inputs_for_check or inputs_for_check[f] is None]
             if missing:
-                from modules.core.error_pinpointer import ErrorPinpointer
                 error = ValueError(f"Missing required inputs: {missing}")
-                if hasattr(self, 'error_pinpointer'):
-                    self.error_pinpointer.analyze_error(error, self.__class__.__name__)
+                if hasattr(self, 'error_pinpointer') and self.error_pinpointer:
+                    try:
+                        self.error_pinpointer.analyze_error(error, self.__class__.__name__)
+                    except Exception:
+                        pass
                 raise error
-            return func(self, inputs, *args, **kwargs)
-        
+
+            return func(self, *args, **kwargs)
+
         return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
     return decorator
+
 
 def provides(*fields):
     """
@@ -531,47 +519,54 @@ def with_timeout(timeout_ms: Optional[int] = None):
 
 def with_confidence_threshold(min_confidence: Optional[float] = None):
     """
-    Decorator to skip execution if confidence too low.
-    
-    Args:
-        min_confidence: Minimum confidence required (0-1)
-        
-    Example:
-        @with_confidence_threshold(0.7)
-        async def process(self, inputs):
-            # Only executes if confidence >= 0.7
+    Decorator to skip execution if confidence too low (supports dict or **kwargs).
     """
     def decorator(func):
         @wraps(func)
-        async def async_wrapper(self, inputs: Dict[str, Any], *args, **kwargs):
-            threshold = min_confidence or self.__module_metadata__.min_confidence
-            confidence = inputs.get('confidence', 1.0)
-            
-            if confidence < threshold:
+        async def async_wrapper(self, *args, **kwargs):
+            thr = min_confidence or getattr(self.__module_metadata__, 'min_confidence', 0.0)
+
+            if 'inputs' in kwargs and isinstance(kwargs['inputs'], dict):
+                ctx = kwargs['inputs']
+            elif args and isinstance(args[0], dict):
+                ctx = args[0]
+            else:
+                ctx = kwargs
+
+            confidence = float(ctx.get('confidence', 1.0))
+            if confidence < thr:
                 return {
                     'skipped': True,
-                    'reason': f'Confidence {confidence:.2f} below threshold {threshold:.2f}',
-                    '_thesis': f'Execution skipped due to low confidence ({confidence:.1%} < {threshold:.1%})'
+                    'reason': f'Confidence {confidence:.2f} below threshold {thr:.2f}',
+                    '_thesis': f'Execution skipped due to low confidence ({confidence:.1%} < {thr:.1%})'
                 }
-            
-            return await func(self, inputs, *args, **kwargs)
-        
+
+            return await func(self, *args, **kwargs)
+
         @wraps(func)
-        def sync_wrapper(self, inputs: Dict[str, Any], *args, **kwargs):
-            threshold = min_confidence or self.__module_metadata__.min_confidence
-            confidence = inputs.get('confidence', 1.0)
-            
-            if confidence < threshold:
+        def sync_wrapper(self, *args, **kwargs):
+            thr = min_confidence or getattr(self.__module_metadata__, 'min_confidence', 0.0)
+
+            if 'inputs' in kwargs and isinstance(kwargs['inputs'], dict):
+                ctx = kwargs['inputs']
+            elif args and isinstance(args[0], dict):
+                ctx = args[0]
+            else:
+                ctx = kwargs
+
+            confidence = float(ctx.get('confidence', 1.0))
+            if confidence < thr:
                 return {
                     'skipped': True,
-                    'reason': f'Confidence {confidence:.2f} below threshold {threshold:.2f}',
-                    '_thesis': f'Execution skipped due to low confidence ({confidence:.1%} < {threshold:.1%})'
+                    'reason': f'Confidence {confidence:.2f} below threshold {thr:.2f}',
+                    '_thesis': f'Execution skipped due to low confidence ({confidence:.1%} < {thr:.1%})'
                 }
-            
-            return func(self, inputs, *args, **kwargs)
-        
+
+            return func(self, *args, **kwargs)
+
         return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
     return decorator
+
 
 def with_retry(max_retries: Optional[int] = None):
     """
@@ -727,9 +722,6 @@ class BaseModule(ABC):
     def _setup_logger(self) -> logging.Logger:
         """
         Set up module logger with rotation support.
-        
-        Returns:
-            Logger instance configured for the module
         """
         try:
             from modules.utils.audit_utils import RotatingLogger
@@ -738,10 +730,17 @@ class BaseModule(ABC):
                 max_lines=5000
             ))
         except Exception:
-            # Fallback to standard logger
             logger = logging.getLogger(self.__class__.__name__)
             logger.setLevel(logging.INFO)
+            if not logger.handlers:
+                handler = logging.StreamHandler()
+                handler.setLevel(logging.INFO)
+                formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s')
+                handler.setFormatter(formatter)
+                logger.addHandler(handler)
+            logger.propagate = False
             return logger
+
     
     @abstractmethod
     def _initialize(self):
@@ -874,19 +873,13 @@ class BaseModule(ABC):
     #   • Leaving the stub unchanged means “I don't support it”.
     # ──────────────────────────────────────────────────────────────
 
-    @abstractmethod
-    async def propose_action(self, **inputs) -> Dict[str, Any]:
-        """
-        ASYNC trading action proposal - must be implemented by modules using trading mixin.
-        """
-        pass
+    async def propose_action(self, **inputs) -> Optional[Dict[str, Any]]:
+        """Optional async trading action proposal; default: no proposal."""
+        return None
 
-    @abstractmethod
-    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
-        """
-        ASYNC confidence calculation - must be implemented by modules using trading mixin.
-        """
-        pass
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> Optional[float]:
+        """Optional async confidence calculation; default: unknown (None)."""
+        return None
     
     def explain_decision(self, decision: Any, context: Dict[str, Any]) -> str:
         """

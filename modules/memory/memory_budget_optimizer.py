@@ -8,12 +8,10 @@ import asyncio
 import time
 import threading
 import numpy as np
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, ClassVar, cast
 from collections import deque, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
-import time
-import threading
 
 from modules.core.module_base import BaseModule, module
 from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin
@@ -62,6 +60,10 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
     Advanced memory budget optimizer with SmartInfoBus integration.
     Dynamically allocates memory resources based on performance analytics.
     """
+    # Class-level shared resources (declared for type checkers and thread safety)
+    _shared_logger: ClassVar[Optional[RotatingLogger]] = None
+    _logger_lock: ClassVar[threading.Lock] = threading.Lock()
+    _monitoring_active_global: ClassVar[bool] = False
 
     def __init__(self, 
                  config: Optional[MemoryBudgetConfig] = None,
@@ -99,19 +101,29 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
     def _initialize_advanced_systems(self):
         """Initialize advanced systems for memory budget optimization"""
         self.smart_bus = InfoBusManager.get_instance()
-        self.logger = RotatingLogger(
-            name="MemoryBudgetOptimizer", 
-            log_path="logs/memory_budget.log", 
-            max_lines=3000, 
-            operator_mode=True,
-            plain_english=True
-        )
+
+        # one shared logger for all instances to avoid spammy init lines (thread-safe)
+        if not hasattr(self.__class__, "_logger_lock"):
+            self.__class__._logger_lock = threading.Lock()
+        with self.__class__._logger_lock:
+            if getattr(self.__class__, "_shared_logger", None) is None:
+                self.__class__._shared_logger = RotatingLogger(
+                    name="MemoryBudgetOptimizer",
+                    log_path="logs/memory_budget.log",
+                    max_lines=3000,
+                    operator_mode=True,
+                    plain_english=True
+                )
+
+        # Cast for type-checkers; runtime ensured by lock-guarded init above
+        self.logger = cast(RotatingLogger, self.__class__._shared_logger)
+
         self.error_pinpointer = ErrorPinpointer()
         self.error_handler = create_error_handler("MemoryBudgetOptimizer", self.error_pinpointer)
         self.english_explainer = EnglishExplainer()
         self.system_utilities = SystemUtilities()
         self.performance_tracker = PerformanceTracker()
-        
+
         # Circuit breaker for memory operations
         self.circuit_breaker = {
             'failures': 0,
@@ -119,11 +131,11 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
             'state': 'CLOSED',
             'threshold': self.config.circuit_breaker_threshold
         }
-        
+
         # Health monitoring
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        # Note: _start_monitoring() moved to end of initialization
+
 
     def _initialize_genome_parameters(self, genome: Optional[Dict[str, Any]]):
         """Initialize genome-based parameters"""
@@ -152,44 +164,25 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
 
     def _initialize_memory_state(self):
         """Initialize memory budget state"""
-        # Memory performance tracking
         self.memory_performance = {
-            "trades": {
-                "size": self.genome["max_trades"], 
-                "hits": 0, 
-                "profit": 0.0, 
-                "recent_hits": deque(maxlen=100),
-                "efficiency": 0.0
-            },
-            "mistakes": {
-                "size": self.genome["max_mistakes"], 
-                "hits": 0, 
-                "profit": 0.0, 
-                "recent_hits": deque(maxlen=100),
-                "efficiency": 0.0
-            },
-            "plays": {
-                "size": self.genome["max_plays"], 
-                "hits": 0, 
-                "profit": 0.0, 
-                "recent_hits": deque(maxlen=100),
-                "efficiency": 0.0
-            }
+            "trades":   {"size": self.genome["max_trades"],   "hits": 0, "profit": 0.0, "recent_hits": deque(maxlen=100), "efficiency": 0.0},
+            "mistakes": {"size": self.genome["max_mistakes"], "hits": 0, "profit": 0.0, "recent_hits": deque(maxlen=100), "efficiency": 0.0},
+            "plays":    {"size": self.genome["max_plays"],    "hits": 0, "profit": 0.0, "recent_hits": deque(maxlen=100), "efficiency": 0.0},
         }
-        
+
         # Enhanced tracking
         self.optimization_count = 0
         self.total_profit = 0.0
         self._optimization_history = deque(maxlen=50)
-        self._efficiency_trends = {mem_type: deque(maxlen=20) for mem_type in ["trades", "mistakes", "plays"]}
+        self._efficiency_trends = {m: deque(maxlen=20) for m in ["trades", "mistakes", "plays"]}
         self._allocation_changes = deque(maxlen=100)
-        
+
         # Performance analytics
         self._memory_utilization_history = deque(maxlen=200)
         self._cost_benefit_analysis = {}
         self._optimal_allocation_predictions = {}
         self._resource_waste_tracking = {"trades": 0, "mistakes": 0, "plays": 0}
-        
+
         # Adaptive thresholds
         self._adaptive_thresholds = {
             'min_efficiency': 0.01,
@@ -198,8 +191,22 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
             'performance_window': 20
         }
 
+        # NEW: warn/rate-limit & data presence gates
+        self._has_seen_data = False
+        self._no_data_notice_emitted = False
+        self._util_state = {"trades": "unknown", "mistakes": "unknown", "plays": "unknown"}
+        self._last_warn = defaultdict(lambda: 0.0)
+        self._warn_min_interval = getattr(self.config, 'warn_min_interval_sec', 180)      # seconds
+        self._warn_on_state_change_only = getattr(self.config, 'warn_on_state_change_only', True)
+
+
     def _start_monitoring(self):
-        """Start background monitoring"""
+        """Start background monitoring (singleton thread across instances)."""
+        # class-level guard: only one monitor thread for the class
+        if getattr(self.__class__, "_monitoring_active_global", False):
+            self.logger.info("Monitoring already active; skipping duplicate thread")
+            return
+
         def monitoring_loop():
             while getattr(self, '_monitoring_active', True):
                 try:
@@ -208,10 +215,13 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
                     time.sleep(30)
                 except Exception as e:
                     self.logger.error(f"Monitoring error: {e}")
-        
+
         self._monitoring_active = True
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
+        self.__class__._monitoring_active_global = True
+        self._monitor_thread = monitor_thread
+
 
     def _initialize(self):
         """Initialize module"""
@@ -255,6 +265,33 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
             # Generate thesis
             thesis = await self._generate_memory_thesis(memory_data, utilization_result)
             
+            # Ensure required provided outputs are present in the returned result
+            current_allocation = {
+                mem_type: perf['size'] 
+                for mem_type, perf in self.memory_performance.items()
+            }
+
+            utilization_metrics = utilization_result.get('utilization_metrics', {})
+            strategy_info = {
+                'allocation_method': 'efficiency_based',
+                'rebalance_frequency': self.genome["optimization_interval"],
+                'efficiency_weight': self.genome["efficiency_weight"],
+                'recent_changes': len(self._allocation_changes)
+            }
+
+            utilization_result.update({
+                'memory_allocation': current_allocation,
+                'memory_efficiency': utilization_metrics,
+                'budget_optimization': {
+                    'optimality_score': utilization_result.get('optimality_score', 0.5),
+                    'total_profit': self.total_profit,
+                    'optimization_count': self.optimization_count,
+                    'last_optimization': time.time()
+                },
+                'allocation_strategy': strategy_info,
+                '_thesis': thesis
+            })
+
             # Update SmartInfoBus
             await self._update_memory_smart_bus(utilization_result, thesis)
             
@@ -324,29 +361,73 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
 
     def _update_memory_performance(self, memory_data: Dict[str, Any]):
         """Update memory performance based on new data"""
-        # Process trades
-        if 'trades' in memory_data and memory_data['trades']:
-            for trade in memory_data['trades'][-10:]:  # Last 10 trades
-                if isinstance(trade, dict) and 'pnl' in trade:
-                    self.memory_performance['trades']['hits'] += 1
-                    self.memory_performance['trades']['profit'] += trade['pnl']
-                    self.memory_performance['trades']['recent_hits'].append(time.time())
-        
-        # Process mistakes
-        if 'mistakes' in memory_data and memory_data['mistakes']:
-            for mistake in memory_data['mistakes'][-10:]:
-                if isinstance(mistake, dict) and 'cost' in mistake:
-                    self.memory_performance['mistakes']['hits'] += 1
-                    self.memory_performance['mistakes']['profit'] -= mistake.get('cost', 0)
-                    self.memory_performance['mistakes']['recent_hits'].append(time.time())
-        
-        # Process playbook entries
-        if 'playbook_entries' in memory_data and memory_data['playbook_entries']:
-            for entry in memory_data['playbook_entries'][-10:]:
-                if isinstance(entry, dict) and 'value' in entry:
-                    self.memory_performance['plays']['hits'] += 1
-                    self.memory_performance['plays']['profit'] += entry.get('value', 0)
-                    self.memory_performance['plays']['recent_hits'].append(time.time())
+        pre_hits = {
+            "trades": self.memory_performance['trades']['hits'],
+            "mistakes": self.memory_performance['mistakes']['hits'],
+            "plays": self.memory_performance['plays']['hits'],
+        }
+
+        trades_seq = memory_data.get('trades')
+        for trade in self._last_n_items(trades_seq, 10):
+            if isinstance(trade, dict) and 'pnl' in trade:
+                self.memory_performance['trades']['hits'] += 1
+                self.memory_performance['trades']['profit'] += trade['pnl']
+                self.memory_performance['trades']['recent_hits'].append(time.time())
+
+        mistakes_seq = memory_data.get('mistakes')
+        for mistake in self._last_n_items(mistakes_seq, 10):
+            if isinstance(mistake, dict) and 'cost' in mistake:
+                self.memory_performance['mistakes']['hits'] += 1
+                self.memory_performance['mistakes']['profit'] -= mistake.get('cost', 0)
+                self.memory_performance['mistakes']['recent_hits'].append(time.time())
+
+        entries_seq = memory_data.get('playbook_entries')
+        for entry in self._last_n_items(entries_seq, 10):
+            if isinstance(entry, dict) and 'value' in entry:
+                self.memory_performance['plays']['hits'] += 1
+                self.memory_performance['plays']['profit'] += entry.get('value', 0)
+                self.memory_performance['plays']['recent_hits'].append(time.time())
+
+        # mark "seen data" once any counter moves
+        post_hits = {
+            "trades": self.memory_performance['trades']['hits'],
+            "mistakes": self.memory_performance['mistakes']['hits'],
+            "plays": self.memory_performance['plays']['hits'],
+        }
+        if any(post_hits[k] > pre_hits[k] for k in post_hits):
+            self._has_seen_data = True
+
+
+    def _last_n_items(self, data: Any, n: int = 10) -> List[Any]:
+        """Return a list of the last n items from various container types safely.
+        Supports list/tuple/deque/np.ndarray/dict (values), generic iterables, and single dicts.
+        """
+        try:
+            if not data:
+                return []
+            # Single record case
+            if isinstance(data, dict):
+                # If it's a mapping of records, use values; if it's a single record, return [data]
+                # Heuristic: dict of records usually has multiple entries; treat as values unless it looks like a record
+                if any(k in data for k in ("pnl", "cost", "value")):
+                    return [data]
+                return list(data.values())[-n:]
+            # Deque
+            if isinstance(data, deque):
+                return list(data)[-n:]
+            # Numpy array
+            if isinstance(data, np.ndarray):
+                return data.tolist()[-n:]
+            # List or tuple
+            if isinstance(data, (list, tuple)):
+                return list(data[-n:])
+            # Generic iterable fallback
+            try:
+                return list(data)[-n:]
+            except Exception:
+                return []
+        except Exception:
+            return []
 
     def _calculate_utilization_metrics(self) -> Dict[str, Any]:
         """Calculate memory utilization metrics"""
@@ -664,12 +745,27 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
     async def _handle_no_data_fallback(self) -> Dict[str, Any]:
         """Handle case when no memory data is available"""
         self.logger.warning("No memory data available - using cached performance metrics")
-        
+        thesis = "No new memory data available - returning current allocation and metrics"
         return {
             'memory_performance': self.memory_performance,
             'utilization_metrics': {},
             'optimality_score': 0.5,
-            'fallback_reason': 'no_memory_data'
+            'fallback_reason': 'no_memory_data',
+            'memory_allocation': {mem_type: perf['size'] for mem_type, perf in self.memory_performance.items()},
+            'memory_efficiency': {},
+            'budget_optimization': {
+                'optimality_score': 0.5,
+                'total_profit': self.total_profit,
+                'optimization_count': self.optimization_count,
+                'last_optimization': time.time()
+            },
+            'allocation_strategy': {
+                'allocation_method': 'efficiency_based',
+                'rebalance_frequency': self.genome["optimization_interval"],
+                'efficiency_weight': self.genome["efficiency_weight"],
+                'recent_changes': len(self._allocation_changes)
+            },
+            '_thesis': thesis
         }
 
     async def _handle_memory_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
@@ -706,6 +802,7 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
 
     def _create_fallback_response(self, reason: str) -> Dict[str, Any]:
         """Create fallback response for error cases"""
+        thesis = f"Memory optimization fallback: {reason}"
         return {
             'memory_performance': self.memory_performance,
             'utilization_metrics': {},
@@ -713,7 +810,22 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
             'total_profit': self.total_profit,
             'optimization_count': self.optimization_count,
             'fallback_reason': reason,
-            'circuit_breaker_state': self.circuit_breaker['state']
+            'circuit_breaker_state': self.circuit_breaker['state'],
+            'memory_allocation': {mem_type: perf['size'] for mem_type, perf in self.memory_performance.items()},
+            'memory_efficiency': {},
+            'budget_optimization': {
+                'optimality_score': 0.5,
+                'total_profit': self.total_profit,
+                'optimization_count': self.optimization_count,
+                'last_optimization': time.time()
+            },
+            'allocation_strategy': {
+                'allocation_method': 'efficiency_based',
+                'rebalance_frequency': self.genome["optimization_interval"],
+                'efficiency_weight': self.genome["efficiency_weight"],
+                'recent_changes': len(self._allocation_changes)
+            },
+            '_thesis': thesis
         }
 
     def _update_memory_health(self):
@@ -743,34 +855,66 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
             self._health_status = 'warning'
 
     def _check_allocation_efficiency(self):
-        """Check allocation efficiency and trigger alerts if needed"""
+        """Check allocation efficiency and trigger alerts if needed (rate-limited)."""
         try:
+            # don't warn until we've actually seen memory data arrive once
+            if not self._has_seen_data:
+                if not self._no_data_notice_emitted:
+                    self.logger.info("MemoryBudgetOptimizer: waiting for data before emitting utilization warnings")
+                    self._no_data_notice_emitted = True
+                return
+
+            now = time.time()
+
             for mem_type, perf in self.memory_performance.items():
-                utilization = perf['hits'] / max(perf['size'], 1)
-                
-                if utilization < 0.1:  # Very low utilization
-                    self.logger.warning(
-                        format_operator_message(
-                            "[WARN]", "LOW_MEMORY_UTILIZATION",
-                            memory_type=mem_type,
-                            utilization=f"{utilization:.1%}",
-                            suggestion="Consider reducing allocation size",
-                            context="efficiency_monitoring"
+                size = max(perf['size'], 1)
+                utilization = perf['hits'] / size
+
+                # determine current state
+                if utilization < 0.10:
+                    state = "low"
+                elif utilization > 0.95:
+                    state = "high"
+                else:
+                    state = "ok"
+
+                # only warn on state change or if min interval elapsed
+                should_emit = False
+                if self._warn_on_state_change_only:
+                    if state != self._util_state.get(mem_type, "unknown"):
+                        should_emit = True
+                if not should_emit and (now - self._last_warn[mem_type] >= self._warn_min_interval):
+                    should_emit = True
+
+                if should_emit and state in ("low", "high"):
+                    if state == "low":
+                        self.logger.warning(
+                            format_operator_message(
+                                "[WARN]", "LOW_MEMORY_UTILIZATION",
+                                memory_type=mem_type,
+                                utilization=f"{utilization:.1%}",
+                                suggestion="Consider reducing allocation size",
+                                context="efficiency_monitoring"
+                            )
                         )
-                    )
-                elif utilization > 0.95:  # Very high utilization
-                    self.logger.warning(
-                        format_operator_message(
-                            "[WARN]", "HIGH_MEMORY_UTILIZATION",
-                            memory_type=mem_type,
-                            utilization=f"{utilization:.1%}",
-                            suggestion="Consider increasing allocation size",
-                            context="efficiency_monitoring"
+                    else:
+                        self.logger.warning(
+                            format_operator_message(
+                                "[WARN]", "HIGH_MEMORY_UTILIZATION",
+                                memory_type=mem_type,
+                                utilization=f"{utilization:.1%}",
+                                suggestion="Consider increasing allocation size",
+                                context="efficiency_monitoring"
+                            )
                         )
-                    )
-            
+                    self._last_warn[mem_type] = now
+
+                # update state snapshot
+                self._util_state[mem_type] = state
+
         except Exception as e:
             self.logger.error(f"Efficiency check failed: {e}")
+
 
     def _record_success(self, processing_time: float):
         """Record successful processing"""
@@ -844,6 +988,8 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
     def stop_monitoring(self):
         """Stop background monitoring"""
         self._monitoring_active = False
+        self.__class__._monitoring_active_global = False
+
 
     # Legacy compatibility methods
     async def propose_action(self, **inputs) -> Dict[str, Any]:

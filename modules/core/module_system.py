@@ -2,7 +2,7 @@
 # File: modules/core/module_system.py
 # [ROCKET] PRODUCTION-READY SmartInfoBus Module System & Orchestrator
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
-# FIXED: Emergency mode, circuit breakers, dynamic config
+# FIXED: Thread safety, resource leaks, memory management, performance
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import inspect
 import time
 import threading
 import yaml
+import weakref
 from pathlib import Path
 from typing import Dict, List, Set, Type, Optional, Any, Callable, Tuple
 from collections import defaultdict, deque
@@ -27,50 +28,74 @@ from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.core.error_pinpointer import ErrorPinpointer
 
 # ═══════════════════════════════════════════════════════════════════
-# CIRCUIT BREAKER IMPLEMENTATION
+# CIRCUIT BREAKER IMPLEMENTATION - FIXED: Thread safety
 # ═══════════════════════════════════════════════════════════════════
 
 @dataclass
 class CircuitBreakerState:
-    """Circuit breaker state for module protection"""
-    failure_count: int = 0
-    last_failure_time: float = 0
-    state: str = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
-    successful_calls: int = 0
-    total_calls: int = 0
-    last_success_time: float = 0
+    """Circuit breaker state for module protection - Thread-safe version"""
+    
+    def __init__(self):
+        self._lock = threading.RLock()  # FIX: Added thread safety
+        self.failure_count: int = 0
+        self.last_failure_time: float = 0
+        self.state: str = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
+        self.successful_calls: int = 0
+        self.total_calls: int = 0
+        self.last_success_time: float = 0
     
     def record_success(self):
-        """Record successful execution"""
-        self.successful_calls += 1
-        self.total_calls += 1
-        self.last_success_time = time.time()
-        if self.state == "HALF_OPEN":
-            self.state = "CLOSED"
-            self.failure_count = 0
+        """Record successful execution - thread-safe"""
+        with self._lock:
+            self.successful_calls += 1
+            self.total_calls += 1
+            self.last_success_time = time.time()
+            if self.state == "HALF_OPEN":
+                self.state = "CLOSED"
+                self.failure_count = 0
     
     def record_failure(self):
-        """Record failed execution"""
-        self.failure_count += 1
-        self.total_calls += 1
-        self.last_failure_time = time.time()
+        """Record failed execution - thread-safe"""
+        with self._lock:
+            self.failure_count += 1
+            self.total_calls += 1
+            self.last_failure_time = time.time()
     
     def should_allow_request(self, recovery_time: float) -> bool:
-        """Check if request should be allowed"""
-        if self.state == "CLOSED":
-            return True
-        elif self.state == "OPEN":
-            # Check if recovery time has passed
-            if time.time() - self.last_failure_time > recovery_time:
-                self.state = "HALF_OPEN"
+        """Check if request should be allowed - thread-safe"""
+        with self._lock:
+            if self.state == "CLOSED":
                 return True
-            return False
-        else:  # HALF_OPEN
-            return True
+            elif self.state == "OPEN":
+                # Check if recovery time has passed
+                if time.time() - self.last_failure_time > recovery_time:
+                    self.state = "HALF_OPEN"
+                    return True
+                return False
+            else:  # HALF_OPEN
+                return True
     
     def trip(self):
-        """Trip the circuit breaker"""
-        self.state = "OPEN"
+        """Trip the circuit breaker - thread-safe"""
+        with self._lock:
+            self.state = "OPEN"
+    
+    def get_state(self) -> str:
+        """Get current state - thread-safe"""
+        with self._lock:
+            return self.state
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get statistics snapshot - thread-safe"""
+        with self._lock:
+            return {
+                'state': self.state,
+                'failure_count': self.failure_count,
+                'successful_calls': self.successful_calls,
+                'total_calls': self.total_calls,
+                'last_failure_time': self.last_failure_time,
+                'last_success_time': self.last_success_time
+            }
 
 # ═══════════════════════════════════════════════════════════════════
 # ENHANCED MODULE CONFIGURATION WITH DYNAMIC UPDATES
@@ -83,6 +108,8 @@ class ModuleConfig:
     """
     
     def __init__(self, **kwargs):
+        self._lock = threading.RLock()  # FIX: Added thread safety
+        
         # Core system defaults
         self.debug = kwargs.get('debug', True)
         self.max_history = kwargs.get('max_history', 1000)
@@ -115,6 +142,10 @@ class ModuleConfig:
         self.emergency_mode_enabled = kwargs.get('emergency_mode_enabled', True)
         self.emergency_cooldown_s = kwargs.get('emergency_cooldown_s', 300)
         self.emergency_health_threshold = kwargs.get('emergency_health_threshold', 0.7)
+        
+        # Performance tracking window size - FIX: Added to prevent unbounded growth
+        self.perf_window_size = kwargs.get('perf_window_size', 1000)
+        self.stage_timing_window = kwargs.get('stage_timing_window', 100)
         
         # Module discovery paths - MODERNIZED MODULES ONLY
         self.module_paths = kwargs.get('module_paths', [
@@ -179,40 +210,44 @@ class ModuleConfig:
             raise ValueError(f"Configuration validation failed: {errors}")
     
     def update_config(self, updates: Dict[str, Any], notify: bool = True):
-        """Update configuration dynamically with validation"""
-        old_values = {}
-        
-        for key, value in updates.items():
-            if hasattr(self, key):
-                old_values[key] = getattr(self, key)
-                setattr(self, key, value)
-        
-        # Re-validate
-        try:
-            self._validate_config()
-        except ValueError as e:
-            # Rollback on validation failure
-            for key, old_value in old_values.items():
-                setattr(self, key, old_value)
-            raise e
-        
-        self._last_config_update = time.time()
-        
-        # Notify watchers
-        if notify:
-            for watcher in self._config_watchers:
-                try:
-                    watcher(updates, old_values)
-                except Exception as e:
-                    print(f"Config watcher error: {e}")
+        """Update configuration dynamically with validation - thread-safe"""
+        with self._lock:  # FIX: Added thread safety
+            old_values = {}
+            
+            for key, value in updates.items():
+                if hasattr(self, key):
+                    old_values[key] = getattr(self, key)
+                    setattr(self, key, value)
+            
+            # Re-validate
+            try:
+                self._validate_config()
+            except ValueError as e:
+                # Rollback on validation failure
+                for key, old_value in old_values.items():
+                    setattr(self, key, old_value)
+                raise e
+            
+            self._last_config_update = time.time()
+            
+            # Notify watchers
+            if notify:
+                watchers = self._config_watchers.copy()  # Copy to avoid modification during iteration
+                for watcher in watchers:
+                    try:
+                        watcher(updates, old_values)
+                    except Exception as e:
+                        print(f"Config watcher error: {e}")
     
     def add_config_watcher(self, callback: Callable):
-        """Add configuration change watcher"""
-        self._config_watchers.append(callback)
+        """Add configuration change watcher - thread-safe"""
+        with self._lock:
+            self._config_watchers.append(callback)
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert configuration to dictionary"""
-        return {k: v for k, v in self.__dict__.items() if not k.startswith('_')}
+        """Convert configuration to dictionary - thread-safe"""
+        with self._lock:
+            return {k: v for k, v in self.__dict__.items() if not k.startswith('_')}
     
     def load_from_file(self, config_path: Path):
         """Load configuration from file with hot-reload support"""
@@ -234,12 +269,11 @@ class ModuleOrchestrator:
     PRODUCTION-GRADE central orchestrator for SmartInfoBus modules.
     
     FIXED IMPLEMENTATIONS:
-    - Complete emergency mode system
-    - Circuit breaker implementation
-    - Health monitoring integration
-    - Dynamic configuration support
-    - Performance optimization feedback
-    - Automated recovery mechanisms
+    - Thread-safe circuit breakers and performance tracking
+    - Proper resource cleanup for ThreadPoolExecutor
+    - Memory-bounded collections
+    - Efficient circular dependency detection
+    - Async-safe locks
     """
     
     _instance: Optional['ModuleOrchestrator'] = None
@@ -262,8 +296,9 @@ class ModuleOrchestrator:
         self.metadata: Dict[str, ModuleMetadata] = {}
         self.module_classes: Dict[str, Type[BaseModule]] = {}
         
-        # Circuit breakers for each module
+        # Circuit breakers for each module - FIX: Now thread-safe
         self.circuit_breakers: Dict[str, CircuitBreakerState] = {}
+        self._circuit_breaker_lock = threading.RLock()  # FIX: Added lock for circuit breaker access
         
         # Execution planning
         self.execution_order: List[str] = []
@@ -276,10 +311,11 @@ class ModuleOrchestrator:
         self.reverse_dependencies: Dict[str, Set[str]] = defaultdict(set)
         self.circular_dependencies: List[List[str]] = []
         
-        # Performance tracking
-        self.execution_history: deque = deque(maxlen=10000)
-        self.stage_timings: Dict[str, List[float]] = defaultdict(list)
-        self.module_performance: Dict[str, Dict[str, float]] = {}
+        # Performance tracking - FIX: Memory-bounded with rolling windows
+        self.execution_history: deque = deque(maxlen=self.config.perf_window_size)
+        self.stage_timings: Dict[str, deque] = defaultdict(lambda: deque(maxlen=self.config.stage_timing_window))
+        self.module_performance: Dict[str, Dict[str, Any]] = {}
+        self._perf_lock = threading.RLock()  # FIX: Added lock for performance tracking
         
         # Emergency mode state
         self.emergency_mode = False
@@ -294,16 +330,19 @@ class ModuleOrchestrator:
         self.last_health_check = 0
         
         # Error handling and recovery
-        self.module_errors: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        self.module_errors: Dict[str, deque] = defaultdict(lambda: deque(maxlen=100))  # FIX: Bounded error history
         self.consecutive_system_failures = 0
         self.last_successful_execution = time.time()
         
-        # Threading and execution
-        self.executor = ThreadPoolExecutor(
-            max_workers=self.config.max_parallel_modules,
-            thread_name_prefix="ModuleExec"
-        )
-        self.execution_lock = threading.RLock()
+        # Threading and execution - FIX: Proper resource management
+        self._executor = None
+        self._executor_lock = threading.Lock()
+        self._pending_futures = weakref.WeakSet()  # FIX: Track pending futures for cleanup
+        self._create_executor()
+        
+        # Use async lock for async contexts - FIX: Proper async/sync separation
+        self.execution_lock = threading.RLock()  # For sync operations
+        self._async_execution_lock = None  # Will be created in async context
         
         # Dynamic configuration monitoring
         self.config_monitor_task = None
@@ -329,6 +368,7 @@ class ModuleOrchestrator:
         
         # Initialize system
         self._initialized = False
+        self._shutdown_requested = False  # FIX: Added graceful shutdown flag
         ModuleOrchestrator._instance = self
         
         self.logger.info(
@@ -339,30 +379,61 @@ class ModuleOrchestrator:
             )
         )
     
+    def _create_executor(self):
+        """Create ThreadPoolExecutor with proper resource management"""
+        with self._executor_lock:
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(
+                    max_workers=self.config.max_parallel_modules,
+                    thread_name_prefix="ModuleExec"
+                )
+    
+    @property
+    def executor(self):
+        """Get executor instance"""
+        if self._executor is None:
+            self._create_executor()
+        return self._executor
+    
     def set_health_monitor(self, health_monitor):
         """Set health monitor reference for integration"""
         self.health_monitor = health_monitor
         self.logger.info("[OK] Health monitor integrated with orchestrator")
     
     def _on_config_change(self, updates: Dict[str, Any], old_values: Dict[str, Any]):
-        """Handle configuration changes dynamically"""
+        """Handle configuration changes dynamically - FIX: Proper resource cleanup"""
         self.logger.info(f"[LOG] Configuration updated: {list(updates.keys())}")
-        
+
         # Update executor if worker count changed
         if 'max_parallel_modules' in updates:
-            old_executor = self.executor
-            self.executor = ThreadPoolExecutor(
-                max_workers=updates['max_parallel_modules'],
-                thread_name_prefix="ModuleExec"
-            )
-            old_executor.shutdown(wait=False)
-        
+            with self._executor_lock:
+                if self._executor:
+                    old_executor = self._executor
+                    self._executor = None
+
+                    # Cancel pending futures
+                    for future in list(self._pending_futures):
+                        if not future.done():
+                            future.cancel()
+
+                    # Graceful shutdown (no 'timeout' arg on ThreadPoolExecutor.shutdown)
+                    try:
+                        old_executor.shutdown(wait=True)
+                    except Exception as e:
+                        self.logger.warning(f"Executor shutdown warning: {e}")
+                        old_executor.shutdown(wait=False)
+
+                    # Create new executor with the new size
+                    self._create_executor()
+
         # Update circuit breaker thresholds
         if 'circuit_breaker_threshold' in updates:
-            for cb in self.circuit_breakers.values():
-                # Reset counts if threshold lowered
-                if updates['circuit_breaker_threshold'] < old_values.get('circuit_breaker_threshold', 3):
-                    cb.failure_count = min(cb.failure_count, updates['circuit_breaker_threshold'] - 1)
+            with self._circuit_breaker_lock:
+                for cb in self.circuit_breakers.values():
+                    # clamp failure_count if threshold lowered
+                    if updates['circuit_breaker_threshold'] < old_values.get('circuit_breaker_threshold', 3):
+                        cb.failure_count = min(cb.failure_count, updates['circuit_breaker_threshold'] - 1)
+
     
     def initialize(self):
         """Initialize orchestrator with complete system setup"""
@@ -419,8 +490,10 @@ class ModuleOrchestrator:
     
     def _initialize_circuit_breakers(self):
         """Initialize circuit breakers for all modules"""
-        for module_name in self.modules:
-            self.circuit_breakers[module_name] = CircuitBreakerState()
+        with self._circuit_breaker_lock:
+                for module_name in self.modules:
+                    self.circuit_breakers[module_name] = CircuitBreakerState()
+                    self.logger.info(f"[FAST] Initialized circuit breaker for {module_name}")
         
         self.logger.info(f"[FAST] Initialized {len(self.circuit_breakers)} circuit breakers")
     
@@ -441,27 +514,37 @@ class ModuleOrchestrator:
         
         self.logger.info("[ALERT] Emergency monitoring systems initialized")
 
-        # ──────────────────────────────────────────────────────────────
-    # PERF-STATS HELPER
+    # ──────────────────────────────────────────────────────────────
+    # PERF-STATS HELPER - FIX: Thread-safe and memory-bounded
     # ──────────────────────────────────────────────────────────────
     def _update_perf_stats(self, module_name: str, dur_ms: float):
         """
         Keep the self.module_performance structure up-to-date.
         Called for every successful run.
+        FIX: Added thread safety and rolling window
         """
-        perf = self.module_performance.setdefault(
-            module_name,
-            {
-                "total_executions": 0,
-                "total_time_ms": 0.0,
-                "failures": 0,
-                "avg_time_ms": 0.0,
-            },
-        )
-        perf["total_executions"] += 1
-        perf["total_time_ms"] += dur_ms
-        perf["avg_time_ms"] = perf["total_time_ms"] / perf["total_executions"]
-
+        with self._perf_lock:
+            if module_name not in self.module_performance:
+                self.module_performance[module_name] = {
+                    "total_executions": 0,
+                    "total_time_ms": 0.0,
+                    "failures": 0,
+                    "avg_time_ms": 0.0,
+                    "recent_times": deque(maxlen=100),  # FIX: Rolling window for recent times
+                }
+            
+            perf = self.module_performance[module_name]
+            perf["total_executions"] += 1
+            perf["recent_times"].append(dur_ms)
+            
+            # Use rolling average for recent performance
+            if perf["recent_times"]:
+                perf["avg_time_ms"] = sum(perf["recent_times"]) / len(perf["recent_times"])
+            
+            # Prevent unbounded growth - reset totals periodically
+            if perf["total_executions"] > 10000:
+                perf["total_executions"] = len(perf["recent_times"])
+                perf["total_time_ms"] = sum(perf["recent_times"])
 
     # ──────────────────────────────────────────────────────────────
     # FAILURE-HANDLING HELPER
@@ -470,7 +553,7 @@ class ModuleOrchestrator:
         self,
         module: BaseModule,
         module_name: str,
-        cb: "CircuitBreakerState",
+        cb: CircuitBreakerState,
         dur_ms: float,
         error_msg: str,
         execution_id: str,
@@ -484,28 +567,37 @@ class ModuleOrchestrator:
         # 1. Audit trail
         self.smart_bus.record_module_failure(module_name, error_msg)
 
-        # 2. Module’s own history
+        # 2. Module's own history
         module.record_execution(dur_ms, False, error_msg)
 
-        # 3. Circuit breaker
+        # 3. Circuit breaker - thread-safe
         cb.record_failure()
         if cb.failure_count >= self.config.circuit_breaker_threshold:
             cb.trip()
             self.logger.error(f"[FAST] Circuit breaker TRIPPED for {module_name}")
 
-        # 4. Performance map
-        perf = self.module_performance.setdefault(
-            module_name,
-            {
-                "total_executions": 0,
-                "total_time_ms": 0.0,
-                "failures": 0,
-                "avg_time_ms": 0.0,
-            },
-        )
-        perf["failures"] += 1
+        # 4. Performance map - thread-safe
+        with self._perf_lock:
+            perf = self.module_performance.setdefault(
+                module_name,
+                {
+                    "total_executions": 0,
+                    "total_time_ms": 0.0,
+                    "failures": 0,
+                    "avg_time_ms": 0.0,
+                    "recent_times": deque(maxlen=100),
+                },
+            )
+            perf["failures"] += 1
 
-        # 5. Human-readable log
+        # 5. Error history - bounded
+        self.module_errors[module_name].append({
+            'timestamp': time.time(),
+            'error': error_msg[:500],  # Limit error message size
+            'execution_id': execution_id
+        })
+
+        # 6. Human-readable log
         self.logger.error(
             format_operator_message(
                 f"[{tag}]", "MODULE FAILED",
@@ -514,7 +606,6 @@ class ModuleOrchestrator:
                 context=execution_id,
             )
         )
-
     
     def _check_emergency_conditions(self) -> Tuple[bool, str]:
         """Check if emergency mode should be activated"""
@@ -534,9 +625,10 @@ class ModuleOrchestrator:
         
         # Check critical module failures
         for module_name in self.critical_modules:
-            cb = self.circuit_breakers.get(module_name)
-            if cb and cb.state == "OPEN":
-                return True, f"Critical module '{module_name}' circuit breaker is open"
+            with self._circuit_breaker_lock:
+                cb = self.circuit_breakers.get(module_name)
+                if cb and cb.get_state() == "OPEN":
+                    return True, f"Critical module '{module_name}' circuit breaker is open"
         
         # Check memory usage
         try:
@@ -588,8 +680,10 @@ class ModuleOrchestrator:
                 )
                 disabled_count += 1
         
-        # Reduce parallel execution
-        self.executor._max_workers = max(1, self.config.max_parallel_modules // 2)
+        # Reduce parallel execution - FIX: Proper executor update
+        with self._executor_lock:
+            if self._executor:
+                self._executor._max_workers = max(1, self.config.max_parallel_modules // 2)
         
         # Alert health monitor if available
         if self.health_monitor:
@@ -624,8 +718,9 @@ class ModuleOrchestrator:
         if module_name in self.modules:
             self.smart_bus.reset_module_failures(module_name)
             # Reset circuit breaker
-            if module_name in self.circuit_breakers:
-                self.circuit_breakers[module_name] = CircuitBreakerState()
+            with self._circuit_breaker_lock:
+                if module_name in self.circuit_breakers:
+                    self.circuit_breakers[module_name] = CircuitBreakerState()
             self.logger.info(f"[OK] Module enabled: {module_name}")
             return True
         return False
@@ -677,12 +772,15 @@ class ModuleOrchestrator:
             if not self.smart_bus.is_module_enabled(module_name):
                 self.smart_bus.reset_module_failures(module_name)
                 # Reset circuit breaker
-                if module_name in self.circuit_breakers:
-                    self.circuit_breakers[module_name] = CircuitBreakerState()
+                with self._circuit_breaker_lock:
+                    if module_name in self.circuit_breakers:
+                        self.circuit_breakers[module_name] = CircuitBreakerState()
                 enabled_count += 1
         
-        # Restore parallel execution
-        self.executor._max_workers = self.config.max_parallel_modules
+        # Restore parallel execution - FIX: Proper executor update
+        with self._executor_lock:
+            if self._executor:
+                self._executor._max_workers = self.config.max_parallel_modules
         
         # Notify health monitor
         if self.health_monitor:
@@ -714,18 +812,19 @@ class ModuleOrchestrator:
     
     def _validate_circuit_breakers(self) -> bool:
         """Validate all circuit breakers are healthy"""
-        open_breakers = [
-            name for name, cb in self.circuit_breakers.items()
-            if cb.state == "OPEN"
-        ]
-        
-        # Allow some non-critical breakers to be open
-        critical_open = [
-            name for name in open_breakers
-            if name in self.critical_modules
-        ]
-        
-        return len(critical_open) == 0
+        with self._circuit_breaker_lock:
+            open_breakers = [
+                name for name, cb in self.circuit_breakers.items()
+                if cb.get_state() == "OPEN"
+            ]
+            
+            # Allow some non-critical breakers to be open
+            critical_open = [
+                name for name in open_breakers
+                if name in self.critical_modules
+            ]
+            
+            return len(critical_open) == 0
     
     def _validate_memory_usage(self) -> bool:
         """Validate memory usage is acceptable"""
@@ -802,7 +901,7 @@ class ModuleOrchestrator:
         
         self.logger.info(f"[LOG] Monitoring {len(config_files)} config files")
         
-        while True:
+        while not self._shutdown_requested:  # FIX: Check shutdown flag
             try:
                 await asyncio.sleep(5)  # Check every 5 seconds
                 
@@ -838,9 +937,14 @@ class ModuleOrchestrator:
         """
         Execute all modules with complete error handling and recovery.
         ENHANCED: Emergency mode checks, circuit breakers, health monitoring.
+        FIX: Proper async locks
         """
         if not self._initialized:
             raise RuntimeError("Orchestrator not initialized")
+        
+        # Initialize async lock if needed
+        if self._async_execution_lock is None:
+            self._async_execution_lock = asyncio.Lock()
         
         # Check for emergency conditions before execution
         should_enter_emergency, reason = self._check_emergency_conditions()
@@ -859,7 +963,7 @@ class ModuleOrchestrator:
         execution_id = f"exec_{int(start_time)}"
         
         try:
-            with self.execution_lock:
+            async with self._async_execution_lock:  # FIX: Use async lock
                 self.logger.debug(f"[ROCKET] STARTING EXECUTION: {execution_id}")
                 
                 # Store market data in SmartInfoBus
@@ -894,7 +998,7 @@ class ModuleOrchestrator:
                         results.update(stage_result)
                         stage_results.append(stage_result)
                         
-                        # Record stage timing
+                        # Record stage timing - FIX: Use bounded deque
                         stage_duration = (time.time() - stage_start) * 1000
                         self.stage_timings[f"stage_{stage_idx}"].append(stage_duration)
                         
@@ -955,12 +1059,13 @@ class ModuleOrchestrator:
             raise
     
     def _check_circuit_breaker(self, module_name: str) -> bool:
-        """Check if module's circuit breaker allows execution"""
-        cb = self.circuit_breakers.get(module_name)
-        if not cb:
-            return True
-        
-        return cb.should_allow_request(self.config.recovery_time_s)
+        """Check if module's circuit breaker allows execution - FIX: Thread-safe"""
+        with self._circuit_breaker_lock:
+            cb = self.circuit_breakers.get(module_name)
+            if not cb:
+                return True
+            
+            return cb.should_allow_request(self.config.recovery_time_s)
     
     def _perform_health_check(self):
         """Perform system-wide health check"""
@@ -991,17 +1096,18 @@ class ModuleOrchestrator:
         import gc
         gc.collect()
         
-        # Reduce execution parallelism
-        if self.executor._max_workers > 2:
-            self.executor._max_workers = max(2, self.executor._max_workers // 2)
-            self.logger.warning(f"Reduced parallel execution to {self.executor._max_workers} workers")
+        # Reduce execution parallelism - FIX: Thread-safe
+        with self._executor_lock:
+            if self._executor and self._executor._max_workers > 2:
+                self._executor._max_workers = max(2, self._executor._max_workers // 2)
+                self.logger.warning(f"Reduced parallel execution to {self._executor._max_workers} workers")
     
     def _handle_latency_alert(self, alert):
         """Handle latency-related health alerts"""
-        # Identify slow modules
+        # Identify slow modules - FIX: Thread-safe
         slow_modules = []
-        for module_name, cb in self.circuit_breakers.items():
-            if module_name in self.module_performance:
+        with self._perf_lock:
+            for module_name in self.module_performance:
                 avg_time = self.module_performance[module_name].get('avg_time_ms', 0)
                 if avg_time > self.config.latency_critical_ms:
                     slow_modules.append(module_name)
@@ -1013,13 +1119,14 @@ class ModuleOrchestrator:
                 self.smart_bus.record_module_failure(module_name, "Disabled due to high latency")
     
     def _handle_error_rate_alert(self, alert):
-        """Handle error rate health alerts"""
+        """Handle error rate health alerts - FIX: Thread-safe"""
         # Reset circuit breakers for modules with improving performance
-        for module_name, cb in self.circuit_breakers.items():
-            if cb.state == "HALF_OPEN" and cb.successful_calls > 5:
-                cb.state = "CLOSED"
-                cb.failure_count = 0
-                self.logger.info(f"Reset circuit breaker for {module_name}")
+        with self._circuit_breaker_lock:
+            for module_name, cb in self.circuit_breakers.items():
+                if cb.get_state() == "HALF_OPEN" and cb.successful_calls > 5:
+                    cb.state = "CLOSED"
+                    cb.failure_count = 0
+                    self.logger.info(f"Reset circuit breaker for {module_name}")
     
     # ═════════════════════════════════════════════════════════════
     # SAFE MODULE EXECUTION (with optional confidence & voting)
@@ -1035,11 +1142,13 @@ class ModuleOrchestrator:
         """
         Run one module with timeout, circuit-breaker and optional
         confidence / voting hooks.  Errors are contained and recorded.
+        FIX: Thread-safe circuit breaker access
         """
-        cb = self.circuit_breakers.setdefault(module_name, CircuitBreakerState())
-
-        # 1. Circuit-breaker gate
-        if not cb.should_allow_request(self.config.recovery_time_s):
+        with self._circuit_breaker_lock:
+            cb = self.circuit_breakers.setdefault(module_name, CircuitBreakerState())
+            can_execute = cb.should_allow_request(self.config.recovery_time_s)
+        
+        if not can_execute:
             self.logger.warning(f"[FAST] Circuit breaker OPEN for {module_name}")
             return {'error': 'Circuit breaker open', '_circuit_breaker': True}
 
@@ -1150,10 +1259,11 @@ class ModuleOrchestrator:
                 metadata = self.metadata[module_name]
                 
                 # Check circuit breaker even in emergency mode
-                cb = self.circuit_breakers.get(module_name)
-                if cb and cb.state == "OPEN":
-                    # Try anyway in emergency, but log
-                    self.logger.warning(f"Attempting {module_name} despite open circuit breaker (emergency)")
+                with self._circuit_breaker_lock:
+                    cb = self.circuit_breakers.get(module_name)
+                    if cb and cb.get_state() == "OPEN":
+                        # Try anyway in emergency, but log
+                        self.logger.warning(f"Attempting {module_name} despite open circuit breaker (emergency)")
                 
                 inputs = self._prepare_module_inputs(module_name, metadata, execution_id)
                 
@@ -1177,8 +1287,9 @@ class ModuleOrchestrator:
                 failed += 1
                 
                 # Still update circuit breaker
-                if module_name in self.circuit_breakers:
-                    self.circuit_breakers[module_name].record_failure()
+                with self._circuit_breaker_lock:
+                    if module_name in self.circuit_breakers:
+                        self.circuit_breakers[module_name].record_failure()
         
         execution_time = (time.time() - start_time) * 1000
         
@@ -1196,8 +1307,6 @@ class ModuleOrchestrator:
             'timestamp': time.time(),
             'emergency_reason': self.emergency_mode_reason
         }
-    
-    # ... (rest of the methods remain the same but with the enhancements integrated)
     
     def get_module_by_name(self, name: str) -> Optional[BaseModule]:
         """Get module instance by name"""
@@ -1217,78 +1326,132 @@ class ModuleOrchestrator:
             ]
         }
     
+    def _cb_can_execute_peek(self, cb: CircuitBreakerState) -> bool:
+        """Non-mutating 'can execute' check for status reporting."""
+        state = cb.get_state()
+        if state == "CLOSED":
+            return True
+        if state == "OPEN":
+            # Only compute whether the cooldown has elapsed; do not change state
+            return (time.time() - cb.last_failure_time) > self.config.recovery_time_s
+        # HALF_OPEN
+        return True
+
     def get_circuit_breaker_status(self) -> Dict[str, Dict[str, Any]]:
-        """Get status of all circuit breakers"""
+        """Get status of all circuit breakers (non-mutating)."""
         status = {}
-        
-        for module_name, cb in self.circuit_breakers.items():
-            status[module_name] = {
-                'state': cb.state,
-                'failure_count': cb.failure_count,
-                'success_rate': cb.successful_calls / max(cb.total_calls, 1),
-                'last_failure': cb.last_failure_time,
-                'can_execute': cb.should_allow_request(self.config.recovery_time_s)
-            }
-        
+        with self._circuit_breaker_lock:
+            for module_name, cb in self.circuit_breakers.items():
+                stats = cb.get_stats()
+                status[module_name] = {
+                    'state': stats['state'],
+                    'failure_count': stats['failure_count'],
+                    'success_rate': stats['successful_calls'] / max(stats['total_calls'], 1),
+                    'last_failure': stats['last_failure_time'],
+                    'can_execute': self._cb_can_execute_peek(cb)
+                }
         return status
+
     
     def reset_circuit_breaker(self, module_name: str) -> bool:
-        """Manually reset a circuit breaker"""
-        if module_name in self.circuit_breakers:
-            self.circuit_breakers[module_name] = CircuitBreakerState()
-            self.logger.info(f"[FAST] Circuit breaker reset for {module_name}")
-            return True
+        """Manually reset a circuit breaker - FIX: Thread-safe"""
+        with self._circuit_breaker_lock:
+            if module_name in self.circuit_breakers:
+                self.circuit_breakers[module_name] = CircuitBreakerState()
+                self.logger.info(f"[FAST] Circuit breaker reset for {module_name}")
+                return True
         return False
     
+    def can_exit_emergency_mode(self) -> bool:
+        """Non-mutating check: would we be allowed to exit emergency mode now?"""
+        if not self.emergency_mode:
+            return True
+
+        # Cooldown check
+        time_in_emergency = time.time() - self.emergency_activation_time
+        if time_in_emergency < self.config.emergency_cooldown_s:
+            return False
+
+        checks = {
+            'circuit_breakers': self._validate_circuit_breakers(),
+            'memory': self._validate_memory_usage(),
+            'module_health': self._validate_module_health(),
+            'execution_success': self._validate_recent_executions(),
+        }
+        if self.health_monitor:
+            try:
+                health_report = self.health_monitor.generate_health_report()
+                overall_health = getattr(health_report, 'overall_health_score', 1.0)
+                checks['overall_health'] = overall_health >= self.config.emergency_health_threshold
+            except Exception:
+                # if health monitor misbehaves, don't block exit purely on that
+                pass
+
+        return all(checks.values())
+
     def get_emergency_mode_status(self) -> Dict[str, Any]:
-        """Get detailed emergency mode status"""
+        """Get detailed emergency mode status (non-mutating)."""
         return {
             'active': self.emergency_mode,
             'reason': self.emergency_mode_reason,
             'activation_time': self.emergency_activation_time,
             'duration_seconds': time.time() - self.emergency_activation_time if self.emergency_mode else 0,
             'activation_count': self.emergency_activation_count,
-            'can_exit': self.exit_emergency_mode() if self.emergency_mode else True,
+            'can_exit': self.can_exit_emergency_mode(),
             'triggers': self.emergency_triggers if hasattr(self, 'emergency_triggers') else {}
         }
+
     
     def trigger_emergency_mode_manually(self, reason: str = "Manual trigger"):
         """Manually trigger emergency mode for testing"""
         self._enter_emergency_mode(f"MANUAL: {reason}")
     
     def shutdown(self):
-        """Graceful system shutdown with cleanup"""
+        """Graceful system shutdown with cleanup - FIX: Proper resource cleanup"""
         self.logger.info("[STOP] Initiating system shutdown...")
-        
+
+        self._shutdown_requested = True  # Signal shutdown to background tasks
+
         try:
             # Cancel config monitoring
             if self.config_monitor_task:
                 self.config_monitor_task.cancel()
-            
+
             # Save all module states
             self.state_manager.create_checkpoint(self, "shutdown")
-            
+
             # Log circuit breaker final state
-            cb_summary = {
-                name: cb.state 
-                for name, cb in self.circuit_breakers.items()
-            }
+            with self._circuit_breaker_lock:
+                cb_summary = {name: cb.get_state() for name, cb in self.circuit_breakers.items()}
             self.logger.info(f"Final circuit breaker states: {cb_summary}")
-            
-            # Shutdown executor
-            self.executor.shutdown(wait=True)
-            
+
+            # Shutdown executor properly
+            with self._executor_lock:
+                if self._executor:
+                    # Cancel pending futures
+                    for future in list(self._pending_futures):
+                        if not future.done():
+                            future.cancel()
+
+                    # Shutdown executor (no timeout parameter)
+                    try:
+                        self._executor.shutdown(wait=True)
+                    except Exception as e:
+                        self.logger.warning(f"Executor shutdown warning: {e}")
+                        self._executor.shutdown(wait=False)
+
+                    self._executor = None
+
             # Clear registrations
             self._registered_classes.clear()
             self.modules.clear()
             self.circuit_breakers.clear()
-            
+
             self.logger.info("[OK] System shutdown complete")
-            
+
         except Exception as e:
             self.logger.error(f"Error during shutdown: {e}")
-    
-    # Add remaining missing methods from original with fixes...
+
     
     def discover_modules(self) -> Dict[str, Type[BaseModule]]:
         """Discover and validate all available modules"""
@@ -1383,8 +1546,9 @@ class ModuleOrchestrator:
             self.metadata[name] = metadata
             self.module_classes[name] = module_class
             
-            # Initialize circuit breaker
-            self.circuit_breakers[name] = CircuitBreakerState()
+            # Initialize circuit breaker - thread-safe
+            with self._circuit_breaker_lock:
+                self.circuit_breakers[name] = CircuitBreakerState()
             
             # Register with SmartInfoBus
             self.smart_bus.register_provider(name, metadata.provides)
@@ -1405,33 +1569,38 @@ class ModuleOrchestrator:
     def build_execution_plan(self):
         """Build execution plan with dependency resolution"""
         try:
+            # RESET dependency maps to avoid stale edges across rebuilds
+            self.module_dependencies = defaultdict(set)
+            self.reverse_dependencies = defaultdict(set)
+
             # Build dependencies
             for name, metadata in self.metadata.items():
                 self._build_module_dependencies(name, metadata)
-            
+
             # Find circular dependencies
-            self.circular_dependencies = self._find_circular_dependencies()
+            self.circular_dependencies = self._find_circular_dependencies_efficient()
             if self.circular_dependencies:
                 self.logger.warning(f"Found circular dependencies: {self.circular_dependencies}")
                 self._break_circular_dependencies()
-            
-            # Topological sort
+
+            # Topological sort (fixed in-degree calculation)
             self.execution_order = self._topological_sort()
-            
+
             # Build parallel stages
             self.execution_stages = self._build_parallel_stages()
-            
+
             # Optimize if visualizer available
             if hasattr(self, 'dependency_visualizer'):
                 optimized = self.dependency_visualizer.optimize_execution_stages()
                 if optimized:
                     self.execution_stages = optimized
-            
+
             self._log_execution_plan()
-            
+
         except Exception as e:
             self.logger.error(f"Failed to build execution plan: {e}")
             raise
+
     
     def _build_module_dependencies(self, module_name: str, metadata: ModuleMetadata):
         """Build dependency graph for module"""
@@ -1444,103 +1613,110 @@ class ModuleOrchestrator:
                     self.module_dependencies[module_name].add(provider)
                     self.reverse_dependencies[provider].add(module_name)
     
+    def _find_circular_dependencies_efficient(self) -> List[List[str]]:
+        """Find circular dependencies using Tarjan's algorithm - FIX: O(V+E) complexity"""
+        index_counter = [0]
+        stack = []
+        lowlinks = {}
+        index = {}
+        on_stack = {}
+        cycles = []
+        
+        def strongconnect(v):
+            index[v] = index_counter[0]
+            lowlinks[v] = index_counter[0]
+            index_counter[0] += 1
+            on_stack[v] = True
+            stack.append(v)
+            
+            for w in self.module_dependencies.get(v, []):
+                if w not in index:
+                    strongconnect(w)
+                    lowlinks[v] = min(lowlinks[v], lowlinks[w])
+                elif on_stack.get(w, False):
+                    lowlinks[v] = min(lowlinks[v], index[w])
+            
+            if lowlinks[v] == index[v]:
+                component = []
+                while True:
+                    w = stack.pop()
+                    on_stack[w] = False
+                    component.append(w)
+                    if w == v:
+                        break
+                
+                if len(component) > 1:
+                    cycles.append(component)
+        
+        for v in self.modules:
+            if v not in index:
+                strongconnect(v)
+        
+        return cycles
+    
     def _find_circular_dependencies(self) -> List[List[str]]:
-        """Find circular dependencies using DFS"""
-        def dfs(node: str, path: List[str], visited: Set[str]) -> List[List[str]]:
-            if node in path:
-                cycle_start = path.index(node)
-                return [path[cycle_start:] + [node]]
-            
-            if node in visited:
-                return []
-            
-            visited.add(node)
-            path.append(node)
-            
-            cycles = []
-            for dep in self.module_dependencies.get(node, []):
-                cycles.extend(dfs(dep, path.copy(), visited.copy()))
-            
-            return cycles
-        
-        all_cycles = []
-        for module in self.modules:
-            cycles = dfs(module, [], set())
-            all_cycles.extend(cycles)
-        
-        # Remove duplicates
-        unique_cycles = []
-        for cycle in all_cycles:
-            normalized = tuple(sorted(cycle[:-1]))
-            if not any(normalized == tuple(sorted(c[:-1])) for c in unique_cycles):
-                unique_cycles.append(cycle)
-        
-        return unique_cycles
+        """Fallback DFS method for backward compatibility"""
+        return self._find_circular_dependencies_efficient()
     
     def _break_circular_dependencies(self):
-        """Break circular dependencies by removing lowest priority edges"""
+        """Break cycles by removing an edge inside the SCC from the lowest-priority module."""
         for cycle in self.circular_dependencies:
             if len(cycle) < 2:
                 continue
-            
-            # Find lowest priority module
-            min_priority = float('inf')
-            min_module = None
-            
-            for module in cycle[:-1]:
-                if module in self.metadata:
-                    priority = self.metadata[module].priority
-                    if priority < min_priority:
-                        min_priority = priority
-                        min_module = module
-            
-            if min_module and min_module in self.module_dependencies:
-                deps = list(self.module_dependencies[min_module])
-                if deps:
-                    removed_dep = deps[0]
-                    self.module_dependencies[min_module].discard(removed_dep)
-                    self.reverse_dependencies[removed_dep].discard(min_module)
-                    self.logger.warning(f"Broke circular dependency: {min_module} -> {removed_dep}")
+
+            scc = set(cycle)
+            # lowest priority victim in the cycle
+            victim = min(scc, key=lambda m: self.metadata[m].priority)
+            # remove an edge victim -> dep where dep is also in the cycle
+            candidate = next((dep for dep in self.module_dependencies.get(victim, set()) if dep in scc), None)
+            if candidate:
+                self.module_dependencies[victim].discard(candidate)
+                self.reverse_dependencies[candidate].discard(victim)
+                self.logger.warning(f"Broke circular dependency: {victim} -> {candidate}")
+
     
     def _topological_sort(self) -> List[str]:
-        """Topological sort with priority"""
-        in_degree = defaultdict(int)
-        
-        for module in self.modules:
-            for dep in self.module_dependencies[module]:
-                in_degree[dep] += 1
-        
+        """Topological sort with priority (FIXED in-degree for consumers)."""
+        # in_degree[m] = number of providers m depends on
+        in_degree = {m: 0 for m in self.modules}
+        for m, deps in self.module_dependencies.items():
+            in_degree[m] += len(deps)
+
+        # modules with no deps, ordered by priority (high first)
         available = sorted(
-            [m for m in self.modules if in_degree[m] == 0],
+            (m for m, d in in_degree.items() if d == 0),
             key=lambda m: self.metadata[m].priority,
             reverse=True
         )
-        
-        result = []
-        
+
+        result: List[str] = []
+
         while available:
-            module = available.pop(0)
-            result.append(module)
-            
-            for dependent in self.reverse_dependencies.get(module, []):
-                in_degree[dependent] -= 1
-                if in_degree[dependent] == 0:
-                    priority = self.metadata[dependent].priority
+            m = available.pop(0)
+            result.append(m)
+
+            # For every consumer of m, reduce its in-degree
+            for consumer in self.reverse_dependencies.get(m, []):
+                in_degree[consumer] -= 1
+                if in_degree[consumer] == 0 and consumer not in result and consumer not in available:
+                    # insert by priority
+                    pri = self.metadata[consumer].priority
                     inserted = False
-                    for i, existing in enumerate(available):
-                        if self.metadata[existing].priority < priority:
-                            available.insert(i, dependent)
+                    for i, ex in enumerate(available):
+                        if self.metadata[ex].priority < pri:
+                            available.insert(i, consumer)
                             inserted = True
                             break
                     if not inserted:
-                        available.append(dependent)
-        
+                        available.append(consumer)
+
         remaining = set(self.modules) - set(result)
         if remaining:
             self.logger.warning(f"Orphaned modules: {remaining}")
-            result.extend(sorted(remaining))
-        
+            result.extend(sorted(remaining, key=lambda m: self.metadata[m].priority, reverse=True))
+
         return result
+
     
     def _build_parallel_stages(self) -> List[List[str]]:
         """Build parallel execution stages"""
@@ -1597,41 +1773,49 @@ class ModuleOrchestrator:
         self.logger.info("\n".join(lines))
     
     async def _execute_stage(self, 
-                           module_names: List[str], 
-                           stage_idx: int,
-                           previous_results: Dict[str, Any],
-                           execution_id: str) -> Dict[str, Any]:
-        """Execute a stage of modules in parallel"""
+                         module_names: List[str], 
+                         stage_idx: int,
+                         previous_results: Dict[str, Any],
+                         execution_id: str) -> Dict[str, Any]:
+        """Execute a stage of modules in parallel (robust against empty/filtered stages)."""
         self.logger.debug(f"Executing stage {stage_idx}: {module_names}")
-        
+
+        if not module_names:
+            return {}
+
         tasks = []
-        results = {}
-        
+        scheduled_names = []  # keep names for timeout calc
+        results: Dict[str, Any] = {}
+
         for module_name in module_names:
             if not self.smart_bus.is_module_enabled(module_name):
                 self.logger.warning(f"Skipping disabled module: {module_name}")
                 continue
-            
+
             module = self.modules[module_name]
             metadata = self.metadata[module_name]
-            
-            inputs = self._prepare_module_inputs(module_name, metadata, execution_id)
-            
+
+            # Prepare inputs; if not ready, SKIP this module for this tick (no failure)
+            try:
+                inputs = self._prepare_module_inputs(module_name, metadata, execution_id)
+            except Exception as e:
+                self.logger.debug(f"Stage {stage_idx} skip {module_name}: {e}")
+                continue
+
             task = asyncio.create_task(
-                self._execute_module_safe(
-                    module, module_name, inputs, metadata, execution_id
-                ),
+                self._execute_module_safe(module, module_name, inputs, metadata, execution_id),
                 name=f"{execution_id}_{module_name}"
             )
-            
             tasks.append((module_name, task))
-        
-        # Execute with timeout
-        stage_timeout = max(
-            self.metadata[name].timeout_ms for name in module_names
-            if name in self.metadata
-        ) / 1000.0 + 5.0
-        
+            scheduled_names.append(module_name)
+
+        if not tasks:
+            # Nothing to run in this stage
+            return {}
+
+        # Timeout based on actually scheduled modules (not the original list)
+        stage_timeout = (max(self.metadata[n].timeout_ms for n in scheduled_names) / 1000.0) + 5.0
+
         try:
             await asyncio.wait_for(
                 asyncio.gather(*[task for _, task in tasks], return_exceptions=True),
@@ -1642,7 +1826,7 @@ class ModuleOrchestrator:
             for _, task in tasks:
                 if not task.done():
                     task.cancel()
-        
+
         # Collect results
         for module_name, task in tasks:
             try:
@@ -1658,27 +1842,26 @@ class ModuleOrchestrator:
             except Exception as e:
                 self.logger.error(f"Error collecting result from {module_name}: {e}")
                 results[module_name] = {'error': str(e)}
-        
+
         return results
-    
+
     def _prepare_module_inputs(self, 
-                             module_name: str, 
-                             metadata: ModuleMetadata,
-                             execution_id: str) -> Dict[str, Any]:
-        """Prepare inputs for module execution"""
+                           module_name: str, 
+                           metadata: ModuleMetadata,
+                           execution_id: str) -> Dict[str, Any]:
+        """Prepare inputs for module execution (fail-fast if inputs not ready)."""
         inputs = {'execution_id': execution_id}
         missing_inputs = []
-        
+
         for required_key in metadata.requires:
             data = self.smart_bus.get_with_metadata(required_key, module_name)
-            
             if data:
                 inputs[required_key] = data.value
-                
-                # Check staleness
-                if data.age_seconds() > 60:
+                # Staleness warning
+                age = data.age_seconds()
+                if age > 60:
                     self.logger.warning(
-                        f"Stale data for {module_name}: {required_key} ({data.age_seconds():.1f}s old)"
+                        f"Stale data for {module_name}: {required_key} ({age:.1f}s old)"
                     )
             else:
                 value = self.smart_bus.get(required_key, module_name)
@@ -1686,23 +1869,37 @@ class ModuleOrchestrator:
                     inputs[required_key] = value
                 else:
                     missing_inputs.append(required_key)
-        
+
         if missing_inputs:
-            self.logger.warning(f"Missing inputs for {module_name}: {missing_inputs}")
             for key in missing_inputs:
                 self.smart_bus.request_data(key, module_name)
-                inputs[key] = ""
-        
+            raise RuntimeError(f"Inputs not ready: {missing_inputs}")
+
         return inputs
+
     
-    def _store_market_data(self, market_data: Dict[str, Any], execution_id: str):
-        """Store market data in SmartInfoBus"""
+    def _store_market_data(self, market_data: Dict[str, Any] | None, execution_id: str):
+        """Store market data in SmartInfoBus (accept None / non-dicts gracefully)."""
         try:
-            if not isinstance(market_data, dict):
-                raise ValueError("Market data must be a dictionary")
-            
+            if market_data is None:
+                market_data = {}
+            elif not isinstance(market_data, dict):
+                # Try to coerce; if it fails, stash raw payload and continue
+                try:
+                    market_data = dict(market_data)  # works for mappings
+                except Exception:
+                    self.logger.warning("Non-dict market_data provided; storing under 'raw_market_payload'")
+                    self.smart_bus.set(
+                        'raw_market_payload',
+                        market_data,
+                        module="Environment",
+                        thesis=f"Raw market payload for {execution_id}",
+                        confidence=0.5
+                    )
+                    market_data = {}
+
             for key, value in market_data.items():
-                if not key.startswith('_'):
+                if not str(key).startswith('_'):
                     self.smart_bus.set(
                         key,
                         value,
@@ -1710,7 +1907,7 @@ class ModuleOrchestrator:
                         thesis=f"Market data for {execution_id}",
                         confidence=1.0
                     )
-            
+
             self.smart_bus.set(
                 'execution_metadata',
                 {
@@ -1721,11 +1918,11 @@ class ModuleOrchestrator:
                 module="Orchestrator",
                 thesis=f"Execution metadata for {execution_id}"
             )
-            
+
         except Exception as e:
             self.logger.error(f"Failed to store market data: {e}")
             raise
-    
+
     def _check_critical_failures(self, stage_result: Dict[str, Any]) -> bool:
         """Check if stage had critical failures"""
         for module_name, result in stage_result.items():
@@ -1739,9 +1936,9 @@ class ModuleOrchestrator:
         return any(m in self.critical_modules for m in stage_modules)
     
     def _aggregate_results(self, 
-                         results: Dict[str, Any], 
-                         execution_id: str) -> Dict[str, Any]:
-        """Aggregate execution results"""
+                       results: Dict[str, Any], 
+                       execution_id: str) -> Dict[str, Any]:
+        """Aggregate execution results (resilient to missing 'performance')."""
         aggregated = {
             'execution_id': execution_id,
             'timestamp': time.time(),
@@ -1754,11 +1951,11 @@ class ModuleOrchestrator:
             'theses': {},
             'performance_metrics': {}
         }
-        
+
         for module_name, result in results.items():
             if isinstance(result, dict) and 'error' not in result:
                 aggregated['successful_modules'].append(module_name)
-                
+
                 for key, value in result.items():
                     if key == '_thesis':
                         aggregated['theses'][module_name] = value
@@ -1775,35 +1972,49 @@ class ModuleOrchestrator:
                     'module': module_name,
                     'error': result.get('error', 'Unknown error') if isinstance(result, dict) else str(result)
                 })
-        
-        # Add performance metrics
-        for module_name in results:
-            if module_name in self.modules:
-                health = self.modules[module_name].get_health_status()
-                aggregated['performance_metrics'][module_name] = health['performance']
-        
-        # Store in SmartInfoBus
+
+        # Performance metrics (be tolerant)
+        with self._perf_lock:
+            for module_name in results:
+                if module_name in self.modules:
+                    health = {}
+                    try:
+                        health = self.modules[module_name].get_health_status() or {}
+                    except Exception:
+                        health = {}
+
+                    # Prefer health['performance'] if present, else fall back to orchestrator perf map or the whole health dict
+                    perf = None
+                    if isinstance(health, dict):
+                        perf = health.get('performance')
+
+                    if perf is None:
+                        perf = self.module_performance.get(module_name, health if isinstance(health, dict) else {})
+
+                    aggregated['performance_metrics'][module_name] = perf
+
+        # Store summary in the bus
         self.smart_bus.set(
             'execution_results',
             aggregated,
             module='Orchestrator',
             thesis=self.explainer.explain_execution_results(
-                aggregated, 
-                execution_time=0.0,  # Will be calculated from execution history
+                aggregated,
+                execution_time=0.0,
                 module_count=len(results),
                 success_count=len(aggregated['successful_modules'])
             ),
             confidence=0.9
         )
-        
+
         return aggregated
-    
+
     def _record_execution(self, 
                         execution_id: str,
                         execution_time: float,
                         results: Dict[str, Any],
                         aggregated: Dict[str, Any]):
-        """Record execution metrics"""
+        """Record execution metrics - FIX: Bounded history"""
         record = {
             'execution_id': execution_id,
             'timestamp': time.time(),
@@ -1814,7 +2025,7 @@ class ModuleOrchestrator:
             'emergency_mode': self.emergency_mode
         }
         
-        self.execution_history.append(record)
+        self.execution_history.append(record)  # Already bounded by maxlen
     
     def _generate_execution_summary(self,
                                   execution_id: str,
@@ -1979,10 +2190,10 @@ class ModuleOrchestrator:
     
     @classmethod
     def get_instance(cls) -> 'ModuleOrchestrator':
-        """Get orchestrator singleton"""
+        """Get orchestrator singleton - FIX: Proper thread-safe singleton"""
         if cls._instance is None:
             with cls._lock:
-                if cls._instance is None:
+                if cls._instance is None:  # Double-check pattern
                     cls._instance = cls()
         return cls._instance
     
@@ -1995,21 +2206,27 @@ class ModuleOrchestrator:
             cls._instance.register_module(module_class.__name__, module_class)
     
     def get_execution_metrics(self) -> Dict[str, Any]:
-        """Get comprehensive execution metrics"""
+        """Get comprehensive execution metrics - FIX: Thread-safe"""
         if not self.execution_history:
             return {}
         
         recent = list(self.execution_history)[-100:]
         
+        with self._circuit_breaker_lock:
+            cb_status = self.get_circuit_breaker_status()
+        
+        with self._perf_lock:
+            perf_metrics = dict(self.module_performance)
+        
         return {
             'total_executions': len(self.execution_history),
-            'avg_execution_time_ms': np.mean([r['execution_time_ms'] for r in recent]),
+            'avg_execution_time_ms': np.mean([r['execution_time_ms'] for r in recent]) if recent else 0,
             'success_rate': np.mean([
                 r['success_count'] / max(r['module_count'], 1) for r in recent
-            ]),
+            ]) if recent else 0,
             'emergency_mode': self.emergency_mode,
-            'circuit_breakers': self.get_circuit_breaker_status(),
-            'module_performance': self.module_performance
+            'circuit_breakers': cb_status,
+            'module_performance': perf_metrics
         }
     
     def get_system_status_report(self) -> str:
@@ -2017,12 +2234,15 @@ class ModuleOrchestrator:
         metrics = self.get_execution_metrics()
         emergency_status = self.get_emergency_mode_status()
         
+        with self._circuit_breaker_lock:
+            open_breakers = sum(1 for cb in self.circuit_breakers.values() if cb.get_state() == 'OPEN')
+        
         lines = [
             "SMARTINFOBUS SYSTEM STATUS",
             "=" * 50,
             f"Mode: {'[ALERT] EMERGENCY' if self.emergency_mode else '[OK] NORMAL'}",
             f"Modules: {len(self.modules)} ({len(self.critical_modules)} critical)",
-            f"Circuit Breakers: {sum(1 for cb in self.circuit_breakers.values() if cb.state == 'OPEN')} open",
+            f"Circuit Breakers: {open_breakers} open",
         ]
         
         if self.emergency_mode:

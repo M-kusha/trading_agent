@@ -31,8 +31,8 @@ from modules.monitoring.performance_tracker import PerformanceTracker
         "contextual_narratives", "operator_updates", "decision_rationales"
     ],
     requires=[
-        "recent_trades", "positions", "risk_data", "system_alerts",
-        "market_context", "session_metrics", "module_insights"
+    "recent_trades", "positions", "risk_data", "system_alerts",
+    "market_context", "session_metrics"
     ],
     description="Advanced intelligent explanation system for trading decisions and system state with contextual adaptation",
     thesis_required=True,
@@ -395,7 +395,8 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 'operator_updates': explanations.get('updates', []),
                 'decision_rationales': explanations.get('rationales', []),
                 'explanation_metrics': self.session_metrics.copy(),
-                'health_metrics': self._get_health_metrics()
+                'health_metrics': self._get_health_metrics(),
+                '_thesis': thesis
             }
             
             # Update SmartInfoBus with comprehensive thesis
@@ -1638,7 +1639,8 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             'operator_updates': ["System operating in degraded mode"],
             'decision_rationales': ["Rationale generation unavailable"],
             'explanation_metrics': self.session_metrics.copy(),
-            'health_metrics': {'status': 'error', 'error_context': str(error_context)}
+            'health_metrics': {'status': 'error', 'error_context': str(error_context)},
+            '_thesis': f"ExplanationGenerator encountered an error and entered degraded mode: {error_context}"
         }
 
     def _get_safe_context_defaults(self) -> Dict[str, Any]:
@@ -1690,7 +1692,8 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             'operator_updates': ["Restart explanation system"],
             'decision_rationales': ["Rationale generation disabled"],
             'explanation_metrics': {'status': 'disabled'},
-            'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'}
+            'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'},
+            '_thesis': 'ExplanationGenerator disabled by circuit breaker due to repeated errors'
         }
 
     # ═══════════════════════════════════════════════════════════════════

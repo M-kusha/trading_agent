@@ -180,6 +180,49 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         self.performance_tracker = PerformanceTracker()
         self.health_monitor = HealthMonitor()
 
+    def _normalize_weights_input(self, weights: Any) -> np.ndarray:
+        """Normalize incoming weights to a numeric numpy array.
+
+        Accepts dict, list, tuple, or numpy array. Ensures non-negative values and
+        normalizes to sum to 1. Falls back to equal weights if invalid/empty.
+        """
+        try:
+            # Dict: use values in stable key order
+            if isinstance(weights, dict):
+                # Prefer a stable alphabetical order to avoid run-to-run drift
+                keys = sorted(weights.keys())
+                vals = [float(weights[k]) for k in keys if self._is_number_like(weights[k])]
+                arr = np.asarray(vals, dtype=np.float32)
+            else:
+                arr = np.asarray(weights, dtype=np.float32).flatten()
+
+            # Fallback to equal weights if empty or invalid
+            if arr.size == 0 or not np.all(np.isfinite(arr)):
+                size = int(getattr(self, 'dim', 4) or 4)
+                arr = np.ones(size, dtype=np.float32) / float(size)
+
+            # Ensure non-negative and normalized
+            arr = np.abs(arr)
+            total = float(np.sum(arr))
+            if total <= 0:
+                size = arr.size if arr.size > 0 else int(getattr(self, 'dim', 4) or 4)
+                arr = np.ones(size, dtype=np.float32) / float(size)
+            else:
+                arr = arr / total
+
+            return arr
+        except Exception:
+            size = int(getattr(self, 'dim', 4) or 4)
+            return np.ones(size, dtype=np.float32) / float(size)
+
+    @staticmethod
+    def _is_number_like(x: Any) -> bool:
+        try:
+            float(x)
+            return True
+        except Exception:
+            return False
+
     def _initialize_sampling_methods(self) -> Dict[str, Dict[str, Any]]:
         """Initialize comprehensive sampling method definitions"""
         return {
@@ -318,7 +361,8 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
                 'sampling_recommendations': recommendations,
                 'quality_metrics': quality_analysis,
                 'strategy_performance': strategy_updates,
-                'health_metrics': self._get_health_metrics()
+                'health_metrics': self._get_health_metrics(),
+                '_thesis': thesis
             }
             
             # Update SmartInfoBus with comprehensive thesis
@@ -1163,8 +1207,8 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             Array of alternative weight samples with comprehensive analysis
         """
         try:
-            # Validate and prepare input
-            weights = np.asarray(weights, dtype=np.float32).flatten()
+            # Validate and prepare input (accept dict/list/ndarray)
+            weights = self._normalize_weights_input(weights)
             if weights.size != self.dim:
                 self.logger.warning(format_operator_message(
                     icon="[WARN]",
@@ -1629,7 +1673,8 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             'effective_samples': 0,
             'confidence_bounds': {'error': str(error_context)},
             'sampling_recommendations': ["Investigate alternative reality sampler errors"],
-            'health_metrics': {'status': 'error', 'error_context': str(error_context)}
+            'health_metrics': {'status': 'error', 'error_context': str(error_context)},
+            '_thesis': f"AlternativeRealitySampler error: {error_context}"
         }
 
     def _get_safe_voting_defaults(self) -> Dict[str, Any]:
@@ -1651,7 +1696,8 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             'effective_samples': 0,
             'confidence_bounds': {'status': 'disabled'},
             'sampling_recommendations': ["Restart alternative reality sampler system"],
-            'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'}
+            'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'},
+            '_thesis': 'AlternativeRealitySampler disabled via circuit breaker'
         }
 
     # ═══════════════════════════════════════════════════════════════════
@@ -2043,8 +2089,8 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             
             # Extract current weights if available
             weights = market_data.get('strategy_arbiter_weights')
-            if weights is None or len(weights) == 0:
-                weights = np.ones(4) / 4  # Default equal weights
+            # Normalize to a numeric vector; default to equal weights at self.dim
+            weights = self._normalize_weights_input(weights if weights is not None else [])
             
             # Generate alternative samples
             samples = await self.sample_comprehensive(weights, market_data)

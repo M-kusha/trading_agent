@@ -138,14 +138,24 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                 monitoring_results.get('processing_time_ms', 0), True
             )
             
-            return {
-                'risk_score': self.risk_score,
-                'severity_level': self.severity_level,
-                'monitoring_results': monitoring_results,
-                'risk_metrics': risk_metrics,
-                'thesis': thesis,
-                'recommendations': self._generate_recommendations(monitoring_results)
+            # Conform to provides contract
+            provides_payload = {
+                'position_duration_risk': {
+                    'risk_score': self.risk_score,
+                    'severity_level': self.severity_level,
+                    'monitoring_results': monitoring_results,
+                    'risk_metrics': risk_metrics,
+                    'timestamp': datetime.datetime.now().isoformat()
+                },
+                'duration_alerts': monitoring_results.get('alerts', {'critical': [], 'warning': [], 'info': []}),
+                'position_tracking': {
+                    'durations': self.position_durations.copy(),
+                    'velocities': self.position_velocity.copy(),
+                    'statistics': monitoring_results.get('duration_statistics', {})
+                },
+                '_thesis': thesis
             }
+            return provides_payload
             
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "ActiveTradeMonitor")
@@ -602,24 +612,32 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
     
     def _generate_disabled_response(self) -> Dict[str, Any]:
         """Generate response when module is disabled"""
+        thesis = "Active Trade Monitor is disabled"
         return {
-            'risk_score': 0.0,
-            'severity_level': 'disabled',
-            'monitoring_results': {'alerts': {'critical': [], 'warning': [], 'info': []}},
-            'risk_metrics': {'risk_score': 0.0, 'severity_level': 'disabled'},
-            'thesis': "Active Trade Monitor is disabled",
-            'recommendations': ["Enable Active Trade Monitor for position duration tracking"]
+            'position_duration_risk': {
+                'risk_score': 0.0,
+                'severity_level': 'disabled',
+                'monitoring_results': {'alerts': {'critical': [], 'warning': [], 'info': []}},
+                'risk_metrics': {'risk_score': 0.0, 'severity_level': 'disabled'}
+            },
+            'duration_alerts': {'critical': [], 'warning': [], 'info': []},
+            'position_tracking': {'durations': {}, 'velocities': {}, 'statistics': {}},
+            '_thesis': thesis
         }
     
     def _generate_error_response(self, error_context: str) -> Dict[str, Any]:
         """Generate response when processing fails"""
+        thesis = f"Position monitoring failed: {error_context}"
         return {
-            'risk_score': 0.5,
-            'severity_level': 'error',
-            'monitoring_results': {'alerts': {'critical': [], 'warning': [], 'info': []}},
-            'risk_metrics': {'risk_score': 0.5, 'severity_level': 'error'},
-            'thesis': f"Position monitoring failed: {error_context}",
-            'recommendations': ["Investigate position monitoring system errors"]
+            'position_duration_risk': {
+                'risk_score': 0.5,
+                'severity_level': 'error',
+                'monitoring_results': {'alerts': {'critical': [], 'warning': [], 'info': []}},
+                'risk_metrics': {'risk_score': 0.5, 'severity_level': 'error'}
+            },
+            'duration_alerts': {'critical': [], 'warning': [], 'info': []},
+            'position_tracking': {'durations': {}, 'velocities': {}, 'statistics': {}},
+            '_thesis': thesis
         }
     
     def get_state(self) -> Dict[str, Any]:

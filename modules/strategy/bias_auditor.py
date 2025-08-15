@@ -227,9 +227,14 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
                 'bias_corrections': corrections,
                 'bias_adjustments': adjustments,
                 'bias_report': self._generate_comprehensive_report(bias_analysis),
-                'recommendations': self._generate_intelligent_recommendations(bias_analysis),
+                'bias_recommendations': self._generate_intelligent_recommendations(bias_analysis),
+                'psychological_state': self._generate_psychological_state_summary({
+                    'bias_analysis': bias_analysis,
+                    'bias_corrections': corrections
+                }),
                 'session_performance': self.session_stats.copy(),
-                'health_metrics': self._get_health_metrics()
+                'health_metrics': self._get_health_metrics(),
+                '_thesis': thesis
             }
             
             # Update SmartInfoBus with comprehensive thesis
@@ -761,8 +766,8 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
                              module='BiasAuditor', thesis="Comprehensive bias analysis report generated")
             
             # Intelligent recommendations
-            recommendations_thesis = f"Generated {len(results['recommendations'])} actionable recommendations"
-            self.smart_bus.set('bias_recommendations', results['recommendations'],
+            recommendations_thesis = f"Generated {len(results['bias_recommendations'])} actionable recommendations"
+            self.smart_bus.set('bias_recommendations', results['bias_recommendations'],
                              module='BiasAuditor', thesis=recommendations_thesis)
             
             # Psychological state summary
@@ -798,9 +803,14 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             'bias_corrections': {'individual_corrections': {}, 'error': str(error_context)},
             'bias_adjustments': {bias: 1.0 for bias in self.bias_categories.keys()},
             'bias_report': f"Bias analysis failed: {error_context}",
-            'recommendations': ["Investigate bias auditor system errors"],
+            'bias_recommendations': ["Investigate bias auditor system errors"],
+            'psychological_state': self._generate_psychological_state_summary({
+                'bias_analysis': {'individual_biases': {}, 'aggregate_metrics': {'total_bias_score': 0.0}},
+                'bias_corrections': {'individual_corrections': {}}
+            }),
             'session_performance': self.session_stats.copy(),
-            'health_metrics': {'status': 'error', 'error_context': str(error_context)}
+            'health_metrics': {'status': 'error', 'error_context': str(error_context)},
+            '_thesis': f"BiasAuditor error: {error_context}"
         }
 
     # ═══════════════════════════════════════════════════════════════════
@@ -1111,9 +1121,14 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             'bias_corrections': {'individual_corrections': {}, 'status': 'disabled'},
             'bias_adjustments': {bias: 1.0 for bias in self.bias_categories.keys()},
             'bias_report': "Bias Auditor is temporarily disabled due to errors",
-            'recommendations': ["Restart bias auditor system", "Check error logs for issues"],
+            'bias_recommendations': ["Restart bias auditor system", "Check error logs for issues"],
+            'psychological_state': self._generate_psychological_state_summary({
+                'bias_analysis': {'individual_biases': {}, 'aggregate_metrics': {'total_bias_score': 0.0}},
+                'bias_corrections': {'individual_corrections': {}}
+            }),
             'session_performance': self.session_stats.copy(),
-            'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'}
+            'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'},
+            '_thesis': 'BiasAuditor disabled via circuit breaker'
         }
 
     def _calculate_session_duration(self) -> str:

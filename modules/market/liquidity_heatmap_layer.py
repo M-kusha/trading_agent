@@ -283,48 +283,140 @@ class LiquidityHeatmapLayer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             module='LiquidityHeatmapLayer',
             thesis="Liquidity analysis capabilities for market assessment"
         )
+
+    # ── NEW: trading session helpers ──────────────────────────────────────────
+    def _compute_trading_sessions(self, market_data: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """
+        Compute current trading session snapshot.
+        Returns:
+          sessions_map: dict with per-session booleans & scores
+          session_meta: dict with active session, windows, and liquidity bias
+        """
+        # Use "now" (UTC) – if your system provides a timestamp in market_data, you can swap this in.
+        import datetime as _dt
+        now = _dt.datetime.utcnow()
+        weekday = now.weekday()  # 0=Mon .. 6=Sun
+        hour = now.hour + now.minute/60.0
+
+        # Weekend handling (approx: Fri 22:00–Sun 21:00 UTC is thin)
+        weekend = (weekday == 5) or (weekday == 6) or (weekday == 4 and hour >= 22.0) or (weekday == 6 and hour < 21.0)
+
+        # Simple UTC windows (approximate, widely used):
+        # Asian:     23:00–07:00
+        # European:  07:00–16:00
+        # American:  12:00–21:00
+        # Rollover:  21:00–23:00
+        def in_window(h, start, end):
+            return (h >= start and h < end) if start < end else (h >= start or h < end)
+
+        asian     = in_window(hour, 23.0, 7.0) and not weekend
+        european  = (hour >= 7.0 and hour < 16.0) and not weekend
+        american  = (hour >= 12.0 and hour < 21.0) and not weekend
+        rollover  = (hour >= 21.0 and hour < 23.0) and not weekend
+
+        # pick the most likely active (priority: rollover > american > european > asian)
+        if weekend:
+            active = 'weekend'
+            bias = 0.3
+        elif rollover:
+            active = 'rollover'
+            bias = 0.4
+        elif american:
+            active = 'american'
+            bias = 1.0
+        elif european:
+            active = 'european'
+            bias = 0.9
+        elif asian:
+            active = 'asian'
+            bias = 0.7
+        else:
+            # fall back to closest bucket
+            active = 'unknown'
+            bias = 0.6
+
+        sessions_map = {
+            'asian': bool(asian),
+            'european': bool(european),
+            'american': bool(american),
+            'rollover': bool(rollover),
+            'weekend': bool(weekend),
+            'active': active,
+        }
+
+        session_meta = {
+            'active_session': active,
+            'utc_time': now.isoformat() + 'Z',
+            'windows_utc': {
+                'asian':    {'start': '23:00', 'end': '07:00'},
+                'european': {'start': '07:00', 'end': '16:00'},
+                'american': {'start': '12:00', 'end': '21:00'},
+                'rollover': {'start': '21:00', 'end': '23:00'},
+            },
+            'liquidity_bias': bias,  # heuristic multiplier (used in thesis/action if needed)
+        }
+        return sessions_map, session_meta
+
     
     async def process(self, **inputs) -> Dict[str, Any]:
-        """Main processing function for liquidity analysis"""
-        
+        """Main processing function for liquidity analysis (contract-compliant)."""
         process_start_time = time.time()
-        
-        # Check circuit breaker
+
+        # Circuit breaker check
         if not self._check_neural_circuit_breaker():
-            return self._create_liquidity_fallback_response("Neural circuit breaker open")
-        
+            # still satisfy provides
+            fallback = self._create_liquidity_fallback_response("Neural circuit breaker open")
+            # add contract keys
+            sessions_map, session_meta = self._compute_trading_sessions({})
+            fallback['trading_sessions'] = sessions_map
+            fallback['session_data'] = session_meta
+            fallback['_thesis'] = fallback.get('thesis', 'Liquidity analysis fallback')
+            return fallback
+
         try:
-            # Extract market data
+            # 1) Extract market data
             market_data = await self._extract_market_data(**inputs)
-            
-            # Process liquidity metrics
+
+            # 2) Core analytics
             liquidity_metrics = await self._analyze_liquidity(market_data)
-            
-            # Neural prediction
             prediction_result = await self._neural_liquidity_prediction(liquidity_metrics)
-            
-            # Generate comprehensive thesis
+
+            # 3) Session snapshot
+            sessions_map, session_meta = self._compute_trading_sessions(market_data)
+
+            # 4) Thesis (augment with session)
             thesis = await self._generate_liquidity_thesis(market_data, liquidity_metrics, prediction_result)
-            
-            # Update SmartInfoBus
-            await self._update_liquidity_smart_bus(liquidity_metrics, prediction_result, thesis)
-            
-            # Record success
+            thesis = f"{thesis}\n\nSession: {session_meta['active_session'].upper()} (UTC {session_meta['utc_time']})"
+
+            # 5) Update SmartInfoBus (also writes sessions)
+            await self._update_liquidity_smart_bus(liquidity_metrics, prediction_result, thesis, sessions_map, session_meta)
+
+            # 6) Record success
             self._record_liquidity_success(time.time() - process_start_time)
-            
+
+            # 7) Return all declared provides
             return {
                 'success': True,
                 'liquidity_score': liquidity_metrics['liquidity_score'],
                 'market_depth': liquidity_metrics['depth_analysis'],
                 'spread_analysis': liquidity_metrics['spread_analysis'],
-                'liquidity_prediction': prediction_result,  # Fixed: Use 'liquidity_prediction' to match provides declaration
-                'predictions': prediction_result,  # Keep for backward compatibility
+                'liquidity_prediction': prediction_result,   # matches provides
+                'trading_sessions': sessions_map,            # ✅ now provided
+                'session_data': session_meta,                # ✅ now provided
                 'thesis': thesis,
-                'processing_time_ms': (time.time() - process_start_time) * 1000
+                '_thesis': thesis,                           # helpful for explainable orchestrators
+                'processing_time_ms': (time.time() - process_start_time) * 1000.0,
             }
-            
+
         except Exception as e:
-            return await self._handle_liquidity_error(e, process_start_time)
+            # keep contract even on failure
+            fail = await self._handle_liquidity_error(e, process_start_time)
+            sessions_map, session_meta = self._compute_trading_sessions({})
+            fail['trading_sessions'] = sessions_map
+            fail['session_data'] = session_meta
+            fail['_thesis'] = fail.get('thesis', f"Liquidity analysis error: {e}")
+            return fail
+
     
     async def _extract_market_data(self, **inputs) -> Dict[str, Any]:
         """Extract market data from SmartInfoBus and inputs"""
@@ -669,10 +761,13 @@ Trading Implications:
         except Exception as e:
             return f"Liquidity analysis completed. Thesis generation failed: {str(e)}"
     
-    async def _update_liquidity_smart_bus(self, liquidity_metrics: Dict[str, Any], 
-                                        prediction_result: Dict[str, Any], thesis: str):
-        """Update SmartInfoBus with liquidity analysis results"""
-        
+    async def _update_liquidity_smart_bus(self, liquidity_metrics: Dict[str, Any],
+                                          prediction_result: Dict[str, Any],
+                                          thesis: str,
+                                          sessions_map: Optional[Dict[str, Any]] = None,
+                                          session_meta: Optional[Dict[str, Any]] = None):
+        """Update SmartInfoBus with liquidity analysis results + sessions."""
+
         # Main liquidity score
         self.smart_bus.set(
             'liquidity_score',
@@ -680,7 +775,7 @@ Trading Implications:
             module='LiquidityHeatmapLayer',
             thesis=f"Current market liquidity: {liquidity_metrics['liquidity_score']:.3f}"
         )
-        
+
         # Market depth analysis
         self.smart_bus.set(
             'market_depth',
@@ -692,7 +787,7 @@ Trading Implications:
             module='LiquidityHeatmapLayer',
             thesis=f"Market depth: {liquidity_metrics['depth_analysis'].get('condition', 'unknown')}"
         )
-        
+
         # Spread analysis
         self.smart_bus.set(
             'spread_analysis',
@@ -704,21 +799,45 @@ Trading Implications:
             module='LiquidityHeatmapLayer',
             thesis=f"Spread condition: {liquidity_metrics['spread_analysis'].get('condition', 'normal')}"
         )
-        
+
         # Neural predictions
         if prediction_result.get('predictions'):
             self.smart_bus.set(
                 'liquidity_prediction',
                 {
                     'predictions': prediction_result['predictions'],
-                    'confidence': prediction_result['confidence'],
+                    'confidence': prediction_result.get('confidence', 0.0),
                     'horizon': self.config.prediction_horizon,
                     'timestamp': time.time()
                 },
                 module='LiquidityHeatmapLayer',
-                thesis=f"Liquidity prediction with {prediction_result['confidence']:.1%} confidence"
+                thesis=f"Liquidity prediction with {prediction_result.get('confidence', 0.0):.1%} confidence"
             )
-    
+
+        # Sessions (NEW)
+        if sessions_map is not None:
+            self.smart_bus.set(
+                'trading_sessions',
+                sessions_map,
+                module='LiquidityHeatmapLayer',
+                thesis=f"Active session: {sessions_map.get('active', 'unknown')}"
+            )
+        if session_meta is not None:
+            self.smart_bus.set(
+                'session_data',
+                session_meta,
+                module='LiquidityHeatmapLayer',
+                thesis=f"Session metadata: {session_meta.get('active_session', 'unknown')}"
+            )
+
+        # Optional: store the thesis for explainability dashboards
+        self.smart_bus.set(
+            'liquidity_thesis',
+            thesis,
+            module='LiquidityHeatmapLayer',
+            thesis="LiquidityHeatmapLayer analysis thesis"
+        )
+
     def _check_neural_circuit_breaker(self) -> bool:
         """Check neural circuit breaker state"""
         

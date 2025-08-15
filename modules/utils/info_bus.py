@@ -26,6 +26,20 @@ import numpy as np
 # Import core dependencies
 from modules.utils.audit_utils import RotatingLogger, format_operator_message, AuditSystem
 
+# Public exports to make symbols visible to importers and type checkers
+__all__ = [
+    "SmartInfoBus",
+    "InfoBusManager",
+    "InfoBusConfig",
+    "DataVersion",
+    "DataRequest",
+    "create_info_bus",
+    "validate_info_bus",
+    "InfoBusExtractor",
+    "InfoBusUpdater",
+    "InfoBusQuality",
+]
+
 # ═══════════════════════════════════════════════════════════════════
 # PRODUCTION-GRADE CONFIGURATION STRUCTURES
 # ═══════════════════════════════════════════════════════════════════
@@ -260,20 +274,26 @@ class DataVersion:
         return time.time() - self.timestamp
     
     def validate_integrity(self) -> bool:
-        """Validate data integrity using hash"""
+        """Validate data integrity without mutating the stored hash."""
+        original_hash = self.validation_hash
         try:
-            original_hash = self.validation_hash
+            # compute fresh hash without including the existing hash
             self.validation_hash = ""
             self._calculate_validation_hash()
-            
-            is_valid = self.validation_hash == original_hash
+            computed = self.validation_hash
+            # restore
+            self.validation_hash = original_hash
+
+            is_valid = (computed == original_hash)
             if not is_valid:
                 self.anomaly_flags.append("integrity_failure")
-            
             return is_valid
         except Exception:
+            # defensive restore on any error
+            self.validation_hash = original_hash
             self.anomaly_flags.append("validation_error")
             return False
+
     
     def increment_access(self, accessor_module: str = "unknown"):
         """Enhanced access tracking with module attribution"""
@@ -419,24 +439,28 @@ class CircuitBreakerState:
     success_history: deque = field(default_factory=lambda: deque(maxlen=100))
     
     def record_success(self):
-        """Record successful operation with enhanced tracking"""
+        """Record successful operation with enhanced tracking."""
         self.successful_calls += 1
         self.total_calls += 1
         self.consecutive_successes += 1
         self.consecutive_failures = 0
         self.last_success_time = time.time()
-        
-        self.success_history.append(time.time())
-        
-        # Update failure rate
+        self.success_history.append(self.last_success_time)
         self._update_failure_rate()
-        
-        # Reset circuit breaker if in half-open state
+
         if self.state == "HALF_OPEN":
-            if self.consecutive_successes >= 3:  # Require 3 consecutive successes
+            if self.consecutive_successes >= 3:
                 self.state = "CLOSED"
                 self.failure_count = 0
                 self.consecutive_failures = 0
+                setattr(self, "_half_open_trials", 0)
+
+    def trip(self):
+        """Trip the circuit breaker with enhanced state management."""
+        self.state = "OPEN"
+        self.consecutive_successes = 0
+        setattr(self, "_half_open_trials", 0)
+
     
     def record_failure(self):
         """Record failed operation with enhanced tracking"""
@@ -479,37 +503,40 @@ class CircuitBreakerState:
                 self.avg_failure_interval = sum(intervals) / len(intervals)
     
     def should_allow_request(self, recovery_time: float, failure_threshold: int = 5) -> bool:
-        """Enhanced request allowance logic with predictive analysis"""
+        """Enhanced request allowance with capped probes in HALF_OPEN."""
+        now = time.time()
+
         if self.state == "CLOSED":
-            # Check if we should trip based on failure rate and consecutive failures
+            # trip on many consecutive failures or high recent failure rate
             if (self.consecutive_failures >= failure_threshold or 
                 (self.failure_rate > 0.5 and self.total_calls > 10)):
                 self.trip()
                 return False
             return True
-        
-        elif self.state == "OPEN":
-            # Check if recovery time has passed
-            if time.time() - self.last_failure_time > recovery_time:
+
+        if self.state == "OPEN":
+            if now - self.last_failure_time > recovery_time:
                 self.state = "HALF_OPEN"
-                return True
+                # dynamic attribute: avoid changing the dataclass
+                setattr(self, "_half_open_trials", 0)
+                return True  # first probe
             return False
-        
-        else:  # HALF_OPEN
-            # -----------------------------------------------------------------
-            # Idle-recovery: if no new failure for 2× recovery_time → close CB
-            # -----------------------------------------------------------------
-            current_time = time.time()
-            if (current_time - self.last_failure_time > recovery_time * 2
-                    and self.consecutive_failures == 0):
-                self.state = "CLOSED"
-                return True
+
+        # HALF_OPEN
+        # idle-recovery: if quiet long enough, close
+        if (now - self.last_failure_time > recovery_time * 2
+                and self.consecutive_failures == 0):
+            self.state = "CLOSED"
+            setattr(self, "_half_open_trials", 0)
             return True
+
+        trials = getattr(self, "_half_open_trials", 0)
+        if trials >= 3:  # cap number of probes
+            return False
+        setattr(self, "_half_open_trials", trials + 1)
+        return True
+
     
-    def trip(self):
-        """Trip the circuit breaker with enhanced state management"""
-        self.state = "OPEN"
-        self.consecutive_successes = 0
     
     def get_health_score(self) -> float:
         """Calculate health score based on circuit breaker metrics"""
@@ -816,26 +843,26 @@ class SmartInfoBus:
             self.logger.error(f"Failed to initialize system monitoring: {e}")
     
     def _record_system_metrics(self):
-        """Record current system metrics"""
+        """Record current system metrics (more reliable cpu_percent)."""
         try:
-            # Memory usage
+            # Memory
             memory_info = psutil.virtual_memory()
             self._memory_usage_history.append({
                 'timestamp': time.time(),
                 'percent': memory_info.percent,
                 'available_mb': memory_info.available // (1024 * 1024)
             })
-            
-            # CPU usage
-            cpu_percent = psutil.cpu_percent()
+
+            # CPU: give psutil a short sampling window
+            cpu_percent = psutil.cpu_percent(interval=0.1)
             self._cpu_usage_history.append({
                 'timestamp': time.time(),
                 'percent': cpu_percent
             })
-            
+
         except Exception as e:
             self.logger.debug(f"Failed to record system metrics: {e}")
-    
+
     def _initialize_performance_baselines(self):
         """Initialize performance baselines for predictive analytics"""
         try:
@@ -1034,53 +1061,41 @@ class SmartInfoBus:
             raise
 
     def get(self, 
-            key: str, 
-            module: str, 
-            max_age: Optional[float] = None,
-            min_confidence: float = 0.0,
-            default: Any = None) -> Any:
+        key: str, 
+        module: str, 
+        max_age: Optional[float] = None,
+        min_confidence: float = 0.0,
+        default: Any = None) -> Any:
         """
         Get data with freshness and confidence validation.
-        
-        Args:
-            key: Data key to retrieve
-            module: Requesting module name
-            max_age: Maximum acceptable age in seconds
-            min_confidence: Minimum confidence required
-            default: Default value if not found
-            
-        Returns:
-            Data value or default if not found/invalid
         """
         try:
             with self._access_lock:
-                # Track access pattern
-                with self._performance_lock:
-                    self._access_patterns[module][f'read:{key}'] += 1
-                
-                # Register consumer
+                # Register consumer FIRST (registry -> perf lock order)
                 with self._registry_lock:
                     self._consumers[key].add(module)
-                
-                # Get data
+
+                # Track access pattern AFTER registry
+                with self._performance_lock:
+                    self._access_patterns[module][f'read:{key}'] += 1
+
+                # Lookup
                 data = self._data_store.get(key)
-                
+
                 if not data:
                     with self._performance_lock:
                         self._cache_misses += 1
-                    
                     self._log_miss(key, module)
                     return default
-                
-                # Validate data integrity
+
+                # Validate integrity (kept behavior; now safe due to fixed hash)
                 if self._validation_enabled and not data.validate_integrity():
                     self.logger.error(f"Data integrity check failed for {key}")
                     return default
-                
-                # Check age requirement
+
+                # Age gate
                 age_seconds = data.age_seconds()
                 max_age_check = max_age or self.config.max_data_age_seconds
-                
                 if age_seconds > max_age_check:
                     self._emit('stale_data_warning', {
                         'key': key,
@@ -1088,29 +1103,30 @@ class SmartInfoBus:
                         'module': module,
                         'max_age': max_age_check
                     })
-                    
-                    self.logger.warning(f"Stale data: {key} is {age_seconds:.1f}s old (max: {max_age_check}s)")
+                    self.logger.warning(
+                        f"Stale data: {key} is {age_seconds:.1f}s old (max: {max_age_check}s)"
+                    )
                     return default
-                
-                # Check confidence requirement
+
+                # Confidence gate
                 if data.confidence < min_confidence:
-                    self.logger.warning(f"Low confidence: {key} has {data.confidence:.2f} (min: {min_confidence:.2f})")
+                    self.logger.warning(
+                        f"Low confidence: {key} has {data.confidence:.2f} (min: {min_confidence:.2f})"
+                    )
                     return default
-                
-                # Update access tracking
+
+                # Access tracking
                 data.increment_access(accessor_module=module)
-                
                 with self._performance_lock:
                     self._cache_hits += 1
-                
+
                 return data.value
-                
+
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to get {key} for {module}: {e}")
-            
-            # Record failure
             self.record_module_failure(module, f"Data get failed: {str(e)}")
             return default
+
     
     def get_with_metadata(self, key: str, module: str) -> Optional[DataVersion]:
         """
@@ -1172,24 +1188,15 @@ class SmartInfoBus:
         return data.value, thesis
     
     def request_data(self, 
-                    key: str, 
-                    module: str, 
-                    max_age: Optional[float] = None,
-                    min_confidence: Optional[float] = None,
-                    priority: int = 0,
-                    callback: Optional[Callable] = None,
-                    timeout_seconds: float = 60.0):
+                key: str, 
+                module: str, 
+                max_age: Optional[float] = None,
+                min_confidence: Optional[float] = None,
+                priority: int = 0,
+                callback: Optional[Callable] = None,
+                timeout_seconds: float = 60.0):
         """
-        Request data that may not be available yet.
-        
-        Args:
-            key: Data key to request
-            module: Requesting module name
-            max_age: Maximum acceptable age in seconds
-            min_confidence: Minimum confidence required
-            priority: Request priority (higher = more urgent)
-            callback: Callback function when data becomes available
-            timeout_seconds: Request timeout
+        Request data that may not be available yet. Returns request_id for tracking.
         """
         try:
             request = DataRequest(
@@ -1202,27 +1209,27 @@ class SmartInfoBus:
                 callback=callback,
                 timeout_seconds=timeout_seconds
             )
-            
+
             with self._request_lock:
-                # Insert by priority (higher priority first)
                 inserted = False
                 for i, existing_req in enumerate(self._pending_requests):
                     if request.priority > existing_req.priority:
                         self._pending_requests.insert(i, request)
                         inserted = True
                         break
-                
                 if not inserted:
                     self._pending_requests.append(request)
-            
-            # Register as consumer
+
             with self._registry_lock:
                 self._consumers[key].add(module)
-            
+
             self.logger.debug(f"📋 {module} requested '{key}' (priority: {priority})")
-            
+            return request.request_id
+
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to create data request: {e}")
+            return None
+
     
     # ═══════════════════════════════════════════════════════════════════
     # MODULE REGISTRY & DISCOVERY
@@ -1725,40 +1732,56 @@ class SmartInfoBus:
             self.logger.error(f"[CRASH] Failed to log miss: {e}")
     
     def _check_pending_requests(self, key: str):
-        """Check if any pending requests can be fulfilled"""
+        """Check if any pending requests can be fulfilled and notify (sync/async)."""
         try:
             fulfilled = []
-            
             with self._request_lock:
                 for i, request in enumerate(self._pending_requests):
-                    if request.requested_key == key:
-                        # Check if data meets requirements
-                        data = self._data_store.get(key)
-                        if data and request.matches_data(data):
-                            # Fulfill request
-                            self._emit('data_available', {
-                                'key': key,
-                                'requesting_module': request.requesting_module,
-                                'value': data.value,
-                                'metadata': data.to_dict()
-                            })
-                            
-                            # Call callback if provided
-                            if request.callback:
-                                try:
-                                    request.callback(data.value)
-                                except Exception as e:
-                                    self.logger.error(f"Request callback error: {e}")
-                            
-                            fulfilled.append(i)
-                
-                # Remove fulfilled requests (reverse order to maintain indices)
+                    if request.requested_key != key:
+                        continue
+
+                    data = self._data_store.get(key)
+                    if data is None:
+                        continue
+
+                    # Type guard to satisfy linters/type-checkers and ensure safety
+                    if not isinstance(data, DataVersion):
+                        continue
+
+                    value = data.value
+
+                    if request.matches_data(data):
+                        # Emit bus event
+                        self._emit('data_available', {
+                            'key': key,
+                            'requesting_module': request.requesting_module,
+                            'value': value,
+                            'metadata': data.to_dict()
+                        })
+
+                        # Fire user callback if provided
+                        if request.callback:
+                            cb = request.callback
+                            try:
+                                if asyncio.iscoroutinefunction(cb):
+                                    try:
+                                        asyncio.get_running_loop().create_task(cb(value))
+                                    except RuntimeError:
+                                        self._thread_pool.submit(lambda: asyncio.run(cb(value)))
+                                else:
+                                    self._thread_pool.submit(cb, value)
+                            except Exception as e:
+                                self.logger.error(f"Request callback error: {e}")
+
+                        fulfilled.append(i)
+
                 for i in reversed(fulfilled):
                     self._pending_requests.pop(i)
-                    
+
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to check pending requests: {e}")
-    
+
+        
     # ═══════════════════════════════════════════════════════════════════
     # DATA QUALITY & MAINTENANCE
     # ═══════════════════════════════════════════════════════════════════
@@ -1842,29 +1865,26 @@ class SmartInfoBus:
             self.logger.error(f"[CRASH] Request cleanup failed: {e}")
     
     def _validate_data_integrity(self):
-        """Validate integrity of stored data"""
+        """Validate integrity of stored data (uses writer lock for mutations)."""
         try:
             corruption_count = 0
-            
-            with self._access_lock:
+            with self._write_lock:  # <-- writer lock, not access lock
                 for key, data in list(self._data_store.items()):
                     if not data.validate_integrity():
                         self.logger.error(f"Data corruption detected for key: {key}")
-                        # Remove corrupted data
                         del self._data_store[key]
                         corruption_count += 1
-            
+
             if corruption_count > 0:
                 self.logger.warning(f"[ALERT] Removed {corruption_count} corrupted data entries")
-                
-                # Emit corruption alert
                 self._emit('data_corruption_detected', {
                     'corrupted_count': corruption_count,
                     'timestamp': time.time()
                 })
-                
+
         except Exception as e:
             self.logger.error(f"[CRASH] Data integrity validation failed: {e}")
+
     
     # ═══════════════════════════════════════════════════════════════════
     # ANALYSIS & REPORTING
@@ -2175,19 +2195,34 @@ class InfoBusExtractor:
     
     @staticmethod
     def get_risk_score(info_bus: Dict[str, Any]) -> float:
-        """Get risk score with SmartInfoBus fallback"""
-        # Try direct access first
+        """Get risk score with SmartInfoBus fallback (supports nested 'risk')."""
+        # direct top-level
         if 'risk_score' in info_bus:
-            return float(info_bus['risk_score'])
-        
-        # Try SmartInfoBus
+            try:
+                return float(info_bus['risk_score'])
+            except Exception:
+                pass
+
+        # legacy nested dict: info_bus['risk'] = {'risk_score': ...}
+        risk = info_bus.get('risk')
+        if isinstance(risk, dict) and 'risk_score' in risk:
+            try:
+                return float(risk['risk_score'])
+            except Exception:
+                pass
+
+        # SmartInfoBus fallback
         if '_smart_bus' in info_bus:
             smart_bus = info_bus['_smart_bus']
             risk_data = smart_bus.get('risk_score', 'InfoBusExtractor')
             if risk_data is not None:
-                return float(risk_data)
-        
+                try:
+                    return float(risk_data)
+                except Exception:
+                    return 0.0
+
         return 0.0
+
     
     @staticmethod
     def get_market_regime(info_bus: Dict[str, Any]) -> str:
@@ -2263,9 +2298,10 @@ class InfoBusUpdater:
     
     @staticmethod
     def set_risk_score(info_bus: Dict[str, Any], score: float) -> None:
-        """Set risk score in both legacy and SmartInfoBus"""
+        """Set risk score in both legacy and SmartInfoBus shapes."""
         info_bus['risk_score'] = score
-        
+        info_bus.setdefault('risk', {})['risk_score'] = score
+
         if '_smart_bus' in info_bus:
             smart_bus = info_bus['_smart_bus']
             smart_bus.set(
@@ -2274,7 +2310,7 @@ class InfoBusUpdater:
                 module='InfoBusUpdater',
                 thesis=f"Risk score updated to {score:.2%}"
             )
-    
+
     @staticmethod
     def set_market_regime(info_bus: Dict[str, Any], regime: str) -> None:
         """Set market regime in both legacy and SmartInfoBus"""
@@ -2291,8 +2327,9 @@ class InfoBusUpdater:
 
 # Utility functions
 def now_utc() -> str:
-    """Current UTC timestamp"""
-    return datetime.now().isoformat()
+    """Current UTC timestamp (ISO8601, with Z)."""
+    return datetime.utcnow().isoformat() + "Z"
+
 
 def extract_standard_context(info_bus: Dict[str, Any]) -> Dict[str, Any]:
     """Extract standard context for modules"""

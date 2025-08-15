@@ -46,9 +46,12 @@ class MarketDataConfig:
     version="1.0.0",
     category="external",
     provides=[
-        "market_data", "price_data", "technical_indicators", "volatility_data", 
+        "market_data", "price_data", "technical_indicators", "volatility_data",
         "symbols", "timestamp", "prices", "trading_session", "session_type",
-        "market_conditions", "ohlcv_data", "bid_ask_data", "market_regime", "market_context", "historical_prices", "volatility", "historical_prices", "volatility"],
+        "market_conditions", "ohlcv_data", "bid_ask_data",
+        "market_regime", "market_context", "historical_prices", "volatility",
+        "multi_timeframe_data"
+    ],
     requires=[],  # Root data provider - no dependencies
     description="Offline market data provider for backtesting and simulation with comprehensive data feeds",
     thesis_required=False,
@@ -58,6 +61,7 @@ class MarketDataConfig:
     is_voting_member=False,
     explainable=False  # Explicitly disable explainability to avoid thesis requirement
 )
+
 class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     [ROCKET] Advanced offline market data provider with SmartInfoBus integration.

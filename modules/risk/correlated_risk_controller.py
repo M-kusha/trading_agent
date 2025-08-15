@@ -300,15 +300,20 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
                 correlation_results.get('processing_time_ms', 0), True
             )
             
-            return {
-                'correlation_risk_score': self.correlation_risk_score,
+            # Conform to provides contract
+            provides_payload = {
+                'correlation_risk': {
+                    'correlation_risk_score': self.correlation_risk_score,
+                    'severity_level': self.severity_level,
+                    'correlation_results': correlation_results,
+                    'risk_metrics': risk_metrics,
+                    'thesis': thesis
+                },
                 'diversification_score': self.diversification_score,
-                'severity_level': self.severity_level,
-                'correlation_results': correlation_results,
-                'risk_metrics': risk_metrics,
-                'thesis': thesis,
-                'recommendations': self._generate_recommendations(correlation_results)
+                'correlation_clusters': correlation_results.get('cluster_analysis', {}).get('clusters', {}),
+                '_thesis': thesis
             }
+            return provides_payload
             
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "CorrelatedRiskController")
@@ -995,26 +1000,36 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
     
     def _generate_disabled_response(self) -> Dict[str, Any]:
         """Generate response when module is disabled"""
+        thesis = "Correlated Risk Controller is disabled"
+        insufficient = self._generate_insufficient_data_response()
         return {
-            'correlation_risk_score': 0.0,
+            'correlation_risk': {
+                'correlation_risk_score': 0.0,
+                'severity_level': 'disabled',
+                'correlation_results': insufficient,
+                'risk_metrics': {'correlation_risk_score': 0.0, 'severity_level': 'disabled'},
+                'thesis': thesis
+            },
             'diversification_score': 1.0,
-            'severity_level': 'disabled',
-            'correlation_results': self._generate_insufficient_data_response(),
-            'risk_metrics': {'correlation_risk_score': 0.0, 'severity_level': 'disabled'},
-            'thesis': "Correlated Risk Controller is disabled",
-            'recommendations': ["Enable Correlated Risk Controller for correlation monitoring"]
+            'correlation_clusters': {},
+            '_thesis': thesis
         }
     
     def _generate_error_response(self, error_context: str) -> Dict[str, Any]:
         """Generate response when processing fails"""
+        thesis = f"Correlation analysis failed: {error_context}"
+        insufficient = self._generate_insufficient_data_response()
         return {
-            'correlation_risk_score': 0.5,
+            'correlation_risk': {
+                'correlation_risk_score': 0.5,
+                'severity_level': 'error',
+                'correlation_results': insufficient,
+                'risk_metrics': {'correlation_risk_score': 0.5, 'severity_level': 'error'},
+                'thesis': thesis
+            },
             'diversification_score': 0.5,
-            'severity_level': 'error',
-            'correlation_results': self._generate_insufficient_data_response(),
-            'risk_metrics': {'correlation_risk_score': 0.5, 'severity_level': 'error'},
-            'thesis': f"Correlation analysis failed: {error_context}",
-            'recommendations': ["Investigate correlation analysis system errors"]
+            'correlation_clusters': {},
+            '_thesis': thesis
         }
     
     def _generate_analysis_error_response(self, error_context: str) -> Dict[str, Any]:

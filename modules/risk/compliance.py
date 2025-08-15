@@ -355,15 +355,32 @@ class ComplianceModule(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin
                 validation_results.get('processing_time_ms', 0), True
             )
             
-            return {
-                'compliance_score': self.compliance_score,
-                'validation_results': validation_results,
-                'risk_assessment': risk_assessment,
-                'compliance_metrics': compliance_metrics,
-                'current_limits': current_limits,
-                'thesis': thesis,
-                'recommendations': self._generate_recommendations(validation_results, risk_assessment)
+            # Conform to provides contract
+            provides_payload = {
+                'compliance_status': {
+                    'compliance_score': self.compliance_score,
+                    'risk_budget_usage': self.risk_budget_usage,
+                    'validation_results': validation_results,
+                    'risk_assessment': risk_assessment,
+                    'compliance_metrics': compliance_metrics,
+                    'current_limits': current_limits,
+                    'timestamp': datetime.datetime.now().isoformat()
+                },
+                'validation_results': {
+                    'approved_orders': validation_results.get('approved', []),
+                    'rejected_orders': validation_results.get('rejected', []),
+                    'approval_rate': compliance_metrics.get('approval_rate', 1.0)
+                },
+                'risk_limits': {
+                    'max_leverage': self.max_leverage,
+                    'max_position_risk': self.max_position_risk,
+                    'max_total_risk': self.max_total_risk,
+                    'current_leverage': self.current_leverage,
+                    'risk_budget_usage': self.risk_budget_usage
+                },
+                '_thesis': thesis
             }
+            return provides_payload
             
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "ComplianceModule")
@@ -998,26 +1015,56 @@ class ComplianceModule(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin
     
     def _generate_disabled_response(self) -> Dict[str, Any]:
         """Generate response when module is disabled"""
+        thesis = "Compliance Module is disabled"
         return {
-            'compliance_score': 1.0,
-            'validation_results': {'total_orders': 0, 'approved': [], 'rejected': []},
-            'risk_assessment': {'compliance_score': 1.0, 'risk_budget_usage': 0.0},
-            'compliance_metrics': {'compliance_score': 1.0, 'approval_rate': 1.0},
-            'current_limits': {},
-            'thesis': "Compliance Module is disabled",
-            'recommendations': ["Enable Compliance Module for trade validation"]
+            'compliance_status': {
+                'compliance_score': 1.0,
+                'risk_budget_usage': 0.0,
+                'validation_results': {'total_orders': 0, 'approved': [], 'rejected': []},
+                'risk_assessment': {'compliance_score': 1.0, 'risk_budget_usage': 0.0},
+                'compliance_metrics': {'compliance_score': 1.0, 'approval_rate': 1.0},
+                'current_limits': {}
+            },
+            'validation_results': {
+                'approved_orders': [],
+                'rejected_orders': [],
+                'approval_rate': 1.0
+            },
+            'risk_limits': {
+                'max_leverage': self.max_leverage,
+                'max_position_risk': self.max_position_risk,
+                'max_total_risk': self.max_total_risk,
+                'current_leverage': self.current_leverage,
+                'risk_budget_usage': self.risk_budget_usage
+            },
+            '_thesis': thesis
         }
     
     def _generate_error_response(self, error_context: str) -> Dict[str, Any]:
         """Generate response when processing fails"""
+        thesis = f"Compliance processing failed: {error_context}"
         return {
-            'compliance_score': 0.5,
-            'validation_results': {'error': error_context},
-            'risk_assessment': {'compliance_score': 0.5, 'error': error_context},
-            'compliance_metrics': {'compliance_score': 0.5, 'error': error_context},
-            'current_limits': {},
-            'thesis': f"Compliance processing failed: {error_context}",
-            'recommendations': ["Investigate compliance system errors"]
+            'compliance_status': {
+                'compliance_score': 0.5,
+                'risk_budget_usage': self.risk_budget_usage,
+                'validation_results': {'error': error_context},
+                'risk_assessment': {'compliance_score': 0.5, 'error': error_context},
+                'compliance_metrics': {'compliance_score': 0.5, 'error': error_context},
+                'current_limits': {}
+            },
+            'validation_results': {
+                'approved_orders': [],
+                'rejected_orders': [],
+                'approval_rate': 0.0
+            },
+            'risk_limits': {
+                'max_leverage': self.max_leverage,
+                'max_position_risk': self.max_position_risk,
+                'max_total_risk': self.max_total_risk,
+                'current_leverage': self.current_leverage,
+                'risk_budget_usage': self.risk_budget_usage
+            },
+            '_thesis': thesis
         }
     
     def get_state(self) -> Dict[str, Any]:

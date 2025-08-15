@@ -371,6 +371,71 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             # Generate thesis
             thesis = await self._generate_detection_thesis(detection_data, result)
             
+            # Build provided outputs for return payload
+            detection_data_payload = {
+                'current_mode': self.current_mode.value,
+                'enabled': self.enabled,
+                'anomaly_score': self.anomaly_score,
+                'detection_confidence': self.detection_confidence,
+                'total_anomalies': sum(len(v) for v in self.anomalies.values()),
+                'training_mode': self.config.training_mode,
+                'training_progress': self.training_progress,
+                'is_training_complete': self.is_training_complete,
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+
+            score_data_payload = {
+                'anomaly_score': self.anomaly_score,
+                'detection_confidence': self.detection_confidence,
+                'anomaly_types': {
+                    anomaly_type: len(anomalies)
+                    for anomaly_type, anomalies in self.anomalies.items() if anomalies
+                },
+                'critical_anomalies': sum(
+                    1 for anomalies in self.anomalies.values() for a in anomalies
+                    if a.get("severity") == AnomalySeverity.CRITICAL.value
+                ),
+                'emergency_mode': self.current_mode == AnomalyDetectionMode.EMERGENCY
+            }
+
+            alerts_data_payload = {
+                'emergency_mode': self.current_mode == AnomalyDetectionMode.EMERGENCY,
+                'critical_anomalies_present': any(
+                    a.get("severity") == AnomalySeverity.CRITICAL.value
+                    for anomalies in self.anomalies.values() for a in anomalies
+                ),
+                'high_anomaly_score': self.anomaly_score > self.config.critical_threshold,
+                'low_detection_quality': self._detection_quality < self.config.min_detection_quality,
+                'circuit_breaker_open': self.circuit_breaker['state'] == 'OPEN',
+                'recent_anomalies': {
+                    anomaly_type: [
+                        {
+                            'type': a.get('type', 'unknown'),
+                            'severity': a.get('severity', 'info'),
+                            'confidence': a.get('confidence', 0.5),
+                            'timestamp': a.get('timestamp')
+                        }
+                        for a in anomalies[-5:]
+                    ]
+                    for anomaly_type, anomalies in self.anomalies.items() if anomalies
+                }
+            }
+
+            analytics_payload = {
+                'detection_quality': self._detection_quality,
+                'detection_effectiveness': list(self.detection_effectiveness)[-10:] if self.detection_effectiveness else [],
+                'threshold_adaptation_count': len(self.threshold_history),
+                'current_thresholds': self.current_thresholds.copy(),
+                'base_thresholds': self.base_thresholds.copy(),
+                'detection_stats': dict(self.detection_stats),
+                'data_sufficiency': {
+                    'pnl_history': len(self.pnl_history),
+                    'volume_history': len(self.volume_history),
+                    'price_history': len(self.price_history),
+                    'observation_history': len(self.observation_history)
+                }
+            }
+
             # Update SmartInfoBus
             await self._update_detection_smart_bus(result, thesis)
             
@@ -378,6 +443,16 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             processing_time = (time.time() - start_time) * 1000
             self._record_success(processing_time)
             
+            # Ensure returned payload complies with provides contract
+            result.update({
+                'anomaly_detection': detection_data_payload,
+                'anomaly_score': score_data_payload,
+                'anomaly_alerts': alerts_data_payload,
+                'detection_analytics': analytics_payload,
+                '_thesis': thesis,
+                'success': True
+            })
+
             return result
             
         except Exception as e:
@@ -1904,11 +1979,25 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         self.anomaly_score = 0.0
         self.detection_confidence = 1.0
         
-        return {
+        thesis = "Anomaly detector disabled - maintenance mode"
+        detection_data_payload = {
             'current_mode': AnomalyDetectionMode.MAINTENANCE.value,
             'enabled': False,
             'anomaly_score': 0.0,
             'detection_confidence': 1.0,
+            'total_anomalies': 0,
+            'training_mode': self.config.training_mode,
+            'training_progress': self.training_progress,
+            'is_training_complete': self.is_training_complete,
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+        return {
+            'anomaly_detection': detection_data_payload,
+            'anomaly_score': {'anomaly_score': 0.0, 'detection_confidence': 1.0, 'anomaly_types': {}, 'critical_anomalies': 0, 'emergency_mode': False},
+            'anomaly_alerts': {'emergency_mode': False, 'critical_anomalies_present': False, 'high_anomaly_score': False, 'low_detection_quality': False, 'circuit_breaker_open': False, 'recent_anomalies': {}},
+            'detection_analytics': {'detection_quality': 1.0, 'detection_effectiveness': [], 'threshold_adaptation_count': 0, 'current_thresholds': self.current_thresholds.copy(), 'base_thresholds': self.base_thresholds.copy(), 'detection_stats': {}, 'data_sufficiency': {'pnl_history': 0, 'volume_history': 0, 'price_history': 0, 'observation_history': 0}},
+            '_thesis': thesis,
+            'success': True,
             'fallback_reason': 'detector_disabled'
         }
 
@@ -1916,10 +2005,25 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         """Handle case when no detection data is available"""
         self.logger.warning("No detection data available - maintaining previous state")
         
-        return {
+        thesis = "No detection data - maintaining previous state"
+        detection_data_payload = {
             'current_mode': self.current_mode.value,
+            'enabled': self.enabled,
             'anomaly_score': self.anomaly_score,
             'detection_confidence': max(0.1, self.detection_confidence - 0.1),
+            'total_anomalies': sum(len(v) for v in self.anomalies.values()),
+            'training_mode': self.config.training_mode,
+            'training_progress': self.training_progress,
+            'is_training_complete': self.is_training_complete,
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+        return {
+            'anomaly_detection': detection_data_payload,
+            'anomaly_score': {'anomaly_score': self.anomaly_score, 'detection_confidence': self.detection_confidence, 'anomaly_types': {k: len(v) for k, v in self.anomalies.items() if v}, 'critical_anomalies': 0, 'emergency_mode': self.current_mode == AnomalyDetectionMode.EMERGENCY},
+            'anomaly_alerts': {'emergency_mode': self.current_mode == AnomalyDetectionMode.EMERGENCY, 'critical_anomalies_present': False, 'high_anomaly_score': self.anomaly_score > self.config.critical_threshold, 'low_detection_quality': self._detection_quality < self.config.min_detection_quality, 'circuit_breaker_open': self.circuit_breaker['state'] == 'OPEN', 'recent_anomalies': {}},
+            'detection_analytics': {'detection_quality': self._detection_quality, 'detection_effectiveness': list(self.detection_effectiveness)[-10:] if self.detection_effectiveness else [], 'threshold_adaptation_count': len(self.threshold_history), 'current_thresholds': self.current_thresholds.copy(), 'base_thresholds': self.base_thresholds.copy(), 'detection_stats': dict(self.detection_stats), 'data_sufficiency': {'pnl_history': len(self.pnl_history), 'volume_history': len(self.volume_history), 'price_history': len(self.price_history), 'observation_history': len(self.observation_history)}},
+            '_thesis': thesis,
+            'success': True,
             'fallback_reason': 'no_detection_data'
         }
 
@@ -1957,10 +2061,25 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
 
     def _create_error_fallback_response(self, reason: str) -> Dict[str, Any]:
         """Create fallback response for error cases"""
-        return {
+        thesis = f"Anomaly detector error fallback: {reason}"
+        detection_data_payload = {
             'current_mode': AnomalyDetectionMode.EMERGENCY.value,
-            'anomaly_score': 0.1,  # Conservative fallback
-            'detection_confidence': 0.1,  # Low confidence due to error
+            'enabled': self.enabled,
+            'anomaly_score': 0.1,
+            'detection_confidence': 0.1,
+            'total_anomalies': sum(len(v) for v in self.anomalies.values()),
+            'training_mode': self.config.training_mode,
+            'training_progress': self.training_progress,
+            'is_training_complete': self.is_training_complete,
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+        return {
+            'anomaly_detection': detection_data_payload,
+            'anomaly_score': {'anomaly_score': 0.1, 'detection_confidence': 0.1, 'anomaly_types': {}, 'critical_anomalies': 0, 'emergency_mode': True},
+            'anomaly_alerts': {'emergency_mode': True, 'critical_anomalies_present': True if any(self.anomalies.values()) else False, 'high_anomaly_score': True, 'low_detection_quality': True, 'circuit_breaker_open': self.circuit_breaker['state'] == 'OPEN', 'recent_anomalies': {}},
+            'detection_analytics': {'detection_quality': self._detection_quality, 'detection_effectiveness': list(self.detection_effectiveness)[-10:] if self.detection_effectiveness else [], 'threshold_adaptation_count': len(self.threshold_history), 'current_thresholds': self.current_thresholds.copy(), 'base_thresholds': self.base_thresholds.copy(), 'detection_stats': dict(self.detection_stats), 'data_sufficiency': {'pnl_history': len(self.pnl_history), 'volume_history': len(self.volume_history), 'price_history': len(self.price_history), 'observation_history': len(self.observation_history)}},
+            '_thesis': thesis,
+            'success': False,
             'circuit_breaker_state': self.circuit_breaker['state'],
             'fallback_reason': reason
         }

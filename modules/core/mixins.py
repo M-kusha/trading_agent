@@ -52,7 +52,7 @@ class MixinStateManager:
         self.explainer = EnglishExplainer()
         
     def get_state(self) -> Dict[str, Any]:
-        """Get complete mixin state for persistence"""
+        """Get complete mixin state for persistence (includes last_execution)."""
         with self.state_lock:
             return {
                 'performance_metrics': {
@@ -60,96 +60,108 @@ class MixinStateManager:
                     'success_count': self.performance_metrics.success_count,
                     'failure_count': self.performance_metrics.failure_count,
                     'avg_latency_ms': self.performance_metrics.avg_latency_ms,
-                    'health_status': self.performance_metrics.health_status
+                    'last_execution': self.performance_metrics.last_execution,
+                    'health_status': self.performance_metrics.health_status,
                 }
             }
+
     
     def set_state(self, state: Dict[str, Any]):
-        """Restore mixin state"""
+        """Restore mixin state (robust to missing fields)."""
         with self.state_lock:
-            if 'performance_metrics' in state:
-                metrics = state['performance_metrics']
-                self.performance_metrics.operation_count = metrics.get('operation_count', 0)
-                self.performance_metrics.success_count = metrics.get('success_count', 0)
-                self.performance_metrics.failure_count = metrics.get('failure_count', 0)
-                self.performance_metrics.avg_latency_ms = metrics.get('avg_latency_ms', 0.0)
-                self.performance_metrics.health_status = metrics.get('health_status', 'OK')
+            metrics = state.get('performance_metrics', {})
+            self.performance_metrics.operation_count = metrics.get('operation_count', 0)
+            self.performance_metrics.success_count = metrics.get('success_count', 0)
+            self.performance_metrics.failure_count = metrics.get('failure_count', 0)
+            self.performance_metrics.avg_latency_ms = metrics.get('avg_latency_ms', 0.0)
+            self.performance_metrics.last_execution = metrics.get('last_execution')
+            self.performance_metrics.health_status = metrics.get('health_status', 'OK')
+
     
-    def record_operation(self, operation_name: str, duration_ms: float, success: bool):
-        """Record operation performance"""
-        with self.state_lock:
-            self.performance_metrics.operation_count += 1
-            self.performance_metrics.last_execution = time.time()
-            
-            if success:
-                self.performance_metrics.success_count += 1
-                # Update health if recovering
-                if self.performance_metrics.health_status == "DEGRADED":
-                    success_rate = self.performance_metrics.success_count / self.performance_metrics.operation_count
-                    if success_rate > 0.8:
-                        self.performance_metrics.health_status = "OK"
-            else:
-                self.performance_metrics.failure_count += 1
-                # Degrade health if too many failures
-                failure_rate = self.performance_metrics.failure_count / self.performance_metrics.operation_count
-                if failure_rate > 0.3:
-                    self.performance_metrics.health_status = "DEGRADED"
-                elif failure_rate > 0.5:
-                    self.performance_metrics.health_status = "FAILED"
-            
-            # Update average latency
-            total_ops = self.performance_metrics.operation_count
-            current_avg = self.performance_metrics.avg_latency_ms
-            self.performance_metrics.avg_latency_ms = (
-                (current_avg * (total_ops - 1) + duration_ms) / total_ops
-            )
+def record_operation(self, operation_name: str, duration_ms: float, success: bool):
+    """Record operation performance with correct degradation thresholds."""
+    with self.state_lock:
+        self.performance_metrics.operation_count += 1
+        self.performance_metrics.last_execution = time.time()
+
+        if success:
+            self.performance_metrics.success_count += 1
+            # Recover health if sustained success
+            if self.performance_metrics.health_status in ("DEGRADED", "FAILED"):
+                success_rate = self.performance_metrics.success_count / max(self.performance_metrics.operation_count, 1)
+                if success_rate > 0.8:
+                    self.performance_metrics.health_status = "OK"
+        else:
+            self.performance_metrics.failure_count += 1
+            # IMPORTANT: check higher threshold first
+            failure_rate = self.performance_metrics.failure_count / max(self.performance_metrics.operation_count, 1)
+            if failure_rate > 0.5:
+                self.performance_metrics.health_status = "FAILED"
+            elif failure_rate > 0.3:
+                self.performance_metrics.health_status = "DEGRADED"
+
+        # Online average latency
+        total_ops = self.performance_metrics.operation_count
+        current_avg = self.performance_metrics.avg_latency_ms
+        self.performance_metrics.avg_latency_ms = ((current_avg * (total_ops - 1)) + duration_ms) / total_ops
+
 
 def with_mixin_error_handling(operation_name: str):
-    """Decorator for mixin operations with error handling"""
+    """Decorator for mixin operations with error handling and safe metrics recording."""
     def decorator(func):
         @wraps(func)
         async def wrapper(self, *args, **kwargs):
             start_time = time.time()
             success = False
-            result = None
-            
             try:
-                # Check circuit breaker if available
+                # Optional circuit breaker pre-check
                 if hasattr(self, '_check_circuit_breaker'):
                     if not self._check_circuit_breaker(operation_name):
                         raise RuntimeError(f"Circuit breaker open for {operation_name}")
-                
+
                 result = await func(self, *args, **kwargs)
                 success = True
                 return result
-                
+
             except Exception as e:
-                # Log error with pinpointer if available
-                if hasattr(self, 'error_pinpointer') and self.error_pinpointer:
-                    self.error_pinpointer.analyze_error(e, self.__class__.__name__)
-                
-                # Log with standard format
-                if hasattr(self, 'logger') and self.logger:
-                    self.logger.error(
-                        format_operator_message(
-                            "[CRASH]", f"MIXIN ERROR: {operation_name}",
-                            details=str(e),
-                            context="mixin_operation"
+                # Error pinpointer if available
+                if getattr(self, 'error_pinpointer', None):
+                    try:
+                        self.error_pinpointer.analyze_error(e, self.__class__.__name__)
+                    except Exception:
+                        pass
+
+                # Logger if available
+                if getattr(self, 'logger', None):
+                    try:
+                        self.logger.error(
+                            format_operator_message(
+                                "[CRASH]", f"MIXIN ERROR: {operation_name}",
+                                details=str(e),
+                                context="mixin_operation"
+                            )
                         )
-                    )
-                
-                # Trigger emergency mode if too many failures
+                    except Exception:
+                        pass
+
+                # Optional emergency trigger
                 if hasattr(self, '_check_emergency_trigger'):
-                    self._check_emergency_trigger(operation_name, e)
-                
+                    try:
+                        self._check_emergency_trigger(operation_name, e)
+                    except Exception:
+                        pass
+
                 raise
-            
+
             finally:
-                # Record performance metrics
                 duration_ms = (time.time() - start_time) * 1000
-                if hasattr(self, 'state_manager'):
-                    self.state_manager.record_operation(operation_name, duration_ms, success)
-        
+                # Safe-guard: not all users set state_manager before first call
+                sm = getattr(self, 'state_manager', None)
+                if sm and hasattr(sm, 'record_operation'):
+                    try:
+                        sm.record_operation(operation_name, duration_ms, success)
+                    except Exception:
+                        pass
         return wrapper
     return decorator
 
@@ -175,51 +187,51 @@ class SmartInfoBusTradingMixin(ABC):
         self._initialize_trading_state()
     
     def _initialize_trading_state(self):
-        """Initialize enhanced trading state with all integrations"""
+        """Initialize enhanced trading state with all integrations (idempotent)."""
         # Core state
         max_history = getattr(getattr(self, "config", None), "max_history", 100)
         self._trade_history = deque(maxlen=max_history)
         self._trade_theses = deque(maxlen=max_history)
         self._position_history = deque(maxlen=max_history)
-        
+
         # Trading metrics
-        self._total_pnl = 0.0
-        self._trades_processed = 0
-        self._winning_trades = 0
-        self._losing_trades = 0
-        self._max_drawdown = 0.0
-        self._current_drawdown = 0.0
-        self._peak_equity = 0.0
-        
-        # State management
-        self.state_manager = MixinStateManager(self)
-        
-        # Smart bus integration
-        self.smart_bus = InfoBusManager.get_instance()
-        
-        # Logger setup
-        self.logger = getattr(self, "logger", RotatingLogger(
-            name=f"{self.__class__.__name__}_Trading",
-            log_path=f"logs/mixins/{self.__class__.__name__.lower()}_trading.log",
-            max_lines=5000,
-            operator_mode=True
-        ))
-        
-        # Circuit breaker state
-        self._trading_circuit_breaker = {
+        self._total_pnl = getattr(self, "_total_pnl", 0.0)
+        self._trades_processed = getattr(self, "_trades_processed", 0)
+        self._winning_trades = getattr(self, "_winning_trades", 0)
+        self._losing_trades = getattr(self, "_losing_trades", 0)
+        self._max_drawdown = getattr(self, "_max_drawdown", 0.0)
+        self._current_drawdown = getattr(self, "_current_drawdown", 0.0)
+        self._peak_equity = getattr(self, "_peak_equity", 0.0)
+
+        # State management (do not overwrite if another mixin already created one)
+        if not hasattr(self, 'state_manager'):
+            self.state_manager = MixinStateManager(self)
+
+        # Smart bus
+        self.smart_bus = getattr(self, 'smart_bus', InfoBusManager.get_instance())
+
+        # Logger setup (keep existing if present)
+        if not getattr(self, 'logger', None):
+            self.logger = RotatingLogger(
+                name=f"{self.__class__.__name__}_Trading",
+                log_path=f"logs/mixins/{self.__class__.__name__.lower()}_trading.log",
+                max_lines=5000,
+                operator_mode=True
+            )
+
+        # Circuit breaker state (preserve if existed)
+        self._trading_circuit_breaker = getattr(self, "_trading_circuit_breaker", {
             'failures': 0,
             'threshold': 5,
             'reset_time': 300,  # 5 minutes
             'last_failure': 0,
-            'state': 'CLOSED'  # CLOSED, OPEN, HALF_OPEN
-        }
-        
+            'state': 'CLOSED'   # CLOSED, OPEN, HALF_OPEN
+        })
+
         self.logger.info(
-            format_operator_message(
-                "🏗️", "TRADING MIXIN INITIALIZED",
-                context="mixin_init"
-            )
+            format_operator_message("🏗️", "TRADING MIXIN INITIALIZED", context="mixin_init")
         )
+
     
     @abstractmethod
     async def propose_action(self, **inputs) -> Dict[str, Any]:
@@ -676,53 +688,54 @@ class SmartInfoBusRiskMixin(ABC):
         self._initialize_risk_state()
     
     def _initialize_risk_state(self):
-        """Initialize enhanced risk management state"""
+        """Initialize enhanced risk management state (idempotent)."""
         # Core risk state
         self._risk_alerts = deque(maxlen=100)
-        self._risk_violations = 0
-        self._last_risk_check = None
+        self._risk_violations = getattr(self, "_risk_violations", 0)
+        self._last_risk_check = getattr(self, "_last_risk_check", None)
         self._risk_theses = deque(maxlen=50)
         self._risk_history = deque(maxlen=1000)
-        
-        # Risk limits and thresholds
-        self._risk_limits = {
-            'max_drawdown': 0.15,  # 15%
-            'max_position_size': 0.1,  # 10% of portfolio
-            'max_sector_exposure': 0.3,  # 30%
+
+        # Risk limits and thresholds (merge with defaults if already present)
+        defaults = {
+            'max_drawdown': 0.15,
+            'max_position_size': 0.1,
+            'max_sector_exposure': 0.3,
             'max_leverage': 2.0,
-            'var_limit': 0.05,  # 5% VaR
-            'stress_test_limit': 0.1  # 10% stress loss
+            'var_limit': 0.05,
+            'stress_test_limit': 0.1
         }
-        
-        # State management
-        self.state_manager = MixinStateManager(self)
-        
-        # Smart bus integration
-        self.smart_bus = InfoBusManager.get_instance()
-        
-        # Logger setup
-        self.logger = getattr(self, "logger", RotatingLogger(
-            name=f"{self.__class__.__name__}_Risk",
-            log_path=f"logs/mixins/{self.__class__.__name__.lower()}_risk.log",
-            max_lines=5000,
-            operator_mode=True
-        ))
-        
-        # Circuit breaker for risk operations
-        self._risk_circuit_breaker = {
+        self._risk_limits = {**defaults, **getattr(self, "_risk_limits", {})}
+
+        # State manager
+        if not hasattr(self, 'state_manager'):
+            self.state_manager = MixinStateManager(self)
+
+        # Smart bus
+        self.smart_bus = getattr(self, 'smart_bus', InfoBusManager.get_instance())
+
+        # Logger
+        if not getattr(self, 'logger', None):
+            self.logger = RotatingLogger(
+                name=f"{self.__class__.__name__}_Risk",
+                log_path=f"logs/mixins/{self.__class__.__name__.lower()}_risk.log",
+                max_lines=5000,
+                operator_mode=True
+            )
+
+        # Circuit breaker
+        self._risk_circuit_breaker = getattr(self, "_risk_circuit_breaker", {
             'failures': 0,
             'threshold': 3,
-            'reset_time': 180,  # 3 minutes
+            'reset_time': 180,
             'last_failure': 0,
             'state': 'CLOSED'
-        }
-        
+        })
+
         self.logger.info(
-            format_operator_message(
-                "[SAFE]", "RISK MIXIN INITIALIZED",
-                context="mixin_init"
-            )
+            format_operator_message("[SAFE]", "RISK MIXIN INITIALIZED", context="mixin_init")
         )
+
     
     @with_mixin_error_handling("assess_risk")
     async def assess_risk_with_thesis(self, **inputs) -> Dict[str, Any]:
@@ -804,32 +817,58 @@ class SmartInfoBusRiskMixin(ABC):
             raise
     
     async def _extract_enhanced_risk_context(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract comprehensive risk context from inputs and SmartInfoBus"""
-        # Get basic context
-        context = InfoBusExtractor.extract_risk_context(inputs)
-        
-        # Enhance with SmartInfoBus data
+        """Extract comprehensive risk context from inputs and SmartInfoBus (robust)."""
+        # Base context (safe if extractor missing)
+        try:
+            context = InfoBusExtractor.extract_risk_context(inputs)
+            if not isinstance(context, dict):
+                context = {}
+        except Exception:
+            context = {}
+
+        # SmartInfoBus data (graceful fallbacks)
         positions = self.smart_bus.get('current_positions', self.__class__.__name__) or {}
-        portfolio_value = self.smart_bus.get('portfolio_value', self.__class__.__name__) or 1000000
+        portfolio_value = self.smart_bus.get('portfolio_value', self.__class__.__name__) or 1_000_000
         market_data = self.smart_bus.get('market_data', self.__class__.__name__) or {}
-        
-        # Calculate enhanced metrics
-        total_exposure = sum(
-            abs(pos['net']) * market_data.get(symbol, {}).get('price', 0)
-            for symbol, pos in positions.items()
-        )
-        
+        market_vol = market_data.get('volatility', 0.0)
+
+        # Compute exposure (price-aware if available)
+        total_exposure = 0.0
+        for symbol, pos in positions.items():
+            price = 0.0
+            md = market_data.get(symbol)
+            if isinstance(md, dict):
+                price = md.get('price', 0.0)
+            try:
+                total_exposure += abs(pos.get('net', 0)) * float(price)
+            except Exception:
+                pass
+
+        # Drawdown from trading mixin if available; else from context
+        dd_pct = None
+        try:
+            dd_pct = float(getattr(self, '_current_drawdown', 0.0)) * 100.0
+        except Exception:
+            dd_pct = None
+        if dd_pct is None:
+            dd_pct = float(context.get('drawdown_pct', 0.0))
+
+        # Leverage
+        leverage = (total_exposure / portfolio_value) if portfolio_value > 0 else 0.0
+
         return {
             **context,
             'total_positions': len(positions),
             'total_exposure': total_exposure,
-            'exposure_pct': (total_exposure / portfolio_value) * 100,
+            'exposure_pct': (total_exposure / portfolio_value) * 100.0 if portfolio_value > 0 else 0.0,
             'portfolio_value': portfolio_value,
-            'leverage': total_exposure / portfolio_value if portfolio_value > 0 else 0,
+            'leverage': leverage,
             'positions': positions,
-            'market_volatility': market_data.get('volatility', 0.0),
-            'correlation_risk': await self._calculate_correlation_risk(positions, market_data)
+            'market_volatility': market_vol,
+            'drawdown_pct': dd_pct,
+            'correlation_risk': await self._calculate_correlation_risk(positions, market_data),
         }
+
     
     async def _calculate_risk_components(self, context: Dict[str, Any]) -> Dict[str, float]:
         """Calculate individual risk components"""
@@ -1182,49 +1221,43 @@ class SmartInfoBusVotingMixin(ABC):
         self._initialize_voting_state()
     
     def _initialize_voting_state(self):
-        """Initialize enhanced voting state"""
-        # Core voting state
+        """Initialize enhanced voting state (idempotent)."""
         max_history = getattr(getattr(self, "config", None), "max_history", 100)
-        self._votes_cast = 0
+        self._votes_cast = getattr(self, "_votes_cast", 0)
         self._vote_history = deque(maxlen=max_history)
         self._confidence_history = deque(maxlen=100)
         self._vote_theses = deque(maxlen=50)
         self._consensus_history = deque(maxlen=100)
-        
-        # Voting performance metrics
-        self._successful_votes = 0
-        self._vote_accuracy = 0.0
-        self._consensus_participation = 0.0
-        
-        # State management
-        self.state_manager = MixinStateManager(self)
-        
-        # Smart bus integration
-        self.smart_bus = InfoBusManager.get_instance()
-        
-        # Logger setup
-        self.logger = getattr(self, "logger", RotatingLogger(
-            name=f"{self.__class__.__name__}_Voting",
-            log_path=f"logs/mixins/{self.__class__.__name__.lower()}_voting.log",
-            max_lines=5000,
-            operator_mode=True
-        ))
-        
-        # Circuit breaker for voting operations
-        self._voting_circuit_breaker = {
+
+        self._successful_votes = getattr(self, "_successful_votes", 0)
+        self._vote_accuracy = getattr(self, "_vote_accuracy", 0.0)
+        self._consensus_participation = getattr(self, "_consensus_participation", 0.0)
+
+        if not hasattr(self, 'state_manager'):
+            self.state_manager = MixinStateManager(self)
+
+        self.smart_bus = getattr(self, 'smart_bus', InfoBusManager.get_instance())
+
+        if not getattr(self, 'logger', None):
+            self.logger = RotatingLogger(
+                name=f"{self.__class__.__name__}_Voting",
+                log_path=f"logs/mixins/{self.__class__.__name__.lower()}_voting.log",
+                max_lines=5000,
+                operator_mode=True
+            )
+
+        self._voting_circuit_breaker = getattr(self, "_voting_circuit_breaker", {
             'failures': 0,
             'threshold': 3,
-            'reset_time': 120,  # 2 minutes
+            'reset_time': 120,
             'last_failure': 0,
             'state': 'CLOSED'
-        }
-        
+        })
+
         self.logger.info(
-            format_operator_message(
-                "🗳️", "VOTING MIXIN INITIALIZED",
-                context="mixin_init"
-            )
+            format_operator_message("🗳️", "VOTING MIXIN INITIALIZED", context="mixin_init")
         )
+
     
     @abstractmethod
     async def propose_action(self, **inputs) -> Dict[str, Any]:
@@ -1319,10 +1352,8 @@ class SmartInfoBusVotingMixin(ABC):
             raise
     
     async def _analyze_consensus(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze current voting consensus and conflicts"""
-        # Get existing votes from InfoBus
+        """Analyze current voting consensus and conflicts (numpy-optional)."""
         existing_votes = inputs.get('votes', [])
-        
         if not existing_votes:
             return {
                 'consensus_exists': False,
@@ -1330,37 +1361,39 @@ class SmartInfoBusVotingMixin(ABC):
                 'conflict_level': 'NONE',
                 'dominant_action': None
             }
-        
-        # Analyze vote distribution
-        actions = [vote.get('action') for vote in existing_votes if vote.get('action')]
-        confidences = [vote.get('confidence', 0.5) for vote in existing_votes]
-        
-        # Calculate consensus metrics
-        if actions:
-            # Simple consensus analysis (in production, this would be more sophisticated)
-            action_counts = {}
-            for action in actions:
-                action_str = str(action)  # Simplify for counting
-                action_counts[action_str] = action_counts.get(action_str, 0) + 1
-            
-            dominant_action = max(action_counts.items(), key=lambda x: x[1])
-            consensus_strength = dominant_action[1] / len(actions)
-            
+
+        actions = [v.get('action') for v in existing_votes if v.get('action') is not None]
+        confidences = [float(v.get('confidence', 0.5)) for v in existing_votes]
+
+        if not actions:
             return {
-                'consensus_exists': consensus_strength > 0.6,
-                'alignment_score': consensus_strength,
-                'conflict_level': self._assess_conflict_level(consensus_strength),
-                'dominant_action': dominant_action[0],
-                'vote_count': len(existing_votes),
-                'avg_confidence': np.mean(confidences) if confidences else 0.5
+                'consensus_exists': False,
+                'alignment_score': 0.5,
+                'conflict_level': 'UNKNOWN',
+                'dominant_action': None
             }
-        
+
+        # Normalize actions for simple counting
+        counts: Dict[str, int] = {}
+        for a in actions:
+            key = str(a)
+            counts[key] = counts.get(key, 0) + 1
+
+        dominant_action, dom_count = max(counts.items(), key=lambda kv: kv[1])
+        consensus_strength = dom_count / max(len(actions), 1)
+
+        # Avg confidence – safe without numpy
+        avg_conf = (sum(confidences) / len(confidences)) if confidences else 0.5
+
         return {
-            'consensus_exists': False,
-            'alignment_score': 0.5,
-            'conflict_level': 'UNKNOWN',
-            'dominant_action': None
+            'consensus_exists': consensus_strength > 0.6,
+            'alignment_score': consensus_strength,
+            'conflict_level': self._assess_conflict_level(consensus_strength),
+            'dominant_action': dominant_action,
+            'vote_count': len(existing_votes),
+            'avg_confidence': avg_conf
         }
+
     
     def _assess_conflict_level(self, consensus_strength: float) -> str:
         """Assess level of voting conflict"""
@@ -1373,79 +1406,97 @@ class SmartInfoBusVotingMixin(ABC):
         else:
             return "SEVERE"
     
-    async def _generate_vote_thesis(self, action: Dict[str, Any], confidence: float, 
-                                  inputs: Dict[str, Any], consensus_analysis: Dict[str, Any]) -> str:
-        """Generate comprehensive voting thesis"""
-        
+    async def _generate_vote_thesis(self, action: Dict[str, Any], confidence: float,
+                                    inputs: Dict[str, Any], consensus_analysis: Dict[str, Any]) -> str:
+        """Generate comprehensive voting thesis (works without NumPy)."""
         context = extract_standard_context(inputs)
-        
-        # Determine action description
-        if isinstance(action, dict):
-            action_desc = f"Action: {action.get('type', 'Unknown')} with parameters {list(action.keys())}"
-        elif isinstance(action, np.ndarray):
-            action_desc = f"Action vector with {len(action)} dimensions, max signal at index {np.argmax(np.abs(action))}"
-        else:
+
+        # Action description – robust across types
+        action_desc: str
+        try:
+            if isinstance(action, dict):
+                action_desc = f"Action: {action.get('type', 'Unknown')} with parameters {list(action.keys())}"
+            elif hasattr(action, 'shape') and hasattr(action, '__getitem__'):  # numpy-like
+                try:
+                    length = int(action.shape[0])  # type: ignore[attr-defined]
+                except Exception:
+                    length = len(action) if hasattr(action, '__len__') else 0
+                # argmax of |signal|
+                try:
+                    max_idx = max(range(length), key=lambda i: abs(float(action[i]))) if length > 0 else 0
+                except Exception:
+                    max_idx = 0
+                action_desc = f"Action vector with {length} dimensions, max signal at index {max_idx}"
+            elif hasattr(action, '__len__') and hasattr(action, '__getitem__'):  # list/tuple-like
+                length = len(action)
+                try:
+                    max_idx = max(range(length), key=lambda i: abs(float(action[i]))) if length > 0 else 0
+                except Exception:
+                    max_idx = 0
+                action_desc = f"Action sequence len={length}, max signal at index {max_idx}"
+            else:
+                action_desc = f"Action: {str(action)}"
+        except Exception:
             action_desc = f"Action: {str(action)}"
-        
+
         thesis = f"""
-VOTING DECISION ANALYSIS
-========================
-Module: {self.__class__.__name__}
-Vote Confidence: {confidence:.1%}
-{action_desc}
-Decision Time: {datetime.datetime.now().isoformat()}
+    VOTING DECISION ANALYSIS
+    ========================
+    Module: {self.__class__.__name__}
+    Vote Confidence: {confidence:.1%}
+    {action_desc}
+    Decision Time: {datetime.datetime.now().isoformat()}
 
-MARKET CONTEXT:
-- Market Regime: {context.get('regime', 'Unknown')}
-- Risk Level: {context.get('risk_score', 0):.1%}
-- Portfolio Positions: {context.get('position_count', 0)}
-- System Health: {inputs.get('system_health', 'Unknown')}
+    MARKET CONTEXT:
+    - Market Regime: {context.get('regime', 'Unknown')}
+    - Risk Level: {context.get('risk_score', 0):.1%}
+    - Portfolio Positions: {context.get('position_count', 0)}
+    - System Health: {inputs.get('system_health', 'Unknown')}
 
-CONSENSUS ANALYSIS:
-"""
-        
-        if consensus_analysis['consensus_exists']:
+    CONSENSUS ANALYSIS:
+    """
+
+        if consensus_analysis.get('consensus_exists'):
             thesis += f"""
-- [OK] CONSENSUS PRESENT: {consensus_analysis['alignment_score']:.1%} agreement
-- Dominant Action: {consensus_analysis['dominant_action']}
-- Conflict Level: {consensus_analysis['conflict_level']}
-- My Position: {'ALIGNED' if consensus_analysis['alignment_score'] > 0.6 else 'CONTRARIAN'}
-"""
+    - [OK] CONSENSUS PRESENT: {consensus_analysis.get('alignment_score', 0.0):.1%} agreement
+    - Dominant Action: {consensus_analysis.get('dominant_action')}
+    - Conflict Level: {consensus_analysis.get('conflict_level')}
+    - My Position: {'ALIGNED' if consensus_analysis.get('alignment_score', 0.0) > 0.6 else 'CONTRARIAN'}
+    """
         else:
             thesis += """
-- [WARN] NO CONSENSUS: First vote or highly divided opinions
-- Vote Weight: Higher due to early position
-- Market Leadership: Taking initiative in uncertain conditions
-"""
-        
+    - [WARN] NO CONSENSUS: First vote or highly divided opinions
+    - Vote Weight: Higher due to early position
+    - Market Leadership: Taking initiative in uncertain conditions
+    """
+
         thesis += f"\n\nDECISION RATIONALE:\n"
-        
+
         if confidence > 0.8:
             thesis += f"""
-🔥 HIGH CONFIDENCE VOTE:
-- Strong conviction based on robust analysis
-- Clear market signals support this action
-- Risk/reward profile highly favorable
-- Historical accuracy: {self._vote_accuracy:.1%}
-"""
+    🔥 HIGH CONFIDENCE VOTE:
+    - Strong conviction based on robust analysis
+    - Clear market signals support this action
+    - Risk/reward profile highly favorable
+    - Historical accuracy: {self._vote_accuracy:.1%}
+    """
         elif confidence > 0.5:
             thesis += f"""
-[BALANCE] MODERATE CONFIDENCE VOTE:
-- Balanced view with mixed signals
-- Acceptable risk/reward trade-off
-- Following systematic approach
-- Monitoring for confirmation signals
-"""
+    [BALANCE] MODERATE CONFIDENCE VOTE:
+    - Balanced view with mixed signals
+    - Acceptable risk/reward trade-off
+    - Following systematic approach
+    - Monitoring for confirmation signals
+    """
         else:
             thesis += f"""
-🤔 LOW CONFIDENCE VOTE:
-- Uncertain market conditions
-- Limited conviction in current signals
-- Defensive positioning preferred
-- Ready to adjust based on new information
-"""
-        
-        # Add consensus alignment analysis
+    🤔 LOW CONFIDENCE VOTE:
+    - Uncertain market conditions
+    - Limited conviction in current signals
+    - Defensive positioning preferred
+    - Ready to adjust based on new information
+    """
+
         alignment = consensus_analysis.get('alignment_score', 0.5)
         if alignment > 0.8:
             thesis += "\n\n🤝 STRONG CONSENSUS: Vote aligns with majority view"
@@ -1453,15 +1504,15 @@ CONSENSUS ANALYSIS:
             thesis += "\n\n[FAST] CONTRARIAN POSITION: Vote differs significantly from consensus"
         else:
             thesis += "\n\n[BALANCE] MIXED CONSENSUS: Moderate alignment with existing votes"
-        
-        # Add risk considerations
+
         risk_score = context.get('risk_score', 0)
-        if risk_score > 0.7:
-            thesis += f"\n\n[WARN] HIGH RISK ENVIRONMENT: Vote considers elevated risk level of {risk_score:.1%}"
-        
+        if isinstance(risk_score, (int, float)) and risk_score > 0.7:
+            thesis += f"\n\n[WARN] HIGH RISK ENVIRONMENT: Vote considers elevated risk level of {float(risk_score):.1%}"
+
         thesis += f"\n\nVOTE QUALITY: {await self._get_vote_quality_description(confidence, consensus_analysis)}"
-        
+
         return thesis.strip()
+
     
     async def _get_vote_quality_description(self, confidence: float, consensus_analysis: Dict[str, Any]) -> str:
         """Get vote quality description"""
@@ -1666,21 +1717,24 @@ class SmartInfoBusStateMixin(ABC):
         self._initialize_state_management()
     
     def _initialize_state_management(self):
-        """Initialize state management infrastructure"""
-        self.state_manager = MixinStateManager(self)
-        self._state_version = 1
-        self._last_state_save = None
-        self._state_integrity_hash = None
-        
+        """Initialize state management infrastructure (non-destructive)."""
+        if not hasattr(self, 'state_manager'):
+            self.state_manager = MixinStateManager(self)
+        self._state_version = getattr(self, "_state_version", 1)
+        self._last_state_save = getattr(self, "_last_state_save", None)
+        self._state_integrity_hash = getattr(self, "_state_integrity_hash", None)
+
         # Smart bus integration
-        self.smart_bus = InfoBusManager.get_instance()
-        
-        self.logger = getattr(self, "logger", RotatingLogger(
-            name=f"{self.__class__.__name__}_State",
-            log_path=f"logs/mixins/{self.__class__.__name__.lower()}_state.log",
-            max_lines=1000,
-            operator_mode=True
-        ))
+        self.smart_bus = getattr(self, 'smart_bus', InfoBusManager.get_instance())
+
+        if not getattr(self, 'logger', None):
+            self.logger = RotatingLogger(
+                name=f"{self.__class__.__name__}_State",
+                log_path=f"logs/mixins/{self.__class__.__name__.lower()}_state.log",
+                max_lines=1000,
+                operator_mode=True
+            )
+
     
     def get_complete_state(self) -> Dict[str, Any]:
         """Get complete state including all mixin states"""
@@ -1716,42 +1770,41 @@ class SmartInfoBusStateMixin(ABC):
         return state
     
     def set_complete_state(self, state: Dict[str, Any]) -> bool:
-        """Restore complete state with validation"""
+        """Restore complete state with validation (does not mutate input)."""
         try:
-            # Validate state version
-            if state.get('state_version', 0) > self._state_version:
-                self.logger.warning(f"State version mismatch: {state.get('state_version')} > {self._state_version}")
+            # Validate version
+            incoming_version = state.get('state_version', 0)
+            if incoming_version > getattr(self, '_state_version', 1):
+                self.logger.warning(f"State version mismatch: {incoming_version} > {self._state_version}")
                 return False
-            
-            # Validate integrity if present
+
+            # Validate integrity if present, without mutating caller's dict
             if 'integrity_hash' in state:
-                # Remove hash for verification
-                original_hash = state.pop('integrity_hash')
-                import hashlib
-                import json
-                state_json = json.dumps(state, sort_keys=True, default=str)
+                original_hash = state['integrity_hash']
+                import hashlib, json
+                state_copy = {k: v for k, v in state.items() if k != 'integrity_hash'}
+                state_json = json.dumps(state_copy, sort_keys=True, default=str)
                 calculated_hash = hashlib.sha256(state_json.encode()).hexdigest()
-                
                 if original_hash != calculated_hash:
                     self.logger.error("State integrity check failed")
                     return False
-            
+
             # Restore base state
             if 'base_state' in state and hasattr(self, 'state_manager'):
                 self.state_manager.set_state(state['base_state'])
-            
+
             # Restore mixin-specific states
             if 'trading_state' in state and hasattr(self, '_set_trading_state'):
                 self._set_trading_state(state['trading_state'])
-            
+
             if 'risk_state' in state and hasattr(self, '_set_risk_state'):
                 self._set_risk_state(state['risk_state'])
-            
+
             if 'voting_state' in state and hasattr(self, '_set_voting_state'):
                 self._set_voting_state(state['voting_state'])
-            
+
             self._last_state_save = time.time()
-            
+
             self.logger.info(
                 format_operator_message(
                     "[SAVE]", "STATE RESTORED",
@@ -1759,12 +1812,12 @@ class SmartInfoBusStateMixin(ABC):
                     context="state_management"
                 )
             )
-            
             return True
-            
+
         except Exception as e:
             self.logger.error(f"Failed to restore state: {e}")
             return False
+
     
     def _get_trading_state(self) -> Dict[str, Any]:
         """Get trading-specific state"""

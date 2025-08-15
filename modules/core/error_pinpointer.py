@@ -114,73 +114,68 @@ class ErrorPinpointer:
     FIXED: Integration with orchestrator recovery mechanisms.
     """
     
-    def __init__(self, orchestrator: Optional[ModuleOrchestrator] = None):
+    def __init__(self, orchestrator: Optional['ModuleOrchestrator'] = None):
         """Initialize with comprehensive error tracking and recovery"""
-        
         self.orchestrator = orchestrator
         self.logger = RotatingLogger("ErrorPinpointer", max_lines=10000)
-        
-        # ═══════════════════════════════════════════════════════════
+
+        # Thread-safety for shared structures
+        self._history_lock = threading.RLock()
+        self._cache_lock = threading.Lock()
+
         # Error Tracking & History
-        # ═══════════════════════════════════════════════════════════
         self.error_history: deque = deque(maxlen=1000)
         self.error_patterns = defaultdict(int)
         self.module_error_counts = defaultdict(int)
         self.error_correlations = defaultdict(list)
-        
+
         # Recovery tracking
         self.recovery_attempts = defaultdict(int)
         self.successful_recoveries = defaultdict(int)
         self.recovery_history: deque = deque(maxlen=500)
-        
-        # ═══════════════════════════════════════════════════════════
+
         # Built-in Error Patterns with Recovery Actions
-        # ═══════════════════════════════════════════════════════════
         self.known_patterns = self._initialize_error_patterns()
-        
-        # ═══════════════════════════════════════════════════════════
+
         # Performance Tracking
-        # ═══════════════════════════════════════════════════════════
         self.analysis_times = deque(maxlen=100)
         self.fix_success_rates = defaultdict(float)
-        
+
         # Pattern matching cache for performance
         self._pattern_cache = {}
-        self._cache_lock = threading.Lock()
-        
-        # Automatic recovery system
+
+        # Async recovery infrastructure (created by _start_recovery_system)
         self._recovery_executor = None
-        self._recovery_queue = asyncio.Queue(maxsize=100)
+        self._recovery_queue = None
         self._recovery_task = None
-        self._recovery_executor = None
-        self._recovery_queue = asyncio.Queue(maxsize=100)
-        self._recovery_task = None
-        
-        # ADD THIS - Start the recovery system
+
+        # Start recovery infra (idempotent)
         self._start_recovery_system()
-        
+
         self.logger.info("[OK] ErrorPinpointer initialized with advanced debugging and recovery")
 
+
     def _start_recovery_system(self) -> None:
-        """Spin-up the thread-pool & async worker that handle recovery tasks."""
+        """Spin up the thread pool & async worker that handle recovery tasks (idempotent)."""
         from concurrent.futures import ThreadPoolExecutor
 
-        # Only create once
-        if getattr(self, "_recovery_executor", None):
-            return
+        if self._recovery_executor is None:
+            self._recovery_executor = ThreadPoolExecutor(
+                max_workers=2,
+                thread_name_prefix="ErrorRecovery",
+            )
 
-        self._recovery_executor = ThreadPoolExecutor(
-            max_workers=2,
-            thread_name_prefix="ErrorRecovery",
-        )
-        self._recovery_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+        # Queue is created once; it's fine to create outside a loop in modern asyncio
+        if self._recovery_queue is None:
+            self._recovery_queue = asyncio.Queue(maxsize=100)
 
-        # Try to run the worker inside an existing event-loop; otherwise we’ll defer
+        # Start/refresh worker if an event loop is running
         try:
             loop = asyncio.get_running_loop()
-            self._recovery_task = loop.create_task(self._recovery_worker())
+            if self._recovery_task is None or self._recovery_task.done():
+                self._recovery_task = loop.create_task(self._recovery_worker(), name="ErrorRecoveryWorker")
         except RuntimeError:
-            # No loop in this thread → worker will be launched on-demand
+            # No loop here; worker will be launched lazily when analyze_error queues recovery
             self._recovery_task = None
 
         self.logger.info("[TOOL] Recovery system initialized")
@@ -189,54 +184,66 @@ class ErrorPinpointer:
     async def _recovery_worker(self) -> None:
         """Background coroutine that pulls work off _recovery_queue."""
         self.logger.info("[BOT] Recovery worker started")
+        try:
+            while True:
+                # Wait until queue exists (can happen if worker starts before init)
+                if self._recovery_queue is None:
+                    await asyncio.sleep(0.1)
+                    continue
 
-        while True:
-            try:
-                item = await asyncio.wait_for(self._recovery_queue.get(), timeout=30.0)
-            except asyncio.TimeoutError:
-                # Periodic wake-up – continue listening
-                continue
-
-            if item is None:                     # graceful shutdown token
-                self.logger.info("[STOP] Recovery worker exiting")
-                break
-
-            ctx = item.get("context")
-            if not ctx:
-                self._recovery_queue.task_done()
-                continue
-
-            self.logger.info(f"[TOOL] Processing recovery for {ctx.module_name}:{ctx.error_type}")
-
-            success = False
-            for act in ctx.recovery_actions:
+                q = self._recovery_queue
+                item = await q.get()
                 try:
-                    success = await self._execute_recovery_action(
-                        act.get("action"), act.get("params", {}), ctx
-                    )
-                    if success:
-                        self.logger.info(f"[OK] Recovery succeeded via {act['action']}")
+                    if item is None:  # graceful shutdown token
+                        q.task_done()
                         break
-                except Exception as exc:
-                    self.logger.error(f"[FAIL] Recovery action {act['action']} failed: {exc}")
 
-            key = f"{ctx.module_name}:{ctx.error_type}"
-            if success:
-                self.successful_recoveries[key] += 1
-                ctx.action_taken, ctx.action_result = True, "Automatic recovery successful"
-            else:
-                ctx.action_result = "Automatic recovery failed"
+                    ctx = item.get("context")
+                    if not ctx:
+                        q.task_done()
+                        continue
 
-            self.recovery_history.append(
-                {
-                    "timestamp": datetime.now(),
-                    "module": ctx.module_name,
-                    "error_type": ctx.error_type,
-                    "success": success,
-                    "actions_attempted": len(ctx.recovery_actions),
-                }
-            )
-            self._recovery_queue.task_done()
+                    self.logger.info(f"[TOOL] Processing recovery for {ctx.module_name}:{ctx.error_type}")
+
+                    success = False
+                    for act in ctx.recovery_actions:
+                        try:
+                            success = await self._execute_recovery_action(
+                                act.get("action"), act.get("params", {}), ctx
+                            )
+                            if success:
+                                self.logger.info(f"[OK] Recovery succeeded via {act.get('action')}")
+                                break
+                        except Exception as exc:
+                            self.logger.error(f"[FAIL] Recovery action {act.get('action')} failed: {exc}")
+
+                    key = f"{ctx.module_name}:{ctx.error_type}"
+                    if success:
+                        self.successful_recoveries[key] += 1
+                        ctx.action_taken, ctx.action_result = True, "Automatic recovery successful"
+                    else:
+                        ctx.action_result = "Automatic recovery failed"
+
+                    self.recovery_history.append(
+                        {
+                            "timestamp": datetime.now(),
+                            "module": ctx.module_name,
+                            "error_type": ctx.error_type,
+                            "success": success,
+                            "actions_attempted": len(ctx.recovery_actions),
+                        }
+                    )
+                finally:
+                    # Always mark item done, even on exceptions
+                    try:
+                        q.task_done()
+                    except Exception:
+                        pass
+        except asyncio.CancelledError:
+            self.logger.info("[STOP] Recovery worker cancelled")
+        finally:
+            self.logger.info("[STOP] Recovery worker exiting")
+
 
     
     def _initialize_error_patterns(self) -> List[ErrorPattern]:
@@ -464,39 +471,31 @@ class ErrorPinpointer:
         Comprehensive error analysis with automated recovery.
         ENHANCED: Integration with orchestrator recovery mechanisms.
         """
-        
+        import traceback
+
         start_time = time.time()
-        
+
         try:
-            # ═══════════════════════════════════════════════════════════
-            # Extract Basic Error Information
-            # ═══════════════════════════════════════════════════════════
-            
+            # Basic Error Info
             error_type = type(exception).__name__
             error_message = str(exception)
-            
-            # Get traceback information
+
+            # Traceback (use last frame where the exception occurred)
             tb = exception.__traceback__
+            file_path = function_name = "unknown"
+            line_number = 0
+            frame = None
+
             if tb:
+                # Walk to last traceback entry
+                while tb.tb_next:
+                    tb = tb.tb_next
                 frame = tb.tb_frame
                 file_path = frame.f_code.co_filename
                 function_name = frame.f_code.co_name
                 line_number = tb.tb_lineno
-            else:
-                frame = inspect.currentframe()
-                if frame is not None:
-                    file_path = frame.f_code.co_filename
-                    function_name = frame.f_code.co_name
-                    line_number = frame.f_lineno
-                else:
-                    file_path = "unknown"
-                    function_name = "unknown"
-                    line_number = 0
-            
-            # ═══════════════════════════════════════════════════════════
-            # Create Error Context
-            # ═══════════════════════════════════════════════════════════
-            
+
+            # Build Context
             context = ErrorContext(
                 error_type=error_type,
                 error_message=error_message,
@@ -504,74 +503,51 @@ class ErrorPinpointer:
                 function_name=function_name,
                 file_path=file_path,
                 line_number=line_number,
-                timestamp=datetime.now()
+                timestamp=datetime.now(),
             )
-            
-            # ═══════════════════════════════════════════════════════════
-            # Extract Code Context
-            # ═══════════════════════════════════════════════════════════
-            
+
+            # Code & System Context
             context.source_lines = self._extract_source_lines(file_path, line_number)
             context.local_variables = self._extract_local_variables(frame)
-            context.call_stack = self._extract_call_stack(tb)
-            
-            # ═══════════════════════════════════════════════════════════
-            # Extract System Context
-            # ═══════════════════════════════════════════════════════════
-            
+            context.call_stack = self._extract_call_stack(exception.__traceback__)
             context.module_state = self._get_module_state(module_name)
             context.infobus_snapshot = self._get_infobus_snapshot()
             context.related_errors = self._find_related_errors(error_type, module_name)
-            
-            # ═══════════════════════════════════════════════════════════
-            # Analyze Error Pattern and Generate Recovery Actions
-            # ═══════════════════════════════════════════════════════════
-            
+
+            # Pattern analysis + fixes + actions
             self._analyze_error_pattern(context)
             context.recovery_actions = self._generate_recovery_actions(context)
-            
-            # ═══════════════════════════════════════════════════════════
-            # Generate Debugging Steps
-            # ═══════════════════════════════════════════════════════════
-            
             context.suggested_fixes = self._generate_fix_suggestions(context)
             context.reproduction_steps = self._generate_reproduction_steps(context)
-            
-            # ═══════════════════════════════════════════════════════════
-            # Record Error and Correlate
-            # ═══════════════════════════════════════════════════════════
-            
-            self.error_history.append(context)
-            self.error_patterns[f"{error_type}:{module_name}"] += 1
-            self.module_error_counts[module_name] += 1
+
+            # Record & correlate (locked)
+            with self._history_lock:
+                self.error_history.append(context)
+                self.error_patterns[f"{error_type}:{module_name}"] += 1
+                self.module_error_counts[module_name] += 1
             self._correlate_error(context)
-            
-            # ═══════════════════════════════════════════════════════════
-            # Attempt Automatic Recovery if Enabled - FIXED
-            # ═══════════════════════════════════════════════════════════
-            
+
+            # Auto-recovery scheduling (loop-aware)
             if context.recovery_actions and self._should_attempt_recovery(context):
                 try:
                     loop = asyncio.get_running_loop()
+                    # Make sure infra is up
+                    if self._recovery_queue is None:
+                        self._start_recovery_system()
                     loop.create_task(self._attempt_recovery(context))
                 except RuntimeError:
-                    # No event loop - use thread pool
+                    # No loop; fall back to sync recovery in thread pool
                     if self._recovery_executor:
                         self._recovery_executor.submit(self._sync_recovery, context)
                     else:
                         self.logger.warning(f"[WARN] No recovery system available for {context.module_name}")
-            
-            # ═══════════════════════════════════════════════════════════
-            # Performance Tracking
-            # ═══════════════════════════════════════════════════════════
-            
+
+            # Perf
             analysis_time = (time.time() - start_time) * 1000
-            self.analysis_times.append(analysis_time)
-            
-            # ═══════════════════════════════════════════════════════════
-            # Logging
-            # ═══════════════════════════════════════════════════════════
-            
+            with self._history_lock:
+                self.analysis_times.append(analysis_time)
+
+            # Log
             self.logger.error(format_operator_message(
                 "[CRASH]",
                 message=f"ERROR ANALYZED: {error_type} in {module_name}::{function_name}:{line_number}",
@@ -579,13 +555,11 @@ class ErrorPinpointer:
                 category=context.category,
                 recovery_planned=len(context.recovery_actions) > 0
             ))
-            
+
             return context
-            
+
         except Exception as analysis_error:
-            # Fallback error context if analysis fails
             self.logger.error(f"Error analysis failed: {analysis_error}")
-            
             return ErrorContext(
                 error_type=type(exception).__name__,
                 error_message=str(exception),
@@ -596,8 +570,9 @@ class ErrorPinpointer:
                 timestamp=datetime.now(),
                 severity="high",
                 category="analysis_failed",
-                suggested_fixes=["Manual debugging required - error analysis failed"]
+                suggested_fixes=["Manual debugging required - error analysis failed"],
             )
+
     
     def _correlate_error(self, context: ErrorContext):
         """Correlate error with recent system events"""
@@ -642,174 +617,177 @@ class ErrorPinpointer:
         return False
     
     async def _attempt_recovery(self, context: ErrorContext):
-        """Queue recovery attempt for background processing"""
+        """Queue recovery attempt for background processing."""
         recovery_key = f"{context.module_name}:{context.error_type}"
         self.recovery_attempts[recovery_key] += 1
-        
+
+        # Ensure infra
+        if self._recovery_queue is None or (self._recovery_task and self._recovery_task.done()):
+            self._start_recovery_system()
+
+        # If still no loop (this coroutine shouldn't run without a loop), fallback
         try:
-            # Ensure recovery worker is running
-            if not self._recovery_task or self._recovery_task.done():
-                try:
-                    loop = asyncio.get_running_loop()
-                    self._recovery_task = loop.create_task(self._recovery_worker())
-                except RuntimeError:
-                    # No event loop - use thread pool for recovery
-                    if self._recovery_executor:
-                        self._recovery_executor.submit(self._sync_recovery, context)
-                    return
-            
-            # Queue recovery for async processing
-            recovery_item = {'context': context, 'timestamp': time.time()}
-            
-            try:
-                await asyncio.wait_for(
-                    self._recovery_queue.put(recovery_item), 
-                    timeout=1.0
-                )
-                self.logger.info(f"📋 Queued recovery for {context.module_name}")
-            except asyncio.TimeoutError:
-                self.logger.warning(f"[WARN] Recovery queue full for {context.module_name}")
-            
-        except Exception as e:
-            self.logger.error(f"[CRASH] Failed to queue recovery: {e}")
-            
-            
+            _ = asyncio.get_running_loop()
+        except RuntimeError:
+            if self._recovery_executor:
+                self._recovery_executor.submit(self._sync_recovery, context)
+            return
+
+        # Enqueue (bounded)
+        recovery_item = {'context': context, 'timestamp': time.time()}
+        q = self._recovery_queue
+        if q is None:
+            # If still no queue, give up gracefully
+            self.logger.warning("[WARN] Recovery queue not initialized; skipping enqueue")
+            return
+        try:
+            await asyncio.wait_for(q.put(recovery_item), timeout=1.0)
+            self.logger.info(f"📋 Queued recovery for {context.module_name}")
+        except asyncio.TimeoutError:
+            self.logger.warning(f"[WARN] Recovery queue full for {context.module_name}")
+
+                
+                
     def shutdown(self) -> None:
         """Graceful, idempotent shutdown of ErrorPinpointer infrastructure."""
         self.logger.info("[STOP] Shutting down ErrorPinpointer …")
 
-        # Tell the async worker to stop
-        if getattr(self, "_recovery_queue", None):
-            try:
-                # Works whether or not an event-loop is running
+        # Signal the worker to stop
+        try:
+            if self._recovery_queue is not None:
                 try:
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(self._recovery_queue.put(None))
-                except RuntimeError:
                     self._recovery_queue.put_nowait(None)
-            except Exception as exc:
-                self.logger.debug(f"Failed to enqueue shutdown token: {exc}")
+                except Exception:
+                    # If full or not thread-safe here, best-effort cancel below
+                    pass
+        except Exception as exc:
+            self.logger.debug(f"Failed to enqueue shutdown token: {exc}")
 
-        # Wait a moment so the coroutine can exit
-        if getattr(self, "_recovery_task", None) and self._recovery_task:
+        # Cancel task if still running (don’t call asyncio.run() from unknown context)
+        if self._recovery_task and not self._recovery_task.done():
             try:
-                # Use asyncio.run() to handle the async call in sync context
-                asyncio.run(asyncio.wait_for(self._recovery_task, timeout=1.0))
+                self._recovery_task.cancel()
             except Exception:
                 pass
 
         # Tear down the thread-pool
-        if getattr(self, "_recovery_executor", None) and self._recovery_executor:
-            self._recovery_executor.shutdown(wait=True)
+        if self._recovery_executor:
+            try:
+                self._recovery_executor.shutdown(wait=False)
+            except Exception:
+                pass
 
         self.logger.info("[OK] ErrorPinpointer shutdown complete")
 
+
     def _sync_recovery(self, context: ErrorContext):
-        """Synchronous recovery fallback when no event loop available"""
+        """Synchronous recovery fallback when no event loop available."""
         try:
             self.logger.info(f"[TOOL] Sync recovery for {context.module_name}")
-            
-            # Simple synchronous recovery actions
+
             for action in context.recovery_actions:
                 action_type = action.get('action')
-                
+                params = action.get('params', {})
+
                 if action_type == 'force_garbage_collection':
                     import gc
-                    gc.collect()
+                    # Collect twice to be thorough
+                    generations = params.get('generations', 2)
+                    for _ in range(max(generations, 1)):
+                        gc.collect()
                     return True
-                elif action_type == 'enter_emergency_mode' and self.orchestrator:
-                    reason = action.get('params', {}).get('reason', 'Error recovery')
-                    self.orchestrator.trigger_emergency_mode_manually(reason)
+
+                orc = self.orchestrator
+                if action_type == 'enter_emergency_mode' and orc and hasattr(orc, 'trigger_emergency_mode_manually'):
+                    reason = params.get('reason', 'Error recovery')
+                    orc.trigger_emergency_mode_manually(reason)
                     return True
-            
+
             return False
-            
+
         except Exception as e:
             self.logger.error(f"Sync recovery failed: {e}")
             return False
+
     
     async def _execute_recovery_action(self, action_type: str, params: Dict[str, Any], context: ErrorContext) -> bool:
-        """Execute specific recovery action"""
-        
-        if not self.orchestrator:
+        """Execute specific recovery action."""
+        orc = self.orchestrator
+        if not orc:
             return False
-        
+
         try:
             if action_type == 'request_missing_data':
-                # Request missing data from InfoBus
                 key_match = re.search(r"['\"]([^'\"]+)['\"]", context.error_message)
                 if key_match:
                     key = key_match.group(1)
                     smart_bus = InfoBusManager.get_instance()
                     smart_bus.request_data(key, context.module_name)
-                    
-                    # Wait for data
-                    timeout = params.get('timeout', 5.0)
-                    await asyncio.sleep(timeout)
-                    
-                    # Check if data is now available
+                    await asyncio.sleep(float(params.get('timeout', 5.0)))
                     if smart_bus.get(key, context.module_name) is not None:
                         return True
-            
+
             elif action_type == 'disable_module_temporarily':
-                # Temporarily disable problematic module
-                duration = params.get('duration', 60)
-                self.orchestrator.disable_module(context.module_name)
-                
-                # Schedule re-enable
+                duration = int(params.get('duration', 60))
+                if hasattr(orc, 'disable_module'):
+                    orc.disable_module(context.module_name)
+
                 async def re_enable():
                     await asyncio.sleep(duration)
-                    if self.orchestrator:
-                        self.orchestrator.enable_module(context.module_name)
-                
+                    if hasattr(orc, 'enable_module'):
+                        orc.enable_module(context.module_name)
+
                 asyncio.create_task(re_enable())
                 return True
-            
+
             elif action_type == 'force_garbage_collection':
-                # Force garbage collection
                 import gc
-                generations = params.get('generations', 2)
-                gc.collect(generations)
-                
-                # Clear some caches
+                generations = int(params.get('generations', 2))
+                for _ in range(max(generations, 1)):
+                    gc.collect()
                 if params.get('preserve_critical', True):
                     smart_bus = InfoBusManager.get_instance()
-                    smart_bus._cleanup_old_data()
-                
+                    if hasattr(smart_bus, "_cleanup_old_data"):
+                        smart_bus._cleanup_old_data()
                 return True
-            
+
             elif action_type == 'enter_emergency_mode':
-                # Trigger emergency mode
                 reason = params.get('reason', f"Error in {context.module_name}")
-                self.orchestrator.trigger_emergency_mode_manually(reason)
+                if hasattr(orc, 'trigger_emergency_mode_manually'):
+                    orc.trigger_emergency_mode_manually(reason)
                 return True
-            
+
             elif action_type == 'wait_and_reset_breaker':
-                # Wait and reset circuit breaker
-                wait_time = params.get('wait_time', 30)
+                wait_time = int(params.get('wait_time', 30))
                 await asyncio.sleep(wait_time)
-                
-                return self.orchestrator.reset_circuit_breaker(context.module_name)
-            
+                return bool(hasattr(orc, 'reset_circuit_breaker') and orc.reset_circuit_breaker(context.module_name))
+
             elif action_type == 'break_dependency_cycle':
-                # Rebuild execution plan
-                self.orchestrator.build_execution_plan()
+                # Rebuild execution plan to try to break cycles
+                if hasattr(orc, 'build_execution_plan'):
+                    orc.build_execution_plan()
                 return True
-            
+
+            elif action_type == 'rebuild_execution_plan':
+                validate = bool(params.get('validate', True))
+                if hasattr(orc, 'build_execution_plan'):
+                    orc.build_execution_plan()
+                if validate and hasattr(orc, '_validate_system_integrity'):
+                    orc._validate_system_integrity()
+                return True
+
             elif action_type == 'reduce_module_load':
-                # Reduce module load by adjusting config
-                factor = params.get('factor', 0.5)
-                
-                if hasattr(self.orchestrator.modules.get(context.module_name), 'reduce_load'):
-                    module = self.orchestrator.modules[context.module_name]
+                factor = float(params.get('factor', 0.5))
+                module = getattr(orc, 'modules', {}).get(context.module_name) if hasattr(orc, 'modules') else None
+                if module and hasattr(module, 'reduce_load'):
                     module.reduce_load(factor)
                     return True
-                    
+
         except Exception as e:
             self.logger.error(f"Recovery action {action_type} failed: {e}")
-        
+
         return False
-    
+
     def _generate_recovery_actions(self, context: ErrorContext) -> List[Dict[str, Any]]:
         """Generate recovery actions based on error pattern"""
         actions = []
@@ -1119,30 +1097,35 @@ class ErrorPinpointer:
         return {"error": "Failed to get module state"}
     
     def _get_infobus_snapshot(self) -> Dict[str, Any]:
-        """Get snapshot of current InfoBus state"""
-        
+        """Get snapshot of current InfoBus state (best-effort, guarded)."""
         try:
             smart_bus = InfoBusManager.get_instance()
-            
+
+            data_store = getattr(smart_bus, "_data_store", {})
+            module_disabled = getattr(smart_bus, "_module_disabled", set())
+            event_log = getattr(smart_bus, "_event_log", deque(maxlen=0))
+            get_perf = getattr(smart_bus, "get_performance_metrics", None)
+
             snapshot = {
-                'data_keys': list(smart_bus._data_store.keys())[:20],  # First 20 keys
-                'total_keys': len(smart_bus._data_store),
-                'disabled_modules': list(smart_bus._module_disabled),
-                'recent_events': list(smart_bus._event_log)[-10:] if hasattr(smart_bus, '_event_log') else [],
-                'performance_metrics': smart_bus.get_performance_metrics()
+                'data_keys': list(data_store.keys())[:20] if isinstance(data_store, dict) else [],
+                'total_keys': len(data_store) if isinstance(data_store, dict) else 0,
+                'disabled_modules': list(module_disabled) if isinstance(module_disabled, (set, list)) else [],
+                'recent_events': list(event_log)[-10:] if isinstance(event_log, (list, deque)) else [],
+                'performance_metrics': get_perf() if callable(get_perf) else {},
             }
-            
-            # Add memory usage
+
+            # Memory usage
             try:
                 memory_usage = psutil.Process().memory_info().rss / 1024 / 1024  # MB
                 snapshot['memory_usage_mb'] = round(memory_usage, 2)
-            except:
+            except Exception:
                 pass
-            
+
             return snapshot
-            
+
         except Exception as e:
             return {"error": f"Failed to get InfoBus snapshot: {e}"}
+
     
     def _find_related_errors(self, error_type: str, module_name: str, lookback_minutes: int = 10) -> List[str]:
         """Find related errors in recent history"""
@@ -1331,8 +1314,7 @@ class ErrorPinpointer:
         return module_errors
     
     def create_debug_snapshot(self, module_name: str) -> Dict[str, Any]:
-        """Create comprehensive debugging snapshot for a module"""
-        
+        """Create comprehensive debugging snapshot for a module."""
         snapshot = {
             'timestamp': datetime.now().isoformat(),
             'module': module_name,
@@ -1342,27 +1324,25 @@ class ErrorPinpointer:
             'execution_context': {},
             'recovery_history': []
         }
-        
-        # Add execution context from orchestrator
+
+        # Orchestrator context
         if self.orchestrator:
-            smart_bus = InfoBusManager.get_instance()
+            cb_obj = self.orchestrator.circuit_breakers.get(module_name)
+            cb_stats = cb_obj.get_stats() if cb_obj and hasattr(cb_obj, "get_stats") else {}
             snapshot['execution_context'] = {
-                'is_enabled': smart_bus.is_module_enabled(module_name),
-                'failure_count': smart_bus._circuit_breakers[module_name].failure_count if module_name in smart_bus._circuit_breakers else 0,
-                'circuit_breaker': self.orchestrator.circuit_breakers.get(module_name, {})
+                'is_enabled': True if module_name not in getattr(InfoBusManager.get_instance(), "_module_disabled", set()) else False,
+                'circuit_breaker': cb_stats,
             }
-            
-            # Get performance metrics
             if module_name in self.orchestrator.module_performance:
                 snapshot['performance'] = self.orchestrator.module_performance[module_name]
-        
-        # Add recovery history
+
+        # Recovery history
         for record in self.recovery_history:
             if record['module'] == module_name:
                 snapshot['recovery_history'].append(record)
-        
+
         return snapshot
-    
+
     def export_error_report(self, filepath: str, last_n_errors: int = 100):
         """Export comprehensive error report"""
         

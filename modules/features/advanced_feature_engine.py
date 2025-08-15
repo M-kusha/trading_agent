@@ -362,14 +362,53 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             'instruments': []
         }
         
-        # Extract from SmartInfoBus
-        bus_data = self.smart_bus.get('market_data', self.__class__.__name__)
-        if bus_data and isinstance(bus_data, dict):
-            for key, value in bus_data.items():
-                if 'price' in key.lower() and isinstance(value, (list, np.ndarray)):
-                    market_data['prices'].extend(np.asarray(value).flatten())
-                elif 'volume' in key.lower() and isinstance(value, (list, np.ndarray)):
-                    market_data['volumes'].extend(np.asarray(value).flatten())
+        # Extract from SmartInfoBus (prefer richer multi-timeframe data)
+        hist = (
+            self.smart_bus.get('historical_prices', self.__class__.__name__)
+            or self.smart_bus.get('multi_timeframe_data', self.__class__.__name__)
+        )
+        if hist and isinstance(hist, dict):
+            try:
+                for instrument, tfs in hist.items():
+                    if isinstance(tfs, dict):
+                        for tf, payload in tfs.items():
+                            if isinstance(payload, dict):
+                                closes = payload.get('close')
+                                # some providers might embed arrays under 'current_bar' etc.
+                                if isinstance(closes, (list, np.ndarray)) and len(closes) > 0:
+                                    market_data['prices'].extend(np.asarray(closes).flatten())
+                                elif 'current_bar' in payload and isinstance(payload['current_bar'], dict):
+                                    cb = payload['current_bar']
+                                    if isinstance(cb.get('close'), (int, float)):
+                                        market_data['prices'].append(float(cb['close']))
+            except Exception:
+                pass
+
+        # Fallback to OHLCV dicts
+        if not market_data['prices']:
+            ohlcv = self.smart_bus.get('ohlcv_data', self.__class__.__name__)
+            if ohlcv and isinstance(ohlcv, dict):
+                for symbol, bar in ohlcv.items():
+                    if isinstance(bar, dict) and isinstance(bar.get('close'), (int, float)):
+                        market_data['prices'].append(float(bar['close']))
+
+        # Fallback to compact price_data map
+        if not market_data['prices']:
+            pd_map = self.smart_bus.get('price_data', self.__class__.__name__)
+            if pd_map and isinstance(pd_map, dict):
+                for symbol, pd_entry in pd_map.items():
+                    if isinstance(pd_entry, dict) and isinstance(pd_entry.get('close'), (int, float)):
+                        market_data['prices'].append(float(pd_entry['close']))
+
+        # Fallback to raw market_data
+        if not market_data['prices']:
+            bus_data = self.smart_bus.get('market_data', self.__class__.__name__)
+            if bus_data and isinstance(bus_data, dict):
+                for key, value in bus_data.items():
+                    if 'price' in str(key).lower() and isinstance(value, (list, np.ndarray)):
+                        market_data['prices'].extend(np.asarray(value).flatten())
+                    elif isinstance(value, dict) and isinstance(value.get('close'), (int, float)):
+                        market_data['prices'].append(float(value['close']))
         
         # Extract from direct inputs
         for key, value in inputs.items():

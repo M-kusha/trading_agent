@@ -887,6 +887,82 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
             theme_momentum=self.theme_momentum
         ))
 
+
+    async def process(self, **inputs) -> Dict[str, Any]:
+            """
+            Contract-compliant process for EnhancedThemeExpert.
+            Produces: theme_voting_proposal, theme_confidence, theme_analysis, voting_summary,
+                    strategy_arbiter_weights, consensus_direction, agreement_score,
+                    raw_proposals, member_confidences, and _thesis.
+            """
+            start = time.time()
+            try:
+                base = await super().process(**inputs)
+
+                proposal = dict(base.get('voting_proposal') or {})
+                confidence = float(base.get('confidence', 0.0))
+                thesis = base.get('thesis', 'Theme expert thesis unavailable')
+                mc = dict(base.get('market_context') or {})
+                analytics = dict(base.get('expert_analytics') or {})
+                emergency = dict(base.get('emergency_status') or {})
+                health = dict(base.get('health_metrics') or {})
+
+                expert_name = self.__class__.__name__
+                member_confidences = {expert_name: confidence}
+                raw_proposals = {expert_name: proposal}
+                strategy_weights = {expert_name: 1.0}
+
+                voting_summary = {
+                    'expert': expert_name,
+                    'action': proposal.get('action', 'abstain'),
+                    'signal_strength': float(proposal.get('signal_strength', 0.0)),
+                    'position_size': float(proposal.get('position_size', 0.0)),
+                    'duration': proposal.get('duration', 'unknown'),
+                    'theme_type': proposal.get('theme_type', 'unknown'),
+                    'confidence': confidence,
+                    'regime': mc.get('regime', 'unknown'),
+                    'session': mc.get('session', 'unknown'),
+                }
+
+                theme_analysis = {
+                    'market_context': mc,
+                    'expert_analytics': analytics,
+                    'emergency_status': emergency,
+                    'health_metrics': health,
+                    'theme_metadata': proposal.get('theme_metadata', {}),
+                }
+
+                out = {
+                    'theme_voting_proposal': proposal,
+                    'theme_confidence': confidence,
+                    'theme_analysis': theme_analysis,
+                    'voting_summary': voting_summary,
+                    'strategy_arbiter_weights': strategy_weights,
+                    'consensus_direction': proposal.get('action', 'neutral'),
+                    'agreement_score': 1.0,
+                    'raw_proposals': raw_proposals,
+                    'member_confidences': member_confidences,
+                    '_thesis': thesis,
+                }
+                self.performance_tracker.record_metric(self.__class__.__name__, 'process', (time.time() - start) * 1000, True)
+                return out
+
+            except Exception as e:
+                self.logger.error(f"[FAIL] Theme process error: {e}")
+                return {
+                    'theme_voting_proposal': {'action': 'abstain', 'reason': f'error:{str(e)}'},
+                    'theme_confidence': 0.1,
+                    'theme_analysis': {'status': 'error', 'error': str(e)},
+                    'voting_summary': {'expert': self.__class__.__name__, 'action': 'abstain'},
+                    'strategy_arbiter_weights': {self.__class__.__name__: 1.0},
+                    'consensus_direction': 'neutral',
+                    'agreement_score': 0.0,
+                    'raw_proposals': {},
+                    'member_confidences': {},
+                    '_thesis': f"Theme expert failed: {str(e)}",
+                }
+
+
     async def _generate_expert_specific_proposal(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
         """Generate theme-based voting proposal"""
         try:
@@ -1100,6 +1176,52 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
             base_signal_strength=self.base_signal_strength,
             seasonality_sensitivity=self.seasonality_sensitivity
         ))
+
+
+    async def process(self, **inputs) -> Dict[str, Any]:
+            """
+            Contract-compliant process for EnhancedSeasonalityRiskExpert.
+            Produces: seasonality_voting_proposal, seasonality_confidence, seasonality_analysis, _thesis.
+            """
+            start = time.time()
+            try:
+                base = await super().process(**inputs)
+
+                proposal = dict(base.get('voting_proposal') or {})
+                confidence = float(base.get('confidence', 0.0))
+                thesis = base.get('thesis', 'Seasonality expert thesis unavailable')
+                mc = dict(base.get('market_context') or {})
+                analytics = dict(base.get('expert_analytics') or {})
+                emergency = dict(base.get('emergency_status') or {})
+                health = dict(base.get('health_metrics') or {})
+
+                seasonality_analysis = {
+                    'market_context': mc,
+                    'expert_analytics': analytics,
+                    'emergency_status': emergency,
+                    'health_metrics': health,
+                    'seasonality_metadata': proposal.get('seasonality_metadata', {}),
+                    'session_adjustment': proposal.get('session_adjustment', {}),
+                }
+
+                out = {
+                    'seasonality_voting_proposal': proposal,
+                    'seasonality_confidence': confidence,
+                    'seasonality_analysis': seasonality_analysis,
+                    '_thesis': thesis,
+                }
+                self.performance_tracker.record_metric(self.__class__.__name__, 'process', (time.time() - start) * 1000, True)
+                return out
+
+            except Exception as e:
+                self.logger.error(f"[FAIL] Seasonality process error: {e}")
+                return {
+                    'seasonality_voting_proposal': {'action': 'abstain', 'reason': f'error:{str(e)}'},
+                    'seasonality_confidence': 0.1,
+                    'seasonality_analysis': {'status': 'error', 'error': str(e)},
+                    '_thesis': f"Seasonality expert failed: {str(e)}",
+                }
+
 
     async def _generate_expert_specific_proposal(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
         """Generate seasonality-based voting proposal"""
@@ -1389,6 +1511,7 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
             operator_mode=True
         )
         self.error_pinpointer = ErrorPinpointer()
+        self.performance_tracker = PerformanceTracker()
         
         self.logger.info(format_operator_message(
             icon="🗳️",
@@ -1398,59 +1521,116 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
         ))
 
     async def process(self, **inputs) -> Dict[str, Any]:
-        """Process committee voting with enhanced coordination"""
+        """Process committee voting with enhanced coordination (contract-compliant)."""
         start_time = time.time()
-        
         try:
-            # Collect expert votes
+            # 1) Collect inputs
             expert_votes = await self._collect_expert_votes()
-            
-            # Calculate expert weights
             expert_weights = await self._calculate_expert_weights(expert_votes)
-            
-            # Determine committee decision
-            committee_decision = await self._determine_committee_decision(expert_votes, expert_weights)
-            
-            # Calculate committee confidence
+
+            # 2) Committee decisions & metrics
+            decision = await self._determine_committee_decision(expert_votes, expert_weights)
             committee_confidence = await self._calculate_committee_confidence(expert_votes, expert_weights)
-            
-            # Analyze consensus
-            consensus_analysis = await self._analyze_voting_consensus(expert_votes, expert_weights)
-            
-            # Generate committee thesis
-            committee_thesis = await self._generate_committee_thesis(
-                committee_decision, committee_confidence, consensus_analysis, expert_votes
-            )
-            
-            results = {
-                'committee_decision': committee_decision,
-                'voting_consensus': consensus_analysis,
+            consensus = await self._analyze_voting_consensus(expert_votes, expert_weights)
+            thesis = await self._generate_committee_thesis(decision, committee_confidence, consensus, expert_votes)
+
+            # 3) Build all declared outputs
+            # voting_summary (required by orchestrator)
+            voting_summary = {
+                'action': decision.get('action', 'abstain'),
+                'decision_type': decision.get('decision_type', 'unknown'),
+                'consensus_strength': float(consensus.get('consensus_strength', 0.0)),
+                'consensus_exists': bool(consensus.get('consensus_exists', False)),
+                'vote_count': int(consensus.get('vote_count', len(expert_votes))),
+            }
+
+            # strategy_arbiter_weights (mirror normalized expert weights)
+            strategy_arbiter_weights = dict(expert_weights)
+
+            # consensus_direction & agreement_score
+            consensus_direction = decision.get('action', 'neutral')
+            agreement_score = float(consensus.get('consensus_strength', 0.0))
+
+            # raw_proposals & member_confidences
+            raw_proposals = {v['expert']: dict(v['vote'] or {}) for v in expert_votes}
+            member_confidences = {v['expert']: float(v.get('confidence', 0.0)) for v in expert_votes}
+
+            # Extra keys declared in provides (fill safely)
+            votes = list(expert_votes)
+            member_proposals = dict(raw_proposals)
+            voting_weights = dict(expert_weights)
+            time_of_day = datetime.datetime.now().strftime("%H:%M:%S")
+            performance_feedback = {'average_confidence': float(self.committee_analytics.get('average_confidence', 0.5))}
+            horizon_alignment = {'status': 'neutral', 'reason': 'no explicit horizon data'}
+
+            # 4) Update SmartInfoBus (side-effect)
+            await self._update_smartinfobus_committee({
+                'committee_decision': decision,
+                'voting_consensus': consensus,
                 'committee_confidence': committee_confidence,
                 'expert_votes': expert_votes,
                 'expert_weights': expert_weights,
                 'committee_analytics': self.committee_analytics.copy(),
-                '_thesis': committee_thesis
+            }, thesis)
+
+            # 5) Record and return
+            self._record_committee_decision({
+                'committee_decision': decision,
+                'committee_confidence': committee_confidence,
+                'voting_consensus': consensus,
+                'expert_votes': expert_votes,
+            })
+
+            out = {
+                'committee_decision': decision,
+                'voting_consensus': consensus,
+                'committee_confidence': committee_confidence,
+                'expert_votes': expert_votes,
+                'expert_weights': expert_weights,
+                'committee_analytics': self.committee_analytics.copy(),
+                'voting_summary': voting_summary,                      # ✅ required
+                'strategy_arbiter_weights': strategy_arbiter_weights, # ✅ advertised
+                'consensus_direction': consensus_direction,
+                'agreement_score': agreement_score,
+                'raw_proposals': raw_proposals,
+                'member_confidences': member_confidences,
+                'votes': votes,
+                'member_proposals': member_proposals,
+                'voting_weights': voting_weights,
+                'time_of_day': time_of_day,
+                'performance_feedback': performance_feedback,
+                'horizon_alignment': horizon_alignment,
+                '_thesis': thesis,                                     # explainable modules need this
             }
-            
-            # Update SmartInfoBus
-            await self._update_smartinfobus_committee(results, committee_thesis)
-            
-            # Record committee decision
-            self._record_committee_decision(results)
-            
-            return results
-            
+            # perf
+            self.performance_tracker.record_metric(self.__class__.__name__, 'process', (time.time() - start_time) * 1000, True)
+            return out
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "committee_coordination")
-            return {
+            fail = {
                 'committee_decision': {'action': 'abstain', 'reason': f'Committee error: {error_context}'},
                 'voting_consensus': {'consensus_exists': False, 'error': str(error_context)},
                 'committee_confidence': 0.1,
                 'expert_votes': [],
                 'expert_weights': {},
                 'committee_analytics': {'error': str(error_context)},
-                '_thesis': f"Committee coordination failed: {error_context}"
+                'voting_summary': {'action': 'abstain', 'decision_type': 'error', 'consensus_strength': 0.0, 'consensus_exists': False, 'vote_count': 0},
+                'strategy_arbiter_weights': {},
+                'consensus_direction': 'neutral',
+                'agreement_score': 0.0,
+                'raw_proposals': {},
+                'member_confidences': {},
+                'votes': [],
+                'member_proposals': {},
+                'voting_weights': {},
+                'time_of_day': datetime.datetime.now().strftime("%H:%M:%S"),
+                'performance_feedback': {'error': str(error_context)},
+                'horizon_alignment': {'status': 'unknown'},
+                '_thesis': f"Committee coordination failed: {error_context}",
             }
+            return fail
+
 
     async def _collect_expert_votes(self) -> List[Dict[str, Any]]:
         """Collect votes from all active voting experts"""

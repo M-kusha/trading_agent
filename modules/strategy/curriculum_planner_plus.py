@@ -346,7 +346,8 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'stage_progression': progression_analysis,
                 'mastery_assessment': self._get_mastery_assessment(),
                 'learning_analytics': self.learning_stats.copy(),
-                'health_metrics': self._get_health_metrics()
+                'health_metrics': self._get_health_metrics(),
+                '_thesis': thesis
             }
             
             # Update SmartInfoBus with comprehensive thesis
@@ -1507,7 +1508,8 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             'stage_progression': {'ready_for_advancement': False, 'status': 'disabled'},
             'mastery_assessment': {'overall_mastery': 0.0, 'status': 'disabled'},
             'learning_analytics': {'status': 'disabled'},
-            'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'}
+            'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'},
+            '_thesis': 'Curriculum planner disabled due to circuit breaker; see logs for details.'
         }
 
     # ═══════════════════════════════════════════════════════════════════

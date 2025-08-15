@@ -262,6 +262,40 @@ class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
             processing_time = (time.time() - start_time) * 1000
             self._record_success(processing_time)
             
+            # Conform to provides contract
+            provides_payload = {
+                'intuition_vector': {
+                    'vector': self.intuition_vector.tolist(),
+                    'strength': float(np.linalg.norm(self.intuition_vector)),
+                    'components': self.genome["n_components"],
+                    'last_updated': time.time()
+                },
+                'compressed_patterns': {
+                    'profit_direction': self.profit_direction.tolist(),
+                    'loss_direction': self.loss_direction.tolist(),
+                    'profit_strength': float(np.linalg.norm(self.profit_direction)),
+                    'loss_strength': float(np.linalg.norm(self.loss_direction)),
+                    'compression_count': self._compression_count
+                },
+                'memory_compression': {
+                    'total_memories': len(self.profit_memory) + len(self.loss_memory),
+                    'profit_memories': len(self.profit_memory),
+                    'loss_memories': len(self.loss_memory),
+                    'memory_utilization': self._compression_performance['memory_utilization'],
+                    'compression_efficiency': self._compression_efficiency,
+                    'last_compression': self._compression_count
+                },
+                'feature_importance': (
+                    {
+                        'profit_components': np.array(getattr(self.profit_pca, 'components_', [])).tolist() if hasattr(self.profit_pca, 'components_') else [],
+                        'explained_variance_ratio': np.array(getattr(self.profit_pca, 'explained_variance_ratio_', [])).tolist() if hasattr(self.profit_pca, 'explained_variance_ratio_') else [],
+                        'n_features': getattr(self.profit_pca, 'n_features_in_', 0)
+                    }
+                ),
+                '_thesis': thesis
+            }
+            # Return combined detail + provides payload for downstream consumers
+            memory_result.update(provides_payload)
             return memory_result
             
         except Exception as e:
@@ -758,11 +792,40 @@ class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         """Handle case when no compression data is available"""
         self.logger.warning("No compression data available - returning current intuition")
         
+        thesis = "No compression data available – serving latest intuition and cached compression status"
         return {
             'intuition_strength': float(np.linalg.norm(self.intuition_vector)),
             'total_memories': len(self.profit_memory) + len(self.loss_memory),
             'compression_count': self._compression_count,
-            'fallback_reason': 'no_compression_data'
+            'fallback_reason': 'no_compression_data',
+            # Provides contract minimal payload
+            'intuition_vector': {
+                'vector': self.intuition_vector.tolist(),
+                'strength': float(np.linalg.norm(self.intuition_vector)),
+                'components': self.genome["n_components"],
+                'last_updated': time.time()
+            },
+            'compressed_patterns': {
+                'profit_direction': self.profit_direction.tolist(),
+                'loss_direction': self.loss_direction.tolist(),
+                'profit_strength': float(np.linalg.norm(self.profit_direction)),
+                'loss_strength': float(np.linalg.norm(self.loss_direction)),
+                'compression_count': self._compression_count
+            },
+            'memory_compression': {
+                'total_memories': len(self.profit_memory) + len(self.loss_memory),
+                'profit_memories': len(self.profit_memory),
+                'loss_memories': len(self.loss_memory),
+                'memory_utilization': self._compression_performance['memory_utilization'],
+                'compression_efficiency': self._compression_efficiency,
+                'last_compression': self._compression_count
+            },
+            'feature_importance': {
+                'profit_components': np.array(getattr(self.profit_pca, 'components_', [])).tolist() if hasattr(self.profit_pca, 'components_') else [],
+                'explained_variance_ratio': np.array(getattr(self.profit_pca, 'explained_variance_ratio_', [])).tolist() if hasattr(self.profit_pca, 'explained_variance_ratio_') else [],
+                'n_features': getattr(self.profit_pca, 'n_features_in_', 0)
+            },
+            '_thesis': thesis
         }
 
     async def _handle_compression_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
@@ -799,12 +862,41 @@ class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
 
     def _create_fallback_response(self, reason: str) -> Dict[str, Any]:
         """Create fallback response for error cases"""
+        thesis = f"Memory compression encountered issues; serving last known state ({reason})"
         return {
             'intuition_strength': float(np.linalg.norm(self.intuition_vector)),
             'total_memories': len(self.profit_memory) + len(self.loss_memory),
             'compression_count': self._compression_count,
             'circuit_breaker_state': self.circuit_breaker['state'],
-            'fallback_reason': reason
+            'fallback_reason': reason,
+            # Provides contract minimal payload
+            'intuition_vector': {
+                'vector': self.intuition_vector.tolist(),
+                'strength': float(np.linalg.norm(self.intuition_vector)),
+                'components': self.genome["n_components"],
+                'last_updated': time.time()
+            },
+            'compressed_patterns': {
+                'profit_direction': self.profit_direction.tolist(),
+                'loss_direction': self.loss_direction.tolist(),
+                'profit_strength': float(np.linalg.norm(self.profit_direction)),
+                'loss_strength': float(np.linalg.norm(self.loss_direction)),
+                'compression_count': self._compression_count
+            },
+            'memory_compression': {
+                'total_memories': len(self.profit_memory) + len(self.loss_memory),
+                'profit_memories': len(self.profit_memory),
+                'loss_memories': len(self.loss_memory),
+                'memory_utilization': self._compression_performance['memory_utilization'],
+                'compression_efficiency': self._compression_efficiency,
+                'last_compression': self._compression_count
+            },
+            'feature_importance': {
+                'profit_components': np.array(getattr(self.profit_pca, 'components_', [])).tolist() if hasattr(self.profit_pca, 'components_') else [],
+                'explained_variance_ratio': np.array(getattr(self.profit_pca, 'explained_variance_ratio_', [])).tolist() if hasattr(self.profit_pca, 'explained_variance_ratio_') else [],
+                'n_features': getattr(self.profit_pca, 'n_features_in_', 0)
+            },
+            '_thesis': thesis
         }
 
     def _update_compression_health(self):

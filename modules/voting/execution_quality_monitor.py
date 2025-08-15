@@ -140,7 +140,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         # Health monitoring
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        self._start_monitoring()
+        # Do not start monitoring yet; wait until execution state is initialized to avoid races
 
     def _initialize_execution_state(self):
         """Initialize execution quality state"""
@@ -221,6 +221,8 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             'context_sensitivity': 1.0,
             'quality_adaptation_confidence': 0.5
         }
+        # Now that all attributes exist, start monitoring loop safely
+        self._start_monitoring()
 
     def _start_monitoring(self):
         """Start background monitoring for execution quality"""
@@ -300,6 +302,48 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             # Generate thesis
             thesis = await self._generate_execution_thesis(execution_data, result)
             
+            # Build provided outputs for return payload
+            execution_quality_data = {
+                'current_mode': self.current_mode.value,
+                'quality_score': self.quality_score,
+                'training_mode': self.training_mode,
+                'execution_count': self.execution_count,
+                'degraded_executions': self.degraded_executions,
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+
+            analytics_data = {
+                'comprehensive_metrics': self.comprehensive_metrics.copy(),
+                'issues': {k: len(v) for k, v in self.issues.items() if v},
+                'quality_alerts': len(self.quality_alerts),
+                'escalation_count': self.escalation_count,
+                'regime_performance': {
+                    regime: {
+                        'quality_scores': len(data['quality_scores']),
+                        'avg_quality': np.mean(data['quality_scores'][-10:]) if data['quality_scores'] else 0.0
+                    }
+                    for regime, data in self.regime_performance.items()
+                }
+            }
+
+            metrics_data = {
+                'quality_score': self.quality_score,
+                'avg_slippage': self.comprehensive_metrics["avg_slippage"],
+                'avg_latency': self.comprehensive_metrics["avg_latency"],
+                'avg_fill_rate': self.comprehensive_metrics["avg_fill_rate"],
+                'avg_spread': self.comprehensive_metrics["avg_spread"],
+                'success_rate': self.comprehensive_metrics["success_rate"],
+                'degradation_rate': self.comprehensive_metrics["degradation_rate"]
+            }
+
+            alerts_data = {
+                'quality_alerts': len(self.quality_alerts),
+                'escalation_count': self.escalation_count,
+                'critical_issues': sum(1 for issues in self.issues.values() for issue in issues),
+                'last_escalation': self.last_escalation.isoformat() if self.last_escalation else None,
+                'current_issues': {k: len(v) for k, v in self.issues.items() if v}
+            }
+
             # Update SmartInfoBus
             await self._update_execution_smart_bus(result, thesis)
             
@@ -307,6 +351,16 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             processing_time = (time.time() - start_time) * 1000
             self._record_success(processing_time)
             
+            # Ensure returned payload complies with provides contract
+            result.update({
+                'execution_quality': execution_quality_data,
+                'execution_analytics': analytics_data,
+                'quality_metrics': metrics_data,
+                'execution_alerts': alerts_data,
+                '_thesis': thesis,
+                'success': True
+            })
+
             return result
             
         except Exception as e:
@@ -1335,11 +1389,45 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         """Handle case when no execution data is available"""
         self.logger.warning("No execution data available - maintaining current state")
         
-        return {
+        thesis = "No execution data available - maintaining current state"
+        execution_quality_data = {
             'current_mode': self.current_mode.value,
             'quality_score': self.quality_score,
-            'execution_count': self.execution_count,
             'training_mode': self.training_mode,
+            'execution_count': self.execution_count,
+            'degraded_executions': self.degraded_executions,
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+        analytics_data = {
+            'comprehensive_metrics': self.comprehensive_metrics.copy(),
+            'issues': {k: len(v) for k, v in self.issues.items() if v},
+            'quality_alerts': len(self.quality_alerts),
+            'escalation_count': self.escalation_count
+        }
+        metrics_data = {
+            'quality_score': self.quality_score,
+            'avg_slippage': self.comprehensive_metrics.get("avg_slippage", 0.0),
+            'avg_latency': self.comprehensive_metrics.get("avg_latency", 0.0),
+            'avg_fill_rate': self.comprehensive_metrics.get("avg_fill_rate", 1.0),
+            'avg_spread': self.comprehensive_metrics.get("avg_spread", 0.0),
+            'success_rate': self.comprehensive_metrics.get("success_rate", 1.0),
+            'degradation_rate': self.comprehensive_metrics.get("degradation_rate", 0.0)
+        }
+        alerts_data = {
+            'quality_alerts': len(self.quality_alerts),
+            'escalation_count': self.escalation_count,
+            'critical_issues': sum(1 for issues in self.issues.values() for issue in issues),
+            'last_escalation': self.last_escalation.isoformat() if self.last_escalation else None,
+            'current_issues': {k: len(v) for k, v in self.issues.items() if v}
+        }
+
+        return {
+            'execution_quality': execution_quality_data,
+            'execution_analytics': analytics_data,
+            'quality_metrics': metrics_data,
+            'execution_alerts': alerts_data,
+            '_thesis': thesis,
+            'success': True,
             'fallback_reason': 'no_execution_data'
         }
 
@@ -1379,10 +1467,45 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
 
     def _create_error_fallback_response(self, reason: str) -> Dict[str, Any]:
         """Create fallback response for error cases"""
-        return {
+        thesis = f"Execution monitor error fallback: {reason}"
+        execution_quality_data = {
             'current_mode': ExecutionMode.EMERGENCY.value,
-            'quality_score': 0.1,  # Conservative low quality
+            'quality_score': 0.1,
+            'training_mode': self.training_mode,
             'execution_count': self.execution_count,
+            'degraded_executions': self.degraded_executions,
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+        analytics_data = {
+            'comprehensive_metrics': self.comprehensive_metrics.copy(),
+            'issues': {k: len(v) for k, v in self.issues.items() if v},
+            'quality_alerts': len(self.quality_alerts),
+            'escalation_count': self.escalation_count
+        }
+        metrics_data = {
+            'quality_score': 0.1,
+            'avg_slippage': self.comprehensive_metrics.get("avg_slippage", 0.0),
+            'avg_latency': self.comprehensive_metrics.get("avg_latency", 0.0),
+            'avg_fill_rate': self.comprehensive_metrics.get("avg_fill_rate", 1.0),
+            'avg_spread': self.comprehensive_metrics.get("avg_spread", 0.0),
+            'success_rate': self.comprehensive_metrics.get("success_rate", 0.0),
+            'degradation_rate': self.comprehensive_metrics.get("degradation_rate", 1.0)
+        }
+        alerts_data = {
+            'quality_alerts': len(self.quality_alerts),
+            'escalation_count': self.escalation_count,
+            'critical_issues': sum(1 for issues in self.issues.values() for issue in issues),
+            'last_escalation': self.last_escalation.isoformat() if self.last_escalation else None,
+            'current_issues': {k: len(v) for k, v in self.issues.items() if v}
+        }
+
+        return {
+            'execution_quality': execution_quality_data,
+            'execution_analytics': analytics_data,
+            'quality_metrics': metrics_data,
+            'execution_alerts': alerts_data,
+            '_thesis': thesis,
+            'success': False,
             'circuit_breaker_state': self.circuit_breaker['state'],
             'fallback_reason': reason
         }

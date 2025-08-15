@@ -307,10 +307,28 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             
             # Generate alignment recommendations
             recommendations = await self._generate_intelligent_alignment_recommendations(quality_analysis)
+
+            # Compute aligned weights using current voting weights or safe defaults
+            raw_weights = alignment_data.get('voting_weights') or []
+            if not isinstance(raw_weights, (list, tuple, np.ndarray)) or len(raw_weights) == 0:
+                # Default to equal weights over horizons if no voting weights available
+                safe_weights = np.ones_like(self.horizons, dtype=np.float32)
+                safe_weights = safe_weights / (safe_weights.sum() + 1e-12)
+            else:
+                safe_weights = np.asarray(raw_weights, dtype=np.float32)
+
+            try:
+                aligned = await self.apply_alignment(safe_weights)
+                aligned_list = aligned.astype(float).tolist()
+            except Exception:
+                # Fallback to neutral if alignment fails
+                fallback = np.ones_like(self.horizons, dtype=np.float32)
+                fallback = fallback / (fallback.sum() + 1e-12)
+                aligned_list = fallback.astype(float).tolist()
             
             # Create comprehensive results
             results = {
-                'aligned_weights': None,  # Will be set when apply() is called
+                'aligned_weights': aligned_list,
                 'horizon_distances': self.current_distances.tolist(),
                 'horizon_multipliers': self._get_combined_multipliers().tolist(),
                 'regime_adjustments': self.regime_multipliers[self.current_regime].tolist(),
@@ -318,11 +336,19 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 'alignment_quality': quality_analysis,
                 'performance_metrics': self._get_performance_metrics_summary(),
                 'adaptation_status': self._get_adaptation_status(),
-                'health_metrics': self._get_health_metrics()
+                'health_metrics': self._get_health_metrics(),
+                'horizon_alignment': {
+                    'distances': self.current_distances.tolist(),
+                    'multipliers': self._get_combined_multipliers().tolist(),
+                    'regime': self.current_regime,
+                    'session': self.current_session
+                },
+                '_thesis': ''  # populated below
             }
             
             # Generate comprehensive thesis
             thesis = await self._generate_comprehensive_alignment_thesis(results, quality_analysis)
+            results['_thesis'] = thesis
             
             # Update SmartInfoBus with comprehensive results
             await self._update_smartinfobus_comprehensive(results, thesis)
@@ -401,12 +427,11 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     clock=self.clock
                 ))
             
-            # Update volatility tracking
+            # Update volatility tracking (robust to numeric, list, or dict inputs)
             volatility_data = alignment_data.get('volatility_data', {})
-            if volatility_data:
-                current_vol = np.mean(list(volatility_data.values()))
-                self.volatility_history.append(current_vol)
-                self.current_volatility = current_vol
+            current_vol = self._extract_numeric_volatility(volatility_data)
+            self.volatility_history.append(current_vol)
+            self.current_volatility = current_vol
             
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "market_state_update")
@@ -630,6 +655,66 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         except Exception:
             return 'medium'
 
+    def _extract_numeric_volatility(self, volatility_data: Any) -> float:
+        """Normalize incoming volatility data to a numeric value.
+
+        Accepts:
+        - float/int/np.floating: returns abs(value)
+        - list/tuple/np.ndarray: returns mean of numeric entries
+        - dict: if 'value'/'atr'/'sigma'/'vol' present, use it; else average numeric values; if 'level' present, map to numeric
+        Fallback to a conservative default (0.02).
+        """
+        try:
+            # Numeric inputs
+            if isinstance(volatility_data, (int, float, np.floating)):
+                return float(abs(volatility_data))
+
+            # Sequence inputs
+            if isinstance(volatility_data, (list, tuple, np.ndarray)):
+                arr = np.asarray(volatility_data, dtype=np.float64)
+                if arr.size > 0 and np.isfinite(arr).any():
+                    return float(np.nanmean(arr))
+                return 0.02
+
+            # Mapping inputs
+            if isinstance(volatility_data, dict):
+                # Direct numeric fields
+                for key in ('value', 'atr', 'sigma', 'vol'):
+                    if key in volatility_data:
+                        try:
+                            return float(abs(volatility_data[key]))
+                        except Exception:
+                            pass
+                # Level mapping
+                level = volatility_data.get('level')
+                if isinstance(level, str):
+                    return self._map_level_to_numeric(level)
+                # Average numeric values if available
+                numeric_vals = [float(v) for v in volatility_data.values() if isinstance(v, (int, float, np.floating))]
+                if numeric_vals:
+                    return float(np.mean(numeric_vals))
+                return 0.02
+
+            # Unknown type
+            return 0.02
+        except Exception:
+            return 0.02
+
+    def _map_level_to_numeric(self, level: str) -> float:
+        """Map a volatility level string to a representative numeric value."""
+        lvl = (level or '').lower()
+        if lvl == 'very_low':
+            return 0.005
+        if lvl == 'low':
+            return 0.01
+        if lvl == 'medium':
+            return 0.02
+        if lvl == 'high':
+            return 0.035
+        if lvl == 'extreme':
+            return 0.06
+        return 0.02
+
     async def _calculate_comprehensive_alignment_quality(self) -> Dict[str, Any]:
         """Calculate comprehensive alignment quality metrics"""
         try:
@@ -783,6 +868,11 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             self.smart_bus.set('performance_metrics', results['performance_metrics'],
                              module='TimeHorizonAligner',
                              thesis=f"Performance metrics: Comprehensive alignment analytics")
+
+            # Publish combined horizon_alignment bundle for downstream validators
+            self.smart_bus.set('horizon_alignment', results['horizon_alignment'],
+                             module='TimeHorizonAligner',
+                             thesis='Combined horizon alignment bundle (distances, multipliers, regime, session)')
             
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
@@ -990,7 +1080,14 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'alignment_quality': {'overall_quality': 0.5, 'error': str(error_context)},
             'performance_metrics': {'error': str(error_context)},
             'adaptation_status': {'status': 'error', 'error_context': str(error_context)},
-            'health_metrics': {'status': 'error', 'error_context': str(error_context)}
+            'health_metrics': {'status': 'error', 'error_context': str(error_context)},
+            'horizon_alignment': {
+                'distances': np.ones_like(self.horizons).tolist(),
+                'multipliers': np.ones_like(self.horizons).tolist(),
+                'regime': getattr(self, 'current_regime', 'unknown'),
+                'session': getattr(self, 'current_session', 'unknown')
+            },
+            '_thesis': f"TimeHorizonAligner encountered an error and returned safe defaults: {error_context}"
         }
 
     def reset(self) -> None:
@@ -1161,7 +1258,14 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'alignment_weights': [1.0] * len(getattr(self, 'horizon_weights', [1.0])),
             'quality_score': 0.5,
             'disabled': True,
-            'reason': 'Module disabled'
+            'reason': 'Module disabled',
+            'horizon_alignment': {
+                'distances': self.current_distances.tolist() if hasattr(self, 'current_distances') else [],
+                'multipliers': self._get_combined_multipliers().tolist() if hasattr(self, 'horizons') else [],
+                'regime': getattr(self, 'current_regime', 'unknown'),
+                'session': getattr(self, 'current_session', 'unknown')
+            },
+            '_thesis': 'TimeHorizonAligner disabled by circuit breaker; returning neutral horizon alignment bundle'
         }
     
     async def _update_horizon_performance_comprehensive(self, alignment_data: Dict[str, Any]) -> None:

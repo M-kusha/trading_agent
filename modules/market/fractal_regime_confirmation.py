@@ -177,6 +177,8 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         """Initialize module-specific state using mixins"""
         self._initialize_trading_state()
         self._initialize_voting_state()
+        self._last_symbols = []
+        self._last_timestamps = []
         
         self._buf = deque(maxlen=int(self.window * 0.75))
         self.regime_strength = 0.0
@@ -266,108 +268,229 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         except Exception as e:
             self.logger.error(f"Initialization failed: {e}")
 
+    def _generate_thesis(self, regime: str, strength: float) -> str:
+        """Human-readable explanation for explainable pipelines."""
+        metrics = {}
+        if getattr(self, "_fractal_metrics_history", None):
+            try:
+                metrics = dict(self._fractal_metrics_history[-1].get("metrics", {}))
+            except Exception:
+                metrics = {}
+
+        H  = float(metrics.get("H", 0.5))
+        VR = float(metrics.get("VR", 1.0))
+        WE = float(metrics.get("WE", 0.0))
+        trend     = float(getattr(self, "_trend_direction", 0.0))
+        stability = float(getattr(self, "_regime_stability_score", 100.0))
+        theme     = float(getattr(self, "_theme_integration_score", 1.0))
+
+        return (
+            f"FRACTAL REGIME: {regime.upper()} | strength {strength:.3f} | "
+            f"trend {trend:+.3f} | stability {stability:.1f}/100 | "
+            f"H={H:.3f}, VR={VR:.3f}, WE={WE:.3f} | theme_conf {theme:.3f}"
+        )
+    def _build_regime_data(self, regime: str, strength: float) -> Dict[str, Any]:
+        """Bundle a consistent regime payload for downstream consumers."""
+        last_metrics = {}
+        if getattr(self, "_fractal_metrics_history", None):
+            try:
+                last_metrics = dict(self._fractal_metrics_history[-1])
+            except Exception:
+                last_metrics = {}
+
+        return {
+            "regime": regime,
+            "strength": float(strength),
+            "trend_direction": float(getattr(self, "_trend_direction", 0.0)),
+            "stability_score": float(getattr(self, "_regime_stability_score", 100.0)),
+            "theme_confidence": float(getattr(self, "_theme_integration_score", 1.0)),
+            "latest_metrics": last_metrics,
+            "history_len": len(getattr(self, "_fractal_metrics_history", [])),
+        }
+
+
     async def process(self, **inputs) -> Dict[str, Any]:
-        """Process fractal regime analysis"""
+        """Process fractal regime analysis and return all declared outputs plus _thesis."""
         start_time = time.time()
-        
         try:
-            # Extract market data
             market_data = self._extract_market_data_comprehensive(None, inputs)
             if not market_data:
-                return await self._handle_no_data_fallback()
-            # Process regime detection
+                thesis = "Fractal analysis fallback: no market data available; using cached state."
+                regime_data = self._build_regime_data(self.label, self.regime_strength)
+                return self._format_declared_outputs(
+                    regime=self.label,
+                    strength=self.regime_strength,
+                    trend_direction=self._trend_direction,
+                    fractal_metrics=regime_data.get("latest_metrics", {}).get("metrics", {}),
+                    regime_data=regime_data,
+                    symbols=getattr(self, "_last_symbols", []),
+                    timestamps=getattr(self, "_last_timestamps", []),
+                    extra={
+                        "processing_time_ms": (time.time() - start_time) * 1000.0,
+                        "_thesis": thesis,
+                        "thesis": thesis,
+                        "fallback_reason": "no_market_data",
+                    },
+                )
+
             regime, strength = self._process_regime_detection(market_data)
-            # Update regime metrics
             self._update_regime_metrics(regime, strength)
-            # Update SmartInfoBus
             await self._update_fractal_smart_bus(regime, strength)
-            # Record success
-            processing_time = (time.time() - start_time) * 1000
+
+            thesis = self._generate_thesis(regime, strength)
+            processing_time = (time.time() - start_time) * 1000.0
             self._record_success(processing_time)
+
+            regime_data = self._build_regime_data(regime, strength)
             return self._format_declared_outputs(
                 regime=regime,
                 strength=strength,
                 trend_direction=self._trend_direction,
-                fractal_metrics=self._fractal_metrics_history[-1] if self._fractal_metrics_history else {},
-                extra={'processing_time_ms': processing_time}
+                fractal_metrics=regime_data.get("latest_metrics", {}).get("metrics", {}),
+                regime_data=regime_data,
+                symbols=getattr(self, "_last_symbols", []),
+                timestamps=getattr(self, "_last_timestamps", []),
+                extra={"processing_time_ms": processing_time, "_thesis": thesis, "thesis": thesis},
             )
         except Exception as e:
             return await self._handle_fractal_error(e, start_time)
 
+
     async def _handle_no_data_fallback(self) -> Dict[str, Any]:
-        """Handle case when no market data is available"""
+        """Return a contract-compliant fallback when no market data is present."""
         self.logger.warning("No market data available - using cached regime state")
-        
+        thesis = "Fractal analysis fallback: no market data; returning cached regime state."
+        regime_data = self._build_regime_data(self.label, self.regime_strength)
         return self._format_declared_outputs(
-            extra={'fallback_reason': 'no_market_data'}
+            regime=self.label,
+            strength=self.regime_strength,
+            trend_direction=self._trend_direction,
+            fractal_metrics=regime_data.get("latest_metrics", {}).get("metrics", {}),
+            regime_data=regime_data,
+            symbols=getattr(self, "_last_symbols", []),
+            timestamps=getattr(self, "_last_timestamps", []),
+            extra={"fallback_reason": "no_market_data", "_thesis": thesis, "thesis": thesis},
         )
 
+
     async def _update_fractal_smart_bus(self, regime: str, strength: float):
-        """Update SmartInfoBus with fractal analysis results"""
+        """Update SmartInfoBus with fractal analysis results + a ready-to-read thesis."""
         try:
-            # Market regime data
             self.smart_bus.set(
-                'market_regime',
+                "market_regime",
                 regime,
-                module='FractalRegimeConfirmation',
-                thesis=f"Current market regime: {regime} with {strength:.3f} strength"
+                module="FractalRegimeConfirmation",
+                thesis=f"Current market regime: {regime} (strength {strength:.3f})",
             )
-            
-            # Regime strength
             self.smart_bus.set(
-                'regime_strength',
+                "regime_strength",
                 strength,
-                module='FractalRegimeConfirmation',
-                thesis=f"Regime strength based on fractal analysis: {strength:.3f}"
+                module="FractalRegimeConfirmation",
+                thesis=f"Regime strength (fractal): {strength:.3f}",
             )
-            
-            # Trend direction
             self.smart_bus.set(
-                'trend_direction',
+                "trend_direction",
                 self._trend_direction,
-                module='FractalRegimeConfirmation',
-                thesis=f"Market trend direction: {self._trend_direction:.3f}"
+                module="FractalRegimeConfirmation",
+                thesis=f"Trend direction: {self._trend_direction:+.3f}",
             )
-            
-            # Fractal metrics
-            if self._fractal_metrics_history:
-                latest_metrics = list(self._fractal_metrics_history)[-1] if self._fractal_metrics_history else {}
+
+            # metrics snapshot
+            if getattr(self, "_fractal_metrics_history", None):
+                latest_metrics = list(self._fractal_metrics_history)[-1]
                 self.smart_bus.set(
-                    'fractal_metrics',
-                    latest_metrics,
-                    module='FractalRegimeConfirmation',
-                    thesis="Latest fractal analysis metrics and indicators"
+                    "fractal_metrics",
+                    latest_metrics.get("metrics", {}),
+                    module="FractalRegimeConfirmation",
+                    thesis="Latest fractal metrics snapshot",
                 )
-            
+
+            # publish human thesis for explainability dashboards
+            thesis = self._generate_thesis(regime, strength)
+            self.smart_bus.set(
+                "fractal_thesis",
+                thesis,
+                module="FractalRegimeConfirmation",
+                thesis="Explainable thesis for fractal regime decision",
+            )
+
+            # optional: symbols/timestamps helpers for consumers
+            if getattr(self, "_last_symbols", None) is not None:
+                self.smart_bus.set(
+                    "symbols",
+                    list(self._last_symbols),
+                    module="FractalRegimeConfirmation",
+                    thesis="Symbols used by fractal analysis",
+                )
+            if getattr(self, "_last_timestamps", None) is not None:
+                self.smart_bus.set(
+                    "timestamps",
+                    list(self._last_timestamps),
+                    module="FractalRegimeConfirmation",
+                    thesis="Timestamps used by fractal analysis",
+                )
         except Exception as e:
             self.logger.error(f"Failed to update SmartInfoBus: {e}")
 
+    def _capture_symbols_timestamps_from_df(self, df, start_idx: int, end_idx: int, selected_inst: str) -> None:
+        """Record symbols and timestamps for declared outputs, robust to index types."""
+        try:
+            self._last_symbols = [selected_inst]
+        except Exception:
+            self._last_symbols = [str(selected_inst)]
+
+        try:
+            idx_slice = df.index[start_idx:end_idx]
+            self._last_timestamps = [str(x) for x in idx_slice]
+        except Exception:
+            self._last_timestamps = [str(i) for i in range(start_idx, end_idx)]
+
+    def _capture_symbols_from_prices(self, prices: Dict[str, Any]) -> None:
+        """Record symbols from a simple prices dict path."""
+        try:
+            self._last_symbols = list(prices.keys())
+        except Exception:
+            self._last_symbols = []
+        # timestamps unknown in this path; leave as-is
+        if not hasattr(self, "_last_timestamps"):
+            self._last_timestamps = []
+
+
+
+
     async def _handle_fractal_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
-        """Handle fractal analysis errors"""
-        processing_time = (time.time() - start_time) * 1000
-        
-        # Update circuit breaker
-        self.fractal_circuit_breaker['failures'] += 1
-        self.fractal_circuit_breaker['last_failure'] = time.time()
-        
-        if self.fractal_circuit_breaker['failures'] >= self.fractal_circuit_breaker['threshold']:
-            self.fractal_circuit_breaker['state'] = 'OPEN'
-        
-        # Log error with context
+        """Return a safe response and include _thesis when an exception occurs."""
+        processing_time = (time.time() - start_time) * 1000.0
+
+        # circuit breaker bookkeeping
+        self.fractal_circuit_breaker["failures"] += 1
+        self.fractal_circuit_breaker["last_failure"] = time.time()
+        if self.fractal_circuit_breaker["failures"] >= self.fractal_circuit_breaker["threshold"]:
+            self.fractal_circuit_breaker["state"] = "OPEN"
+
         error_context = self.error_pinpointer.analyze_error(error, "FractalRegimeConfirmation")
-        explanation = self.english_explainer.explain_error(
-            "FractalRegimeConfirmation", str(error), "fractal analysis"
-        )
-        
+        explanation = self.english_explainer.explain_error("FractalRegimeConfirmation", str(error), "fractal analysis")
         self.logger.error(f"Fractal analysis error: {str(error)} - {explanation}")
-        
+
+        thesis = f"Fractal analysis error; returning safe defaults. Reason: {error_context}"
+        regime_data = self._build_regime_data(self.label, self.regime_strength)
         return self._format_declared_outputs(
+            regime=self.label,
+            strength=self.regime_strength,
+            trend_direction=self._trend_direction,
+            fractal_metrics=regime_data.get("latest_metrics", {}).get("metrics", {}),
+            regime_data=regime_data,
+            symbols=getattr(self, "_last_symbols", []),
+            timestamps=getattr(self, "_last_timestamps", []),
             extra={
-                'error': str(error),
-                'processing_time_ms': processing_time,
-                'circuit_breaker_state': self.fractal_circuit_breaker['state']
-            }
+                "error": str(error_context),
+                "processing_time_ms": processing_time,
+                "circuit_breaker_state": self.fractal_circuit_breaker["state"],
+                "_thesis": thesis,
+                "thesis": thesis,
+            },
         )
+
 
     def _record_success(self, processing_time: float):
         """Record successful processing"""
@@ -682,7 +805,7 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
                 return self.label, self.regime_strength
                 
             # Try to find a good instrument (prefer major pairs)
-            preferred_order = ['EUR/USD', 'XAU/USD', 'GBP/USD', 'USD/JPY']
+            preferred_order = ['EUR/USD', 'XAU/USD', ]
             selected_inst = None
             
             for inst in preferred_order:
@@ -714,6 +837,7 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
                 return self.label, self.regime_strength
                 
             ts = df["close"].values[start_idx:end_idx].astype(np.float32)
+            self._capture_symbols_timestamps_from_df(df, start_idx, end_idx, selected_inst)
             
             if len(ts) < 2:
                 self.logger.warning(f"Insufficient price data: {len(ts)} points")
@@ -739,6 +863,7 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         """[TOOL] NEW: Process simple price format data"""
         
         prices = market_data['prices']
+        self._capture_symbols_from_prices(prices)
         current_step = market_data.get('current_step', 0)
         source = market_data.get('source', 'unknown')
         

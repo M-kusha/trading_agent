@@ -519,8 +519,99 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             # Record success
             processing_time = (time.time() - start_time) * 1000
             self._record_success(processing_time)
-            
-            return result
+
+            # Build contract-compliant return payload (must include all provides)
+            predictions_data: Dict[str, Any] = {
+                'current_mode': self.current_mode.value,
+                'is_trained': self.is_trained,
+                'model_confidence': self.model_confidence,
+                'prediction_quality': self.prediction_quality,
+                'stability_score': self.stability_score,
+                'last_training_time': self.last_training_time.isoformat() if self.last_training_time else None,
+                'device': str(self.device),
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+            if result.get('predictions_generated') and 'predictions' in result:
+                _p = result['predictions']
+                try:
+                    price_changes = _p['price_changes'].tolist() if hasattr(_p['price_changes'], 'tolist') else list(_p['price_changes'])
+                    vol_preds = _p['volatility_predictions'].tolist() if hasattr(_p['volatility_predictions'], 'tolist') else list(_p['volatility_predictions'])
+                    regime_probs = _p['regime_probabilities'].tolist() if hasattr(_p['regime_probabilities'], 'tolist') else list(_p['regime_probabilities'])
+                except Exception:
+                    price_changes, vol_preds, regime_probs = [], [], []
+                predictions_data['latest_predictions'] = {
+                    'price_changes': price_changes,
+                    'volatility_predictions': vol_preds,
+                    'regime_probabilities': regime_probs,
+                    'confidence': _p.get('confidence', 0.0),
+                    'predicted_regime': _p.get('predicted_regime', -1),
+                    'confidence_level': _p.get('confidence_level', 'very_low'),
+                    'timestamp': _p.get('timestamp')
+                }
+
+            scenario_data: Dict[str, Any] = {
+                'scenarios_available': bool(self.scenario_cache),
+                'scenario_count': len(self.scenario_cache.get('scenarios', [])) if self.scenario_cache else 0,
+                'scenario_timestamp': self.scenario_cache.get('timestamp') if self.scenario_cache else None,
+                'scenario_parameters': self.scenario_cache.get('parameters', {}) if self.scenario_cache else {},
+                'scenarios': self.scenario_cache.get('scenarios', []) if self.scenario_cache else []
+            }
+
+            analytics_data: Dict[str, Any] = {
+                'model_architecture': {
+                    'input_size': self.config.input_size,
+                    'hidden_size': self.config.hidden_size,
+                    'num_layers': self.config.num_layers,
+                    'sequence_length': self.config.sequence_length,
+                    'attention_heads': self.config.attention_heads
+                },
+                'performance_metrics': {
+                    'training_quality': self.training_quality,
+                    'prediction_quality': self.prediction_quality,
+                    'stability_score': self.stability_score,
+                    'model_confidence': self.model_confidence
+                },
+                'data_status': {
+                    'market_history_size': len(self.market_history),
+                    'prediction_history_size': len(self.prediction_history),
+                    'training_sessions': len(self.training_history),
+                    'feature_importance_count': len(self.feature_importance)
+                },
+                'training_curves': {
+                    name: list(data)[-20:]
+                    for name, data in self.training_curves.items() if data
+                },
+                'attention_patterns': len(self.attention_patterns),
+                'genome_config': self.genome.copy()
+            }
+
+            confidence_data: Dict[str, Any] = {
+                'current_confidence': self.model_confidence,
+                'prediction_confidence': self.prediction_quality,
+                'stability_confidence': self.stability_score,
+                'training_confidence': self.training_quality,
+                'confidence_history': list(self.confidence_history)[-20:] if self.confidence_history else []
+            }
+            # Enrich classification and recommendations
+            try:
+                confidence_data['confidence_classification'] = await self._classify_confidence_level_async(float(self.model_confidence))
+                confidence_data['is_reliable'] = self.model_confidence > self.config.confidence_threshold
+                confidence_data['recommendations'] = await self._generate_confidence_recommendations_async()
+            except Exception:
+                pass
+
+            return {
+                # Preserve useful transient keys for downstreams
+                **result,
+                # Contract-required provides
+                'market_predictions': predictions_data,
+                'scenario_generation': scenario_data,
+                'world_model_analytics': analytics_data,
+                'prediction_confidence': confidence_data,
+                # Thesis + status
+                '_thesis': thesis,
+                'success': True
+            }
             
         except Exception as e:
             return await self._handle_world_model_error(e, start_time)
@@ -2035,11 +2126,68 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
     async def _handle_no_data_fallback(self) -> Dict[str, Any]:
         """Handle case when no market data is available"""
         self.logger.warning("No market data available - maintaining current state")
-        
-        return {
+        thesis = "No market data available - maintaining current state"
+
+        # Minimal but contract-compliant payload
+        predictions_data = {
             'current_mode': self.current_mode.value,
+            'is_trained': self.is_trained,
             'model_confidence': self.model_confidence,
             'prediction_quality': self.prediction_quality,
+            'stability_score': self.stability_score,
+            'last_training_time': self.last_training_time.isoformat() if self.last_training_time else None,
+            'device': str(self.device),
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+        scenario_data = {
+            'scenarios_available': False,
+            'scenario_count': 0,
+            'scenario_timestamp': None,
+            'scenario_parameters': {},
+            'scenarios': []
+        }
+        analytics_data = {
+            'model_architecture': {
+                'input_size': self.config.input_size,
+                'hidden_size': self.config.hidden_size,
+                'num_layers': self.config.num_layers,
+                'sequence_length': self.config.sequence_length,
+                'attention_heads': self.config.attention_heads
+            },
+            'performance_metrics': {
+                'training_quality': self.training_quality,
+                'prediction_quality': self.prediction_quality,
+                'stability_score': self.stability_score,
+                'model_confidence': self.model_confidence
+            },
+            'data_status': {
+                'market_history_size': len(self.market_history),
+                'prediction_history_size': len(self.prediction_history),
+                'training_sessions': len(self.training_history),
+                'feature_importance_count': len(self.feature_importance)
+            },
+            'training_curves': {},
+            'attention_patterns': len(self.attention_patterns),
+            'genome_config': self.genome.copy()
+        }
+        confidence_data = {
+            'current_confidence': self.model_confidence,
+            'prediction_confidence': self.prediction_quality,
+            'stability_confidence': self.stability_score,
+            'training_confidence': self.training_quality,
+            'confidence_history': list(self.confidence_history)[-20:] if self.confidence_history else [],
+            'confidence_classification': 'very_low',
+            'is_reliable': self.model_confidence > self.config.confidence_threshold,
+            'recommendations': ["Collect more market data for improved accuracy"]
+        }
+
+        return {
+            'market_predictions': predictions_data,
+            'scenario_generation': scenario_data,
+            'world_model_analytics': analytics_data,
+            'prediction_confidence': confidence_data,
+            '_thesis': thesis,
+            'success': True,
             'fallback_reason': 'no_market_data'
         }
 
@@ -2078,12 +2226,70 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
 
     def _create_error_fallback_response(self, reason: str) -> Dict[str, Any]:
         """Create fallback response for error cases"""
-        return {
+        thesis = f"World model error fallback: {reason}"
+
+        predictions_data = {
             'current_mode': WorldModelMode.ERROR_RECOVERY.value,
-            'model_confidence': 0.1,  # Very low confidence due to error
+            'is_trained': self.is_trained,
+            'model_confidence': 0.1,
             'prediction_quality': 0.1,
-            'circuit_breaker_state': self.circuit_breaker['state'],
-            'fallback_reason': reason
+            'stability_score': self.stability_score,
+            'last_training_time': self.last_training_time.isoformat() if self.last_training_time else None,
+            'device': str(self.device),
+            'timestamp': datetime.datetime.now().isoformat(),
+            'circuit_breaker_state': self.circuit_breaker['state']
+        }
+        scenario_data = {
+            'scenarios_available': False,
+            'scenario_count': 0,
+            'scenario_timestamp': None,
+            'scenario_parameters': {},
+            'scenarios': []
+        }
+        analytics_data = {
+            'model_architecture': {
+                'input_size': self.config.input_size,
+                'hidden_size': self.config.hidden_size,
+                'num_layers': self.config.num_layers,
+                'sequence_length': self.config.sequence_length,
+                'attention_heads': self.config.attention_heads
+            },
+            'performance_metrics': {
+                'training_quality': self.training_quality,
+                'prediction_quality': 0.1,
+                'stability_score': self.stability_score,
+                'model_confidence': 0.1
+            },
+            'data_status': {
+                'market_history_size': len(self.market_history),
+                'prediction_history_size': len(self.prediction_history),
+                'training_sessions': len(self.training_history),
+                'feature_importance_count': len(self.feature_importance)
+            },
+            'training_curves': {},
+            'attention_patterns': len(self.attention_patterns),
+            'genome_config': self.genome.copy()
+        }
+        confidence_data = {
+            'current_confidence': 0.1,
+            'prediction_confidence': 0.1,
+            'stability_confidence': self.stability_score,
+            'training_confidence': self.training_quality,
+            'confidence_history': list(self.confidence_history)[-20:] if self.confidence_history else [],
+            'confidence_classification': 'very_low',
+            'is_reliable': False,
+            'recommendations': ["Model requires error recovery and retraining"]
+        }
+
+        return {
+            'market_predictions': predictions_data,
+            'scenario_generation': scenario_data,
+            'world_model_analytics': analytics_data,
+            'prediction_confidence': confidence_data,
+            '_thesis': thesis,
+            'success': False,
+            'fallback_reason': reason,
+            'circuit_breaker_state': self.circuit_breaker['state']
         }
 
     def _record_success(self, processing_time: float):

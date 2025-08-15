@@ -450,16 +450,13 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
     async def _process_action_selection(self, ppo_data: Dict[str, Any]) -> Dict[str, Any]:
         """Process action selection"""
         try:
-            observation = ppo_data['observation']
-            
-            if isinstance(observation, np.ndarray):
-                obs_tensor = torch.tensor(observation, dtype=torch.float32).to(self.device)
-            else:
-                obs_tensor = torch.tensor([observation], dtype=torch.float32).to(self.device)
-            
-            # Ensure correct shape
-            if obs_tensor.dim() == 1:
-                obs_tensor = obs_tensor.unsqueeze(0)
+            observation = ppo_data.get('observation')
+
+            # Normalize observation to a fixed-length numeric vector
+            obs_vec = self._normalize_observation(observation)
+            obs_tensor = torch.from_numpy(obs_vec).to(self.device)
+            # Ensure batch dimension
+            obs_tensor = obs_tensor.unsqueeze(0)
             
             # Forward pass
             with torch.no_grad():
@@ -1127,15 +1124,12 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             obs = inputs.get('observation', inputs.get('observations', inputs.get('market_data')))
             
             if obs is not None:
-                if isinstance(obs, np.ndarray):
-                    obs_tensor = torch.tensor(obs, dtype=torch.float32)
-                else:
-                    obs_tensor = torch.tensor([obs], dtype=torch.float32)
-                
+                obs_vec = self._normalize_observation(obs)
+                obs_tensor = torch.from_numpy(obs_vec)
                 # Use the PPO network to select action
                 with torch.no_grad():
                     action_mean, _, _ = self.network(obs_tensor.unsqueeze(0))
-                    action = action_mean.squeeze(0).numpy()
+                    action = action_mean.squeeze(0).cpu().numpy()
                 
                 # Store for next time
                 self.last_action = action
@@ -1144,7 +1138,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                     'action_type': 'ppo_policy_action',
                     'action': action.tolist(),
                     'confidence': 0.8,
-                    'reasoning': f'PPO policy action based on {len(obs)} observations',
+                    'reasoning': f'PPO policy action based on {len(obs_vec)} observations',
                     'action_stats': {
                         'mean': float(np.mean(action)),
                         'std': float(np.std(action)),
@@ -1154,7 +1148,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                 }
             else:
                 # Fallback action
-                fallback_action = getattr(self, 'last_action', np.zeros(2, dtype=np.float32))
+                fallback_action = getattr(self, 'last_action', np.zeros(self.config.act_size, dtype=np.float32))
                 return {
                     'action_type': 'fallback_action',
                     'action': fallback_action.tolist() if hasattr(fallback_action, 'tolist') else [0.0, 0.0],
@@ -1227,3 +1221,35 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
         except Exception as e:
             self.logger.error(f"PPO confidence calculation failed: {e}")
             return 0.5
+
+    def _normalize_observation(self, observation: Any) -> np.ndarray:
+        """Normalize raw observation into a fixed-length float32 vector.
+        - Handles None by returning zeros of length config.obs_size.
+        - Accepts arrays/lists/tuples and pads/truncates to obs_size.
+        - If dict, uses numeric values; if scalar, wraps and pads.
+        - Replaces NaN/Inf with 0.
+        """
+        obs_size = int(getattr(self.config, 'obs_size', 10) or 10)
+        try:
+            if observation is None:
+                return np.zeros(obs_size, dtype=np.float32)
+            # Dict: try numeric values
+            if isinstance(observation, dict):
+                # Prefer common keys; otherwise use all numeric values in key order
+                keys = [k for k in observation.keys() if isinstance(observation[k], (int, float, np.number))]
+                arr = np.array([float(observation[k]) for k in keys], dtype=np.float32) if keys else np.array([], dtype=np.float32)
+            else:
+                # Generic array-like
+                arr = np.array(observation, dtype=np.float32).reshape(-1)
+            # Sanitize NaN/Inf
+            arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+            # Pad or truncate
+            if arr.size < obs_size:
+                padded = np.zeros(obs_size, dtype=np.float32)
+                padded[:arr.size] = arr
+                return padded
+            elif arr.size > obs_size:
+                return arr[-obs_size:]
+            return arr.astype(np.float32, copy=False)
+        except Exception:
+            return np.zeros(obs_size, dtype=np.float32)

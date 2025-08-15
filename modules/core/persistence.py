@@ -292,11 +292,13 @@ class StateManager:
     def save_module_state(self, module: 'BaseModule') -> bytes:
         """
         Save module state with comprehensive validation.
-        
-        ENHANCED: Complete validation before save.
+
+        ENHANCED: Complete validation before save. Records the serialization
+        method in the envelope so on-disk format and in-memory format stay
+        in lockstep.
         """
         module_name = module.__class__.__name__
-        
+
         with self._lock:
             try:
                 # Get state from module
@@ -304,21 +306,21 @@ class StateManager:
                     state = module.get_state()
                 else:
                     state = self._extract_safe_attributes(module)
-                
+
                 # Pre-save validation
                 validation = self._validate_state_for_save(state, module)
                 if not validation.is_valid:
                     raise ValueError(f"State validation failed: {validation.errors}")
-                
-                # Get module version
+
+                # Module version
                 module_version = getattr(module.metadata, 'version', '1.0.0') if hasattr(module, 'metadata') else '1.0.0'
                 self.module_versions[module_name] = module_version
-                
-                # Create state metadata
+
+                # Envelope
                 version = self.state_versions.get(module_name, 0) + 1
                 timestamp = datetime.now()
-                
-                state_with_metadata = {
+
+                state_with_metadata: Dict[str, Any] = {
                     'module_name': module_name,
                     'timestamp': timestamp.isoformat(),
                     'version': version,
@@ -333,23 +335,24 @@ class StateManager:
                     'system_context': self._get_system_context(),
                     'validation': validation.__dict__
                 }
-                
-                # Calculate checksum
+
+                # Checksum
                 state_json = json.dumps(state, sort_keys=True, default=str)
                 checksum = hashlib.sha256(state_json.encode()).hexdigest()
                 state_with_metadata['checksum'] = checksum
-                
-                # Update tracking
+
+                # Serialize (no compression here); remember method in envelope
+                serialized, method = self._serialize_state(state_with_metadata)
+                state_with_metadata['serialization_method'] = method
+
+                # Track in-memory
                 self.state_versions[module_name] = version
                 self.state_checksums[module_name] = checksum
                 self.state_cache[module_name] = state_with_metadata
-                
-                # Serialize with compression
-                serialized, method = self._serialize_state(state_with_metadata)
-                
-                # Save to disk with backup
+
+                # Persist to disk (uses serialization_method to pick the writer/ext)
                 self._save_to_disk_with_backup(module_name, state_with_metadata)
-                
+
                 self.logger.info(
                     format_operator_message(
                         "[SAVE]", "STATE SAVED",
@@ -358,12 +361,12 @@ class StateManager:
                         context="state_management"
                     )
                 )
-                
                 return serialized
-                
+
             except Exception as e:
                 self.logger.error(f"[CRASH] Failed to save state for {module_name}: {e}")
                 raise RuntimeError(f"State save failed for {module_name}: {e}")
+
     
     def _validate_state_for_save(self, state: Dict[str, Any], module: 'BaseModule') -> StateValidation:
         """Validate state before saving"""
@@ -408,86 +411,86 @@ class StateManager:
     def reload_module(self, module_name: str, orchestrator: 'ModuleOrchestrator') -> bool:
         """
         Hot-reload module with state preservation and validation.
-        
-        ENHANCED: Complete validation and health checks.
+
+        ENHANCED: Load state back from disk using format detection to avoid
+        pickle/JSON mismatches. Includes health and version checks.
         """
         with self._lock:
             try:
-                # Get current module
+                # Current module
                 current_module = orchestrator.modules.get(module_name)
                 if not current_module:
                     self.logger.error(f"Module {module_name} not found in orchestrator")
                     return False
-                
-                # Check system health before reload
+
+                # System health pre-check
                 if not self._check_system_health_for_operation(orchestrator):
                     self.logger.error("System health check failed - aborting reload")
                     return False
-                
+
                 # Save current state with backup
-                state_bytes = self.save_module_state(current_module)
-                
-                # Create pre-reload checkpoint
+                _ = self.save_module_state(current_module)
+
+                # Pre-reload checkpoint
                 pre_reload_checkpoint = self._create_mini_checkpoint(
                     module_name, current_module, "pre_reload"
                 )
-                
-                # Get module information
+
+                # Class & module info
                 module_class = orchestrator.module_classes.get(module_name)
                 if not module_class:
                     self.logger.error(f"Module class {module_name} not found")
                     return False
-                
+
                 module_path = module_class.__module__
-                
+
                 # Reload module code
                 self.logger.info(f"[RELOAD] Reloading module code for {module_name}")
-                
                 try:
                     module_ref = importlib.import_module(module_path)
                     importlib.reload(module_ref)
                 except Exception as e:
                     self.logger.error(f"Failed to reload module code: {e}")
                     return False
-                
-                # Get new class with validation
+
+                # Get new class
                 new_class = getattr(module_ref, module_name, None)
                 if not new_class:
                     self.logger.error(f"Class {module_name} not found after reload")
                     return False
-                
-                # Verify it has proper metadata
+
                 if not hasattr(new_class, '__module_metadata__'):
                     self.logger.error(f"Reloaded class missing @module decorator")
                     return False
-                
-                # Check version compatibility
+
+                # Version compatibility
                 old_version = self.module_versions.get(module_name, '1.0.0')
                 new_version = getattr(new_class.__module_metadata__, 'version', '1.0.0')
-                
                 if not self._check_version_compatibility(module_name, old_version, new_version):
                     self.logger.error(f"Version incompatibility: {old_version} -> {new_version}")
                     return False
-                
+
                 # Create new instance
                 try:
                     new_instance = new_class()
                 except Exception as e:
                     self.logger.error(f"Failed to create new instance: {e}")
-                    # Rollback using checkpoint
                     self._restore_mini_checkpoint(pre_reload_checkpoint, orchestrator)
                     return False
-                
-                # Restore state with validation
+
+                # Restore state with validation (load from disk to respect actual format)
                 try:
-                    state_data = pickle.loads(state_bytes)
-                    
-                    # Validate state integrity
+                    state_data = self.load_from_disk(module_name)
+                    if not state_data:
+                        self.logger.error(f"Failed to load persisted state for {module_name}")
+                        self._restore_mini_checkpoint(pre_reload_checkpoint, orchestrator)
+                        return False
+
                     validation = self._validate_state_for_restore(state_data, new_instance)
                     if not validation.is_valid:
                         self.logger.error(f"State validation failed: {validation.errors}")
                         return False
-                    
+
                     # Apply any required migrations
                     if validation.required_migrations:
                         state_data['state'] = self._apply_state_migrations(
@@ -495,45 +498,40 @@ class StateManager:
                             validation.required_migrations,
                             module_name
                         )
-                    
-                    # Restore state
+
+                    # Restore into instance
                     if hasattr(new_instance, 'set_state'):
                         new_instance.set_state(state_data['state'])
                     else:
                         self._restore_attributes_safely(new_instance, state_data['state'])
-                    
+
                 except Exception as e:
                     self.logger.error(f"Failed to restore state: {e}")
-                    # Rollback
                     self._restore_mini_checkpoint(pre_reload_checkpoint, orchestrator)
                     return False
-                
-                # Validate new instance health
+
+                # Health check new instance
                 if hasattr(new_instance, 'get_health_status'):
                     health = new_instance.get_health_status()
                     if health.get('status') == 'CRITICAL':
                         self.logger.error("New instance health check failed")
                         return False
-                
-                # Update orchestrator atomically
-                old_instance = orchestrator.modules[module_name]
+
+                # Atomically swap into orchestrator
                 orchestrator.modules[module_name] = new_instance
                 orchestrator.module_classes[module_name] = new_class
-                
+
                 # Update metadata if changed
                 old_metadata = orchestrator.metadata.get(module_name)
                 new_metadata = new_class.__module_metadata__
-                
                 if old_metadata and old_metadata.to_dict() != new_metadata.to_dict():
                     orchestrator.metadata[module_name] = new_metadata
                     self.logger.info(f"Module metadata updated for {module_name}")
-                    
-                    # May need to rebuild execution plan
                     orchestrator.build_execution_plan()
-                
-                # Update version tracking
+
+                # Track version
                 self.module_versions[module_name] = new_version
-                
+
                 self.logger.info(
                     format_operator_message(
                         "[OK]", "MODULE RELOADED",
@@ -542,13 +540,13 @@ class StateManager:
                         context="hot_reload"
                     )
                 )
-                
                 return True
-                
+
             except Exception as e:
                 self.logger.error(f"[CRASH] Failed to reload {module_name}: {e}")
                 self.logger.error(f"Traceback: {traceback.format_exc()}")
                 return False
+
     
     def _check_system_health_for_operation(self, orchestrator: 'ModuleOrchestrator') -> bool:
         """Check if system is healthy enough for state operations"""
@@ -772,7 +770,11 @@ class StateManager:
     
     def _serialize_state(self, state_data: Dict[str, Any]) -> Tuple[bytes, str]:
         """
-        Serialise without compression; return (blob, method).
+        Serialize without compression and return (blob, method),
+        where method ∈ {"pickle", "json"}.
+
+        The on-disk writer will re-serialize using the same method so that
+        runtime bytes and persisted format remain consistent.
         """
         try:
             blob = pickle.dumps(state_data)
@@ -780,6 +782,7 @@ class StateManager:
         except Exception:
             blob = json.dumps(state_data, default=str).encode("utf-8")
             return blob, "json"
+
 
     
     def _extract_safe_attributes(self, module: 'BaseModule') -> Dict[str, Any]:
@@ -809,45 +812,45 @@ class StateManager:
         return safe_state
     
     def _save_to_disk_with_backup(self, module_name: str, state_data: Dict[str, Any]):
-        """Save state to disk with atomic operation and backup"""
-        # Determine file format
-        if state_data.get('serialization_method') == 'json':
+        """Save state to disk with atomic operation and backup."""
+        # Determine file format (must match the method used in _serialize_state)
+        method = state_data.get('serialization_method', 'pickle')
+        if method == 'json':
             file_ext = '.json'
             data_to_write = json.dumps(state_data, indent=2, default=str).encode('utf-8')
         else:
             file_ext = '.pkl'
             data_to_write = pickle.dumps(state_data)
-        
-        # Apply compression if enabled
+
+        # Optional compression
         if self.compression_enabled:
             compressed = zlib.compress(data_to_write, level=self.compression_level)
             if len(compressed) < len(data_to_write) * 0.9:
                 data_to_write = compressed
                 file_ext += '.gz'
-        
+
         file_path = self.state_dir / f"{module_name}_state{file_ext}"
         temp_path = self.state_dir / f"{module_name}_state.tmp"
-        
+
         try:
             # Write to temporary file first (atomic operation)
             temp_path.write_bytes(data_to_write)
-            
+
             # Create backup if file exists
             if file_path.exists():
                 backup_path = self.backup_dir / f"{module_name}_state_{int(time.time())}{file_ext}"
                 backup_path.write_bytes(file_path.read_bytes())
-                
                 # Clean old backups
                 self._cleanup_old_backups(module_name)
-            
+
             # Atomic move
             temp_path.replace(file_path)
-            
+
         except Exception as e:
-            # Cleanup temporary file on error
             if temp_path.exists():
                 temp_path.unlink()
             raise e
+
     
     def _cleanup_old_backups(self, module_name: str):
         """Clean up old backup files"""
@@ -1556,7 +1559,7 @@ class ReplayEngine:
                 return None
     
     def _start_health_monitoring(self):
-        """Start periodic health monitoring during recording"""
+        """Start periodic health monitoring during recording (loop-safe)."""
         async def monitor_health():
             while self.is_recording:
                 try:
@@ -1566,8 +1569,14 @@ class ReplayEngine:
                         self.health_snapshots.append(health)
                 except Exception as e:
                     self.logger.error(f"Health monitoring error: {e}")
-        
-        asyncio.create_task(monitor_health())
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(monitor_health())
+        except RuntimeError:
+            # No loop – health monitoring will start when a loop exists (recording still works)
+            self.logger.info("Health monitoring deferred (no running event loop)")
+
     
     def _capture_system_health(self) -> Dict[str, Any]:
         """Capture comprehensive system health"""
@@ -2119,30 +2128,32 @@ class ReplayEngine:
             self.logger.error(f"Failed to replay event {event.event_type}: {e}")
     
     async def _restore_system_state(self, state: Dict[str, Any]):
-        """Restore system to captured state"""
+        """Restore system to captured state (defensive against API changes)."""
         if not self.orchestrator:
             return
-        
+
         try:
-            # Clear current state
-            self.smart_bus._cleanup_old_data()  # Clear all
-            
+            # Clear current state (defensively)
+            if hasattr(self.smart_bus, "_cleanup_old_data"):
+                try:
+                    self.smart_bus._cleanup_old_data()
+                except Exception as e:
+                    self.logger.warning(f"SmartInfoBus cleanup failed: {e}")
+
             # Restore circuit breaker states
             cb_states = state.get('circuit_breaker_states', {})
             for module_name, cb_state in cb_states.items():
                 if module_name in self.orchestrator.circuit_breakers:
                     cb = self.orchestrator.circuit_breakers[module_name]
-                    cb.state = cb_state['state']
-                    cb.failure_count = cb_state['failure_count']
-            
+                    cb.state = cb_state.get('state', getattr(cb, 'state', 'CLOSED'))
+                    cb.failure_count = cb_state.get('failure_count', getattr(cb, 'failure_count', 0))
+
             # Restore module states if available
             active_modules = state.get('active_modules', [])
             for module_info in active_modules:
                 module_name = module_info.get('name')
                 if module_name in self.orchestrator.modules:
                     module = self.orchestrator.modules[module_name]
-                    
-                    # Restore basic state
                     if hasattr(module, 'set_state'):
                         try:
                             module.set_state({
@@ -2152,12 +2163,12 @@ class ReplayEngine:
                             })
                         except Exception as e:
                             self.logger.warning(f"Failed to restore state for {module_name}: {e}")
-            
+
             self.logger.info("System state restored for replay")
-            
+
         except Exception as e:
             self.logger.error(f"Failed to restore system state: {e}")
-    
+
     async def pause(self):
         """Pause replay with state preservation"""
         self.is_paused = True
@@ -2434,8 +2445,7 @@ class PersistenceManager:
         )
     
     def _start_background_maintenance(self):
-        """Start background maintenance tasks"""
-        # Auto-checkpoint task
+        """Start background maintenance tasks (loop-safe)."""
         async def auto_checkpoint():
             while not self._shutdown_event.is_set():
                 try:
@@ -2445,7 +2455,7 @@ class PersistenceManager:
                         health = self.orchestrator.get_execution_metrics()
                         if health.get('success_rate', 0) > 0.7:
                             self.state_manager.create_checkpoint(
-                                self.orchestrator, 
+                                self.orchestrator,
                                 f"auto_{int(time.time())}"
                             )
                             self.logger.info("[RELOAD] Auto-checkpoint created")
@@ -2455,33 +2465,34 @@ class PersistenceManager:
                     break
                 except Exception as e:
                     self.logger.error(f"Auto-checkpoint failed: {e}")
-        
-        # Cleanup task
+
         async def periodic_cleanup():
             while not self._shutdown_event.is_set():
                 try:
                     await asyncio.sleep(24 * 3600)  # Daily
-                    
                     # Cleanup old states
                     self.state_manager.cleanup_old_states(
                         days_to_keep=self.config['max_session_age_days']
                     )
-                    
                     # Cleanup old sessions
                     self._cleanup_old_sessions()
-                    
                     self.logger.info("🧹 Periodic cleanup completed")
-                    
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
                     self.logger.error(f"Periodic cleanup failed: {e}")
-        
-        # Start tasks
-        self._background_tasks = [
-            asyncio.create_task(auto_checkpoint()),
-            asyncio.create_task(periodic_cleanup())
-        ]
+
+        # Start tasks only if a loop exists
+        try:
+            loop = asyncio.get_running_loop()
+            self._background_tasks = [
+                loop.create_task(auto_checkpoint()),
+                loop.create_task(periodic_cleanup())
+            ]
+        except RuntimeError:
+            self.logger.info("No running event loop; background tasks not started")
+            self._background_tasks = []
+
     
     def _cleanup_old_sessions(self):
             """Cleanup old replay sessions"""
@@ -2506,29 +2517,38 @@ class PersistenceManager:
                 self.logger.info(f"Cleaned up {cleaned_count} old sessions")
     
     async def shutdown(self):
-        """Graceful shutdown of persistence manager"""
+        """Graceful shutdown of persistence manager (robust if tasks absent)."""
         self.logger.info("[STOP] Shutting down persistence manager...")
-        
+
         # Signal shutdown
-        self._shutdown_event.set()
-        
-        # Cancel background tasks
-        for task in self._background_tasks:
-            task.cancel()
-        
+        try:
+            self._shutdown_event.set()
+        except Exception:
+            pass
+
+        # Cancel background tasks (if any)
+        for task in list(self._background_tasks):
+            try:
+                task.cancel()
+            except Exception:
+                pass
+
         # Wait for tasks to complete
         if self._background_tasks:
-            await asyncio.gather(*self._background_tasks, return_exceptions=True)
-        
+            try:
+                await asyncio.gather(*self._background_tasks, return_exceptions=True)
+            except Exception:
+                pass
+
         # Final checkpoint if orchestrator available
         if self.orchestrator:
             try:
                 self.state_manager.create_checkpoint(self.orchestrator, "final_shutdown")
             except Exception as e:
                 self.logger.error(f"Final checkpoint failed: {e}")
-        
+
         self.logger.info("[OK] Persistence manager shutdown complete")
-    
+
     def get_status_report(self) -> str:
         """Get comprehensive status report"""
         

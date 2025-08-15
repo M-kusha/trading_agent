@@ -335,7 +335,8 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
                 'detection_statistics': self._get_comprehensive_detection_stats(),
                 'audit_recommendations': recommendations,
                 'quality_metrics': quality_analysis,
-                'health_metrics': self._get_health_metrics()
+                'health_metrics': self._get_health_metrics(),
+                '_thesis': thesis
             }
             
             # Update SmartInfoBus with comprehensive thesis
@@ -2177,7 +2178,8 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             'coordination_events': [],
             'detection_statistics': {'error': str(error_context)},
             'audit_recommendations': ["Investigate collusion auditor errors"],
-            'health_metrics': {'status': 'error', 'error_context': str(error_context)}
+            'health_metrics': {'status': 'error', 'error_context': str(error_context)},
+            '_thesis': f"CollusionAuditor error: {error_context}"
         }
 
     def _get_safe_voting_defaults(self) -> Dict[str, Any]:
@@ -2200,7 +2202,8 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             'coordination_events': [],
             'detection_statistics': {'status': 'disabled'},
             'audit_recommendations': ["Restart collusion auditor system"],
-            'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'}
+            'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'},
+            '_thesis': 'CollusionAuditor disabled via circuit breaker'
         }
 
     # ═══════════════════════════════════════════════════════════════════

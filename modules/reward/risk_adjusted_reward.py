@@ -359,6 +359,39 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
             # Generate thesis
             thesis = await self._generate_reward_thesis(reward_data, result)
             
+            # Build provided outputs for return payload
+            shaped_payload = {
+                'reward': result.get('shaped_reward', 0.0),
+                'components': result.get('reward_components', {}),
+                'calculation_method': result.get('calculation_method', 'enhanced_async'),
+                'timestamp': utcnow()
+            }
+
+            analytics_payload = result.get('reward_analytics', {
+                'performance_metrics': {
+                    'sharpe_ratio': self._sharpe_ratio,
+                    'consistency_score': self._consistency_score,
+                    'win_rate': self._win_rate,
+                    'avg_reward': self._avg_reward,
+                    'reward_volatility': self._reward_volatility,
+                    'reward_quality': self._reward_quality
+                },
+                'component_analysis': {},
+                'regime_analysis': {}
+            })
+
+            performance_payload = {
+                'reward_quality': self._reward_quality,
+                'sharpe_ratio': self._sharpe_ratio,
+                'consistency_score': self._consistency_score,
+                'win_rate': self._win_rate,
+                'avg_reward': self._avg_reward,
+                'reward_volatility': self._reward_volatility,
+                'adaptive_params': self._adaptive_params.copy(),
+                'health_status': self._health_status,
+                'circuit_breaker_state': self.circuit_breaker['state']
+            }
+
             # Update SmartInfoBus
             await self._update_reward_smart_bus(result, thesis)
             
@@ -366,6 +399,16 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
             processing_time = (time.time() - start_time) * 1000
             self._record_success(processing_time)
             
+            # Ensure returned payload complies with provides contract
+            result.update({
+                'shaped_reward': shaped_payload,
+                'reward_components': result.get('reward_components', {}),
+                'reward_analytics': analytics_payload,
+                'reward_performance': performance_payload,
+                '_thesis': thesis,
+                'success': True
+            })
+
             return result
             
         except Exception as e:
@@ -1219,12 +1262,44 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
         # Generate minimal reward with penalty for no data
         fallback_reward = -0.1  # Small penalty for missing data
         
+        thesis = "No reward data available - fallback applied"
         return {
-            'shaped_reward': fallback_reward,
+            'shaped_reward': {
+                'reward': fallback_reward,
+                'components': {
+                    'fallback_penalty': -0.1,
+                    'reason': 'no_reward_data'
+                },
+                'calculation_method': 'fallback',
+                'timestamp': utcnow()
+            },
             'reward_components': {
                 'fallback_penalty': -0.1,
                 'reason': 'no_reward_data'
             },
+            'reward_analytics': {
+                'performance_metrics': {
+                    'sharpe_ratio': self._sharpe_ratio,
+                    'consistency_score': self._consistency_score,
+                    'win_rate': self._win_rate,
+                    'avg_reward': self._avg_reward,
+                    'reward_volatility': self._reward_volatility,
+                    'reward_quality': self._reward_quality
+                }
+            },
+            'reward_performance': {
+                'reward_quality': self._reward_quality,
+                'sharpe_ratio': self._sharpe_ratio,
+                'consistency_score': self._consistency_score,
+                'win_rate': self._win_rate,
+                'avg_reward': self._avg_reward,
+                'reward_volatility': self._reward_volatility,
+                'adaptive_params': self._adaptive_params.copy(),
+                'health_status': self._health_status,
+                'circuit_breaker_state': self.circuit_breaker['state']
+            },
+            '_thesis': thesis,
+            'success': True,
             'fallback_reason': 'no_reward_data'
         }
 
@@ -1275,12 +1350,44 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
         # Provide conservative negative reward during errors
         error_reward = -0.5 if self.circuit_breaker['state'] == 'OPEN' else -0.2
         
+        thesis = f"Reward error fallback: {reason}"
         return {
-            'shaped_reward': error_reward,
+            'shaped_reward': {
+                'reward': error_reward,
+                'components': {
+                    'error_penalty': error_reward,
+                    'reason': reason
+                },
+                'calculation_method': 'error_fallback',
+                'timestamp': utcnow()
+            },
             'reward_components': {
                 'error_penalty': error_reward,
                 'reason': reason
             },
+            'reward_analytics': {
+                'performance_metrics': {
+                    'sharpe_ratio': self._sharpe_ratio,
+                    'consistency_score': self._consistency_score,
+                    'win_rate': self._win_rate,
+                    'avg_reward': self._avg_reward,
+                    'reward_volatility': self._reward_volatility,
+                    'reward_quality': self._reward_quality
+                }
+            },
+            'reward_performance': {
+                'reward_quality': self._reward_quality,
+                'sharpe_ratio': self._sharpe_ratio,
+                'consistency_score': self._consistency_score,
+                'win_rate': self._win_rate,
+                'avg_reward': self._avg_reward,
+                'reward_volatility': self._reward_volatility,
+                'adaptive_params': self._adaptive_params.copy(),
+                'health_status': self._health_status,
+                'circuit_breaker_state': self.circuit_breaker['state']
+            },
+            '_thesis': thesis,
+            'success': False,
             'circuit_breaker_state': self.circuit_breaker['state'],
             'fallback_reason': reason
         }

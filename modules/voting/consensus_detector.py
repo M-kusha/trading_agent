@@ -408,8 +408,8 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             weight_multiplier = regime_config.get('weight_multiplier', 1.0)
             stability_factor = regime_config.get('stability_factor', 1.0)
             
-            # Apply volatility-based adaptations
-            volatility_level = volatility_data.get('level', 'medium')
+            # Apply volatility-based adaptations (robust to numeric or dict inputs)
+            volatility_level = self._extract_volatility_level(volatility_data)
             volatility_multiplier = self.market_adaptation['volatility_adjustments'].get(volatility_level, 1.0)
             
             # Update smoothing parameters
@@ -480,9 +480,9 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             }.get(regime, 0.5)
             consensus_factors.append(regime_factor)
             
-            # Volatility factor
+            # Volatility factor (accepts dict or numeric and normalizes to level)
             volatility_data = voting_data.get('volatility_data', {})
-            volatility_level = volatility_data.get('level', 'medium')
+            volatility_level = self._extract_volatility_level(volatility_data)
             volatility_factor = {
                 'very_low': 0.9, 'low': 0.8, 'medium': 0.6, 'high': 0.4, 'extreme': 0.2
             }.get(volatility_level, 0.6)
@@ -509,6 +509,53 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "market_consensus_factor_calculation")
             return 0.5
+
+    def _extract_volatility_level(self, volatility_data: Any) -> str:
+        """Normalize incoming volatility data to one of: very_low, low, medium, high, extreme.
+
+        Accepts either a dict with a 'level' key or a numeric value. Falls back to 'medium' if unknown.
+        """
+        try:
+            # If already a mapping with a declared level, trust it
+            if isinstance(volatility_data, dict):
+                level = volatility_data.get('level')
+                if isinstance(level, str) and level in {'very_low', 'low', 'medium', 'high', 'extreme'}:
+                    return level
+                # Try common numeric fields
+                for key in ('value', 'atr', 'sigma', 'vol'):
+                    if key in volatility_data:
+                        val = float(volatility_data[key])
+                        return self._map_numeric_volatility_to_level(val)
+                return 'medium'
+
+            # If it's a numeric type, map to a level
+            if isinstance(volatility_data, (int, float, np.floating)):
+                return self._map_numeric_volatility_to_level(float(volatility_data))
+
+            return 'medium'
+        except Exception:
+            return 'medium'
+
+    def _map_numeric_volatility_to_level(self, value: float) -> str:
+        """Map a numeric volatility value to a discrete level. Thresholds are heuristic and safe.
+
+        Assumes value is a non-negative number. The mapping is conservative to avoid overreacting.
+        """
+        try:
+            v = abs(float(value))
+            # Heuristic thresholds; adjust if config provides better ranges in future
+            if v < 0.01:
+                return 'very_low'
+            elif v < 0.02:
+                return 'low'
+            elif v < 0.05:
+                return 'medium'
+            elif v < 0.1:
+                return 'high'
+            else:
+                return 'extreme'
+        except Exception:
+            return 'medium'
 
     async def _perform_comprehensive_consensus_analysis(self, voting_data: Dict[str, Any]) -> Dict[str, Any]:
         """Perform comprehensive consensus analysis with multiple algorithms"""

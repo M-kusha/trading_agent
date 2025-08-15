@@ -416,14 +416,64 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
             # Generate thesis
             thesis = await self._generate_controller_thesis(controller_data, performance_result)
             
+            # Build comprehensive results to satisfy provides + thesis contract
+            controller_status = {
+                'controller_mode': self.current_mode.value,
+                'active_agent': self.active_agent_name,
+                'session_pnl': self.live_session_pnl,
+                'current_episode': self.current_episode,
+                'mode_duration': (datetime.now() - self.mode_start_time).total_seconds(),
+                'last_transition': self.mode_transitions[-1] if self.mode_transitions else None
+            }
+            # Agent performance summary (defensive to avoid None access)
+            try:
+                performance_summary = self.performance_tracker_agent.get_performance_summary()
+                best_agent = self.performance_tracker_agent.get_best_agent()
+            except Exception:
+                performance_summary = {}
+                best_agent = getattr(self, 'active_agent_name', 'unknown')
+            agent_performance = {
+                'performance_summary': performance_summary,
+                'best_agent': best_agent,
+                'agent_comparison': getattr(self, 'agent_comparison_results', {})
+            }
+            training_metrics = {
+                'training_history': list(self.training_history)[-10:],
+                'validation_results': list(self.validation_results)[-5:],
+                'convergence_count': self.training_convergence_count,
+                'poor_episodes': self.consecutive_poor_episodes
+            }
+            automation_status = {
+                'automation_metrics': getattr(self, 'automation_metrics', {}).copy() if hasattr(self, 'automation_metrics') else {},
+                'mode_transitions': list(self.mode_transitions)[-5:],
+                'decision_history': list(self.decision_history)[-10:]
+            }
+            # Minimal signal scaffolding (satisfy provides)
+            try:
+                confidence_val = float(await self.calculate_confidence({'action_type': 'status_check'}))
+            except Exception:
+                confidence_val = 0.5
+            results = {
+                **performance_result,
+                'controller_status': controller_status,
+                'agent_performance': agent_performance,
+                'training_metrics': training_metrics,
+                'automation_status': automation_status,
+                'trading_signals': [],
+                'trading_signal': {'action': 'hold', 'confidence': confidence_val},
+                'meta_signals': {},
+                'agent_decisions': [],
+                '_thesis': thesis
+            }
+            
             # Update SmartInfoBus
-            await self._update_controller_smart_bus(performance_result, thesis)
+            await self._update_controller_smart_bus(results, thesis)
             
             # Record success
             processing_time = (time.time() - start_time) * 1000
             self._record_success(processing_time)
             
-            return performance_result
+            return results
             
         except Exception as e:
             return await self._handle_controller_error(e, start_time)
@@ -1308,11 +1358,25 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
     async def _handle_no_data_fallback(self) -> Dict[str, Any]:
         """Handle case when no controller data is available"""
         self.logger.warning("No controller data available - using cached state")
-        
-        return {
+        thesis = "Controller operating with cached state due to missing inputs"
+        controller_status = {
             'controller_mode': self.current_mode.value,
             'active_agent': self.active_agent_name,
             'session_pnl': self.live_session_pnl,
+            'current_episode': getattr(self, 'current_episode', 0),
+            'mode_duration': (datetime.now() - getattr(self, 'mode_start_time', datetime.now())).total_seconds(),
+            'last_transition': self.mode_transitions[-1] if getattr(self, 'mode_transitions', None) else None
+        }
+        return {
+            'controller_status': controller_status,
+            'agent_performance': {'performance_summary': {}, 'best_agent': self.active_agent_name, 'agent_comparison': {}},
+            'training_metrics': {'training_history': [], 'validation_results': [], 'convergence_count': 0, 'poor_episodes': 0},
+            'automation_status': {'automation_metrics': getattr(self, 'automation_metrics', {}).copy() if hasattr(self, 'automation_metrics') else {}, 'mode_transitions': [], 'decision_history': []},
+            'trading_signals': [],
+            'trading_signal': {'action': 'hold', 'confidence': 0.5},
+            'meta_signals': {},
+            'agent_decisions': [],
+            '_thesis': thesis,
             'fallback_reason': 'no_controller_data'
         }
 
@@ -1349,13 +1413,28 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         return self._create_fallback_response(f"error: {str(error)}")
 
     def _create_fallback_response(self, reason: str) -> Dict[str, Any]:
-        """Create fallback response for error cases"""
-        return {
+        """Create fallback response for error cases - satisfy provides + thesis"""
+        thesis = f"Controller fallback: {reason}"
+        controller_status = {
             'controller_mode': self.current_mode.value,
             'active_agent': self.active_agent_name,
-            'session_pnl': self.live_session_pnl,
-            'fallback_reason': reason,
-            'circuit_breaker_state': self.circuit_breaker['state']
+            'session_pnl': getattr(self, 'live_session_pnl', 0.0),
+            'current_episode': getattr(self, 'current_episode', 0),
+            'mode_duration': (datetime.now() - getattr(self, 'mode_start_time', datetime.now())).total_seconds(),
+            'last_transition': self.mode_transitions[-1] if getattr(self, 'mode_transitions', None) else None,
+            'circuit_breaker_state': self.circuit_breaker['state'] if hasattr(self, 'circuit_breaker') else 'UNKNOWN'
+        }
+        return {
+            'controller_status': controller_status,
+            'agent_performance': {'performance_summary': {}, 'best_agent': getattr(self, 'active_agent_name', 'unknown'), 'agent_comparison': {}},
+            'training_metrics': {'training_history': [], 'validation_results': [], 'convergence_count': 0, 'poor_episodes': 0},
+            'automation_status': {'automation_metrics': getattr(self, 'automation_metrics', {}).copy() if hasattr(self, 'automation_metrics') else {}, 'mode_transitions': [], 'decision_history': []},
+            'trading_signals': [],
+            'trading_signal': {'action': 'hold', 'confidence': 0.0},
+            'meta_signals': {},
+            'agent_decisions': [],
+            '_thesis': thesis,
+            'fallback_reason': reason
         }
 
     def _update_controller_health(self):

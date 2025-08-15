@@ -266,6 +266,39 @@ class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
             processing_time = (time.time() - start_time) * 1000
             self._record_success(processing_time)
             
+            # Conform to provides contract
+            provides_payload = {
+                'mistake_avoidance': {
+                    'avoidance_signal': self._avoidance_signal,
+                    'consecutive_losses': self._consecutive_losses,
+                    'danger_zones_count': len(self._danger_zones),
+                    'profit_zones_count': len(self._profit_zones),
+                    'total_loss_memories': len(self._loss_buf),
+                    'total_win_memories': len(self._win_buf)
+                },
+                'danger_zones': {
+                    'zones': self._danger_zones,
+                    'zone_count': len(self._danger_zones),
+                    'avoidance_sensitivity': self.genome["avoidance_sensitivity"],
+                    'last_updated': time.time()
+                },
+                'pattern_recognition': {
+                    'loss_patterns': dict(list(self._loss_patterns.items())[:10]),
+                    'win_patterns': dict(list(self._win_patterns.items())[:10]),
+                    'total_loss_patterns': len(self._loss_patterns),
+                    'total_win_patterns': len(self._win_patterns),
+                    'pattern_memory_size': self.genome["pattern_memory_size"]
+                },
+                'loss_prevention': {
+                    'avoidance_effectiveness': self._mistake_performance['avoidance_effectiveness'],
+                    'false_positive_rate': self._false_positive_rate,
+                    'true_positive_rate': self._true_positive_rate,
+                    'cluster_quality': np.mean(list(self._cluster_quality_scores)) if self._cluster_quality_scores else 0.0,
+                    'learning_samples': len(self._loss_buf) + len(self._win_buf)
+                },
+                '_thesis': thesis
+            }
+            learning_result.update(provides_payload)
             return learning_result
             
         except Exception as e:
@@ -837,12 +870,42 @@ class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         """Handle case when no learning data is available"""
         self.logger.warning("No learning data available - using cached mistake memory")
         
+        thesis = "No learning data available – serving cached mistake memory state"
         return {
             'avoidance_signal': self._avoidance_signal,
             'total_loss_memories': len(self._loss_buf),
             'total_win_memories': len(self._win_buf),
             'consecutive_losses': self._consecutive_losses,
-            'fallback_reason': 'no_learning_data'
+            'fallback_reason': 'no_learning_data',
+            'mistake_avoidance': {
+                'avoidance_signal': self._avoidance_signal,
+                'consecutive_losses': self._consecutive_losses,
+                'danger_zones_count': len(self._danger_zones),
+                'profit_zones_count': len(self._profit_zones),
+                'total_loss_memories': len(self._loss_buf),
+                'total_win_memories': len(self._win_buf)
+            },
+            'danger_zones': {
+                'zones': self._danger_zones,
+                'zone_count': len(self._danger_zones),
+                'avoidance_sensitivity': self.genome["avoidance_sensitivity"],
+                'last_updated': time.time()
+            },
+            'pattern_recognition': {
+                'loss_patterns': dict(list(self._loss_patterns.items())[:10]),
+                'win_patterns': dict(list(self._win_patterns.items())[:10]),
+                'total_loss_patterns': len(self._loss_patterns),
+                'total_win_patterns': len(self._win_patterns),
+                'pattern_memory_size': self.genome["pattern_memory_size"]
+            },
+            'loss_prevention': {
+                'avoidance_effectiveness': self._mistake_performance['avoidance_effectiveness'],
+                'false_positive_rate': self._false_positive_rate,
+                'true_positive_rate': self._true_positive_rate,
+                'cluster_quality': np.mean(list(self._cluster_quality_scores)) if self._cluster_quality_scores else 0.0,
+                'learning_samples': len(self._loss_buf) + len(self._win_buf)
+            },
+            '_thesis': thesis
         }
 
     async def _handle_mistake_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
@@ -879,13 +942,43 @@ class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
 
     def _create_fallback_response(self, reason: str) -> Dict[str, Any]:
         """Create fallback response for error cases"""
+        thesis = f"Mistake memory encountered issues; serving last known state ({reason})"
         return {
             'avoidance_signal': self._avoidance_signal,
             'total_loss_memories': len(self._loss_buf),
             'total_win_memories': len(self._win_buf),
             'consecutive_losses': self._consecutive_losses,
             'circuit_breaker_state': self.circuit_breaker['state'],
-            'fallback_reason': reason
+            'fallback_reason': reason,
+            'mistake_avoidance': {
+                'avoidance_signal': self._avoidance_signal,
+                'consecutive_losses': self._consecutive_losses,
+                'danger_zones_count': len(self._danger_zones),
+                'profit_zones_count': len(self._profit_zones),
+                'total_loss_memories': len(self._loss_buf),
+                'total_win_memories': len(self._win_buf)
+            },
+            'danger_zones': {
+                'zones': self._danger_zones,
+                'zone_count': len(self._danger_zones),
+                'avoidance_sensitivity': self.genome["avoidance_sensitivity"],
+                'last_updated': time.time()
+            },
+            'pattern_recognition': {
+                'loss_patterns': dict(list(self._loss_patterns.items())[:10]),
+                'win_patterns': dict(list(self._win_patterns.items())[:10]),
+                'total_loss_patterns': len(self._loss_patterns),
+                'total_win_patterns': len(self._win_patterns),
+                'pattern_memory_size': self.genome["pattern_memory_size"]
+            },
+            'loss_prevention': {
+                'avoidance_effectiveness': self._mistake_performance['avoidance_effectiveness'],
+                'false_positive_rate': self._false_positive_rate,
+                'true_positive_rate': self._true_positive_rate,
+                'cluster_quality': np.mean(list(self._cluster_quality_scores)) if self._cluster_quality_scores else 0.0,
+                'learning_samples': len(self._loss_buf) + len(self._win_buf)
+            },
+            '_thesis': thesis
         }
 
     def _update_mistake_health(self):

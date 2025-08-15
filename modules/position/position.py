@@ -301,90 +301,283 @@ class PositionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixi
         self._exit_signals: Dict[str, List[Dict[str, Any]]] = {}
 
     async def process(self, **inputs) -> Dict[str, Any]:
-        """Main processing method for SmartInfoBus integration"""
+        """Main processing method for SmartInfoBus integration (contract-compliant)."""
         start_time = time.time()
-        
         try:
-            # Extract market data from SmartInfoBus
-            market_data = self._extract_market_data_from_smartbus()
-            
-            if not market_data:
-                return self._create_fallback_response("No market data available")
-            
-            # Process position decisions
+            # 1) Build market snapshot from inputs first, then overlay bus snapshot
+            market_from_inputs = self._extract_market_data_from_inputs(inputs)
+            bus_snapshot = self._extract_market_data_from_smartbus() or {}
+            # merge – input snapshot dominates
+            market_data = {}
+            market_data.update(bus_snapshot)
+            # keep per-instrument dicts keyed by self.instruments names
+            for k, v in market_from_inputs.items():
+                market_data[k] = v
+            # carry over optional global fields
+            for gkey in ("market_regime",):
+                if gkey in market_from_inputs:
+                    market_data[gkey] = market_from_inputs[gkey]
+
+            if not any(isinstance(v, dict) for v in market_data.values()):
+                # contract-compliant empty snapshot
+                fb = self._create_fallback_response("No market data available")
+                return {
+                    "position_decisions": {},
+                    "portfolio_state": {
+                        'health_score': fb['portfolio_health'],
+                        'exposure_ratio': fb['exposure_ratio'],
+                        'open_positions': len(self.open_positions),
+                        'decision_quality': self._decision_quality_score
+                    },
+                    "risk_metrics": {},
+                    "position_analysis": {"note": fb['thesis']},
+                    "positions": copy.deepcopy(self.open_positions),
+                    "pending_orders": [],
+                    "position_data": {},
+                    "trades": [],
+                    "recent_trades": [],
+                    "current_pnl": 0.0,
+                    "balance": float(getattr(self.config, "initial_balance", 0.0)),
+                    "equity": float(getattr(self.config, "initial_balance", 0.0)),
+                    "current_positions": copy.deepcopy(self.open_positions),
+                    "execution_data": {},
+                    "order_data": {},
+                    "_thesis": fb['thesis'],
+                    "processing_time_ms": 0.0
+                }
+
+            # 2) Decisions
             decisions = self.process_market_signals(market_data)
-            
-            # Update SmartInfoBus with results
+
+            # 3) Publish to SmartInfoBus
             await self._update_smartbus_with_decisions(decisions)
-            
-            # Generate thesis
+
+            # 4) Thesis
             thesis = await self._generate_position_thesis(market_data, decisions)
-            
-            # Performance tracking
-            processing_time = (time.time() - start_time) * 1000
-            self.performance_tracker.record_metric('PositionManager', 'process', processing_time, True)
-            
-            return {
-                'decisions': decisions,
-                'portfolio_health': self._portfolio_health_score,
-                'exposure_ratio': self._total_exposure_ratio,
-                'processing_time_ms': processing_time,
-                'thesis': thesis
+
+            # 5) Risk roll-up and balances
+            aggregated_risks = {}
+            for inst, dr in decisions.items():
+                for k, v in (dr.risk_factors or {}).items():
+                    aggregated_risks[k] = max(aggregated_risks.get(k, 0.0), float(v))
+
+            balance = float(self.config.initial_balance)
+            bus_port = self.smart_bus.get('portfolio_metrics', 'PositionManager')
+            if isinstance(bus_port, dict):
+                balance = float(bus_port.get('balance', balance))
+            current_pnl = 0.0
+            equity = balance + current_pnl
+
+            # 6) Contract output
+            position_decisions = {
+                inst: {
+                    "decision": dr.decision.value,
+                    "intensity": float(dr.intensity),
+                    "size": float(dr.size),
+                    "confidence": float(dr.confidence),
+                    "rationale": dr.rationale,
+                    "risk_factors": dr.risk_factors
+                } for inst, dr in decisions.items()
             }
-            
+
+            processing_time = (time.time() - start_time) * 1000.0
+            self.performance_tracker.record_metric('PositionManager', 'process', processing_time, True)
+
+            return {
+                "position_decisions": position_decisions,
+                "portfolio_state": {
+                    'health_score': float(self._portfolio_health_score),
+                    'exposure_ratio': float(self._total_exposure_ratio),
+                    'open_positions': int(len(self.open_positions)),
+                    'decision_quality': float(self._decision_quality_score)
+                },
+                "risk_metrics": aggregated_risks,
+                "position_analysis": {
+                    "instruments": list(self.instruments),
+                    "decisions_count": len(decisions),
+                    "exposure_ratio": float(self._total_exposure_ratio),
+                    "risk_management_score": float(self._risk_management_score),
+                },
+                "positions": copy.deepcopy(self.open_positions),
+                "pending_orders": [],
+                "position_data": copy.deepcopy(self.open_positions),
+                "trades": [],
+                "recent_trades": [],
+                "current_pnl": float(current_pnl),
+                "balance": float(balance),
+                "equity": float(equity),
+                "current_positions": copy.deepcopy(self.open_positions),
+                "execution_data": {},
+                "order_data": {},
+                "_thesis": thesis,
+                "processing_time_ms": processing_time,
+            }
+
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "PositionManager")
             self.logger.error(f"Position processing failed: {e}")
-            return self._create_fallback_response(f"Processing error: {str(e)}")
+            fb = self._create_fallback_response(f"Processing error: {str(e)}")
+            return {
+                "position_decisions": {},
+                "portfolio_state": {
+                    'health_score': fb['portfolio_health'],
+                    'exposure_ratio': fb['exposure_ratio'],
+                    'open_positions': len(self.open_positions),
+                    'decision_quality': self._decision_quality_score
+                },
+                "risk_metrics": {},
+                "position_analysis": {"note": fb['thesis']},
+                "positions": copy.deepcopy(self.open_positions),
+                "pending_orders": [],
+                "position_data": {},
+                "trades": [],
+                "recent_trades": [],
+                "current_pnl": 0.0,
+                "balance": float(getattr(self.config, "initial_balance", 0.0)),
+                "equity": float(getattr(self.config, "initial_balance", 0.0)),
+                "current_positions": copy.deepcopy(self.open_positions),
+                "execution_data": {},
+                "order_data": {},
+                "_thesis": fb['thesis'],
+                "processing_time_ms": 0.0
+            }
+        
+
+    def _extract_market_data_from_inputs(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+            """
+            Convert orchestrator inputs (market_data, price_data, technical_indicators, volatility_data, prices)
+            into the internal per-instrument dict keyed EXACTLY by self.instruments (e.g., 'XAU/USD').
+            Handles symbol variants like 'XAUUSD', 'XAU_USD', 'xauusd'.
+            """
+            out: Dict[str, Any] = {}
+
+            market_data = inputs.get("market_data") or {}
+            price_data = inputs.get("price_data") or {}
+            tech = inputs.get("technical_indicators") or {}
+            vol = inputs.get("volatility_data") or {}
+            simple_prices = inputs.get("prices") or {}
+            regime = inputs.get("market_regime") or inputs.get("market_context", {}).get("volatility_regime")
+            session = inputs.get("trading_session") or inputs.get("market_context", {}).get("session")
+
+            def variants(inst: str):
+                core = inst.replace("/", "").replace("_", "")
+                return {
+                    inst,
+                    inst.replace("/", ""),
+                    inst.replace("/", "_"),
+                    inst.upper(),
+                    inst.lower(),
+                    core.upper(),
+                    core.lower()
+                }
+
+            def pick(src: Dict[str, Any], inst: str):
+                for k in variants(inst):
+                    if k in src:
+                        return src[k]
+                return None
+
+            for inst in self.instruments:
+                inst_dict: Dict[str, Any] = {}
+
+                # market_data OHLCV-like
+                md = pick(market_data, inst)
+                if isinstance(md, dict):
+                    inst_dict["current_price"] = float(md.get("close", md.get("price", md.get("bid", 0.0))))
+                    inst_dict["volatility"] = float(md.get("atr", md.get("volatility", self.config.min_volatility)))
+
+                # price_data close/open/high/low
+                pd = pick(price_data, inst)
+                if isinstance(pd, dict):
+                    inst_dict["current_price"] = float(pd.get("close", inst_dict.get("current_price", 0.0)))
+
+                # indicators
+                ti = pick(tech, inst)
+                if isinstance(ti, dict):
+                    sma20 = float(ti.get("sma_20", 0.0))
+                    sma50 = float(ti.get("sma_50", 0.0)) or 1.0
+                    inst_dict["trend_strength"] = (sma20 - sma50) / (abs(sma50) or 1.0)
+                    inst_dict["momentum"] = float(ti.get("macd", 0.0))
+                    inst_dict["rsi"] = float(ti.get("rsi", 50.0))
+
+                # volatility_data
+                vd = pick(vol, inst)
+                if isinstance(vd, dict):
+                    inst_dict["volatility"] = float(vd.get("atr", vd.get("volatility", inst_dict.get("volatility", self.config.min_volatility))))
+
+                # simple prices
+                sp = pick(simple_prices, inst)
+                if sp is not None:
+                    inst_dict["current_price"] = float(sp)
+
+                if session:
+                    inst_dict["session"] = session
+
+                out[inst] = inst_dict
+
+            if regime:
+                out["market_regime"] = regime
+
+            return out
+
+
 
     def _extract_market_data_from_smartbus(self) -> Optional[Dict[str, Any]]:
-        """Extract market data from SmartInfoBus"""
-        market_data = {}
-        
-        # Get trading signals
+        """Extract market data from SmartInfoBus (robust to instrument name variants)."""
+        market_data: Dict[str, Any] = {}
+
+        # high-level fields
         trading_signal = self.smart_bus.get('trading_signal', 'PositionManager')
         if trading_signal:
             market_data['trading_signal'] = trading_signal
-        
-        # Get risk data
+
         risk_score = self.smart_bus.get('risk_score', 'PositionManager')
         if risk_score:
             market_data['risk_score'] = risk_score
-        
-        # Get market regime
+
         market_regime = self.smart_bus.get('market_regime', 'PositionManager')
         if market_regime:
             market_data['market_regime'] = market_regime
-        
-        # Get per-instrument data
+
+        def try_get(prefix: str, inst: str):
+            keys = [
+                f"{prefix}_{inst}",
+                f"{prefix}_{inst.replace('/', '')}",
+                f"{prefix}_{inst.replace('/', '_')}",
+                f"{prefix}_{inst.upper()}",
+                f"{prefix}_{inst.replace('/', '').upper()}",
+            ]
+            for k in keys:
+                val = self.smart_bus.get(k, 'PositionManager')
+                if val:
+                    return val
+            return None
+
         for instrument in self.instruments:
             inst_data = {}
-            
-            # Get market data for instrument
-            price_data = self.smart_bus.get(f'price_{instrument}', 'PositionManager')
-            if price_data:
-                inst_data['current_price'] = price_data.get('price', 0.0)
-                inst_data['volatility'] = price_data.get('volatility', self.config.min_volatility)
-            
-            # Get technical indicators
-            indicators = self.smart_bus.get(f'indicators_{instrument}', 'PositionManager')
-            if indicators:
-                inst_data['trend_strength'] = indicators.get('trend_strength', 0.0)
-                inst_data['momentum'] = indicators.get('momentum', 0.0)
-                inst_data['rsi'] = indicators.get('rsi', 50.0)
-            
-            # Get signal intensity
-            signal = self.smart_bus.get(f'signal_{instrument}', 'PositionManager')
-            if signal:
-                inst_data['intensity'] = signal.get('intensity', 0.0)
-                inst_data['confidence'] = signal.get('confidence', 0.5)
+
+            price_data = try_get("price", instrument)
+            if isinstance(price_data, dict):
+                inst_data['current_price'] = float(price_data.get('price', price_data.get('close', 0.0)))
+                inst_data['volatility'] = float(price_data.get('volatility', self.config.min_volatility))
+
+            indicators = try_get("indicators", instrument)
+            if isinstance(indicators, dict):
+                inst_data['trend_strength'] = float(indicators.get('trend_strength', 0.0))
+                inst_data['momentum'] = float(indicators.get('momentum', 0.0))
+                inst_data['rsi'] = float(indicators.get('rsi', 50.0))
+
+            signal = try_get("signal", instrument)
+            if isinstance(signal, dict):
+                inst_data['intensity'] = float(signal.get('intensity', 0.0))
+                inst_data['confidence'] = float(signal.get('confidence', 0.5))
             else:
                 inst_data['intensity'] = 0.0
                 inst_data['confidence'] = 0.5
-            
+
             market_data[instrument] = inst_data
-        
+
         return market_data if market_data else None
+
 
     async def _update_smartbus_with_decisions(self, decisions: Dict[str, PositionDecisionResult]):
         """Update SmartInfoBus with position decisions"""
@@ -603,8 +796,25 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
         streak_health = max(0.1, 1.0 - self.consecutive_losses / self.config.max_consecutive_losses)
         
         # Risk management score from SmartInfoBus
+        # Handle both numeric and dict formats for compatibility across modules
         risk_score = self.smart_bus.get('risk_score', 'PositionManager')
-        risk_health = 1.0 - (risk_score.get('risk_level', 0.0) if risk_score else 0.0)
+        risk_value = 0.0
+        try:
+            if isinstance(risk_score, dict):
+                # Prefer explicit risk_level; fall back to risk_score if present
+                risk_value = float(risk_score.get('risk_level', risk_score.get('risk_score', 0.0)))
+            else:
+                # Assume numeric
+                risk_value = float(risk_score or 0.0)
+        except (TypeError, ValueError):
+            risk_value = 0.0
+
+        # Bound to [0,1] then invert to get health contribution
+        if risk_value < 0.0:
+            risk_value = 0.0
+        elif risk_value > 1.0:
+            risk_value = 1.0
+        risk_health = 1.0 - risk_value
         
         overall_health = (dd_health + exposure_health + streak_health + risk_health) / 4.0
         
@@ -1059,11 +1269,23 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
                 'consecutive_losses': self.consecutive_losses
             })
             
-            # Calculate risk management score
+            # Calculate risk management score (support both numeric and dict formats)
             risk_data = self.smart_bus.get('risk_score', 'PositionManager')
-            if risk_data:
-                risk_level = risk_data.get('risk_level', 0.5)
-                self._risk_management_score = max(0.1, 1.0 - risk_level)
+            risk_level = 0.0
+            try:
+                if isinstance(risk_data, dict):
+                    risk_level = float(risk_data.get('risk_level', risk_data.get('risk_score', 0.0)))
+                else:
+                    risk_level = float(risk_data or 0.0)
+            except (TypeError, ValueError):
+                risk_level = 0.0
+
+            # Bound and compute management score
+            if risk_level < 0.0:
+                risk_level = 0.0
+            elif risk_level > 1.0:
+                risk_level = 1.0
+            self._risk_management_score = max(0.1, 1.0 - risk_level)
             
             # Update adaptive parameters based on performance
             self._adapt_parameters()
@@ -1085,54 +1307,48 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
             self.logger.warning(f"Position health update failed: {e}")
 
     def _adapt_parameters(self) -> None:
-        """Adapt position management parameters based on performance"""
-        
-        try:
-            # Adapt max_pct based on recent performance
-            if len(self._decision_history) >= 10:
-                recent_decisions = list(self._decision_history)[-10:]
-                avg_portfolio_health = np.mean([d['portfolio_health'] for d in recent_decisions])
-                
-                if avg_portfolio_health > 0.8:
-                    # Good performance, slightly increase risk tolerance
-                    self._adaptive_params['dynamic_max_position_pct'] = min(
-                        self.config.max_position_pct * 1.1,
-                        self.config.max_position_pct * 1.5
-                    )
-                elif avg_portfolio_health < 0.4:
-                    # Poor performance, reduce risk
-                    self._adaptive_params['dynamic_max_position_pct'] = max(
-                        self.config.max_position_pct * 0.7,
-                        self.config.max_position_pct * 0.3
-                    )
-                else:
-                    # Neutral performance, gradual return to default
-                    current = self._adaptive_params['dynamic_max_position_pct']
-                    self._adaptive_params['dynamic_max_position_pct'] = current * 0.95 + self.config.max_position_pct * 0.05
+            """Adapt position management parameters based on performance (consistent keys)."""
+            try:
+                # Adapt risk ceiling around config.max_position_pct
+                if len(self._decision_history) >= 10:
+                    recent = list(self._decision_history)[-10:]
+                    avg_ph = np.mean([d.get('portfolio_health', self._portfolio_health_score) for d in recent])
 
-            # Adapt signal sensitivity based on decision success
-            if len(self._decision_history) >= 5:
-                recent_confidences = []
-                for decision_record in list(self._decision_history)[-5:]:
-                    for decision_data in decision_record['decisions'].values():
-                        if decision_data['decision'] != 'hold':
-                            recent_confidences.append(decision_data['confidence'])
-                
-                if recent_confidences:
-                    avg_confidence = np.mean(recent_confidences)
-                    if avg_confidence > 0.7:
-                        self._adaptive_params['signal_sensitivity'] = min(1.2, self._adaptive_params['signal_sensitivity'] * 1.02)
-                    elif avg_confidence < 0.4:
-                        self._adaptive_params['signal_sensitivity'] = max(0.7, self._adaptive_params['signal_sensitivity'] * 0.98)
-            
-            # Adapt risk tolerance based on consecutive losses
-            if self.consecutive_losses == 0:
-                self._adaptive_params['risk_tolerance'] = min(1.3, self._adaptive_params['risk_tolerance'] * 1.01)
-            elif self.consecutive_losses >= 3:
-                self._adaptive_params['risk_tolerance'] = max(0.5, self._adaptive_params['risk_tolerance'] * 0.95)
-                
-        except Exception as e:
-            self.logger.warning(f"Parameter adaptation failed: {e}")
+                    current = float(self._adaptive_params.get('dynamic_max_pct', self.config.max_position_pct))
+                    base = float(self.config.max_position_pct)
+
+                    if avg_ph > 0.8:
+                        self._adaptive_params['dynamic_max_pct'] = min(current * 1.05, base * 1.5)
+                    elif avg_ph < 0.4:
+                        self._adaptive_params['dynamic_max_pct'] = max(current * 0.90, base * 0.3)
+                    else:
+                        # mean-revert to base slowly
+                        self._adaptive_params['dynamic_max_pct'] = current * 0.95 + base * 0.05
+
+                # Adapt signal sensitivity based on recent non-hold confidences
+                if len(self._decision_history) >= 5:
+                    rec = list(self._decision_history)[-5:]
+                    confs = []
+                    for record in rec:
+                        for d in record.get('decisions', {}).values():
+                            if d.get('decision') != 'hold':
+                                confs.append(float(d.get('confidence', 0.5)))
+                    if confs:
+                        avgc = float(np.mean(confs))
+                        if avgc > 0.7:
+                            self._adaptive_params['signal_sensitivity'] = min(1.2, self._adaptive_params['signal_sensitivity'] * 1.02)
+                        elif avgc < 0.4:
+                            self._adaptive_params['signal_sensitivity'] = max(0.7, self._adaptive_params['signal_sensitivity'] * 0.98)
+
+                # Risk tolerance vs loss streak
+                if self.consecutive_losses == 0:
+                    self._adaptive_params['risk_tolerance'] = min(1.3, self._adaptive_params['risk_tolerance'] * 1.01)
+                elif self.consecutive_losses >= 3:
+                    self._adaptive_params['risk_tolerance'] = max(0.5, self._adaptive_params['risk_tolerance'] * 0.95)
+
+            except Exception as e:
+                self.logger.warning(f"Parameter adaptation failed: {e}")
+
 
     def _sync_live_positions(self) -> None:
         """Sync positions from live broker"""
@@ -1480,44 +1696,59 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
         }
         
     def mutate(self, mutation_rate: float = 0.2):
-        """Enhanced mutation with performance-based adjustments"""
-        g = self.genome.copy()
+        """Enhanced mutation with correct genome keys."""
+        # start from current genome snapshot
+        g = self.genome.copy() or {
+            "max_position_pct": self.config.max_position_pct,
+            "max_consecutive_losses": self.config.max_consecutive_losses,
+            "loss_reduction": self.config.loss_reduction,
+            "min_signal_threshold": self.config.min_signal_threshold,
+            "hard_loss_eur": self.config.hard_loss_eur,
+            "trail_pct": self.config.trail_pct,
+            "trail_abs_eur": self.config.trail_abs_eur,
+        }
         mutations = []
-        
+
         if np.random.rand() < mutation_rate:
-            old_val = g["max_pct"]
-            g["max_pct"] = float(np.clip(old_val + np.random.uniform(-0.02, 0.02), 0.01, 0.25))
-            mutations.append(f"max_pct: {old_val:.3f} -> {g['max_pct']:.3f}")
-            
+            old = g["max_position_pct"]
+            g["max_position_pct"] = float(np.clip(old + np.random.uniform(-0.02, 0.02), 0.01, 0.25))
+            mutations.append(f"max_position_pct: {old:.3f} -> {g['max_position_pct']:.3f}")
+
         if np.random.rand() < mutation_rate:
-            old_val = g["max_consecutive_losses"]
-            g["max_consecutive_losses"] = int(np.clip(old_val + np.random.choice([-1, 0, 1]), 1, 20))
-            mutations.append(f"max_losses: {old_val} -> {g['max_consecutive_losses']}")
-            
+            old = g["max_consecutive_losses"]
+            g["max_consecutive_losses"] = int(np.clip(old + np.random.choice([-1, 0, 1]), 1, 20))
+            mutations.append(f"max_consecutive_losses: {old} -> {g['max_consecutive_losses']}")
+
         if np.random.rand() < mutation_rate:
-            old_val = g["loss_reduction"]
-            g["loss_reduction"] = float(np.clip(old_val + np.random.uniform(-0.1, 0.1), 0.05, 1.0))
-            mutations.append(f"loss_reduction: {old_val:.2f} -> {g['loss_reduction']:.2f}")
-            
+            old = g["loss_reduction"]
+            g["loss_reduction"] = float(np.clip(old + np.random.uniform(-0.1, 0.1), 0.05, 1.0))
+            mutations.append(f"loss_reduction: {old:.2f} -> {g['loss_reduction']:.2f}")
+
         if np.random.rand() < mutation_rate:
-            old_val = g["min_signal_threshold"]
-            g["min_signal_threshold"] = float(np.clip(old_val + np.random.uniform(-0.05, 0.05), 0.05, 0.5))
-            mutations.append(f"signal_threshold: {old_val:.2f} -> {g['min_signal_threshold']:.2f}")
-            
+            old = g["min_signal_threshold"]
+            g["min_signal_threshold"] = float(np.clip(old + np.random.uniform(-0.05, 0.05), 0.05, 0.5))
+            mutations.append(f"min_signal_threshold: {old:.2f} -> {g['min_signal_threshold']:.2f}")
+
         if np.random.rand() < mutation_rate:
-            old_val = g["hard_loss_eur"]
-            g["hard_loss_eur"] = float(np.clip(old_val + np.random.uniform(-5, 5), 10.0, 100.0))
-            mutations.append(f"hard_loss: €{old_val:.0f} -> €{g['hard_loss_eur']:.0f}")
-        
+            old = g["hard_loss_eur"]
+            g["hard_loss_eur"] = float(np.clip(old + np.random.uniform(-5, 5), 10.0, 100.0))
+            mutations.append(f"hard_loss_eur: €{old:.0f} -> €{g['hard_loss_eur']:.0f}")
+
+        if np.random.rand() < mutation_rate:
+            old = g["trail_pct"]
+            g["trail_pct"] = float(np.clip(old + np.random.uniform(-0.02, 0.02), 0.05, 0.30))
+            mutations.append(f"trail_pct: {old:.2f} -> {g['trail_pct']:.2f}")
+
+        if np.random.rand() < mutation_rate:
+            old = g["trail_abs_eur"]
+            g["trail_abs_eur"] = float(np.clip(old + np.random.uniform(-5, 5), 5.0, 50.0))
+            mutations.append(f"trail_abs_eur: €{old:.0f} -> €{g['trail_abs_eur']:.0f}")
+
         if mutations:
-            self.logger.info(
-                format_operator_message(
-                    "🧬", "MUTATION_APPLIED",
-                    changes=", ".join(mutations)
-                )
-            )
-            
+            self.logger.info(format_operator_message("🧬", "MUTATION_APPLIED", changes=", ".join(mutations)))
+
         self.set_genome(g)
+
         
     def crossover(self, other: "PositionManager") -> "PositionManager":
         """Enhanced crossover with performance-based selection"""
@@ -1613,8 +1844,7 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
         }
 
     def get_position_manager_report(self) -> str:
-        """Generate operator-friendly position manager report"""
-        
+        """Generate operator-friendly position manager report (fixed keys)."""
         # Portfolio status
         if self._portfolio_health_score > 0.8:
             portfolio_status = "[ROCKET] Excellent"
@@ -1624,7 +1854,7 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
             portfolio_status = "[FAST] Fair"
         else:
             portfolio_status = "[WARN] Poor"
-        
+
         # Risk status
         if self.consecutive_losses == 0:
             risk_status = "[GREEN] Safe"
@@ -1632,21 +1862,21 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
             risk_status = "[YELLOW] Caution"
         else:
             risk_status = "[RED] High Risk"
-        
-        # Active decisions
+
         active_decisions = len([d for d in self.last_decisions.values() if d.decision != PositionDecision.HOLD])
-        
-        # Recent performance
+
         recent_avg_confidence = 0.0
         if self._decision_history:
             recent_decisions = list(self._decision_history)[-5:]
-            all_confidences = []
+            all_conf = []
             for record in recent_decisions:
-                for decision_data in record['decisions'].values():
-                    if decision_data['decision'] != 'hold':
-                        all_confidences.append(decision_data['confidence'])
-            recent_avg_confidence = np.mean(all_confidences) if all_confidences else 0.0
-        
+                for decision_data in record.get('decisions', {}).values():
+                    if decision_data.get('decision') != 'hold':
+                        all_conf.append(float(decision_data.get('confidence', 0.0)))
+            recent_avg_confidence = float(np.mean(all_conf)) if all_conf else 0.0
+
+        dyn_max = float(self._adaptive_params.get('dynamic_max_pct', self.config.max_position_pct))
+
         return f"""
 [STATS] ENHANCED POSITION MANAGER
 =======================================
@@ -1656,7 +1886,7 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
 📍 Open Positions: {len(self.open_positions)}
 
 [TOOL] RISK PARAMETERS
-* Max Position %: {self.config.max_position_pct:.1%} (dynamic: {self._adaptive_params['dynamic_max_position_pct']:.1%})
+* Max Position %: {self.config.max_position_pct:.1%} (dynamic: {dyn_max:.1%})
 * Hard Loss Limit: €{self.config.hard_loss_eur:.0f}
 * Trail Stop: {self.config.trail_pct:.1%} / €{self.config.trail_abs_eur:.0f}
 * Signal Threshold: {self.config.min_signal_threshold:.2f}
@@ -1683,71 +1913,65 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
 {chr(10).join([f"* {inst}: {len(self.signal_history.get(inst, []))} signals, confidence: {self.position_confidence.get(inst, 0.5):.2f}" for inst in self.instruments[:5]])}
         """
 
+
     def get_observation_components(self) -> np.ndarray:
-        """Enhanced observation components with position metrics"""
-        
+        """Enhanced observation components with position metrics (fixed keys)."""
         try:
-            # Portfolio health metrics
             portfolio_health = self._portfolio_health_score
             total_exposure = self._total_exposure_ratio
             decision_quality = self._decision_quality_score
-            
-            # Position statistics
+
             position_count = len(self.open_positions)
-            avg_position_confidence = np.mean(list(self.position_confidence.values())) if self.position_confidence else 0.5
-            
-            # Risk metrics
+            avg_position_confidence = float(np.mean(list(self.position_confidence.values()))) if self.position_confidence else 0.5
+
             consecutive_losses_ratio = self.consecutive_losses / max(self.config.max_consecutive_losses, 1)
             risk_management_score = self._risk_management_score
-            
-            # Adaptive parameters
-            dynamic_risk_ratio = self._adaptive_params['dynamic_max_position_pct'] / self.config.max_position_pct
+
+            dynamic_risk_ratio = float(self._adaptive_params.get('dynamic_max_pct', self.config.max_position_pct)) / max(self.config.max_position_pct, 1e-9)
             signal_sensitivity = self._adaptive_params['signal_sensitivity']
-            
-            # Recent performance indicators
-            recent_decision_count = 0
+
+            recent_decision_count = 0.0
             if self._decision_history:
-                recent_decisions = list(self._decision_history)[-5:]
-                recent_decision_count = sum(
-                    len([d for d in record['decisions'].values() if d['decision'] != 'hold'])
-                    for record in recent_decisions
-                ) / max(len(recent_decisions), 1)
-            
-            # Balance information
+                recent = list(self._decision_history)[-5:]
+                if recent:
+                    recent_decision_count = sum(
+                        len([d for d in record.get('decisions', {}).values() if d.get('decision') != 'hold'])
+                        for record in recent
+                    ) / float(len(recent))
+
             balance = self.config.initial_balance
             drawdown = 0.0
-            
             portfolio_metrics = self.smart_bus.get('portfolio_metrics', 'PositionManager')
             if portfolio_metrics:
-                balance = portfolio_metrics.get('balance', self.config.initial_balance)
-                drawdown = portfolio_metrics.get('drawdown', 0.0)
+                balance = float(portfolio_metrics.get('balance', balance))
+                drawdown = float(portfolio_metrics.get('drawdown', 0.0))
             elif self.env:
-                balance = getattr(self.env, 'balance', self.config.initial_balance)
-                drawdown = getattr(self.env, 'current_drawdown', 0.0)
-            
-            balance_ratio = balance / self.config.initial_balance
-            
-            # Combine all components
+                balance = float(getattr(self.env, 'balance', self.config.initial_balance))
+                drawdown = float(getattr(self.env, 'current_drawdown', 0.0))
+
+            balance_ratio = balance / max(self.config.initial_balance, 1e-9)
+
             observation = np.array([
-                portfolio_health,
-                total_exposure,
-                decision_quality,
-                float(position_count) / 10.0,  # Normalize
-                avg_position_confidence,
-                consecutive_losses_ratio,
-                risk_management_score,
-                dynamic_risk_ratio,
-                signal_sensitivity,
-                recent_decision_count / 5.0,  # Normalize
-                balance_ratio,
-                drawdown
+                float(portfolio_health),
+                float(total_exposure),
+                float(decision_quality),
+                float(position_count) / 10.0,
+                float(avg_position_confidence),
+                float(consecutive_losses_ratio),
+                float(risk_management_score),
+                float(dynamic_risk_ratio),
+                float(signal_sensitivity),
+                float(recent_decision_count) / 5.0,
+                float(balance_ratio),
+                float(drawdown)
             ], dtype=np.float32)
-            
+
             return observation
-            
+
         except Exception as e:
             self.logger.error(f"Observation generation failed: {e}")
             return np.zeros(12, dtype=np.float32)
+
 
     async def propose_action(self, **inputs) -> Dict[str, Any]:
         """

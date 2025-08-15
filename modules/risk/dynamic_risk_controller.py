@@ -499,6 +499,49 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
             # Generate thesis
             thesis = await self._generate_comprehensive_risk_thesis(risk_data, result)
             
+            # Ensure required provided outputs are present in the returned result
+            scaling_data = {
+                'current_mode': self.current_mode.value,
+                'current_risk_scale': self.current_risk_scale,
+                'base_risk_scale': self.config.base_risk_scale,
+                'min_risk_scale': self.config.min_risk_scale,
+                'max_risk_scale': self.config.max_risk_scale,
+                'adaptive_scaling': self.adaptive_scaling,
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+
+            factors_data = {
+                'risk_factors': self.risk_factors.copy(),
+                'external_risk_scale': self.external_risk_scale,
+                'external_signals': self.external_signals.copy(),
+                'consecutive_losses': self.consecutive_losses,
+                'risk_adjustments_made': self.risk_adjustments_made,
+                'emergency_interventions': self.emergency_interventions
+            }
+
+            analytics_data = {
+                'risk_quality': self._risk_quality,
+                'adaptive_params': self._adaptive_params.copy(),
+                'risk_events': len(self.risk_events),
+                'scale_history_size': len(self.risk_scale_history),
+                'volatility_history_size': len(self.vol_history)
+            }
+
+            alerts_data = {
+                'emergency_interventions': self.emergency_interventions,
+                'risk_adjustments_made': self.risk_adjustments_made,
+                'critical_mode': self.current_mode in [RiskControlMode.EMERGENCY, RiskControlMode.AGGRESSIVE_REDUCTION],
+                'low_risk_quality': self._risk_quality < self.config.min_risk_quality
+            }
+
+            result.update({
+                'risk_scaling': scaling_data,
+                'risk_factors': factors_data,
+                'risk_analytics': analytics_data,
+                'risk_alerts': alerts_data,
+                '_thesis': thesis
+            })
+
             # Update SmartInfoBus
             await self._update_risk_smart_bus(result, thesis)
             
@@ -1442,12 +1485,43 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
     async def _handle_no_data_fallback(self) -> Dict[str, Any]:
         """Handle case when no risk data is available"""
         self.logger.warning("No risk data available - maintaining current scale")
-        
+        thesis = "No risk data available - maintaining current risk posture"
         return {
             'current_mode': self.current_mode.value,
             'current_risk_scale': self.current_risk_scale,
             'risk_quality': self._risk_quality,
-            'fallback_reason': 'no_risk_data'
+            'fallback_reason': 'no_risk_data',
+            'risk_scaling': {
+                'current_mode': self.current_mode.value,
+                'current_risk_scale': self.current_risk_scale,
+                'base_risk_scale': self.config.base_risk_scale,
+                'min_risk_scale': self.config.min_risk_scale,
+                'max_risk_scale': self.config.max_risk_scale,
+                'adaptive_scaling': self.adaptive_scaling,
+                'timestamp': datetime.datetime.now().isoformat()
+            },
+            'risk_factors': {
+                'risk_factors': self.risk_factors.copy(),
+                'external_risk_scale': self.external_risk_scale,
+                'external_signals': self.external_signals.copy(),
+                'consecutive_losses': self.consecutive_losses,
+                'risk_adjustments_made': self.risk_adjustments_made,
+                'emergency_interventions': self.emergency_interventions
+            },
+            'risk_analytics': {
+                'risk_quality': self._risk_quality,
+                'adaptive_params': self._adaptive_params.copy(),
+                'risk_events': len(self.risk_events),
+                'scale_history_size': len(self.risk_scale_history),
+                'volatility_history_size': len(self.vol_history)
+            },
+            'risk_alerts': {
+                'emergency_interventions': self.emergency_interventions,
+                'risk_adjustments_made': self.risk_adjustments_made,
+                'critical_mode': self.current_mode in [RiskControlMode.EMERGENCY, RiskControlMode.AGGRESSIVE_REDUCTION],
+                'low_risk_quality': self._risk_quality < self.config.min_risk_quality
+            },
+            '_thesis': thesis
         }
 
     async def _handle_risk_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
@@ -1484,12 +1558,44 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
 
     def _create_error_fallback_response(self, reason: str) -> Dict[str, Any]:
         """Create fallback response for error cases"""
+        thesis = f"Risk control error fallback engaged: {reason}"
         return {
             'current_mode': RiskControlMode.EMERGENCY.value,
             'current_risk_scale': self.config.min_risk_scale,  # Conservative fallback
             'risk_quality': 0.1,  # Poor quality due to error
             'circuit_breaker_state': self.circuit_breaker['state'],
-            'fallback_reason': reason
+            'fallback_reason': reason,
+            'risk_scaling': {
+                'current_mode': RiskControlMode.EMERGENCY.value,
+                'current_risk_scale': self.config.min_risk_scale,
+                'base_risk_scale': self.config.base_risk_scale,
+                'min_risk_scale': self.config.min_risk_scale,
+                'max_risk_scale': self.config.max_risk_scale,
+                'adaptive_scaling': self.adaptive_scaling,
+                'timestamp': datetime.datetime.now().isoformat()
+            },
+            'risk_factors': {
+                'risk_factors': self.risk_factors.copy(),
+                'external_risk_scale': self.external_risk_scale,
+                'external_signals': self.external_signals.copy(),
+                'consecutive_losses': self.consecutive_losses,
+                'risk_adjustments_made': self.risk_adjustments_made,
+                'emergency_interventions': self.emergency_interventions
+            },
+            'risk_analytics': {
+                'risk_quality': 0.1,
+                'adaptive_params': self._adaptive_params.copy(),
+                'risk_events': len(self.risk_events),
+                'scale_history_size': len(self.risk_scale_history),
+                'volatility_history_size': len(self.vol_history)
+            },
+            'risk_alerts': {
+                'emergency_interventions': self.emergency_interventions,
+                'risk_adjustments_made': self.risk_adjustments_made,
+                'critical_mode': True,
+                'low_risk_quality': True
+            },
+            '_thesis': thesis
         }
 
     def _update_risk_health(self):

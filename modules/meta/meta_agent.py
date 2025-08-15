@@ -297,6 +297,40 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
             # Generate thesis
             thesis = await self._generate_meta_thesis(meta_data, result)
             
+            # Build provided outputs for return payload
+            automation_data = {
+                'current_mode': self.current_mode.value,
+                'system_confidence': self.system_confidence,
+                'automation_score': self.automation_score,
+                'last_decision': result.get('decision_executed', False),
+                'mode_duration': (datetime.datetime.now() - self.mode_start_time).total_seconds()
+            }
+
+            mode_data = {
+                'current_mode': self.current_mode.value,
+                'mode_start_time': self.mode_start_time.isoformat(),
+                'mode_transitions': len(self.mode_transitions),
+                'available_modes': [mode.value for mode in MetaMode]
+            }
+
+            metrics_data = result.get('automation_metrics', {
+                'automation_score': self.automation_score,
+                'total_mode_switches': self.automation_metrics['total_mode_switches'],
+                'automation_accuracy': self.automation_metrics['automation_accuracy'],
+                'system_confidence': self.system_confidence,
+                'current_mode': self.current_mode.value,
+                'mode_duration': (datetime.datetime.now() - self.mode_start_time).total_seconds()
+            })
+
+            performance_data = {
+                'daily_pnl': self.daily_pnl,
+                'drawdown_pct': self.drawdown_pct,
+                'consecutive_losses': self.consecutive_losses,
+                'win_streak': self.win_streak,
+                'system_confidence': self.system_confidence,
+                'training_episodes': self.training_episodes
+            }
+
             # Update SmartInfoBus
             await self._update_meta_smart_bus(result, thesis)
             
@@ -304,6 +338,16 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
             processing_time = (time.time() - start_time) * 1000
             self._record_success(processing_time)
             
+            # Ensure returned payload complies with provides contract and includes success
+            result.update({
+                'automation_decisions': automation_data,
+                'system_mode': mode_data,
+                'automation_metrics': metrics_data,
+                'meta_performance': performance_data,
+                '_thesis': thesis,
+                'success': True
+            })
+
             return result
             
         except Exception as e:
@@ -960,11 +1004,39 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
         """Handle case when no meta data is available"""
         self.logger.warning("No meta data available - maintaining current mode")
         
+        thesis = "No meta data available - maintaining current mode"
         return {
-            'current_mode': self.current_mode.value,
-            'system_confidence': self.system_confidence,
-            'automation_score': self.automation_score,
-            'daily_pnl': self.daily_pnl,
+            'automation_decisions': {
+                'current_mode': self.current_mode.value,
+                'system_confidence': self.system_confidence,
+                'automation_score': self.automation_score,
+                'last_decision': False,
+                'mode_duration': (datetime.datetime.now() - self.mode_start_time).total_seconds()
+            },
+            'system_mode': {
+                'current_mode': self.current_mode.value,
+                'mode_start_time': self.mode_start_time.isoformat(),
+                'mode_transitions': len(self.mode_transitions),
+                'available_modes': [mode.value for mode in MetaMode]
+            },
+            'automation_metrics': {
+                'automation_score': self.automation_score,
+                'total_mode_switches': self.automation_metrics['total_mode_switches'],
+                'automation_accuracy': self.automation_metrics['automation_accuracy'],
+                'system_confidence': self.system_confidence,
+                'current_mode': self.current_mode.value,
+                'mode_duration': (datetime.datetime.now() - self.mode_start_time).total_seconds()
+            },
+            'meta_performance': {
+                'daily_pnl': self.daily_pnl,
+                'drawdown_pct': self.drawdown_pct,
+                'consecutive_losses': self.consecutive_losses,
+                'win_streak': self.win_streak,
+                'system_confidence': self.system_confidence,
+                'training_episodes': self.training_episodes
+            },
+            '_thesis': thesis,
+            'success': True,
             'fallback_reason': 'no_meta_data'
         }
 
@@ -1002,10 +1074,39 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
 
     def _create_fallback_response(self, reason: str) -> Dict[str, Any]:
         """Create fallback response for error cases"""
+        thesis = f"Meta agent error fallback: {reason}"
         return {
-            'current_mode': self.current_mode.value,
-            'system_confidence': self.system_confidence,
-            'automation_score': self.automation_score,
+            'automation_decisions': {
+                'current_mode': self.current_mode.value,
+                'system_confidence': self.system_confidence,
+                'automation_score': self.automation_score,
+                'last_decision': False,
+                'mode_duration': (datetime.datetime.now() - self.mode_start_time).total_seconds()
+            },
+            'system_mode': {
+                'current_mode': self.current_mode.value,
+                'mode_start_time': self.mode_start_time.isoformat(),
+                'mode_transitions': len(self.mode_transitions),
+                'available_modes': [mode.value for mode in MetaMode]
+            },
+            'automation_metrics': {
+                'automation_score': self.automation_score,
+                'total_mode_switches': self.automation_metrics['total_mode_switches'],
+                'automation_accuracy': self.automation_metrics['automation_accuracy'],
+                'system_confidence': self.system_confidence,
+                'current_mode': self.current_mode.value,
+                'mode_duration': (datetime.datetime.now() - self.mode_start_time).total_seconds()
+            },
+            'meta_performance': {
+                'daily_pnl': self.daily_pnl,
+                'drawdown_pct': self.drawdown_pct,
+                'consecutive_losses': self.consecutive_losses,
+                'win_streak': self.win_streak,
+                'system_confidence': self.system_confidence,
+                'training_episodes': self.training_episodes
+            },
+            '_thesis': thesis,
+            'success': False,
             'circuit_breaker_state': self.circuit_breaker['state'],
             'fallback_reason': reason
         }

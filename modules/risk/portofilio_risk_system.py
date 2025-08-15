@@ -294,14 +294,93 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             # Generate thesis
             thesis = await self._generate_portfolio_thesis(portfolio_data, result)
             
+            # Build provides-compliant payload with thesis
+            provides_payload = {
+                **result,
+                'portfolio_risk': {
+                    'current_mode': self.current_mode.value,
+                    'var_95': self.current_var,
+                    'max_correlation': self.max_correlation,
+                    'risk_adjustment': self.risk_adjustment,
+                    'bootstrap_mode': self.bootstrap_mode,
+                    'timestamp': datetime.datetime.now().isoformat()
+                },
+                # Minimal risk_metrics bundle for contract compliance
+                'risk_metrics': {
+                    'var_95': self.current_var,
+                    'max_correlation': self.max_correlation,
+                    'portfolio_volatility': self.performance_metrics.get('volatility', 0.0),
+                    'risk_quality': self.performance_metrics.get('risk_quality', 0.5),
+                    'total_exposure': self.performance_metrics.get('total_exposure', 0.0)
+                },
+                # Position limits bundle for contract compliance
+                'position_limits': {
+                    'position_limits': self.position_limits.copy(),
+                    'risk_adjustment': self.risk_adjustment,
+                    'base_limit': self.config.max_position_pct,
+                    'bootstrap_mode': self.bootstrap_mode
+                },
+                # Risk analytics bundle for contract compliance
+                'risk_analytics': {
+                    'performance_metrics': self.performance_metrics.copy(),
+                    'risk_events': len(self.risk_events),
+                    'limit_violations': self.limit_violations,
+                    'correlation_alerts': self.correlation_alerts,
+                    'daily_risk_used': self.daily_risk_used,
+                    'risk_budget_violations': self.risk_budget_violations,
+                    'adaptive_params': self._adaptive_params.copy()
+                },
+                # Consolidated risk data bundle
+                'risk_data': {
+                    'current_mode': self.current_mode.value,
+                    'metrics': {
+                        'var_95': self.current_var,
+                        'max_correlation': self.max_correlation,
+                        'portfolio_volatility': self.performance_metrics.get('volatility', 0.0),
+                        'risk_quality': self.performance_metrics.get('risk_quality', 0.5),
+                        'total_exposure': self.performance_metrics.get('total_exposure', 0.0),
+                        'daily_risk_used': self.daily_risk_used
+                    },
+                    'limits': {
+                        'position_limits': self.position_limits.copy(),
+                        'base_limit': self.config.max_position_pct,
+                        'risk_adjustment': self.risk_adjustment,
+                        'bootstrap_mode': self.bootstrap_mode
+                    },
+                    'alerts': {
+                        'limit_violations': self.limit_violations,
+                        'correlation_alerts': self.correlation_alerts
+                    }
+                },
+                # Derived risk signals (warnings/info)
+                'risk_signals': {
+                    'violations': result.get('violations', []),
+                    'mode': self.current_mode.value,
+                    'budget_violation': result.get('budget_violation', False)
+                },
+                # Overall risk score (0-1)
+                'risk_score': float(self.performance_metrics.get('risk_quality', 0.5)),
+                # Trade and trading data passthrough (minimal, safe defaults)
+                'trade_data': {
+                    'recent_trades': portfolio_data.get('trades', []),
+                    'positions': portfolio_data.get('positions', [])
+                },
+                'trading_data': {
+                    'timestamp': portfolio_data.get('timestamp'),
+                    'prices_available': bool(portfolio_data.get('prices')),
+                    'positions_count': len(portfolio_data.get('positions', []))
+                },
+                '_thesis': thesis
+            }
+            
             # Update SmartInfoBus
-            await self._update_portfolio_smart_bus(result, thesis)
+            await self._update_portfolio_smart_bus(provides_payload, thesis)
             
             # Record success
             processing_time = (time.time() - start_time) * 1000
             self._record_success(processing_time)
             
-            return result
+            return provides_payload
             
         except Exception as e:
             return await self._handle_portfolio_error(e, start_time)
@@ -350,9 +429,11 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             # Extract market context from SmartInfoBus
             market_context = self.smart_bus.get('market_context', 'PortfolioRiskSystem') or {}
             
-            # Update regime tracking
+            # Update regime tracking (don't downgrade to 'unknown' if missing)
             old_regime = self.market_regime
-            self.market_regime = market_context.get('regime', 'unknown')
+            new_regime = market_context.get('regime')
+            if new_regime and isinstance(new_regime, str):
+                self.market_regime = new_regime
             self.volatility_regime = market_context.get('volatility_level', 'medium')
             self.market_session = market_context.get('session', 'unknown')
             
@@ -1006,14 +1087,14 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         """Update SmartInfoBus with portfolio results"""
         try:
             # Portfolio risk
-            portfolio_risk_data = {
+            portfolio_risk_data = result.get('portfolio_risk', {
                 'current_mode': self.current_mode.value,
                 'var_95': self.current_var,
                 'max_correlation': self.max_correlation,
                 'risk_adjustment': self.risk_adjustment,
                 'bootstrap_mode': self.bootstrap_mode,
                 'timestamp': datetime.datetime.now().isoformat()
-            }
+            })
             
             self.smart_bus.set(
                 'portfolio_risk',
@@ -1072,18 +1153,114 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 thesis="Portfolio risk analytics and performance tracking"
             )
             
+            # Risk data (consolidated)
+            self.smart_bus.set(
+                'risk_data',
+                result.get('risk_data', {}),
+                module='PortfolioRiskSystem',
+                thesis="Consolidated portfolio risk data"
+            )
+
+            # Risk signals
+            self.smart_bus.set(
+                'risk_signals',
+                result.get('risk_signals', {}),
+                module='PortfolioRiskSystem',
+                thesis="Risk signals and alerts"
+            )
+
+            # Risk score
+            self.smart_bus.set(
+                'risk_score',
+                result.get('risk_score', 0.0),
+                module='PortfolioRiskSystem',
+                thesis="Overall portfolio risk score"
+            )
+
+            # Trade data
+            self.smart_bus.set(
+                'trade_data',
+                result.get('trade_data', {}),
+                module='PortfolioRiskSystem',
+                thesis="Recent trades and positions (risk view)"
+            )
+
+            # Trading data summary
+            self.smart_bus.set(
+                'trading_data',
+                result.get('trading_data', {}),
+                module='PortfolioRiskSystem',
+                thesis="Trading data summary (risk view)"
+            )
+            
         except Exception as e:
             self.logger.error(f"Failed to update SmartInfoBus: {e}")
 
     async def _handle_no_data_fallback(self) -> Dict[str, Any]:
         """Handle case when no portfolio data is available"""
         self.logger.warning("No portfolio data available - using fallback mode")
-        
+        thesis = "Portfolio risk operating with cached state due to missing inputs"
         return {
-            'current_mode': self.current_mode.value,
-            'var_95': self.current_var,
-            'max_correlation': self.max_correlation,
-            'risk_adjustment': self.risk_adjustment,
+            'portfolio_risk': {
+                'current_mode': self.current_mode.value,
+                'var_95': self.current_var,
+                'max_correlation': self.max_correlation,
+                'risk_adjustment': self.risk_adjustment,
+                'bootstrap_mode': self.bootstrap_mode,
+                'timestamp': datetime.datetime.now().isoformat()
+            },
+            'position_limits': {
+                'position_limits': self.position_limits.copy(),
+                'risk_adjustment': self.risk_adjustment,
+                'base_limit': self.config.max_position_pct,
+                'bootstrap_mode': self.bootstrap_mode
+            },
+            'risk_analytics': {
+                'performance_metrics': self.performance_metrics.copy(),
+                'risk_events': len(getattr(self, 'risk_events', [])),
+                'limit_violations': getattr(self, 'limit_violations', 0),
+                'correlation_alerts': getattr(self, 'correlation_alerts', 0),
+                'daily_risk_used': getattr(self, 'daily_risk_used', 0.0),
+                'risk_budget_violations': getattr(self, 'risk_budget_violations', 0),
+                'adaptive_params': getattr(self, '_adaptive_params', {}).copy() if hasattr(self, '_adaptive_params') else {}
+            },
+            'risk_data': {
+                'current_mode': self.current_mode.value,
+                'metrics': {
+                    'var_95': self.current_var,
+                    'max_correlation': self.max_correlation,
+                    'portfolio_volatility': self.performance_metrics.get('volatility', 0.0),
+                    'risk_quality': self.performance_metrics.get('risk_quality', 0.5),
+                    'total_exposure': self.performance_metrics.get('total_exposure', 0.0),
+                    'daily_risk_used': getattr(self, 'daily_risk_used', 0.0)
+                },
+                'limits': {
+                    'position_limits': self.position_limits.copy(),
+                    'base_limit': self.config.max_position_pct,
+                    'risk_adjustment': self.risk_adjustment,
+                    'bootstrap_mode': self.bootstrap_mode
+                },
+                'alerts': {
+                    'limit_violations': getattr(self, 'limit_violations', 0),
+                    'correlation_alerts': getattr(self, 'correlation_alerts', 0)
+                }
+            },
+            'risk_signals': {
+                'violations': [],
+                'mode': self.current_mode.value,
+                'budget_violation': False
+            },
+            'risk_score': float(self.performance_metrics.get('risk_quality', 0.5)),
+            'trade_data': {
+                'recent_trades': [],
+                'positions': []
+            },
+            'trading_data': {
+                'timestamp': datetime.datetime.now().isoformat(),
+                'prices_available': False,
+                'positions_count': 0
+            },
+            '_thesis': thesis,
             'fallback_reason': 'no_portfolio_data'
         }
 
@@ -1123,11 +1300,67 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
 
     def _create_error_fallback_response(self, reason: str) -> Dict[str, Any]:
         """Create fallback response for error cases"""
+        thesis = f"Portfolio risk fallback: {reason}"
         return {
-            'current_mode': RiskMode.EMERGENCY.value,
-            'var_95': 0.1,  # Conservative high VaR
-            'max_correlation': 0.9,  # Conservative high correlation
-            'risk_adjustment': self.min_risk_adjustment,  # Conservative low adjustment
+            'portfolio_risk': {
+                'current_mode': RiskMode.EMERGENCY.value,
+                'var_95': 0.1,  # Conservative high VaR
+                'max_correlation': 0.9,  # Conservative high correlation
+                'risk_adjustment': self.min_risk_adjustment,  # Conservative low adjustment
+                'timestamp': datetime.datetime.now().isoformat()
+            },
+            'position_limits': {
+                'position_limits': self.position_limits.copy(),
+                'risk_adjustment': self.risk_adjustment,
+                'base_limit': self.config.max_position_pct,
+                'bootstrap_mode': self.bootstrap_mode
+            },
+            'risk_analytics': {
+                'performance_metrics': self.performance_metrics.copy(),
+                'risk_events': len(getattr(self, 'risk_events', [])),
+                'limit_violations': getattr(self, 'limit_violations', 0),
+                'correlation_alerts': getattr(self, 'correlation_alerts', 0),
+                'daily_risk_used': getattr(self, 'daily_risk_used', 0.0),
+                'risk_budget_violations': getattr(self, 'risk_budget_violations', 0),
+                'adaptive_params': getattr(self, '_adaptive_params', {}).copy() if hasattr(self, '_adaptive_params') else {}
+            },
+            'risk_data': {
+                'current_mode': RiskMode.EMERGENCY.value,
+                'metrics': {
+                    'var_95': 0.1,
+                    'max_correlation': 0.9,
+                    'portfolio_volatility': self.performance_metrics.get('volatility', 0.0),
+                    'risk_quality': self.performance_metrics.get('risk_quality', 0.5),
+                    'total_exposure': self.performance_metrics.get('total_exposure', 0.0),
+                    'daily_risk_used': getattr(self, 'daily_risk_used', 0.0)
+                },
+                'limits': {
+                    'position_limits': self.position_limits.copy(),
+                    'base_limit': self.config.max_position_pct,
+                    'risk_adjustment': self.risk_adjustment,
+                    'bootstrap_mode': self.bootstrap_mode
+                },
+                'alerts': {
+                    'limit_violations': getattr(self, 'limit_violations', 0),
+                    'correlation_alerts': getattr(self, 'correlation_alerts', 0)
+                }
+            },
+            'risk_signals': {
+                'violations': [],
+                'mode': RiskMode.EMERGENCY.value,
+                'budget_violation': False
+            },
+            'risk_score': float(self.performance_metrics.get('risk_quality', 0.5)),
+            'trade_data': {
+                'recent_trades': [],
+                'positions': []
+            },
+            'trading_data': {
+                'timestamp': datetime.datetime.now().isoformat(),
+                'prices_available': False,
+                'positions_count': 0
+            },
+            '_thesis': thesis,
             'circuit_breaker_state': self.circuit_breaker['state'],
             'fallback_reason': reason
         }
