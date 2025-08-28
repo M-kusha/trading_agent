@@ -1,8 +1,6 @@
 # ─────────────────────────────────────────────────────────────
-# File: modules/features/advanced_feature_engine.py  
-# [ROCKET] PRODUCTION-GRADE Advanced Feature Engine
-# NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
-# ENHANCED: Complete SmartInfoBus integration with all advanced features
+# File: modules/features/advanced_feature_engine.py
+# Advanced Feature Engine (Contract-Clean, Single-Writer)
 # ─────────────────────────────────────────────────────────────
 
 import time
@@ -10,7 +8,7 @@ import asyncio
 import numpy as np
 from typing import Dict, Any, List, Optional, Union
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 
 # Core infrastructure
 from modules.core.module_base import BaseModule, module
@@ -22,234 +20,862 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
+# ─────────────────────────────────────────────────────────────
+# Config
+# ─────────────────────────────────────────────────────────────
 @dataclass
 class FeatureEngineConfig:
-    """Configuration for Advanced Feature Engine"""
     window_sizes: Optional[List[int]] = None
     max_buffer_size: int = 1000
-    enable_neural_processing: bool = True
+    enable_neural_processing: bool = False  # placeholder hook
     enable_health_monitoring: bool = True
     enable_performance_tracking: bool = True
     enable_error_pinpointing: bool = True
     enable_english_explanations: bool = True
     circuit_breaker_threshold: int = 5
-    
+
     def __post_init__(self):
         if self.window_sizes is None:
             self.window_sizes = [7, 14, 28, 56]
 
 
+# ─────────────────────────────────────────────────────────────
+# Contract declaration
+# ─────────────────────────────────────────────────────────────
 @module(
     name="AdvancedFeatureEngine",
-    version="3.0.0",
+    version="3.1.1",
     category="features",
     provides=[
-        "advanced_features", "feature_analysis", "feature_health", "feature_thesis",
-        "features", "technical_indicators", "market_features", "price_features"
+        "advanced_features",     # structured dict (vector + meta)
+        "features",              # alias (back-compat) pointing to advanced_features
+        "feature_analysis",      # explainer + stats
+        "feature_thesis"         # human-readable thesis
     ],
-    requires=["market_data", "price_data"],
-    description="Advanced feature extraction with comprehensive SmartInfoBus integration",
+    requires=["price_data"],     # hard require; we still fall back via Bus gracefully
+    description="Deterministic multi-window feature extraction with circuit breaker, monitoring, and explainability.",
     thesis_required=True,
     health_monitoring=True,
     performance_tracking=True,
-    error_handling=True
+    error_handling=True,
+    is_voting_member=False,
+    hot_reload=True,
+    timeout_ms=120
 )
 class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    [ROCKET] PRODUCTION-GRADE Advanced Feature Engine
-    
-    FEATURES:
-    - Complete SmartInfoBus integration with thesis generation
-    - ErrorPinpointer for advanced error analysis
-    - English explanations for all decisions
-    - Health monitoring with circuit breakers
-    - Performance tracking and optimization
-    - State management for hot-reload
-    - Comprehensive validation and auditing
+    - Provides: advanced_features, features, feature_analysis, feature_thesis
+    - Requires: price_data (dict: symbol -> {close: float})
+    - Fallbacks via Bus: historical_prices -> ohlcv_data -> market_data
+    - Fleet-wide health is NOT published here (aggregator owns that).
     """
-    
+
+    # ─────────────────────────────────────────────────────────
+    # Lifecycle
+    # ─────────────────────────────────────────────────────────
     def __init__(self, config: Optional[Union[FeatureEngineConfig, Dict[str, Any]]] = None, **kwargs):
-        # Store config first 
+        # Normalize config → dataclass
         if isinstance(config, dict):
-            # Convert dict config to FeatureEngineConfig
-            self.feature_config = FeatureEngineConfig(**{k: v for k, v in config.items() if k in FeatureEngineConfig.__dataclass_fields__})
+            filtered: Dict[str, Any] = {k: config[k] for k in FeatureEngineConfig.__dataclass_fields__ if k in config}
+            self._cfg = FeatureEngineConfig(**filtered)
+        elif isinstance(config, FeatureEngineConfig) or config is None:
+            self._cfg = config or FeatureEngineConfig()
         else:
-            self.feature_config = config or FeatureEngineConfig()
-        
-        self.config = self.feature_config  # Set config early for init methods
-        
-        # Initialize all systems before super().__init__() 
-        # because BaseModule calls _initialize() which needs these attributes
-        self._initialize_advanced_systems()
-        
-        # Feature-specific initialization
-        self.window_sizes = sorted(self.config.window_sizes or [7, 14, 28, 56])
-        self.out_dim = len(self.window_sizes) * 6 + 8  # Enhanced feature set
-        self.max_buffer_size = self.config.max_buffer_size
-        
-        # Initialize state
+            # Defensive fallback
+            self._cfg = FeatureEngineConfig()
+
+        # Pass DI-friendly dict config to BaseModule (required by your infra)
+        super().__init__(config=asdict(self._cfg), **kwargs)
+
+        # BaseModule __init__ calls our _initialize()
+
+    def _initialize(self):
+        """
+        Implement abstract hook. Do NOT call super()._initialize() (abstract).
+        Prepare internals, state, and background monitoring.
+        """
+        # Core handles
+        self.smart_bus = InfoBusManager.get_instance()
+
+        # Feature geometry
+        self.window_sizes = sorted(self._cfg.window_sizes or [7, 14, 28, 56])
+        # 6 stats per window + 6 global stats = len(ws)*6 + 6
+        self.out_dim = len(self.window_sizes) * 6 + 6
+        self.max_buffer_size = int(self._cfg.max_buffer_size)
+
+        # Subsystems (use BaseModule's logger already set)
+        if self._cfg.enable_error_pinpointing:
+            self.error_pinpointer = ErrorPinpointer()
+            self.error_handler = create_error_handler("AdvancedFeatureEngine", self.error_pinpointer)
+        else:
+            self.error_pinpointer = None
+            self.error_handler = None
+
+        if self._cfg.enable_english_explanations:
+            self.english_explainer = EnglishExplainer()
+            self.system_utilities = SystemUtilities()
+        else:
+            self.english_explainer = None
+            self.system_utilities = None
+
+        if self._cfg.enable_performance_tracking:
+            self.performance_tracker = PerformanceTracker()
+        else:
+            self.performance_tracker = None
+
+        # Circuit breaker (local accounting; real breaker can be DI'd)
+        self.circuit_breaker: Dict[str, Any] = {
+            "failures": 0,
+            "last_failure": 0.0,
+            "state": "CLOSED",  # CLOSED, OPEN, HALF_OPEN
+            "threshold": int(self._cfg.circuit_breaker_threshold),
+        }
+
+        # State & monitoring
         self._initialize_feature_state()
-        
-        # Start monitoring
         self._start_monitoring()
-        
-        super().__init__(**kwargs)  # Don't pass config to BaseModule
-        
-        # Ensure our config is preserved after BaseModule initialization
-        self.config = self.feature_config
-        
+
+        # Log
         self.logger.info(
             format_operator_message(
-                "[ROCKET]", "ADVANCED_FEATURE_ENGINE_INITIALIZED",
-                details=f"Windows: {self.window_sizes}, Output dim: {self.out_dim}",
-                result="Production-grade feature engine active",
+                "[INIT]", "ADVANCED_FEATURE_ENGINE_READY",
+                details=f"Windows={self.window_sizes}, OutDim={self.out_dim}, Buffer={self.max_buffer_size}",
+                result="ready",
                 context="feature_engine_startup"
             )
         )
-    
-    def _initialize_advanced_systems(self):
-        """Initialize all advanced systems"""
-        # Core systems
-        self.smart_bus = InfoBusManager.get_instance()
-        self.logger = RotatingLogger(
-            name="AdvancedFeatureEngine",
-            log_path="logs/features/advanced_engine.log",
-            max_lines=5000,
-            operator_mode=True,
-            plain_english=True
-        )
-        
-        # Advanced systems
-        if self.config.enable_error_pinpointing:
-            self.error_pinpointer = ErrorPinpointer()
-            self.error_handler = create_error_handler("AdvancedFeatureEngine", self.error_pinpointer)
-        
-        if self.config.enable_english_explanations:
-            self.english_explainer = EnglishExplainer()
-            self.system_utilities = SystemUtilities()
-        
-        if self.config.enable_performance_tracking:
-            self.performance_tracker = PerformanceTracker()
-        
-        # Circuit breaker state
-        self.circuit_breaker = {
-            'failures': 0,
-            'last_failure': 0,
-            'state': 'CLOSED',  # CLOSED, OPEN, HALF_OPEN
-            'threshold': self.config.circuit_breaker_threshold
-        }
-    
+
+    # ─────────────────────────────────────────────────────────
+    # Internal state & monitoring
+    # ─────────────────────────────────────────────────────────
     def _initialize_feature_state(self):
-        """Initialize feature-specific state"""
-        # Feature buffers
-        self.price_buffer = deque(maxlen=self.max_buffer_size)
-        self.feature_buffer = deque(maxlen=1000)
-        
-        # Feature outputs
+        self.price_buffer: deque = deque(maxlen=self.max_buffer_size)
+        self.feature_buffer: deque = deque(maxlen=1000)
         self.last_features = np.zeros(self.out_dim, dtype=np.float32)
         self.feature_quality_score = 100.0
-        
-        # Statistics
-        self.feature_stats = {
-            'total_extractions': 0,
-            'successful_extractions': 0,
-            'failed_extractions': 0,
-            'avg_extraction_time_ms': 0.0,
-            'avg_feature_quality': 0.0,
-            'price_points_processed': 0
+
+        self.feature_stats: Dict[str, Any] = {
+            "total_extractions": 0,
+            "successful_extractions": 0,
+            "failed_extractions": 0,
+            "avg_extraction_time_ms": 0.0,
+            "avg_feature_quality": 0.0,
+            "price_points_processed": 0
         }
-        
-        # Health tracking
-        self.health_metrics = {
-            'last_health_check': time.time(),
-            'health_score': 100.0,
-            'issues_detected': [],
-            'performance_trend': 'stable'
+
+        self.health_metrics: Dict[str, Any] = {
+            "last_health_check": time.time(),
+            "health_score": 100.0,
+            "issues_detected": [],
+            "performance_trend": "stable"
         }
-    
+
     def _start_monitoring(self):
-        """Start background monitoring tasks"""
-        # Only start monitoring tasks if we're in an async context
         try:
             loop = asyncio.get_running_loop()
-            if self.config.enable_health_monitoring:
+            if self._cfg.enable_health_monitoring:
                 loop.create_task(self._health_monitoring_loop())
-            
-            if self.config.enable_performance_tracking:
+            if self._cfg.enable_performance_tracking:
                 loop.create_task(self._performance_monitoring_loop())
         except RuntimeError:
-            # No event loop running, monitoring will start when module is initialized
+            # No running loop; orchestrator will attach later.
             pass
-    
-    def _initialize(self):
-        """Initialize module - called by orchestrator"""
-        super()._initialize()
-        
-        # Store module capabilities in SmartInfoBus
+
+    # ─────────────────────────────────────────────────────────
+    # Main processing
+    # ─────────────────────────────────────────────────────────
+    async def process(self, **inputs) -> Dict[str, Any]:
+        start = time.time()
+
+        # Circuit breaker
+        if not self._check_circuit_breaker():
+            return self._create_fallback_response("Circuit breaker open")
+
+        try:
+            market_data = await self._extract_market_data(**inputs)
+            features_payload = await self._process_features_with_monitoring(market_data)
+            thesis = await self._generate_feature_thesis(features_payload, market_data)
+
+            # Publish only declared keys (single-writer discipline)
+            self._update_bus(features_payload, thesis)
+
+            self._record_success(time.time() - start)
+
+            return self._format_declared_outputs(
+                features_payload=features_payload,
+                thesis=thesis,
+                analysis={
+                    "explanation": features_payload.get("explanation"),
+                    "statistics": self.feature_stats,
+                    "buffer_status": {
+                        "current_size": len(self.price_buffer),
+                        "max_size": self.max_buffer_size,
+                        "utilization": len(self.price_buffer) / max(self.max_buffer_size, 1),
+                    },
+                },
+                extra={
+                    "success": True,
+                    "processing_time_ms": (time.time() - start) * 1000.0,
+                },
+            )
+
+        except Exception as e:
+            return await self._handle_processing_error(e, start)
+
+    # ─────────────────────────────────────────────────────────
+    # Inputs
+    # ─────────────────────────────────────────────────────────
+    async def _extract_market_data(self, **inputs) -> Dict[str, Any]:
+        """
+        Consumes hard-required `price_data` from inputs (preferred),
+        with resilient fallbacks through the Bus. Produces a flat list of prices.
+        """
+        market_data = {"prices": []}
+
+        # 1) Hard require: price_data from inputs
+        pd_map = inputs.get("price_data")
+        if isinstance(pd_map, dict):
+            for _sym, entry in pd_map.items():
+                close = (entry or {}).get("close")
+                if isinstance(close, (int, float)):
+                    market_data["prices"].append(float(close))
+
+        # 2) Fallbacks from Bus (in order of richness)
+        if not market_data["prices"]:
+            hist = self.smart_bus.get("historical_prices", self.__class__.__name__)
+            if isinstance(hist, dict):
+                try:
+                    for _instrument, tfs in hist.items():
+                        if isinstance(tfs, dict):
+                            for _tf, payload in tfs.items():
+                                if isinstance(payload, dict):
+                                    closes = payload.get("close")
+                                    if isinstance(closes, (list, np.ndarray)) and len(closes) > 0:
+                                        market_data["prices"].extend(np.asarray(closes).flatten().tolist())
+                                    else:
+                                        cb = payload.get("current_bar", {})
+                                        if isinstance(cb.get("close"), (int, float)):
+                                            market_data["prices"].append(float(cb["close"]))
+                except Exception:
+                    pass
+
+        if not market_data["prices"]:
+            ohlcv = self.smart_bus.get("ohlcv_data", self.__class__.__name__)
+            if isinstance(ohlcv, dict):
+                for _symbol, bar in ohlcv.items():
+                    if isinstance(bar, dict) and isinstance(bar.get("close"), (int, float)):
+                        market_data["prices"].append(float(bar["close"]))
+
+        if not market_data["prices"]:
+            mkt = self.smart_bus.get("market_data", self.__class__.__name__)
+            if isinstance(mkt, dict):
+                for key, val in mkt.items():
+                    if "price" in str(key).lower() and isinstance(val, (list, np.ndarray)):
+                        market_data["prices"].extend(np.asarray(val).flatten().tolist())
+                    elif isinstance(val, dict) and isinstance(val.get("close"), (int, float)):
+                        market_data["prices"].append(float(val["close"]))
+
+        # 3) Loose direct inputs convenience (non-contract)
+        for k in ("prices", "price", "close", "price_series"):
+            v = inputs.get(k)
+            if isinstance(v, (list, np.ndarray)):
+                market_data["prices"].extend(np.asarray(v).flatten().tolist())
+            elif isinstance(v, (int, float)):
+                market_data["prices"].append(float(v))
+
+        # Clean & validate
+        market_data["prices"] = self._validate_prices(market_data["prices"])
+        if not market_data["prices"]:
+            raise ValueError("No valid price data available")
+
+        return market_data
+
+    def _validate_prices(self, prices: List[float]) -> List[float]:
+        valid: List[float] = []
+        for p in prices:
+            if isinstance(p, (int, float)) and np.isfinite(p) and p > 0:
+                valid.append(float(p))
+        # Simple 3σ outlier trim
+        if len(valid) > 10:
+            arr = np.asarray(valid, dtype=float)
+            mu, sd = float(np.mean(arr)), float(np.std(arr))
+            if sd > 0:
+                valid = [x for x in valid if abs(x - mu) <= 3.0 * sd]
+        return valid
+
+    # ─────────────────────────────────────────────────────────
+    # Feature extraction
+    # ─────────────────────────────────────────────────────────
+    async def _process_features_with_monitoring(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
+        t0 = time.time()
+
+        # Buffer update
+        self.price_buffer.extend(market_data["prices"])
+
+        # Extract deterministic features
+        feats = self._extract_comprehensive_features(market_data["prices"])
+
+        # Quality
+        quality = self._calculate_feature_quality(feats)
+        self.feature_quality_score = quality
+
+        # Persist local last
+        self.last_features = feats
+        self.feature_buffer.append({
+            "features": feats.copy(),
+            "quality_score": quality,
+            "timestamp": time.time()
+        })
+
+        # Stats
+        dur_ms = (time.time() - t0) * 1000.0
+        self._update_feature_stats(dur_ms, quality)
+
+        # Explanation
+        explanation = self._generate_feature_explanation(feats, quality)
+
+        return {
+            "raw_features": feats,
+            "quality_score": float(quality),
+            "explanation": explanation,
+            "extraction_time_ms": float(dur_ms),
+            "buffer_size": int(len(self.price_buffer)),
+            "feature_count": int(feats.size if isinstance(feats, np.ndarray) else len(feats))
+        }
+
+    def _extract_comprehensive_features(self, prices: List[float]) -> np.ndarray:
+        """
+        Features: per-window [mean, std, return, range, up_ratio, n], plus global
+        [last_price, global_mean, global_std, global_range, pos_step_ratio, n].
+        """
+        if len(prices) < max(self.window_sizes):
+            return self._get_fallback_features()
+
+        arr = np.asarray(prices[-max(self.window_sizes):], dtype=float)
+        feats: List[float] = []
+
+        # Per-window stats
+        for w in self.window_sizes:
+            if len(arr) >= w:
+                window = arr[-w:]
+                diffs = np.diff(window)
+                up_ratio = float(np.mean(diffs > 0.0)) if len(diffs) > 0 else 0.0
+                ret = (window[-1] - window[0]) / max(window[0], 1e-12)
+                feats.extend([
+                    float(np.mean(window)),
+                    float(np.std(window)),
+                    float(ret),
+                    float(np.max(window) - np.min(window)),
+                    up_ratio,
+                    float(len(window))
+                ])
+            else:
+                feats.extend([0.0] * 6)
+
+        # Global stats (no raw timestamps)
+        diffs_all = np.diff(arr)
+        pos_step_ratio = float(np.mean(diffs_all > 0.0)) if len(diffs_all) > 0 else 0.0
+        feats.extend([
+            float(arr[-1]),                         # last price
+            float(np.mean(arr)),                    # global mean
+            float(np.std(arr)),                     # global volatility
+            float(np.max(arr) - np.min(arr)),       # global range
+            pos_step_ratio,                         # positive step ratio
+            float(len(arr))                         # sample size
+        ])
+
+        return np.asarray(feats, dtype=np.float32)
+
+    def _calculate_feature_quality(self, features: np.ndarray) -> float:
+        try:
+            if not isinstance(features, np.ndarray) or features.size == 0:
+                return 0.0
+            if np.any(~np.isfinite(features)):
+                return 0.0
+            # Detect low-variability/flat data: per-window std/return/range mostly ~0 and globals agree
+            L = max(0, (features.size - 6) // 6)
+            if L > 0:
+                try:
+                    perwin_std = [float(features[i * 6 + 1]) for i in range(L)]
+                    perwin_ret = [float(features[i * 6 + 2]) for i in range(L)]
+                    perwin_rng = [float(features[i * 6 + 3]) for i in range(L)]
+                    g_idx = L * 6
+                    g_std = float(features[g_idx + 2])
+                    g_rng = float(features[g_idx + 3])
+                    pos_step = float(features[g_idx + 4])
+                    zeros_std = sum(1 for v in perwin_std if abs(v) < 1e-12)
+                    zeros_ret = sum(1 for v in perwin_ret if abs(v) < 1e-12)
+                    zeros_rng = sum(1 for v in perwin_rng if abs(v) < 1e-12)
+                    if (
+                        zeros_std >= max(1, int(0.75 * L)) and
+                        zeros_ret >= max(1, int(0.75 * L)) and
+                        zeros_rng >= max(1, int(0.75 * L)) and
+                        abs(g_std) < 1e-12 and abs(g_rng) < 1e-12 and
+                        (pos_step <= 1e-6 or abs(pos_step - 1.0) <= 1e-6)
+                    ):
+                        return 30.0
+                except Exception:
+                    pass
+            if float(np.std(features)) == 0.0:
+                return 25.0
+            span = float(np.max(features) - np.min(features))
+            if span < 1e-8:
+                return 35.0
+
+            quality = 85.0
+            if np.max(np.abs(features)) > 1e6:
+                quality -= 15.0
+
+            stdv = float(np.std(features))
+            if 0.05 < stdv < 250.0:
+                quality += 5.0
+
+            return max(0.0, min(100.0, quality))
+        except Exception:
+            return 0.0
+
+    def _generate_feature_explanation(self, feats: np.ndarray, quality: float) -> str:
+        if not self.english_explainer:
+            return "Feature extraction completed."
+        try:
+            analysis = {
+                "feature_count": int(feats.size) if isinstance(feats, np.ndarray) else 0,
+                "quality_score": float(quality),
+                "max_value": float(np.max(feats)),
+                "min_value": float(np.min(feats)),
+                "mean_value": float(np.mean(feats)),
+                "std_value": float(np.std(feats)),
+                "window_sizes": self.window_sizes,
+                "buffer_size": len(self.price_buffer),
+            }
+            return self.english_explainer.explain_module_decision(
+                module_name="AdvancedFeatureEngine",
+                decision="feature_extraction",
+                context=analysis,
+                confidence=quality / 100.0
+            )
+        except Exception as e:
+            return f"Feature extraction completed (explanation generation failed: {e})"
+
+    async def _generate_feature_thesis(self, features: Dict[str, Any], market_data: Dict[str, Any]) -> str:
+        try:
+            prices = market_data["prices"]
+            latest = prices[-1] if prices else 0.0
+            change = (prices[-1] - prices[0]) / max(prices[0], 1e-12) if len(prices) > 1 else 0.0
+            q = float(features["quality_score"])
+            n = int(features["feature_count"])
+            buf_util = f"{len(self.price_buffer)}/{self.max_buffer_size}"
+
+            conf = "High" if q > 80 else ("Medium" if q > 60 else "Low")
+            data_qual = "Good" if len(prices) > 50 else ("Adequate" if len(prices) > 20 else "Limited")
+
+            return (
+                "Advanced Feature Analysis\n"
+                f"- Current price: {latest:.4f}\n"
+                f"- Price change: {change:.2%}\n"
+                f"- Data points processed: {len(prices)}\n\n"
+                "Feature Quality\n"
+                f"- Quality score: {q:.1f}/100\n"
+                f"- Features extracted: {n}\n"
+                f"- Buffer utilization: {buf_util}\n\n"
+                "Confidence\n"
+                f"- Extraction confidence: {conf}\n"
+                f"- Data quality: {data_qual}\n"
+                "Recommendation: " + ("Continue processing" if q > 60 else "Review data quality")
+            )
+        except Exception as e:
+            return f"Feature extraction completed. Thesis generation encountered error: {e}"
+
+    # ─────────────────────────────────────────────────────────
+    # Bus I/O (declared keys only)
+    # ─────────────────────────────────────────────────────────
+    def _update_bus(self, features: Dict[str, Any], thesis: str):
+        # advanced_features
         self.smart_bus.set(
-            'feature_engine_capabilities',
+            "advanced_features",
             {
-                'window_sizes': self.window_sizes,
-                'output_dimensions': self.out_dim,
-                'max_buffer_size': self.max_buffer_size,
-                'supports_neural_processing': self.feature_config.enable_neural_processing,
-                'features_available': ['price_momentum', 'volatility', 'trend_strength', 'volume_profile']
+                "raw_features": features["raw_features"].tolist() if isinstance(features["raw_features"], np.ndarray)
+                                 else list(features["raw_features"]),
+                "quality_score": float(features["quality_score"]),
+                "extraction_time_ms": float(features["extraction_time_ms"]),
+                "timestamp": time.time()
             },
-            module='AdvancedFeatureEngine',
-            thesis="Advanced feature engine capabilities for system optimization"
+            module="AdvancedFeatureEngine",
+            thesis=thesis
         )
-    
+
+        # features (alias/back-compat)
+        self.smart_bus.set(
+            "features",
+            {
+                "raw_features": features["raw_features"].tolist() if isinstance(features["raw_features"], np.ndarray)
+                                 else list(features["raw_features"]),
+                "quality_score": float(features["quality_score"])
+            },
+            module="AdvancedFeatureEngine",
+            thesis="Features alias for backward compatibility."
+        )
+
+        # feature_analysis
+        self.smart_bus.set(
+            "feature_analysis",
+            {
+                "explanation": features.get("explanation"),
+                "buffer_status": {
+                    "current_size": len(self.price_buffer),
+                    "max_size": self.max_buffer_size,
+                    "utilization": len(self.price_buffer) / max(self.max_buffer_size, 1)
+                },
+                "statistics": self.feature_stats
+            },
+            module="AdvancedFeatureEngine",
+            thesis=f"Feature analysis summary: {features['quality_score']:.1f}% quality"
+        )
+
+        # feature_thesis
+        self.smart_bus.set(
+            "feature_thesis",
+            thesis,
+            module="AdvancedFeatureEngine",
+            thesis="Feature engine thesis"
+        )
+
+    # ─────────────────────────────────────────────────────────
+    # Stats / monitoring / errors
+    # ─────────────────────────────────────────────────────────
+    def _update_feature_stats(self, extraction_time_ms: float, quality_score: float):
+        self.feature_stats["total_extractions"] += 1
+        self.feature_stats["successful_extractions"] += 1
+        total = self.feature_stats["total_extractions"]
+        self.feature_stats["avg_extraction_time_ms"] = (
+            (self.feature_stats["avg_extraction_time_ms"] * (total - 1) + extraction_time_ms) / total
+        )
+        self.feature_stats["avg_feature_quality"] = (
+            (self.feature_stats["avg_feature_quality"] * (total - 1) + quality_score) / total
+        )
+
+    def _check_circuit_breaker(self) -> bool:
+        if self.circuit_breaker["state"] == "OPEN":
+            # Only allow HALF_OPEN after cooldown if we've actually recorded a failure time
+            lf = float(self.circuit_breaker.get("last_failure", 0.0) or 0.0)
+            if lf > 0.0 and (time.time() - lf > 60.0):
+                self.circuit_breaker["state"] = "HALF_OPEN"
+                return True
+            return False
+        return True
+
+    def _record_success(self, processing_time_s: float):
+        if self.circuit_breaker["state"] == "HALF_OPEN":
+            self.circuit_breaker["state"] = "CLOSED"
+            self.circuit_breaker["failures"] = 0
+        self.health_metrics["health_score"] = min(100.0, self.health_metrics["health_score"] + 1.0)
+        self.health_metrics["performance_trend"] = "improving"
+        if self.performance_tracker:
+            self.performance_tracker.record_metric(
+                "AdvancedFeatureEngine",
+                "feature_extraction",
+                processing_time_s * 1000.0,
+                True
+            )
+
+    async def _handle_processing_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
+        elapsed = time.time() - start_time
+        self._record_failure(error)
+        if self.error_pinpointer:
+            try:
+                ctx = self.error_pinpointer.analyze_error(error, "AdvancedFeatureEngine")
+                _ = self.error_pinpointer.create_debugging_guide(ctx)
+            except Exception:
+                pass
+
+        # Do NOT publish undeclared keys to Bus; return a formatted fallback instead.
+        fallback = self._get_fallback_features()
+        thesis = f"Feature extraction failed: {error}. Using fallback features."
+        self.logger.error(
+            format_operator_message(
+                "[CRASH]", "FEATURE_EXTRACTION_ERROR",
+                details=str(error),
+                context="feature_processing"
+            )
+        )
+
+        return self._format_declared_outputs(
+            features_payload={
+                "raw_features": fallback,
+                "quality_score": 0.0,
+                "extraction_time_ms": elapsed * 1000.0,
+                "buffer_size": len(self.price_buffer),
+                "feature_count": int(fallback.size if isinstance(fallback, np.ndarray) else len(fallback)),
+                "explanation": None,
+            },
+            thesis=thesis,
+            analysis={
+                "explanation": None,
+                "statistics": self.feature_stats,
+                "buffer_status": {
+                    "current_size": len(self.price_buffer),
+                    "max_size": self.max_buffer_size,
+                    "utilization": len(self.price_buffer) / max(self.max_buffer_size, 1),
+                },
+            },
+            extra={
+                "success": False,
+                "error": str(error),
+                "processing_time_ms": elapsed * 1000.0,
+            },
+        )
+
+    def _record_failure(self, error: Exception):
+        self.circuit_breaker["failures"] += 1
+        self.circuit_breaker["last_failure"] = time.time()
+        if self.circuit_breaker["failures"] >= self.circuit_breaker["threshold"]:
+            self.circuit_breaker["state"] = "OPEN"
+            self.logger.error(
+                format_operator_message(
+                    "[ALERT]", "CIRCUIT_BREAKER_OPEN",
+                    details=f"Too many failures ({self.circuit_breaker['failures']})",
+                    context="circuit_breaker"
+                )
+            )
+        self.health_metrics["health_score"] = max(0.0, self.health_metrics["health_score"] - 10.0)
+        self.health_metrics["issues_detected"].append(f"{type(error).__name__}: {error}")
+        self.health_metrics["performance_trend"] = "degrading"
+        self.feature_stats["failed_extractions"] += 1
+
+    def _get_fallback_features(self) -> np.ndarray:
+        if len(self.feature_buffer) > 0:
+            return self.feature_buffer[-1]["features"]
+        return np.zeros(self.out_dim, dtype=np.float32)
+
+    def _create_fallback_response(self, reason: str) -> Dict[str, Any]:
+        return self._format_declared_outputs(
+            features_payload={
+                "raw_features": self._get_fallback_features(),
+                "quality_score": 0.0,
+                "extraction_time_ms": 0.0,
+                "buffer_size": len(self.price_buffer),
+                "feature_count": 0,
+                "explanation": None,
+            },
+            thesis=f"Feature extraction unavailable: {reason}",
+            analysis={
+                "explanation": None,
+                "statistics": self.feature_stats,
+                "buffer_status": {
+                    "current_size": len(self.price_buffer),
+                    "max_size": self.max_buffer_size,
+                    "utilization": len(self.price_buffer) / max(self.max_buffer_size, 1),
+                },
+            },
+            extra={"success": False, "reason": reason, "processing_time_ms": 0.0},
+        )
+
+    # ─────────────────────────────────────────────────────────
+    # Public API helpers
+    # ─────────────────────────────────────────────────────────
+    def get_state(self) -> Dict[str, Any]:
+        base = super().get_state()
+        feature_state = {
+            "config": {
+                "window_sizes": self.window_sizes,
+                "max_buffer_size": self.max_buffer_size,
+                "out_dim": self.out_dim
+            },
+            "buffers": {
+                "price_buffer": list(self.price_buffer),
+                "feature_buffer": [fb for fb in self.feature_buffer]
+            },
+            "features": {
+                "last_features": self.last_features.tolist(),
+                "quality_score": self.feature_quality_score
+            },
+            "statistics": self.feature_stats,
+            "health_metrics": self.health_metrics,
+            "circuit_breaker": self.circuit_breaker
+        }
+        return {**base, **feature_state}
+
+    def set_state(self, state: Dict[str, Any]):
+        super().set_state(state)
+        if "buffers" in state:
+            if "price_buffer" in state["buffers"]:
+                self.price_buffer = deque(state["buffers"]["price_buffer"], maxlen=self.max_buffer_size)
+            if "feature_buffer" in state["buffers"]:
+                self.feature_buffer = deque(state["buffers"]["feature_buffer"], maxlen=1000)
+        if "features" in state:
+            if "last_features" in state["features"]:
+                self.last_features = np.array(state["features"]["last_features"], dtype=np.float32)
+            if "quality_score" in state["features"]:
+                self.feature_quality_score = float(state["features"]["quality_score"])
+        if "statistics" in state:
+            self.feature_stats.update(state["statistics"])
+        if "health_metrics" in state:
+            self.health_metrics.update(state["health_metrics"])
+        if "circuit_breaker" in state:
+            self.circuit_breaker.update(state["circuit_breaker"])
+
+    def get_health_status(self) -> Dict[str, Any]:
+        return {
+            "health_score": self.health_metrics["health_score"],
+            "circuit_breaker_state": self.circuit_breaker["state"],
+            "issues_detected": list(self.health_metrics["issues_detected"]),
+            "performance_trend": self.health_metrics["performance_trend"],
+            "statistics": dict(self.feature_stats),
+            "buffer_status": {
+                "price_buffer_size": len(self.price_buffer),
+                "price_buffer_utilization": len(self.price_buffer) / max(self.max_buffer_size, 1),
+                "feature_buffer_size": len(self.feature_buffer)
+            }
+        }
+
+    def get_performance_report(self) -> str:
+        if not self.english_explainer:
+            return "Performance reporting disabled or explainer unavailable."
+        try:
+            return self.english_explainer.explain_performance(
+                module_name="AdvancedFeatureEngine",
+                metrics={
+                    "total_extractions": self.feature_stats["total_extractions"],
+                    "success_rate": self.feature_stats["successful_extractions"] / max(self.feature_stats["total_extractions"], 1),
+                    "avg_extraction_time_ms": self.feature_stats["avg_extraction_time_ms"],
+                    "avg_feature_quality": self.feature_stats["avg_feature_quality"],
+                    "health_score": self.health_metrics["health_score"],
+                    "buffer_utilization": len(self.price_buffer) / max(self.max_buffer_size, 1)
+                }
+            )
+        except Exception as e:
+            return f"Performance report generation failed: {e}"
+
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """
+        Lightweight example action proposal based on freshly computed features.
+        (Not a voter; downstream logic decides.)
+        """
+        try:
+            result = await self.process(**inputs)
+            if not result.get("success", False):
+                return {
+                    "action_type": "no_action",
+                    "confidence": 0.0,
+                    "reasoning": "Feature extraction failed",
+                    "features_available": False
+                }
+
+            adv = result["advanced_features"]
+            features = np.asarray(adv["raw_features"], dtype=float)
+            quality_score = float(adv["quality_score"])
+
+            # Simple momentum heuristic across the first few windows
+            slice_len = max(1, min(5, len(self.window_sizes)))
+            if features.size >= 6 * slice_len:
+                per_window_stats = features[: 6 * slice_len].reshape(slice_len, 6)
+                recent_returns = per_window_stats[:, 2]
+                avg_momentum = float(np.mean(recent_returns))
+            else:
+                avg_momentum = 0.0
+
+            if quality_score > 80:
+                if avg_momentum > 0.01:
+                    action_type, magnitude = "increase_position", min(abs(avg_momentum) * 10.0, 1.0)
+                elif avg_momentum < -0.01:
+                    action_type, magnitude = "decrease_position", min(abs(avg_momentum) * 10.0, 1.0)
+                else:
+                    action_type, magnitude = "hold_position", 0.0
+            else:
+                action_type, magnitude = "reduce_risk", 0.5
+
+            # Confidence blended from quality + signal strength
+            base_conf = quality_score / 100.0
+            strength = min(abs(avg_momentum) * 50.0, 1.0)
+            confidence = float(np.clip(0.6 * base_conf + 0.4 * strength, 0.0, 1.0))
+
+            # Adjust for breaker state
+            if self.circuit_breaker["state"] == "OPEN":
+                confidence *= 0.1
+            elif self.circuit_breaker["state"] == "HALF_OPEN":
+                confidence *= 0.5
+
+            return {
+                "action_type": action_type,
+                "magnitude": float(magnitude),
+                "confidence": float(confidence),
+                "reasoning": f"{len(features)} features @ {quality_score:.1f}% quality; avg momentum {avg_momentum:.4f}",
+                "features_used": int(features.size),
+                "quality_score": quality_score,
+                "momentum_signal": avg_momentum
+            }
+
+        except Exception as e:
+            self.logger.error(f"Action proposal failed: {e}")
+            return {
+                "action_type": "no_action",
+                "confidence": 0.0,
+                "reasoning": f"Action proposal error: {e}",
+                "error": str(e)
+            }
+
+    async def calculate_confidence(self, action: Dict[str, Any], **_inputs) -> float:
+        try:
+            if not isinstance(action, dict):
+                return 0.0
+            base_conf = self.feature_quality_score / 100.0
+            action_type = action.get("action_type", "no_action")
+            magnitude = float(action.get("magnitude", 0.0))
+
+            if action_type in ("increase_position", "decrease_position"):
+                features_used = int(action.get("features_used", 0))
+                denom = max(1, len(self.window_sizes) * 6)
+                feature_conf = min(1.0, features_used / denom)
+                mag_conf = 1.0 - min(abs(magnitude), 0.5)
+                combined = 0.5 * base_conf + 0.3 * feature_conf + 0.2 * mag_conf
+            elif action_type == "hold_position":
+                combined = 0.8 * base_conf
+            elif action_type == "reduce_risk":
+                combined = max(base_conf, 0.6)
+            else:
+                combined = 0.1
+
+            if self.circuit_breaker["state"] == "OPEN":
+                combined *= 0.1
+            elif self.circuit_breaker["state"] == "HALF_OPEN":
+                combined *= 0.5
+
+            return float(np.clip(combined, 0.0, 1.0))
+        except Exception:
+            return 0.0
+
+    # ─────────────────────────────────────────────────────────
+    # Output formatting (contract)
+    # ─────────────────────────────────────────────────────────
     def _format_declared_outputs(
         self,
         *,
         features_payload: Optional[Dict[str, Any]] = None,
         thesis: Optional[str] = None,
         analysis: Optional[Dict[str, Any]] = None,
-        health: Optional[Dict[str, Any]] = None,
-        technical_indicators: Optional[Dict[str, Any]] = None,
-        market_features: Optional[Dict[str, Any]] = None,
-        price_features: Optional[Dict[str, Any]] = None,
         extra: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        Strictly format and validate declared outputs.
-        - advanced_features: dict with keys like raw_features (list), quality_score, etc.
-        - features: alias/back-compat pointing to advanced_features
-        - feature_analysis: dict with explanation and statistics
-        - feature_health: dict with health/circuit breaker state
-        - feature_thesis: thesis string
-        Also adds '_thesis' for explainability enforcement.
-        """
         out: Dict[str, Any] = {}
 
-        # Advanced/features payload
         fp = features_payload or {}
-        if isinstance(fp, dict):
-            # Convert numpy arrays to lists
-            rf = fp.get("raw_features")
-            if isinstance(rf, np.ndarray):
-                rf_safe = rf.tolist()
-            else:
-                rf_safe = rf if isinstance(rf, list) else []
-            out_payload = {
-                "raw_features": rf_safe,
-                "quality_score": float(fp.get("quality_score", 0.0)),
-                "extraction_time_ms": float(fp.get("extraction_time_ms", 0.0)),
-                "buffer_size": int(fp.get("buffer_size", 0)),
-                "feature_count": int(fp.get("feature_count", len(rf_safe) if isinstance(rf_safe, list) else 0)),
-            }
+        rf = fp.get("raw_features")
+        if isinstance(rf, np.ndarray):
+            rf_safe = rf.tolist()
+        elif isinstance(rf, list):
+            rf_safe = rf
         else:
-            out_payload = {
-                "raw_features": [],
-                "quality_score": 0.0,
-                "extraction_time_ms": 0.0,
-                "buffer_size": 0,
-                "feature_count": 0,
-            }
-        out["advanced_features"] = out_payload
-        out["features"] = out_payload  # backward compatibility
+            rf_safe = []
 
-        # feature_analysis block
+        adv = {
+            "raw_features": rf_safe,
+            "quality_score": float(fp.get("quality_score", 0.0)),
+            "extraction_time_ms": float(fp.get("extraction_time_ms", 0.0)),
+            "buffer_size": int(fp.get("buffer_size", 0)),
+            "feature_count": int(fp.get("feature_count", len(rf_safe))),
+        }
+        out["advanced_features"] = adv
+        out["features"] = {"raw_features": rf_safe, "quality_score": adv["quality_score"]}
+
         ana = analysis or {}
         if not isinstance(ana, dict):
             ana = {}
@@ -259,666 +885,59 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             "buffer_status": ana.get("buffer_status", {}),
         }
 
-        # feature_health block
-        hl = health or {}
-        if not isinstance(hl, dict):
-            hl = {}
-        out["feature_health"] = {
-            "health_score": float(hl.get("health_score", self.health_metrics.get("health_score", 100.0))),
-            "circuit_breaker_state": self.circuit_breaker.get("state", "CLOSED"),
-            "issues_detected": hl.get("issues_detected", self.health_metrics.get("issues_detected", [])),
-            "performance_trend": hl.get("performance_trend", self.health_metrics.get("performance_trend", "stable")),
-        }
-
-        # Optional detailed mappings (safe defaults)
-        out["technical_indicators"] = technical_indicators or {}
-        out["market_features"] = market_features or {}
-        out["price_features"] = price_features or {}
-
-        # thesis strings
+        # ---- CRITICAL: orchestrator expects `_thesis` top-level ----
         ft = thesis or "Advanced feature extraction completed."
-        out["feature_thesis"] = ft
-        out["_thesis"] = ft
+        out["feature_thesis"] = ft     # declared provide
+        out["_thesis"] = ft            # orchestrator-required hidden key
 
-        # merge extras
+        # Optional: include passthrough extras (success flag, timings, etc.)
         if extra:
             try:
                 out.update(extra)
             except Exception:
                 pass
 
-        # Validate presence of declared outputs
-        for key in [
-            "advanced_features",
-            "feature_analysis",
-            "feature_health",
-            "feature_thesis",
-            "features",
-            "technical_indicators",
-            "market_features",
-            "price_features",
-        ]:
+        # Contract sanity: keep your declared provides intact
+        for key in ("advanced_features", "features", "feature_analysis", "feature_thesis"):
             if key not in out:
                 raise ValueError(f"Critical output '{key}' missing in AdvancedFeatureEngine")
 
         return out
 
-    async def process(self, **inputs) -> Dict[str, Any]:
-        """Main processing function with full error handling and monitoring"""
-        process_start_time = time.time()
 
-        # Check circuit breaker
-        if not self._check_circuit_breaker():
-            return self._create_fallback_response("Circuit breaker open")
-
-        try:
-            # Extract market data
-            market_data = await self._extract_market_data(**inputs)
-
-            # Process features with monitoring
-            features = await self._process_features_with_monitoring(market_data)
-
-            # Generate thesis
-            thesis = await self._generate_feature_thesis(features, market_data)
-
-            # Update SmartInfoBus
-            await self._update_smart_bus(features, thesis)
-
-            # Record success
-            self._record_success(time.time() - process_start_time)
-
-            return self._format_declared_outputs(
-                features_payload=features,
-                thesis=thesis,
-                analysis={
-                    "explanation": features.get("explanation"),
-                    "statistics": self.feature_stats,
-                    "buffer_status": {
-                        "current_size": len(self.price_buffer),
-                        "max_size": self.max_buffer_size,
-                        "utilization": len(self.price_buffer) / max(self.max_buffer_size, 1),
-                    },
-                },
-                health=self.health_metrics,
-                technical_indicators={},
-                market_features={},
-                price_features={},
-                extra={
-                    "success": True,
-                    "processing_time_ms": (time.time() - process_start_time) * 1000,
-                },
-            )
-
-        except Exception as e:
-            return await self._handle_processing_error(e, process_start_time)
-    
-    async def _extract_market_data(self, **inputs) -> Dict[str, Any]:
-        """Extract market data from multiple sources"""
-        
-        market_data = {
-            'prices': [],
-            'volumes': [],
-            'timestamps': [],
-            'instruments': []
-        }
-        
-        # Extract from SmartInfoBus (prefer richer multi-timeframe data)
-        hist = (
-            self.smart_bus.get('historical_prices', self.__class__.__name__)
-            or self.smart_bus.get('multi_timeframe_data', self.__class__.__name__)
-        )
-        if hist and isinstance(hist, dict):
-            try:
-                for instrument, tfs in hist.items():
-                    if isinstance(tfs, dict):
-                        for tf, payload in tfs.items():
-                            if isinstance(payload, dict):
-                                closes = payload.get('close')
-                                # some providers might embed arrays under 'current_bar' etc.
-                                if isinstance(closes, (list, np.ndarray)) and len(closes) > 0:
-                                    market_data['prices'].extend(np.asarray(closes).flatten())
-                                elif 'current_bar' in payload and isinstance(payload['current_bar'], dict):
-                                    cb = payload['current_bar']
-                                    if isinstance(cb.get('close'), (int, float)):
-                                        market_data['prices'].append(float(cb['close']))
-            except Exception:
-                pass
-
-        # Fallback to OHLCV dicts
-        if not market_data['prices']:
-            ohlcv = self.smart_bus.get('ohlcv_data', self.__class__.__name__)
-            if ohlcv and isinstance(ohlcv, dict):
-                for symbol, bar in ohlcv.items():
-                    if isinstance(bar, dict) and isinstance(bar.get('close'), (int, float)):
-                        market_data['prices'].append(float(bar['close']))
-
-        # Fallback to compact price_data map
-        if not market_data['prices']:
-            pd_map = self.smart_bus.get('price_data', self.__class__.__name__)
-            if pd_map and isinstance(pd_map, dict):
-                for symbol, pd_entry in pd_map.items():
-                    if isinstance(pd_entry, dict) and isinstance(pd_entry.get('close'), (int, float)):
-                        market_data['prices'].append(float(pd_entry['close']))
-
-        # Fallback to raw market_data
-        if not market_data['prices']:
-            bus_data = self.smart_bus.get('market_data', self.__class__.__name__)
-            if bus_data and isinstance(bus_data, dict):
-                for key, value in bus_data.items():
-                    if 'price' in str(key).lower() and isinstance(value, (list, np.ndarray)):
-                        market_data['prices'].extend(np.asarray(value).flatten())
-                    elif isinstance(value, dict) and isinstance(value.get('close'), (int, float)):
-                        market_data['prices'].append(float(value['close']))
-        
-        # Extract from direct inputs
-        for key, value in inputs.items():
-            if key in ['price', 'prices', 'close', 'price_series'] and value is not None:
-                if isinstance(value, (list, np.ndarray)):
-                    market_data['prices'].extend(np.asarray(value).flatten())
-                elif isinstance(value, (int, float)):
-                    market_data['prices'].append(float(value))
-        
-        # Validate and clean
-        market_data['prices'] = self._validate_prices(market_data['prices'])
-        
-        if not market_data['prices']:
-            raise ValueError("No valid price data available")
-        
-        return market_data
-    
-    def _validate_prices(self, prices: List[float]) -> List[float]:
-        """Validate and clean price data"""
-        valid_prices = []
-        
-        for price in prices:
-            if isinstance(price, (int, float)) and np.isfinite(price) and price > 0:
-                valid_prices.append(float(price))
-        
-        # Remove outliers (beyond 3 standard deviations)
-        if len(valid_prices) > 10:
-            prices_array = np.array(valid_prices)
-            mean_price = np.mean(prices_array)
-            std_price = np.std(prices_array)
-            
-            valid_prices = [
-                p for p in valid_prices 
-                if abs(p - mean_price) <= 3 * std_price
-            ]
-        
-        return valid_prices
-    
-    async def _process_features_with_monitoring(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Process features with comprehensive monitoring"""
-        
-        extraction_start = time.time()
-        
-        # Update price buffer
-        self.price_buffer.extend(market_data['prices'])
-        
-        # Extract features
-        features = self._extract_comprehensive_features(market_data['prices'])
-        
-        # Calculate quality score
-        quality_score = self._calculate_feature_quality(features)
-        self.feature_quality_score = quality_score
-        
-        # Store features
-        self.last_features = features
-        self.feature_buffer.append({
-            'features': features.copy(),
-            'quality_score': quality_score,
-            'timestamp': time.time()
-        })
-        
-        # Update statistics
-        extraction_time = (time.time() - extraction_start) * 1000
-        self._update_feature_stats(extraction_time, quality_score)
-        
-        # Generate English explanation
-        explanation = self._generate_feature_explanation(features, quality_score)
-        
-        return {
-            'raw_features': features,
-            'quality_score': quality_score,
-            'explanation': explanation,
-            'extraction_time_ms': extraction_time,
-            'buffer_size': len(self.price_buffer),
-            'feature_count': len(features)
-        }
-    
-    def _extract_comprehensive_features(self, prices: List[float]) -> np.ndarray:
-        """Extract comprehensive feature set"""
-        
-        if len(prices) < max(self.window_sizes):
-            return self._get_fallback_features()
-        
-        prices_array = np.array(prices[-max(self.window_sizes):])
-        features = []
-        
-        # Multi-window features
-        for window in self.window_sizes:
-            if len(prices_array) >= window:
-                window_prices = prices_array[-window:]
-                
-                # Basic features
-                features.extend([
-                    np.mean(window_prices),  # Mean price
-                    np.std(window_prices),   # Volatility
-                    (window_prices[-1] - window_prices[0]) / window_prices[0],  # Return
-                    np.max(window_prices) - np.min(window_prices),  # Range
-                    np.mean(np.diff(window_prices) > 0),  # Trend strength
-                    len(window_prices)  # Window size
-                ])
-            else:
-                features.extend([0.0] * 6)
-        
-        # Global features
-        features.extend([
-            prices_array[-1],  # Current price
-            np.mean(prices_array),  # Overall mean
-            np.std(prices_array),   # Overall volatility
-            np.max(prices_array),   # Max price
-            np.min(prices_array),   # Min price
-            len(prices_array),      # Data points
-            time.time(),            # Timestamp
-            self.feature_quality_score / 100.0  # Quality indicator
-        ])
-        
-        return np.array(features, dtype=np.float32)
-    
-    def _calculate_feature_quality(self, features: np.ndarray) -> float:
-        """Calculate feature quality score"""
-        
-        try:
-            # Check for invalid values
-            if np.any(~np.isfinite(features)):
-                return 0.0
-            
-            # Check for zero variance
-            if np.std(features) == 0:
-                return 30.0
-            
-            # Check for reasonable ranges
-            if np.max(features) - np.min(features) < 1e-6:
-                return 40.0
-            
-            # Quality indicators
-            quality_score = 100.0
-            
-            # Penalize extreme values
-            if np.max(np.abs(features)) > 1e6:
-                quality_score -= 20
-            
-            # Reward good variance
-            feature_std = np.std(features)
-            if 0.1 < feature_std < 100:
-                quality_score += 10
-            
-            return max(0.0, min(100.0, quality_score))
-            
-        except Exception:
-            return 0.0
-    
-    def _generate_feature_explanation(self, features: np.ndarray, quality_score: float) -> str:
-        """Generate English explanation of features"""
-        
-        if not self.config.enable_english_explanations:
-            return "Feature extraction completed"
-        
-        try:
-            # Analyze features
-            feature_analysis = {
-                'feature_count': len(features),
-                'quality_score': quality_score,
-                'max_value': float(np.max(features)),
-                'min_value': float(np.min(features)),
-                'mean_value': float(np.mean(features)),
-                'std_value': float(np.std(features)),
-                'window_sizes': self.window_sizes,
-                'buffer_size': len(self.price_buffer)
-            }
-            
-            # Generate explanation
-            explanation = self.english_explainer.explain_module_decision(
-                module_name="AdvancedFeatureEngine",
-                decision="feature_extraction",
-                context=feature_analysis,
-                confidence=quality_score / 100.0
-            )
-            
-            return explanation
-            
-        except Exception as e:
-            return f"Feature extraction completed (explanation generation failed: {str(e)})"
-    
-    async def _generate_feature_thesis(self, features: Dict[str, Any], market_data: Dict[str, Any]) -> str:
-        """Generate thesis for feature extraction"""
-        
-        try:
-            # Analyze market conditions
-            prices = market_data['prices']
-            latest_price = prices[-1] if prices else 0
-            price_change = (prices[-1] - prices[0]) / prices[0] if len(prices) > 1 else 0
-            
-            # Feature analysis
-            feature_quality = features['quality_score']
-            feature_count = features['feature_count']
-            
-            # Generate thesis
-            thesis = f"""
-Advanced Feature Analysis:
-
-Market Assessment:
-- Current price: ${latest_price:.2f}
-- Price change: {price_change:.2%}
-- Data points processed: {len(prices)}
-
-Feature Quality:
-- Quality score: {feature_quality:.1f}/100
-- Features extracted: {feature_count}
-- Buffer utilization: {len(self.price_buffer)}/{self.max_buffer_size}
-
-Technical Indicators:
-- Multi-timeframe analysis across {len(self.window_sizes)} windows
-- Window sizes: {self.window_sizes}
-- Comprehensive feature set including momentum, volatility, and trend strength
-
-Confidence Assessment:
-- Feature extraction: {'High' if feature_quality > 80 else 'Medium' if feature_quality > 60 else 'Low'}
-- Data quality: {'Good' if len(prices) > 50 else 'Adequate' if len(prices) > 20 else 'Limited'}
-- System health: {'Optimal' if self.health_metrics['health_score'] > 90 else 'Good' if self.health_metrics['health_score'] > 70 else 'Needs attention'}
-
-Recommendation: {'Continue processing' if feature_quality > 60 else 'Review data quality'}
-            """.strip()
-            
-            return thesis
-            
-        except Exception as e:
-            return f"Feature extraction completed. Thesis generation encountered error: {str(e)}"
-    
-    async def _update_smart_bus(self, features: Dict[str, Any], thesis: str):
-        """Update SmartInfoBus with results"""
-        
-        # Main feature data
-        self.smart_bus.set(
-            'advanced_features',
-            {
-                'features': features['raw_features'].tolist(),
-                'quality_score': features['quality_score'],
-                'extraction_time_ms': features['extraction_time_ms'],
-                'timestamp': time.time()
-            },
-            module='AdvancedFeatureEngine',
-            thesis=thesis
-        )
-        
-        # Feature analysis
-        self.smart_bus.set(
-            'feature_analysis',
-            {
-                'explanation': features['explanation'],
-                'buffer_status': {
-                    'current_size': len(self.price_buffer),
-                    'max_size': self.max_buffer_size,
-                    'utilization': len(self.price_buffer) / self.max_buffer_size
-                },
-                'statistics': self.feature_stats,
-                'health_metrics': self.health_metrics
-            },
-            module='AdvancedFeatureEngine',
-            thesis=f"Feature analysis summary: {features['quality_score']:.1f}% quality"
-        )
-        
-        # Health status
-        self.smart_bus.set(
-            'feature_health',
-            {
-                'health_score': self.health_metrics['health_score'],
-                'circuit_breaker_state': self.circuit_breaker['state'],
-                'issues_detected': self.health_metrics['issues_detected'],
-                'performance_trend': self.health_metrics['performance_trend']
-            },
-            module='AdvancedFeatureEngine',
-            thesis=f"Feature engine health: {self.health_metrics['health_score']:.1f}%"
-        )
-    
-    def _update_feature_stats(self, extraction_time_ms: float, quality_score: float):
-        """Update feature extraction statistics"""
-        
-        self.feature_stats['total_extractions'] += 1
-        self.feature_stats['successful_extractions'] += 1
-        
-        # Update averages
-        total = self.feature_stats['total_extractions']
-        self.feature_stats['avg_extraction_time_ms'] = (
-            (self.feature_stats['avg_extraction_time_ms'] * (total - 1) + extraction_time_ms) / total
-        )
-        self.feature_stats['avg_feature_quality'] = (
-            (self.feature_stats['avg_feature_quality'] * (total - 1) + quality_score) / total
-        )
-    
-    def _check_circuit_breaker(self) -> bool:
-        """Check circuit breaker state"""
-        
-        if self.circuit_breaker['state'] == 'OPEN':
-            # Check if we should try half-open
-            if time.time() - self.circuit_breaker['last_failure'] > 60:  # 1 minute recovery
-                self.circuit_breaker['state'] = 'HALF_OPEN'
-                return True
-            return False
-        
-        return True
-    
-    def _record_success(self, processing_time: float):
-        """Record successful operation"""
-        
-        if self.circuit_breaker['state'] == 'HALF_OPEN':
-            self.circuit_breaker['state'] = 'CLOSED'
-            self.circuit_breaker['failures'] = 0
-        
-        # Update health metrics
-        self.health_metrics['health_score'] = min(100.0, self.health_metrics['health_score'] + 1)
-        self.health_metrics['performance_trend'] = 'improving'
-        
-        # Performance tracking
-        if hasattr(self, 'performance_tracker'):
-            self.performance_tracker.record_metric(
-                'AdvancedFeatureEngine',
-                'feature_extraction',
-                processing_time * 1000,
-                True
-            )
-    
-    async def _handle_processing_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
-        """Handle processing errors with comprehensive analysis"""
-        processing_time = time.time() - start_time
-        # Record failure
-        self._record_failure(error)
-        # Error analysis
-        if hasattr(self, 'error_pinpointer'):
-            error_context = self.error_pinpointer.analyze_error(error, "AdvancedFeatureEngine")
-            debug_guide = self.error_pinpointer.create_debugging_guide(error_context)
-            self.logger.error(
-                format_operator_message(
-                    "[CRASH]", "FEATURE_EXTRACTION_ERROR",
-                    details=str(error),
-                    context="feature_processing",
-                    recovery_actions=len(error_context.recovery_actions)
-                )
-            )
-        # Generate fallback response (formatted)
-        fallback_features = self._get_fallback_features()
-        fallback_thesis = f"Feature extraction failed: {str(error)}. Using fallback features."
-        self.smart_bus.set(
-            'feature_error',
-            {
-                'error_type': type(error).__name__,
-                'error_message': str(error),
-                'fallback_used': True,
-                'timestamp': time.time()
-            },
-            module='AdvancedFeatureEngine',
-            thesis=fallback_thesis
-        )
-        return self._format_declared_outputs(
-            features_payload={
-                'raw_features': fallback_features,
-                'quality_score': 0.0,
-                'extraction_time_ms': processing_time * 1000,
-                'buffer_size': len(self.price_buffer),
-                'feature_count': int(getattr(fallback_features, 'size', 0) if isinstance(fallback_features, np.ndarray) else len(fallback_features)),
-                'explanation': None,
-            },
-            thesis=fallback_thesis,
-            analysis={
-                'explanation': None,
-                'statistics': self.feature_stats,
-                'buffer_status': {
-                    'current_size': len(self.price_buffer),
-                    'max_size': self.max_buffer_size,
-                    'utilization': len(self.price_buffer) / max(self.max_buffer_size, 1),
-                },
-            },
-            health=self.health_metrics,
-            technical_indicators={},
-            market_features={},
-            price_features={},
-            extra={
-                'success': False,
-                'error': str(error),
-                'processing_time_ms': processing_time * 1000,
-            },
-        )
-    
-    def _record_failure(self, error: Exception):
-        """Record failure for circuit breaker"""
-        
-        self.circuit_breaker['failures'] += 1
-        self.circuit_breaker['last_failure'] = time.time()
-        
-        if self.circuit_breaker['failures'] >= self.circuit_breaker['threshold']:
-            self.circuit_breaker['state'] = 'OPEN'
-            
-            self.logger.error(
-                format_operator_message(
-                    "[ALERT]", "CIRCUIT_BREAKER_OPEN",
-                    details=f"Too many failures ({self.circuit_breaker['failures']})",
-                    context="circuit_breaker"
-                )
-            )
-        
-        # Update health metrics
-        self.health_metrics['health_score'] = max(0.0, self.health_metrics['health_score'] - 10)
-        self.health_metrics['issues_detected'].append(f"{type(error).__name__}: {str(error)}")
-        self.health_metrics['performance_trend'] = 'degrading'
-        
-        # Update stats
-        self.feature_stats['failed_extractions'] += 1
-    
-    def _get_fallback_features(self) -> np.ndarray:
-        """Get fallback features when processing fails"""
-        
-        # Try to use last successful features
-        if len(self.feature_buffer) > 0:
-            return self.feature_buffer[-1]['features']
-        
-        # Generate synthetic features
-        return np.zeros(self.out_dim, dtype=np.float32)
-    
-    def _create_fallback_response(self, reason: str) -> Dict[str, Any]:
-        """Create fallback response"""
-        return self._format_declared_outputs(
-            features_payload={
-                'raw_features': self._get_fallback_features(),
-                'quality_score': 0.0,
-                'extraction_time_ms': 0.0,
-                'buffer_size': len(self.price_buffer),
-                'feature_count': 0,
-                'explanation': None,
-            },
-            thesis=f"Feature extraction unavailable: {reason}",
-            analysis={
-                'explanation': None,
-                'statistics': self.feature_stats,
-                'buffer_status': {
-                    'current_size': len(self.price_buffer),
-                    'max_size': self.max_buffer_size,
-                    'utilization': len(self.price_buffer) / max(self.max_buffer_size, 1),
-                },
-            },
-            health=self.health_metrics,
-            technical_indicators={},
-            market_features={},
-            price_features={},
-            extra={
-                'success': False,
-                'reason': reason,
-                'processing_time_ms': 0.0,
-            },
-        )
-    
+    # ─────────────────────────────────────────────────────────
+    # Background tasks
+    # ─────────────────────────────────────────────────────────
     async def _health_monitoring_loop(self):
-        """Background health monitoring"""
-        
         while True:
             try:
-                await asyncio.sleep(30)  # Check every 30 seconds
-                
-                # Update health metrics
+                await asyncio.sleep(30)
                 self._update_health_metrics()
-                
-                # Check for issues
                 self._check_health_issues()
-                
             except Exception as e:
                 self.logger.error(f"Health monitoring error: {e}")
-    
+
     def _update_health_metrics(self):
-        """Update health metrics"""
-        
-        current_time = time.time()
-        
-        # Calculate success rate
-        total_ops = self.feature_stats['total_extractions']
-        success_rate = (
-            self.feature_stats['successful_extractions'] / max(total_ops, 1)
-        )
-        
-        # Update health score based on success rate
+        total = self.feature_stats["total_extractions"]
+        success_rate = self.feature_stats["successful_extractions"] / max(total, 1)
         if success_rate > 0.95:
-            self.health_metrics['health_score'] = min(100.0, self.health_metrics['health_score'] + 0.5)
+            self.health_metrics["health_score"] = min(100.0, self.health_metrics["health_score"] + 0.5)
         elif success_rate < 0.8:
-            self.health_metrics['health_score'] = max(0.0, self.health_metrics['health_score'] - 1.0)
-        
-        # Update timestamp
-        self.health_metrics['last_health_check'] = current_time
-    
+            self.health_metrics["health_score"] = max(0.0, self.health_metrics["health_score"] - 1.0)
+        self.health_metrics["last_health_check"] = time.time()
+
     def _check_health_issues(self):
-        """Check for health issues"""
-        
-        issues = []
-        
-        # Check circuit breaker
-        if self.circuit_breaker['state'] == 'OPEN':
+        issues: List[str] = []
+        if self.circuit_breaker["state"] == "OPEN":
             issues.append("Circuit breaker is open")
-        
-        # Check buffer utilization
-        buffer_utilization = len(self.price_buffer) / self.max_buffer_size
-        if buffer_utilization > 0.9:
+        buf_util = len(self.price_buffer) / max(self.max_buffer_size, 1)
+        if buf_util > 0.9:
             issues.append("Price buffer nearly full")
-        
-        # Check processing time
-        if self.feature_stats['avg_extraction_time_ms'] > 100:
+        if self.feature_stats["avg_extraction_time_ms"] > 100.0:
             issues.append("Processing time is high")
-        
-        # Check feature quality
-        if self.feature_stats['avg_feature_quality'] < 60:
+        if self.feature_stats["avg_feature_quality"] < 60.0:
             issues.append("Feature quality is low")
-        
-        # Update issues
-        self.health_metrics['issues_detected'] = issues
-        
-        # Log critical issues
+        self.health_metrics["issues_detected"] = issues
         if issues:
             self.logger.warning(
                 format_operator_message(
@@ -927,240 +946,17 @@ Recommendation: {'Continue processing' if feature_quality > 60 else 'Review data
                     context="health_monitoring"
                 )
             )
-    
+
     async def _performance_monitoring_loop(self):
-        """Background performance monitoring"""
-        
         while True:
             try:
-                await asyncio.sleep(60)  # Check every minute
-                
-                # Record performance metrics
-                if hasattr(self, 'performance_tracker'):
+                await asyncio.sleep(60)
+                if self.performance_tracker:
                     self.performance_tracker.record_metric(
-                        'AdvancedFeatureEngine',
-                        'periodic_metrics',
-                        1.0,  # Dummy duration for metric collection
+                        "AdvancedFeatureEngine",
+                        "periodic_metrics",
+                        1.0,  # collection tick
                         True
                     )
-                
             except Exception as e:
                 self.logger.error(f"Performance monitoring error: {e}")
-    
-    def get_state(self) -> Dict[str, Any]:
-        """Get complete module state"""
-        
-        base_state = super().get_state()
-        
-        feature_state = {
-            'config': {
-                'window_sizes': self.window_sizes,
-                'max_buffer_size': self.max_buffer_size,
-                'out_dim': self.out_dim
-            },
-            'buffers': {
-                'price_buffer': list(self.price_buffer),
-                'feature_buffer': [fb for fb in self.feature_buffer]
-            },
-            'features': {
-                'last_features': self.last_features.tolist(),
-                'quality_score': self.feature_quality_score
-            },
-            'statistics': self.feature_stats,
-            'health_metrics': self.health_metrics,
-            'circuit_breaker': self.circuit_breaker
-        }
-        
-        return {**base_state, **feature_state}
-    
-    def set_state(self, state: Dict[str, Any]):
-        """Restore module state"""
-        
-        super().set_state(state)
-        
-        # Restore buffers
-        if 'buffers' in state:
-            if 'price_buffer' in state['buffers']:
-                self.price_buffer = deque(state['buffers']['price_buffer'], maxlen=self.max_buffer_size)
-            if 'feature_buffer' in state['buffers']:
-                self.feature_buffer = deque(state['buffers']['feature_buffer'], maxlen=1000)
-        
-        # Restore features
-        if 'features' in state:
-            if 'last_features' in state['features']:
-                self.last_features = np.array(state['features']['last_features'], dtype=np.float32)
-            if 'quality_score' in state['features']:
-                self.feature_quality_score = state['features']['quality_score']
-        
-        # Restore statistics
-        if 'statistics' in state:
-            self.feature_stats.update(state['statistics'])
-        
-        # Restore health metrics
-        if 'health_metrics' in state:
-            self.health_metrics.update(state['health_metrics'])
-        
-        # Restore circuit breaker
-        if 'circuit_breaker' in state:
-            self.circuit_breaker.update(state['circuit_breaker'])
-    
-    def get_health_status(self) -> Dict[str, Any]:
-        """Get comprehensive health status"""
-        
-        return {
-            'health_score': self.health_metrics['health_score'],
-            'circuit_breaker_state': self.circuit_breaker['state'],
-            'issues_detected': self.health_metrics['issues_detected'],
-            'performance_trend': self.health_metrics['performance_trend'],
-            'statistics': self.feature_stats,
-            'buffer_status': {
-                'price_buffer_size': len(self.price_buffer),
-                'price_buffer_utilization': len(self.price_buffer) / self.max_buffer_size,
-                'feature_buffer_size': len(self.feature_buffer)
-            }
-        }
-    
-    def get_performance_report(self) -> str:
-        """Get comprehensive performance report in plain English"""
-        
-        if not self.config.enable_english_explanations:
-            return "Performance reporting disabled"
-        
-        try:
-            return self.english_explainer.explain_performance(
-                module_name="AdvancedFeatureEngine",
-                metrics={
-                    'total_extractions': self.feature_stats['total_extractions'],
-                    'success_rate': self.feature_stats['successful_extractions'] / max(self.feature_stats['total_extractions'], 1),
-                    'avg_extraction_time_ms': self.feature_stats['avg_extraction_time_ms'],
-                    'avg_feature_quality': self.feature_stats['avg_feature_quality'],
-                    'health_score': self.health_metrics['health_score'],
-                    'buffer_utilization': len(self.price_buffer) / self.max_buffer_size
-                }
-            )
-        except Exception as e:
-            return f"Performance report generation failed: {str(e)}"
-    
-    async def propose_action(self, **inputs) -> Dict[str, Any]:
-        """Propose feature-based action"""
-        try:
-            # Process features first
-            result = await self.process(**inputs)
-            
-            if not result.get('success', False):
-                return {
-                    'action_type': 'no_action',
-                    'confidence': 0.0,
-                    'reasoning': 'Feature extraction failed',
-                    'features_available': False
-                }
-            
-            # Analyze features for action proposal
-            features = result['features']['raw_features']
-            quality_score = result['quality_score']
-            
-            # Simple feature-based action logic
-            if len(features) > 0:
-                # Look at recent momentum and volatility
-                momentum_indicators = features[:len(self.window_sizes)]  # First window features
-                avg_momentum = float(np.mean(momentum_indicators)) if len(momentum_indicators) > 0 else 0.0
-                
-                # Propose action based on feature analysis
-                if quality_score > 80:
-                    if avg_momentum > 0.01:  # Positive momentum
-                        action_type = "increase_position"
-                        magnitude = min(abs(avg_momentum) * 10, 1.0)
-                    elif avg_momentum < -0.01:  # Negative momentum  
-                        action_type = "decrease_position"
-                        magnitude = min(abs(avg_momentum) * 10, 1.0)
-                    else:
-                        action_type = "hold_position"
-                        magnitude = 0.0
-                else:
-                    action_type = "reduce_risk"
-                    magnitude = 0.5
-                
-                return {
-                    'action_type': action_type,
-                    'magnitude': magnitude,
-                    'confidence': quality_score / 100.0,
-                    'reasoning': f"Feature analysis: {len(features)} features, {quality_score:.1f}% quality, momentum: {avg_momentum:.4f}",
-                    'features_used': len(features),
-                    'quality_score': quality_score,
-                    'momentum_signal': avg_momentum
-                }
-            else:
-                return {
-                    'action_type': 'no_action',
-                    'confidence': 0.0,
-                    'reasoning': 'No features available',
-                    'features_available': False
-                }
-                
-        except Exception as e:
-            self.logger.error(f"Action proposal failed: {e}")
-            return {
-                'action_type': 'no_action',
-                'confidence': 0.0,
-                'reasoning': f'Action proposal error: {str(e)}',
-                'error': str(e)
-            }
-    
-    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
-        """Calculate confidence in the proposed action"""
-        try:
-            if not isinstance(action, dict):
-                return 0.0
-            
-            # Base confidence from feature quality
-            base_confidence = self.feature_quality_score / 100.0
-            
-            # Adjust based on action characteristics
-            action_type = action.get('action_type', 'no_action')
-            magnitude = action.get('magnitude', 0.0)
-            
-            # Higher confidence for well-supported actions
-            if action_type in ['increase_position', 'decrease_position']:
-                # Check if we have sufficient features
-                features_used = action.get('features_used', 0)
-                if features_used >= len(self.window_sizes):
-                    feature_confidence = 1.0
-                elif features_used > 0:
-                    feature_confidence = features_used / len(self.window_sizes)
-                else:
-                    feature_confidence = 0.0
-                
-                # Confidence based on magnitude (higher magnitude needs higher confidence)
-                magnitude_confidence = 1.0 - min(abs(magnitude), 0.5)
-                
-                # Combine confidences
-                combined_confidence = (base_confidence * 0.5 + 
-                                     feature_confidence * 0.3 + 
-                                     magnitude_confidence * 0.2)
-            
-            elif action_type == 'hold_position':
-                # Holding is usually lower risk
-                combined_confidence = base_confidence * 0.8
-            
-            elif action_type == 'reduce_risk':
-                # Risk reduction is conservative
-                combined_confidence = max(base_confidence, 0.6)
-            
-            else:  # no_action
-                combined_confidence = 0.1
-            
-            # Adjust based on health metrics
-            health_adjustment = self.health_metrics['health_score'] / 100.0
-            final_confidence = combined_confidence * health_adjustment
-            
-            # Adjust based on circuit breaker state
-            if self.circuit_breaker['state'] == 'OPEN':
-                final_confidence *= 0.1
-            elif self.circuit_breaker['state'] == 'HALF_OPEN':
-                final_confidence *= 0.5
-            
-            return float(np.clip(final_confidence, 0.0, 1.0))
-            
-        except Exception as e:
-            self.logger.error(f"Confidence calculation failed: {e}")
-            return 0.0

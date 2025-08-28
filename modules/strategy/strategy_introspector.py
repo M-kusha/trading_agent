@@ -137,6 +137,41 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
         
         # Generate initialization thesis
         self._generate_initialization_thesis()
+
+        # Seed initial SmartInfoBus keys to avoid early BUS MISS by consumers
+        try:
+            _seed_thesis = "Initialization seed: default strategy_performance and trading_performance published for early consumers"
+            default_strategy_performance = {
+                'effectiveness_score': 0.5,
+                'confidence_score': 0.5,
+                'dominant_style': 'balanced',
+                'recent_adaptations': 0,
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+            # Set only if not already present to preserve any prior state
+            existing_sp = self.smart_bus.get('strategy_performance', 'StrategyIntrospector')
+            if not existing_sp:
+                self.smart_bus.set('strategy_performance', default_strategy_performance,
+                                   module='StrategyIntrospector', thesis=_seed_thesis)
+
+            # Also seed trading_performance to satisfy early consumers like TradingModeManager and VisualizationInterface
+            default_trading_performance = {
+                'win_rate': 0.0,
+                'avg_pnl': 0.0,
+                'profit_factor': 1.0,
+                'max_drawdown': 0.0,
+                'sharpe': 0.0,
+                'session_pnl': 0.0,
+                'trade_frequency': 0.0,
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+            existing_tp = self.smart_bus.get('trading_performance', 'StrategyIntrospector')
+            if not existing_tp:
+                self.smart_bus.set('trading_performance', default_trading_performance,
+                                   module='StrategyIntrospector', thesis=_seed_thesis)
+        except Exception:
+            # Seeding is best-effort; continue initialization regardless
+            pass
         
         version = getattr(self.metadata, 'version', '3.0.0') if self.metadata else '3.0.0'
         self.logger.info(format_operator_message(
@@ -271,6 +306,45 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 'behavior_patterns': self._get_behavioral_patterns(),
                 'health_metrics': self._get_health_metrics()
             }
+
+            # Derive and include trading/strategy performance for downstream consumers
+            performance_analysis = strategy_analysis.get('performance_analysis', {})
+            win_rate = float(performance_analysis.get('win_rate', 0.5))
+            profit_factor = float(performance_analysis.get('profit_factor', 1.0))
+            max_drawdown = float(performance_analysis.get('max_drawdown', 0.0))
+            avg_pnl = float(performance_analysis.get('avg_pnl', 0.0)) if 'avg_pnl' in performance_analysis else 0.0
+            sharpe = float(performance_analysis.get('sharpe_ratio', 0.0))
+            session_pnl = float(performance_analysis.get('session_pnl', 0.0))
+            trade_frequency = float(performance_analysis.get('trade_frequency', 0.0))
+
+            # Normalize effectiveness into [0,1]
+            pf_norm = min(3.0, max(0.0, profit_factor)) / 3.0
+            dd_component = max(0.0, 1.0 - max_drawdown)
+            effectiveness_score = float(np.clip(0.4 * win_rate + 0.3 * pf_norm + 0.3 * dd_component, 0.0, 1.0))
+            confidence_score = float(self.current_analysis.get('confidence_level', 0.5))
+
+            trading_performance = {
+                'win_rate': win_rate,
+                'avg_pnl': avg_pnl,
+                'profit_factor': profit_factor,
+                'max_drawdown': max_drawdown,
+                'sharpe': sharpe,
+                'session_pnl': session_pnl,
+                'trade_frequency': trade_frequency,
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+
+            strategy_performance = {
+                'effectiveness_score': effectiveness_score,
+                'confidence_score': confidence_score,
+                'dominant_style': self.current_analysis.get('dominant_strategy_type', 'balanced'),
+                'recent_adaptations': int(self.introspection_metrics.get('significant_adaptations', 0)),
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+
+            # Include in results so orchestrator publishes them
+            results['trading_performance'] = trading_performance
+            results['strategy_performance'] = strategy_performance
             
             # Update SmartInfoBus with comprehensive thesis
             await self._update_smartinfobus_comprehensive(results, thesis)
@@ -1646,6 +1720,16 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             patterns_thesis = f"Behavioral patterns: {self.current_analysis.get('dominant_strategy_type', 'unknown')} trading style detected"
             self.smart_bus.set('behavior_patterns', results['behavior_patterns'],
                              module='StrategyIntrospector', thesis=patterns_thesis)
+
+            # Trading performance for broad consumers
+            perf_thesis = f"Trading performance update: WR={results.get('trading_performance', {}).get('win_rate', 0.5):.1%}, PF={results.get('trading_performance', {}).get('profit_factor', 1.0):.2f}, DD={results.get('trading_performance', {}).get('max_drawdown', 0.0):.1%}"
+            self.smart_bus.set('trading_performance', results.get('trading_performance', {}),
+                             module='StrategyIntrospector', thesis=perf_thesis)
+
+            # Strategy performance summary (effectiveness/confidence)
+            strat_thesis = f"Strategy performance: effectiveness={results.get('strategy_performance', {}).get('effectiveness_score', 0.5):.2f}, confidence={results.get('strategy_performance', {}).get('confidence_score', 0.5):.2f}"
+            self.smart_bus.set('strategy_performance', results.get('strategy_performance', {}),
+                             module='StrategyIntrospector', thesis=strat_thesis)
             
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "smartinfobus_update")

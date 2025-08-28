@@ -1,0 +1,1914 @@
+{
+  "ActiveTradeMonitor": {
+    "file": "modules/risk/active_trade_monitor.py",
+    "infra": false,
+    "provides": [
+      "position_duration_risk",
+      "duration_alerts",
+      "position_tracking"
+    ],
+    "reads": [
+      "step_idx"
+    ],
+    "requires": [
+      "positions",
+      "market_context"
+    ],
+    "writes": [
+      "duration_alerts",
+      "position_duration_risk",
+      "position_tracking"
+    ]
+  },
+  "AdvancedFeatureEngine": {
+    "file": "modules/features/advanced_feature_engine.py",
+    "infra": false,
+    "provides": [
+      "advanced_features"
+    ],
+    "reads": [
+      "historical_prices",
+      "market_data",
+      "ohlcv_data"
+    ],
+    "requires": [
+      "price_data"
+    ],
+    "writes": [
+      "advanced_features",
+      "feature_analysis",
+      "feature_thesis",
+      "features"
+    ]
+  },
+  "AlternativeRealitySampler": {
+    "file": "modules/voting/alternative_reality_sampler.py",
+    "infra": false,
+    "provides": [
+      "alternative_samples",
+      "sampling_uncertainty",
+      "diversity_score",
+      "sampling_stats",
+      "effective_samples",
+      "confidence_bounds",
+      "sampling_recommendations"
+    ],
+    "reads": [],
+    "requires": [
+      "votes",
+      "voting_summary",
+      "strategy_arbiter_weights",
+      "market_context",
+      "volatility_data",
+      "consensus_direction",
+      "agreement_score",
+      "market_regime"
+    ],
+    "writes": [
+      "alternative_reality_sampler_initialization",
+      "voting/ars/metrics",
+      "voting/ars/status"
+    ]
+  },
+  "AuditingCoordinator": {
+    "file": "modules/auditing/auditing_coordinator.py",
+    "infra": false,
+    "provides": [
+      "audit_status",
+      "audit_report",
+      "audit_metrics"
+    ],
+    "reads": [],
+    "requires": [
+      "trading_signal",
+      "market_data",
+      "trades"
+    ],
+    "writes": [
+      "audit_status"
+    ]
+  },
+  "BiasAuditor": {
+    "file": "modules/strategy/bias_auditor.py",
+    "infra": false,
+    "provides": [
+      "bias_analysis",
+      "bias_corrections",
+      "bias_adjustments",
+      "bias_report",
+      "bias_recommendations",
+      "psychological_state"
+    ],
+    "reads": [
+      "bias_analysis",
+      "current_pnl",
+      "market_regime",
+      "positions",
+      "recent_trades",
+      "risk_data",
+      "session_context",
+      "trading_session",
+      "volatility_level"
+    ],
+    "requires": [
+      "recent_trades",
+      "current_pnl",
+      "positions",
+      "risk_data",
+      "session_context",
+      "market_regime"
+    ],
+    "writes": [
+      "bias_adjustments",
+      "bias_analysis",
+      "bias_auditor_initialization",
+      "bias_corrections",
+      "bias_recommendations",
+      "bias_report",
+      "psychological_state"
+    ]
+  },
+  "CollusionAuditor": {
+    "file": "modules/voting/collusion_auditor.py",
+    "infra": false,
+    "provides": [
+      "collusion_score",
+      "suspicious_pairs",
+      "member_independence_scores",
+      "collusion_alerts",
+      "behavioral_profiles",
+      "coordination_events",
+      "detection_statistics",
+      "audit_recommendations"
+    ],
+    "reads": [],
+    "requires": [
+      "votes",
+      "voting_summary",
+      "strategy_arbiter_weights",
+      "raw_proposals",
+      "member_confidences",
+      "consensus_direction",
+      "agreement_score",
+      "market_context",
+      "recent_trades",
+      "market_regime",
+      "volatility_data"
+    ],
+    "writes": [
+      "audit_recommendations",
+      "behavioral_profiles",
+      "collusion_alerts",
+      "collusion_auditor_initialization",
+      "collusion_score",
+      "coordination_events",
+      "detection_statistics",
+      "member_independence_scores",
+      "suspicious_pairs"
+    ]
+  },
+  "ComplianceModule": {
+    "file": "modules/risk/compliance.py",
+    "infra": false,
+    "provides": [
+      "compliance_status",
+      "validation_results",
+      "risk_limits"
+    ],
+    "reads": [
+      "balance",
+      "market_context",
+      "pending_orders",
+      "positions"
+    ],
+    "requires": [
+      "positions",
+      "pending_orders",
+      "market_context"
+    ],
+    "writes": [
+      "compliance_status",
+      "risk_limits",
+      "validation_results"
+    ]
+  },
+  "ConsensusDetector": {
+    "file": "modules/voting/consensus_detector.py",
+    "infra": false,
+    "provides": [
+      "consensus_score",
+      "consensus_quality",
+      "consensus_components",
+      "directional_consensus",
+      "magnitude_consensus",
+      "confidence_consensus",
+      "member_contributions",
+      "consensus_trends",
+      "quality_metrics",
+      "consensus_recommendations"
+    ],
+    "reads": [],
+    "requires": [
+      "votes",
+      "raw_proposals",
+      "member_confidences",
+      "voting_summary",
+      "alpha_weights",
+      "blended_action",
+      "market_context",
+      "agreement_score"
+    ],
+    "writes": [
+      "consensus_detector_initialization",
+      "consensus_score"
+    ]
+  },
+  "CorrelatedRiskController": {
+    "file": "modules/risk/correlated_risk_controller.py",
+    "infra": false,
+    "provides": [
+      "correlation_risk",
+      "diversification_score",
+      "correlation_clusters"
+    ],
+    "reads": [
+      "market_context",
+      "positions",
+      "prices"
+    ],
+    "requires": [
+      "positions",
+      "prices",
+      "market_context"
+    ],
+    "writes": [
+      "correlation_clusters",
+      "correlation_risk",
+      "diversification_score"
+    ]
+  },
+  "CurriculumPlannerPlus": {
+    "file": "modules/strategy/curriculum_planner_plus.py",
+    "infra": false,
+    "provides": [
+      "curriculum_stage",
+      "learning_constraints",
+      "competency_scores",
+      "learning_recommendations",
+      "stage_progression",
+      "mastery_assessment"
+    ],
+    "reads": [
+      "episode_summary",
+      "learning_context",
+      "market_conditions",
+      "performance_data",
+      "recent_trades",
+      "risk_metrics",
+      "trading_session"
+    ],
+    "requires": [
+      "performance_data",
+      "episode_summary",
+      "risk_metrics",
+      "trading_session",
+      "market_conditions",
+      "recent_trades"
+    ],
+    "writes": [
+      "competency_scores",
+      "curriculum_initialization",
+      "curriculum_stage",
+      "learning_constraints",
+      "learning_recommendations",
+      "mastery_assessment",
+      "stage_advancement",
+      "stage_progression"
+    ]
+  },
+  "DrawdownRescue": {
+    "file": "modules/risk/drawdown_rescue.py",
+    "infra": false,
+    "provides": [
+      "drawdown_risk",
+      "rescue_status",
+      "risk_adjustment"
+    ],
+    "reads": [
+      "balance",
+      "equity",
+      "market_context",
+      "positions"
+    ],
+    "requires": [
+      "balance",
+      "equity",
+      "positions",
+      "market_context"
+    ],
+    "writes": [
+      "drawdown_risk",
+      "rescue_status",
+      "risk_adjustment"
+    ]
+  },
+  "DynamicRiskController": {
+    "file": "modules/risk/dynamic_risk_controller.py",
+    "infra": false,
+    "provides": [
+      "risk_scaling",
+      "risk_factors",
+      "risk_analytics",
+      "risk_alerts"
+    ],
+    "reads": [
+      "anomaly_detector",
+      "compliance",
+      "execution_quality",
+      "market_context",
+      "market_data",
+      "market_regime",
+      "performance_data",
+      "portfolio_risk",
+      "position_data",
+      "risk_data"
+    ],
+    "requires": [
+      "risk_data",
+      "performance_data",
+      "market_data",
+      "position_data"
+    ],
+    "writes": [
+      "risk_alerts",
+      "risk_analytics",
+      "risk_factors",
+      "risk_scaling"
+    ]
+  },
+  "EnhancedAnomalyDetector": {
+    "file": "modules/risk/anomaly_detector.py",
+    "infra": false,
+    "provides": [
+      "anomaly_detection",
+      "anomaly_score",
+      "anomaly_alerts",
+      "detection_analytics"
+    ],
+    "reads": [
+      "market_context",
+      "market_data",
+      "performance_data",
+      "risk_data",
+      "trading_data"
+    ],
+    "requires": [
+      "risk_data",
+      "market_data",
+      "trading_data",
+      "performance_data"
+    ],
+    "writes": [
+      "anomaly_alerts",
+      "anomaly_detection",
+      "anomaly_score",
+      "detection_analytics"
+    ]
+  },
+  "EnhancedSeasonalityRiskExpert": {
+    "file": "modules/voting/voting_wrappers.py",
+    "infra": false,
+    "provides": [
+      "seasonality_voting_proposal",
+      "seasonality_confidence",
+      "seasonality_analysis"
+    ],
+    "reads": [
+      "risk_data"
+    ],
+    "requires": [
+      "market_data",
+      "risk_data",
+      "session_type"
+    ],
+    "writes": []
+  },
+  "EnhancedThemeExpert": {
+    "file": "modules/voting/voting_wrappers.py",
+    "infra": false,
+    "provides": [
+      "theme_voting_proposal",
+      "theme_confidence",
+      "theme_analysis",
+      "voting_summary",
+      "strategy_arbiter_weights",
+      "consensus_direction",
+      "agreement_score",
+      "raw_proposals",
+      "member_confidences"
+    ],
+    "reads": [
+      "theme_detection"
+    ],
+    "requires": [
+      "market_data",
+      "theme_detection",
+      "market_regime",
+      "risk_data"
+    ],
+    "writes": []
+  },
+  "EnhancedVotingCommitteeCoordinator": {
+    "file": "modules/voting/voting_wrappers.py",
+    "infra": false,
+    "provides": [
+      "committee_decision",
+      "voting_consensus",
+      "committee_confidence",
+      "voting_summary",
+      "strategy_arbiter_weights",
+      "consensus_direction",
+      "agreement_score",
+      "raw_proposals",
+      "member_confidences",
+      "votes",
+      "member_proposals",
+      "voting_weights",
+      "time_of_day",
+      "performance_feedback",
+      "horizon_alignment",
+      "trade_vote"
+    ],
+    "reads": [
+      "market_regime"
+    ],
+    "requires": [
+      "expert_votes",
+      "market_context",
+      "system_health"
+    ],
+    "writes": [
+      "committee_confidence",
+      "committee_decision",
+      "expert_performance",
+      "member_confidences",
+      "performance_feedback",
+      "time_of_day",
+      "trade_vote",
+      "voting_consensus",
+      "voting_weights"
+    ]
+  },
+  "EnhancedWorldModel": {
+    "file": "modules/models/world_model.py",
+    "infra": false,
+    "provides": [
+      "market_predictions",
+      "scenario_generation",
+      "world_model_analytics",
+      "prediction_confidence"
+    ],
+    "reads": [
+      "market_conditions",
+      "market_context",
+      "market_data",
+      "market_predictions",
+      "market_regime",
+      "performance_data",
+      "performance_metrics",
+      "regime_data",
+      "risk_data",
+      "time_risk_analysis",
+      "trading_data",
+      "volatility_adjustment"
+    ],
+    "requires": [
+      "market_data"
+    ],
+    "writes": [
+      "market_predictions",
+      "prediction_confidence",
+      "scenario_generation",
+      "world_model_analytics"
+    ]
+  },
+  "ExecutionQualityMonitor": {
+    "file": "modules/risk/execution_quality_monitor.py",
+    "infra": false,
+    "provides": [
+      "execution_quality",
+      "execution_analytics",
+      "quality_metrics",
+      "execution_alerts"
+    ],
+    "reads": [
+      "execution_data",
+      "market_context",
+      "market_data",
+      "order_data",
+      "trade_data"
+    ],
+    "requires": [
+      "execution_data",
+      "trade_data",
+      "order_data",
+      "market_data"
+    ],
+    "writes": [
+      "execution_alerts",
+      "execution_analytics",
+      "execution_quality",
+      "quality_metrics"
+    ]
+  },
+  "ExplanationGenerator": {
+    "file": "modules/strategy/explanation_generator.py",
+    "infra": false,
+    "provides": [
+      "trading_explanations",
+      "system_explanations",
+      "performance_insights",
+      "contextual_narratives",
+      "operator_updates",
+      "decision_rationales"
+    ],
+    "reads": [
+      "bias_analysis",
+      "learning_status",
+      "market_context",
+      "module_insights",
+      "performance_data",
+      "positions",
+      "recent_trades",
+      "risk_data",
+      "session_metrics",
+      "strategy_status",
+      "system_alerts"
+    ],
+    "requires": [
+      "recent_trades",
+      "positions",
+      "risk_data",
+      "system_alerts",
+      "market_context",
+      "session_metrics"
+    ],
+    "writes": [
+      "contextual_narratives",
+      "decision_rationales",
+      "explanation_generator_initialization",
+      "operator_updates",
+      "performance_insights",
+      "system_explanations",
+      "trading_explanations"
+    ]
+  },
+  "FractalRegimeConfirmation": {
+    "file": "modules/market/fractal_regime_confirmation.py",
+    "infra": false,
+    "provides": [
+      "market_regime",
+      "regime_strength",
+      "trend_direction",
+      "fractal_metrics",
+      "regime_data",
+      "symbols",
+      "timestamps"
+    ],
+    "reads": [
+      "market_regime",
+      "module_data",
+      "prices",
+      "step_idx",
+      "volatility_level"
+    ],
+    "requires": [
+      "prices",
+      "step_idx",
+      "volatility_level"
+    ],
+    "writes": [
+      "market_regime",
+      "regime_data",
+      "regime_strength",
+      "symbols",
+      "timestamps",
+      "trend_direction"
+    ]
+  },
+  "HistoricalReplayAnalyzer": {
+    "file": "modules/memory/historical_replay_analyzer.py",
+    "infra": false,
+    "provides": [
+      "replay_sequences",
+      "pattern_analysis",
+      "sequence_quality",
+      "learning_progress"
+    ],
+    "reads": [
+      "actions",
+      "episode_data",
+      "market_data",
+      "trades"
+    ],
+    "requires": [
+      "trades",
+      "actions",
+      "market_data",
+      "episode_data"
+    ],
+    "writes": [
+      "learning_progress",
+      "pattern_analysis",
+      "replay_sequences",
+      "sequence_quality"
+    ]
+  },
+  "LiquidityHeatmapLayer": {
+    "file": "modules/market/liquidity_heatmap_layer.py",
+    "infra": false,
+    "provides": [
+      "liquidity_score",
+      "market_depth",
+      "spread_analysis",
+      "liquidity_prediction",
+      "trading_sessions",
+      "session_data",
+      "liquidity_thesis",
+      "liquidity_capabilities"
+    ],
+    "reads": [
+      "bid_ask_data",
+      "liquidity_capabilities",
+      "price_data",
+      "prices"
+    ],
+    "requires": [
+      "bid_ask_data",
+      "price_data",
+      "prices"
+    ],
+    "writes": [
+      "liquidity_capabilities",
+      "liquidity_prediction",
+      "liquidity_score",
+      "liquidity_thesis",
+      "market_depth",
+      "session_data",
+      "spread_analysis",
+      "trading_sessions"
+    ]
+  },
+  "MarketDataProvider": {
+    "file": "modules/external/market_data_provider.py",
+    "infra": false,
+    "provides": [
+      "market_data",
+      "price_data",
+      "ohlcv_data",
+      "bid_ask_data",
+      "prices",
+      "symbols",
+      "timestamp",
+      "technical_indicators",
+      "indicators",
+      "volatility_data",
+      "volatility",
+      "volatility_index",
+      "multi_timeframe_data",
+      "historical_prices",
+      "market_context",
+      "trading_session",
+      "session_type",
+      "session_canonical",
+      "data_provider_health"
+    ],
+    "reads": [],
+    "requires": [],
+    "writes": []
+  },
+  "MarketThemeDetector": {
+    "file": "modules/market/market_theme_detector.py",
+    "infra": false,
+    "provides": [
+      "market_theme",
+      "theme_strength",
+      "theme_confidence",
+      "theme_transition",
+      "theme_analysis",
+      "theme_detection",
+      "theme_detector_status",
+      "theme_detector_health",
+      "theme_model_quality"
+    ],
+    "reads": [
+      "historical_prices",
+      "macro_data",
+      "market_data",
+      "multi_timeframe_data",
+      "price_data",
+      "technical_indicators"
+    ],
+    "requires": [
+      "market_data",
+      "price_data",
+      "technical_indicators",
+      "historical_prices",
+      "multi_timeframe_data",
+      "macro_data"
+    ],
+    "writes": [
+      "market_theme",
+      "theme_analysis",
+      "theme_confidence",
+      "theme_detection",
+      "theme_detector_health",
+      "theme_detector_status",
+      "theme_model_quality",
+      "theme_strength",
+      "theme_transition"
+    ]
+  },
+  "MemoryBudgetOptimizer": {
+    "file": "modules/memory/memory_budget_optimizer.py",
+    "infra": false,
+    "provides": [
+      "memory_allocation",
+      "budget_optimization",
+      "memory_efficiency",
+      "allocation_strategy"
+    ],
+    "reads": [
+      "loss_prevention",
+      "memory_usage",
+      "mistakes",
+      "pattern_memory",
+      "performance_metrics",
+      "playbook_entries",
+      "trades"
+    ],
+    "requires": [
+      "memory_usage"
+    ],
+    "writes": [
+      "allocation_strategy",
+      "budget_optimization",
+      "memory_allocation",
+      "memory_efficiency"
+    ]
+  },
+  "MemoryCompressor": {
+    "file": "modules/memory/memory_compressor.py",
+    "infra": false,
+    "provides": [
+      "intuition_vector",
+      "compressed_patterns",
+      "memory_compression",
+      "feature_importance"
+    ],
+    "reads": [
+      "episode_data",
+      "features",
+      "market_context",
+      "trades"
+    ],
+    "requires": [
+      "trades",
+      "features",
+      "market_context",
+      "episode_data"
+    ],
+    "writes": [
+      "compressed_patterns",
+      "feature_importance",
+      "intuition_vector",
+      "memory_compression"
+    ]
+  },
+  "MetaAgent": {
+    "file": "modules/meta/meta_agent.py",
+    "infra": false,
+    "provides": [
+      "automation_decisions",
+      "system_mode",
+      "automation_metrics",
+      "meta_performance"
+    ],
+    "reads": [
+      "market_conditions",
+      "risk_signals",
+      "system_performance",
+      "time_risk_analysis",
+      "training_metrics"
+    ],
+    "requires": [
+      "training_metrics",
+      "market_conditions"
+    ],
+    "writes": [
+      "automation_decisions",
+      "automation_metrics",
+      "meta_performance",
+      "system_mode"
+    ]
+  },
+  "MetaCognitivePlanner": {
+    "file": "modules/meta/metacognitive_planner.py",
+    "infra": false,
+    "provides": [
+      "planning_status",
+      "strategic_insights",
+      "tactical_recommendations",
+      "adaptation_metrics"
+    ],
+    "reads": [
+      "actions",
+      "market_conditions",
+      "market_data",
+      "market_regime",
+      "performance_metrics",
+      "regime_data",
+      "trades",
+      "volatility_adjustment"
+    ],
+    "requires": [
+      "market_data"
+    ],
+    "writes": [
+      "adaptation_metrics",
+      "planning_status",
+      "strategic_insights",
+      "tactical_recommendations"
+    ]
+  },
+  "MetaRLController": {
+    "file": "modules/meta/metar_rl_controller.py",
+    "infra": false,
+    "provides": [
+      "controller_status",
+      "agents_performance",
+      "controller_training_overview",
+      "automation_status",
+      "trading_signals",
+      "trading_signal",
+      "meta_signals",
+      "agent_decisions"
+    ],
+    "reads": [
+      "actions",
+      "market_data",
+      "trades",
+      "training_data"
+    ],
+    "requires": [
+      "market_data"
+    ],
+    "writes": [
+      "agents_performance",
+      "automation_status",
+      "controller_status",
+      "controller_training_overview"
+    ]
+  },
+  "MistakeMemory": {
+    "file": "modules/memory/mistake_memory.py",
+    "infra": false,
+    "provides": [
+      "mistake_memory",
+      "danger_zones",
+      "pattern_recognition",
+      "loss_prevention"
+    ],
+    "reads": [
+      "features",
+      "market_context",
+      "risk_data",
+      "time_risk_analysis",
+      "trades"
+    ],
+    "requires": [
+      "trades",
+      "features",
+      "market_context"
+    ],
+    "writes": [
+      "danger_zones",
+      "loss_prevention",
+      "mistake_avoidance",
+      "mistake_memory",
+      "pattern_recognition"
+    ]
+  },
+  "MultiScaleFeatureEngine": {
+    "file": "modules/features/multiscale_feature_engine.py",
+    "infra": false,
+    "provides": [
+      "multiscale_features"
+    ],
+    "reads": [
+      "advanced_features"
+    ],
+    "requires": [],
+    "writes": [
+      "attention_weights",
+      "feature_fusion",
+      "multiscale_features",
+      "neural_embeddings"
+    ]
+  },
+  "NeuralMemoryArchitect": {
+    "file": "modules/memory/neural_memory_architect.py",
+    "infra": false,
+    "provides": [
+      "neural_memory",
+      "attention_retrieval",
+      "memory_embedding",
+      "importance_scoring"
+    ],
+    "reads": [
+      "actions",
+      "market_context",
+      "observations",
+      "rewards"
+    ],
+    "requires": [
+      "observations",
+      "rewards",
+      "actions",
+      "market_context"
+    ],
+    "writes": [
+      "attention_retrieval",
+      "importance_scoring",
+      "memory_embedding",
+      "neural_memory"
+    ]
+  },
+  "NewsSentimentModule": {
+    "file": "modules/external/news_sentiment.py",
+    "infra": false,
+    "provides": [
+      "news_sentiment",
+      "sentiment_confidence",
+      "news_summary",
+      "sentiment_trend"
+    ],
+    "reads": [
+      "market_data",
+      "symbols",
+      "trading_session"
+    ],
+    "requires": [
+      "market_data",
+      "symbols",
+      "trading_session"
+    ],
+    "writes": [
+      "news_sentiment",
+      "news_summary",
+      "sentiment_confidence",
+      "sentiment_trend"
+    ]
+  },
+  "OpponentModeEnhancer": {
+    "file": "modules/strategy/opponent_mode_enhancer.py",
+    "infra": false,
+    "provides": [
+      "mode_weights",
+      "mode_analysis",
+      "mode_recommendations",
+      "market_mode_detection",
+      "strategy_adaptation",
+      "mode_performance"
+    ],
+    "reads": [
+      "market_context",
+      "market_data",
+      "market_regime",
+      "price_data",
+      "recent_trades",
+      "session_metrics",
+      "technical_indicators",
+      "trading_performance",
+      "volatility_data"
+    ],
+    "requires": [
+      "market_data",
+      "recent_trades",
+      "technical_indicators",
+      "volatility_data",
+      "price_data",
+      "market_regime",
+      "trading_performance"
+    ],
+    "writes": [
+      "market_mode_detection",
+      "mode_analysis",
+      "mode_performance",
+      "mode_recommendations",
+      "mode_weights",
+      "opponent_mode_enhancer_initialization",
+      "strategy_adaptation"
+    ]
+  },
+  "OpponentSimulator": {
+    "file": "modules/simulation/opponent_simulator.py",
+    "infra": false,
+    "provides": [
+      "market_perturbations",
+      "simulation_effects",
+      "opponent_analysis",
+      "market_noise",
+      "adversarial_scenarios",
+      "simulation_statistics",
+      "perturbation_history"
+    ],
+    "reads": [
+      "historical_prices",
+      "market_context",
+      "market_data",
+      "positions",
+      "prices"
+    ],
+    "requires": [
+      "market_data",
+      "prices",
+      "historical_prices",
+      "positions",
+      "market_context",
+      "volatility",
+      "regime_data",
+      "session_data"
+    ],
+    "writes": [
+      "opponent_simulation",
+      "simulated_prices"
+    ]
+  },
+  "PPOAgent": {
+    "file": "modules/meta/ppo_agent.py",
+    "infra": false,
+    "provides": [
+      "policy_actions",
+      "agent_performance",
+      "training_metrics",
+      "policy_gradients",
+      "actions",
+      "training_data",
+      "observations",
+      "rewards",
+      "training_signals"
+    ],
+    "reads": [
+      "market_data"
+    ],
+    "requires": [
+      "market_data"
+    ],
+    "writes": [
+      "actions",
+      "agent_performance",
+      "observations",
+      "policy_actions",
+      "policy_gradients",
+      "rewards",
+      "training_data",
+      "training_metrics",
+      "training_signals"
+    ]
+  },
+  "PPOLagAgent": {
+    "file": "modules/meta/ppo_lag_agent.py",
+    "infra": false,
+    "provides": [
+      "agent_status",
+      "ppo_lag_training_metrics",
+      "position_metrics",
+      "market_adaptation"
+    ],
+    "reads": [
+      "actions",
+      "market_data",
+      "trades",
+      "training_signals"
+    ],
+    "requires": [
+      "trades",
+      "actions",
+      "market_data",
+      "training_signals"
+    ],
+    "writes": [
+      "agent_status",
+      "market_adaptation",
+      "position_metrics",
+      "ppo_lag_training_metrics"
+    ]
+  },
+  "PlaybookClusterer": {
+    "file": "modules/strategy/playbook_clusterer.py",
+    "infra": false,
+    "provides": [
+      "cluster_weights",
+      "cluster_analysis",
+      "clustering_health",
+      "cluster_recommendations",
+      "cluster_effectiveness",
+      "pattern_analysis",
+      "clustering_thesis"
+    ],
+    "reads": [
+      "market_context",
+      "market_data",
+      "market_regime",
+      "playbook_memory",
+      "recent_trades",
+      "session_metrics",
+      "trading_performance",
+      "volatility_data"
+    ],
+    "requires": [
+      "playbook_memory",
+      "recent_trades",
+      "market_data",
+      "trading_performance",
+      "market_regime",
+      "session_metrics"
+    ],
+    "writes": [
+      "cluster_analysis",
+      "cluster_effectiveness",
+      "cluster_recommendations",
+      "cluster_weights",
+      "clustering_health",
+      "pattern_analysis",
+      "playbook_clusterer_initialization"
+    ]
+  },
+  "PlaybookMemory": {
+    "file": "modules/memory/playbook_memory.py",
+    "infra": false,
+    "provides": [
+      "playbook_recall",
+      "pattern_memory",
+      "playbook_quality",
+      "memory_analytics"
+    ],
+    "reads": [
+      "actions",
+      "market_data",
+      "prices",
+      "trades"
+    ],
+    "requires": [
+      "trades",
+      "actions",
+      "market_data",
+      "prices"
+    ],
+    "writes": [
+      "memory_analytics",
+      "pattern_memory",
+      "playbook_quality",
+      "playbook_recall"
+    ]
+  },
+  "PortfolioRiskSystem": {
+    "file": "modules/risk/portofilio_risk_system.py",
+    "infra": false,
+    "provides": [
+      "portfolio_risk",
+      "risk_metrics",
+      "position_limits",
+      "risk_analytics",
+      "risk_data",
+      "risk_signals",
+      "risk_score",
+      "trade_data",
+      "trading_data"
+    ],
+    "reads": [
+      "market_context",
+      "market_data",
+      "position_data",
+      "risk_signals",
+      "trade_data"
+    ],
+    "requires": [
+      "market_data"
+    ],
+    "writes": [
+      "portfolio_risk",
+      "portfolio_risk_proposal",
+      "position_limits",
+      "risk_analytics",
+      "risk_data",
+      "risk_metrics",
+      "risk_score",
+      "risk_signals",
+      "trade_data",
+      "trading_data"
+    ]
+  },
+  "PositionManager": {
+    "file": "modules/position/position.py",
+    "infra": false,
+    "provides": [
+      "balance",
+      "current_pnl",
+      "current_positions",
+      "equity",
+      "execution_data",
+      "order_data",
+      "portfolio_state",
+      "position_health",
+      "recent_trades",
+      "trades"
+    ],
+    "reads": [
+      "correlation_matrix",
+      "environment_config",
+      "indicators",
+      "instrument_signals",
+      "liquidity_capabilities",
+      "liquidity_score",
+      "market_conditions",
+      "market_context",
+      "market_liquidity",
+      "market_regime",
+      "market_state",
+      "portfolio_metrics",
+      "price_data",
+      "prices",
+      "risk_score",
+      "technical_indicators",
+      "time_risk_analysis",
+      "volatility_data"
+    ],
+    "requires": [
+      "market_data",
+      "market_context",
+      "market_conditions",
+      "market_regime",
+      "price_data",
+      "prices",
+      "indicators",
+      "technical_indicators",
+      "volatility_data",
+      "instrument_signals",
+      "portfolio_metrics",
+      "market_state",
+      "environment_config",
+      "risk_score",
+      "time_risk_analysis",
+      "correlation_matrix",
+      "liquidity_capabilities",
+      "liquidity_score",
+      "market_liquidity"
+    ],
+    "writes": [
+      "balance",
+      "current_pnl",
+      "current_positions",
+      "equity",
+      "execution_data",
+      "order_data",
+      "portfolio_state",
+      "position_health",
+      "recent_trades",
+      "trades"
+    ]
+  },
+  "RegimePerformanceMatrix": {
+    "file": "modules/market/regime_performance_matrix.py",
+    "infra": false,
+    "provides": [
+      "regime_accuracy",
+      "regime_prediction",
+      "market_state",
+      "performance_metrics",
+      "stress_test_results",
+      "backtesting_data",
+      "recent_trades",
+      "trading_signals",
+      "regime_analysis",
+      "regime_data",
+      "regime_matrix_analysis",
+      "regime_matrix_health",
+      "regime_matrix_status",
+      "regime_performance"
+    ],
+    "reads": [
+      "liquidity_score",
+      "market_data",
+      "market_regime",
+      "pnl_data",
+      "recent_trades",
+      "volatility_data"
+    ],
+    "requires": [
+      "market_regime",
+      "market_data",
+      "liquidity_score",
+      "recent_trades",
+      "volatility_data",
+      "pnl_data"
+    ],
+    "writes": [
+      "backtesting_data",
+      "market_state",
+      "performance_metrics",
+      "recent_trades",
+      "regime_accuracy",
+      "regime_analysis",
+      "regime_data",
+      "regime_matrix_analysis",
+      "regime_matrix_health",
+      "regime_matrix_status",
+      "regime_performance",
+      "regime_prediction",
+      "stress_test_results",
+      "trading_signals"
+    ]
+  },
+  "RiskAdjustedReward": {
+    "file": "modules/reward/risk_adjusted_reward.py",
+    "infra": false,
+    "provides": [
+      "shaped_reward",
+      "reward_components",
+      "reward_analytics",
+      "reward_performance"
+    ],
+    "reads": [
+      "environment_config",
+      "market_context",
+      "mistake_memory",
+      "performance_data",
+      "risk_metrics",
+      "trade_data"
+    ],
+    "requires": [
+      "trade_data",
+      "risk_metrics",
+      "market_context",
+      "performance_data"
+    ],
+    "writes": [
+      "reward_analytics",
+      "reward_components",
+      "reward_performance",
+      "shaped_reward"
+    ]
+  },
+  "RoleCoach": {
+    "file": "modules/simulation/role_coach.py",
+    "infra": false,
+    "provides": [
+      "coaching_penalties",
+      "discipline_assessment",
+      "trade_limits",
+      "coaching_recommendations",
+      "compliance_tracking",
+      "performance_scoring",
+      "coaching_statistics"
+    ],
+    "reads": [
+      "market_context",
+      "pending_orders",
+      "positions",
+      "recent_trades",
+      "risk_metrics"
+    ],
+    "requires": [
+      "recent_trades",
+      "pending_orders",
+      "positions",
+      "risk_metrics",
+      "trading_performance",
+      "market_context",
+      "regime_data",
+      "session_data"
+    ],
+    "writes": [
+      "coaching_results",
+      "discipline_penalty"
+    ]
+  },
+  "SessionManager": {
+    "file": "modules/external/session_manager.py",
+    "infra": false,
+    "provides": [
+      "session_metrics",
+      "session_context",
+      "system_performance",
+      "system_health",
+      "system_alerts",
+      "trading_session",
+      "session_type",
+      "session_canonical",
+      "time_of_day"
+    ],
+    "reads": [],
+    "requires": [],
+    "writes": []
+  },
+  "ShadowSimulator": {
+    "file": "modules/simulation/shadow_simulator.py",
+    "infra": false,
+    "provides": [
+      "shadow_predictions",
+      "scenario_analysis",
+      "strategy_simulations",
+      "forward_projections",
+      "simulation_confidence",
+      "scenario_recommendations",
+      "simulation_statistics"
+    ],
+    "reads": [
+      "committee_votes",
+      "environment",
+      "market_context",
+      "market_data",
+      "pending_orders",
+      "positions",
+      "prices",
+      "recent_trades",
+      "risk_metrics"
+    ],
+    "requires": [
+      "market_data",
+      "prices",
+      "positions",
+      "recent_trades",
+      "pending_orders",
+      "committee_votes",
+      "market_context",
+      "risk_metrics",
+      "trading_performance"
+    ],
+    "writes": [
+      "shadow_simulation",
+      "simulation_predictions"
+    ]
+  },
+  "StrategyArbiter": {
+    "file": "modules/voting/strategy_arbiter.py",
+    "infra": false,
+    "provides": [
+      "blended_action",
+      "alpha_weights",
+      "member_weights",
+      "gate_decision",
+      "voting_quality",
+      "member_performance",
+      "decision_statistics",
+      "proposal_analysis",
+      "arbiter_recommendations",
+      "instrument_signals"
+    ],
+    "reads": [
+      "collusion_score",
+      "consensus_score"
+    ],
+    "requires": [
+      "market_context",
+      "recent_trades",
+      "current_positions",
+      "member_proposals",
+      "member_confidences",
+      "consensus_score",
+      "collusion_score",
+      "horizon_alignment",
+      "volatility_data",
+      "market_regime",
+      "instruments"
+    ],
+    "writes": [
+      "alpha_weights",
+      "blended_action",
+      "instrument_signals",
+      "instruments",
+      "strategy_arbiter_initialization"
+    ]
+  },
+  "StrategyGenomePool": {
+    "file": "modules/strategy/strategy_genome_pool.py",
+    "infra": false,
+    "provides": [
+      "genome_weights",
+      "genome_analysis",
+      "genome_recommendations",
+      "evolution_analytics",
+      "best_genome",
+      "population_metrics"
+    ],
+    "reads": [
+      "market_context",
+      "market_data",
+      "market_regime",
+      "recent_trades",
+      "risk_data",
+      "session_metrics",
+      "trading_performance",
+      "volatility_data"
+    ],
+    "requires": [
+      "market_data",
+      "recent_trades",
+      "trading_performance",
+      "risk_data",
+      "market_regime",
+      "volatility_data",
+      "session_metrics"
+    ],
+    "writes": [
+      "best_genome",
+      "evolution_analytics",
+      "genome_analysis",
+      "genome_recommendations",
+      "genome_weights",
+      "population_metrics",
+      "strategy_genome_pool_initialization"
+    ]
+  },
+  "StrategyIntrospector": {
+    "file": "modules/strategy/strategy_introspector.py",
+    "infra": false,
+    "provides": [
+      "strategy_analysis",
+      "performance_insights",
+      "adaptation_recommendations",
+      "strategy_profiles",
+      "introspection_metrics",
+      "behavior_patterns",
+      "trading_performance",
+      "strategy_performance",
+      "strategy_weights",
+      "module_data"
+    ],
+    "reads": [
+      "market_context",
+      "market_regime",
+      "module_data",
+      "recent_trades",
+      "risk_data",
+      "strategy_performance",
+      "strategy_weights",
+      "trading_performance",
+      "volatility_data"
+    ],
+    "requires": [
+      "recent_trades",
+      "module_data",
+      "risk_data",
+      "market_regime",
+      "volatility_data",
+      "trading_performance",
+      "strategy_weights"
+    ],
+    "writes": [
+      "adaptation_recommendations",
+      "behavior_patterns",
+      "introspection_metrics",
+      "performance_insights",
+      "strategy_analysis",
+      "strategy_introspector_initialization",
+      "strategy_performance",
+      "strategy_profiles",
+      "trading_performance"
+    ]
+  },
+  "ThesisEvolutionEngine": {
+    "file": "modules/strategy/thesis_evolution_engine.py",
+    "infra": false,
+    "provides": [
+      "active_theses",
+      "thesis_performance",
+      "evolution_analytics",
+      "thesis_recommendations",
+      "best_thesis",
+      "thesis_diversity",
+      "evolution_history",
+      "market_adaptation"
+    ],
+    "reads": [
+      "economic_calendar",
+      "market_context",
+      "market_data",
+      "market_regime",
+      "recent_trades",
+      "risk_metrics",
+      "session_metrics",
+      "strategy_performance",
+      "trading_performance",
+      "volatility_data"
+    ],
+    "requires": [
+      "market_data",
+      "recent_trades",
+      "trading_performance",
+      "market_regime",
+      "volatility_data",
+      "session_metrics",
+      "strategy_performance",
+      "risk_metrics"
+    ],
+    "writes": [
+      "thesis_evolution_initialization"
+    ]
+  },
+  "TimeAwareRiskScaling": {
+    "file": "modules/market/time_aware_risk_scaling.py",
+    "infra": false,
+    "provides": [
+      "risk_scaling_factor",
+      "session_risk",
+      "volatility_adjustment",
+      "market_conditions",
+      "time_risk_analysis",
+      "time_risk_status",
+      "time_risk_health"
+    ],
+    "reads": [
+      "market_data",
+      "risk_data",
+      "timestamp",
+      "volatility_data"
+    ],
+    "requires": [
+      "timestamp",
+      "market_data",
+      "risk_data",
+      "volatility_data"
+    ],
+    "writes": [
+      "market_conditions",
+      "risk_scaling_factor",
+      "session_risk",
+      "time_risk_analysis",
+      "time_risk_health",
+      "time_risk_status",
+      "volatility_adjustment"
+    ]
+  },
+  "TimeHorizonAligner": {
+    "file": "modules/voting/time_horizon_aligner.py",
+    "infra": false,
+    "provides": [
+      "aligned_weights",
+      "horizon_distances",
+      "horizon_multipliers",
+      "regime_adjustments",
+      "session_patterns",
+      "alignment_quality",
+      "performance_metrics",
+      "adaptation_status",
+      "horizon_alignment"
+    ],
+    "reads": [],
+    "requires": [
+      "market_regime",
+      "session_type",
+      "volatility_data",
+      "market_context\"\n        # optional: voting_weights",
+      "time_of_day",
+      "performance_feedback",
+      "member_confidences",
+      "recent_trades",
+      "expert_performance"
+    ],
+    "writes": [
+      "time_horizon_aligner_initialization"
+    ]
+  },
+  "TradeExplanationAuditor": {
+    "file": "modules/auditing/trade_explanation_auditor.py",
+    "infra": false,
+    "provides": [
+      "trade_explanations",
+      "audit_alerts",
+      "explanation_metrics"
+    ],
+    "reads": [],
+    "requires": [
+      "trading_signal",
+      "market_data",
+      "trades"
+    ],
+    "writes": [
+      "trade_explanations"
+    ]
+  },
+  "TradeMapVisualizer": {
+    "file": "modules/visualization/trade_map_visualizer.py",
+    "infra": false,
+    "provides": [
+      "trade_charts",
+      "performance_charts",
+      "dashboard_charts",
+      "chart_statistics",
+      "visualization_reports",
+      "chart_cache",
+      "chart_history"
+    ],
+    "reads": [
+      "consensus_data",
+      "market_data",
+      "module_performance",
+      "positions",
+      "recent_trades",
+      "risk_metrics",
+      "trading_performance"
+    ],
+    "requires": [
+      "market_data",
+      "recent_trades",
+      "trading_performance",
+      "positions",
+      "risk_metrics",
+      "consensus_data",
+      "module_performance"
+    ],
+    "writes": [
+      "chart_statistics",
+      "trade_charts"
+    ]
+  },
+  "TradeThesisTracker": {
+    "file": "modules/auditing/trade_thesis_tracker.py",
+    "infra": false,
+    "provides": [
+      "thesis_analysis",
+      "thesis_performance",
+      "thesis_alerts"
+    ],
+    "reads": [],
+    "requires": [
+      "trading_signal",
+      "market_data",
+      "trades"
+    ],
+    "writes": [
+      "thesis_analysis"
+    ]
+  },
+  "TradingModeManager": {
+    "file": "modules/trading_modes/trading_mode.py",
+    "infra": false,
+    "provides": [
+      "trading_mode",
+      "mode_config",
+      "mode_stats",
+      "mode_effectiveness",
+      "decision_factors",
+      "mode_thresholds",
+      "market_context",
+      "mode_recommendations"
+    ],
+    "reads": [
+      "economic_calendar",
+      "market_context",
+      "market_regime",
+      "positions",
+      "recent_trades",
+      "risk_metrics",
+      "session_metrics",
+      "strategy_performance",
+      "trading_performance",
+      "volatility_data",
+      "votes"
+    ],
+    "requires": [
+      "recent_trades",
+      "risk_metrics",
+      "votes",
+      "positions",
+      "market_context",
+      "session_metrics",
+      "strategy_performance",
+      "trading_performance",
+      "market_regime"
+    ],
+    "writes": [
+      "decision_factors",
+      "market_context",
+      "mode_config",
+      "mode_effectiveness",
+      "mode_recommendations",
+      "mode_stats",
+      "mode_thresholds",
+      "trading_mode"
+    ]
+  },
+  "VisualizationInterface": {
+    "file": "modules/visualization/visualization_interface.py",
+    "infra": false,
+    "provides": [
+      "visualization_data",
+      "performance_metrics",
+      "dashboard_data",
+      "alert_timeline",
+      "analytics_reports",
+      "streaming_data",
+      "system_status"
+    ],
+    "reads": [
+      "alerts",
+      "consensus_data",
+      "market_data",
+      "module_performance",
+      "positions",
+      "recent_trades",
+      "risk_metrics",
+      "step_data"
+    ],
+    "requires": [
+      "market_data",
+      "recent_trades",
+      "positions",
+      "risk_metrics",
+      "consensus_data",
+      "module_performance",
+      "system_alerts",
+      "trading_performance"
+    ],
+    "writes": [
+      "dashboard_data",
+      "visualization_data"
+    ]
+  },
+  "audit_utils": {
+    "file": "modules/utils/audit_utils.py",
+    "infra": true,
+    "provides": [],
+    "reads": [],
+    "requires": [],
+    "writes": [
+      "thesis_stream"
+    ]
+  },
+  "info_bus": {
+    "file": "modules/utils/info_bus.py",
+    "infra": true,
+    "provides": [],
+    "reads": [
+      "market_regime",
+      "risk_score"
+    ],
+    "requires": [],
+    "writes": [
+      "market_regime",
+      "risk_score"
+    ]
+  },
+  "integration_validator": {
+    "file": "modules/monitoring/integration_validator.py",
+    "infra": false,
+    "provides": [],
+    "reads": [],
+    "requires": [],
+    "writes": [
+      "validation/issues",
+      "validation/summary"
+    ]
+  },
+  "mixins": {
+    "file": "modules/core/mixins.py",
+    "infra": true,
+    "provides": [],
+    "reads": [
+      "current_pnl",
+      "current_positions",
+      "emergency_mode_status",
+      "market_data",
+      "market_regime",
+      "market_volatility",
+      "portfolio_exposure",
+      "portfolio_value"
+    ],
+    "requires": [],
+    "writes": [
+      "comprehensive_risk_assessment",
+      "consensus_tracking_update",
+      "current_positions",
+      "emergency_risk_event",
+      "trading_session_summary"
+    ]
+  },
+  "module_system": {
+    "file": "modules/core/module_system.py",
+    "infra": true,
+    "provides": [],
+    "reads": [],
+    "requires": [],
+    "writes": [
+      "emergency_mode_event",
+      "emergency_mode_recovery",
+      "execution_metadata",
+      "execution_results",
+      "raw_market_payload",
+      "vote"
+    ]
+  }
+}

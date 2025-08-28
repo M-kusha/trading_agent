@@ -95,7 +95,7 @@ class NewsSentimentModule(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRisk
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
             name="NewsSentimentModule", 
-            log_path="logs/news_sentiment.log", 
+            log_path="logs/external/news_sentiment.log", 
             max_lines=3000, 
             operator_mode=True,
             plain_english=True

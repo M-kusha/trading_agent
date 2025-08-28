@@ -15,7 +15,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 import glob
 
 import pandas as pd
@@ -26,9 +26,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-import MetaTrader5 as mt5
-import websockets.server
+import MetaTrader5 as _mt5
 import websockets
+
+# Help Pylance with third-party modules that lack type stubs
+mt5: Any = cast(Any, _mt5)
 
 # Fix Windows encoding issues
 if sys.platform == "win32":
@@ -135,36 +137,63 @@ class ModuleStatus(BaseModel):
 
 class EnhancedTradingSystemState:
     """Advanced state management with comprehensive module tracking"""
-    
+
+    # Explicit attribute types to satisfy static type checkers
+    training_process: Optional[subprocess.Popen[str]]
+    training_websocket_server: Optional[Any]
+    trading_task: Optional[asyncio.Task[Any]]
+    tensorboard_process: Optional[subprocess.Popen[bytes]]
+    monitoring_tasks: List[asyncio.Task[Any]]
+
+    training_mode: Optional[str]
+    training_metrics: Dict[str, Any]
+    training_metrics_history: List[Dict[str, Any]]
+    training_start_time: Optional[datetime]
+    training_config: Optional['PPOTrainingConfig']
+
+    live_env: Optional[Any]
+    model: Optional[Any]
+    last_trade_time: Dict[str, float]
+    trading_config: Optional['LiveTradingConfig']
+
+    websocket_connections: List[WebSocket]
+    training_websocket_connections: List[Any]
+    module_states: Dict[str, Dict[str, Any]]
+    performance_metrics: Dict[str, Any]
+    errors: List[Dict[str, Any]]
+    warnings: List[Dict[str, Any]]
+    alerts: List[Dict[str, Any]]
+    system_metrics: Dict[str, Any]
+
     def __init__(self):
         self.startup_time = datetime.now()
-        
+
         # Core system state
         self.system_status = "IDLE"
         self.mt5_connected = False
         self.model_loaded = False
         self.current_session_id = str(uuid.uuid4())
-        
+
         # Process management
         self.training_process = None
         self.training_websocket_server = None
         self.trading_task = None
         self.tensorboard_process = None
         self.monitoring_tasks = []
-        
+
         # Training state
         self.training_mode = None  # "offline" or "online"
         self.training_metrics = {}
         self.training_metrics_history = []
         self.training_start_time = None
         self.training_config = None
-        
+
         # Trading state
         self.live_env = None
         self.model = None
         self.last_trade_time = {}
         self.trading_config = None
-        
+
         # Performance tracking
         self.performance_metrics = {
             "session_start_time": self.startup_time.isoformat(),
@@ -366,7 +395,7 @@ class EnhancedTradingSystemState:
             "active_connections": 0,
             "requests_per_minute": 0,
             "last_health_check": datetime.now().isoformat(),
-        }
+    }
         
     def get_uptime(self) -> str:
         """Get system uptime"""
@@ -467,7 +496,7 @@ class TrainingMetricsServer:
         self.server = None
         self.clients = set()
         
-    async def handler(self, websocket, path):
+    async def handler(self, websocket):
         """Handle WebSocket connections from training process"""
         self.clients.add(websocket)
         logger.info(f"Training metrics client connected from {websocket.remote_address}")
@@ -494,7 +523,7 @@ class TrainingMetricsServer:
     
     async def start(self):
         """Start the WebSocket server"""
-        self.server = await websockets.server.serve(
+        self.server = await websockets.serve(
             self.handler, self.host, self.port
         )
         logger.info(f"Training metrics server started on ws://{self.host}:{self.port}")
@@ -615,7 +644,11 @@ async def start_live_trading(config: LiveTradingConfig):
         # Import trading components
         from stable_baselines3 import PPO
         from envs.env import EnhancedTradingEnv, TradingConfig
-        from live.live_connector import LiveDataConnector
+        # Adapt to available connector class name
+        try:
+            from live.live_connector import LiveDataConnector  # type: ignore
+        except Exception:
+            from live.live_connector import InfoBusLiveDataConnector as LiveDataConnector  # type: ignore
         
         # Create live data connector
         connector = LiveDataConnector(
@@ -625,7 +658,13 @@ async def start_live_trading(config: LiveTradingConfig):
         connector.connect()
         
         # Get historical data
-        hist_data = connector.get_historical_data(n_bars=1000)
+        # Support connectors that expose InfoBus-specific method name
+        if hasattr(connector, 'get_historical_data'):
+            hist_data = connector.get_historical_data(n_bars=1000)  # type: ignore
+        elif hasattr(connector, 'get_historical_data_with_infobus'):
+            hist_data = connector.get_historical_data_with_infobus(n_bars=1000)  # type: ignore
+        else:
+            raise HTTPException(status_code=500, detail="Connector does not support historical data retrieval")
         if not hist_data:
             raise HTTPException(status_code=500, detail="Failed to retrieve historical data")
         
@@ -647,11 +686,11 @@ async def start_live_trading(config: LiveTradingConfig):
         state.trading_task = asyncio.create_task(
             live_trading_loop(config, connector)
         )
-        
+
         state.system_status = "TRADING"
         state.add_alert("Live trading started successfully", "success", "trading")
         logger.info("Live trading started successfully")
-        
+
         return {"success": True, "message": "Live trading started", "session_id": state.current_session_id}
         
     except Exception as e:
@@ -663,6 +702,9 @@ async def start_live_trading(config: LiveTradingConfig):
 async def live_trading_loop(config: LiveTradingConfig, connector):
     """Enhanced live trading loop with comprehensive monitoring"""
     try:
+        # Help type checker know these are set
+        assert state.live_env is not None
+        assert state.model is not None
         obs, _ = state.live_env.reset()
         step_count = 0
         last_balance_update = time.time()
@@ -713,13 +755,13 @@ async def live_trading_loop(config: LiveTradingConfig, connector):
                 loop_time = time.time() - loop_start
                 sleep_time = max(0, config.update_interval - loop_time)
                 await asyncio.sleep(sleep_time)
-                
+
             except Exception as e:
                 error_msg = f"Trading loop step error: {str(e)}"
                 state.add_error(error_msg, "trading")
                 logger.error(error_msg)
                 await asyncio.sleep(config.update_interval)
-                
+
     except Exception as e:
         error_msg = f"Trading loop fatal error: {str(e)}"
         state.add_error(error_msg, "trading")
@@ -736,7 +778,7 @@ def update_environment_data(new_data: Dict, config: LiveTradingConfig):
             inst_key = inst[:3] + "/" + inst[3:] if len(inst) == 6 else inst
             for tf in config.timeframes:
                 if inst_key in new_data and tf in new_data[inst_key]:
-                    if hasattr(state.live_env, 'data') and inst_key in state.live_env.data:
+                    if state.live_env is not None and hasattr(state.live_env, 'data') and inst_key in state.live_env.data:
                         state.live_env.data[inst_key][tf] = pd.concat([
                             state.live_env.data[inst_key][tf].iloc[1:],
                             new_data[inst_key][tf].iloc[-1:]
@@ -1036,6 +1078,7 @@ async def monitor_training_process():
         
         # Read training output in real-time
         while state.training_process.poll() is None:
+            assert state.training_process.stdout is not None
             output = state.training_process.stdout.readline()
             if output:
                 logger.info(f"Training: {output.strip()}")
@@ -1056,7 +1099,9 @@ async def monitor_training_process():
             state.add_alert("Training completed successfully", "success", "training")
             logger.info("Training completed successfully")
         else:
-            error_output = state.training_process.stderr.read()
+            error_output = ""
+            if state.training_process.stderr is not None:
+                error_output = state.training_process.stderr.read()
             state.add_error(f"Training failed with code {return_code}: {error_output}", "training")
             logger.error(f"Training failed: {error_output}")
         
@@ -1652,7 +1697,7 @@ async def save_checkpoint(name: str = "manual_checkpoint"):
 async def upload_model(file: UploadFile = File(...)):
     """Enhanced model upload"""
     try:
-        if not file.filename.endswith('.zip'):
+        if not file.filename or not file.filename.endswith('.zip'):
             raise HTTPException(status_code=400, detail="Only .zip model files are accepted")
         
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -1687,7 +1732,7 @@ async def upload_csv_data(files: List[UploadFile] = File(...)):
         
         uploaded_files = []
         for file in files:
-            if not file.filename.endswith('.csv'):
+            if not file.filename or not file.filename.endswith('.csv'):
                 continue
                 
             file_path = os.path.join(data_dir, file.filename)
@@ -1799,7 +1844,9 @@ async def start_tensorboard():
                 "pid": state.tensorboard_process.pid
             }
         else:
-            error = state.tensorboard_process.stderr.read().decode()
+            error = ""
+            if state.tensorboard_process.stderr is not None:
+                error = state.tensorboard_process.stderr.read().decode()
             logger.error(f"TensorBoard failed to start: {error}")
             return {"success": False, "error": error}
             

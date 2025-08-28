@@ -106,7 +106,7 @@ class NeuralMemoryArchitect(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
             name="NeuralMemoryArchitect", 
-            log_path="logs/neural_memory.log", 
+            log_path="logs/memory/neural_memory.log", 
             max_lines=3000, 
             operator_mode=True,
             plain_english=True
@@ -320,6 +320,63 @@ class NeuralMemoryArchitect(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
             processing_time = (time.time() - start_time) * 1000
             self._record_success(processing_time)
             
+            # Contract-compliant return payload
+            neural_status = {
+                'buffer_size': len(self.buffer),
+                'memory_utilization': len(self.buffer) / self.genome["max_len"],
+                'average_importance': self._neural_performance['average_importance'],
+                'neural_performance_score': self._neural_performance_score,
+                'last_updated': time.time()
+            }
+
+            if storage_result.get('retrieval_performed', False):
+                retrieval_data = storage_result.get('retrieved_memories', {})
+                attention_data = {
+                    'retrieved_count': len(retrieval_data.get('memories', [])),
+                    'similarity_scores': retrieval_data.get('similarity_scores', []),
+                    'top_k': self.genome["retrieval_top_k"],
+                    'attention_heads': self.genome["num_heads"]
+                }
+            else:
+                attention_data = {
+                    'retrieved_count': 0,
+                    'similarity_scores': [],
+                    'top_k': self.genome["retrieval_top_k"],
+                    'attention_heads': self.genome["num_heads"]
+                }
+
+            embedding_info = {
+                'embedding_dim': self.genome["embed_dim"],
+                'total_embeddings': len(self.buffer),
+                'importance_threshold': self.genome["importance_threshold"],
+                'decay_rate': self.genome["memory_decay"]
+            }
+
+            if len(self.importance_scores) > 0:
+                importance_stats = {
+                    'average_importance': float(torch.mean(self.importance_scores)),
+                    'max_importance': float(torch.max(self.importance_scores)),
+                    'min_importance': float(torch.min(self.importance_scores)),
+                    'std_importance': float(torch.std(self.importance_scores)),
+                    'total_scored': len(self.importance_scores)
+                }
+            else:
+                importance_stats = {
+                    'average_importance': 0.0,
+                    'max_importance': 0.0,
+                    'min_importance': 0.0,
+                    'std_importance': 0.0,
+                    'total_scored': 0
+                }
+
+            storage_result.update({
+                'neural_memory': neural_status,
+                'attention_retrieval': attention_data,
+                'memory_embedding': embedding_info,
+                'importance_scoring': importance_stats,
+                '_thesis': thesis
+            })
+
             return storage_result
             
         except Exception as e:
@@ -831,10 +888,49 @@ class NeuralMemoryArchitect(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
         """Handle case when no memory data is available"""
         self.logger.warning("No memory data available - returning current neural status")
         
-        return {
+        thesis = "NeuralMemoryArchitect fallback: no memory data available"
+        neural_status = {
             'buffer_size': len(self.buffer),
             'memory_utilization': len(self.buffer) / self.genome["max_len"],
+            'average_importance': self._neural_performance['average_importance'],
             'neural_performance_score': self._neural_performance_score,
+            'last_updated': time.time()
+        }
+        attention_data = {
+            'retrieved_count': 0,
+            'similarity_scores': [],
+            'top_k': self.genome["retrieval_top_k"],
+            'attention_heads': self.genome["num_heads"]
+        }
+        embedding_info = {
+            'embedding_dim': self.genome["embed_dim"],
+            'total_embeddings': len(self.buffer),
+            'importance_threshold': self.genome["importance_threshold"],
+            'decay_rate': self.genome["memory_decay"]
+        }
+        if len(self.importance_scores) > 0:
+            importance_stats = {
+                'average_importance': float(torch.mean(self.importance_scores)),
+                'max_importance': float(torch.max(self.importance_scores)),
+                'min_importance': float(torch.min(self.importance_scores)),
+                'std_importance': float(torch.std(self.importance_scores)),
+                'total_scored': len(self.importance_scores)
+            }
+        else:
+            importance_stats = {
+                'average_importance': 0.0,
+                'max_importance': 0.0,
+                'min_importance': 0.0,
+                'std_importance': 0.0,
+                'total_scored': 0
+            }
+
+        return {
+            'neural_memory': neural_status,
+            'attention_retrieval': attention_data,
+            'memory_embedding': embedding_info,
+            'importance_scoring': importance_stats,
+            '_thesis': thesis,
             'fallback_reason': 'no_memory_data'
         }
 
@@ -872,10 +968,48 @@ class NeuralMemoryArchitect(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
 
     def _create_fallback_response(self, reason: str) -> Dict[str, Any]:
         """Create fallback response for error cases"""
-        return {
+        thesis = f"NeuralMemoryArchitect fallback: {reason}"
+        neural_status = {
             'buffer_size': len(self.buffer),
             'memory_utilization': len(self.buffer) / self.genome["max_len"],
+            'average_importance': self._neural_performance['average_importance'],
             'neural_performance_score': self._neural_performance_score,
+            'last_updated': time.time()
+        }
+        attention_data = {
+            'retrieved_count': 0,
+            'similarity_scores': [],
+            'top_k': self.genome["retrieval_top_k"],
+            'attention_heads': self.genome["num_heads"]
+        }
+        embedding_info = {
+            'embedding_dim': self.genome["embed_dim"],
+            'total_embeddings': len(self.buffer),
+            'importance_threshold': self.genome["importance_threshold"],
+            'decay_rate': self.genome["memory_decay"]
+        }
+        if len(self.importance_scores) > 0:
+            importance_stats = {
+                'average_importance': float(torch.mean(self.importance_scores)),
+                'max_importance': float(torch.max(self.importance_scores)),
+                'min_importance': float(torch.min(self.importance_scores)),
+                'std_importance': float(torch.std(self.importance_scores)),
+                'total_scored': len(self.importance_scores)
+            }
+        else:
+            importance_stats = {
+                'average_importance': 0.0,
+                'max_importance': 0.0,
+                'min_importance': 0.0,
+                'std_importance': 0.0,
+                'total_scored': 0
+            }
+        return {
+            'neural_memory': neural_status,
+            'attention_retrieval': attention_data,
+            'memory_embedding': embedding_info,
+            'importance_scoring': importance_stats,
+            '_thesis': thesis,
             'circuit_breaker_state': self.circuit_breaker['state'],
             'fallback_reason': reason
         }

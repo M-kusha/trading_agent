@@ -68,7 +68,7 @@ class MetaAgentConfig:
     version="3.0.0",
     category="meta",
     provides=["automation_decisions", "system_mode", "automation_metrics", "meta_performance"],
-    requires=["system_performance", "training_metrics", "market_conditions", "risk_signals"],
+    requires=["training_metrics", "market_conditions"],  # keep others optional in code
     description="Advanced meta agent for autonomous trading system automation and lifecycle management",
     thesis_required=True,
     health_monitoring=True,
@@ -354,24 +354,23 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
             return await self._handle_meta_error(e, start_time)
 
     async def _extract_meta_data(self, **inputs) -> Optional[Dict[str, Any]]:
-        """Extract meta data from SmartInfoBus"""
+        """Extract meta data from SmartInfoBus with robust fallbacks."""
         try:
-            # Get system performance
+            # Core inputs (authoritative writers exist)
+            training_metrics   = self.smart_bus.get('training_metrics', 'MetaAgent') or {}
+            market_conditions  = self.smart_bus.get('market_conditions', 'MetaAgent') or {}
+
+            # Optional context (do not break if absent)
             system_performance = self.smart_bus.get('system_performance', 'MetaAgent') or {}
-            
-            # Get training metrics
-            training_metrics = self.smart_bus.get('training_metrics', 'MetaAgent') or {}
-            
-            # Get market conditions
-            market_conditions = self.smart_bus.get('market_conditions', 'MetaAgent') or {}
-            
-            # Get risk signals
-            risk_signals = self.smart_bus.get('risk_signals', 'MetaAgent') or {}
-            
-            # Get direct inputs
+            # Accept either legacy 'risk_signals' or modern 'time_risk_analysis'
+            risk_signals       = self.smart_bus.get('risk_signals', 'MetaAgent') \
+                                or self.smart_bus.get('time_risk_analysis', 'MetaAgent') \
+                                or {}
+
+            # Direct inputs
             pnl = inputs.get('pnl', 0.0)
             performance_update = inputs.get('performance_update')
-            
+
             return {
                 'system_performance': system_performance,
                 'training_metrics': training_metrics,
@@ -381,10 +380,10 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
                 'performance_update': performance_update,
                 'timestamp': datetime.datetime.now().isoformat()
             }
-            
         except Exception as e:
             self.logger.error(f"Failed to extract meta data: {e}")
             return None
+
 
     async def _update_system_performance(self, meta_data: Dict[str, Any]) -> Dict[str, Any]:
         """Update system performance metrics"""

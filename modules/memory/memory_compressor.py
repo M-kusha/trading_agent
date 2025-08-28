@@ -104,7 +104,7 @@ class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
             name="MemoryCompressor", 
-            log_path="logs/memory_compression.log", 
+            log_path="logs/memory/memory_compression.log", 
             max_lines=3000, 
             operator_mode=True,
             plain_english=True

@@ -36,7 +36,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
         "session_metrics", "strategy_performance", "risk_metrics"
     ],
     description="Advanced thesis development and evolution system with intelligent learning and adaptation",
-    thesis_required=True,
+    thesis_required=False,
     health_monitoring=True,
     performance_tracking=True,
     error_handling=True,

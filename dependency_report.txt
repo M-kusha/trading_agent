@@ -1,0 +1,45 @@
+DEPENDENCY AUDIT REPORT
+==================================================
+
+Title: Dependency Audit - System Health Check
+Generated at: 1756418107.9909127
+Elapsed time: 0ms
+
+SUMMARY:
+------------------------------
+Total providers: 2
+Total consumers: 0
+Active keys: 2
+Cache hit rate: 0.0%
+Disabled modules: []
+
+CRITICAL KEYS STATUS:
+------------------------------
+market_regime:
+  Providers: []
+  Consumers: []
+
+training_metrics:
+  Providers: []
+  Consumers: []
+
+performance_metrics:
+  Providers: []
+  Consumers: []
+
+risk_data:
+  Providers: []
+  Consumers: []
+
+sequence_quality:
+  Providers: []
+  Consumers: []
+
+trade_vote:
+  Providers: []
+  Consumers: []
+
+SAMPLE FRESHNESS:
+------------------------------
+compliance: v1 from SmartInfoBus age=0.0s conf=0.90
+anomaly_detector: v1 from SmartInfoBus age=0.0s conf=0.90

@@ -45,16 +45,17 @@ class MemoryBudgetConfig:
 
 @module(
     name="MemoryBudgetOptimizer",
-    version="3.0.0",
+    version="3.0.1",  # bump
     category="memory",
     provides=["memory_allocation", "budget_optimization", "memory_efficiency", "allocation_strategy"],
-    requires=["trades", "mistakes", "playbook_entries", "memory_usage"],
+    requires=["memory_usage"],  # trades/mistakes/playbook_entries become soft/optional reads
     description="Advanced memory budget optimization with dynamic allocation strategies",
     thesis_required=True,
     health_monitoring=True,
     performance_tracking=True,
     error_handling=True
 )
+
 class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
     Advanced memory budget optimizer with SmartInfoBus integration.
@@ -109,7 +110,7 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
             if getattr(self.__class__, "_shared_logger", None) is None:
                 self.__class__._shared_logger = RotatingLogger(
                     name="MemoryBudgetOptimizer",
-                    log_path="logs/memory_budget.log",
+                    log_path="logs/memory/memory_budget.log",
                     max_lines=3000,
                     operator_mode=True,
                     plain_english=True
@@ -305,19 +306,39 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
             return await self._handle_memory_error(e, start_time)
 
     async def _extract_memory_data(self, **inputs) -> Optional[Dict[str, Any]]:
-        """Extract memory usage data from SmartInfoBus"""
+        """Extract memory usage data with robust fallbacks for optional sources."""
         try:
-            # Get recent trades
+            # Soft inputs (present if upstream provides them)
             trades = self.smart_bus.get('trades', 'MemoryBudgetOptimizer') or []
+
             mistakes = self.smart_bus.get('mistakes', 'MemoryBudgetOptimizer') or []
+            if not mistakes:
+                # Derive from MistakeMemory when available
+                # Prefer explicit recent mistakes if exposed; otherwise infer from loss_prevention metrics.
+                loss_prev = self.smart_bus.get('loss_prevention', 'MemoryBudgetOptimizer') or {}
+                # Heuristic: accept any list-like under a plausible key; else empty
+                if isinstance(loss_prev, dict):
+                    # If upstream adds 'recent_losses': [{'cost': ...}, ...], this will just work.
+                    candidates = loss_prev.get('recent_losses') or loss_prev.get('loss_events') or []
+                    mistakes = candidates if isinstance(candidates, (list, tuple, deque, np.ndarray)) else []
+                # Last resort: empty list (safe no-ops in utilization)
+            
             playbook_entries = self.smart_bus.get('playbook_entries', 'MemoryBudgetOptimizer') or []
-            
-            # Get memory usage stats
+            if not playbook_entries:
+                # Derive from PlaybookMemory when available
+                pattern_mem = self.smart_bus.get('pattern_memory', 'MemoryBudgetOptimizer') or {}
+                # Flatten pattern effectiveness into pseudo-entries using 'total_pnl' as value
+                if isinstance(pattern_mem, dict):
+                    pe = pattern_mem.get('pattern_effectiveness', {})
+                    if isinstance(pe, dict):
+                        playbook_entries = [{'value': v.get('total_pnl', 0.0)} for v in pe.values() if isinstance(v, dict)]
+
+            # Required input (kept minimal)
             memory_usage = self.smart_bus.get('memory_usage', 'MemoryBudgetOptimizer') or {}
-            
-            # Get performance metrics
+
+            # Performance metrics (optional)
             performance_data = self.smart_bus.get('performance_metrics', 'MemoryBudgetOptimizer') or {}
-            
+
             return {
                 'trades': trades,
                 'mistakes': mistakes,
@@ -326,10 +347,10 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
                 'performance_data': performance_data,
                 'timestamp': datetime.now().isoformat()
             }
-            
         except Exception as e:
             self.logger.error(f"Failed to extract memory data: {e}")
             return None
+
 
     async def _process_memory_utilization(self, memory_data: Dict[str, Any]) -> Dict[str, Any]:
         """Process memory utilization with enhanced analytics"""

@@ -1,13 +1,16 @@
 """
-🕵️ Enhanced Collusion Auditor with SmartInfoBus Integration v3.0
+🕵️ Enhanced Collusion Auditor with SmartInfoBus Integration v3.1
 Advanced collusion detection and anti-manipulation safeguards for voting committees
 """
 
+from __future__ import annotations
+
 import asyncio
 import time
+import math
 import numpy as np
-import datetime
-from typing import Dict, Any, List, Optional, Tuple, Set
+import datetime as dt
+from typing import Dict, Any, List, Optional, Tuple, Set, Deque
 from collections import deque, defaultdict
 
 # ═══════════════════════════════════════════════════════════════════
@@ -25,15 +28,30 @@ from modules.monitoring.performance_tracker import PerformanceTracker
 
 @module(
     name="CollusionAuditor",
-    version="3.0.0",
+    version="3.1.0",
     category="voting",
     provides=[
-        "collusion_score", "suspicious_pairs", "member_independence_scores", "collusion_alerts",
-        "behavioral_profiles", "coordination_events", "detection_statistics", "audit_recommendations"
+        "collusion_score",
+        "suspicious_pairs",
+        "member_independence_scores",
+        "collusion_alerts",
+        "behavioral_profiles",
+        "coordination_events",
+        "detection_statistics",
+        "audit_recommendations",
     ],
     requires=[
-        "votes", "voting_summary", "strategy_arbiter_weights", "raw_proposals", "member_confidences",
-        "consensus_direction", "agreement_score", "market_context", "recent_trades"
+        "votes",
+        "voting_summary",
+        "strategy_arbiter_weights",
+        "raw_proposals",
+        "member_confidences",
+        "consensus_direction",
+        "agreement_score",
+        "market_context",
+        "recent_trades",
+        "market_regime",
+        "volatility_data",
     ],
     description="Advanced collusion detection and anti-manipulation safeguards for voting committees",
     thesis_required=True,
@@ -43,1969 +61,1486 @@ from modules.monitoring.performance_tracker import PerformanceTracker
     timeout_ms=100,
     priority=2,
     explainable=True,
-    hot_reload=True
+    hot_reload=True,
 )
 class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    🕵️ PRODUCTION-GRADE Collusion Auditor v3.0
-    
-    Advanced collusion detection system with:
+    🕵️ PRODUCTION-GRADE Collusion Auditor v3.1
+
     - Multi-dimensional similarity analysis for detecting coordination patterns
     - Adaptive threshold management based on market conditions
-    - Comprehensive behavioral profiling and temporal pattern analysis
+    - Behavioral profiling and temporal/network pattern analysis
     - SmartInfoBus zero-wiring architecture
     - Real-time threat assessment and alert management
     """
 
-    def _initialize(self):
-        """Initialize advanced collusion detection systems"""
-        # Initialize base mixins
-        self._initialize_trading_state()
-        self._initialize_state_management()
-        self._initialize_advanced_systems()
-        
-        # Enhanced detection configuration
-        self.n_members = self.config.get('n_members', 5)
-        self.window = self.config.get('window', 10)
-        self.base_threshold = self.config.get('threshold', 0.9)
-        self.current_threshold = self.base_threshold
-        self.adaptive_threshold = self.config.get('adaptive_threshold', True)
-        self.similarity_methods = self.config.get('similarity_methods', ['cosine', 'correlation', 'euclidean'])
-        self.debug = self.config.get('debug', False)
-        
-        # Initialize comprehensive detection methods
-        self.detection_methods = self._initialize_detection_methods()
-        
-        # Core collusion detection state
-        self.vote_history = deque(maxlen=self.window * 2)
-        self.collusion_score = 0.0
-        self.suspicious_pairs = set()
-        self.collusion_history = deque(maxlen=100)
-        
-        # Advanced behavioral analysis
-        self.pair_agreement_history = defaultdict(lambda: deque(maxlen=self.window))
-        self.member_behavior_profiles = defaultdict(lambda: {
-            'avg_similarity': 0.0,
-            'volatility': 0.0,
-            'consistency_score': 0.0,
-            'independence_score': 1.0,
-            'coordination_frequency': 0.0,
-            'anomaly_score': 0.0
-        })
-        
-        # Temporal and coordination analysis
-        self.temporal_patterns = defaultdict(list)
-        self.coordination_events = deque(maxlen=50)
-        self.alert_patterns = defaultdict(list)
-        
-        # Enhanced statistics and analytics
-        self.detection_stats = {
-            'total_checks': 0,
-            'alerts_raised': 0,
-            'false_positive_rate': 0.0,
-            'confirmed_collusion_events': 0,
-            'avg_pair_similarity': 0.0,
-            'member_independence_scores': {},
-            'detection_accuracy': 0.95,
-            'alert_frequency': 0.0,
-            'session_start': datetime.datetime.now().isoformat()
-        }
-        
-        # Adaptive intelligence parameters
-        self.detection_intelligence = {
-            'threshold_bounds': (0.7, 0.98),
-            'adaptation_rate': 0.15,
-            'sensitivity_target': 0.85,
-            'false_positive_threshold': 0.1,
-            'confirmation_threshold': 0.8,
-            'temporal_sensitivity': 0.6,
-            'behavioral_memory': 0.9
-        }
-        
-        # Market condition adaptation
-        self.market_adaptation = {
-            'regime_multipliers': {
-                'trending': 1.1,    # Stricter during trending (coordination easier)
-                'ranging': 0.9,     # More lenient during ranging
-                'volatile': 0.85,   # More lenient during high volatility
-                'breakout': 1.2,    # Very strict during breakouts
-                'reversal': 1.15,   # Strict during reversals
-                'unknown': 1.0
-            },
-            'agreement_adjustments': {
-                'high_agreement': 1.2,    # Stricter when natural agreement is high
-                'medium_agreement': 1.0,
-                'low_agreement': 0.8      # More lenient when natural disagreement
-            }
-        }
-        
-        # Alert management system
-        self.alert_system = {
-            'cooldown_period': 10,  # Steps between alerts for same pair
-            'escalation_threshold': 3,  # Alerts before escalation
-            'severity_levels': ['info', 'warning', 'critical'],
-            'auto_investigation': True,
-            'last_alerts': defaultdict(int),
-            'alert_history': deque(maxlen=100)
-        }
-        
-        # Quality and performance metrics
-        self.quality_metrics = {
-            'detection_precision': 0.0,
-            'detection_recall': 0.0,
-            'behavioral_accuracy': 0.0,
-            'temporal_consistency': 0.0,
-            'overall_effectiveness': 0.0
-        }
-        
-        # Circuit breaker for error handling
-        self.error_count = 0
-        self.circuit_breaker_threshold = 5
-        self.is_disabled = False
-        
-        # Generate initialization thesis
-        self._generate_initialization_thesis()
-        
-        version = getattr(self.metadata, 'version', '3.0.0') if self.metadata else '3.0.0'
-        self.logger.info(format_operator_message(
-            icon="🕵️",
-            message=f"Collusion Auditor v{version} initialized",
-            members=self.n_members,
-            window=self.window,
-            base_threshold=f"{self.base_threshold:.3f}",
-            methods=len(self.similarity_methods),
-            adaptive=self.adaptive_threshold
-        ))
-
-    def _initialize_advanced_systems(self):
-        """Initialize all modern system components"""
+    # ────────────────────────────
+    # INIT & SYSTEM WIRING
+    # ────────────────────────────
+    def _initialize(self) -> None:
+        # Core services (no calls to unknown mixin init hooks)
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
             name="CollusionAuditor",
             log_path="logs/voting/collusion_auditor.log",
             max_lines=5000,
             operator_mode=True,
-            plain_english=True
+            plain_english=True,
         )
         self.error_pinpointer = ErrorPinpointer()
         self.error_handler = create_error_handler("CollusionAuditor", self.error_pinpointer)
         self.english_explainer = EnglishExplainer()
         self.system_utilities = SystemUtilities()
         self.performance_tracker = PerformanceTracker()
-        self.health_monitor = HealthMonitor()
+        self.health_monitor = HealthMonitor(auto_start=False)
 
-    def _initialize_detection_methods(self) -> Dict[str, Dict[str, Any]]:
-        """Initialize comprehensive detection method definitions"""
-        return {
-            'cosine_similarity': {
-                'description': 'Cosine similarity analysis for detecting aligned voting patterns',
-                'parameters': {'normalization': True, 'weight_threshold': 0.1},
-                'use_cases': ['general_coordination', 'direction_alignment'],
-                'effectiveness_threshold': 0.7,
-                'computational_cost': 'low'
-            },
-            'correlation_analysis': {
-                'description': 'Statistical correlation analysis for temporal coordination patterns',
-                'parameters': {'min_samples': 3, 'confidence_level': 0.95},
-                'use_cases': ['temporal_coordination', 'sequential_patterns'],
-                'effectiveness_threshold': 0.8,
-                'computational_cost': 'medium'
-            },
-            'euclidean_distance': {
-                'description': 'Distance-based analysis for detecting similar magnitude responses',
-                'parameters': {'distance_normalization': True, 'outlier_detection': True},
-                'use_cases': ['magnitude_coordination', 'precision_collusion'],
-                'effectiveness_threshold': 0.6,
-                'computational_cost': 'low'
-            },
-            'behavioral_profiling': {
-                'description': 'Long-term behavioral pattern analysis for identifying systematic coordination',
-                'parameters': {'profile_memory': 50, 'anomaly_sensitivity': 0.3},
-                'use_cases': ['systematic_collusion', 'long_term_coordination'],
-                'effectiveness_threshold': 0.75,
-                'computational_cost': 'high'
-            },
-            'temporal_clustering': {
-                'description': 'Time-based clustering analysis for detecting coordinated timing patterns',
-                'parameters': {'time_window': 5, 'clustering_threshold': 0.8},
-                'use_cases': ['timing_coordination', 'synchronized_responses'],
-                'effectiveness_threshold': 0.7,
-                'computational_cost': 'medium'
+        # Configuration
+        self.n_members: int = int(self.config.get("n_members", 5))
+        self.window: int = int(self.config.get("window", 10))
+        self.base_threshold: float = float(self.config.get("threshold", 0.9))
+        self.current_threshold: float = float(self.base_threshold)
+        self.adaptive_threshold: bool = bool(self.config.get("adaptive_threshold", True))
+        self.similarity_methods: List[str] = list(
+            self.config.get("similarity_methods", ["cosine", "correlation", "euclidean"])
+        )
+        self.debug: bool = bool(self.config.get("debug", False))
+
+        # Method registry (metadata)
+        self.detection_methods = self._initialize_detection_methods()
+
+        # Collusion state
+        self.vote_history: deque = deque(maxlen=self.window * 2)
+        self.collusion_score: float = 0.0
+        self.suspicious_pairs: Set[Tuple[int, int]] = set()
+        self.collusion_history: deque = deque(maxlen=100)
+
+        # Pair & member analytics
+        self.pair_agreement_history: Dict[Tuple[int, int], deque] = defaultdict(lambda: deque(maxlen=self.window))
+        self.member_behavior_profiles: Dict[int, Dict[str, float]] = defaultdict(
+            lambda: {
+                "avg_similarity": 0.0,
+                "volatility": 0.0,
+                "consistency_score": 0.0,
+                "independence_score": 1.0,
+                "coordination_frequency": 0.0,
+                "anomaly_score": 0.0,
             }
+        )
+
+        # Temporal/network tracking
+        self.temporal_patterns: Dict[str, Any] = defaultdict(list)
+        self.coordination_events: deque = deque(maxlen=50)
+        self.alert_patterns: Dict[str, Any] = defaultdict(list)
+
+        # Statistics
+        self.detection_stats: Dict[str, Any] = {
+            "total_checks": 0,
+            "alerts_raised": 0,
+            "false_positive_rate": 0.0,
+            "confirmed_collusion_events": 0,
+            "avg_pair_similarity": 0.0,
+            "member_independence_scores": {},
+            "detection_accuracy": 0.95,
+            "alert_frequency": 0.0,
+            "session_start": dt.datetime.now().isoformat(),
         }
 
-    def _generate_initialization_thesis(self):
-        """Generate comprehensive initialization thesis"""
-        thesis = f"""
-        Collusion Auditor v3.0 Initialization Complete:
-        
-        Advanced Detection Framework:
-        - Multi-member committee surveillance: {self.n_members} members with {self.window}-step analysis window
-        - Adaptive detection algorithms with intelligent threshold adjustment ({self.base_threshold:.3f} base)
-        - Comprehensive behavioral profiling and temporal pattern analysis capabilities
-        - Market-aware detection adaptation based on regime and agreement conditions
-        
-        Current Configuration:
-        - Detection methods: {len(self.detection_methods)} distinct approaches available
-        - Adaptive threshold: {'enabled' if self.adaptive_threshold else 'disabled'} with bounds [{self.detection_intelligence['threshold_bounds'][0]:.3f}, {self.detection_intelligence['threshold_bounds'][1]:.3f}]
-        - Similarity methods: {', '.join(self.similarity_methods)} for multi-dimensional analysis
-        - Alert management: {self.alert_system['cooldown_period']}-step cooldown with {len(self.alert_system['severity_levels'])} severity levels
-        
-        Detection Intelligence Features:
-        - Market regime adaptation with agreement-aware scaling
-        - Multi-method analysis with effectiveness-based weighting
-        - Real-time behavioral profiling and anomaly detection
-        - Comprehensive quality metrics and performance analytics
-        
-        Advanced Capabilities:
-        - Temporal clustering analysis for coordinated timing detection
-        - Behavioral profiling for systematic collusion identification
-        - Adaptive alert management with escalation procedures
-        - Real-time effectiveness monitoring and threshold optimization
-        
-        Expected Outcomes:
-        - Enhanced voting integrity through comprehensive coordination detection
-        - Improved threat identification with behavioral pattern analysis
-        - Optimal detection sensitivity adapted to current market conditions
-        - Transparent audit decisions with detailed forensic analysis and recommendations
-        """
-        
-        self.smart_bus.set('collusion_auditor_initialization', {
-            'status': 'initialized',
-            'thesis': thesis,
-            'timestamp': datetime.datetime.now().isoformat(),
-            'configuration': {
-                'members': self.n_members,
-                'window': self.window,
-                'detection_methods': list(self.detection_methods.keys()),
-                'intelligence_parameters': self.detection_intelligence
-            }
-        }, module='CollusionAuditor', thesis=thesis)
+        # Intelligence knobs
+        self.detection_intelligence: Dict[str, Any] = {
+            "threshold_bounds": (0.7, 0.98),
+            "adaptation_rate": 0.15,
+            "sensitivity_target": 0.85,
+            "false_positive_threshold": 0.10,
+            "confirmation_threshold": 0.80,
+            "temporal_sensitivity": 0.60,
+            "behavioral_memory": 0.90,
+        }
 
+        # Market adaptation multipliers
+        self.market_adaptation: Dict[str, Any] = {
+            "regime_multipliers": {
+                "trending": 1.10,
+                "ranging": 0.90,
+                "volatile": 0.85,
+                "breakout": 1.20,
+                "reversal": 1.15,
+                "unknown": 1.00,
+            },
+            "agreement_adjustments": {
+                "high_agreement": 1.20,
+                "medium_agreement": 1.00,
+                "low_agreement": 0.80,
+            },
+        }
+
+        # Alerting system
+        self.alert_system: Dict[str, Any] = {
+            "cooldown_period": 10,  # checks between alerts for same pair
+            "escalation_threshold": 3,
+            "severity_levels": ["info", "warning", "critical"],
+            "auto_investigation": True,
+            "last_alerts": defaultdict(int),  # pair -> last check index
+            "alert_history": deque(maxlen=200),  # store recent alerts
+        }
+
+        # Quality metrics
+        self.quality_metrics: Dict[str, float] = {
+            "detection_precision": 0.0,
+            "detection_recall": 0.0,
+            "behavioral_accuracy": 0.0,
+            "temporal_consistency": 0.0,
+            "overall_effectiveness": 0.0,
+        }
+
+        # Circuit breaker
+        self.error_count: int = 0
+        self.circuit_breaker_threshold: int = 5
+        self.is_disabled: bool = False
+
+        # Announce
+        self._generate_initialization_thesis()
+        version = getattr(self.metadata, "version", "3.1.0") if self.metadata else "3.1.0"
+        self.logger.info(
+            format_operator_message(
+                icon="🕵️",
+                message=f"Collusion Auditor v{version} initialized",
+                members=self.n_members,
+                window=self.window,
+                base_threshold=f"{self.base_threshold:.3f}",
+                methods=len(self.similarity_methods),
+                adaptive=self.adaptive_threshold,
+            )
+        )
+
+    def _initialize_detection_methods(self) -> Dict[str, Dict[str, Any]]:
+        return {
+            "cosine_similarity": {
+                "description": "Cosine similarity analysis for detecting aligned voting patterns",
+                "parameters": {"normalization": True, "weight_threshold": 0.1},
+                "use_cases": ["general_coordination", "direction_alignment"],
+                "effectiveness_threshold": 0.7,
+                "computational_cost": "low",
+            },
+            "correlation_analysis": {
+                "description": "Statistical correlation analysis for temporal coordination patterns",
+                "parameters": {"min_samples": 3, "confidence_level": 0.95},
+                "use_cases": ["temporal_coordination", "sequential_patterns"],
+                "effectiveness_threshold": 0.8,
+                "computational_cost": "medium",
+            },
+            "euclidean_distance": {
+                "description": "Distance-based analysis for detecting similar magnitude responses",
+                "parameters": {"distance_normalization": True, "outlier_detection": True},
+                "use_cases": ["magnitude_coordination", "precision_collusion"],
+                "effectiveness_threshold": 0.6,
+                "computational_cost": "low",
+            },
+            "behavioral_profiling": {
+                "description": "Long-term behavioral pattern analysis for identifying systematic coordination",
+                "parameters": {"profile_memory": 50, "anomaly_sensitivity": 0.3},
+                "use_cases": ["systematic_collusion", "long_term_coordination"],
+                "effectiveness_threshold": 0.75,
+                "computational_cost": "high",
+            },
+            "temporal_clustering": {
+                "description": "Time-based clustering analysis for detecting coordinated timing patterns",
+                "parameters": {"time_window": 5, "clustering_threshold": 0.8},
+                "use_cases": ["timing_coordination", "synchronized_responses"],
+                "effectiveness_threshold": 0.7,
+                "computational_cost": "medium",
+            },
+        }
+
+    def _generate_initialization_thesis(self) -> None:
+        thesis = f"""
+Collusion Auditor v3.1 Initialization:
+- Members={self.n_members}, Window={self.window}, BaseThreshold={self.base_threshold:.3f}
+- Adaptive={'on' if self.adaptive_threshold else 'off'} Bounds={self.detection_intelligence['threshold_bounds']}
+- Methods={len(self.detection_methods)} Similarities={', '.join(self.similarity_methods)}
+- Alerts cooldown={self.alert_system['cooldown_period']} levels={len(self.alert_system['severity_levels'])}
+"""
+        self.smart_bus.set(
+            "collusion_auditor_initialization",
+            {
+                "status": "initialized",
+                "thesis": thesis,
+                "timestamp": dt.datetime.now().isoformat(),
+                "configuration": {
+                    "members": self.n_members,
+                    "window": self.window,
+                    "detection_methods": list(self.detection_methods.keys()),
+                    "intelligence_parameters": self.detection_intelligence,
+                },
+            },
+            module="CollusionAuditor",
+            thesis=thesis,
+        )
+
+    # ────────────────────────────
+    # MAIN PROCESS
+    # ────────────────────────────
     async def process(self, **inputs) -> Dict[str, Any]:
-        """
-        Modern async processing with comprehensive collusion analysis
-        
-        Returns:
-            Dict containing detection results, behavioral analysis, and recommendations
-        """
         start_time = time.time()
-        
         try:
-            # Circuit breaker check
             if self.is_disabled:
                 return self._generate_disabled_response()
-            
-            # Get comprehensive voting data from SmartInfoBus
+
             voting_data = await self._get_comprehensive_voting_data()
-            
-            # Update detection parameters based on market conditions
             await self._update_detection_parameters_comprehensive(voting_data)
-            
-            # Perform comprehensive collusion analysis
+
             collusion_analysis = await self._perform_comprehensive_collusion_analysis(voting_data)
-            
-            # Update behavioral profiles
             behavioral_updates = await self._update_behavioral_profiles_comprehensive(voting_data)
-            
-            # Analyze temporal coordination patterns
             temporal_analysis = await self._analyze_temporal_coordination_patterns(voting_data)
-            
-            # Calculate comprehensive quality metrics
             quality_analysis = await self._calculate_comprehensive_quality_metrics()
-            
-            # Generate detection recommendations
+
             recommendations = await self._generate_intelligent_detection_recommendations(
                 collusion_analysis, behavioral_updates, temporal_analysis
             )
-            
-            # Generate comprehensive thesis
             thesis = await self._generate_comprehensive_detection_thesis(
                 collusion_analysis, quality_analysis, recommendations
             )
-            
-            # Create comprehensive results
-            results = {
-                'collusion_score': self.collusion_score,
-                'suspicious_pairs': list(self.suspicious_pairs),
-                'member_independence_scores': self.get_member_independence_scores(),
-                'collusion_alerts': self._get_recent_collusion_alerts(),
-                'behavioral_profiles': self._get_behavioral_profiles_summary(),
-                'coordination_events': list(self.coordination_events)[-10:],
-                'detection_statistics': self._get_comprehensive_detection_stats(),
-                'audit_recommendations': recommendations,
-                'quality_metrics': quality_analysis,
-                'health_metrics': self._get_health_metrics(),
-                '_thesis': thesis
+
+            results: Dict[str, Any] = {
+                "collusion_score": float(self.collusion_score),
+                "suspicious_pairs": [tuple(p) for p in self.suspicious_pairs],
+                "member_independence_scores": self.get_member_independence_scores(),
+                "collusion_alerts": self._get_recent_collusion_alerts(),
+                "behavioral_profiles": self._get_behavioral_profiles_summary(),
+                "coordination_events": list(self.coordination_events)[-10:],
+                "detection_statistics": self._get_comprehensive_detection_stats(),
+                "audit_recommendations": recommendations,
+                "quality_metrics": quality_analysis,
+                "health_metrics": self._get_health_metrics(),
+                "_thesis": thesis,
             }
-            
-            # Update SmartInfoBus with comprehensive thesis
+
             await self._update_smartinfobus_comprehensive(results, thesis)
-            
-            # Record performance metrics
-            processing_time = (time.time() - start_time) * 1000
-            self.performance_tracker.record_metric('CollusionAuditor', 'process_time', processing_time, True)
-            
-            # Reset error count on successful processing
+
+            self.performance_tracker.record_metric(
+                "CollusionAuditor", "process_time_ms", (time.time() - start_time) * 1000.0, True
+            )
             self.error_count = 0
-            
             return results
-            
+
         except Exception as e:
             return await self._handle_processing_error(e, start_time)
 
+    # ────────────────────────────
+    # BUS IO
+    # ────────────────────────────
     async def _get_comprehensive_voting_data(self) -> Dict[str, Any]:
-        """Get comprehensive voting data using modern SmartInfoBus patterns"""
         try:
+            g = self.smart_bus.get
             return {
-                'votes': self.smart_bus.get('votes', 'CollusionAuditor') or [],
-                'voting_summary': self.smart_bus.get('voting_summary', 'CollusionAuditor') or {},
-                'strategy_arbiter_weights': self.smart_bus.get('strategy_arbiter_weights', 'CollusionAuditor') or [],
-                'raw_proposals': self.smart_bus.get('raw_proposals', 'CollusionAuditor') or [],
-                'member_confidences': self.smart_bus.get('member_confidences', 'CollusionAuditor') or [],
-                'consensus_direction': self.smart_bus.get('consensus_direction', 'CollusionAuditor') or 'neutral',
-                'agreement_score': self.smart_bus.get('agreement_score', 'CollusionAuditor') or 0.5,
-                'market_context': self.smart_bus.get('market_context', 'CollusionAuditor') or {},
-                'recent_trades': self.smart_bus.get('recent_trades', 'CollusionAuditor') or [],
-                'market_regime': self.smart_bus.get('market_regime', 'CollusionAuditor') or 'unknown',
-                'volatility_data': self.smart_bus.get('volatility_data', 'CollusionAuditor') or {}
+                "votes": g("votes", "CollusionAuditor") or [],
+                "voting_summary": g("voting_summary", "CollusionAuditor") or {},
+                "strategy_arbiter_weights": g("strategy_arbiter_weights", "CollusionAuditor") or [],
+                "raw_proposals": g("raw_proposals", "CollusionAuditor") or [],
+                "member_confidences": g("member_confidences", "CollusionAuditor") or [],
+                "consensus_direction": g("consensus_direction", "CollusionAuditor") or "neutral",
+                "agreement_score": g("agreement_score", "CollusionAuditor") or 0.5,
+                "market_context": g("market_context", "CollusionAuditor") or {},
+                "recent_trades": g("recent_trades", "CollusionAuditor") or [],
+                "market_regime": g("market_regime", "CollusionAuditor") or "unknown",
+                "volatility_data": g("volatility_data", "CollusionAuditor") or {},
             }
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "CollusionAuditor")
             self.logger.warning(f"Voting data retrieval incomplete: {error_context}")
             return self._get_safe_voting_defaults()
 
-    async def _update_detection_parameters_comprehensive(self, voting_data: Dict[str, Any]):
-        """Update comprehensive detection parameters with intelligent adaptation"""
+    # ────────────────────────────
+    # ADAPTIVE THRESHOLD
+    # ────────────────────────────
+    async def _update_detection_parameters_comprehensive(self, voting_data: Dict[str, Any]) -> None:
         try:
             if not self.adaptive_threshold:
                 return
-            
-            # Extract market intelligence
-            market_context = voting_data.get('market_context', {})
-            regime = voting_data.get('market_regime', 'unknown')
-            agreement_score = voting_data.get('agreement_score', 0.5)
-            recent_trades = voting_data.get('recent_trades', [])
-            
-            # Calculate market uncertainty factor
-            market_uncertainty = self._calculate_market_uncertainty_factor(voting_data)
-            
-            # Calculate base adaptation multiplier
+
+            regime = str(voting_data.get("market_regime", "unknown"))
+            agreement_score = float(voting_data.get("agreement_score", 0.5))
+            recent_trades = voting_data.get("recent_trades", [])
+
+            market_uncertainty = float(self._calculate_market_uncertainty_factor(voting_data))
+
             base_multiplier = 1.0
-            
-            # Apply regime-based adaptation
-            regime_multiplier = self.market_adaptation['regime_multipliers'].get(regime, 1.0)
-            base_multiplier *= regime_multiplier
-            
-            # Apply agreement-based adaptation
+            base_multiplier *= float(self.market_adaptation["regime_multipliers"].get(regime, 1.0))
+
             if agreement_score > 0.8:
-                agreement_category = 'high_agreement'
+                agreement_category = "high_agreement"
             elif agreement_score > 0.4:
-                agreement_category = 'medium_agreement'
+                agreement_category = "medium_agreement"
             else:
-                agreement_category = 'low_agreement'
-            
-            agreement_multiplier = self.market_adaptation['agreement_adjustments'].get(agreement_category, 1.0)
-            base_multiplier *= agreement_multiplier
-            
-            # Apply performance-based adaptation
+                agreement_category = "low_agreement"
+            base_multiplier *= float(self.market_adaptation["agreement_adjustments"].get(agreement_category, 1.0))
+
             if recent_trades:
-                recent_performance = self._calculate_recent_performance(recent_trades)
-                if abs(recent_performance) > 0.05:  # High performance volatility
-                    base_multiplier *= 1.1  # Stricter detection during high performance volatility
-            
-            # Calculate target threshold with intelligent bounds
-            target_threshold = self.base_threshold * base_multiplier
-            target_threshold = np.clip(
-                target_threshold,
-                self.detection_intelligence['threshold_bounds'][0],
-                self.detection_intelligence['threshold_bounds'][1]
+                recent_performance = float(self._calculate_recent_performance(recent_trades))
+                if abs(recent_performance) > 0.05:
+                    base_multiplier *= 1.1
+
+            target_threshold = float(
+                np.clip(
+                    self.base_threshold * base_multiplier,
+                    self.detection_intelligence["threshold_bounds"][0],
+                    self.detection_intelligence["threshold_bounds"][1],
+                )
             )
-            
-            # Apply momentum-based smooth adaptation
-            adaptation_rate = self.detection_intelligence['adaptation_rate']
-            old_threshold = self.current_threshold
-            self.current_threshold = (
-                old_threshold * (1 - adaptation_rate) +
-                target_threshold * adaptation_rate
-            )
-            
-            # Track significant adaptations
-            threshold_change = abs(self.current_threshold - old_threshold)
-            if threshold_change > 0.01:  # Threshold for significant change
-                adaptation_record = {
-                    'timestamp': datetime.datetime.now().isoformat(),
-                    'old_threshold': old_threshold,
-                    'new_threshold': self.current_threshold,
-                    'regime': regime,
-                    'agreement_score': agreement_score,
-                    'market_uncertainty': market_uncertainty,
-                    'base_multiplier': base_multiplier
-                }
-                
-                # Log significant adaptation
-                self.logger.info(format_operator_message(
-                    icon="[TARGET]",
-                    message="Detection threshold adapted",
-                    old_threshold=f"{old_threshold:.4f}",
-                    new_threshold=f"{self.current_threshold:.4f}",
-                    regime=regime,
-                    agreement=f"{agreement_score:.1%}",
-                    uncertainty=f"{market_uncertainty:.3f}"
-                ))
-                
+
+            rate = float(self.detection_intelligence["adaptation_rate"])
+            old = float(self.current_threshold)
+            self.current_threshold = float(old * (1.0 - rate) + target_threshold * rate)
+
+            if abs(self.current_threshold - old) > 0.01:
+                self.logger.info(
+                    format_operator_message(
+                        icon="[TARGET]",
+                        message="Detection threshold adapted",
+                        old_threshold=f"{old:.4f}",
+                        new_threshold=f"{self.current_threshold:.4f}",
+                        regime=regime,
+                        agreement=f"{agreement_score:.2f}",
+                        uncertainty=f"{market_uncertainty:.3f}",
+                    )
+                )
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "detection_parameters_update")
             self.logger.warning(f"Detection parameter update failed: {error_context}")
 
     def _calculate_market_uncertainty_factor(self, voting_data: Dict[str, Any]) -> float:
-        """Calculate comprehensive market uncertainty factor"""
         try:
-            uncertainty_components = []
-            
-            # Agreement uncertainty (inverse relationship)
-            agreement_score = voting_data.get('agreement_score', 0.5)
-            agreement_uncertainty = 1.0 - agreement_score
-            uncertainty_components.append(agreement_uncertainty)
-            
-            # Regime uncertainty
-            regime = voting_data.get('market_regime', 'unknown')
-            regime_uncertainty = 0.8 if regime == 'unknown' else 0.2
-            uncertainty_components.append(regime_uncertainty)
-            
-            # Volatility uncertainty
-            volatility_data = voting_data.get('volatility_data', {})
-            volatility_level = volatility_data.get('level', 'medium')
-            volatility_uncertainty = {
-                'very_low': 0.1, 'low': 0.3, 'medium': 0.5, 'high': 0.8, 'extreme': 1.0
-            }.get(volatility_level, 0.5)
-            uncertainty_components.append(volatility_uncertainty)
-            
-            # Performance uncertainty
-            recent_trades = voting_data.get('recent_trades', [])
-            if len(recent_trades) >= 3:
-                recent_pnls = [t.get('pnl', 0) for t in recent_trades[-5:]]
-                if recent_pnls:
-                    pnl_volatility = np.std(recent_pnls) / (abs(np.mean(recent_pnls)) + 0.01)
-                    performance_uncertainty = min(1.0, float(pnl_volatility))
-                    uncertainty_components.append(performance_uncertainty)
-            
-            # Weighted combination
-            if uncertainty_components:
-                weights = [0.4, 0.2, 0.3, 0.1][:len(uncertainty_components)]
-                weights = np.array(weights) / np.sum(weights)  # Normalize
-                total_uncertainty = np.average(uncertainty_components, weights=weights)
-            else:
-                total_uncertainty = 0.5
-            
-            return np.clip(total_uncertainty, 0.0, 1.0)
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "market_uncertainty_calculation")
+            comps: List[float] = []
+            # inverse of agreement
+            comps.append(1.0 - float(voting_data.get("agreement_score", 0.5)))
+            # regime
+            comps.append(0.8 if str(voting_data.get("market_regime", "unknown")) == "unknown" else 0.2)
+            # volatility
+            vol_level = (
+                voting_data.get("volatility_data", {}) or {}
+            ).get("level", "medium")
+            comps.append({"very_low": 0.1, "low": 0.3, "medium": 0.5, "high": 0.8, "extreme": 1.0}.get(vol_level, 0.5))
+            # performance
+            rtr = voting_data.get("recent_trades", [])
+            if len(rtr) >= 3:
+                pnls = [float(t.get("pnl", 0.0)) for t in rtr[-5:]]
+                if pnls:
+                    vol = float(np.std(pnls) / (abs(np.mean(pnls)) + 0.01))
+                    comps.append(min(1.0, vol))
+
+            w = np.array([0.4, 0.2, 0.3, 0.1][: len(comps)], dtype=np.float32)
+            w = w / float(w.sum()) if float(w.sum()) > 0 else w
+            total = float(np.dot(np.array(comps, dtype=np.float32), w))
+            return float(np.clip(total, 0.0, 1.0))
+        except Exception:
             return 0.5
 
-    def _calculate_recent_performance(self, recent_trades: List[Dict]) -> float:
-        """Calculate recent trading performance"""
+    def _calculate_recent_performance(self, recent_trades: List[Dict[str, Any]]) -> float:
         try:
             if not recent_trades:
                 return 0.0
-            
-            recent_pnl = [trade.get('pnl', 0) for trade in recent_trades[-10:]]
-            return float(np.mean(recent_pnl))
+            recent_pnl = [float(trade.get("pnl", 0.0)) for trade in recent_trades[-10:]]
+            return float(np.mean(recent_pnl)) if recent_pnl else 0.0
         except Exception:
             return 0.0
 
+    # ────────────────────────────
+    # CORE ANALYSIS
+    # ────────────────────────────
     async def _perform_comprehensive_collusion_analysis(self, voting_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Perform comprehensive collusion analysis with multiple detection methods"""
         try:
-            self.detection_stats['total_checks'] += 1
-            
-            # Extract voting actions
+            self.detection_stats["total_checks"] += 1
+
             actions = self._extract_voting_actions(voting_data)
             if len(actions) < 2:
-                return {'collusion_score': 0.0, 'suspicious_pairs': [], 'analysis_status': 'insufficient_data'}
-            
-            # Add to history
-            timestamp = datetime.datetime.now().isoformat()
-            vote_entry = {
-                'timestamp': timestamp,
-                'actions': [action.copy() for action in actions],
-                'n_members': len(actions),
-                'agreement_score': voting_data.get('agreement_score', 0.5),
-                'market_regime': voting_data.get('market_regime', 'unknown')
-            }
-            self.vote_history.append(vote_entry)
-            
-            # Need sufficient history for meaningful analysis
+                return {"collusion_score": 0.0, "suspicious_pairs": [], "analysis_status": "insufficient_data"}
+
+            timestamp = dt.datetime.now().isoformat()
+            self.vote_history.append(
+                {
+                    "timestamp": timestamp,
+                    "actions": [a.copy() for a in actions],
+                    "n_members": len(actions),
+                    "agreement_score": float(voting_data.get("agreement_score", 0.5)),
+                    "market_regime": str(voting_data.get("market_regime", "unknown")),
+                }
+            )
+
             if len(self.vote_history) < 3:
-                return {'collusion_score': 0.0, 'suspicious_pairs': [], 'analysis_status': 'building_history'}
-            
-            # Perform multi-method similarity analysis
+                return {"collusion_score": 0.0, "suspicious_pairs": [], "analysis_status": "building_history"}
+
             similarity_analysis = await self._calculate_comprehensive_similarities(actions)
-            
-            # Update pair agreement history
             await self._update_pair_agreements_comprehensive(similarity_analysis)
-            
-            # Detect suspicious coordination patterns
             coordination_analysis = await self._detect_coordination_patterns(similarity_analysis)
-            
-            # Update suspicious pairs and generate alerts
             alert_updates = await self._update_suspicious_pairs_and_alerts(coordination_analysis)
-            
-            # Calculate overall collusion score
+
             self.collusion_score = await self._calculate_overall_collusion_score(coordination_analysis)
-            
-            # Record comprehensive collusion event
-            collusion_event = {
-                'timestamp': timestamp,
-                'collusion_score': self.collusion_score,
-                'suspicious_pairs': list(self.suspicious_pairs),
-                'similarity_analysis': {str(k): v for k, v in similarity_analysis.items()},
-                'threshold_used': self.current_threshold,
-                'coordination_analysis': coordination_analysis,
-                'alert_updates': alert_updates
-            }
-            self.collusion_history.append(collusion_event)
-            
-            # Update comprehensive statistics
+
+            self.collusion_history.append(
+                {
+                    "timestamp": timestamp,
+                    "collusion_score": float(self.collusion_score),
+                    "suspicious_pairs": list(self.suspicious_pairs),
+                    "similarity_analysis": {str(k): v for k, v in similarity_analysis.items()},
+                    "threshold_used": float(self.current_threshold),
+                    "coordination_analysis": coordination_analysis,
+                    "alert_updates": alert_updates,
+                }
+            )
+
             await self._update_detection_statistics_comprehensive(similarity_analysis, coordination_analysis)
-            
+
             return {
-                'collusion_score': self.collusion_score,
-                'suspicious_pairs': list(self.suspicious_pairs),
-                'similarity_analysis': similarity_analysis,
-                'coordination_analysis': coordination_analysis,
-                'alert_updates': alert_updates,
-                'analysis_status': 'complete'
+                "collusion_score": float(self.collusion_score),
+                "suspicious_pairs": list(self.suspicious_pairs),
+                "similarity_analysis": similarity_analysis,
+                "coordination_analysis": coordination_analysis,
+                "alert_updates": alert_updates,
+                "analysis_status": "complete",
             }
-            
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "collusion_analysis")
             self.logger.error(f"Collusion analysis failed: {error_context}")
-            return {'collusion_score': 0.0, 'suspicious_pairs': [], 'analysis_status': 'error', 'error': str(error_context)}
+            return {"collusion_score": 0.0, "suspicious_pairs": [], "analysis_status": "error", "error": str(error_context)}
 
     def _extract_voting_actions(self, voting_data: Dict[str, Any]) -> List[np.ndarray]:
-        """Extract voting actions from comprehensive voting data"""
         try:
-            # Try raw proposals first (most detailed)
-            raw_proposals = voting_data.get('raw_proposals', [])
+            raw_proposals = voting_data.get("raw_proposals", [])
             if raw_proposals and len(raw_proposals) >= 2:
-                actions = []
-                for proposal in raw_proposals[:self.n_members]:
+                actions: List[np.ndarray] = []
+                for proposal in raw_proposals[: self.n_members]:
                     if isinstance(proposal, (list, np.ndarray)) and len(proposal) > 0:
-                        actions.append(np.array(proposal, dtype=np.float32))
+                        actions.append(np.asarray(proposal, dtype=np.float32))
                 if len(actions) >= 2:
                     return actions
-            
-            # Fallback to votes
-            votes = voting_data.get('votes', [])
+
+            votes = voting_data.get("votes", [])
             if votes and len(votes) >= 2:
                 actions = []
-                for vote in votes[:self.n_members]:
-                    if isinstance(vote, (int, float)):
+                for vote in votes[: self.n_members]:
+                    if isinstance(vote, (int, float, np.floating)):
                         actions.append(np.array([float(vote)], dtype=np.float32))
                     elif isinstance(vote, (list, np.ndarray)):
-                        actions.append(np.array(vote, dtype=np.float32))
+                        arr = np.asarray(vote, dtype=np.float32)
+                        if arr.size > 0:
+                            actions.append(arr)
                 if len(actions) >= 2:
                     return actions
-            
-            # Fallback to strategy weights
-            weights = voting_data.get('strategy_arbiter_weights', [])
+
+            weights = voting_data.get("strategy_arbiter_weights", [])
             if weights and len(weights) >= 2:
-                return [np.array(w, dtype=np.float32) for w in weights[:self.n_members]]
-            
+                return [np.asarray(w, dtype=np.float32) for w in weights[: self.n_members]]
+
             return []
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "voting_actions_extraction")
+        except Exception:
             return []
 
-    async def _calculate_comprehensive_similarities(self, actions: List[np.ndarray]) -> Dict[Tuple[int, int], Dict[str, float]]:
-        """Calculate comprehensive similarities using multiple advanced methods"""
+    async def _calculate_comprehensive_similarities(
+        self, actions: List[np.ndarray]
+    ) -> Dict[Tuple[int, int], Dict[str, float]]:
         try:
-            similarities = {}
-            
-            for i in range(len(actions)):
-                for j in range(i + 1, len(actions)):
-                    pair = (i, j)
+            sims: Dict[Tuple[int, int], Dict[str, float]] = {}
+            n = len(actions)
+            for i in range(n):
+                for j in range(i + 1, n):
                     v1, v2 = actions[i], actions[j]
-                    
-                    pair_similarities = {}
-                    
-                    # Only calculate if both vectors have magnitude
-                    if np.linalg.norm(v1) > 1e-6 and np.linalg.norm(v2) > 1e-6:
-                        
-                        # Cosine similarity
-                        if 'cosine' in self.similarity_methods:
-                            cosine_sim = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
-                            pair_similarities['cosine'] = float(np.clip(cosine_sim, -1, 1))
-                        
-                        # Correlation (for multi-dimensional vectors)
-                        if 'correlation' in self.similarity_methods and len(v1) > 1:
-                            if np.std(v1) > 1e-6 and np.std(v2) > 1e-6:
-                                correlation = np.corrcoef(v1, v2)[0, 1]
-                                if not np.isnan(correlation):
-                                    pair_similarities['correlation'] = float(correlation)
-                        
-                        # Inverse Euclidean distance (normalized)
-                        if 'euclidean' in self.similarity_methods:
-                            distance = np.linalg.norm(v1 - v2)
-                            max_distance = np.linalg.norm(v1) + np.linalg.norm(v2)
-                            if max_distance > 1e-6:
-                                euclidean_sim = 1.0 - (distance / max_distance)
-                                pair_similarities['euclidean'] = float(euclidean_sim)
-                        
-                        # Angular similarity (direction-focused)
-                        if len(v1) > 1 and len(v2) > 1:
-                            # Angle between vectors
-                            dot_product = np.dot(v1, v2)
-                            norms = np.linalg.norm(v1) * np.linalg.norm(v2)
-                            if norms > 1e-6:
-                                cos_angle = np.clip(dot_product / norms, -1, 1)
-                                angle_similarity = (cos_angle + 1) / 2  # Normalize to [0, 1]
-                                pair_similarities['angular'] = float(angle_similarity)
-                    
-                    similarities[pair] = pair_similarities
-            
-            return similarities
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "similarity_calculation")
+                    pair: Tuple[int, int] = (i, j)
+                    pair_sims: Dict[str, float] = {}
+
+                    n1 = float(np.linalg.norm(v1))
+                    n2 = float(np.linalg.norm(v2))
+                    if n1 <= 1e-9 or n2 <= 1e-9:
+                        sims[pair] = pair_sims
+                        continue
+
+                    # Cosine
+                    if "cosine" in self.similarity_methods:
+                        c = float(np.dot(v1, v2) / (n1 * n2))
+                        pair_sims["cosine"] = float(np.clip(c, -1.0, 1.0))
+
+                    # Correlation (only if var>0 and dim>1)
+                    if "correlation" in self.similarity_methods and v1.size > 1 and v2.size > 1:
+                        s1 = float(np.std(v1))
+                        s2 = float(np.std(v2))
+                        if s1 > 1e-9 and s2 > 1e-9:
+                            corr = float(np.corrcoef(v1, v2)[0, 1])
+                            if not math.isnan(corr):
+                                pair_sims["correlation"] = float(np.clip(corr, -1.0, 1.0))
+
+                    # Euclidean (normalized to [0,1] as similarity)
+                    if "euclidean" in self.similarity_methods:
+                        dist = float(np.linalg.norm(v1 - v2))
+                        maxd = n1 + n2
+                        eu = 1.0 - (dist / maxd if maxd > 1e-9 else 0.0)
+                        pair_sims["euclidean"] = float(np.clip(eu, -1.0, 1.0))
+
+                    # Angular similarity in [0,1]
+                    dotp = float(np.dot(v1, v2))
+                    cos_angle = float(np.clip(dotp / (n1 * n2), -1.0, 1.0))
+                    ang_sim = (cos_angle + 1.0) / 2.0
+                    pair_sims["angular"] = float(ang_sim)
+
+                    sims[pair] = pair_sims
+            return sims
+        except Exception:
             return {}
 
-    async def _update_pair_agreements_comprehensive(self, similarity_analysis: Dict[Tuple[int, int], Dict[str, float]]):
-        """Update comprehensive pair agreement tracking with advanced analytics"""
+    async def _update_pair_agreements_comprehensive(
+        self, similarity_analysis: Dict[Tuple[int, int], Dict[str, float]]
+    ) -> None:
         try:
-            for pair, similarities in similarity_analysis.items():
-                if similarities:
-                    # Calculate weighted average of similarity measures
-                    valid_similarities = list(similarities.values())
-                    if valid_similarities:
-                        # Weight different similarity measures
-                        weights = {
-                            'cosine': 0.4,
-                            'correlation': 0.3,
-                            'euclidean': 0.2,
-                            'angular': 0.1
-                        }
-                        
-                        weighted_similarity = 0.0
-                        total_weight = 0.0
-                        
-                        for method, similarity in similarities.items():
-                            weight = weights.get(method, 0.25)
-                            weighted_similarity += similarity * weight
-                            total_weight += weight
-                        
-                        if total_weight > 0:
-                            final_similarity = weighted_similarity / total_weight
-                            self.pair_agreement_history[pair].append(final_similarity)
-                        
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "pair_agreements_update")
+            weights = {"cosine": 0.4, "correlation": 0.3, "euclidean": 0.2, "angular": 0.1}
+            for pair, smap in similarity_analysis.items():
+                if not smap:
+                    continue
+                wsum = 0.0
+                acc = 0.0
+                for method, val in smap.items():
+                    w = float(weights.get(method, 0.25))
+                    acc += float(val) * w
+                    wsum += w
+                if wsum > 0.0:
+                    final = float(acc / wsum)
+                    self.pair_agreement_history[pair].append(final)
+        except Exception:
+            pass
 
-    async def _detect_coordination_patterns(self, similarity_analysis: Dict[Tuple[int, int], Dict[str, float]]) -> Dict[str, Any]:
-        """Detect comprehensive coordination patterns using advanced analysis"""
+    async def _detect_coordination_patterns(
+        self, similarity_analysis: Dict[Tuple[int, int], Dict[str, float]]
+    ) -> Dict[str, Any]:
         try:
-            coordination_analysis = {
-                'coordinated_pairs': [],
-                'coordination_strength': {},
-                'temporal_patterns': {},
-                'behavioral_anomalies': {},
-                'network_effects': {}
+            out: Dict[str, Any] = {
+                "coordinated_pairs": [],
+                "coordination_strength": {},
+                "temporal_patterns": {},
+                "behavioral_anomalies": {},
+                "network_effects": {},
             }
-            
-            for pair, similarities in similarity_analysis.items():
-                if not similarities:
+            for pair in similarity_analysis.keys():
+                hist = self.pair_agreement_history.get(pair, deque())
+                if len(hist) < 3:
                     continue
-                
-                # Get historical agreement for this pair
-                pair_history = self.pair_agreement_history.get(pair, deque())
-                if len(pair_history) < 3:
-                    continue
-                
-                # Calculate various coordination metrics
-                historical_avg = np.mean(list(pair_history))
-                recent_avg = np.mean(list(pair_history)[-3:]) if len(pair_history) >= 3 else historical_avg
-                trend = recent_avg - historical_avg
-                consistency = 1.0 - (np.std(list(pair_history)) / max(float(historical_avg), 0.1))
-                
-                # Detect coordination based on multiple criteria
-                is_coordinated = (
-                    historical_avg > self.current_threshold and
-                    consistency > 0.7 and
-                    len(pair_history) >= 5
-                )
-                
-                if is_coordinated:
-                    coordination_analysis['coordinated_pairs'].append(pair)
-                    coordination_analysis['coordination_strength'][pair] = {
-                        'historical_avg': historical_avg,
-                        'recent_avg': recent_avg,
-                        'trend': trend,
-                        'consistency': consistency,
-                        'coordination_score': historical_avg * consistency
+
+                hist_list = list(hist)
+                hist_avg = float(np.mean(hist_list))
+                recent_avg = float(np.mean(hist_list[-3:])) if len(hist_list) >= 3 else hist_avg
+                trend = float(recent_avg - hist_avg)
+                stdv = float(np.std(hist_list))
+                consistency = float(max(0.0, 1.0 - (stdv / max(hist_avg, 0.1))))
+
+                is_coord = hist_avg > self.current_threshold and consistency > 0.7 and len(hist_list) >= 5
+                if is_coord:
+                    out["coordinated_pairs"].append(pair)
+                    out["coordination_strength"][pair] = {
+                        "historical_avg": hist_avg,
+                        "recent_avg": recent_avg,
+                        "trend": trend,
+                        "consistency": consistency,
+                        "coordination_score": float(hist_avg * consistency),
                     }
-                
-                # Analyze temporal patterns
-                if len(pair_history) >= 5:
-                    temporal_pattern = self._analyze_temporal_pattern(list(pair_history))
-                    coordination_analysis['temporal_patterns'][pair] = temporal_pattern
-                
-                # Detect behavioral anomalies
-                if len(pair_history) >= 10:
-                    anomaly_score = self._calculate_anomaly_score(list(pair_history))
-                    if anomaly_score > 0.7:
-                        coordination_analysis['behavioral_anomalies'][pair] = anomaly_score
-            
-            # Analyze network effects (multi-member coordination)
-            coordination_analysis['network_effects'] = await self._analyze_network_coordination_effects(
-                coordination_analysis['coordinated_pairs']
-            )
-            
-            return coordination_analysis
-            
+
+                if len(hist_list) >= 5:
+                    out["temporal_patterns"][pair] = self._analyze_temporal_pattern(hist_list)
+                if len(hist_list) >= 10:
+                    anom = self._calculate_anomaly_score(hist_list)
+                    if anom > 0.7:
+                        out["behavioral_anomalies"][pair] = float(anom)
+
+            out["network_effects"] = await self._analyze_network_coordination_effects(out["coordinated_pairs"])
+            return out
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "coordination_pattern_detection")
-            return {'coordinated_pairs': [], 'coordination_strength': {}, 'analysis_error': str(error_context)}
+            return {"coordinated_pairs": [], "coordination_strength": {}, "analysis_error": str(error_context)}
 
     def _analyze_temporal_pattern(self, history: List[float]) -> Dict[str, Any]:
-        """Analyze temporal patterns in coordination history"""
         try:
             if len(history) < 3:
-                return {'pattern': 'insufficient_data'}
-            
-            # Calculate trend
+                return {"pattern": "insufficient_data"}
             x = np.arange(len(history))
-            slope = np.polyfit(x, history, 1)[0]
-            
-            # Calculate volatility
-            volatility = np.std(history)
-            
-            # Detect pattern type
+            try:
+                slope = float(np.polyfit(x, history, 1)[0])
+            except Exception:
+                slope = 0.0
+            volatility = float(np.std(history))
+            meanv = float(np.mean(history))
             if abs(slope) < 0.01 and volatility < 0.1:
-                pattern = 'stable_high' if np.mean(history) > 0.8 else 'stable_low'
+                pattern = "stable_high" if meanv > 0.8 else "stable_low"
             elif slope > 0.05:
-                pattern = 'increasing'
+                pattern = "increasing"
             elif slope < -0.05:
-                pattern = 'decreasing'
+                pattern = "decreasing"
             elif volatility > 0.3:
-                pattern = 'volatile'
+                pattern = "volatile"
             else:
-                pattern = 'moderate'
-            
-            return {
-                'pattern': pattern,
-                'slope': slope,
-                'volatility': volatility,
-                'mean_value': np.mean(history),
-                'recent_trend': 'up' if len(history) >= 3 and history[-1] > history[-3] else 'down'
-            }
-            
+                pattern = "moderate"
+            recent_trend = "up" if (len(history) >= 3 and history[-1] > history[-3]) else "down"
+            return {"pattern": pattern, "slope": slope, "volatility": volatility, "mean_value": meanv, "recent_trend": recent_trend}
         except Exception:
-            return {'pattern': 'unknown'}
+            return {"pattern": "unknown"}
 
     def _calculate_anomaly_score(self, history: List[float]) -> float:
-        """Calculate behavioral anomaly score"""
         try:
             if len(history) < 5:
                 return 0.0
-            
-            # Calculate z-scores for recent values
-            mean_val = np.mean(history[:-3])  # Exclude recent values from baseline
-            std_val = np.std(history[:-3])
-            
-            if std_val < 1e-6:
+            base = history[:-3]
+            if len(base) < 2:
                 return 0.0
-            
-            recent_values = history[-3:]
-            z_scores = [(val - mean_val) / std_val for val in recent_values]
-            
-            # Anomaly score based on how many standard deviations from normal
-            max_z_score = max(float(abs(z)) for z in z_scores)
-            anomaly_score = min(1.0, max_z_score / 3.0)  # Normalize to [0, 1]
-            
-            return float(anomaly_score)
-            
+            m = float(np.mean(base))
+            s = float(np.std(base))
+            if s < 1e-9:
+                return 0.0
+            z = [abs((float(v) - m) / s) for v in history[-3:]]
+            return float(min(1.0, max(z) / 3.0))
         except Exception:
             return 0.0
 
-    async def _analyze_network_coordination_effects(self, coordinated_pairs: List[Tuple[int, int]]) -> Dict[str, Any]:
-        """Analyze network-level coordination effects"""
+    async def _analyze_network_coordination_effects(self, pairs: List[Tuple[int, int]]) -> Dict[str, Any]:
         try:
-            if not coordinated_pairs:
-                return {'network_score': 0.0, 'clusters': [], 'coordination_density': 0.0}
-            
-            # Build coordination network
-            coordination_network = defaultdict(set)
-            for pair in coordinated_pairs:
-                i, j = pair
-                coordination_network[i].add(j)
-                coordination_network[j].add(i)
-            
-            # Find coordination clusters
-            clusters = []
-            visited = set()
-            
-            for member in coordination_network:
-                if member not in visited:
-                    cluster = self._find_coordination_cluster(member, coordination_network, visited)
-                    if len(cluster) > 2:  # Only clusters with 3+ members are significant
-                        clusters.append(cluster)
-            
-            # Calculate network metrics
-            total_possible_pairs = self.n_members * (self.n_members - 1) / 2
-            coordination_density = len(coordinated_pairs) / max(total_possible_pairs, 1)
-            
-            # Network coordination score
-            network_score = coordination_density
-            if clusters:
-                # Bonus for large clusters
-                largest_cluster_size = max(len(cluster) for cluster in clusters)
-                cluster_bonus = (largest_cluster_size - 2) / max(self.n_members - 2, 1)
-                network_score += cluster_bonus * 0.5
-            
-            network_score = min(1.0, network_score)
-            
+            if not pairs:
+                return {"network_score": 0.0, "clusters": [], "coordination_density": 0.0, "largest_cluster_size": 0, "total_coordinated_pairs": 0}
+            net: Dict[int, Set[int]] = defaultdict(set)
+            for i, j in pairs:
+                net[i].add(j)
+                net[j].add(i)
+
+            clusters: List[List[int]] = []
+            visited: Set[int] = set()
+
+            def dfs(start: int) -> List[int]:
+                stack = [start]
+                cluster: List[int] = []
+                while stack:
+                    u = stack.pop()
+                    if u in visited:
+                        continue
+                    visited.add(u)
+                    cluster.append(u)
+                    for v in net.get(u, set()):
+                        if v not in visited:
+                            stack.append(v)
+                return sorted(cluster)
+
+            for node in list(net.keys()):
+                if node not in visited:
+                    c = dfs(node)
+                    if len(c) > 2:
+                        clusters.append(c)
+
+            total_pairs = self.n_members * (self.n_members - 1) / 2.0
+            density = float(len(pairs) / max(total_pairs, 1.0))
+            largest = max((len(c) for c in clusters), default=0)
+            score = density + 0.5 * ((largest - 2) / max(self.n_members - 2, 1.0)) if largest >= 3 else density
             return {
-                'network_score': network_score,
-                'clusters': clusters,
-                'coordination_density': coordination_density,
-                'largest_cluster_size': max(len(cluster) for cluster in clusters) if clusters else 0,
-                'total_coordinated_pairs': len(coordinated_pairs)
+                "network_score": float(min(1.0, max(0.0, score))),
+                "clusters": clusters,
+                "coordination_density": float(density),
+                "largest_cluster_size": int(largest),
+                "total_coordinated_pairs": int(len(pairs)),
             }
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "network_coordination_analysis")
-            return {'network_score': 0.0, 'clusters': [], 'coordination_density': 0.0}
+        except Exception:
+            return {"network_score": 0.0, "clusters": [], "coordination_density": 0.0, "largest_cluster_size": 0, "total_coordinated_pairs": 0}
 
-    def _find_coordination_cluster(self, start_member: int, network: Dict[int, Set[int]], visited: Set[int]) -> List[int]:
-        """Find coordination cluster using DFS"""
-        cluster = []
-        stack = [start_member]
-        
-        while stack:
-            member = stack.pop()
-            if member not in visited:
-                visited.add(member)
-                cluster.append(member)
-                
-                # Add connected members to stack
-                for connected_member in network.get(member, set()):
-                    if connected_member not in visited:
-                        stack.append(connected_member)
-        
-        return sorted(cluster)
-
-    async def _update_suspicious_pairs_and_alerts(self, coordination_analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """Update suspicious pairs and manage comprehensive alert system"""
+    async def _update_suspicious_pairs_and_alerts(self, coord: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            alert_updates = {
-                'new_alerts': [],
-                'escalated_alerts': [],
-                'resolved_alerts': [],
-                'alert_summary': {}
-            }
-            
-            old_suspicious = self.suspicious_pairs.copy()
-            self.suspicious_pairs.clear()
-            
-            # Update suspicious pairs from coordination analysis
-            coordinated_pairs = coordination_analysis.get('coordinated_pairs', [])
-            self.suspicious_pairs.update(coordinated_pairs)
-            
-            # Generate alerts for new or escalated suspicious activity
+            updates = {"new_alerts": [], "escalated_alerts": [], "resolved_alerts": [], "alert_summary": {}}
+            old = set(self.suspicious_pairs)
+            self.suspicious_pairs = set(coord.get("coordinated_pairs", []))
+
+            # New / periodic alerts
             for pair in self.suspicious_pairs:
-                coordination_strength = coordination_analysis.get('coordination_strength', {}).get(pair, {})
-                coordination_score = coordination_strength.get('coordination_score', 0.0)
-                
-                # Check if this is a new alert or needs escalation
-                last_alert_step = self.alert_system['last_alerts'].get(pair, 0)
-                steps_since_last_alert = self.detection_stats['total_checks'] - last_alert_step
-                
-                should_alert = (
-                    pair not in old_suspicious or  # New suspicious pair
-                    steps_since_last_alert > self.alert_system['cooldown_period']  # Cooldown period passed
-                )
-                
-                if should_alert:
-                    alert_severity = self._determine_alert_severity(coordination_score)
-                    alert_info = await self._generate_coordination_alert(pair, coordination_strength, alert_severity)
-                    
-                    alert_updates['new_alerts'].append(alert_info)
-                    self.alert_system['last_alerts'][pair] = self.detection_stats['total_checks']
-                    
+                strength = coord.get("coordination_strength", {}).get(pair, {})
+                score = float(strength.get("coordination_score", 0.0))
+                last_step = int(self.alert_system["last_alerts"].get(pair, 0))
+                steps_since = int(self.detection_stats["total_checks"] - last_step)
+                if pair not in old or steps_since > int(self.alert_system["cooldown_period"]):
+                    sev = self._determine_alert_severity(score)
+                    alert = await self._generate_coordination_alert(pair, strength, sev)
+                    updates["new_alerts"].append(alert)
+                    self.alert_system["last_alerts"][pair] = int(self.detection_stats["total_checks"])
+                    self.alert_system["alert_history"].append(alert)
+                    # Escalation logic (simple heuristic based on repeats)
+                    repeat_count = sum(1 for a in self.alert_system["alert_history"] if tuple(a.get("pair", (-1, -1))) == pair)
+                    if repeat_count >= int(self.alert_system["escalation_threshold"]) and sev != "critical":
+                        alert_escalated = dict(alert)
+                        alert_escalated["severity"] = "critical"
+                        updates["escalated_alerts"].append(alert_escalated)
+                        self.alert_system["alert_history"].append(alert_escalated)
+
                     # Record coordination event
-                    coordination_event = {
-                        'timestamp': datetime.datetime.now().isoformat(),
-                        'pair': pair,
-                        'coordination_score': coordination_score,
-                        'alert_severity': alert_severity,
-                        'coordination_strength': coordination_strength,
-                        'alert_type': 'coordination_detection'
+                    self.coordination_events.append(
+                        {
+                            "timestamp": dt.datetime.now().isoformat(),
+                            "pair": pair,
+                            "coordination_score": score,
+                            "alert_severity": sev,
+                            "coordination_strength": strength,
+                            "alert_type": "coordination_detection",
+                        }
+                    )
+
+            # Resolutions
+            resolved = old - self.suspicious_pairs
+            for pair in resolved:
+                updates["resolved_alerts"].append(
+                    {
+                        "pair": pair,
+                        "resolution_timestamp": dt.datetime.now().isoformat(),
+                        "resolution_reason": "coordination_below_threshold",
                     }
-                    self.coordination_events.append(coordination_event)
-            
-            # Check for resolved alerts (pairs no longer suspicious)
-            resolved_pairs = old_suspicious - self.suspicious_pairs
-            for pair in resolved_pairs:
-                alert_updates['resolved_alerts'].append({
-                    'pair': pair,
-                    'resolution_timestamp': datetime.datetime.now().isoformat(),
-                    'resolution_reason': 'coordination_below_threshold'
-                })
-            
-            # Update alert statistics
-            self.detection_stats['alerts_raised'] += len(alert_updates['new_alerts'])
-            
-            alert_updates['alert_summary'] = {
-                'total_suspicious_pairs': len(self.suspicious_pairs),
-                'new_alerts_count': len(alert_updates['new_alerts']),
-                'resolved_alerts_count': len(alert_updates['resolved_alerts']),
-                'active_cooldowns': len(self.alert_system['last_alerts'])
+                )
+
+            self.detection_stats["alerts_raised"] += int(len(updates["new_alerts"]))
+            updates["alert_summary"] = {
+                "total_suspicious_pairs": int(len(self.suspicious_pairs)),
+                "new_alerts_count": int(len(updates["new_alerts"])),
+                "resolved_alerts_count": int(len(updates["resolved_alerts"])),
+                "active_cooldowns": int(len(self.alert_system["last_alerts"])),
             }
-            
-            return alert_updates
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "alert_system_update")
-            return {'new_alerts': [], 'escalated_alerts': [], 'resolved_alerts': [], 'alert_summary': {}}
+            return updates
+        except Exception:
+            return {"new_alerts": [], "escalated_alerts": [], "resolved_alerts": [], "alert_summary": {}}
 
     def _determine_alert_severity(self, coordination_score: float) -> str:
-        """Determine alert severity based on coordination score"""
         try:
-            if coordination_score > 0.9:
-                return 'critical'
-            elif coordination_score > 0.8:
-                return 'warning'
-            else:
-                return 'info'
+            if coordination_score > 0.90:
+                return "critical"
+            if coordination_score > 0.80:
+                return "warning"
+            return "info"
         except Exception:
-            return 'info'
+            return "info"
 
-    async def _generate_coordination_alert(self, pair: Tuple[int, int], coordination_strength: Dict[str, Any], 
-                                         severity: str) -> Dict[str, Any]:
-        """Generate comprehensive coordination alert"""
+    async def _generate_coordination_alert(
+        self, pair: Tuple[int, int], strength: Dict[str, Any], severity: str
+    ) -> Dict[str, Any]:
         try:
-            member_i, member_j = pair
-            historical_avg = coordination_strength.get('historical_avg', 0.0)
-            consistency = coordination_strength.get('consistency', 0.0)
-            trend = coordination_strength.get('trend', 0.0)
-            
-            # Generate human-readable alert message
-            if severity == 'critical':
-                icon = "[ALERT]"
-                message = f"CRITICAL: High coordination detected between members {member_i} and {member_j}"
-            elif severity == 'warning':
-                icon = "[WARN]"
-                message = f"WARNING: Suspicious coordination between members {member_i} and {member_j}"
+            i, j = pair
+            hist = float(strength.get("historical_avg", 0.0))
+            cons = float(strength.get("consistency", 0.0))
+            trend = float(strength.get("trend", 0.0))
+            if severity == "critical":
+                icon, msg = "[ALERT]", f"CRITICAL: High coordination detected between members {i} and {j}"
+            elif severity == "warning":
+                icon, msg = "[WARN]", f"WARNING: Suspicious coordination between members {i} and {j}"
             else:
-                icon = "ℹ️"
-                message = f"INFO: Monitoring coordination between members {member_i} and {member_j}"
-            
-            # Log the alert
-            self.logger.warning(format_operator_message(
-                icon=icon,
-                message=message,
-                coordination=f"{historical_avg:.3f}",
-                threshold=f"{self.current_threshold:.3f}",
-                consistency=f"{consistency:.3f}",
-                trend=f"{trend:+.3f}",
-                action_required="Monitor these members closely"
-            ))
-            
+                icon, msg = "ℹ️", f"INFO: Monitoring coordination between members {i} and {j}"
+
+            self.logger.warning(
+                format_operator_message(
+                    icon=icon,
+                    message=msg,
+                    coordination=f"{hist:.3f}",
+                    threshold=f"{self.current_threshold:.3f}",
+                    consistency=f"{cons:.3f}",
+                    trend=f"{trend:+.3f}",
+                    action_required="Monitor these members closely",
+                )
+            )
             return {
-                'timestamp': datetime.datetime.now().isoformat(),
-                'pair': pair,
-                'severity': severity,
-                'message': message,
-                'coordination_score': historical_avg,
-                'threshold_used': self.current_threshold,
-                'consistency_score': consistency,
-                'trend': trend,
-                'recommended_action': self._get_recommended_action(severity, coordination_strength)
+                "timestamp": dt.datetime.now().isoformat(),
+                "pair": (int(i), int(j)),
+                "severity": severity,
+                "message": msg,
+                "coordination_score": hist,
+                "threshold_used": float(self.current_threshold),
+                "consistency_score": cons,
+                "trend": trend,
+                "recommended_action": self._get_recommended_action(severity, strength),
             }
-            
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "alert_generation")
             return {
-                'timestamp': datetime.datetime.now().isoformat(),
-                'pair': pair,
-                'severity': 'info',
-                'message': f"Alert generation failed: {error_context}",
-                'coordination_score': 0.0
+                "timestamp": dt.datetime.now().isoformat(),
+                "pair": pair,
+                "severity": "info",
+                "message": f"Alert generation failed: {error_context}",
+                "coordination_score": 0.0,
             }
 
-    def _get_recommended_action(self, severity: str, coordination_strength: Dict[str, Any]) -> str:
-        """Get recommended action based on alert severity and coordination details"""
+    def _get_recommended_action(self, severity: str, strength: Dict[str, Any]) -> str:
         try:
-            if severity == 'critical':
-                return "Immediate investigation required - consider member rotation or voting weight adjustment"
-            elif severity == 'warning':
-                return "Enhanced monitoring recommended - review member behavior patterns"
-            else:
-                return "Continue standard monitoring - document coordination patterns"
+            if severity == "critical":
+                return "Immediate investigation required – consider member rotation or voting weight adjustment"
+            if severity == "warning":
+                return "Enhanced monitoring recommended – review member behavior patterns"
+            return "Continue standard monitoring – document coordination patterns"
         except Exception:
-            return "Monitor situation and investigate if patterns persist"
+            return "Monitor and investigate if patterns persist"
 
-    async def _calculate_overall_collusion_score(self, coordination_analysis: Dict[str, Any]) -> float:
-        """Calculate comprehensive overall collusion score"""
+    async def _calculate_overall_collusion_score(self, coord: Dict[str, Any]) -> float:
         try:
-            coordinated_pairs = coordination_analysis.get('coordinated_pairs', [])
-            network_effects = coordination_analysis.get('network_effects', {})
-            
-            # Base score from pair coordination
-            max_possible_pairs = self.n_members * (self.n_members - 1) / 2
-            pair_score = len(coordinated_pairs) / max(max_possible_pairs, 1)
-            
-            # Network effects bonus
-            network_score = network_effects.get('network_score', 0.0)
-            
-            # Weighted combination
-            overall_score = (0.7 * pair_score + 0.3 * network_score)
-            
-            # Apply temporal consistency factor
+            pairs = coord.get("coordinated_pairs", [])
+            net = coord.get("network_effects", {})
+            max_pairs = self.n_members * (self.n_members - 1) / 2.0
+            pair_score = float(len(pairs) / max(max_pairs, 1.0))
+            net_score = float(net.get("network_score", 0.0))
+            overall = 0.7 * pair_score + 0.3 * net_score
             if len(self.collusion_history) >= 3:
-                recent_scores = [event.get('collusion_score', 0.0) for event in list(self.collusion_history)[-3:]]
-                consistency_factor = 1.0 - (np.std(recent_scores) / max(float(np.mean(recent_scores)), 0.1))
-                overall_score *= (0.8 + 0.2 * consistency_factor)
-            
-            return float(np.clip(overall_score, 0.0, 1.0))
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "overall_collusion_score_calculation")
+                recent = [float(e.get("collusion_score", 0.0)) for e in list(self.collusion_history)[-3:]]
+                if recent:
+                    std = float(np.std(recent))
+                    mean = float(np.mean(recent))
+                    cons = 1.0 - (std / max(mean, 0.1))
+                    overall *= float(np.clip(0.8 + 0.2 * cons, 0.5, 1.2))
+            return float(np.clip(overall, 0.0, 1.0))
+        except Exception:
             return 0.0
 
-    async def _update_detection_statistics_comprehensive(self, similarity_analysis: Dict[Tuple[int, int], Dict[str, float]], 
-                                                       coordination_analysis: Dict[str, Any]):
-        """Update comprehensive detection statistics and analytics"""
+    async def _update_detection_statistics_comprehensive(
+        self, similarity_analysis: Dict[Tuple[int, int], Dict[str, float]], coordination_analysis: Dict[str, Any]
+    ) -> None:
         try:
-            # Calculate average pair similarity
-            all_similarities = []
-            for similarities in similarity_analysis.values():
-                all_similarities.extend(similarities.values())
-            
-            if all_similarities:
-                self.detection_stats['avg_pair_similarity'] = float(np.mean(all_similarities))
-            
-            # Update member independence scores
-            for member_id in range(self.n_members):
-                member_similarities = []
-                for pair, similarities in similarity_analysis.items():
-                    if member_id in pair and similarities:
-                        member_similarities.extend(similarities.values())
-                
-                if member_similarities:
-                    avg_similarity = np.mean(member_similarities)
-                    independence_score = max(0.0, 1.0 - float(avg_similarity))
-                    self.detection_stats['member_independence_scores'][f'member_{member_id}'] = independence_score
-            
-            # Update alert frequency
-            if self.detection_stats['total_checks'] > 0:
-                self.detection_stats['alert_frequency'] = (
-                    self.detection_stats['alerts_raised'] / self.detection_stats['total_checks']
-                )
-            
-            # Update performance metrics
-            self._update_performance_metric('collusion_score', self.collusion_score)
-            self._update_performance_metric('suspicious_pairs_count', len(self.suspicious_pairs))
-            self._update_performance_metric('avg_pair_similarity', self.detection_stats['avg_pair_similarity'])
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "detection_statistics_update")
+            all_vals: List[float] = []
+            for mp in similarity_analysis.values():
+                for v in mp.values():
+                    all_vals.append(float(v))
+            if all_vals:
+                self.detection_stats["avg_pair_similarity"] = float(np.mean(all_vals))
 
+            for member_id in range(self.n_members):
+                mvals: List[float] = []
+                for (i, j), mp in similarity_analysis.items():
+                    if (i == member_id or j == member_id) and mp:
+                        mvals.extend([float(v) for v in mp.values()])
+                if mvals:
+                    avg = float(np.mean(mvals))
+                    indep = max(0.0, 1.0 - avg)
+                    self.detection_stats["member_independence_scores"][f"member_{member_id}"] = float(indep)
+
+            tc = int(self.detection_stats["total_checks"])
+            ar = int(self.detection_stats["alerts_raised"])
+            self.detection_stats["alert_frequency"] = float(ar / tc) if tc > 0 else 0.0
+
+            self._update_performance_metric("collusion_score", float(self.collusion_score))
+            self._update_performance_metric("suspicious_pairs_count", int(len(self.suspicious_pairs)))
+            self._update_performance_metric("avg_pair_similarity", float(self.detection_stats["avg_pair_similarity"]))
+        except Exception:
+            pass
+
+    # ────────────────────────────
+    # BEHAVIORAL ANALYTICS
+    # ────────────────────────────
     async def _update_behavioral_profiles_comprehensive(self, voting_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update comprehensive behavioral profiles for all members"""
         try:
-            behavioral_updates = {
-                'profile_updates': {},
-                'anomaly_detections': {},
-                'behavioral_trends': {}
-            }
-            
-            raw_proposals = voting_data.get('raw_proposals', [])
-            if len(raw_proposals) < 2:
-                return behavioral_updates
-            
-            # Analyze each member's behavior
-            for i, proposal in enumerate(raw_proposals[:self.n_members]):
+            out = {"profile_updates": {}, "anomaly_detections": {}, "behavioral_trends": {}}
+            raw = voting_data.get("raw_proposals", [])
+            if len(raw) < 2:
+                return out
+
+            for i, proposal in enumerate(raw[: self.n_members]):
                 if not isinstance(proposal, (list, np.ndarray)) or len(proposal) == 0:
                     continue
-                
-                proposal_array = np.array(proposal)
-                profile = self.member_behavior_profiles[i]
-                
-                # Calculate similarity with all other members
-                similarities = []
-                for j, other_proposal in enumerate(raw_proposals[:self.n_members]):
-                    if i != j and isinstance(other_proposal, (list, np.ndarray)) and len(other_proposal) > 0:
-                        other_array = np.array(other_proposal)
-                        if np.linalg.norm(proposal_array) > 0 and np.linalg.norm(other_array) > 0:
-                            sim = np.dot(proposal_array, other_array) / (
-                                np.linalg.norm(proposal_array) * np.linalg.norm(other_array)
-                            )
-                            similarities.append(sim)
-                
-                if similarities:
-                    # Update member profile with comprehensive metrics
-                    old_avg_similarity = profile.get('avg_similarity', 0.0)
-                    new_avg_similarity = np.mean(similarities)
-                    
-                    # Exponential moving average for smoothing
-                    memory_factor = self.detection_intelligence['behavioral_memory']
-                    profile['avg_similarity'] = (
-                        old_avg_similarity * memory_factor + 
-                        new_avg_similarity * (1 - memory_factor)
-                    )
-                    
-                    profile['volatility'] = float(np.std(similarities))
-                    profile['independence_score'] = max(0.0, 1.0 - profile['avg_similarity'])
-                    profile['consistency_score'] = float(max(0.0, 1.0 - profile['volatility']))
-                    
-                    # Calculate coordination frequency
-                    high_similarity_count = sum(1 for sim in similarities if sim > self.current_threshold)
-                    profile['coordination_frequency'] = high_similarity_count / len(similarities)
-                    
-                    # Calculate anomaly score
-                    if len(similarities) >= 3:
-                        profile['anomaly_score'] = self._calculate_member_anomaly_score(similarities, profile)
-                    
-                    # Track behavioral changes
-                    similarity_change = abs(new_avg_similarity - old_avg_similarity)
-                    if similarity_change > 0.2:  # Significant behavioral change
-                        behavioral_updates['profile_updates'][i] = {
-                            'old_similarity': old_avg_similarity,
-                            'new_similarity': new_avg_similarity,
-                            'change_magnitude': similarity_change,
-                            'timestamp': datetime.datetime.now().isoformat()
-                        }
-                    
-                    # Detect anomalies
-                    if profile['anomaly_score'] > 0.7:
-                        behavioral_updates['anomaly_detections'][i] = {
-                            'anomaly_score': profile['anomaly_score'],
-                            'anomaly_type': self._classify_behavioral_anomaly(profile),
-                            'timestamp': datetime.datetime.now().isoformat()
-                        }
-                
-                # Update global statistics
-                self.detection_stats['member_independence_scores'][f'member_{i}'] = profile['independence_score']
-            
-            # Analyze behavioral trends across all members
-            behavioral_updates['behavioral_trends'] = await self._analyze_behavioral_trends()
-            
-            return behavioral_updates
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "behavioral_profile_update")
-            return {'profile_updates': {}, 'anomaly_detections': {}, 'behavioral_trends': {}}
+                p = np.asarray(proposal, dtype=np.float32)
+                prof = self.member_behavior_profiles[i]
+                sims: List[float] = []
+                for j, other in enumerate(raw[: self.n_members]):
+                    if i == j or not isinstance(other, (list, np.ndarray)) or len(other) == 0:
+                        continue
+                    q = np.asarray(other, dtype=np.float32)
+                    n1, n2 = float(np.linalg.norm(p)), float(np.linalg.norm(q))
+                    if n1 > 1e-9 and n2 > 1e-9:
+                        sims.append(float(np.dot(p, q) / (n1 * n2)))
+                if not sims:
+                    continue
 
-    def _calculate_member_anomaly_score(self, similarities: List[float], profile: Dict[str, Any]) -> float:
-        """Calculate anomaly score for individual member behavior"""
+                old_avg = float(prof.get("avg_similarity", 0.0))
+                new_avg = float(np.mean(sims))
+                mem = float(self.detection_intelligence["behavioral_memory"])
+                prof["avg_similarity"] = float(old_avg * mem + new_avg * (1.0 - mem))
+                prof["volatility"] = float(np.std(sims))
+                prof["independence_score"] = float(max(0.0, 1.0 - prof["avg_similarity"]))
+                prof["consistency_score"] = float(max(0.0, 1.0 - prof["volatility"]))
+                high_sim = sum(1 for s in sims if s > self.current_threshold)
+                prof["coordination_frequency"] = float(high_sim / max(len(sims), 1))
+                if len(sims) >= 3:
+                    prof["anomaly_score"] = float(self._calculate_member_anomaly_score(sims, prof))
+
+                if abs(new_avg - old_avg) > 0.2:
+                    out["profile_updates"][i] = {
+                        "old_similarity": old_avg,
+                        "new_similarity": new_avg,
+                        "change_magnitude": float(abs(new_avg - old_avg)),
+                        "timestamp": dt.datetime.now().isoformat(),
+                    }
+                if float(prof["anomaly_score"]) > 0.7:
+                    out["anomaly_detections"][i] = {
+                        "anomaly_score": float(prof["anomaly_score"]),
+                        "anomaly_type": self._classify_behavioral_anomaly(prof),
+                        "timestamp": dt.datetime.now().isoformat(),
+                    }
+
+                self.detection_stats["member_independence_scores"][f"member_{i}"] = float(prof["independence_score"])
+
+            out["behavioral_trends"] = await self._analyze_behavioral_trends()
+            return out
+        except Exception:
+            return {"profile_updates": {}, "anomaly_detections": {}, "behavioral_trends": {}}
+
+    def _calculate_member_anomaly_score(self, sims: List[float], prof: Dict[str, Any]) -> float:
         try:
-            historical_avg = profile.get('avg_similarity', 0.0)
-            historical_volatility = profile.get('volatility', 0.0)
-            
-            current_avg = np.mean(similarities)
-            current_volatility = np.std(similarities)
-            
-            # Anomaly based on deviation from historical behavior
-            avg_deviation = abs(current_avg - historical_avg) / max(historical_avg, 0.1)
-            volatility_deviation = abs(current_volatility - historical_volatility) / max(historical_volatility, 0.1)
-            
-            # Combined anomaly score
-            anomaly_score = (avg_deviation + volatility_deviation) / 2
-            return min(1.0, anomaly_score)
-            
+            h_avg = float(prof.get("avg_similarity", 0.0))
+            h_vol = float(prof.get("volatility", 0.0))
+            c_avg = float(np.mean(sims))
+            c_vol = float(np.std(sims))
+            avg_dev = abs(c_avg - h_avg) / max(h_avg, 0.1)
+            vol_dev = abs(c_vol - h_vol) / max(h_vol, 0.1) if h_vol > 1e-9 else 0.0
+            return float(min(1.0, (avg_dev + vol_dev) / 2.0))
         except Exception:
             return 0.0
 
     def _classify_behavioral_anomaly(self, profile: Dict[str, Any]) -> str:
-        """Classify the type of behavioral anomaly"""
         try:
-            avg_similarity = profile.get('avg_similarity', 0.0)
-            volatility = profile.get('volatility', 0.0)
-            coordination_frequency = profile.get('coordination_frequency', 0.0)
-            
-            if avg_similarity > 0.8 and coordination_frequency > 0.7:
-                return 'high_coordination'
-            elif volatility > 0.5:
-                return 'erratic_behavior'
-            elif avg_similarity < 0.2:
-                return 'isolation_behavior'
-            else:
-                return 'moderate_anomaly'
-                
+            a = float(profile.get("avg_similarity", 0.0))
+            v = float(profile.get("volatility", 0.0))
+            f = float(profile.get("coordination_frequency", 0.0))
+            if a > 0.8 and f > 0.7:
+                return "high_coordination"
+            if v > 0.5:
+                return "erratic_behavior"
+            if a < 0.2:
+                return "isolation_behavior"
+            return "moderate_anomaly"
         except Exception:
-            return 'unknown_anomaly'
+            return "unknown_anomaly"
 
     async def _analyze_behavioral_trends(self) -> Dict[str, Any]:
-        """Analyze behavioral trends across all committee members"""
         try:
-            trends = {
-                'overall_coordination_trend': 'stable',
-                'independence_distribution': {},
-                'coordination_network_density': 0.0,
-                'behavioral_diversity': 0.0
+            trends: Dict[str, Any] = {
+                "overall_coordination_trend": "stable",
+                "independence_distribution": {},
+                "coordination_network_density": 0.0,
+                "behavioral_diversity": 0.0,
             }
-            
-            # Calculate overall coordination trend
             if len(self.collusion_history) >= 5:
-                recent_scores = [event.get('collusion_score', 0.0) for event in list(self.collusion_history)[-5:]]
-                trend_slope = self._calculate_slope(recent_scores)
-                
-                if trend_slope > 0.1:
-                    trends['overall_coordination_trend'] = 'increasing'
-                elif trend_slope < -0.1:
-                    trends['overall_coordination_trend'] = 'decreasing'
+                recent = [float(e.get("collusion_score", 0.0)) for e in list(self.collusion_history)[-5:]]
+                slope = float(self._calculate_slope(recent))
+                if slope > 0.1:
+                    trends["overall_coordination_trend"] = "increasing"
+                elif slope < -0.1:
+                    trends["overall_coordination_trend"] = "decreasing"
                 else:
-                    trends['overall_coordination_trend'] = 'stable'
-            
-            # Analyze independence distribution
-            independence_scores = [
-                profile.get('independence_score', 1.0) 
-                for profile in self.member_behavior_profiles.values()
-            ]
-            
-            if independence_scores:
-                trends['independence_distribution'] = {
-                    'mean': np.mean(independence_scores),
-                    'std': np.std(independence_scores),
-                    'min': np.min(independence_scores),
-                    'max': np.max(independence_scores)
+                    trends["overall_coordination_trend"] = "stable"
+
+            indeps = [float(p.get("independence_score", 1.0)) for p in self.member_behavior_profiles.values()]
+            if indeps:
+                trends["independence_distribution"] = {
+                    "mean": float(np.mean(indeps)),
+                    "std": float(np.std(indeps)),
+                    "min": float(np.min(indeps)),
+                    "max": float(np.max(indeps)),
                 }
-                
-                # Behavioral diversity (higher std = more diverse behavior)
-                trends['behavioral_diversity'] = np.std(independence_scores)
-            
-            # Coordination network density
+                trends["behavioral_diversity"] = float(np.std(indeps))
+
             if len(self.suspicious_pairs) > 0:
-                max_possible_pairs = self.n_members * (self.n_members - 1) / 2
-                trends['coordination_network_density'] = len(self.suspicious_pairs) / max(max_possible_pairs, 1)
-            
+                max_pairs = self.n_members * (self.n_members - 1) / 2.0
+                trends["coordination_network_density"] = float(len(self.suspicious_pairs) / max(max_pairs, 1.0))
             return trends
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "behavioral_trends_analysis")
-            return {'overall_coordination_trend': 'unknown'}
+        except Exception:
+            return {"overall_coordination_trend": "unknown"}
 
     def _calculate_slope(self, values: List[float]) -> float:
-        """Calculate slope of values using linear regression"""
         try:
             if len(values) < 2:
                 return 0.0
-            
             x = np.arange(len(values))
-            slope = np.polyfit(x, values, 1)[0]
-            return slope
-            
+            try:
+                return float(np.polyfit(x, values, 1)[0])
+            except Exception:
+                return 0.0
         except Exception:
             return 0.0
 
-    def _update_performance_metric(self, metric_name: str, value: float) -> None:
-            """Update performance metric for tracking and analysis"""
-            try:
-                if hasattr(self, 'performance_tracker') and self.performance_tracker:
-                    self.performance_tracker.record_metric('ConsensusDetector', metric_name, value, True)
-                
-                # Also store in internal tracking for historical analysis
-                if not hasattr(self, '_performance_history'):
-                    self._performance_history = defaultdict(lambda: deque(maxlen=50))
-                
-                self._performance_history[metric_name].append({
-                    'timestamp': datetime.datetime.now().isoformat(),
-                    'value': value
-                })
-                
-            except Exception as e:
-                # Don't let performance tracking failures affect main functionality
-                if hasattr(self, 'logger'):
-                    self.logger.warning(f"Performance metric update failed for {metric_name}: {e}")
-
+    # ────────────────────────────
+    # TEMPORAL ANALYTICS
+    # ────────────────────────────
     async def _analyze_temporal_coordination_patterns(self, voting_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze temporal coordination patterns and timing-based collusion"""
         try:
-            temporal_analysis = {
-                'timing_patterns': {},
-                'coordination_clusters': [],
-                'temporal_consistency': 0.0,
-                'synchronized_responses': {}
-            }
-            
+            out = {"timing_patterns": {}, "coordination_clusters": [], "temporal_consistency": 0.0, "synchronized_responses": {}}
             if len(self.vote_history) < 5:
-                temporal_analysis['status'] = 'insufficient_history'
-                return temporal_analysis
-            
-            # Analyze timing patterns in recent voting history
+                out["status"] = "insufficient_history"
+                return out
+
             recent_votes = list(self.vote_history)[-10:]
-            
-            # Look for synchronized response patterns
-            for i, vote_entry in enumerate(recent_votes):
-                timestamp = vote_entry.get('timestamp', '')
-                if timestamp:
-                    # Analyze time-based clustering
-                    sync_analysis = await self._analyze_vote_synchronization(vote_entry, recent_votes[max(0, i-2):i])
-                    if sync_analysis['synchronization_score'] > 0.7:
-                        temporal_analysis['synchronized_responses'][timestamp] = sync_analysis
-            
-            # Calculate temporal consistency across all pairs
-            consistency_scores = []
-            for pair in self.pair_agreement_history:
-                history = list(self.pair_agreement_history[pair])
-                if len(history) >= 5:
-                    consistency = self._calculate_temporal_consistency(history)
-                    consistency_scores.append(consistency)
-                    temporal_analysis['timing_patterns'][str(pair)] = {
-                        'consistency': consistency,
-                        'pattern_type': self._classify_temporal_pattern(history)
-                    }
-            
-            if consistency_scores:
-                temporal_analysis['temporal_consistency'] = np.mean(consistency_scores)
-            
-            # Identify coordination clusters based on timing
-            temporal_analysis['coordination_clusters'] = await self._identify_temporal_coordination_clusters()
-            
-            return temporal_analysis
-            
+            for idx, vote_entry in enumerate(recent_votes):
+                ts = vote_entry.get("timestamp", "")
+                if ts:
+                    sync = await self._analyze_vote_synchronization(vote_entry, recent_votes[max(0, idx - 2) : idx])
+                    if float(sync.get("synchronization_score", 0.0)) > 0.7:
+                        out["synchronized_responses"][ts] = sync
+
+            scores: List[float] = []
+            for pair, hist in self.pair_agreement_history.items():
+                lst = list(hist)
+                if len(lst) >= 5:
+                    scores.append(float(self._calculate_temporal_consistency(lst)))
+                    out["timing_patterns"][str(pair)] = {"consistency": float(scores[-1]), "pattern_type": self._classify_temporal_pattern(lst)}
+            out["temporal_consistency"] = float(np.mean(scores)) if scores else 0.0
+            out["coordination_clusters"] = await self._identify_temporal_coordination_clusters()
+            return out
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "temporal_coordination_analysis")
-            return {'timing_patterns': {}, 'analysis_error': str(error_context)}
+            return {"timing_patterns": {}, "analysis_error": str(error_context)}
 
-    async def _analyze_vote_synchronization(self, current_vote: Dict[str, Any], 
-                                          recent_votes: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Analyze synchronization patterns in voting timing"""
+    async def _analyze_vote_synchronization(self, current_vote: Dict[str, Any], recent_votes: List[Dict[str, Any]]) -> Dict[str, Any]:
         try:
-            sync_analysis = {
-                'synchronization_score': 0.0,
-                'synchronized_members': [],
-                'timing_deviation': 0.0
-            }
-            
-            current_actions = current_vote.get('actions', [])
-            if len(current_actions) < 2:
-                return sync_analysis
-            
-            # Simple synchronization analysis based on action similarity timing
-            synchronization_count = 0
-            total_pairs = 0
-            
-            for i in range(len(current_actions)):
-                for j in range(i + 1, len(current_actions)):
-                    action_i = np.array(current_actions[i])
-                    action_j = np.array(current_actions[j])
-                    
-                    if np.linalg.norm(action_i) > 0 and np.linalg.norm(action_j) > 0:
-                        similarity = np.dot(action_i, action_j) / (
-                            np.linalg.norm(action_i) * np.linalg.norm(action_j)
-                        )
-                        
-                        if similarity > 0.9:  # High similarity suggests synchronization
-                            synchronization_count += 1
-                            sync_analysis['synchronized_members'].append((i, j))
-                        
-                        total_pairs += 1
-            
-            if total_pairs > 0:
-                sync_analysis['synchronization_score'] = synchronization_count / total_pairs
-            
-            return sync_analysis
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "vote_synchronization_analysis")
-            return {'synchronization_score': 0.0, 'synchronized_members': [], 'timing_deviation': 0.0}
+            res = {"synchronization_score": 0.0, "synchronized_members": [], "timing_deviation": 0.0}
+            actions = current_vote.get("actions", [])
+            if len(actions) < 2:
+                return res
+            sync_count = 0
+            total = 0
+            for i in range(len(actions)):
+                for j in range(i + 1, len(actions)):
+                    a = np.asarray(actions[i], dtype=np.float32)
+                    b = np.asarray(actions[j], dtype=np.float32)
+                    n1, n2 = float(np.linalg.norm(a)), float(np.linalg.norm(b))
+                    if n1 <= 1e-9 or n2 <= 1e-9:
+                        continue
+                    sim = float(np.dot(a, b) / (n1 * n2))
+                    if sim > 0.90:
+                        sync_count += 1
+                        res["synchronized_members"].append((i, j))
+                    total += 1
+            res["synchronization_score"] = float(sync_count / total) if total > 0 else 0.0
+            return res
+        except Exception:
+            return {"synchronization_score": 0.0, "synchronized_members": [], "timing_deviation": 0.0}
 
     def _calculate_temporal_consistency(self, history: List[float]) -> float:
-        """Calculate temporal consistency in coordination patterns"""
         try:
             if len(history) < 3:
                 return 0.0
-            
-            # Consistency based on how stable the coordination pattern is over time
-            variance = np.var(history)
-            mean_val = np.mean(history)
-            
-            if mean_val < 1e-6:
+            var = float(np.var(history))
+            mean = float(np.mean(history))
+            if mean < 1e-9:
                 return 0.0
-            
-            # Consistency is inverse of coefficient of variation
-            coefficient_of_variation = np.sqrt(variance) / mean_val
-            consistency = max(0.0, 1.0 - coefficient_of_variation)
-            
-            return consistency
-            
+            cv = math.sqrt(max(var, 0.0)) / mean
+            return float(max(0.0, 1.0 - cv))
         except Exception:
             return 0.0
 
     def _classify_temporal_pattern(self, history: List[float]) -> str:
-        """Classify temporal coordination pattern"""
         try:
             if len(history) < 3:
-                return 'insufficient_data'
-            
-            # Calculate trend and volatility
-            slope = self._calculate_slope(history)
-            volatility = np.std(history)
-            
-            if volatility < 0.1:
-                if np.mean(history) > 0.8:
-                    return 'consistently_high'
-                elif np.mean(history) < 0.3:
-                    return 'consistently_low'
-                else:
-                    return 'stable_moderate'
-            elif abs(slope) > 0.1:
-                return 'trending_up' if slope > 0 else 'trending_down'
-            else:
-                return 'volatile'
-                
+                return "insufficient_data"
+            slope = float(self._calculate_slope(history))
+            vol = float(np.std(history))
+            mean = float(np.mean(history))
+            if vol < 0.1:
+                if mean > 0.8:
+                    return "consistently_high"
+                if mean < 0.3:
+                    return "consistently_low"
+                return "stable_moderate"
+            if abs(slope) > 0.1:
+                return "trending_up" if slope > 0 else "trending_down"
+            return "volatile"
         except Exception:
-            return 'unknown'
+            return "unknown"
 
     async def _identify_temporal_coordination_clusters(self) -> List[Dict[str, Any]]:
-        """Identify temporal coordination clusters"""
         try:
-            clusters = []
-            
-            # Simple clustering based on coordination timing patterns
+            clusters: List[Dict[str, Any]] = []
             if len(self.coordination_events) < 3:
                 return clusters
-            
-            # Group coordination events by time windows
-            time_windows = defaultdict(list)
-            
-            for event in list(self.coordination_events)[-20:]:  # Recent events
-                timestamp_str = event.get('timestamp', '')
-                if timestamp_str:
-                    try:
-                        timestamp = datetime.datetime.fromisoformat(timestamp_str)
-                        # Group by 5-minute windows
-                        window_key = timestamp.replace(second=0, microsecond=0)
-                        window_key = window_key.replace(minute=(window_key.minute // 5) * 5)
-                        time_windows[window_key].append(event)
-                    except Exception:
-                        continue
-            
-            # Identify significant clusters (multiple coordination events in same window)
-            for window_time, events in time_windows.items():
-                if len(events) >= 2:  # Multiple coordination events in same window
-                    cluster = {
-                        'window_start': window_time.isoformat(),
-                        'event_count': len(events),
-                        'involved_pairs': [event.get('pair') for event in events],
-                        'avg_coordination_score': np.mean([
-                            event.get('coordination_score', 0.0) for event in events
-                        ]),
-                        'cluster_significance': len(events) / len(list(self.coordination_events)[-20:])
-                    }
-                    clusters.append(cluster)
-            
-            # Sort by significance
-            clusters.sort(key=lambda x: x['cluster_significance'], reverse=True)
-            
-            return clusters[:5]  # Return top 5 clusters
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "temporal_clustering")
+            time_windows: Dict[dt.datetime, List[Dict[str, Any]]] = defaultdict(list)
+            recent = list(self.coordination_events)[-20:]
+            for ev in recent:
+                ts = ev.get("timestamp", "")
+                try:
+                    t = dt.datetime.fromisoformat(ts)
+                    base = t.replace(second=0, microsecond=0, minute=(t.minute // 5) * 5)
+                    time_windows[base].append(ev)
+                except Exception:
+                    continue
+            for win, events in time_windows.items():
+                if len(events) >= 2:
+                    clusters.append(
+                        {
+                            "window_start": win.isoformat(),
+                            "event_count": int(len(events)),
+                            "involved_pairs": [tuple(e.get("pair", (-1, -1))) for e in events],
+                            "avg_coordination_score": float(np.mean([float(e.get("coordination_score", 0.0)) for e in events])),
+                            "cluster_significance": float(len(events) / max(len(recent), 1)),
+                        }
+                    )
+            clusters.sort(key=lambda x: float(x["cluster_significance"]), reverse=True)
+            return clusters[:5]
+        except Exception:
             return []
 
+    # ────────────────────────────
+    # QUALITY METRICS & RECS
+    # ────────────────────────────
     async def _calculate_comprehensive_quality_metrics(self) -> Dict[str, Any]:
-        """Calculate comprehensive quality metrics for detection system"""
         try:
-            quality_metrics = {
-                'detection_precision': self.quality_metrics.get('detection_precision', 0.0),
-                'detection_recall': self.quality_metrics.get('detection_recall', 0.0),
-                'behavioral_accuracy': self.quality_metrics.get('behavioral_accuracy', 0.0),
-                'temporal_consistency': self.quality_metrics.get('temporal_consistency', 0.0),
-                'overall_effectiveness': 0.0
+            qm: Dict[str, float] = {
+                "detection_precision": float(self.quality_metrics.get("detection_precision", 0.0)),
+                "detection_recall": float(self.quality_metrics.get("detection_recall", 0.0)),
+                "behavioral_accuracy": float(self.quality_metrics.get("behavioral_accuracy", 0.0)),
+                "temporal_consistency": float(self.quality_metrics.get("temporal_consistency", 0.0)),
+                "overall_effectiveness": 0.0,
             }
-            
-            # Update detection precision (how many detected events are actually problematic)
-            if self.detection_stats['alerts_raised'] > 0:
-                # Simplified precision based on confirmed vs total alerts
-                confirmed_events = self.detection_stats.get('confirmed_collusion_events', 0)
-                quality_metrics['detection_precision'] = confirmed_events / self.detection_stats['alerts_raised']
-            
-            # Update detection recall (estimated based on behavioral consistency)
+            ar = int(self.detection_stats.get("alerts_raised", 0))
+            confirmed = int(self.detection_stats.get("confirmed_collusion_events", 0))
+            if ar > 0:
+                qm["detection_precision"] = float(confirmed / ar)
+
             if len(self.member_behavior_profiles) > 0:
-                independence_scores = [
-                    profile.get('independence_score', 1.0) 
-                    for profile in self.member_behavior_profiles.values()
-                ]
-                avg_independence = np.mean(independence_scores)
-                # Higher average independence suggests good recall (catching coordination)
-                quality_metrics['detection_recall'] = float(1.0 - avg_independence)
-            
-            # Update behavioral accuracy (consistency of behavioral profiling)
+                indeps = [float(p.get("independence_score", 1.0)) for p in self.member_behavior_profiles.values()]
+                qm["detection_recall"] = float(1.0 - (np.mean(indeps) if indeps else 1.0))
+
             if len(self.collusion_history) >= 5:
-                recent_scores = [event.get('collusion_score', 0.0) for event in list(self.collusion_history)[-5:]]
-                behavioral_consistency = 1.0 - (np.std(recent_scores) / max(float(np.mean(recent_scores)), 0.1))
-                quality_metrics['behavioral_accuracy'] = float(max(0.0, float(behavioral_consistency)))
-            
-            # Update temporal consistency
-            if self.pair_agreement_history:
-                consistency_scores = []
-                for pair_history in self.pair_agreement_history.values():
-                    if len(pair_history) >= 3:
-                        consistency = self._calculate_temporal_consistency(list(pair_history))
-                        consistency_scores.append(consistency)
-                
-                if consistency_scores:
-                    quality_metrics['temporal_consistency'] = float(np.mean(consistency_scores))
-            
-            # Calculate overall effectiveness
-            weights = [0.3, 0.3, 0.2, 0.2]
-            values = [
-                quality_metrics['detection_precision'],
-                quality_metrics['detection_recall'],
-                quality_metrics['behavioral_accuracy'],
-                quality_metrics['temporal_consistency']
-            ]
-            
-            quality_metrics['overall_effectiveness'] = float(np.average(values, weights=weights))
-            
-            # Update internal quality metrics
-            self.quality_metrics.update(quality_metrics)
-            
-            return quality_metrics
-            
+                recent = [float(e.get("collusion_score", 0.0)) for e in list(self.collusion_history)[-5:]]
+                if recent:
+                    std = float(np.std(recent))
+                    mean = float(np.mean(recent))
+                    qm["behavioral_accuracy"] = float(max(0.0, 1.0 - (std / max(mean, 0.1))))
+
+            scores: List[float] = []
+            for hist in self.pair_agreement_history.values():
+                lst = list(hist)
+                if len(lst) >= 3:
+                    scores.append(float(self._calculate_temporal_consistency(lst)))
+            if scores:
+                qm["temporal_consistency"] = float(np.mean(scores))
+
+            weights = np.array([0.3, 0.3, 0.2, 0.2], dtype=np.float32)
+            vals = np.array(
+                [qm["detection_precision"], qm["detection_recall"], qm["behavioral_accuracy"], qm["temporal_consistency"]],
+                dtype=np.float32,
+            )
+            qm["overall_effectiveness"] = float(np.dot(weights, vals))
+            self.quality_metrics.update(qm)
+            return qm
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "quality_metrics_calculation")
-            return {'overall_effectiveness': 0.5, 'calculation_error': str(error_context)}
+            return {"overall_effectiveness": 0.5, "calculation_error": str(error_context)}
 
-    async def _generate_intelligent_detection_recommendations(self, collusion_analysis: Dict[str, Any], 
-                                                           behavioral_updates: Dict[str, Any], 
-                                                           temporal_analysis: Dict[str, Any]) -> List[str]:
-        """Generate intelligent detection recommendations"""
+    async def _generate_intelligent_detection_recommendations(
+        self, collusion_analysis: Dict[str, Any], behavioral_updates: Dict[str, Any], temporal_analysis: Dict[str, Any]
+    ) -> List[str]:
         try:
-            recommendations = []
-            
-            # Collusion-based recommendations
-            collusion_score = collusion_analysis.get('collusion_score', 0.0)
-            if collusion_score > 0.8:
-                recommendations.append("HIGH PRIORITY: Immediate investigation of detected coordination patterns required")
-            elif collusion_score > 0.5:
-                recommendations.append("MODERATE: Enhanced monitoring and analysis of suspicious member pairs")
-            
-            # Behavioral anomaly recommendations
-            anomaly_detections = behavioral_updates.get('anomaly_detections', {})
-            if len(anomaly_detections) > 0:
-                member_count = len(anomaly_detections)
-                recommendations.append(f"BEHAVIORAL: {member_count} members showing anomalous behavior patterns - investigate")
-            
-            # Temporal pattern recommendations
-            temporal_consistency = temporal_analysis.get('temporal_consistency', 0.0)
-            if temporal_consistency > 0.8:
-                recommendations.append("TEMPORAL: High temporal coordination detected - review timing-based collusion")
-            
-            # Network effect recommendations
-            network_effects = collusion_analysis.get('coordination_analysis', {}).get('network_effects', {})
-            clusters = network_effects.get('clusters', [])
-            if len(clusters) > 0:
-                largest_cluster = max(len(cluster) for cluster in clusters)
-                if largest_cluster >= 3:
-                    recommendations.append(f"NETWORK: Large coordination cluster detected ({largest_cluster} members) - consider member rotation")
-            
-            # Alert frequency recommendations
-            alert_frequency = self.detection_stats.get('alert_frequency', 0.0)
-            if alert_frequency > 0.3:
-                recommendations.append("SYSTEM: High alert frequency - review detection sensitivity")
-            elif alert_frequency < 0.05:
-                recommendations.append("SYSTEM: Low alert frequency - consider increasing detection sensitivity")
-            
-            # Threshold adjustment recommendations
+            recs: List[str] = []
+            score = float(collusion_analysis.get("collusion_score", self.collusion_score))
+            if score > 0.8:
+                recs.append("HIGH PRIORITY: Immediate investigation of detected coordination patterns required")
+            elif score > 0.5:
+                recs.append("MODERATE: Enhanced monitoring and analysis of suspicious member pairs")
+
+            anomalies = behavioral_updates.get("anomaly_detections", {})
+            if len(anomalies) > 0:
+                recs.append(f"BEHAVIORAL: {len(anomalies)} members showing anomalous behavior patterns – investigate")
+
+            tcons = float(temporal_analysis.get("temporal_consistency", 0.0))
+            if tcons > 0.8:
+                recs.append("TEMPORAL: High temporal coordination detected – review timing-based collusion")
+
+            net_effects = collusion_analysis.get("coordination_analysis", {}).get("network_effects", {}) if "coordination_analysis" in collusion_analysis else {}
+            clusters = net_effects.get("clusters", [])
+            if clusters:
+                largest = max((len(c) for c in clusters), default=0)
+                if largest >= 3:
+                    recs.append(f"NETWORK: Large coordination cluster detected ({largest} members) – consider member rotation")
+
+            af = float(self.detection_stats.get("alert_frequency", 0.0))
+            if af > 0.3:
+                recs.append("SYSTEM: High alert frequency – review detection sensitivity")
+            elif af < 0.05:
+                recs.append("SYSTEM: Low alert frequency – consider increasing detection sensitivity")
+
             if self.adaptive_threshold:
-                threshold_change = abs(self.current_threshold - self.base_threshold) / self.base_threshold
-                if threshold_change > 0.2:
-                    recommendations.append("THRESHOLD: Significant threshold adaptation - review market condition sensitivity")
-            
-            # Quality-based recommendations
-            overall_effectiveness = self.quality_metrics.get('overall_effectiveness', 0.0)
-            if overall_effectiveness < 0.4:
-                recommendations.append("QUALITY: Low detection effectiveness - review detection parameters and methods")
-            
-            # Default recommendation
-            if not recommendations:
-                recommendations.append("SYSTEM: Collusion detection operating within normal parameters")
-            
-            return recommendations[:6]  # Limit to top 6 recommendations
-            
+                delta = abs(self.current_threshold - self.base_threshold) / max(self.base_threshold, 1e-9)
+                if delta > 0.2:
+                    recs.append("THRESHOLD: Significant threshold adaptation – review market condition sensitivity")
+
+            eff = float(self.quality_metrics.get("overall_effectiveness", 0.0))
+            if eff < 0.4:
+                recs.append("QUALITY: Low detection effectiveness – review detection parameters and methods")
+
+            return recs[:6] if recs else ["SYSTEM: Collusion detection operating within normal parameters"]
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "recommendation_generation")
             return [f"Recommendation generation failed: {error_context}"]
 
-    async def _generate_comprehensive_detection_thesis(self, collusion_analysis: Dict[str, Any], 
-                                                     quality_analysis: Dict[str, Any], 
-                                                     recommendations: List[str]) -> str:
-        """Generate comprehensive detection thesis"""
+    async def _generate_comprehensive_detection_thesis(
+        self, collusion_analysis: Dict[str, Any], quality_analysis: Dict[str, Any], recommendations: List[str]
+    ) -> str:
         try:
-            # Core metrics
-            collusion_score = collusion_analysis.get('collusion_score', 0.0)
-            suspicious_pairs_count = len(collusion_analysis.get('suspicious_pairs', []))
-            overall_effectiveness = quality_analysis.get('overall_effectiveness', 0.0)
-            
-            thesis_parts = []
-            
-            # Executive summary
-            risk_level = "HIGH" if collusion_score > 0.7 else "MODERATE" if collusion_score > 0.4 else "LOW"
-            thesis_parts.append(
-                f"COLLUSION ANALYSIS: {risk_level} risk with {collusion_score:.1%} coordination score"
-            )
-            
-            # Detection summary
-            thesis_parts.append(
-                f"DETECTION STATUS: {suspicious_pairs_count} suspicious pairs identified from {self.n_members} members"
-            )
-            
-            # Quality assessment
-            thesis_parts.append(
-                f"SYSTEM EFFECTIVENESS: {overall_effectiveness:.1%} detection quality across multiple analysis methods"
-            )
-            
-            # Alert status
-            alerts_raised = self.detection_stats.get('alerts_raised', 0)
-            if alerts_raised > 0:
-                thesis_parts.append(f"ALERT STATUS: {alerts_raised} alerts raised with managed escalation")
-            
-            # Threshold status
+            score = float(collusion_analysis.get("collusion_score", self.collusion_score))
+            suspicious_count = len(collusion_analysis.get("suspicious_pairs", []))
+            eff = float(quality_analysis.get("overall_effectiveness", 0.0))
+            risk = "HIGH" if score > 0.7 else "MODERATE" if score > 0.4 else "LOW"
+            parts = [
+                f"COLLUSION ANALYSIS: {risk} risk with {score:.1%} coordination score",
+                f"DETECTION STATUS: {suspicious_count} suspicious pairs identified from {self.n_members} members",
+                f"SYSTEM EFFECTIVENESS: {eff:.1%} detection quality across multiple analysis methods",
+            ]
+            ar = int(self.detection_stats.get("alerts_raised", 0))
+            if ar > 0:
+                parts.append(f"ALERT STATUS: {ar} alerts raised with managed escalation")
             if self.adaptive_threshold:
-                threshold_change = (self.current_threshold - self.base_threshold) / self.base_threshold
-                thesis_parts.append(
-                    f"THRESHOLD ADAPTATION: {threshold_change:+.1%} adjustment for market conditions"
-                )
-            
-            # Behavioral insights
-            behavioral_anomalies = len([p for p in self.member_behavior_profiles.values() 
-                                     if p.get('anomaly_score', 0) > 0.5])
-            if behavioral_anomalies > 0:
-                thesis_parts.append(f"BEHAVIORAL ANALYSIS: {behavioral_anomalies} members with anomalous patterns")
-            
-            # System performance
-            total_checks = self.detection_stats.get('total_checks', 0)
-            thesis_parts.append(f"SYSTEM PERFORMANCE: {total_checks} checks completed with comprehensive analysis")
-            
-            # Recommendations summary
-            priority_recommendations = [rec for rec in recommendations if any(keyword in rec 
-                                      for keyword in ['HIGH PRIORITY', 'CRITICAL', 'IMMEDIATE'])]
-            if priority_recommendations:
-                thesis_parts.append(f"ACTION REQUIRED: {len(priority_recommendations)} high-priority recommendations")
-            
-            return " | ".join(thesis_parts)
-            
+                delta = (self.current_threshold - self.base_threshold) / max(self.base_threshold, 1e-9)
+                parts.append(f"THRESHOLD ADAPTATION: {delta:+.1%} adjustment for market conditions")
+            anomalies = len([p for p in self.member_behavior_profiles.values() if float(p.get("anomaly_score", 0.0)) > 0.5])
+            if anomalies > 0:
+                parts.append(f"BEHAVIORAL ANALYSIS: {anomalies} members with anomalous patterns")
+            total = int(self.detection_stats.get("total_checks", 0))
+            parts.append(f"SYSTEM PERFORMANCE: {total} checks completed with comprehensive analysis")
+            priors = [r for r in recommendations if any(k in r for k in ["HIGH PRIORITY", "CRITICAL", "IMMEDIATE"])]
+            if priors:
+                parts.append(f"ACTION REQUIRED: {len(priors)} high-priority recommendations")
+            return " | ".join(parts)
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "thesis_generation")
             return f"Detection thesis generation failed: {error_context}"
 
-    async def _update_smartinfobus_comprehensive(self, results: Dict[str, Any], thesis: str):
-        """Update SmartInfoBus with comprehensive detection results"""
+    async def _update_smartinfobus_comprehensive(self, results: Dict[str, Any], thesis: str) -> None:
         try:
-            # Core detection results
-            self.smart_bus.set('collusion_score', results['collusion_score'],
-                             module='CollusionAuditor', thesis=thesis)
-            
-            # Suspicious pairs
-            pairs_thesis = f"Suspicious coordination: {len(results['suspicious_pairs'])} pairs under monitoring"
-            self.smart_bus.set('suspicious_pairs', results['suspicious_pairs'],
-                             module='CollusionAuditor', thesis=pairs_thesis)
-            
-            # Member independence scores
-            independence_thesis = f"Member independence: {len(results['member_independence_scores'])} profiles analyzed"
-            self.smart_bus.set('member_independence_scores', results['member_independence_scores'],
-                             module='CollusionAuditor', thesis=independence_thesis)
-            
-            # Collusion alerts
-            alerts_thesis = f"Alert system: {len(results['collusion_alerts'])} active alerts managed"
-            self.smart_bus.set('collusion_alerts', results['collusion_alerts'],
-                             module='CollusionAuditor', thesis=alerts_thesis)
-            
-            # Behavioral profiles
-            behavioral_thesis = f"Behavioral analysis: {len(results['behavioral_profiles'])} member profiles updated"
-            self.smart_bus.set('behavioral_profiles', results['behavioral_profiles'],
-                             module='CollusionAuditor', thesis=behavioral_thesis)
-            
-            # Coordination events
-            events_thesis = f"Coordination tracking: {len(results['coordination_events'])} recent events recorded"
-            self.smart_bus.set('coordination_events', results['coordination_events'],
-                             module='CollusionAuditor', thesis=events_thesis)
-            
-            # Detection statistics
-            stats_thesis = f"Detection statistics: {results['detection_statistics']['total_checks']} total checks performed"
-            self.smart_bus.set('detection_statistics', results['detection_statistics'],
-                             module='CollusionAuditor', thesis=stats_thesis)
-            
-            # Audit recommendations
-            rec_thesis = f"Audit recommendations: {len(results['audit_recommendations'])} actionable insights"
-            self.smart_bus.set('audit_recommendations', results['audit_recommendations'],
-                             module='CollusionAuditor', thesis=rec_thesis)
-            
+            self.smart_bus.set("collusion_score", results["collusion_score"], module="CollusionAuditor", thesis=thesis)
+            self.smart_bus.set(
+                "suspicious_pairs",
+                results["suspicious_pairs"],
+                module="CollusionAuditor",
+                thesis=f"Suspicious coordination: {len(results['suspicious_pairs'])} pairs under monitoring",
+            )
+            self.smart_bus.set(
+                "member_independence_scores",
+                results["member_independence_scores"],
+                module="CollusionAuditor",
+                thesis=f"Member independence: {len(results['member_independence_scores'])} profiles analyzed",
+            )
+            self.smart_bus.set(
+                "collusion_alerts",
+                results["collusion_alerts"],
+                module="CollusionAuditor",
+                thesis=f"Alert system: {len(results['collusion_alerts'])} active alerts managed",
+            )
+            self.smart_bus.set(
+                "behavioral_profiles",
+                results["behavioral_profiles"],
+                module="CollusionAuditor",
+                thesis=f"Behavioral analysis: {len(results['behavioral_profiles'])} member profiles updated",
+            )
+            self.smart_bus.set(
+                "coordination_events",
+                results["coordination_events"],
+                module="CollusionAuditor",
+                thesis=f"Coordination tracking: {len(results['coordination_events'])} recent events recorded",
+            )
+            self.smart_bus.set(
+                "detection_statistics",
+                results["detection_statistics"],
+                module="CollusionAuditor",
+                thesis=f"Detection statistics: {results['detection_statistics'].get('total_checks', 0)} total checks performed",
+            )
+            self.smart_bus.set(
+                "audit_recommendations",
+                results["audit_recommendations"],
+                module="CollusionAuditor",
+                thesis=f"Audit recommendations: {len(results['audit_recommendations'])} actionable insights",
+            )
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
             self.logger.error(f"SmartInfoBus update failed: {error_context}")
 
-    # ═══════════════════════════════════════════════════════════════════
-    # LEGACY COMPATIBILITY AND PUBLIC INTERFACE
-    # ═══════════════════════════════════════════════════════════════════
-
+    # ────────────────────────────
+    # LEGACY / PUBLIC API
+    # ────────────────────────────
     def check_collusion(self, actions: List[np.ndarray]) -> float:
-        """Legacy collusion checking interface for backward compatibility"""
         try:
-            # Run async method synchronously
-            import asyncio
-            
-            # Create minimal voting data from actions
             voting_data = {
-                'raw_proposals': actions,
-                'votes': [np.mean(action) if len(action) > 0 else 0.0 for action in actions],
-                'agreement_score': 0.5,
-                'market_regime': 'unknown',
-                'market_context': {},
-                'recent_trades': []
+                "raw_proposals": actions,
+                "votes": [float(np.mean(a)) if len(a) > 0 else 0.0 for a in actions],
+                "agreement_score": 0.5,
+                "market_regime": "unknown",
+                "market_context": {},
+                "recent_trades": [],
             }
-            
-            if asyncio.get_event_loop().is_running():
-                # If already in async context, use simplified sync method
-                return self._simple_collusion_check_fallback(actions)
-            else:
-                # Run async analysis
-                loop = asyncio.new_event_loop()
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    return self._simple_collusion_check_fallback(actions)
+            except RuntimeError:
+                pass
+            loop = asyncio.new_event_loop()
+            try:
                 asyncio.set_event_loop(loop)
-                try:
-                    collusion_analysis = loop.run_until_complete(
-                        self._perform_comprehensive_collusion_analysis(voting_data)
-                    )
-                    return collusion_analysis.get('collusion_score', 0.0)
-                finally:
-                    loop.close()
-                    
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "legacy_collusion_check")
+                res = loop.run_until_complete(self._perform_comprehensive_collusion_analysis(voting_data))
+                return float(res.get("collusion_score", 0.0))
+            finally:
+                loop.close()
+        except Exception:
             return self._simple_collusion_check_fallback(actions)
 
     def _simple_collusion_check_fallback(self, actions: List[np.ndarray]) -> float:
-        """Simple fallback collusion checking method"""
         try:
             if len(actions) < 2:
                 return 0.0
-            
-            # Simple pairwise similarity analysis
-            similarities = []
-            suspicious_count = 0
-            
+            sims: List[float] = []
+            suspicious = 0
             for i in range(len(actions)):
                 for j in range(i + 1, len(actions)):
-                    v1, v2 = actions[i], actions[j]
-                    
-                    if np.linalg.norm(v1) > 1e-6 and np.linalg.norm(v2) > 1e-6:
-                        cosine_sim = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
-                        similarities.append(cosine_sim)
-                        
-                        if cosine_sim > self.current_threshold:
-                            suspicious_count += 1
-            
-            # Calculate collusion score
-            max_pairs = len(actions) * (len(actions) - 1) / 2
-            collusion_score = suspicious_count / max(max_pairs, 1)
-            
-            # Update basic state
-            self.collusion_score = collusion_score
-            if similarities:
-                self.detection_stats['avg_pair_similarity'] = float(np.mean(similarities))
-            
-            return collusion_score
-            
+                    v1, v2 = np.asarray(actions[i], dtype=np.float32), np.asarray(actions[j], dtype=np.float32)
+                    n1, n2 = float(np.linalg.norm(v1)), float(np.linalg.norm(v2))
+                    if n1 <= 1e-9 or n2 <= 1e-9:
+                        continue
+                    c = float(np.dot(v1, v2) / (n1 * n2))
+                    sims.append(c)
+                    if c > self.current_threshold:
+                        suspicious += 1
+            max_pairs = len(actions) * (len(actions) - 1) / 2.0
+            score = float(suspicious / max(max_pairs, 1.0))
+            self.collusion_score = score
+            if sims:
+                self.detection_stats["avg_pair_similarity"] = float(np.mean(sims))
+            return score
         except Exception:
             return 0.0
 
     def get_member_independence_scores(self) -> Dict[int, float]:
-        """Get independence scores for all members"""
-        scores = {}
-        for member_id, profile in self.member_behavior_profiles.items():
-            scores[member_id] = profile.get('independence_score', 1.0)
-        return scores
+        return {int(mid): float(p.get("independence_score", 1.0)) for mid, p in self.member_behavior_profiles.items()}
 
     def _get_recent_collusion_alerts(self) -> List[Dict[str, Any]]:
-        """Get recent collusion alerts"""
         try:
-            recent_events = list(self.coordination_events)[-5:]
-            alerts = []
-            
-            for event in recent_events:
-                if event.get('alert_type') == 'coordination_detection':
-                    alert = {
-                        'timestamp': event.get('timestamp'),
-                        'pair': event.get('pair'),
-                        'severity': event.get('alert_severity', 'info'),
-                        'coordination_score': event.get('coordination_score', 0.0),
-                        'alert_type': 'coordination'
+            recent = list(self.alert_system.get("alert_history", []))[-5:]
+            cleaned: List[Dict[str, Any]] = []
+            for a in recent:
+                cleaned.append(
+                    {
+                        "timestamp": a.get("timestamp"),
+                        "pair": tuple(a.get("pair", (-1, -1))),
+                        "severity": a.get("severity", "info"),
+                        "coordination_score": float(a.get("coordination_score", 0.0)),
+                        "alert_type": "coordination",
                     }
-                    alerts.append(alert)
-            
-            return alerts
-            
+                )
+            return cleaned
         except Exception:
             return []
 
     def _get_behavioral_profiles_summary(self) -> Dict[str, Any]:
-        """Get summary of behavioral profiles"""
         try:
-            summary = {}
-            
-            for member_id, profile in self.member_behavior_profiles.items():
-                summary[f'member_{member_id}'] = {
-                    'independence_score': profile.get('independence_score', 1.0),
-                    'coordination_frequency': profile.get('coordination_frequency', 0.0),
-                    'anomaly_score': profile.get('anomaly_score', 0.0),
-                    'consistency_score': profile.get('consistency_score', 0.0)
+            out: Dict[str, Any] = {}
+            for mid, prof in self.member_behavior_profiles.items():
+                out[f"member_{int(mid)}"] = {
+                    "independence_score": float(prof.get("independence_score", 1.0)),
+                    "coordination_frequency": float(prof.get("coordination_frequency", 0.0)),
+                    "anomaly_score": float(prof.get("anomaly_score", 0.0)),
+                    "consistency_score": float(prof.get("consistency_score", 0.0)),
                 }
-            
-            return summary
-            
+            return out
         except Exception:
             return {}
 
     def _get_comprehensive_detection_stats(self) -> Dict[str, Any]:
-        """Get comprehensive detection statistics"""
         return {
             **self.detection_stats,
-            'current_threshold': self.current_threshold,
-            'base_threshold': self.base_threshold,
-            'adaptive_enabled': self.adaptive_threshold,
-            'members_monitored': self.n_members,
-            'analysis_window': self.window,
-            'similarity_methods': self.similarity_methods,
-            'quality_metrics': self.quality_metrics.copy(),
-            'recent_collusion_trend': self._calculate_recent_collusion_trend()
+            "current_threshold": float(self.current_threshold),
+            "base_threshold": float(self.base_threshold),
+            "adaptive_enabled": bool(self.adaptive_threshold),
+            "members_monitored": int(self.n_members),
+            "analysis_window": int(self.window),
+            "similarity_methods": list(self.similarity_methods),
+            "quality_metrics": dict(self.quality_metrics),
+            "recent_collusion_trend": self._calculate_recent_collusion_trend(),
         }
 
     def _calculate_recent_collusion_trend(self) -> str:
-        """Calculate recent collusion trend"""
         try:
             if len(self.collusion_history) < 3:
-                return 'insufficient_data'
-            
-            recent_scores = [event.get('collusion_score', 0.0) for event in list(self.collusion_history)[-5:]]
-            slope = self._calculate_slope(recent_scores)
-            
+                return "insufficient_data"
+            recent = [float(e.get("collusion_score", 0.0)) for e in list(self.collusion_history)[-5:]]
+            slope = float(self._calculate_slope(recent))
             if slope > 0.1:
-                return 'increasing'
-            elif slope < -0.1:
-                return 'decreasing'
-            else:
-                return 'stable'
-                
+                return "increasing"
+            if slope < -0.1:
+                return "decreasing"
+            return "stable"
         except Exception:
-            return 'unknown'
+            return "unknown"
 
     def get_observation_components(self) -> np.ndarray:
-        """Return collusion features for RL observation"""
         try:
             features = [
                 float(self.collusion_score),
                 float(len(self.suspicious_pairs) / max(self.n_members, 1)),
                 float(self.current_threshold),
-                float(self.detection_stats.get('avg_pair_similarity', 0)),
-                float(len(self.vote_history) / self.window),
-                float(self.quality_metrics.get('overall_effectiveness', 0.5)),
-                float(self.detection_stats.get('alert_frequency', 0.0)),
-                float(len(self.coordination_events) / 50)  # Coordination event density
+                float(self.detection_stats.get("avg_pair_similarity", 0.0)),
+                float(len(self.vote_history) / max(self.window, 1)),
+                float(self.quality_metrics.get("overall_effectiveness", 0.5)),
+                float(self.detection_stats.get("alert_frequency", 0.0)),
+                float(len(self.coordination_events) / 50.0),
             ]
-            
-            observation = np.array(features, dtype=np.float32)
-            
-            # Validate for NaN/infinite values
-            if np.any(~np.isfinite(observation)):
-                self.logger.error(f"Invalid collusion observation: {observation}")
-                observation = np.nan_to_num(observation, nan=0.5)
-            
-            return observation
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "observation_generation")
-            self.logger.error(f"Collusion observation generation failed: {error_context}")
+            arr = np.asarray(features, dtype=np.float32)
+            if np.any(~np.isfinite(arr)):
+                self.logger.error(f"Invalid collusion observation: {arr}")
+                arr = np.nan_to_num(arr, nan=0.5)
+            return arr
+        except Exception:
             return np.array([0.0, 0.0, 0.9, 0.5, 0.0, 0.5, 0.0, 0.0], dtype=np.float32)
 
+    # Health (public + internal alias)
     def get_health_metrics(self) -> Dict[str, Any]:
-        """Get comprehensive health metrics for monitoring"""
         return {
-            'module_name': 'CollusionAuditor',
-            'status': 'disabled' if self.is_disabled else 'healthy',
-            'error_count': self.error_count,
-            'circuit_breaker_threshold': self.circuit_breaker_threshold,
-            'total_checks': self.detection_stats.get('total_checks', 0),
-            'alerts_raised': self.detection_stats.get('alerts_raised', 0),
-            'suspicious_pairs_count': len(self.suspicious_pairs),
-            'avg_pair_similarity': self.detection_stats.get('avg_pair_similarity', 0.0),
-            'detection_effectiveness': self.quality_metrics.get('overall_effectiveness', 0.0),
-            'alert_frequency': self.detection_stats.get('alert_frequency', 0.0),
-            'behavioral_profiles_count': len(self.member_behavior_profiles),
-            'coordination_events_count': len(self.coordination_events),
-            'session_duration': (datetime.datetime.now() - 
-                               datetime.datetime.fromisoformat(self.detection_stats['session_start'])).total_seconds() / 3600
+            "module_name": "CollusionAuditor",
+            "status": "disabled" if self.is_disabled else "healthy",
+            "error_count": int(self.error_count),
+            "circuit_breaker_threshold": int(self.circuit_breaker_threshold),
+            "total_checks": int(self.detection_stats.get("total_checks", 0)),
+            "alerts_raised": int(self.detection_stats.get("alerts_raised", 0)),
+            "suspicious_pairs_count": int(len(self.suspicious_pairs)),
+            "avg_pair_similarity": float(self.detection_stats.get("avg_pair_similarity", 0.0)),
+            "detection_effectiveness": float(self.quality_metrics.get("overall_effectiveness", 0.0)),
+            "alert_frequency": float(self.detection_stats.get("alert_frequency", 0.0)),
+            "behavioral_profiles_count": int(len(self.member_behavior_profiles)),
+            "coordination_events_count": int(len(self.coordination_events)),
+            "session_duration": (dt.datetime.now() - dt.datetime.fromisoformat(self.detection_stats["session_start"])).total_seconds() / 3600.0,
         }
 
     def _get_health_metrics(self) -> Dict[str, Any]:
-        """Internal method for health metrics (for compatibility)"""
         return self.get_health_metrics()
 
+    # Operator report
     def get_collusion_report(self) -> str:
-        """Generate comprehensive operator-friendly collusion report"""
-        # Risk assessment
-        if self.collusion_score > 0.8:
-            risk_level = "[ALERT] CRITICAL RISK"
-        elif self.collusion_score > 0.5:
-            risk_level = "[WARN] HIGH RISK"
-        elif self.collusion_score > 0.2:
-            risk_level = "[YELLOW] MODERATE RISK"
-        else:
-            risk_level = "[OK] LOW RISK"
-        
-        # Recent activity
-        recent_alerts = len([e for e in self.coordination_events if 
-                           (datetime.datetime.now() - 
-                            datetime.datetime.fromisoformat(e['timestamp'])).seconds < 600])
-        
-        # Suspicious pairs details
-        suspicious_details = []
-        for pair in list(self.suspicious_pairs)[:5]:  # Show top 5
-            i, j = pair
-            history = self.pair_agreement_history.get(pair, [])
-            if history:
-                avg_sim = np.mean(list(history))
-                suspicious_details.append(f"  [SEARCH] Members {i}-{j}: {avg_sim:.1%} similarity")
-        
-        # Member independence summary
-        independence_summary = []
+        risk = "[ALERT] CRITICAL RISK" if self.collusion_score > 0.8 else "[WARN] HIGH RISK" if self.collusion_score > 0.5 else "[YELLOW] MODERATE RISK" if self.collusion_score > 0.2 else "[OK] LOW RISK"
+        recent_10m = len(
+            [
+                e
+                for e in self.coordination_events
+                if (dt.datetime.now() - dt.datetime.fromisoformat(e["timestamp"])).total_seconds() < 600.0
+            ]
+        )
+        suspicious_details: List[str] = []
+        for pair in list(self.suspicious_pairs)[:5]:
+            hist = self.pair_agreement_history.get(pair, [])
+            if hist:
+                avg_sim = float(np.mean(list(hist)))
+                suspicious_details.append(f"  [SEARCH] Members {pair[0]}-{pair[1]}: {avg_sim:.1%} similarity")
+
+        indep_summary: List[str] = []
         for member_id, profile in list(self.member_behavior_profiles.items())[:5]:
-            independence = profile.get('independence_score', 1.0)
-            anomaly_score = profile.get('anomaly_score', 0.0)
-            if independence < 0.7 or anomaly_score > 0.5:
-                status = "[ALERT]" if anomaly_score > 0.7 else "[WARN]"
-                independence_summary.append(f"  {status} Member {member_id}: {independence:.1%} independence, {anomaly_score:.1%} anomaly")
-        
-        # System effectiveness
-        effectiveness = self.quality_metrics.get('overall_effectiveness', 0.0)
-        if effectiveness > 0.8:
-            effectiveness_status = "[OK] Excellent"
-        elif effectiveness > 0.6:
-            effectiveness_status = "[FAST] Good"
-        elif effectiveness > 0.4:
-            effectiveness_status = "[WARN] Fair"
-        else:
-            effectiveness_status = "[ALERT] Poor"
-        
+            independence = float(profile.get("independence_score", 1.0))
+            anomaly = float(profile.get("anomaly_score", 0.0))
+            if independence < 0.7 or anomaly > 0.5:
+                status = "[ALERT]" if anomaly > 0.7 else "[WARN]"
+                indep_summary.append(f"  {status} Member {member_id}: {independence:.1%} independence, {anomaly:.1%} anomaly")
+
+        eff = float(self.quality_metrics.get("overall_effectiveness", 0.0))
+        eff_status = "[OK] Excellent" if eff > 0.8 else "[FAST] Good" if eff > 0.6 else "[WARN] Fair" if eff > 0.4 else "[ALERT] Poor"
+
         return f"""
-🕵️ COLLUSION AUDITOR v3.0
+🕵️ COLLUSION AUDITOR v3.1
 ═══════════════════════════════════════════════════════════════
-[TARGET] Current Status: {risk_level}
+[TARGET] Current Status: {risk}
 [STATS] Collusion Score: {self.collusion_score:.1%}
 🎚️ Detection Threshold: {self.current_threshold:.1%} (Base: {self.base_threshold:.1%})
 
 [CHART] Detection Performance:
 • Total Checks: {self.detection_stats['total_checks']}
 • Alerts Raised: {self.detection_stats['alerts_raised']}
-• Recent Alerts (10min): {recent_alerts}
+• Recent Alerts (10min): {recent_10m}
 • Alert Frequency: {self.detection_stats.get('alert_frequency', 0.0):.1%}
-• Average Pair Similarity: {self.detection_stats.get('avg_pair_similarity', 0):.1%}
+• Average Pair Similarity: {self.detection_stats.get('avg_pair_similarity', 0.0):.1%}
 
 [SEARCH] Current Surveillance:
 • Committee Size: {self.n_members} members
@@ -2018,21 +1553,21 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
 • Analysis Window: {self.window} votes
 • Similarity Methods: {', '.join(self.similarity_methods)}
 • Adaptive Threshold: {'[OK] Enabled' if self.adaptive_threshold else '[FAIL] Disabled'}
-• Alert Cooldown: {self.alert_system['cooldown_period']} steps
+• Alert Cooldown: {self.alert_system['cooldown_period']} checks
 • Detection Methods: {len(self.detection_methods)} active
 
 [SEARCH] Suspicious Pairs:
 {chr(10).join(suspicious_details) if suspicious_details else "  [OK] No suspicious pairs detected"}
 
 [WARN] Member Alerts:
-{chr(10).join(independence_summary) if independence_summary else "  [OK] All members showing normal behavior"}
+{chr(10).join(indep_summary) if indep_summary else "  [OK] All members showing normal behavior"}
 
 [STATS] Quality Metrics:
 • Detection Precision: {self.quality_metrics.get('detection_precision', 0.0):.1%}
 • Detection Recall: {self.quality_metrics.get('detection_recall', 0.0):.1%}
 • Behavioral Accuracy: {self.quality_metrics.get('behavioral_accuracy', 0.0):.1%}
 • Temporal Consistency: {self.quality_metrics.get('temporal_consistency', 0.0):.1%}
-• Overall Effectiveness: {effectiveness_status} ({effectiveness:.1%})
+• Overall Effectiveness: {eff_status} ({eff:.1%})
 
 [STATS] Recent Activity:
 • Vote History: {len(self.vote_history)} entries
@@ -2043,500 +1578,398 @@ class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
 [TOOL] System Health:
 • Error Count: {self.error_count}/{self.circuit_breaker_threshold}
 • Status: {'[ALERT] DISABLED' if self.is_disabled else '[OK] OPERATIONAL'}
-• Session Duration: {(datetime.datetime.now() - datetime.datetime.fromisoformat(self.detection_stats['session_start'])).total_seconds() / 3600:.1f} hours
+• Session Duration: {(dt.datetime.now() - dt.datetime.fromisoformat(self.detection_stats['session_start'])).total_seconds() / 3600:.1f} hours
 • Detection Trend: {self._calculate_recent_collusion_trend().title()}
 
-[TARGET] Intelligence Metrics:
+[TARGET] Intelligence:
 • Adaptation Rate: {self.detection_intelligence.get('adaptation_rate', 0.15):.1%}
 • Sensitivity Target: {self.detection_intelligence.get('sensitivity_target', 0.85):.1%}
 • False Positive Threshold: {self.detection_intelligence.get('false_positive_threshold', 0.1):.1%}
 • Behavioral Memory: {self.detection_intelligence.get('behavioral_memory', 0.9):.1%}
-        """
+"""
 
-    def get_health_status(self) -> Dict[str, Any]:
-        """Get health status for system monitoring"""
-        return {
-            'module_name': 'CollusionAuditor',
-            'status': 'disabled' if self.is_disabled else 'healthy',
-            'metrics': self._get_health_metrics(),
-            'alerts': self._generate_health_alerts(),
-            'recommendations': self._generate_health_recommendations()
-        }
-
-    def _generate_health_alerts(self) -> List[Dict[str, Any]]:
-        """Generate health-related alerts"""
-        alerts = []
-        
-        if self.is_disabled:
-            alerts.append({
-                'severity': 'critical',
-                'message': 'CollusionAuditor disabled due to errors',
-                'action': 'Investigate error logs and restart module'
+    # ────────────────────────────
+    # HEALTH, ERRORS, STATE
+    # ────────────────────────────
+    def _update_performance_metric(self, metric_name: str, value: float) -> None:
+        try:
+            if hasattr(self, "performance_tracker") and self.performance_tracker:
+                self.performance_tracker.record_metric("CollusionAuditor", metric_name, float(value), True)
+            # Use a dedicated per-metric history map to avoid conflicting with BaseModule's deque _performance_history
+            if not hasattr(self, "_metric_history"):
+                self._metric_history = defaultdict(lambda: deque(maxlen=50))  # type: ignore[attr-defined]
+            self._metric_history[metric_name].append({  # type: ignore[attr-defined]
+                "timestamp": dt.datetime.now().isoformat(),
+                "value": float(value),
             })
-        
-        if self.error_count > 2:
-            alerts.append({
-                'severity': 'warning',
-                'message': f'High error count: {self.error_count}',
-                'action': 'Monitor for recurring issues'
-            })
-        
-        # High collusion score alert
-        if self.collusion_score > 0.7:
-            alerts.append({
-                'severity': 'critical',
-                'message': f'High collusion score detected: {self.collusion_score:.1%}',
-                'action': 'Immediate investigation of member coordination required'
-            })
-        
-        # High alert frequency
-        alert_frequency = self.detection_stats.get('alert_frequency', 0.0)
-        if alert_frequency > 0.4:
-            alerts.append({
-                'severity': 'warning',
-                'message': f'High alert frequency: {alert_frequency:.1%}',
-                'action': 'Review detection sensitivity and threshold settings'
-            })
-        
-        # Low detection effectiveness
-        effectiveness = self.quality_metrics.get('overall_effectiveness', 0.0)
-        if effectiveness < 0.3:
-            alerts.append({
-                'severity': 'warning',
-                'message': f'Low detection effectiveness: {effectiveness:.1%}',
-                'action': 'Review detection methods and parameters'
-            })
-        
-        # Insufficient data
-        if len(self.vote_history) < 5:
-            alerts.append({
-                'severity': 'info',
-                'message': 'Insufficient voting history for reliable detection',
-                'action': 'Continue operations to build detection baseline'
-            })
-        
-        return alerts
-
-    def _generate_health_recommendations(self) -> List[str]:
-        """Generate health-related recommendations"""
-        recommendations = []
-        
-        if self.is_disabled:
-            recommendations.append("Restart CollusionAuditor module after investigating errors")
-        
-        if len(self.vote_history) < 10:
-            recommendations.append("Insufficient voting history - continue operations to establish detection patterns")
-        
-        # Threshold recommendations
-        threshold_deviation = abs(self.current_threshold - self.base_threshold) / self.base_threshold
-        if threshold_deviation > 0.3:
-            recommendations.append("Large threshold adaptation detected - review market sensitivity settings")
-        
-        # Coordination recommendations
-        if len(self.suspicious_pairs) > self.n_members // 2:
-            recommendations.append("High number of suspicious pairs - consider member rotation or voting methodology review")
-        
-        # Alert management recommendations
-        if len(self.alert_system['last_alerts']) > self.n_members:
-            recommendations.append("Many members under alert - review overall committee composition")
-        
-        # Performance recommendations
-        effectiveness = self.quality_metrics.get('overall_effectiveness', 0.0)
-        if effectiveness < 0.5:
-            recommendations.append("Low detection effectiveness - consider adjusting similarity methods or thresholds")
-        
-        if not recommendations:
-            recommendations.append("CollusionAuditor operating within normal parameters")
-        
-        return recommendations
+        except Exception as e:
+            if hasattr(self, "logger"):
+                self.logger.warning(f"Performance metric update failed for {metric_name}: {e}")
 
     async def _handle_processing_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
-        """Handle processing errors with intelligent recovery"""
         self.error_count += 1
-        error_context = self.error_pinpointer.analyze_error(error, "CollusionAuditor")
-        
-        # Circuit breaker logic
+        ctx = self.error_pinpointer.analyze_error(error, "CollusionAuditor")
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
-            self.logger.error(format_operator_message(
-                icon="[ALERT]",
-                message="Collusion Auditor disabled due to repeated errors",
-                error_count=self.error_count,
-                threshold=self.circuit_breaker_threshold
-            ))
-        
-        # Record error performance
-        processing_time = (time.time() - start_time) * 1000
-        self.performance_tracker.record_metric('CollusionAuditor', 'process_time', processing_time, False)
-        
+            self.logger.error(
+                format_operator_message(
+                    icon="[ALERT]",
+                    message="Collusion Auditor disabled due to repeated errors",
+                    error_count=self.error_count,
+                    threshold=self.circuit_breaker_threshold,
+                )
+            )
+        self.performance_tracker.record_metric("CollusionAuditor", "process_time_ms", (time.time() - start_time) * 1000.0, False)
         return {
-            'collusion_score': 0.0,
-            'suspicious_pairs': [],
-            'member_independence_scores': {},
-            'collusion_alerts': [],
-            'behavioral_profiles': {},
-            'coordination_events': [],
-            'detection_statistics': {'error': str(error_context)},
-            'audit_recommendations': ["Investigate collusion auditor errors"],
-            'health_metrics': {'status': 'error', 'error_context': str(error_context)},
-            '_thesis': f"CollusionAuditor error: {error_context}"
+            "collusion_score": 0.0,
+            "suspicious_pairs": [],
+            "member_independence_scores": {},
+            "collusion_alerts": [],
+            "behavioral_profiles": {},
+            "coordination_events": [],
+            "detection_statistics": {"error": str(ctx)},
+            "audit_recommendations": ["Investigate collusion auditor errors"],
+            "health_metrics": {"status": "error", "error_context": str(ctx)},
+            "_thesis": f"CollusionAuditor error: {ctx}",
         }
 
     def _get_safe_voting_defaults(self) -> Dict[str, Any]:
-        """Get safe defaults when voting data retrieval fails"""
         return {
-            'votes': [], 'voting_summary': {}, 'strategy_arbiter_weights': [],
-            'raw_proposals': [], 'member_confidences': [], 'consensus_direction': 'neutral',
-            'agreement_score': 0.5, 'market_context': {}, 'recent_trades': [],
-            'market_regime': 'unknown', 'volatility_data': {}
+            "votes": [],
+            "voting_summary": {},
+            "strategy_arbiter_weights": [],
+            "raw_proposals": [],
+            "member_confidences": [],
+            "consensus_direction": "neutral",
+            "agreement_score": 0.5,
+            "market_context": {},
+            "recent_trades": [],
+            "market_regime": "unknown",
+            "volatility_data": {},
         }
 
     def _generate_disabled_response(self) -> Dict[str, Any]:
-        """Generate response when module is disabled"""
         return {
-            'collusion_score': 0.0,
-            'suspicious_pairs': [],
-            'member_independence_scores': {},
-            'collusion_alerts': [],
-            'behavioral_profiles': {},
-            'coordination_events': [],
-            'detection_statistics': {'status': 'disabled'},
-            'audit_recommendations': ["Restart collusion auditor system"],
-            'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'},
-            '_thesis': 'CollusionAuditor disabled via circuit breaker'
+            "collusion_score": 0.0,
+            "suspicious_pairs": [],
+            "member_independence_scores": {},
+            "collusion_alerts": [],
+            "behavioral_profiles": {},
+            "coordination_events": [],
+            "detection_statistics": {"status": "disabled"},
+            "audit_recommendations": ["Restart collusion auditor system"],
+            "health_metrics": {"status": "disabled", "reason": "circuit_breaker_triggered"},
+            "_thesis": "CollusionAuditor disabled via circuit breaker",
         }
 
-    # ═══════════════════════════════════════════════════════════════════
-    # STATE MANAGEMENT AND HOT-RELOAD SUPPORT
-    # ═══════════════════════════════════════════════════════════════════
-
+    # ────────────────────────────
+    # STATE & HOT RELOAD
+    # ────────────────────────────
     def get_state(self) -> Dict[str, Any]:
-        """Get complete state for hot-reload and persistence"""
         return {
-            'module_info': {
-                'name': 'CollusionAuditor',
-                'version': '3.0.0',
-                'last_updated': datetime.datetime.now().isoformat()
+            "module_info": {"name": "CollusionAuditor", "version": "3.1.0", "last_updated": dt.datetime.now().isoformat()},
+            "configuration": {
+                "n_members": int(self.n_members),
+                "window": int(self.window),
+                "base_threshold": float(self.base_threshold),
+                "adaptive_threshold": bool(self.adaptive_threshold),
+                "similarity_methods": list(self.similarity_methods),
+                "debug": bool(self.debug),
             },
-            'configuration': {
-                'n_members': self.n_members,
-                'window': self.window,
-                'base_threshold': self.base_threshold,
-                'adaptive_threshold': self.adaptive_threshold,
-                'similarity_methods': self.similarity_methods,
-                'debug': self.debug
+            "detection_state": {
+                "current_threshold": float(self.current_threshold),
+                "collusion_score": float(self.collusion_score),
+                "suspicious_pairs": [list(p) for p in self.suspicious_pairs],
+                "detection_stats": dict(self.detection_stats),
+                "quality_metrics": dict(self.quality_metrics),
             },
-            'detection_state': {
-                'current_threshold': self.current_threshold,
-                'collusion_score': self.collusion_score,
-                'suspicious_pairs': list(self.suspicious_pairs),
-                'detection_stats': self.detection_stats.copy(),
-                'quality_metrics': self.quality_metrics.copy()
+            "intelligence_state": {
+                "detection_intelligence": dict(self.detection_intelligence),
+                "market_adaptation": dict(self.market_adaptation),
+                "alert_system": {
+                    "cooldown_period": int(self.alert_system["cooldown_period"]),
+                    "escalation_threshold": int(self.alert_system["escalation_threshold"]),
+                    "severity_levels": list(self.alert_system["severity_levels"]),
+                    "auto_investigation": bool(self.alert_system["auto_investigation"]),
+                    "last_alerts": {f"{k}": int(v) for k, v in self.alert_system["last_alerts"].items()},
+                },
             },
-            'intelligence_state': {
-                'detection_intelligence': self.detection_intelligence.copy(),
-                'market_adaptation': self.market_adaptation.copy(),
-                'alert_system': {k: (v.copy() if isinstance(v, dict) else v) for k, v in self.alert_system.items()}
+            "behavioral_state": {
+                "member_behavior_profiles": {int(k): dict(v) for k, v in self.member_behavior_profiles.items()},
+                "pair_agreement_history": {str(k): list(v) for k, v in self.pair_agreement_history.items()},
+                "temporal_patterns": {str(k): list(v) for k, v in self.temporal_patterns.items()},
             },
-            'behavioral_state': {
-                'member_behavior_profiles': {k: v.copy() for k, v in self.member_behavior_profiles.items()},
-                'pair_agreement_history': {str(k): list(v) for k, v in self.pair_agreement_history.items()},
-                'temporal_patterns': {k: v.copy() for k, v in self.temporal_patterns.items()}
+            "history_state": {
+                "vote_history": list(self.vote_history)[-20:],
+                "collusion_history": list(self.collusion_history)[-30:],
+                "coordination_events": list(self.coordination_events)[-20:],
+                "alert_patterns": {k: list(v) for k, v in self.alert_patterns.items()},
+                "alert_history": list(self.alert_system.get("alert_history", []))[-50:],
             },
-            'history_state': {
-                'vote_history': list(self.vote_history)[-20:],
-                'collusion_history': list(self.collusion_history)[-30:],
-                'coordination_events': list(self.coordination_events)[-20:],
-                'alert_patterns': {k: v.copy() for k, v in self.alert_patterns.items()}
-            },
-            'error_state': {
-                'error_count': self.error_count,
-                'is_disabled': self.is_disabled
-            },
-            'performance_metrics': self.get_health_metrics()
+            "error_state": {"error_count": int(self.error_count), "is_disabled": bool(self.is_disabled)},
+            "performance_metrics": self.get_health_metrics(),
         }
 
     def set_state(self, state: Dict[str, Any]) -> None:
-        """Set state for hot-reload and persistence"""
         try:
-            # Load configuration
-            config = state.get("configuration", {})
-            self.n_members = int(config.get("n_members", self.n_members))
-            self.window = int(config.get("window", self.window))
-            self.base_threshold = float(config.get("base_threshold", self.base_threshold))
-            self.adaptive_threshold = bool(config.get("adaptive_threshold", self.adaptive_threshold))
-            self.similarity_methods = config.get("similarity_methods", self.similarity_methods)
-            self.debug = bool(config.get("debug", self.debug))
-            
-            # Load detection state
-            detection_state = state.get("detection_state", {})
-            self.current_threshold = float(detection_state.get("current_threshold", self.base_threshold))
-            self.collusion_score = float(detection_state.get("collusion_score", 0.0))
-            
-            suspicious_pairs = detection_state.get("suspicious_pairs", [])
-            self.suspicious_pairs = set(tuple(pair) for pair in suspicious_pairs)
-            
-            self.detection_stats.update(detection_state.get("detection_stats", {}))
-            self.quality_metrics.update(detection_state.get("quality_metrics", {}))
-            
-            # Load intelligence state
-            intelligence_state = state.get("intelligence_state", {})
-            self.detection_intelligence.update(intelligence_state.get("detection_intelligence", {}))
-            self.market_adaptation.update(intelligence_state.get("market_adaptation", {}))
-            
-            alert_system_data = intelligence_state.get("alert_system", {})
-            for key, value in alert_system_data.items():
-                if key in self.alert_system:
-                    if isinstance(value, dict) and isinstance(self.alert_system[key], dict):
-                        self.alert_system[key].update(value)
-                    else:
-                        self.alert_system[key] = value
-            
-            # Load behavioral state
-            behavioral_state = state.get("behavioral_state", {})
-            
-            # Load member behavior profiles
-            profiles_data = behavioral_state.get("member_behavior_profiles", {})
-            self.member_behavior_profiles.clear()
-            for member_id, profile_data in profiles_data.items():
-                self.member_behavior_profiles[int(member_id)] = profile_data
-            
-            # Load pair agreement history
-            pair_history_data = behavioral_state.get("pair_agreement_history", {})
+            cfg = state.get("configuration", {})
+            self.n_members = int(cfg.get("n_members", self.n_members))
+            self.window = int(cfg.get("window", self.window))
+            self.base_threshold = float(cfg.get("base_threshold", self.base_threshold))
+            self.adaptive_threshold = bool(cfg.get("adaptive_threshold", self.adaptive_threshold))
+            self.similarity_methods = list(cfg.get("similarity_methods", self.similarity_methods))
+            self.debug = bool(cfg.get("debug", self.debug))
+
+            det = state.get("detection_state", {})
+            self.current_threshold = float(det.get("current_threshold", self.base_threshold))
+            self.collusion_score = float(det.get("collusion_score", 0.0))
+            self.suspicious_pairs = set(tuple(p) for p in det.get("suspicious_pairs", []))
+            self.detection_stats.update(det.get("detection_stats", {}))
+            self.quality_metrics.update(det.get("quality_metrics", {}))
+
+            intel = state.get("intelligence_state", {})
+            self.detection_intelligence.update(intel.get("detection_intelligence", {}))
+            self.market_adaptation.update(intel.get("market_adaptation", {}))
+            alert_sys = intel.get("alert_system", {})
+            if alert_sys:
+                self.alert_system["cooldown_period"] = int(alert_sys.get("cooldown_period", self.alert_system["cooldown_period"]))
+                self.alert_system["escalation_threshold"] = int(alert_sys.get("escalation_threshold", self.alert_system["escalation_threshold"]))
+                self.alert_system["severity_levels"] = list(alert_sys.get("severity_levels", self.alert_system["severity_levels"]))
+                self.alert_system["auto_investigation"] = bool(alert_sys.get("auto_investigation", self.alert_system["auto_investigation"]))
+                # last_alerts is a mapping from str(pair) -> step int. Keep as-is if present.
+
+            beh = state.get("behavioral_state", {})
+            self.member_behavior_profiles = defaultdict(
+                lambda: {
+                    "avg_similarity": 0.0,
+                    "volatility": 0.0,
+                    "consistency_score": 0.0,
+                    "independence_score": 1.0,
+                    "coordination_frequency": 0.0,
+                    "anomaly_score": 0.0,
+                }
+            )
+            for mid, prof in beh.get("member_behavior_profiles", {}).items():
+                self.member_behavior_profiles[int(mid)] = dict(prof)
+
             self.pair_agreement_history.clear()
-            for pair_str, history_list in pair_history_data.items():
+            for pair_str, hist in beh.get("pair_agreement_history", {}).items():
                 try:
-                    # Parse pair string like "(0, 1)" back to tuple
-                    pair_str_clean = pair_str.strip('()')
-                    pair_parts = [int(x.strip()) for x in pair_str_clean.split(',')]
-                    if len(pair_parts) == 2:
-                        pair = tuple(pair_parts)
-                        self.pair_agreement_history[pair] = deque(history_list, maxlen=self.window)
+                    pair_str_clean = pair_str.strip("()")
+                    parts = [int(x.strip()) for x in pair_str_clean.split(",")]
+                    if len(parts) == 2:
+                        self.pair_agreement_history[(parts[0], parts[1])] = deque(hist, maxlen=self.window)
                 except Exception:
                     continue
-            
-            # Load temporal patterns
-            self.temporal_patterns.clear()
-            temporal_data = behavioral_state.get("temporal_patterns", {})
-            for key, pattern_data in temporal_data.items():
-                self.temporal_patterns[key] = pattern_data
-            
-            # Load history state
-            history_state = state.get("history_state", {})
-            
-            # Load vote history
-            self.vote_history.clear()
-            for entry in history_state.get("vote_history", []):
-                self.vote_history.append(entry)
-            
-            # Load collusion history
-            self.collusion_history.clear()
-            for entry in history_state.get("collusion_history", []):
-                self.collusion_history.append(entry)
-            
-            # Load coordination events
-            self.coordination_events.clear()
-            for entry in history_state.get("coordination_events", []):
-                self.coordination_events.append(entry)
-            
-            # Load alert patterns
-            self.alert_patterns.clear()
-            alert_patterns_data = history_state.get("alert_patterns", {})
-            for key, pattern_data in alert_patterns_data.items():
-                self.alert_patterns[key] = pattern_data
-            
-            # Load error state
-            error_state = state.get("error_state", {})
-            self.error_count = error_state.get("error_count", 0)
-            self.is_disabled = error_state.get("is_disabled", False)
-            
-            self.logger.info(format_operator_message(
-                icon="[RELOAD]",
-                message="Collusion Auditor state restored",
-                members=self.n_members,
-                threshold=f"{self.current_threshold:.3f}",
-                suspicious_pairs=len(self.suspicious_pairs),
-                total_checks=self.detection_stats.get('total_checks', 0)
-            ))
-            
+
+            self.temporal_patterns = defaultdict(list)
+            for k, v in beh.get("temporal_patterns", {}).items():
+                self.temporal_patterns[str(k)] = list(v)
+
+            hist_state = state.get("history_state", {})
+            self.vote_history = deque(hist_state.get("vote_history", []), maxlen=self.window * 2)
+            self.collusion_history = deque(hist_state.get("collusion_history", []), maxlen=100)
+            self.coordination_events = deque(hist_state.get("coordination_events", []), maxlen=50)
+            self.alert_patterns = defaultdict(list, hist_state.get("alert_patterns", {}))
+            if "alert_history" in hist_state:
+                self.alert_system["alert_history"] = deque(hist_state["alert_history"], maxlen=200)
+
+            err = state.get("error_state", {})
+            self.error_count = int(err.get("error_count", 0))
+            self.is_disabled = bool(err.get("is_disabled", False))
+
+            self.logger.info(
+                format_operator_message(
+                    icon="[RELOAD]",
+                    message="Collusion Auditor state restored",
+                    members=self.n_members,
+                    threshold=f"{self.current_threshold:.3f}",
+                    suspicious_pairs=len(self.suspicious_pairs),
+                    total_checks=self.detection_stats.get("total_checks", 0),
+                )
+            )
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "state_restoration")
             self.logger.error(f"State restoration failed: {error_context}")
 
-    # ═══════════════════════════════════════════════════════════════════
-    # RESET AND CLEANUP METHODS
-    # ═══════════════════════════════════════════════════════════════════
-
+    # ────────────────────────────
+    # RESET & TEARDOWN
+    # ────────────────────────────
     def reset(self) -> None:
-        """Enhanced reset with comprehensive state cleanup"""
         super().reset()
-        
-        # Reset detection state
         self.collusion_score = 0.0
         self.suspicious_pairs.clear()
-        self.current_threshold = self.base_threshold
-        
-        # Reset history
+        self.current_threshold = float(self.base_threshold)
+
         self.vote_history.clear()
         self.collusion_history.clear()
         self.coordination_events.clear()
-        
-        # Reset behavioral tracking
+
         self.pair_agreement_history.clear()
         self.member_behavior_profiles.clear()
         self.temporal_patterns.clear()
         self.alert_patterns.clear()
-        
-        # Reset statistics
+
         self.detection_stats = {
-            'total_checks': 0,
-            'alerts_raised': 0,
-            'false_positive_rate': 0.0,
-            'confirmed_collusion_events': 0,
-            'avg_pair_similarity': 0.0,
-            'member_independence_scores': {},
-            'detection_accuracy': 0.95,
-            'alert_frequency': 0.0,
-            'session_start': datetime.datetime.now().isoformat()
+            "total_checks": 0,
+            "alerts_raised": 0,
+            "false_positive_rate": 0.0,
+            "confirmed_collusion_events": 0,
+            "avg_pair_similarity": 0.0,
+            "member_independence_scores": {},
+            "detection_accuracy": 0.95,
+            "alert_frequency": 0.0,
+            "session_start": dt.datetime.now().isoformat(),
         }
-        
+
         # Reset quality metrics
         self.quality_metrics = {
-            'detection_precision': 0.0,
-            'detection_recall': 0.0,
-            'behavioral_accuracy': 0.0,
-            'temporal_consistency': 0.0,
-            'overall_effectiveness': 0.0
+            "detection_precision": 0.0,
+            "detection_recall": 0.0,
+            "behavioral_accuracy": 0.0,
+            "temporal_consistency": 0.0,
+            "overall_effectiveness": 0.0,
         }
-        
+
         # Reset alert system
-        self.alert_system['last_alerts'].clear()
-        if 'alert_history' in self.alert_system:
-            self.alert_system['alert_history'].clear()
-        
-        # Reset error state
+        self.alert_system["last_alerts"].clear()
+        if "alert_history" in self.alert_system:
+            self.alert_system["alert_history"].clear()
+
+        # Reset errors/circuit breaker
         self.error_count = 0
         self.is_disabled = False
-        
-        self.logger.info(format_operator_message(
-            icon="[RELOAD]",
-            message="Collusion Auditor reset completed",
-            status="All detection state cleared and systems reinitialized"
-        ))
 
-    def __del__(self):
-        """Cleanup on destruction"""
+        self.logger.info(
+            format_operator_message(
+                icon="[RELOAD]",
+                message="Collusion Auditor reset completed",
+                status="All detection state cleared and systems reinitialized",
+            )
+        )
+
+    def __del__(self) -> None:
+        """Best-effort cleanup; never raise."""
         try:
-            if hasattr(self, 'logger') and self.logger:
-                self.logger.info(format_operator_message(
-                    icon="👋",
-                    message="Collusion Auditor shutting down",
-                    total_checks=self.detection_stats.get('total_checks', 0),
-                    alerts_raised=self.detection_stats.get('alerts_raised', 0)
-                ))
+            if hasattr(self, "logger") and self.logger:
+                self.logger.info(
+                    format_operator_message(
+                        icon="👋",
+                        message="Collusion Auditor shutting down",
+                        total_checks=self.detection_stats.get("total_checks", 0),
+                        alerts_raised=self.detection_stats.get("alerts_raised", 0),
+                    )
+                )
         except Exception:
-            pass  # Ignore cleanup errors
+            # Swallow all exceptions during interpreter teardown
+            pass
 
-    # ═══════════════════════════════════════════════════════════════════
-    # BASEMODULE ABSTRACT METHOD IMPLEMENTATIONS
-    # ═══════════════════════════════════════════════════════════════════
-
+    # ────────────────────────────
+    # CONFIDENCE & ACTION
+    # ────────────────────────────
     async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
-        """Calculate confidence in collusion detection results"""
+        """Confidence in the current collusion assessment."""
         try:
-            # Base confidence from detection reliability
-            detection_reliability = 1.0 - self.collusion_score  # Lower collusion = higher confidence
-            
-            # Data quality factor
-            data_quality = min(len(self.vote_history) / max(self.window, 1), 1.0)
-            
-            # Member participation factor
-            expected_pairs = self.n_members * (self.n_members - 1) // 2
-            actual_pairs = len(self.pair_agreement_history)
-            participation = actual_pairs / max(expected_pairs, 1)
-            
-            # Recent detection consistency
+            # Lower collusion => higher confidence (bounded)
+            detection_reliability = float(np.clip(1.0 - float(self.collusion_score), 0.0, 1.0))
+
+            # Data quality: how filled our windowed history is
+            data_quality = float(
+                np.clip(len(self.vote_history) / max(float(self.window), 1.0), 0.0, 1.0)
+            )
+
+            # Participation: how many unique pairs we track vs. expected
+            expected_pairs = float(max(self.n_members * (self.n_members - 1) // 2, 1))
+            actual_pairs = float(len(self.pair_agreement_history))
+            participation = float(np.clip(actual_pairs / expected_pairs, 0.0, 1.0))
+
+            # Recent consistency of collusion scores
             if len(self.collusion_history) > 3:
-                recent_scores = [event.get('collusion_score', 0.0) for event in list(self.collusion_history)[-5:]]
-                consistency = 1.0 - (np.std(recent_scores) / max(float(np.mean(recent_scores)), 0.1))
+                recent_scores = [float(e.get("collusion_score", 0.0)) for e in list(self.collusion_history)[-5:]]
+                mean_val = float(np.mean(recent_scores)) if recent_scores else 0.0
+                std_val = float(np.std(recent_scores)) if recent_scores else 0.0
+                consistency = float(max(0.0, 1.0 - (std_val / max(mean_val, 0.1)))) if mean_val > 0 else 0.5
             else:
                 consistency = 0.5
-            
-            # Combine factors
+
             confidence = (
-                detection_reliability * 0.4 +
-                data_quality * 0.3 +
-                participation * 0.2 +
-                consistency * 0.1
+                0.4 * detection_reliability
+                + 0.3 * data_quality
+                + 0.2 * participation
+                + 0.1 * consistency
             )
-            
-            # Ensure valid range
-            return float(max(0.1, min(0.95, float(confidence))))
-            
+            return float(np.clip(confidence, 0.1, 0.95))
         except Exception as e:
-            if hasattr(self, 'logger'):
+            if hasattr(self, "logger"):
                 self.logger.warning(f"Confidence calculation failed: {e}")
-            return 0.4  # Conservative default
+            return 0.4  # conservative fallback
 
     async def propose_action(self, **inputs) -> Dict[str, Any]:
-        """Propose collusion detection action for voting system integrity"""
+        """Recommend an integrity action based on current risk posture."""
         try:
-            # Analyze current collusion state
-            collusion_score = self.collusion_score
-            suspicious_pairs_count = len(self.suspicious_pairs)
-            recent_alerts = len([a for a in self.alert_system.get('last_alerts', []) 
-                               if a.get('severity') in ['HIGH', 'CRITICAL']])
-            
-            # Determine action based on collusion metrics
-            if collusion_score > 0.8:
-                action_type = 'emergency_intervention'
+            collusion_score = float(self.collusion_score)
+            suspicious_pairs_count = int(len(self.suspicious_pairs))
+
+            # Count recent high-severity alerts (last 10 entries)
+            recent_alerts_list = list(self.alert_system.get("alert_history", []))[-10:]
+            recent_high_severity = sum(
+                1
+                for a in recent_alerts_list
+                if str(a.get("severity", "info")).lower() in {"warning", "critical"}
+            )
+
+            # Decision policy
+            if collusion_score > 0.80:
+                action_type = "emergency_intervention"
                 signal_strength = 0.95
-                reasoning = f"Critical collusion detected (score: {collusion_score:.3f}) - immediate intervention required"
-            elif collusion_score > 0.6:
-                action_type = 'increase_monitoring'
-                signal_strength = 0.8
+                reasoning = f"Critical collusion detected (score: {collusion_score:.3f}) – immediate intervention required"
+            elif collusion_score > 0.60:
+                action_type = "increase_monitoring"
+                signal_strength = 0.80
                 reasoning = f"High collusion risk (score: {collusion_score:.3f})"
-            elif suspicious_pairs_count > self.n_members // 2:
-                action_type = 'investigate_pairs'
-                signal_strength = 0.7
+            elif suspicious_pairs_count > max(self.n_members // 2, 1):
+                action_type = "investigate_pairs"
+                signal_strength = 0.70
                 reasoning = f"Multiple suspicious pairs detected ({suspicious_pairs_count})"
-            elif recent_alerts > 0:
-                action_type = 'review_alerts'
-                signal_strength = 0.6
-                reasoning = f"Recent high-severity alerts ({recent_alerts}) require review"
-            elif collusion_score < 0.2:
-                action_type = 'normal_monitoring'
-                signal_strength = 0.2
-                reasoning = f"Low collusion risk (score: {collusion_score:.3f}) - normal operations"
+            elif recent_high_severity > 0:
+                action_type = "review_alerts"
+                signal_strength = 0.60
+                reasoning = f"{recent_high_severity} recent high-severity alerts require review"
+            elif collusion_score < 0.20:
+                action_type = "normal_monitoring"
+                signal_strength = 0.20
+                reasoning = f"Low collusion risk (score: {collusion_score:.3f}) – normal operations"
             else:
-                action_type = 'monitor'
-                signal_strength = 0.4
-                reasoning = f"Moderate collusion metrics - continue monitoring"
-            
+                action_type = "monitor"
+                signal_strength = 0.40
+                reasoning = "Moderate collusion metrics – continue monitoring"
+
+            # Confidence
+            confidence = await self.calculate_confidence({}, **inputs)
+
             return {
-                'action': action_type,
-                'signal_strength': signal_strength,
-                'reasoning': reasoning,
-                'collusion_metrics': {
-                    'collusion_score': collusion_score,
-                    'suspicious_pairs_count': suspicious_pairs_count,
-                    'recent_alerts': recent_alerts,
-                    'total_members': self.n_members,
-                    'detection_quality': self.quality_metrics.get('detection_quality', 0.5)
+                "action": action_type,
+                "signal_strength": float(signal_strength),
+                "reasoning": reasoning,
+                "collusion_metrics": {
+                    "collusion_score": float(collusion_score),
+                    "suspicious_pairs_count": int(suspicious_pairs_count),
+                    "recent_high_severity_alerts": int(recent_high_severity),
+                    "total_members": int(self.n_members),
+                    "detection_quality": float(self.quality_metrics.get("overall_effectiveness", 0.5)),
                 },
-                'alert_summary': {
-                    'total_alerts': self.detection_stats.get('alerts_raised', 0),
-                    'recent_high_severity': recent_alerts
+                "alert_summary": {
+                    "total_alerts": int(self.detection_stats.get("alerts_raised", 0)),
+                    "recent_high_severity": int(recent_high_severity),
                 },
-                'confidence': await self.calculate_confidence({}, **inputs)
+                "confidence": float(confidence),
             }
-            
         except Exception as e:
-            if hasattr(self, 'logger'):
+            if hasattr(self, "logger"):
                 self.logger.error(f"Action proposal failed: {e}")
             return {
-                'action': 'abstain',
-                'signal_strength': 0.0,
-                'reasoning': f'Collusion detection error: {str(e)}',
-                'confidence': 0.1
+                "action": "abstain",
+                "signal_strength": 0.0,
+                "reasoning": f"Collusion detection error: {str(e)}",
+                "confidence": 0.1,
             }

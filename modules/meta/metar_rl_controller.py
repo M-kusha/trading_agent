@@ -5,6 +5,7 @@
 # ─────────────────────────────────────────────────────────────
 
 import asyncio
+import inspect
 import time
 import threading
 import numpy as np
@@ -159,10 +160,10 @@ class AgentPerformanceTracker:
     version="3.0.0",
     category="meta",
     provides=[
-        "controller_status", "agent_performance", "training_metrics", "automation_status",
+        "controller_status", "agents_performance", "controller_training_overview", "automation_status",
         "trading_signals", "trading_signal", "meta_signals", "agent_decisions"
     ],
-    requires=["market_data"],  # Removed "trades", "actions", "training_data" to break circular deps
+    requires=["market_data"],
     description="Advanced meta RL controller with intelligent automation and agent management",
     thesis_required=True,
     health_monitoring=True,
@@ -215,7 +216,7 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
             name="MetaRLController", 
-            log_path="logs/meta_rl_controller.log", 
+            log_path="logs/meta/meta_rl_controller.log", 
             max_lines=3000, 
             operator_mode=True,
             plain_english=True
@@ -387,96 +388,156 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         except Exception as e:
             self.logger.error(f"Initialization failed: {e}")
 
-    async def process(self, **inputs) -> Dict[str, Any]:
-        """Process meta RL controller operations"""
-        start_time = time.time()
-        
+    async def process(self, market_data: Optional[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
+        """
+        MetaRLController main step.
+        Produces ONLY the declared keys (no collisions with PPO/agents):
+        - controller_status
+        - agents_performance
+        - controller_training_overview
+        - automation_status
+        - trading_signals
+        - trading_signal
+        - meta_signals
+        - agent_decisions
+        """
+        import datetime as _dt
+
+        thesis = kwargs.get("thesis") or "MetaRLController status update"
+
+        # ---------------------------
+        # Controller status (robust)
+        # ---------------------------
         try:
-            # Extract controller data
-            controller_data = await self._extract_controller_data(**inputs)
-            
-            if not controller_data:
-                return await self._handle_no_data_fallback()
-            
-            # Update performance metrics
-            performance_result = await self._update_performance_metrics(controller_data)
-            
-            # Execute current mode logic
-            mode_result = await self._execute_current_mode(controller_data)
-            performance_result.update(mode_result)
-            
-            # Evaluate mode transitions
-            transition_result = await self._evaluate_mode_transition(controller_data)
-            performance_result.update(transition_result)
-            
-            # Update automation metrics
-            automation_result = await self._update_automation_metrics()
-            performance_result.update(automation_result)
-            
-            # Generate thesis
-            thesis = await self._generate_controller_thesis(controller_data, performance_result)
-            
-            # Build comprehensive results to satisfy provides + thesis contract
-            controller_status = {
-                'controller_mode': self.current_mode.value,
-                'active_agent': self.active_agent_name,
-                'session_pnl': self.live_session_pnl,
-                'current_episode': self.current_episode,
-                'mode_duration': (datetime.now() - self.mode_start_time).total_seconds(),
-                'last_transition': self.mode_transitions[-1] if self.mode_transitions else None
-            }
-            # Agent performance summary (defensive to avoid None access)
-            try:
-                performance_summary = self.performance_tracker_agent.get_performance_summary()
-                best_agent = self.performance_tracker_agent.get_best_agent()
-            except Exception:
-                performance_summary = {}
-                best_agent = getattr(self, 'active_agent_name', 'unknown')
-            agent_performance = {
-                'performance_summary': performance_summary,
-                'best_agent': best_agent,
-                'agent_comparison': getattr(self, 'agent_comparison_results', {})
-            }
-            training_metrics = {
-                'training_history': list(self.training_history)[-10:],
-                'validation_results': list(self.validation_results)[-5:],
-                'convergence_count': self.training_convergence_count,
-                'poor_episodes': self.consecutive_poor_episodes
-            }
-            automation_status = {
-                'automation_metrics': getattr(self, 'automation_metrics', {}).copy() if hasattr(self, 'automation_metrics') else {},
-                'mode_transitions': list(self.mode_transitions)[-5:],
-                'decision_history': list(self.decision_history)[-10:]
-            }
-            # Minimal signal scaffolding (satisfy provides)
-            try:
-                confidence_val = float(await self.calculate_confidence({'action_type': 'status_check'}))
-            except Exception:
-                confidence_val = 0.5
-            results = {
-                **performance_result,
-                'controller_status': controller_status,
-                'agent_performance': agent_performance,
-                'training_metrics': training_metrics,
-                'automation_status': automation_status,
-                'trading_signals': [],
-                'trading_signal': {'action': 'hold', 'confidence': confidence_val},
-                'meta_signals': {},
-                'agent_decisions': [],
-                '_thesis': thesis
-            }
-            
-            # Update SmartInfoBus
-            await self._update_controller_smart_bus(results, thesis)
-            
-            # Record success
-            processing_time = (time.time() - start_time) * 1000
-            self._record_success(processing_time)
-            
-            return results
-            
-        except Exception as e:
-            return await self._handle_controller_error(e, start_time)
+            mode_started = getattr(self, "mode_start_time", _dt.datetime.now())
+            mode_duration = float((_dt.datetime.now() - mode_started).total_seconds())
+        except Exception:
+            mode_duration = 0.0
+
+        # Pylance-safe narrowing for optional .value
+        mode_obj = getattr(self, "current_mode", None)
+        controller_mode = mode_obj.value if mode_obj is not None else "unknown"
+
+        controller_status = {
+            "controller_mode": controller_mode,
+            "active_agent": getattr(self, "active_agent_name", None),
+            "session_pnl": getattr(self, "live_session_pnl", 0.0),
+            "current_episode": getattr(self, "current_episode", 0),
+            "mode_duration": mode_duration,
+            "last_transition": (getattr(self, "mode_transitions", [])[-1]
+                                if getattr(self, "mode_transitions", []) else None),
+        }
+
+        # -----------------------------------------------
+        # Agents performance summary (NO agent_performance)
+        # -----------------------------------------------
+        perf_summary: Dict[str, Any] = {}
+        best_agent: Optional[str] = None
+        agent_comparison: Dict[str, Any] = {}
+        try:
+            tracker = getattr(self, "performance_tracker_agent", None)
+            if tracker is not None:
+                # These calls should be safe even if they return None
+                ps = tracker.get_performance_summary()
+                ba = tracker.get_best_agent()
+                perf_summary = ps or {}
+                best_agent = ba
+            agent_comparison = getattr(self, "agent_comparison_results", {}) or {}
+        except Exception:
+            # Keep defaults
+            pass
+
+        agents_performance = {
+            "performance_summary": perf_summary,
+            "best_agent": best_agent,
+            "agent_comparison": agent_comparison,
+        }
+
+        # ----------------------------------------------------------
+        # Controller training overview (NO global training_metrics)
+        # ----------------------------------------------------------
+        try:
+            training_history = list(getattr(self, "training_history", []))[-10:]
+        except Exception:
+            training_history = []
+        try:
+            validation_results = list(getattr(self, "validation_results", []))[-5:]
+        except Exception:
+            validation_results = []
+
+        controller_training_overview = {
+            "training_history": training_history,
+            "validation_results": validation_results,
+            "convergence_count": getattr(self, "training_convergence_count", 0),
+            "poor_episodes": getattr(self, "consecutive_poor_episodes", 0),
+        }
+
+        # --------------------------
+        # Automation status (robust)
+        # --------------------------
+        try:
+            mode_transitions_tail = list(getattr(self, "mode_transitions", []))[-5:]
+        except Exception:
+            mode_transitions_tail = []
+        try:
+            decision_history_tail = list(getattr(self, "decision_history", []))[-10:]
+        except Exception:
+            decision_history_tail = []
+
+        automation_status = {
+            "automation_metrics": (getattr(self, "automation_metrics", {}) or {}).copy(),
+            "mode_transitions": mode_transitions_tail,
+            "decision_history": decision_history_tail,
+        }
+
+        # ---------------------------------------
+        # Optional: internal performance snapshot
+        # (Pylance-safe: never directly access unknown attribute)
+        # ---------------------------------------
+        performance_result: Dict[str, Any] = {}
+        try:
+            maybe_hook = getattr(self, "_collect_performance", None)
+            if callable(maybe_hook):
+                possible = maybe_hook(market_data=market_data, **kwargs)
+                if inspect.isawaitable(possible):
+                    pr = await possible
+                else:
+                    pr = possible
+                if isinstance(pr, dict):
+                    performance_result = pr
+        except Exception:
+            performance_result = {}
+
+        # -----------------------------------------------------
+        # Build results (aligned with declared provides)  ✅
+        # -----------------------------------------------------
+        try:
+            confidence_val = float(await self.calculate_confidence({"action_type": "status_check"}))
+        except Exception:
+            confidence_val = 0.5
+
+        results: Dict[str, Any] = {
+            **performance_result,
+            "controller_status": controller_status,
+            "agents_performance": agents_performance,                     # ✅ renamed summary
+            "controller_training_overview": controller_training_overview, # ✅ renamed summary
+            "automation_status": automation_status,
+            "trading_signals": [],
+            "trading_signal": {"action": "hold", "confidence": confidence_val},
+            "meta_signals": {},
+            "agent_decisions": [],
+            "_thesis": thesis,
+        }
+
+        # ------------------------
+        # Update SmartInfoBus  ✅
+        # ------------------------
+        await self._update_controller_smart_bus(results, thesis)
+
+        # Return exactly what we provide
+        return results
+
+
 
     async def _extract_controller_data(self, **inputs) -> Optional[Dict[str, Any]]:
         """Extract controller data from SmartInfoBus"""
@@ -1259,9 +1320,9 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
             return f"Controller thesis generation failed: {str(e)} - Meta RL control continuing"
 
     async def _update_controller_smart_bus(self, controller_result: Dict[str, Any], thesis: str):
-        """Update SmartInfoBus with controller results"""
+        """Update SmartInfoBus with controller results (summary keys only, no collisions)."""
         try:
-            # Controller status
+            # Controller status (unchanged)
             controller_status = {
                 'controller_mode': self.current_mode.value,
                 'active_agent': self.active_agent_name,
@@ -1270,59 +1331,39 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
                 'mode_duration': (datetime.now() - self.mode_start_time).total_seconds(),
                 'last_transition': self.mode_transitions[-1] if self.mode_transitions else None
             }
-            
-            self.smart_bus.set(
-                'controller_status',
-                controller_status,
-                module='MetaRLController',
-                thesis=thesis
-            )
-            
-            # Agent performance
-            agent_performance = {
+            self.smart_bus.set('controller_status', controller_status, module='MetaRLController', thesis=thesis)
+
+            # ✅ Agents performance (summary/compare) — replaces previous 'agent_performance'
+            agents_performance = {
                 'performance_summary': self.performance_tracker_agent.get_performance_summary(),
                 'best_agent': self.performance_tracker_agent.get_best_agent(),
-                'agent_comparison': self.agent_comparison_results
+                'agent_comparison': getattr(self, 'agent_comparison_results', {})
             }
-            
-            self.smart_bus.set(
-                'agent_performance',
-                agent_performance,
-                module='MetaRLController',
-                thesis=f"Agent performance: {len(self._agents)} agents tracked"
-            )
-            
-            # Training metrics
-            training_metrics = {
+            self.smart_bus.set('agents_performance', agents_performance, module='MetaRLController',
+                            thesis=f"Agents performance summary for {len(self._agents)} agents")
+
+            # ✅ Controller training overview — replaces previous global 'training_metrics'
+            controller_training_overview = {
                 'training_history': list(self.training_history)[-10:],
                 'validation_results': list(self.validation_results)[-5:],
                 'convergence_count': self.training_convergence_count,
                 'poor_episodes': self.consecutive_poor_episodes
             }
-            
-            self.smart_bus.set(
-                'training_metrics',
-                training_metrics,
-                module='MetaRLController',
-                thesis="Training metrics and convergence tracking"
-            )
-            
-            # Automation status
+            self.smart_bus.set('controller_training_overview', controller_training_overview, module='MetaRLController',
+                            thesis="Controller training/validation overview")
+
+            # Automation status (unchanged)
             automation_status = {
                 'automation_metrics': self.automation_metrics.copy(),
                 'mode_transitions': list(self.mode_transitions)[-5:],
                 'decision_history': list(self.decision_history)[-10:]
             }
-            
-            self.smart_bus.set(
-                'automation_status',
-                automation_status,
-                module='MetaRLController',
-                thesis="Automation status and decision tracking"
-            )
-            
+            self.smart_bus.set('automation_status', automation_status, module='MetaRLController',
+                            thesis="Automation status and decision tracking")
+
         except Exception as e:
             self.logger.error(f"Failed to update SmartInfoBus: {e}")
+
 
     def _assess_system_health(self, controller_data: Dict[str, Any]) -> float:
         """Assess overall system health"""

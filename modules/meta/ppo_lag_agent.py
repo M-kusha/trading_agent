@@ -207,7 +207,7 @@ class PPOLagConfig:
     name="PPOLagAgent",
     version="3.0.0",
     category="meta",
-    provides=["agent_status", "training_metrics", "position_metrics", "market_adaptation"],
+    provides=["agent_status", "ppo_lag_training_metrics", "position_metrics", "market_adaptation"],
     requires=["trades", "actions", "market_data", "training_signals"],
     description="Advanced PPO-Lag agent with market adaptation and SmartInfoBus integration",
     thesis_required=True,
@@ -261,7 +261,7 @@ class PPOLagAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, S
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
             name="PPOLagAgent", 
-            log_path="logs/ppo_lag_agent.log", 
+            log_path="logs/meta/ppo_lag_agent.log", 
             max_lines=3000, 
             operator_mode=True,
             plain_english=True
@@ -473,7 +473,65 @@ class PPOLagAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, S
             # Record success
             processing_time = (time.time() - start_time) * 1000
             self._record_success(processing_time)
-            
+
+            # Conform to provides contract in return payload
+            agent_status = {
+                'agent_type': 'ppo-lag',
+                'episodes_completed': self.training_stats['episodes_completed'],
+                'total_updates': self.training_stats['total_updates'],
+                'network_parameters': sum(p.numel() for p in self.network.parameters()),
+                'training_active': len(self.buffer['rewards']) > 0,
+                'buffer_size': len(self.buffer['rewards'])
+            }
+            training_metrics = {
+                'training_stats': self.training_stats.copy(),
+                'episode_rewards': list(self.episode_rewards)[-10:],
+                'episode_lengths': list(self.episode_lengths)[-10:],
+                'adaptive_parameters': {
+                    'clip_eps': self.adaptive_clip_eps,
+                    'lr_factor': self.adaptive_lr_factor,
+                    'entropy_coeff': self.config.entropy_coeff
+                }
+            }
+            position_metrics = {
+                'current_position': self.position,
+                'unrealized_pnl': self.unrealized_pnl,
+                'risk_metrics': self.risk_metrics.copy(),
+                'position_history_size': len(self.position_history)
+            }
+            market_adaptation = {
+                'lag_window': self.genome["lag_window"],
+                'buffer_sizes': {
+                    'price': len(self.price_buffer),
+                    'volume': len(self.volume_buffer),
+                    'spread': len(self.spread_buffer),
+                    'volatility': len(self.volatility_buffer)
+                },
+                'market_performance': {
+                    regime: {
+                        'avg_reward': float(np.mean(list(data['rewards'])[-10:])) if len(data['rewards']) >= 10 else 0.0,
+                        'count': data['count']
+                    } for regime, data in self.market_performance.items()
+                },
+                'volatility_performance': {
+                    vol_level: {
+                        'avg_reward': float(np.mean(list(data['rewards'])[-10:])) if len(data['rewards']) >= 10 else 0.0,
+                        'count': data['count']
+                    } for vol_level, data in self.volatility_performance.items()
+                },
+                'adaptation_settings': {
+                    'vol_scaling': self.genome["vol_scaling"],
+                    'position_aware': self.genome["position_aware"]
+                }
+            }
+            market_result.update({
+                'agent_status': agent_status,
+                'ppo_lag_training_metrics': training_metrics,
+                'position_metrics': position_metrics,
+                'market_adaptation': market_adaptation,
+                '_thesis': thesis
+            })
+
             return market_result
             
         except Exception as e:
@@ -1177,7 +1235,7 @@ class PPOLagAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, S
             return f"Agent thesis generation failed: {str(e)} - PPO-Lag training continuing"
 
     async def _update_agent_smart_bus(self, agent_result: Dict[str, Any], thesis: str):
-        """Update SmartInfoBus with agent results"""
+        """Update SmartInfoBus with PPO-Lag agent results (namespaced metrics to avoid collisions)."""
         try:
             # Agent status
             agent_status = {
@@ -1188,15 +1246,9 @@ class PPOLagAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, S
                 'training_active': len(self.buffer['rewards']) > 0,
                 'buffer_size': len(self.buffer['rewards'])
             }
-            
-            self.smart_bus.set(
-                'agent_status',
-                agent_status,
-                module='PPOLagAgent',
-                thesis=thesis
-            )
-            
-            # Training metrics
+            self.smart_bus.set('agent_status', agent_status, module='PPOLagAgent', thesis=thesis)
+
+            # ✅ Namespaced training metrics (no longer writes the global 'training_metrics')
             training_metrics = {
                 'training_stats': self.training_stats.copy(),
                 'episode_rewards': list(self.episode_rewards)[-10:],
@@ -1207,14 +1259,13 @@ class PPOLagAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, S
                     'entropy_coeff': self.config.entropy_coeff
                 }
             }
-            
             self.smart_bus.set(
-                'training_metrics',
+                'ppo_lag_training_metrics',
                 training_metrics,
                 module='PPOLagAgent',
-                thesis=f"Training metrics: {self.training_stats['episodes_completed']} episodes completed"
+                thesis=f"PPO-Lag training metrics: {self.training_stats['episodes_completed']} episodes completed"
             )
-            
+
             # Position metrics
             position_metrics = {
                 'current_position': self.position,
@@ -1222,14 +1273,8 @@ class PPOLagAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, S
                 'risk_metrics': self.risk_metrics.copy(),
                 'position_history_size': len(self.position_history)
             }
-            
-            self.smart_bus.set(
-                'position_metrics',
-                position_metrics,
-                module='PPOLagAgent',
-                thesis="Position tracking and risk metrics"
-            )
-            
+            self.smart_bus.set('position_metrics', position_metrics, module='PPOLagAgent', thesis="Position tracking and risk metrics")
+
             # Market adaptation
             market_adaptation = {
                 'lag_window': self.genome["lag_window"],
@@ -1243,29 +1288,21 @@ class PPOLagAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, S
                     regime: {
                         'avg_reward': float(np.mean(list(data['rewards'])[-10:])) if len(data['rewards']) >= 10 else 0.0,
                         'count': data['count']
-                    }
-                    for regime, data in self.market_performance.items()
+                    } for regime, data in self.market_performance.items()
                 },
                 'volatility_performance': {
                     vol_level: {
                         'avg_reward': float(np.mean(list(data['rewards'])[-10:])) if len(data['rewards']) >= 10 else 0.0,
                         'count': data['count']
-                    }
-                    for vol_level, data in self.volatility_performance.items()
+                    } for vol_level, data in self.volatility_performance.items()
                 },
                 'adaptation_settings': {
                     'vol_scaling': self.genome["vol_scaling"],
                     'position_aware': self.genome["position_aware"]
                 }
             }
-            
-            self.smart_bus.set(
-                'market_adaptation',
-                market_adaptation,
-                module='PPOLagAgent',
-                thesis="Market adaptation and lag feature processing"
-            )
-            
+            self.smart_bus.set('market_adaptation', market_adaptation, module='PPOLagAgent', thesis="Market adaptation and lag feature processing")
+
         except Exception as e:
             self.logger.error(f"Failed to update SmartInfoBus: {e}")
 

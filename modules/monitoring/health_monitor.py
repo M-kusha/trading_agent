@@ -1,45 +1,74 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/monitoring/health_monitor.py
-# [ROCKET] Production-Grade Lazy Health Monitor for SmartInfoBus
+# [ROCKET] Production-Grade Health Monitor for SmartInfoBus
+# v2.4 — config-driven thresholds, contract-aware scoring, bus-safe publishing
 # ─────────────────────────────────────────────────────────────
+
+from __future__ import annotations
 
 import time
 import threading
-import logging
 import json
 import os
 import sys
 import traceback
-from typing import Dict, List, Any, Optional, Callable, Set, Union
+import hashlib
+import tempfile
+import shutil
+from typing import Dict, List, Any, Optional, Callable, Set, Union, Tuple, Deque
 from collections import deque, defaultdict
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from contextlib import contextmanager
 import warnings
+import weakref
+import uuid
+from functools import wraps
 
 # Suppress psutil warnings
 warnings.filterwarnings('ignore', module='psutil')
 
-# Try to import psutil, but don't fail if not available
+# Optional deps: psutil, numpy
 try:
     import psutil
     PSUTIL_AVAILABLE = True
-except ImportError:
+except Exception:
     PSUTIL_AVAILABLE = False
     psutil = None  # type: ignore
 
-# Try to import numpy for calculations
 try:
     import numpy as np
     NUMPY_AVAILABLE = True
-except ImportError:
+except Exception:
     NUMPY_AVAILABLE = False
     np = None  # type: ignore
 
+# Contract registry (optional, contract-first weighting)
+try:
+    # try common locations; these imports are optional
+    from modules.core.contracts_registry import ContractsRegistry  # type: ignore
+except Exception:
+    try:
+        from modules.utils.contracts_registry import ContractsRegistry  # type: ignore
+    except Exception:
+        ContractsRegistry = None  # type: ignore
+
+# Configuration manager (optional, with graceful fallback)
+try:
+    from modules.core.configuration_manager import ConfigurationManager  # type: ignore
+except Exception:
+    ConfigurationManager = None  # type: ignore
+
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.info_bus import InfoBusManager
+
+
+# ─────────────────────────────────────────────────────────────
+# Health data models
+# ─────────────────────────────────────────────────────────────
 
 class HealthStatus(Enum):
-    """Health status enumeration"""
     HEALTHY = "healthy"
     WARNING = "warning"
     CRITICAL = "critical"
@@ -49,1029 +78,1125 @@ class HealthStatus(Enum):
 
 @dataclass
 class HealthMetric:
-    """Single health measurement"""
     timestamp: float
     metric_type: str
     value: float
     threshold: float
     status: str
     details: Optional[Dict[str, Any]] = None
-    
+    trace_id: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary"""
         return asdict(self)
 
 
 @dataclass
 class HealthReport:
-    """Comprehensive health report"""
     timestamp: datetime
     overall_status: str
-    system_metrics: Dict[str, float]
+    system_metrics: Dict[str, Any]
     module_health: Dict[str, str]
     alerts: List[Dict[str, Any]]
     recommendations: List[str]
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary"""
-        data = asdict(self)
-        data['timestamp'] = self.timestamp.isoformat()
-        return data
+    trace_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
+    def to_dict(self) -> Dict[str, Any]:
+        d = asdict(self)
+        d['timestamp'] = self.timestamp.isoformat()
+        return d
+
+
+# ─────────────────────────────────────────────────────────────
+# Utilities: counters, breaker, rate limiter
+# ─────────────────────────────────────────────────────────────
 
 class ThreadSafeCounter:
-    """Thread-safe counter implementation"""
     def __init__(self, initial: int = 0):
-        self._value = initial
+        self._v = initial
         self._lock = threading.Lock()
-    
     def increment(self, amount: int = 1) -> int:
         with self._lock:
-            self._value += amount
-            return self._value
-    
+            self._v += amount
+            return self._v
     def get(self) -> int:
         with self._lock:
-            return self._value
-    
+            return self._v
     def reset(self) -> None:
         with self._lock:
-            self._value = 0
+            self._v = 0
 
+
+class CircuitBreaker:
+    def __init__(self, failure_threshold: int = 3, timeout: float = 60.0):
+        self.failure_threshold = failure_threshold
+        self.timeout = timeout
+        self.failure_count = 0
+        self.last_failure_time: Optional[float] = None
+        self.state = "closed"  # closed, open, half-open
+        self._lock = threading.Lock()
+    def record_success(self) -> None:
+        with self._lock:
+            self.failure_count = 0
+            self.state = "closed"
+    def record_failure(self) -> None:
+        with self._lock:
+            self.failure_count += 1
+            self.last_failure_time = time.time()
+            if self.failure_count >= self.failure_threshold:
+                self.state = "open"
+    def is_open(self) -> bool:
+        with self._lock:
+            if self.state == "open":
+                if self.last_failure_time and (time.time() - self.last_failure_time > self.timeout):
+                    self.state = "half-open"
+                    return False
+                return True
+            return False
+    def reset(self) -> None:
+        with self._lock:
+            self.failure_count = 0
+            self.state = "closed"
+            self.last_failure_time = None
+
+
+class RateLimiter:
+    def __init__(self, max_calls: int = 10, window_seconds: float = 1.0):
+        self.max_calls = max_calls
+        self.window_seconds = window_seconds
+        self.calls: Deque[float] = deque()
+        self._lock = threading.Lock()
+    def allow(self) -> bool:
+        with self._lock:
+            now = time.time()
+            while self.calls and self.calls[0] < now - self.window_seconds:
+                self.calls.popleft()
+            if len(self.calls) < self.max_calls:
+                self.calls.append(now)
+                return True
+            return False
+
+
+def validate_input(func: Callable) -> Callable:
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        for arg in args:
+            if isinstance(arg, str) and len(arg) > 1000:
+                raise ValueError(f"Input too long in {func.__name__}")
+        for key, value in kwargs.items():
+            if isinstance(value, str) and len(value) > 1000:
+                raise ValueError(f"Input {key} too long in {func.__name__}")
+        return func(self, *args, **kwargs)
+    return wrapper
+
+
+# ─────────────────────────────────────────────────────────────
+# Health Monitor
+# ─────────────────────────────────────────────────────────────
 
 class HealthMonitor:
     """
-    Production-grade health monitor with lazy initialization.
-    No blocking operations during import or initialization.
+    Production-grade health monitor with:
+    • Config-driven thresholds (hot-reload via ConfigurationManager watcher)
+    • Contract-aware module scoring (critical modules weighted higher)
+    • Unified operator logging (RotatingLogger) + SmartInfoBus publishing
+    • Non-blocking psutil snapshots, safe fallbacks when deps missing
     """
-    
-    # Class-level singleton instance
+
+    # Singleton
     _instance: Optional['HealthMonitor'] = None
     _instance_lock = threading.Lock()
-    
-    def __init__(self, orchestrator: Optional[Any] = None,
-                 check_interval: int = 30,
-                 auto_start: bool = False):
-        """
-        Initialize health monitor without blocking operations.
-        
-        Args:
-            orchestrator: Optional orchestrator instance
-            check_interval: Seconds between health checks
-            auto_start: Whether to start monitoring automatically (default: False)
-        """
-        # Basic configuration
-        self.orchestrator = orchestrator
-        self.check_interval = max(1, check_interval)  # Minimum 1 second
-        self._initialized = False
-        self._started = False
-        
-        # Thread management
-        self._monitor_thread: Optional[threading.Thread] = None
-        self._shutdown_event = threading.Event()
-        self._startup_lock = threading.Lock()
-        
-        # Lazy-loaded components
-        self._smart_bus: Optional[Any] = None
-        self._logger: Optional[logging.Logger] = None
-        self._process: Optional[Any] = None
-        
-        # Metrics storage (thread-safe)
-        self._metrics_lock = threading.Lock()
-        self.metrics: Dict[str, deque] = defaultdict(lambda: deque(maxlen=1000))
-        
-        # Thresholds configuration
-        self.thresholds = {
+
+    # Lightweight cache for expensive calls
+    _cache: Dict[str, Tuple[Any, float]] = {}
+    _cache_lock = threading.Lock()
+    CACHE_TTL = 5.0
+
+    # Defaults (overridden by config)
+    _DEFAULTS = {
+        'thresholds': {
             'cpu_percent': {'warning': 70, 'critical': 90},
             'memory_percent': {'warning': 75, 'critical': 90},
             'disk_percent': {'warning': 80, 'critical': 95},
-            'error_rate': {'warning': 0.05, 'critical': 0.1},
+            'error_rate': {'warning': 0.05, 'critical': 0.10},
             'latency_ms': {'warning': 150, 'critical': 300},
             'queue_size': {'warning': 1000, 'critical': 5000}
-        }
-        
-        # Alert management (thread-safe)
-        self._alerts_lock = threading.Lock()
+        },
+        'bus_namespace': 'health',
+        'publish_interval_s': 15,
+        'alert_cooldown_s': 15,
+    }
+
+    def __init__(self,
+                 orchestrator: Optional[Any] = None,
+                 check_interval: int = 30,
+                 auto_start: bool = False,
+                 config: Optional[Dict[str, Any]] = None):
+        self.orchestrator = orchestrator
+        self.check_interval = max(1, int(check_interval))
+        self._initialized = False
+        self._started = False
+        self._start_time: Optional[float] = None
+        self._monitor_thread: Optional[threading.Thread] = None
+        self._shutdown_event = threading.Event()
+        self._startup_lock = threading.Lock()
+
+        # SmartInfoBus
+        self._smart_bus: Optional[Any] = None
+
+        # Operator logger (RotatingLogger)
+        self._oplog = RotatingLogger(
+            name="HealthMonitor",
+            log_path="logs/monitoring/health.log",
+            max_lines=8000,
+            operator_mode=True,
+            plain_english=True,
+            info_bus_aware=True  # safely attaches after bus is alive
+        )
+
+        # Process handle (optional)
+        self._process: Optional[Any] = None
+
+        # Thread-safety
+        self._metrics_lock = threading.RLock()
+        self.metrics: Dict[str, Deque[HealthMetric]] = defaultdict(lambda: deque(maxlen=1000))
+
+        # Net I/O trending
+        self._last_net_io: Optional[Dict[str, float]] = None
+        self._last_net_io_time: Optional[float] = None
+
+        # Config & thresholds (merge defaults + runtime config)
+        self._config = self._load_runtime_config(config or {})
+        self.thresholds: Dict[str, Dict[str, float]] = dict(self._config['thresholds'])
+        self._bus_ns: str = str(self._config.get('bus_namespace', 'health')).strip('/')
+        self._alert_cooldown_s: float = float(self._config.get('alert_cooldown_s', 15))
+        self._publish_interval_s: int = max(5, int(self._config.get('publish_interval_s', 15)))
+
+        # Alerts
+        self._alerts_lock = threading.RLock()
         self.active_alerts: Dict[str, Dict[str, Any]] = {}
-        self.alert_history: deque = deque(maxlen=1000)
-        self.alert_callbacks: List[Callable] = []
-        
-        # Module health tracking (thread-safe)
-        self._module_health_lock = threading.Lock()
+        self.alert_history: Deque[Dict[str, Any]] = deque(maxlen=1000)
+        self._alert_callbacks: weakref.WeakSet = weakref.WeakSet()
+        self._cooldowns: Dict[Tuple[str, str], float] = {}
+
+        # Module health scoring
+        self._module_health_lock = threading.RLock()
         self.module_health_scores: Dict[str, float] = {}
         self.unhealthy_modules: Set[str] = set()
-        
-        # Performance tracking
+
+        # Perf meta
         self._check_count = ThreadSafeCounter()
         self._error_count = ThreadSafeCounter()
         self._last_check_duration = 0.0
-        
-        # Initialize if auto_start is True
+
+        self._circuit_breakers: Dict[str, CircuitBreaker] = defaultdict(
+            lambda: CircuitBreaker(failure_threshold=3, timeout=60)
+        )
+        self._rate_limiter = RateLimiter(max_calls=2, window_seconds=1)
+
+        # Meta-monitoring
+        self._meta_metrics = {
+            'monitor_cpu_usage': deque(maxlen=100),
+            'monitor_memory_usage': deque(maxlen=100),
+            'check_durations': deque(maxlen=100)
+        }
+
+        # Background publisher
+        self._publisher_shutdown = False
+        self._publisher_thread: Optional[threading.Thread] = None
+
+        # Auto-wire config hot-reloader (if CM exists)
+        self._attach_config_watcher()
+
         if auto_start:
             self.start()
-    
+
+    # ─────────────────────────────────────────────────────────
+    # Properties
+    # ─────────────────────────────────────────────────────────
+    @property
+    def logger(self) -> RotatingLogger:
+        # for compatibility with your previous code that used `.logger`
+        return self._oplog
+
+    @property
+    def smart_bus(self) -> Any:
+        if self._smart_bus is None:
+            try:
+                self._smart_bus = InfoBusManager.get_instance()
+                # register provider (best-effort)
+                try:
+                    if hasattr(self._smart_bus, "register_provider"):
+                        self._smart_bus.register_provider(
+                            "HealthMonitor",
+                            [f"{self._bus_ns}/summary", f"{self._bus_ns}/system", f"{self._bus_ns}/modules"]
+                        )
+                except Exception:
+                    pass
+            except Exception as e:
+                # Fallback: minimal dummy bus
+                self._oplog.warning(format_operator_message(
+                    "[WARN]", "SmartInfoBus not available",
+                    details=str(e), context="health_monitor"
+                ))
+                self._smart_bus = self._create_dummy_bus()
+        return self._smart_bus
+
+    # ─────────────────────────────────────────────────────────
+    # Config
+    # ─────────────────────────────────────────────────────────
+    def _load_runtime_config(self, overrides: Dict[str, Any]) -> Dict[str, Any]:
+        cfg = dict(self._DEFAULTS)
+        if ConfigurationManager is not None:
+            try:
+                cm = ConfigurationManager.get_instance()
+                # Prefer a dedicated monitoring section if available
+                mon = {}
+                if hasattr(cm, "get_monitoring_config"):
+                    mon = cm.get_monitoring_config() or {}
+                else:
+                    syscfg = cm.get_system_config() or {}
+                    mon = syscfg.get('monitoring', {})
+                # overlay shallow keys
+                for k in ('thresholds', 'bus_namespace', 'publish_interval_s', 'alert_cooldown_s'):
+                    if k in mon:
+                        cfg[k] = mon[k]
+            except Exception:
+                pass
+        # explicit overrides last
+        for k, v in overrides.items():
+            cfg[k] = v
+        # ensure sub-maps exist
+        cfg.setdefault('thresholds', dict(self._DEFAULTS['thresholds']))
+        return cfg
+
+    def _attach_config_watcher(self):
+        if ConfigurationManager is None:
+            return
+        try:
+            cm = ConfigurationManager.get_instance()
+            def _on_cfg_change(name: str, old: Dict[str, Any], new: Dict[str, Any]):
+                try:
+                    # rebuild thresholds from new config
+                    mon = {}
+                    if hasattr(cm, "get_monitoring_config"):
+                        mon = cm.get_monitoring_config() or {}
+                    else:
+                        mon = (new or {}).get('monitoring', {})
+                    if mon:
+                        self.thresholds = dict(mon.get('thresholds', self.thresholds))
+                        self._bus_ns = str(mon.get('bus_namespace', self._bus_ns)).strip('/')
+                        self._alert_cooldown_s = float(mon.get('alert_cooldown_s', self._alert_cooldown_s))
+                        self._publish_interval_s = max(5, int(mon.get('publish_interval_s', self._publish_interval_s)))
+                        self.logger.info(format_operator_message(
+                            "[LOG]", "HealthMonitor config hot-reloaded",
+                            details=f"ns={self._bus_ns} interval={self._publish_interval_s}s",
+                            context="config"
+                        ))
+                except Exception as e:
+                    self.logger.error(f"Config watcher error: {e}")
+            cm.add_config_watcher(_on_cfg_change)
+        except Exception:
+            pass
+
+    # ─────────────────────────────────────────────────────────
+    # Lifecycle
+    # ─────────────────────────────────────────────────────────
     @classmethod
     def get_instance(cls, **kwargs) -> 'HealthMonitor':
-        """Get or create singleton instance"""
         if cls._instance is None:
             with cls._instance_lock:
                 if cls._instance is None:
                     cls._instance = cls(**kwargs)
         return cls._instance
-    
-    @property
-    def logger(self) -> logging.Logger:
-        """Lazy-load logger"""
-        if self._logger is None:
-            self._logger = self._create_logger()
-        return self._logger
-    
-    @property
-    def smart_bus(self) -> Any:
-        """Lazy-load SmartInfoBus"""
-        if self._smart_bus is None:
-            try:
-                from modules.utils.info_bus import InfoBusManager
-                self._smart_bus = InfoBusManager.get_instance()
-            except Exception as e:
-                self.logger.warning(f"SmartInfoBus not available: {e}")
-                # Create a dummy bus
-                self._smart_bus = self._create_dummy_bus()
-        return self._smart_bus
-    
-    def _create_logger(self) -> logging.Logger:
-        """Create a proper logger"""
-        logger = logging.getLogger('HealthMonitor')
-        
-        if not logger.handlers:
-            # Console handler
-            console_handler = logging.StreamHandler(sys.stdout)
-            console_handler.setLevel(logging.INFO)
-            
-            # File handler with rotation
-            try:
-                os.makedirs('logs/monitoring', exist_ok=True)
-                from logging.handlers import RotatingFileHandler
-                file_handler = RotatingFileHandler(
-                    'logs/monitoring/health.log',
-                    maxBytes=10*1024*1024,  # 10MB
-                    backupCount=5
-                )
-                file_handler.setLevel(logging.DEBUG)
-                
-                # Formatter
-                formatter = logging.Formatter(
-                    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-                )
-                console_handler.setFormatter(formatter)
-                file_handler.setFormatter(formatter)
-                
-                logger.addHandler(console_handler)
-                logger.addHandler(file_handler)
-            except Exception as e:
-                print(f"Warning: Could not set up file logging: {e}")
-                logger.addHandler(console_handler)
-            
-            logger.setLevel(logging.DEBUG)
-        
-        return logger
-    
-    def _create_dummy_bus(self) -> Any:
-        """Create a dummy SmartInfoBus for fallback with critical logging"""
-        
-        class DummyBus:
-            def __init__(self):
-                self._logger = logging.getLogger("DummyBus")
-                self._logger.critical("[ALERT] USING DUMMY BUS - SMARTINFOBUS INSTRUMENTATION FAILED")
-                self._call_count = 0
-                self._logged_critical = False
-            
-            def get(self, key: str, module: Optional[str] = None) -> Any:
-                self._call_count += 1
-                if self._call_count == 1:  # Log only first call
-                    self._logger.error(f"[FAIL] DummyBus.get() called - data unavailable for '{key}' (module: {module})")
-                return None
-            
-            def set(self, key: str, value: Any, module: Optional[str] = None, thesis: Optional[str] = None) -> None:
-                self._call_count += 1
-                if self._call_count <= 5:  # Log first 5 calls
-                    self._logger.warning(f"[WARN] DummyBus.set() called - data LOST for '{key}' (module: {module})")
-                elif self._call_count == 6:
-                    self._logger.error("[ALERT] DummyBus receiving more calls - further data loss not logged")
-            
-            def get_performance_metrics(self) -> Dict[str, Any]:
-                if not self._logged_critical:
-                    self._logger.critical("[CRASH] Performance metrics unavailable - DummyBus active")
-                    self._logged_critical = True
-                return {
-                    'dummy_bus_active': True,
-                    'data_loss_calls': self._call_count,
-                    'status': 'INSTRUMENTATION_FAILED'
-                }
-            
-            @property
-            def _circuit_breakers(self) -> Dict:
-                return {}
-            
-            @property
-            def _latency_history(self) -> Dict:
-                return {}
-            
-            @property
-            def _module_disabled(self) -> Set:
-                return set()
-            
-            @property
-            def _data_store(self) -> Dict:
-                return {}
-            
-            def is_module_enabled(self, module: str) -> bool:
-                return True
-        
-        return DummyBus()
-    
+
     def start(self) -> bool:
-        """
-        Start health monitoring in a separate thread.
-        Safe to call multiple times.
-        
-        Returns:
-            bool: True if started successfully, False otherwise
-        """
         with self._startup_lock:
             if self._started:
                 self.logger.info("Health monitor already started")
                 return True
-            
             try:
-                # Initialize components
                 self._initialize_components()
-                
-                # Clear shutdown event
+                self._start_time = time.time()
                 self._shutdown_event.clear()
-                
-                # Start monitoring thread
                 self._monitor_thread = threading.Thread(
-                    target=self._monitoring_loop,
-                    name="HealthMonitor",
-                    daemon=True
+                    target=self._monitoring_loop, name="HealthMonitor", daemon=True
                 )
                 self._monitor_thread.start()
-                
+
+                # publisher thread
+                self._publisher_shutdown = False
+                self._publisher_thread = threading.Thread(
+                    target=self._publisher_loop, name="HealthPublisher", daemon=True
+                )
+                self._publisher_thread.start()
+
                 self._started = True
                 self.logger.info("Health monitor started successfully")
                 return True
-                
             except Exception as e:
                 self.logger.error(f"Failed to start health monitor: {e}")
-                self.logger.debug(traceback.format_exc())
+                self.logger.error(traceback.format_exc())
                 return False
+
     def stop(self, timeout: float = 5.0) -> bool:
-        """
-        Stop health monitoring with guaranteed thread termination.
-        
-        Args:
-            timeout: Maximum time to wait for thread to stop
-            
-        Returns:
-            bool: True if stopped successfully, False if thread leaked
-        """
         if not self._started:
             return True
-        
         self.logger.info("[STOP] Stopping health monitor...")
-        
-        # Signal shutdown
         self._shutdown_event.set()
-        
-        # Wait for thread to finish
+
+        # stop publisher
+        self._publisher_shutdown = True
+        if self._publisher_thread and self._publisher_thread.is_alive():
+            self._publisher_thread.join(timeout=1.0)
+
         if self._monitor_thread and self._monitor_thread.is_alive():
             self._monitor_thread.join(timeout)
-            
             if self._monitor_thread.is_alive():
-                # ENHANCED: Escalate thread leak to orchestrator
-                self.logger.critical(
-                    f"[ALERT] THREAD LEAK DETECTED: Health monitor thread survived {timeout}s timeout"
-                )
-                
-                # Report to orchestrator if available
+                self.logger.critical("[ALERT] THREAD LEAK DETECTED: Health monitor thread did not stop")
                 if self.orchestrator and hasattr(self.orchestrator, '_report_thread_leak'):
                     try:
                         self.orchestrator._report_thread_leak('HealthMonitor', self._monitor_thread)
                     except Exception as e:
                         self.logger.error(f"Failed to report thread leak: {e}")
-                
-                # Mark thread as zombie
                 self._monitor_thread = None
                 self._started = False
-                
-                # Set alert for operators
                 with self._alerts_lock:
-                    leak_alert = {
-                        'type': 'thread_leak',
-                        'component': 'HealthMonitor',
-                        'severity': 'critical',
-                        'timestamp': time.time(),
-                        'message': f'Monitor thread survived {timeout}s shutdown timeout'
+                    alert = {
+                        'type': 'thread_leak', 'component': 'HealthMonitor', 'severity': 'critical',
+                        'timestamp': time.time(), 'message': f'Monitor thread survived {timeout}s'
                     }
-                    self.active_alerts['thread_leak_health_monitor'] = leak_alert
-                    self.alert_history.append(leak_alert)
-                
+                    self.active_alerts['thread_leak_health_monitor'] = alert
+                    self.alert_history.append(alert)
                 return False
-        
+
         self._started = False
         self.logger.info("[OK] Health monitor stopped gracefully")
         return True
 
     def force_shutdown(self) -> bool:
-        """
-        Force shutdown with aggressive thread termination.
-        Use only as last resort when normal stop() fails.
-        
-        Returns:
-            bool: True if forced shutdown completed
-        """
         self.logger.warning("[WARN] Forcing health monitor shutdown...")
-        
-        # Set shutdown flag
         self._shutdown_event.set()
+        self._publisher_shutdown = True
         self._started = False
-        
-        # Abandon the thread (mark as zombie)
-        if self._monitor_thread and self._monitor_thread.is_alive():
-            self.logger.critical(
-                f"🧟 Abandoning zombie thread: {self._monitor_thread.name} "
-                f"(ID: {self._monitor_thread.ident})"
-            )
-            self._monitor_thread = None
-        
-        # Clear all state
+        self._monitor_thread = None
+        self._publisher_thread = None
         with self._alerts_lock:
             self.active_alerts.clear()
-        
         with self._module_health_lock:
             self.module_health_scores.clear()
             self.unhealthy_modules.clear()
-        
         self.logger.warning("[WARN] Health monitor force shutdown complete")
         return True
-    
+
     def _initialize_components(self) -> None:
-        """Initialize lazy components"""
         if self._initialized:
             return
-        
-        # Initialize process handle for psutil
+        # psutil process and prime CPU meter for non-blocking snapshots
         if PSUTIL_AVAILABLE:
             try:
                 self._process = psutil.Process()  # type: ignore
+                try:
+                    psutil.cpu_percent(interval=None)  # type: ignore
+                except Exception:
+                    pass
             except Exception as e:
                 self.logger.warning(f"Could not initialize process handle: {e}")
                 self._process = None
-        
-        # Log system info
         self._log_system_info()
-        
         self._initialized = True
-    
+
     def _log_system_info(self) -> None:
-        """Log system information"""
-        try:
-            info = {
-                'platform': sys.platform,
-                'python_version': sys.version.split()[0],
-                'psutil_available': PSUTIL_AVAILABLE,
-                'numpy_available': NUMPY_AVAILABLE,
-            }
-            
-            if PSUTIL_AVAILABLE:
+        info = {
+            'platform': sys.platform,
+            'python_version': sys.version.split()[0],
+            'psutil_available': PSUTIL_AVAILABLE,
+            'numpy_available': NUMPY_AVAILABLE,
+        }
+        if PSUTIL_AVAILABLE:
+            try:
                 info.update({
                     'cpu_count': psutil.cpu_count(),  # type: ignore
-                    'memory_total_gb': psutil.virtual_memory().total / (1024**3),  # type: ignore
+                    'memory_total_gb': round(psutil.virtual_memory().total / (1024**3), 2),  # type: ignore
                 })
-            
-            self.logger.info(f"System info: {json.dumps(info, indent=2)}")
-            
-        except Exception as e:
-            self.logger.warning(f"Could not log system info: {e}")
-    
+            except Exception:
+                pass
+        self.logger.info(f"System info: {json.dumps(info)}")
+
+    # ─────────────────────────────────────────────────────────
+    # Main monitoring loop
+    # ─────────────────────────────────────────────────────────
     def _monitoring_loop(self) -> None:
-        """Main monitoring loop - runs in separate thread"""
         self.logger.info("Health monitoring loop started")
-        
-        # Initial delay to let system stabilize
         time.sleep(2)
-        
+        consecutive_errors = 0
+        base_interval = self.check_interval
+
         while not self._shutdown_event.is_set():
             try:
-                start_time = time.time()
-                
-                # Perform health check
+                t0 = time.time()
+                self._record_meta_metrics()
                 self.check_system_health()
-                
-                # Record duration
-                self._last_check_duration = time.time() - start_time
-                
-                # Wait for next check or shutdown
-                self._shutdown_event.wait(self.check_interval)
-                
+                dur = time.time() - t0
+                self._last_check_duration = dur
+                self._meta_metrics['check_durations'].append(dur)
+                consecutive_errors = 0
+                self._shutdown_event.wait(base_interval)
             except Exception as e:
                 self._error_count.increment()
+                consecutive_errors += 1
                 self.logger.error(f"Error in monitoring loop: {e}")
-                self.logger.debug(traceback.format_exc())
-                
-                # Back off on errors
-                self._shutdown_event.wait(min(self.check_interval * 2, 60))
-        
+                self.logger.error(traceback.format_exc())
+                backoff = min(base_interval * (2 ** consecutive_errors), 300)
+                self.logger.info(f"Backing off for {backoff}s after {consecutive_errors} errors")
+                self._shutdown_event.wait(backoff)
         self.logger.info("Health monitoring loop stopped")
-    
+
+    def _record_meta_metrics(self) -> None:
+        if PSUTIL_AVAILABLE and self._process:
+            try:
+                cpu = self._process.cpu_percent()
+                mem = self._process.memory_info().rss / (1024**2)
+                self._meta_metrics['monitor_cpu_usage'].append(cpu)
+                self._meta_metrics['monitor_memory_usage'].append(mem)
+            except Exception:
+                self._process = None
+
+    # ─────────────────────────────────────────────────────────
+    # Public checks & reports
+    # ─────────────────────────────────────────────────────────
+    @validate_input
     def check_system_health(self) -> Dict[str, Any]:
-        """
-        Perform comprehensive system health check.
-        Non-blocking and thread-safe.
-        """
+        trace_id = str(uuid.uuid4())
         self._check_count.increment()
-        
-        health_data = {
+        health = {
             'timestamp': time.time(),
+            'trace_id': trace_id,
             'check_number': self._check_count.get(),
             'system': self._check_system_resources(),
             'modules': self._check_module_health(),
             'infobus': self._check_infobus_health(),
             'performance': self._check_performance_health()
         }
-        
-        # Calculate overall status
-        health_data['overall_status'] = self._calculate_overall_status(health_data)
-        
-        # Record metrics
+        health['overall_status'] = self._calculate_overall_status(health)
         with self._metrics_lock:
-            self._record_health_metrics(health_data)
-        
-        # Check for alerts
+            self._record_health_metrics(health)
         with self._alerts_lock:
-            self._check_for_alerts(health_data)
-        
-        return health_data
-    
+            self._check_for_alerts(health)
+        self._cleanup_old_metrics()
+        return health
+
+    def generate_health_report(self) -> HealthReport:
+        health = self.check_system_health()
+        recs = self._generate_recommendations(health)
+        with self._alerts_lock:
+            alerts = list(self.active_alerts.values())
+        return HealthReport(
+            timestamp=datetime.now(),
+            overall_status=health['overall_status'],
+            system_metrics=health.get('system', {}),
+            module_health={m: info['status'] for m, info in health.get('modules', {}).get('module_details', {}).items()},
+            alerts=alerts,
+            recommendations=recs,
+            trace_id=health.get('trace_id', str(uuid.uuid4()))
+        )
+
+    # ─────────────────────────────────────────────────────────
+    # Sub-checks
+    # ─────────────────────────────────────────────────────────
+    def _get_cached(self, key: str, generator: Callable, ttl: Optional[float] = None) -> Any:
+        ttl = ttl or self.CACHE_TTL
+        with self._cache_lock:
+            if key in self._cache:
+                value, ts = self._cache[key]
+                if time.time() - ts < ttl:
+                    return value
+            val = generator()
+            self._cache[key] = (val, time.time())
+            return val
+
     def _check_system_resources(self) -> Dict[str, Any]:
-        """Check system resource usage (non-blocking)"""
-        if not PSUTIL_AVAILABLE:
+        if not PSUTIL_AVAILABLE or psutil is None:
             return {'error': 'psutil not available'}
-        
+
+        breaker = self._circuit_breakers['system_resources']
+        if breaker.is_open():
+            return {'error': 'Circuit breaker open', 'status': 'degraded'}
+
+        def generate():
+            try:
+                cpu_percent = psutil.cpu_percent(interval=None)  # type: ignore
+                cpu_percent = cpu_percent if 0 <= cpu_percent <= 100 else 0.0
+                mem = psutil.virtual_memory()  # type: ignore
+                root_path = os.path.abspath(os.sep)
+                disk = psutil.disk_usage(root_path)  # type: ignore
+                net = psutil.net_io_counters()  # type: ignore
+
+                rates = {'network_send_rate_mbps': 0.0, 'network_recv_rate_mbps': 0.0}
+                now = time.time()
+                if self._last_net_io and self._last_net_io_time:
+                    dt = now - self._last_net_io_time
+                    if dt > 0:
+                        ds = net.bytes_sent - self._last_net_io['bytes_sent']
+                        dr = net.bytes_recv - self._last_net_io['bytes_recv']
+                        rates['network_send_rate_mbps'] = round((ds * 8) / (dt * 1024 * 1024), 2)
+                        rates['network_recv_rate_mbps'] = round((dr * 8) / (dt * 1024 * 1024), 2)
+                self._last_net_io = {'bytes_sent': net.bytes_sent, 'bytes_recv': net.bytes_recv}
+                self._last_net_io_time = now
+
+                proc_mem = 0.0
+                threads = threading.active_count()
+                if self._process:
+                    try:
+                        proc_mem = self._process.memory_info().rss / (1024**2)
+                    except Exception:
+                        self._process = None
+
+                return {
+                    'cpu_percent': round(cpu_percent, 2),
+                    'memory_percent': round(mem.percent, 2),
+                    'memory_available_gb': round(mem.available / (1024**3), 2),
+                    'disk_percent': round(disk.percent, 2),
+                    'disk_free_gb': round(disk.free / (1024**3), 2),
+                    'process_memory_mb': round(proc_mem, 2),
+                    'network_sent_mb': round(net.bytes_sent / (1024**2), 2),
+                    'network_recv_mb': round(net.bytes_recv / (1024**2), 2),
+                    **rates,
+                    'thread_count': threads
+                }
+            except Exception as e:
+                self.logger.error(f"Failed to check system resources: {e}")
+                return {'error': str(e)}
+
         try:
-            if not PSUTIL_AVAILABLE or psutil is None:
-                return {'error': 'psutil not available'}
-            
-            # FIX: CPU check with proper interval
-            cpu_percent = psutil.cpu_percent(interval=0.1)  # 0.1s interval instead of 0
-            
-            memory = psutil.virtual_memory()  # type: ignore
-            disk = psutil.disk_usage('/')  # type: ignore
-            
-            # Network I/O
-            net_io = psutil.net_io_counters()  # type: ignore
-            
-            # Process-specific metrics
-            process_memory = 0
-            thread_count = threading.active_count()
-            
-            if self._process:
-                try:
-                    process_memory = self._process.memory_info().rss / (1024**2)
-                except (psutil.NoSuchProcess, psutil.AccessDenied):  # type: ignore
-                    # Process might have been terminated
-                    self._process = None
-            
-            return {
-                'cpu_percent': cpu_percent,
-                'memory_percent': memory.percent,
-                'memory_available_gb': memory.available / (1024**3),
-                'disk_percent': disk.percent,
-                'disk_free_gb': disk.free / (1024**3),
-                'process_memory_mb': process_memory,
-                'network_sent_mb': net_io.bytes_sent / (1024**2),
-                'network_recv_mb': net_io.bytes_recv / (1024**2),
-                'thread_count': thread_count
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Failed to check system resources: {e}")
-            return {'error': str(e)}
-    
+            res = self._get_cached("system_resources", generate, ttl=2.0)
+            breaker.record_success()
+            return res
+        except Exception:
+            breaker.record_failure()
+            return {'error': 'system resource check failed'}
+
     def _check_module_health(self) -> Dict[str, Any]:
-        """Check health of all modules"""
+        details: Dict[str, Any] = {}
+        unhealthy = 0
         with self._module_health_lock:
-            module_health = {}
-            unhealthy_count = 0
-            
             if self.orchestrator and hasattr(self.orchestrator, 'modules'):
-                for module_name, module in self.orchestrator.modules.items():
-                    health_info = self._check_single_module_health(module_name, module)
-                    module_health[module_name] = health_info
-                    
-                    if health_info['status'] in ['critical', 'error', 'disabled']:
-                        unhealthy_count += 1
-                        self.unhealthy_modules.add(module_name)
+                for name, module in self.orchestrator.modules.items():
+                    info = self._check_single_module_health(name, module)
+                    details[name] = info
+                    if info['status'] in ['critical', 'error', 'disabled']:
+                        unhealthy += 1
+                        self.unhealthy_modules.add(name)
                     else:
-                        self.unhealthy_modules.discard(module_name)
-            
-            return {
-                'total_modules': len(module_health),
-                'healthy_modules': len(module_health) - unhealthy_count,
-                'unhealthy_modules': unhealthy_count,
-                'module_details': module_health
-            }
-    
-    def _check_single_module_health(self, module_name: str, module: Any) -> Dict[str, Any]:
-        """Check health of a single module"""
+                        self.unhealthy_modules.discard(name)
+        return {
+            'total_modules': len(details),
+            'healthy_modules': len(details) - unhealthy,
+            'unhealthy_modules': unhealthy,
+            'module_details': details
+        }
+
+    def _module_criticality_weight(self, module_name: str) -> float:
+        # contract-first: try to read criticality from registry
         try:
-            health_info = {
-                'enabled': self.smart_bus.is_module_enabled(module_name),
-                'failures': 0,
-                'status': 'unknown'
-            }
-            
-            # Check circuit breaker failures
-            if hasattr(self.smart_bus, '_circuit_breakers'):
-                breaker = self.smart_bus._circuit_breakers.get(module_name)
-                if breaker and hasattr(breaker, 'failure_count'):
-                    health_info['failures'] = breaker.failure_count
-            
-            # Get module-specific health if available
+            if ContractsRegistry:
+                contract = ContractsRegistry.get(module_name)  # type: ignore
+                if contract:
+                    # look for typical flags
+                    if contract.get('critical', False):
+                        return 1.5
+                    if contract.get('category') in ('risk', 'trading'):
+                        return 1.25
+        except Exception:
+            pass
+        return 1.0
+
+    def _check_single_module_health(self, module_name: str, module: Any) -> Dict[str, Any]:
+        try:
+            enabled = True
+            failures = 0
+            status = 'unknown'
+
+            # enabled?
+            try:
+                enabled = bool(self.smart_bus.is_module_enabled(module_name))
+            except Exception:
+                enabled = True
+
+            # failures?
+            try:
+                br = getattr(self.smart_bus, "_circuit_breakers", {}).get(module_name)
+                if br and hasattr(br, 'failure_count'):
+                    failures = int(br.failure_count)
+            except Exception:
+                pass
+
+            # ask module
             if hasattr(module, 'get_health_status'):
                 try:
-                    module_status = module.get_health_status()
-                    health_info.update(module_status)
+                    mod_status = module.get_health_status()
+                    if isinstance(mod_status, dict):
+                        status = mod_status.get('status', status)
                 except Exception:
-                    health_info['status'] = 'error'
-            
-            # Calculate health score
-            if not health_info['enabled']:
-                health_info['status'] = 'disabled'
-                health_info['score'] = 0
-            elif health_info['failures'] >= 3:
-                health_info['status'] = 'critical'
-                health_info['score'] = 0
-            elif health_info['failures'] > 0:
-                health_info['status'] = 'warning'
-                health_info['score'] = 0.5
-            else:
-                health_info['status'] = health_info.get('status', 'healthy')
-                health_info['score'] = 1.0
-            
-            # Check latency
-            if hasattr(self.smart_bus, '_latency_history'):
-                latencies = list(self.smart_bus._latency_history.get(module_name, []))
+                    status = 'error'
+
+            # latency
+            avg_latency = None
+            try:
+                latencies = list(getattr(self.smart_bus, "_latency_history", {}).get(module_name, []))
                 if latencies:
                     if NUMPY_AVAILABLE:
-                        avg_latency = np.mean(latencies[-10:])  # type: ignore
+                        avg_latency = float(np.mean(latencies[-10:]))  # type: ignore
                     else:
-                        avg_latency = sum(latencies[-10:]) / len(latencies[-10:])
-                    
-                    health_info['avg_latency_ms'] = avg_latency
-                    
-                    if avg_latency > self.thresholds['latency_ms']['critical']:
-                        health_info['status'] = 'critical'
-                        health_info['score'] = min(health_info['score'], 0.3)
-                    elif avg_latency > self.thresholds['latency_ms']['warning']:
-                        health_info['status'] = 'warning'
-                        health_info['score'] = min(health_info['score'], 0.7)
-            
-            self.module_health_scores[module_name] = health_info['score']
-            return health_info
-            
+                        tail = latencies[-10:]
+                        avg_latency = sum(tail) / len(tail)
+            except Exception:
+                pass
+
+            # compute score
+            if not enabled:
+                status = 'disabled'
+                score = 0.0
+            elif failures >= 3:
+                status = 'critical'
+                score = 0.0
+            elif failures > 0:
+                status = 'warning'
+                score = 0.5
+            else:
+                status = status if status != 'unknown' else 'healthy'
+                score = 1.0
+
+            # apply latency thresholds
+            if avg_latency is not None:
+                thr = self.thresholds.get(f'module.{module_name}', self.thresholds.get('latency_ms', {'warning':150,'critical':300}))
+                if avg_latency > thr.get('critical', 300):
+                    status = 'critical'
+                    score = min(score, 0.3)
+                elif avg_latency > thr.get('warning', 150):
+                    status = 'warning'
+                    score = min(score, 0.7)
+
+            # weight by contract criticality
+            weight = self._module_criticality_weight(module_name)
+            score = max(0.0, min(1.0, score / weight))  # heavier modules penalize more quickly
+
+            with self._module_health_lock:
+                self.module_health_scores[module_name] = score
+
+            out = {'enabled': enabled, 'failures': failures, 'status': status, 'score': score}
+            if avg_latency is not None:
+                out['avg_latency_ms'] = round(avg_latency, 2)
+            return out
+
         except Exception as e:
             self.logger.error(f"Error checking module {module_name}: {e}")
             return {'status': 'error', 'score': 0, 'error': str(e)}
-    
+
     def _check_infobus_health(self) -> Dict[str, Any]:
-        """Check SmartInfoBus health"""
         try:
-            perf_metrics = self.smart_bus.get_performance_metrics()
-            
-            # Calculate queue sizes
-            event_log_size = perf_metrics.get('total_events', 0)
-            
+            perf = self.smart_bus.get_performance_metrics()
+            event_log_size = perf.get('total_events', 0)
+            disabled = len(perf.get('disabled_modules', []))
+            status = self._assess_infobus_status(perf)
             return {
-                'cache_hit_rate': perf_metrics.get('cache_hit_rate', 0),
-                'active_modules': perf_metrics.get('active_modules', 0),
-                'disabled_modules': len(perf_metrics.get('disabled_modules', [])),
+                'cache_hit_rate': round(perf.get('cache_hit_rate', 0), 3),
+                'active_modules': perf.get('active_modules', 0),
+                'disabled_modules': disabled,
                 'event_log_size': event_log_size,
-                'data_keys': len(self.smart_bus._data_store),
-                'status': self._assess_infobus_status(perf_metrics)
+                'data_keys': len(getattr(self.smart_bus, "_data_store", {})),
+                'status': status
             }
         except Exception as e:
             self.logger.error(f"Failed to check InfoBus health: {e}")
             return {'status': 'error', 'error': str(e)}
-    
+
     def _check_performance_health(self) -> Dict[str, Any]:
-        """Check overall performance health"""
         try:
-            recent_latencies = []
+            latencies: List[float] = []
             recent_errors = 0
-            
             if self.orchestrator and hasattr(self.orchestrator, 'modules'):
-                for module_name in self.orchestrator.modules:
-                    # Latencies
-                    if hasattr(self.smart_bus, '_latency_history'):
-                        latencies = list(self.smart_bus._latency_history.get(module_name, []))
-                        if latencies:
-                            recent_latencies.extend(latencies[-10:])
-                    
-                    # Errors
-                    if hasattr(self.smart_bus, '_circuit_breakers'):
-                        breaker = self.smart_bus._circuit_breakers.get(module_name)
-                        if breaker and hasattr(breaker, 'failure_count'):
-                            recent_errors += breaker.failure_count
-            
-            total_executions = len(recent_latencies)
-            
-            # Calculate metrics
-            if NUMPY_AVAILABLE and recent_latencies:
-                avg_latency = np.mean(recent_latencies)  # type: ignore
-                max_latency = np.max(recent_latencies)  # type: ignore
-                p95_latency = np.percentile(recent_latencies, 95)  # type: ignore
-            elif recent_latencies:
-                avg_latency = sum(recent_latencies) / len(recent_latencies)
-                max_latency = max(recent_latencies)
-                sorted_latencies = sorted(recent_latencies)
-                p95_index = int(len(sorted_latencies) * 0.95)
-                p95_latency = sorted_latencies[p95_index]
+                for name in self.orchestrator.modules:
+                    try:
+                        lats = list(getattr(self.smart_bus, "_latency_history", {}).get(name, []))
+                        if lats:
+                            latencies.extend(lats[-10:])
+                        br = getattr(self.smart_bus, "_circuit_breakers", {}).get(name)
+                        if br and hasattr(br, 'failure_count'):
+                            recent_errors += int(br.failure_count)
+                    except Exception:
+                        pass
+
+            total = len(latencies)
+            if total:
+                if NUMPY_AVAILABLE:
+                    avg = float(np.mean(latencies))  # type: ignore
+                    mx = float(np.max(latencies))    # type: ignore
+                    p95 = float(np.percentile(latencies, 95))  # type: ignore
+                else:
+                    avg = sum(latencies) / total
+                    mx = max(latencies)
+                    s = sorted(latencies)
+                    p95 = s[int(total * 0.95) - 1 if total else 0]
             else:
-                avg_latency = max_latency = p95_latency = 0
-            
+                avg = mx = p95 = 0.0
+
+            # meta metrics
+            meta = {}
+            if self._meta_metrics['monitor_cpu_usage']:
+                meta['monitor_cpu_percent'] = round(sum(self._meta_metrics['monitor_cpu_usage']) / len(self._meta_metrics['monitor_cpu_usage']), 2)
+            if self._meta_metrics['monitor_memory_usage']:
+                meta['monitor_memory_mb'] = round(sum(self._meta_metrics['monitor_memory_usage']) / len(self._meta_metrics['monitor_memory_usage']), 2)
+
+            uptime = time.time() - self._start_time if self._start_time else 0.0
             return {
-                'avg_latency_ms': avg_latency,
-                'max_latency_ms': max_latency,
-                'p95_latency_ms': p95_latency,
-                'error_rate': recent_errors / max(total_executions, 1),
-                'throughput_per_min': total_executions * 2,  # Rough estimate
-                'monitor_uptime_seconds': time.time() - (self._check_count.get() * self.check_interval),
+                'avg_latency_ms': round(avg, 2),
+                'max_latency_ms': round(mx, 2),
+                'p95_latency_ms': round(p95, 2),
+                'error_rate': round(recent_errors / max(total, 1), 4),
+                'throughput_per_min': total * 2,
+                'monitor_uptime_seconds': round(uptime, 2),
                 'checks_performed': self._check_count.get(),
-                'monitor_errors': self._error_count.get()
+                'monitor_errors': self._error_count.get(),
+                **meta
             }
         except Exception as e:
             self.logger.error(f"Failed to check performance health: {e}")
             return {'error': str(e)}
-    
-    def _calculate_overall_status(self, health_data: Dict[str, Any]) -> str:
-        """Calculate overall system health status"""
-        statuses = []
-        
-        # System resources
-        system = health_data.get('system', {})
-        if not isinstance(system, dict):
-            statuses.append('error')
-        else:
-            for metric, thresholds in [
-                ('cpu_percent', self.thresholds['cpu_percent']),
-                ('memory_percent', self.thresholds['memory_percent'])
-            ]:
-                value = system.get(metric, 0)
-                if value > thresholds['critical']:
+
+    # ─────────────────────────────────────────────────────────
+    # Status computation & metrics recording
+    # ─────────────────────────────────────────────────────────
+    def _calculate_overall_status(self, health: Dict[str, Any]) -> str:
+        statuses: List[str] = []
+
+        system = health.get('system', {})
+        if isinstance(system, dict):
+            for metric, thr in [('cpu_percent', self.thresholds.get('cpu_percent', {})),
+                                ('memory_percent', self.thresholds.get('memory_percent', {})),
+                                ('disk_percent', self.thresholds.get('disk_percent', {}))]:
+                v = system.get(metric, 0)
+                if v >= thr.get('critical', 1e9):
                     statuses.append('critical')
-                elif value > thresholds['warning']:
+                elif v >= thr.get('warning', 1e9):
                     statuses.append('warning')
-        
-        # Module health
-        modules = health_data.get('modules', {})
+
+        modules = health.get('modules', {})
         if isinstance(modules, dict):
             total = modules.get('total_modules', 1)
             unhealthy = modules.get('unhealthy_modules', 0)
-            unhealthy_ratio = unhealthy / max(total, 1)
-            
-            if unhealthy_ratio > 0.3:
+            ratio = unhealthy / max(total, 1)
+            if ratio > 0.3:
                 statuses.append('critical')
-            elif unhealthy_ratio > 0.1:
+            elif ratio > 0.1:
                 statuses.append('warning')
-        
-        # Performance
-        perf = health_data.get('performance', {})
+
+        perf = health.get('performance', {})
         if isinstance(perf, dict):
-            error_rate = perf.get('error_rate', 0)
-            if error_rate > self.thresholds['error_rate']['critical']:
+            er = perf.get('error_rate', 0)
+            thr = self.thresholds.get('error_rate', {'warning': 0.05, 'critical': 0.1})
+            if er >= thr.get('critical', 0.1):
                 statuses.append('critical')
-            elif error_rate > self.thresholds['error_rate']['warning']:
+            elif er >= thr.get('warning', 0.05):
                 statuses.append('warning')
-        
-        # Determine overall status
-        if 'error' in statuses:
-            return HealthStatus.ERROR.value
-        elif 'critical' in statuses:
+
+        if 'critical' in statuses:
             return HealthStatus.CRITICAL.value
-        elif 'warning' in statuses:
+        if 'warning' in statuses:
             return HealthStatus.WARNING.value
-        else:
-            return HealthStatus.HEALTHY.value
-    
-    def _assess_infobus_status(self, metrics: Dict[str, Any]) -> str:
-        """Assess InfoBus health status"""
-        if metrics.get('cache_hit_rate', 0) < 0.5:
-            return HealthStatus.WARNING.value
-        
-        if len(metrics.get('disabled_modules', [])) > 3:
-            return HealthStatus.CRITICAL.value
-        
         return HealthStatus.HEALTHY.value
-    
-    def _record_health_metrics(self, health_data: Dict[str, Any]) -> None:
-        """Record health metrics for trending"""
-        timestamp = health_data['timestamp']
-        
-        # System metrics
-        system = health_data.get('system', {})
+
+    def _record_health_metrics(self, health: Dict[str, Any]) -> None:
+        ts = health['timestamp']
+        trace = health.get('trace_id')
+
+        system = health.get('system', {})
         if isinstance(system, dict):
-            for metric_name, value in system.items():
+            for name, value in system.items():
                 if isinstance(value, (int, float)):
-                    self.metrics[f'system.{metric_name}'].append(
+                    self.metrics[f'system.{name}'].append(
                         HealthMetric(
-                            timestamp=timestamp,
-                            metric_type=metric_name,
-                            value=value,
-                            threshold=self.thresholds.get(metric_name, {}).get('critical', float('inf')),
-                            status=self._get_metric_status(metric_name, value)
+                            timestamp=ts,
+                            metric_type=name,
+                            value=float(value),
+                            threshold=self.thresholds.get(name, {}).get('critical', float('inf')),
+                            status=self._metric_status(name, float(value)),
+                            trace_id=trace
                         )
                     )
-        
-        # Module health scores
-        for module_name, score in self.module_health_scores.items():
-            self.metrics[f'module.{module_name}.score'].append(
+
+        with self._module_health_lock:
+            snapshot = list(self.module_health_scores.items())
+        for mod, score in snapshot:
+            self.metrics[f'module.{mod}.score'].append(
                 HealthMetric(
-                    timestamp=timestamp,
+                    timestamp=ts,
                     metric_type='health_score',
-                    value=score,
+                    value=float(score),
                     threshold=0.5,
-                    status='healthy' if score > 0.7 else 'warning' if score > 0.3 else 'critical'
+                    status='healthy' if score > 0.7 else 'warning' if score > 0.3 else 'critical',
+                    trace_id=trace
                 )
             )
-    
-    def _get_metric_status(self, metric_name: str, value: float) -> str:
-        """Get status for a metric value"""
-        if metric_name not in self.thresholds:
+
+    def _metric_status(self, metric: str, value: float) -> str:
+        thr = self.thresholds.get(metric)
+        if not thr:
             return HealthStatus.HEALTHY.value
-        
-        thresholds = self.thresholds[metric_name]
-        
-        if value >= thresholds.get('critical', float('inf')):
+        if value >= thr.get('critical', 1e9):
             return HealthStatus.CRITICAL.value
-        elif value >= thresholds.get('warning', float('inf')):
+        if value >= thr.get('warning', 1e9):
             return HealthStatus.WARNING.value
-        else:
-            return HealthStatus.HEALTHY.value
-    
-    def _check_for_alerts(self, health_data: Dict[str, Any]) -> None:
-        """Check for alert conditions"""
-        alerts_to_trigger = []
-        
-        # System resource alerts
-        system = health_data.get('system', {})
+        return HealthStatus.HEALTHY.value
+
+    def _cleanup_old_metrics(self, max_age_seconds: int = 24 * 3600) -> None:
+        """
+        Prune old in-memory metrics and stale cooldown entries to keep memory bounded.
+        """
+        cutoff = time.time() - max_age_seconds
+
+        # Remove old HealthMetric entries and empty metric keys
+        with self._metrics_lock:
+            empty_keys: List[str] = []
+            for key, dq in self.metrics.items():
+                while dq and dq[0].timestamp < cutoff:
+                    dq.popleft()
+                if not dq:
+                    empty_keys.append(key)
+            for key in empty_keys:
+                try:
+                    del self.metrics[key]
+                except Exception:
+                    pass
+
+        # Clean up stale cooldown entries
+        with self._alerts_lock:
+            try:
+                now = time.time()
+                ttl = max(2 * self._alert_cooldown_s, 3600)  # at least 1 hour
+                stale = [k for k, ts in self._cooldowns.items() if (now - ts) > ttl]
+                for k in stale:
+                    self._cooldowns.pop(k, None)
+            except Exception:
+                pass
+
+    # ─────────────────────────────────────────────────────────
+    # Alerts
+    # ─────────────────────────────────────────────────────────
+    def _cooldown_allows(self, key: Tuple[str, str]) -> bool:
+        now = time.time()
+        last = self._cooldowns.get(key, 0.0)
+        if now - last >= self._alert_cooldown_s:
+            self._cooldowns[key] = now
+            return True
+        return False
+
+    def _check_for_alerts(self, health: Dict[str, Any]) -> None:
+        to_trigger: List[Dict[str, Any]] = []
+
+        system = health.get('system', {})
         if isinstance(system, dict):
             for metric, value in system.items():
                 if metric in self.thresholds and isinstance(value, (int, float)):
-                    status = self._get_metric_status(metric, value)
+                    status = self._metric_status(metric, float(value))
                     if status != HealthStatus.HEALTHY.value:
-                        alert_key = f'system.{metric}'
-                        
-                        if alert_key not in self.active_alerts:
+                        key = f'system.{metric}'
+                        if key not in self.active_alerts:
                             alert = {
                                 'type': 'system_resource',
                                 'metric': metric,
                                 'value': value,
                                 'threshold': self.thresholds[metric][status],
                                 'status': status,
-                                'timestamp': time.time()
+                                'timestamp': time.time(),
+                                'trace_id': health.get('trace_id')
                             }
-                            self.active_alerts[alert_key] = alert
-                            alerts_to_trigger.append(alert)
-        
-        # Module health alerts
-        modules = health_data.get('modules', {})
+                            self.active_alerts[key] = alert
+                            to_trigger.append(alert)
+
+        modules = health.get('modules', {})
         if isinstance(modules, dict):
-            module_details = modules.get('module_details', {})
-            for module_name, health_info in module_details.items():
-                if health_info['status'] in ['critical', 'error']:
-                    alert_key = f'module.{module_name}'
-                    
-                    if alert_key not in self.active_alerts:
+            details = modules.get('module_details', {})
+            for mod, info in details.items():
+                if info['status'] in ['critical', 'error']:
+                    key = f'module.{mod}'
+                    if key not in self.active_alerts:
                         alert = {
                             'type': 'module_health',
-                            'module': module_name,
-                            'status': health_info['status'],
-                            'failures': health_info.get('failures', 0),
-                            'timestamp': time.time()
+                            'module': mod,
+                            'status': info['status'],
+                            'failures': info.get('failures', 0),
+                            'timestamp': time.time(),
+                            'trace_id': health.get('trace_id')
                         }
-                        self.active_alerts[alert_key] = alert
-                        alerts_to_trigger.append(alert)
-        
-        # Trigger alerts
-        for alert in alerts_to_trigger:
-            self._trigger_alert(alert)
-    
+                        self.active_alerts[key] = alert
+                        to_trigger.append(alert)
+
+        for a in to_trigger:
+            self._trigger_alert(a)
+        self._clear_resolved_alerts(health)
+
+    def _clear_resolved_alerts(self, health: Dict[str, Any]) -> None:
+        resolved: List[str] = []
+
+        system = health.get('system', {})
+        if isinstance(system, dict):
+            for metric in self.thresholds:
+                key = f'system.{metric}'
+                if key in self.active_alerts:
+                    v = system.get(metric)
+                    if v is not None and self._metric_status(metric, float(v)) == HealthStatus.HEALTHY.value:
+                        resolved.append(key)
+
+        modules = health.get('modules', {})
+        if isinstance(modules, dict):
+            details = modules.get('module_details', {})
+            for mod, info in details.items():
+                key = f'module.{mod}'
+                if key in self.active_alerts and info['status'] not in ['critical', 'error']:
+                    resolved.append(key)
+
+        for k in resolved:
+            self.active_alerts.pop(k, None)
+            self.logger.info(f"Alert resolved: {k}")
+
     def _trigger_alert(self, alert: Dict[str, Any]) -> None:
-        """Trigger an alert"""
-        # Add to history
         self.alert_history.append(alert)
-        
-        # Log alert
-        self.logger.warning(
-            f"[ALERT] HEALTH ALERT: {alert['type']} - "
-            f"{alert.get('metric') or alert.get('module', 'unknown')} - "
-            f"Status: {alert.get('status', 'unknown')}"
-        )
-        
-        # Call registered callbacks
-        for callback in self.alert_callbacks:
+        key = ('alert', alert.get('type', 'unknown'))
+        if not self._cooldown_allows(key):
+            return
+        # operator log
+        msg = f"[ALERT] {alert['type']} - {alert.get('metric') or alert.get('module', 'unknown')} - {alert.get('status','unknown')}"
+        self.logger.warning(msg)
+        # callbacks
+        for cb in list(self._alert_callbacks):
             try:
-                callback(alert)
+                cb(alert)
             except Exception as e:
                 self.logger.error(f"Alert callback error: {e}")
-    
-    def register_alert_callback(self, callback: Callable) -> None:
-        """Register callback for health alerts"""
-        if callable(callback):
-            self.alert_callbacks.append(callback)
-    
-    def generate_health_report(self) -> HealthReport:
-        """Generate comprehensive health report"""
-        health_data = self.check_system_health()
-        
-        # Generate recommendations
-        recommendations = self._generate_recommendations(health_data)
-        
-        # Convert alerts to list
-        with self._alerts_lock:
-            alerts = list(self.active_alerts.values())
-        
-        return HealthReport(
-            timestamp=datetime.now(),
-            overall_status=health_data['overall_status'],
-            system_metrics=health_data.get('system', {}),
-            module_health={
-                m: info['status'] 
-                for m, info in health_data.get('modules', {}).get('module_details', {}).items()
-            },
-            alerts=alerts,
-            recommendations=recommendations
-        )
-    
-    def _generate_recommendations(self, health_data: Dict[str, Any]) -> List[str]:
-        """Generate health improvement recommendations"""
-        recommendations = []
-        
-        # System resource recommendations
-        system = health_data.get('system', {})
-        if isinstance(system, dict):
-            cpu = system.get('cpu_percent', 0)
-            if cpu > self.thresholds['cpu_percent']['warning']:
-                recommendations.append(
-                    f"High CPU usage ({cpu:.1f}%) - consider optimizing compute-intensive modules"
-                )
-            
-            memory = system.get('memory_percent', 0)
-            if memory > self.thresholds['memory_percent']['warning']:
-                recommendations.append(
-                    f"High memory usage ({memory:.1f}%) - check for memory leaks"
-                )
-        
-        # Module recommendations
-        if self.unhealthy_modules:
-            unhealthy_list = list(self.unhealthy_modules)[:5]
-            recommendations.append(
-                f"Unhealthy modules detected: {', '.join(unhealthy_list)}"
+        # publish to bus (best-effort)
+        try:
+            self.smart_bus.set(
+                f"{self._bus_ns}/alerts",
+                list(self.alert_history)[-20:],
+                module="HealthMonitor",
+                thesis="Recent health alerts"
             )
-            recommendations.append("Consider restarting or investigating these modules")
-        
-        # Performance recommendations
-        perf = health_data.get('performance', {})
-        if isinstance(perf, dict):
-            avg_latency = perf.get('avg_latency_ms', 0)
-            if avg_latency > 100:
-                recommendations.append(
-                    f"High average latency ({avg_latency:.0f}ms) - review module performance"
-                )
-            
-            error_rate = perf.get('error_rate', 0)
-            if error_rate > 0.05:
-                recommendations.append(
-                    f"High error rate ({error_rate:.1%}) - investigate failing modules"
-                )
-        
-        # InfoBus recommendations
-        infobus = health_data.get('infobus', {})
-        if isinstance(infobus, dict):
-            cache_hit_rate = infobus.get('cache_hit_rate', 1)
-            if cache_hit_rate < 0.7:
-                recommendations.append(
-                    "Low cache hit rate - consider increasing cache size or TTL"
-                )
-        
-        return recommendations
-    
-    def get_health_trends(self, metric_name: str, 
-                         hours: int = 24) -> Dict[str, Any]:
-        """Get health metric trends"""
+        except Exception:
+            pass
+
+    @validate_input
+    def register_alert_callback(self, callback: Callable) -> None:
+        if not callable(callback):
+            raise ValueError("Callback must be callable")
+        import inspect
+        if len(inspect.signature(callback).parameters) != 1:
+            raise ValueError("Callback must accept exactly one parameter")
+        self._alert_callbacks.add(callback)
+
+    # ─────────────────────────────────────────────────────────
+    # Trends, export, status
+    # ─────────────────────────────────────────────────────────
+    @validate_input
+    def get_health_trends(self, metric_name: str, hours: int = 24) -> Dict[str, Any]:
+        if not (0 <= hours <= 168):
+            raise ValueError("Hours must be between 0 and 168")
         cutoff = time.time() - (hours * 3600)
-        
         with self._metrics_lock:
             if metric_name not in self.metrics:
                 return {'error': 'Metric not found'}
-            
-            metrics = [m for m in self.metrics[metric_name] if m.timestamp > cutoff]
-        
-        if not metrics:
+            ms = [m for m in self.metrics[metric_name] if m.timestamp > cutoff]
+        if not ms:
             return {'error': 'No data in time range'}
-        
-        values = [m.value for m in metrics]
-        
-        # Calculate statistics
+        vals = [m.value for m in ms]
         if NUMPY_AVAILABLE:
-            avg = float(np.mean(values))  # type: ignore
-            minimum = float(np.min(values))  # type: ignore
-            maximum = float(np.max(values))  # type: ignore
+            avg = float(np.mean(vals))  # type: ignore
+            minimum = float(np.min(vals))  # type: ignore
+            maximum = float(np.max(vals))  # type: ignore
+            std = float(np.std(vals))  # type: ignore
         else:
-            avg = sum(values) / len(values)
-            minimum = min(values)
-            maximum = max(values)
-        
+            avg = sum(vals) / len(vals)
+            minimum = min(vals); maximum = max(vals)
+            var = sum((x - avg)**2 for x in vals) / len(vals)
+            std = var ** 0.5
         return {
             'metric': metric_name,
             'period_hours': hours,
-            'data_points': len(values),
-            'current': values[-1] if values else 0,
-            'average': avg,
-            'minimum': minimum,
-            'maximum': maximum,
-            'trend': self._calculate_trend(values)
+            'data_points': len(vals),
+            'current': vals[-1],
+            'average': round(avg, 3),
+            'minimum': round(minimum, 3),
+            'maximum': round(maximum, 3),
+            'std_deviation': round(std, 3),
+            'trend': self._calc_trend(vals)
         }
-    
-    def _calculate_trend(self, values: List[float]) -> str:
-        """Calculate trend direction"""
+
+    def _calc_trend(self, values: List[float]) -> str:
         if len(values) < 10:
             return 'insufficient_data'
-        
-        # Compare first third to last third
-        third = len(values) // 3
-        first_third = values[:third]
-        last_third = values[-third:]
-        
+        third = max(1, len(values)//3)
+        a = values[:third]; b = values[-third:]
         if NUMPY_AVAILABLE:
-            first_avg = float(np.mean(first_third))  # type: ignore
-            last_avg = float(np.mean(last_third))  # type: ignore
+            fa = float(np.mean(a)); fb = float(np.mean(b))  # type: ignore
         else:
-            first_avg = sum(first_third) / len(first_third)
-            last_avg = sum(last_third) / len(last_third)
-        
-        change = (last_avg - first_avg) / max(abs(first_avg), 1) * 100
-        
-        if change > 10:
-            return 'increasing'
-        elif change < -10:
-            return 'decreasing'
-        else:
-            return 'stable'
-    
+            fa = sum(a)/len(a); fb = sum(b)/len(b)
+        change = (fb - fa) / max(abs(fa), 1) * 100
+        if change > 10: return 'increasing'
+        if change < -10: return 'decreasing'
+        return 'stable'
+
+    @validate_input
     def export_health_data(self, filepath: str) -> bool:
-        """Export health data for analysis"""
+        tmp_name: Optional[str] = None
         try:
-            # Create directory if needed
-            os.makedirs(os.path.dirname(filepath), exist_ok=True)
-            
-            # Gather data
+            if not filepath or '..' in filepath:
+                raise ValueError("Invalid filepath")
+            os.makedirs(os.path.dirname(filepath) or '.', exist_ok=True)
+            current = self.check_system_health()
             with self._alerts_lock:
                 alerts = list(self.active_alerts.values())
-                alert_history = list(self.alert_history)[-100:]
-            
+                history = list(self.alert_history)[-100:]
+            with self._module_health_lock:
+                scores = dict(self.module_health_scores)
+            uptime = time.time() - self._start_time if self._start_time else 0.0
             data = {
                 'export_time': datetime.now().isoformat(),
-                'current_health': self.check_system_health(),
+                'current_health': current,
                 'active_alerts': alerts,
-                'alert_history': alert_history,
-                'module_scores': dict(self.module_health_scores),
-                'recommendations': self._generate_recommendations(
-                    self.check_system_health()
-                ),
+                'alert_history': history,
+                'module_scores': scores,
+                'recommendations': self._generate_recommendations(current),
                 'monitor_stats': {
                     'checks_performed': self._check_count.get(),
                     'errors_encountered': self._error_count.get(),
-                    'uptime_seconds': self._check_count.get() * self.check_interval,
-                    'is_running': self._started
+                    'uptime_seconds': round(uptime, 2),
+                    'is_running': self._started,
+                    'meta_metrics': {
+                        'avg_check_duration_ms': (
+                            sum(self._meta_metrics['check_durations'])/len(self._meta_metrics['check_durations']) * 1000
+                        ) if self._meta_metrics['check_durations'] else 0
+                    }
                 }
             }
-            
-            # Write to file
-            with open(filepath, 'w') as f:
-                json.dump(data, f, indent=2, default=str)
-            
-            self.logger.info(f"Health data exported to {filepath}")
+            js = json.dumps(data, indent=2, default=str)
+            checksum = hashlib.sha256(js.encode()).hexdigest()
+            data['checksum'] = checksum
+            with tempfile.NamedTemporaryFile(mode='w', dir=os.path.dirname(filepath) or '.', delete=False) as tmp:
+                json.dump(data, tmp, indent=2, default=str)
+                tmp_name = tmp.name
+            shutil.move(tmp_name, filepath)
+            self.logger.info(f"Health data exported to {filepath} (checksum: {checksum[:8]}...)")
             return True
-            
         except Exception as e:
             self.logger.error(f"Failed to export health data: {e}")
+            if tmp_name:
+                try: os.unlink(tmp_name)
+                except Exception: pass
             return False
-    
+
     def get_status(self) -> Dict[str, Any]:
-        """Get current monitor status"""
+        with self._metrics_lock:
+            tracked = len(self.metrics)
+        uptime = time.time() - self._start_time if self._start_time else 0.0
         return {
             'initialized': self._initialized,
             'running': self._started,
@@ -1080,13 +1205,97 @@ class HealthMonitor:
             'last_check_duration_ms': self._last_check_duration * 1000,
             'active_alerts': len(self.active_alerts),
             'unhealthy_modules': len(self.unhealthy_modules),
-            'thread_alive': self._monitor_thread.is_alive() if self._monitor_thread else False
+            'thread_alive': self._monitor_thread.is_alive() if self._monitor_thread else False,
+            'uptime_seconds': round(uptime, 2),
+            'circuit_breakers': {name: br.state for name, br in self._circuit_breakers.items()},
+            'cache_size': len(self._cache),
+            'metrics_tracked': tracked
         }
-    
+
     def __del__(self):
-        """Cleanup on deletion"""
         try:
             if self._started:
                 self.stop(timeout=1.0)
         except Exception:
             pass
+
+    # ─────────────────────────────────────────────────────────
+    # Recommendations & bus helpers
+    # ─────────────────────────────────────────────────────────
+    def _generate_recommendations(self, health: Dict[str, Any]) -> List[str]:
+        recs: List[str] = []
+        system = health.get('system', {})
+        if isinstance(system, dict):
+            cpu = system.get('cpu_percent', 0)
+            if cpu >= self.thresholds['cpu_percent']['warning']:
+                recs.append(f"High CPU usage ({cpu:.1f}%) - optimize compute-heavy modules")
+            mem = system.get('memory_percent', 0)
+            if mem >= self.thresholds['memory_percent']['warning']:
+                recs.append(f"High memory usage ({mem:.1f}%) - check for leaks")
+        with self._module_health_lock:
+            if self.unhealthy_modules:
+                u = list(self.unhealthy_modules)[:5]
+                recs.append(f"Unhealthy modules detected: {', '.join(u)}")
+                recs.append("Consider restarting or investigating these modules")
+        perf = health.get('performance', {})
+        if isinstance(perf, dict):
+            avg = perf.get('avg_latency_ms', 0)
+            if avg > 100:
+                recs.append(f"High average latency ({avg:.0f}ms) - review module performance")
+            er = perf.get('error_rate', 0)
+            if er > 0.05:
+                recs.append(f"High error rate ({er:.1%}) - investigate failing modules")
+        bus = health.get('infobus', {})
+        if isinstance(bus, dict) and bus.get('cache_hit_rate', 1) < 0.7:
+            recs.append("Low cache hit rate - consider increasing cache size/TTL")
+        if perf.get('monitor_cpu_percent', 0) > 5:
+            recs.append("Health monitor using excessive CPU - increase check interval")
+        return recs
+
+    def _assess_infobus_status(self, metrics: Dict[str, Any]) -> str:
+        if metrics.get('cache_hit_rate', 0) < 0.5:
+            return HealthStatus.WARNING.value
+        if len(metrics.get('disabled_modules', [])) > 3:
+            return HealthStatus.CRITICAL.value
+        return HealthStatus.HEALTHY.value
+
+    def _create_dummy_bus(self) -> Any:
+        class DummyBus:
+            def set(self, *_, **__): pass
+            def get(self, *_, **__): return None
+            def get_performance_metrics(self): return {'dummy_bus': True}
+            def is_module_enabled(self, module: str) -> bool: return True
+        return DummyBus()
+
+    def _publisher_loop(self):
+        # periodic lightweight publish for dashboards
+        while not self._publisher_shutdown:
+            try:
+                snap = self.get_status()
+                health = self.check_system_health()
+                # summary
+                self.smart_bus.set(
+                    f"{self._bus_ns}/summary",
+                    {'timestamp': time.time(), 'overall': health.get('overall_status'),
+                     'checks': snap['checks_performed'], 'errors': snap['errors_encountered']},
+                    module="HealthMonitor",
+                    thesis="System health summary"
+                )
+                # system
+                self.smart_bus.set(
+                    f"{self._bus_ns}/system",
+                    health.get('system', {}),
+                    module="HealthMonitor",
+                    thesis="System resource snapshot"
+                )
+                # modules (trim to 100 for safety)
+                mods = health.get('modules', {}).get('module_details', {})
+                self.smart_bus.set(
+                    f"{self._bus_ns}/modules",
+                    {k: v for k, v in list(mods.items())[:100]},
+                    module="HealthMonitor",
+                    thesis="Module health snapshot"
+                )
+            except Exception:
+                pass
+            time.sleep(self._publish_interval_s)

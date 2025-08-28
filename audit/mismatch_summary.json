@@ -1,0 +1,7 @@
+{
+  "UndefinedWrite": 34,
+  "DeclaredButNotWritten": 133,
+  "ReadsMissingRequire": 79,
+  "RequiresButNeverRead": 75,
+  "TOTAL": 321
+}

@@ -1,0 +1,243 @@
+last_updated: '2025-08-28'
+modules:
+  ActiveTradeMonitor:
+    category: risk
+    file_path: modules\risk\active_trade_monitor.py
+    module_path: modules.risk.active_trade_monitor
+    provides: []
+    requires: []
+  AdvancedFeatureEngine:
+    category: features
+    file_path: modules\features\advanced_feature_engine.py
+    module_path: modules.features.advanced_feature_engine
+    provides: []
+    requires: []
+  AlternativeRealitySampler:
+    category: voting
+    file_path: modules\voting\alternative_reality_sampler.py
+    module_path: modules.voting.alternative_reality_sampler
+    provides: []
+    requires: []
+  AuditingCoordinator:
+    category: auditing
+    file_path: modules\auditing\auditing_coordinator.py
+    module_path: modules.auditing.auditing_coordinator
+    provides: []
+    requires: []
+  BiasAuditor:
+    category: strategy
+    file_path: modules\strategy\bias_auditor.py
+    module_path: modules.strategy.bias_auditor
+    provides: []
+    requires: []
+  CollusionAuditor:
+    category: voting
+    file_path: modules\voting\collusion_auditor.py
+    module_path: modules.voting.collusion_auditor
+    provides: []
+    requires: []
+  ComplianceModule:
+    category: risk
+    file_path: modules\risk\compliance.py
+    module_path: modules.risk.compliance
+    provides: []
+    requires: []
+  ConsensusDetector:
+    category: voting
+    file_path: modules\voting\consensus_detector.py
+    module_path: modules.voting.consensus_detector
+    provides: []
+    requires: []
+  CorrelatedRiskController:
+    category: risk
+    file_path: modules\risk\correlated_risk_controller.py
+    module_path: modules.risk.correlated_risk_controller
+    provides: []
+    requires: []
+  CurriculumPlannerPlus:
+    category: strategy
+    file_path: modules\strategy\curriculum_planner_plus.py
+    module_path: modules.strategy.curriculum_planner_plus
+    provides: []
+    requires: []
+  DrawdownRescue:
+    category: risk
+    file_path: modules\risk\drawdown_rescue.py
+    module_path: modules.risk.drawdown_rescue
+    provides: []
+    requires: []
+  DynamicRiskController:
+    category: risk
+    file_path: modules\risk\dynamic_risk_controller.py
+    module_path: modules.risk.dynamic_risk_controller
+    provides: []
+    requires: []
+  EnhancedAnomalyDetector:
+    category: risk
+    file_path: modules\risk\anomaly_detector.py
+    module_path: modules.risk.anomaly_detector
+    provides: []
+    requires: []
+  EnhancedVotingCommitteeCoordinator:
+    category: voting
+    file_path: modules\voting\voting_wrappers.py
+    module_path: modules.voting.voting_wrappers
+    provides: []
+    requires: []
+  ExecutionQualityMonitor:
+    category: risk
+    file_path: modules\risk\execution_quality_monitor.py
+    module_path: modules.risk.execution_quality_monitor
+    provides: []
+    requires: []
+  ExplanationGenerator:
+    category: strategy
+    file_path: modules\strategy\explanation_generator.py
+    module_path: modules.strategy.explanation_generator
+    provides: []
+    requires: []
+  FractalRegimeConfirmation:
+    category: market
+    file_path: modules\market\fractal_regime_confirmation.py
+    module_path: modules.market.fractal_regime_confirmation
+    provides: []
+    requires: []
+  HistoricalReplayAnalyzer:
+    category: memory
+    file_path: modules\memory\historical_replay_analyzer.py
+    module_path: modules.memory.historical_replay_analyzer
+    provides: []
+    requires: []
+  MarketThemeDetector:
+    category: market
+    file_path: modules\market\market_theme_detector.py
+    module_path: modules.market.market_theme_detector
+    provides: []
+    requires: []
+  MemoryCompressor:
+    category: memory
+    file_path: modules\memory\memory_compressor.py
+    module_path: modules.memory.memory_compressor
+    provides: []
+    requires: []
+  MetaCognitivePlanner:
+    category: meta
+    file_path: modules\meta\metacognitive_planner.py
+    module_path: modules.meta.metacognitive_planner
+    provides: []
+    requires: []
+  MetaRLController:
+    category: meta
+    file_path: modules\meta\metar_rl_controller.py
+    module_path: modules.meta.metar_rl_controller
+    provides: []
+    requires: []
+  MistakeMemory:
+    category: memory
+    file_path: modules\memory\mistake_memory.py
+    module_path: modules.memory.mistake_memory
+    provides: []
+    requires: []
+  MultiScaleFeatureEngine:
+    category: features
+    file_path: modules\features\multiscale_feature_engine.py
+    module_path: modules.features.multiscale_feature_engine
+    provides: []
+    requires: []
+  NeuralMemoryArchitect:
+    category: memory
+    file_path: modules\memory\neural_memory_architect.py
+    module_path: modules.memory.neural_memory_architect
+    provides: []
+    requires: []
+  OpponentModeEnhancer:
+    category: strategy
+    file_path: modules\strategy\opponent_mode_enhancer.py
+    module_path: modules.strategy.opponent_mode_enhancer
+    provides: []
+    requires: []
+  PlaybookClusterer:
+    category: strategy
+    file_path: modules\strategy\playbook_clusterer.py
+    module_path: modules.strategy.playbook_clusterer
+    provides: []
+    requires: []
+  PlaybookMemory:
+    category: memory
+    file_path: modules\memory\playbook_memory.py
+    module_path: modules.memory.playbook_memory
+    provides: []
+    requires: []
+  PortfolioRiskSystem:
+    category: risk
+    file_path: modules\risk\portofilio_risk_system.py
+    module_path: modules.risk.portofilio_risk_system
+    provides: []
+    requires: []
+  PositionManager:
+    category: position
+    file_path: modules\position\position.py
+    module_path: modules.position.position
+    provides: []
+    requires: []
+  RegimePerformanceMatrix:
+    category: market
+    file_path: modules\market\regime_performance_matrix.py
+    module_path: modules.market.regime_performance_matrix
+    provides: []
+    requires: []
+  RiskAdjustedReward:
+    category: reward
+    file_path: modules\reward\risk_adjusted_reward.py
+    module_path: modules.reward.risk_adjusted_reward
+    provides: []
+    requires: []
+  StrategyArbiter:
+    category: voting
+    file_path: modules\voting\strategy_arbiter.py
+    module_path: modules.voting.strategy_arbiter
+    provides: []
+    requires: []
+  StrategyGenomePool:
+    category: strategy
+    file_path: modules\strategy\strategy_genome_pool.py
+    module_path: modules.strategy.strategy_genome_pool
+    provides: []
+    requires: []
+  StrategyIntrospector:
+    category: strategy
+    file_path: modules\strategy\strategy_introspector.py
+    module_path: modules.strategy.strategy_introspector
+    provides: []
+    requires: []
+  ThesisEvolutionEngine:
+    category: strategy
+    file_path: modules\strategy\thesis_evolution_engine.py
+    module_path: modules.strategy.thesis_evolution_engine
+    provides: []
+    requires: []
+  TimeAwareRiskScaling:
+    category: market
+    file_path: modules\market\time_aware_risk_scaling.py
+    module_path: modules.market.time_aware_risk_scaling
+    provides: []
+    requires: []
+  TimeHorizonAligner:
+    category: voting
+    file_path: modules\voting\time_horizon_aligner.py
+    module_path: modules.voting.time_horizon_aligner
+    provides: []
+    requires: []
+  TradeExplanationAuditor:
+    category: auditing
+    file_path: modules\auditing\trade_explanation_auditor.py
+    module_path: modules.auditing.trade_explanation_auditor
+    provides: []
+    requires: []
+  TradeThesisTracker:
+    category: auditing
+    file_path: modules\auditing\trade_thesis_tracker.py
+    module_path: modules.auditing.trade_thesis_tracker
+    provides: []
+    requires: []
+version: 1.0.0

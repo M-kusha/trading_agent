@@ -1,14 +1,15 @@
 """
-🏛️ Enhanced Strategy Arbiter with SmartInfoBus Integration v3.0
-Advanced multi-expert coordination and sophisticated voting mechanisms
+🏛️ Enhanced Strategy Arbiter with SmartInfoBus Integration v3.1
+Advanced multi-expert coordination, robust gating, and production-grade telemetry.
 """
+
+from __future__ import annotations
 
 import asyncio
 import time
 import numpy as np
-import datetime
-import copy
-from typing import Any, Dict, List, Optional, Tuple, Union
+import datetime as dt
+from typing import Any, Dict, List, Optional, Tuple
 from collections import deque, defaultdict
 
 # ═══════════════════════════════════════════════════════════════════
@@ -27,15 +28,32 @@ from utils.get_dir import _BASE_GATE, _smart_gate
 
 @module(
     name="StrategyArbiter",
-    version="3.0.0",
+    version="3.1.0",
     category="voting",
     provides=[
-        "blended_action", "alpha_weights", "member_weights", "gate_decision", "voting_quality",
-        "member_performance", "decision_statistics", "proposal_analysis", "arbiter_recommendations"
+        "blended_action",
+        "alpha_weights",
+        "member_weights",
+        "gate_decision",
+        "voting_quality",
+        "member_performance",
+        "decision_statistics",
+        "proposal_analysis",
+        "arbiter_recommendations",
+        "instrument_signals",
     ],
     requires=[
-        "market_context", "recent_trades", "current_positions", "member_proposals", "member_confidences",
-        "consensus_score", "collusion_score", "horizon_alignment", "volatility_data", "market_regime"
+        "market_context",
+        "recent_trades",
+        "current_positions",
+        "member_proposals",
+        "member_confidences",
+        "consensus_score",
+        "collusion_score",
+        "horizon_alignment",
+        "volatility_data",
+        "market_regime",
+        "instruments",  # optional but helpful for downstream wiring
     ],
     description="Advanced multi-expert coordination and sophisticated voting mechanisms",
     thesis_required=True,
@@ -45,188 +63,195 @@ from utils.get_dir import _BASE_GATE, _smart_gate
     timeout_ms=120,
     priority=1,
     explainable=True,
-    hot_reload=True
+    hot_reload=True,
 )
 class StrategyArbiter(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    🏛️ PRODUCTION-GRADE Strategy Arbiter v3.0
-    
-    Advanced multi-expert coordination system with:
-    - Sophisticated voting mechanisms with REINFORCE learning
-    - Multi-criteria smart gating with adaptive thresholds
-    - Comprehensive member performance tracking and weight adaptation
-    - SmartInfoBus zero-wiring architecture
-    - Real-time decision quality assessment and audit trails
+    🏛️ PRODUCTION-GRADE Strategy Arbiter v3.1
+
+    Capabilities
+    ────────────
+    • Sophisticated multi-expert blending with confidence & adaptive weights
+    • Regime-aware, criteria-weighted gating with bootstrap handling
+    • Per-instrument signal publishing for downstream execution layers
+    • Member performance analytics (contribution, reliability, specialization)
+    • Learning loop (REINFORCE-style) with baseline and telemetry
+    • Full SmartInfoBus integration + circuit breaker, health & performance metrics
     """
 
-    # Enhanced REINFORCE parameters
+    # Learning knobs
     REINFORCE_LR: float = 0.001
     REINFORCE_LAMBDA: float = 0.95
     PRIOR_BLEND: float = 0.30
 
-    def _initialize(self):
-        """Initialize advanced strategy arbitration systems"""
-        # Initialize base mixins
+    # ────────────────────────────
+    # INIT
+    # ────────────────────────────
+    def _initialize(self) -> None:
+        # Mixins & systems
         self._initialize_trading_state()
         self._initialize_state_management()
-        self._initialize_advanced_systems()
-        
-        # Enhanced arbitration configuration
-        self.members = self.config.get('members', [])
-        init_weights = self.config.get('init_weights', [1.0] * len(self.members))
-        self.weights = np.asarray(init_weights, dtype=np.float32)
-        self.action_dim = self.config.get('action_dim', 4)
-        self.adapt_rate = self.config.get('adapt_rate', 0.01)
-        self.min_confidence = self.config.get('min_confidence', 0.3)
-        self.bootstrap_steps = self.config.get('bootstrap_steps', 50)
-        self.debug = self.config.get('debug', True)
-        
-        # Validate configuration
-        if len(init_weights) != len(self.members):
-            raise ValueError(f"Weight count ({len(init_weights)}) must match member count ({len(self.members)})")
-        
-        # Sub-modules (will be injected via InfoBus)
-        self.consensus = None
-        self.collusion = None
-        self.horizon_aligner = None
-        
-        # Enhanced market state tracking
-        self.curr_vol = 0.01
-        self.market_regime = 'unknown'
-        self.market_session = 'unknown'
-        self.market_context = {}
-        
-        # Advanced REINFORCE learning state
-        self.last_alpha = None
-        self._baseline = 0.0
-        self._baseline_beta = 0.98
-        self.learning_history = deque(maxlen=100)
-        
-        # Comprehensive decision tracking
-        self._trace = []
-        self._log_size = self.config.get('audit_log_size', 100)
-        self.decision_history = deque(maxlen=200)
-        self.proposal_history = deque(maxlen=100)
-        self.gate_decisions = deque(maxlen=150)
-        
-        # Enhanced gate statistics with intelligence
-        self._gate_passes = 0
-        self._gate_attempts = 0
-        self._step_count = 0
-        self.gate_intelligence = {
-            'adaptive_threshold': True,
-            'criteria_weights': [0.25, 0.20, 0.20, 0.20, 0.15],
-            'bootstrap_factor': 0.5,
-            'regime_adjustments': {
-                'volatile': 0.8,
-                'trending': 1.2,
-                'ranging': 1.0,
-                'noise': 0.7
-            }
-        }
-        
-        # Advanced member performance tracking
-        self.member_performance = defaultdict(lambda: {
-            'proposals_made': 0,
-            'successful_proposals': 0,
-            'avg_confidence': 0.5,
-            'recent_performance': deque(maxlen=20),
-            'weight_evolution': deque(maxlen=50),
-            'quality_scores': deque(maxlen=30),
-            'contribution_score': 0.5,
-            'reliability_index': 0.5,
-            'specialization_score': 0.5
-        })
-        
-        # Additional tracking attributes
-        self._last_proposals: Optional[List[np.ndarray]] = None
-        self.voting_quality_metrics = {'overall_quality_score': 0.5}
-        self.member_analytics = {'performance_consistency': 0.5}
-        self.regime_analytics = {'current_regime_fit': 0.5}
-        self.coordination_analytics = {'coordination_effectiveness': 0.5}
-        
-        # Enhanced voting quality metrics
-        self.voting_quality = {
-            'avg_consensus': 0.5,
-            'collusion_risk': 0.0,
-            'gate_effectiveness': 0.5,
-            'member_diversity': 0.5,
-            'decision_confidence': 0.5,
-            'proposal_quality': 0.5,
-            'learning_efficiency': 0.5,
-            'adaptation_rate': 0.0
-        }
-        
-        # Comprehensive performance statistics
-        self.arbiter_stats = {
-            'total_decisions': 0,
-            'successful_decisions': 0,
-            'weight_adaptations': 0,
-            'consensus_failures': 0,
-            'collusion_detected': 0,
-            'gate_pass_rate': 0.0,
-            'avg_proposal_quality': 0.5,
-            'learning_convergence': 0.0,
-            'member_coordination': 0.5,
-            'decision_latency': 0.0,
-            'session_start': datetime.datetime.now().isoformat()
-        }
-        
-        # Advanced decision intelligence
-        self.decision_intelligence = {
-            'quality_threshold': 0.7,
-            'adaptation_sensitivity': 0.15,
-            'member_learning_rate': 0.05,
-            'consensus_weight': 0.3,
-            'performance_memory': 0.9,
-            'regime_adaptation': True,
-            'dynamic_weighting': True
-        }
-        
-        # Market condition adaptation
-        self.market_adaptation = {
-            'regime_multipliers': {
-                'trending': {'confidence_boost': 1.1, 'gate_adjustment': 1.2},
-                'volatile': {'confidence_boost': 0.9, 'gate_adjustment': 0.8},
-                'ranging': {'confidence_boost': 1.0, 'gate_adjustment': 1.0},
-                'noise': {'confidence_boost': 0.8, 'gate_adjustment': 0.7},
-                'unknown': {'confidence_boost': 1.0, 'gate_adjustment': 1.0}
-            },
-            'session_adjustments': {
-                'american': 1.0,
-                'european': 0.95,
-                'asian': 0.9,
-                'rollover': 0.6
-            }
-        }
-        
-        # Circuit breaker for error handling
-        self.error_count = 0
-        self.circuit_breaker_threshold = 5
-        self.is_disabled = False
-        
-        # Generate initialization thesis
-        self._generate_initialization_thesis()
-        
-        version = getattr(self.metadata, 'version', '3.0.0') if self.metadata else '3.0.0'
-        self.logger.info(format_operator_message(
-            icon="🏛️",
-            message=f"Strategy Arbiter v{version} initialized",
-            members=len(self.members),
-            action_dim=self.action_dim,
-            bootstrap_steps=self.bootstrap_steps,
-            adaptive_learning=True
-        ))
+        self._init_systems()
 
-    def _initialize_advanced_systems(self):
-        """Initialize all modern system components"""
+        # Config
+        self.members: List[Any] = list(self.config.get("members", []))
+        init_weights = self.config.get("init_weights", [1.0] * max(1, len(self.members)))
+        self.action_dim: int = int(self.config.get("action_dim", 4))
+        self.adapt_rate: float = float(self.config.get("adapt_rate", 0.01))
+        self.min_confidence: float = float(self.config.get("min_confidence", 0.3))
+        self.bootstrap_steps: int = int(self.config.get("bootstrap_steps", 50))
+        self.debug: bool = bool(self.config.get("debug", True))
+
+        # Validation
+        if len(init_weights) != max(1, len(self.members)):
+            raise ValueError(
+                f"init_weights ({len(init_weights)}) must match members ({len(self.members) or 1})"
+            )
+
+        # Core state
+        self._ensure_instruments()
+        self.weights: np.ndarray = np.asarray(init_weights, dtype=np.float32)
+        self.weights = self._normalize_weights(self.weights)
+        self.last_alpha: Optional[np.ndarray] = None
+
+        # Market state
+        self.curr_vol: float = 0.01
+        self.market_regime: str = "unknown"
+        self.market_session: str = "unknown"
+        self.market_context: Dict[str, Any] = {}
+
+        # Learning state
+        self._baseline: float = 0.0
+        self._baseline_beta: float = 0.98
+        self.learning_history: deque = deque(maxlen=100)
+
+        # Decision & audit
+        self._trace: List[Dict[str, Any]] = []
+        self._log_size: int = int(self.config.get("audit_log_size", 100))
+        self.decision_history: deque = deque(maxlen=200)
+        self.proposal_history: deque = deque(maxlen=100)
+        self.gate_decisions: deque = deque(maxlen=150)
+
+        # Counters & intelligence
+        self._gate_passes: int = 0
+        self._gate_attempts: int = 0
+        self._step_count: int = 0
+        self.gate_intelligence: Dict[str, Any] = {
+            "adaptive_threshold": True,
+            "criteria_weights": [0.25, 0.20, 0.20, 0.20, 0.15],  # strength, consensus, reliability, risk, novelty
+            "bootstrap_factor": 0.5,
+            "regime_adjustments": {"volatile": 0.8, "trending": 1.2, "ranging": 1.0, "noise": 0.7},
+        }
+
+        # Member tracking
+        self.member_performance: Dict[int, Dict[str, Any]] = defaultdict(
+            lambda: {
+                "proposals_made": 0,
+                "successful_proposals": 0,
+                "avg_confidence": 0.5,
+                "recent_performance": deque(maxlen=20),
+                "weight_evolution": deque(maxlen=50),
+                "quality_scores": deque(maxlen=30),
+                "contribution_score": 0.5,
+                "reliability_index": 0.5,
+                "specialization_score": 0.5,
+            }
+        )
+
+        # Metrics & analytics
+        self.voting_quality_metrics: Dict[str, float] = {"overall_quality_score": 0.5}
+        self.member_analytics: Dict[str, float] = {"performance_consistency": 0.5}
+        self.regime_analytics: Dict[str, float] = {"current_regime_fit": 0.5}
+        self.coordination_analytics: Dict[str, float] = {"coordination_effectiveness": 0.5}
+
+        self.voting_quality: Dict[str, float] = {
+            "avg_consensus": 0.5,
+            "collusion_risk": 0.0,
+            "gate_effectiveness": 0.5,
+            "member_diversity": 0.5,
+            "decision_confidence": 0.5,
+            "proposal_quality": 0.5,
+            "learning_efficiency": 0.5,
+            "adaptation_rate": 0.0,
+        }
+
+        self.arbiter_stats: Dict[str, Any] = {
+            "total_decisions": 0,
+            "successful_decisions": 0,
+            "weight_adaptations": 0,
+            "consensus_failures": 0,
+            "collusion_detected": 0,
+            "gate_pass_rate": 0.0,
+            "avg_proposal_quality": 0.5,
+            "learning_convergence": 0.0,
+            "member_coordination": 0.5,
+            "decision_latency": 0.0,
+            "session_start": dt.datetime.now().isoformat(),
+        }
+
+        self.decision_intelligence: Dict[str, Any] = {
+            "quality_threshold": 0.7,
+            "adaptation_sensitivity": 0.15,
+            "member_learning_rate": 0.05,
+            "consensus_weight": 0.3,
+            "performance_memory": 0.9,
+            "regime_adaptation": True,
+            "dynamic_weighting": True,
+        }
+
+        self.market_adaptation: Dict[str, Any] = {
+            "regime_multipliers": {
+                "trending": {"confidence_boost": 1.1, "gate_adjustment": 1.2},
+                "volatile": {"confidence_boost": 0.9, "gate_adjustment": 0.8},
+                "ranging": {"confidence_boost": 1.0, "gate_adjustment": 1.0},
+                "noise": {"confidence_boost": 0.8, "gate_adjustment": 0.7},
+                "unknown": {"confidence_boost": 1.0, "gate_adjustment": 1.0},
+            },
+            "session_adjustments": {"american": 1.0, "european": 0.95, "asian": 0.9, "rollover": 0.6},
+        }
+
+        # Circuit breaker
+        self.error_count: int = 0
+        self.circuit_breaker_threshold: int = 5
+        self.is_disabled: bool = False
+
+        # Concurrency guard
+        self._process_lock: asyncio.Lock = asyncio.Lock()
+
+        # Thesis & early BUS pubs
+        self._generate_initialization_thesis()
+        version = getattr(self.metadata, "version", "3.1.0") if self.metadata else "3.1.0"
+        self.logger.info(
+            format_operator_message(
+                icon="🏛️",
+                message=f"Strategy Arbiter v{version} initialized",
+                members=len(self.members),
+                action_dim=self.action_dim,
+                bootstrap_steps=self.bootstrap_steps,
+                adaptive_learning=True,
+            )
+        )
+        try:
+            self.smart_bus.set("instruments", list(self.instruments), module="StrategyArbiter", thesis="Universe of instruments")
+            self.smart_bus.set("alpha_weights", self.weights.tolist(), module="StrategyArbiter", thesis="Initial alpha weights")
+            self.smart_bus.set(
+                "blended_action",
+                [0.0] * max(1, int(self.action_dim)),
+                module="StrategyArbiter",
+                thesis="Initial blended action placeholder",
+            )
+        except Exception:
+            pass
+
+    def _init_systems(self) -> None:
+        """Initialize logging, error handling, telemetry, health."""
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
             name="StrategyArbiter",
             log_path="logs/voting/strategy_arbiter.log",
             max_lines=10000,
             operator_mode=True,
-            plain_english=True
+            plain_english=True,
         )
         self.error_pinpointer = ErrorPinpointer()
         self.error_handler = create_error_handler("StrategyArbiter", self.error_pinpointer)
@@ -235,1039 +260,937 @@ class StrategyArbiter(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
         self.performance_tracker = PerformanceTracker()
         self.health_monitor = HealthMonitor()
 
-    def _generate_initialization_thesis(self):
-        """Generate comprehensive initialization thesis"""
+    def _generate_initialization_thesis(self) -> None:
         thesis = f"""
-        Strategy Arbiter v3.0 Initialization Complete:
-        
-        Advanced Coordination Framework:
-        - Multi-expert committee: {len(self.members)} members with {self.action_dim}-dimensional actions
-        - REINFORCE learning with adaptive baseline and {self.adapt_rate:.4f} learning rate
-        - Smart gating with {len(self.gate_intelligence['criteria_weights'])} evaluation criteria
-        - Bootstrap period: {self.bootstrap_steps} steps for learning stabilization
-        
-        Current Configuration:
-        - Weight adaptation: Dynamic REINFORCE with {self._baseline_beta:.3f} baseline momentum
-        - Gate intelligence: Adaptive thresholds with regime-aware adjustments
-        - Performance tracking: {len(self.member_performance)} member profiles with quality scoring
-        - Decision auditing: Comprehensive trace logging with {self._log_size} entry capacity
-        
-        Arbitration Intelligence Features:
-        - Market regime adaptation with session-aware scaling
-        - Multi-criteria gate evaluation with weighted scoring
-        - Real-time member performance analysis and weight optimization
-        - Comprehensive decision quality metrics and learning efficiency tracking
-        
-        Advanced Capabilities:
-        - Collusion detection integration with automatic weight penalties
-        - Consensus analysis with quality-weighted voting
-        - Horizon alignment with temporal strategy coordination
-        - Real-time decision intelligence and recommendation generation
-        
-        Expected Outcomes:
-        - Enhanced decision quality through expert coordination and learning
-        - Improved risk management with intelligent gating and member selection
-        - Optimal strategy allocation adapted to current market conditions
-        - Transparent arbitration decisions with detailed audit trails and performance analytics
-        """
-        
-        self.smart_bus.set('strategy_arbiter_initialization', {
-            'status': 'initialized',
-            'thesis': thesis,
-            'timestamp': datetime.datetime.now().isoformat(),
-            'configuration': {
-                'members': len(self.members),
-                'action_dim': self.action_dim,
-                'intelligence_parameters': self.decision_intelligence,
-                'gate_parameters': self.gate_intelligence
-            }
-        }, module='StrategyArbiter', thesis=thesis)
+Strategy Arbiter v3.1 Initialization:
+- Members={len(self.members)}, ActionDim={self.action_dim}, Bootstrap={self.bootstrap_steps}
+- Gate criteria weights={self.gate_intelligence['criteria_weights']}, Adaptive={self.gate_intelligence['adaptive_threshold']}
+- Learning: baseline_beta={self._baseline_beta:.3f}, adapt_rate={self.adapt_rate:.4f}
+"""
+        self.smart_bus.set(
+            "strategy_arbiter_initialization",
+            {
+                "status": "initialized",
+                "thesis": thesis,
+                "timestamp": dt.datetime.now().isoformat(),
+                "configuration": {
+                    "members": len(self.members),
+                    "action_dim": self.action_dim,
+                    "intelligence_parameters": self.decision_intelligence,
+                    "gate_parameters": self.gate_intelligence,
+                },
+            },
+            module="StrategyArbiter",
+            thesis=thesis,
+        )
 
+    # ────────────────────────────
+    # PROCESS
+    # ────────────────────────────
     async def process(self, **inputs) -> Dict[str, Any]:
         """
-        Modern async processing with comprehensive strategy arbitration
-        
-        Returns:
-            Dict containing arbitration results, quality metrics, and recommendations
+        Modern async processing with comprehensive strategy arbitration.
+        Computes & publishes per-instrument signals, updates telemetry and quality metrics.
         """
-        start_time = time.time()
-        
-        try:
-            # Circuit breaker check
-            if self.is_disabled:
-                return self._generate_disabled_response()
-            
-            # Get comprehensive market data from SmartInfoBus
-            market_data = await self._get_comprehensive_market_data()
-            
-            # Update market state and regime tracking
-            await self._update_market_state_comprehensive(market_data)
-            
-            # Perform comprehensive member performance analysis
-            performance_analysis = await self._analyze_member_performance_comprehensive(market_data)
-            
-            # Update voting quality metrics
-            quality_updates = await self._update_voting_quality_metrics_comprehensive()
-            
-            # Generate intelligent arbitration recommendations
-            recommendations = await self._generate_intelligent_arbitration_recommendations(
-                performance_analysis, quality_updates
-            )
-            
-            # Generate comprehensive thesis
-            thesis = await self._generate_comprehensive_arbitration_thesis(
-                performance_analysis, recommendations
-            )
-            
-            # Create comprehensive results
-            results = {
-                'blended_action': self.last_alpha.tolist() if self.last_alpha is not None else [],
-                'alpha_weights': self.last_alpha.tolist() if self.last_alpha is not None else [],
-                'member_weights': self.weights.tolist(),
-                'gate_decision': self._get_recent_gate_decision(),
-                'voting_quality': self.voting_quality.copy(),
-                'member_performance': self._get_member_performance_summary(),
-                'decision_statistics': self._get_comprehensive_arbiter_stats(),
-                'proposal_analysis': self._get_recent_proposal_analysis(),
-                'arbiter_recommendations': recommendations,
-                'health_metrics': self._get_health_metrics()
-            }
-            
-            # Update SmartInfoBus with comprehensive thesis
-            await self._update_smartinfobus_comprehensive(results, thesis)
-            
-            # Record performance metrics
-            processing_time = (time.time() - start_time) * 1000
-            self.performance_tracker.record_metric('StrategyArbiter', 'process_time', processing_time, True)
-            
-            # Reset error count on successful processing
-            self.error_count = 0
-            
-            return results
-            
-        except Exception as e:
-            return await self._handle_processing_error(e, start_time)
+        async with self._process_lock:
+            start_time = time.time()
+            try:
+                if self.is_disabled:
+                    return self._generate_disabled_response()
 
+                # 1) Data & market state
+                market_data = await self._get_comprehensive_market_data()
+                await self._update_market_state_comprehensive(market_data)
+
+                # 2) Blended proposal + signals
+                blended_proposal = self._compute_blended_proposal(market_data)
+                signals = self._map_action_to_instrument_signals(blended_proposal)
+                self._publish_instrument_signals(signals)
+                self.smart_bus.set(
+                    "instrument_signals",
+                    signals,
+                    module="StrategyArbiter",
+                    thesis=f"Per-instrument intensities for {len(signals)} instruments",
+                )
+
+                # 3) Analytics & recommendations
+                performance_analysis = await self._analyze_member_performance_comprehensive(market_data)
+                quality_updates = await self._update_voting_quality_metrics_comprehensive()
+                recommendations = await self._generate_intelligent_arbitration_recommendations(
+                    performance_analysis, quality_updates
+                )
+                thesis = await self._generate_comprehensive_arbitration_thesis(performance_analysis, recommendations)
+
+                # 4) Compose & publish
+                results: Dict[str, Any] = {
+                    "blended_action": blended_proposal.tolist(),
+                    "alpha_weights": self.last_alpha.tolist() if self.last_alpha is not None else [],
+                    "member_weights": self.weights.tolist(),
+                    "gate_decision": self._get_recent_gate_decision(),
+                    "voting_quality": dict(self.voting_quality),
+                    "member_performance": self._get_member_performance_summary(),
+                    "decision_statistics": self._get_comprehensive_arbiter_stats(),
+                    "proposal_analysis": self._get_recent_proposal_analysis(),
+                    "arbiter_recommendations": list(recommendations),
+                    "health_metrics": self._get_health_metrics(),
+                    "instrument_signals": signals,
+                    "_thesis": thesis,
+                }
+                await self._update_smartinfobus_comprehensive(results, thesis)
+
+                # 5) Perf
+                self.performance_tracker.record_metric(
+                    "StrategyArbiter", "process_time_ms", (time.time() - start_time) * 1000.0, True
+                )
+                self.error_count = 0
+                return results
+
+            except Exception as e:
+                return await self._handle_processing_error(e, start_time)
+
+    # ────────────────────────────
+    # BUS IO & MARKET STATE
+    # ────────────────────────────
     async def _get_comprehensive_market_data(self) -> Dict[str, Any]:
-        """Get comprehensive market data using modern SmartInfoBus patterns"""
         try:
+            g = self.smart_bus.get
             return {
-                'market_context': self.smart_bus.get('market_context', 'StrategyArbiter') or {},
-                'recent_trades': self.smart_bus.get('recent_trades', 'StrategyArbiter') or [],
-                'current_positions': self.smart_bus.get('current_positions', 'StrategyArbiter') or [],
-                'member_proposals': self.smart_bus.get('member_proposals', 'StrategyArbiter') or [],
-                'member_confidences': self.smart_bus.get('member_confidences', 'StrategyArbiter') or [],
-                'consensus_score': self.smart_bus.get('consensus_score', 'StrategyArbiter') or 0.5,
-                'collusion_score': self.smart_bus.get('collusion_score', 'StrategyArbiter') or 0.0,
-                'horizon_alignment': self.smart_bus.get('horizon_alignment', 'StrategyArbiter') or {},
-                'volatility_data': self.smart_bus.get('volatility_data', 'StrategyArbiter') or {},
-                'market_regime': self.smart_bus.get('market_regime', 'StrategyArbiter') or 'unknown',
-                'session_data': self.smart_bus.get('session_data', 'StrategyArbiter') or {}
+                "market_context": g("market_context", "StrategyArbiter") or {},
+                "recent_trades": g("recent_trades", "StrategyArbiter") or [],
+                "current_positions": g("current_positions", "StrategyArbiter") or [],
+                "member_proposals": g("member_proposals", "StrategyArbiter") or [],
+                "member_confidences": g("member_confidences", "StrategyArbiter") or [],
+                "consensus_score": g("consensus_score", "StrategyArbiter") or 0.5,
+                "collusion_score": g("collusion_score", "StrategyArbiter") or 0.0,
+                "horizon_alignment": g("horizon_alignment", "StrategyArbiter") or {},
+                "volatility_data": g("volatility_data", "StrategyArbiter") or {},
+                "market_regime": g("market_regime", "StrategyArbiter") or "unknown",
+                "session_data": g("session_data", "StrategyArbiter") or {},
+                "instruments": g("instruments", "StrategyArbiter") or list(getattr(self, "instruments", [])),
             }
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "StrategyArbiter")
-            self.logger.warning(f"Market data retrieval incomplete: {error_context}")
+            ctx = self.error_pinpointer.analyze_error(e, "StrategyArbiter")
+            self.logger.warning(f"Market data retrieval incomplete: {ctx}")
             return self._get_safe_market_defaults()
 
-    async def _update_market_state_comprehensive(self, market_data: Dict[str, Any]):
-        """Update comprehensive market state for decision making"""
+    async def _update_market_state_comprehensive(self, market_data: Dict[str, Any]) -> None:
         try:
-            # Update regime and session
             old_regime = self.market_regime
-            self.market_regime = market_data.get('market_regime', 'unknown')
-            session_data = market_data.get('session_data', {})
-            self.market_session = session_data.get('current_session', 'unknown')
-            
-            # Update volatility with multiple sources
-            volatility_data = market_data.get('volatility_data', {})
-            if volatility_data:
-                if isinstance(volatility_data, dict):
-                    volatilities = list(volatility_data.values())
-                    self.curr_vol = max(0.001, float(np.mean(volatilities)))
-                else:
-                    self.curr_vol = max(0.001, float(volatility_data))
-            
-            # Update market context
-            self.market_context = market_data.get('market_context', {})
-            
-            # Log significant regime changes
-            if old_regime != self.market_regime and old_regime != 'unknown':
-                self.logger.info(format_operator_message(
-                    icon="[STATS]",
-                    message="Market regime transition detected",
-                    old_regime=old_regime,
-                    new_regime=self.market_regime,
-                    volatility=f"{self.curr_vol:.3f}",
-                    session=self.market_session,
-                    impact="Strategy weights will adapt"
-                ))
-                
-                # Update regime-based adaptations
-                await self._apply_regime_adaptations()
-                
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "market_state_update")
-            self.logger.warning(f"Market state update failed: {error_context}")
+            self.market_regime = str(market_data.get("market_regime", "unknown"))
+            self.market_session = str(market_data.get("session_data", {}).get("current_session", "unknown"))
 
-    async def _apply_regime_adaptations(self):
-        """Apply regime-based adaptations to arbitration parameters"""
-        try:
-            regime_config = self.market_adaptation['regime_multipliers'].get(self.market_regime, {})
-            
-            # Adjust gate intelligence based on regime
-            if self.market_regime == 'volatile':
-                self.gate_intelligence['criteria_weights'] = [0.3, 0.25, 0.15, 0.15, 0.15]  # Emphasize signal strength
-            elif self.market_regime == 'trending':
-                self.gate_intelligence['criteria_weights'] = [0.2, 0.15, 0.25, 0.25, 0.15]  # Emphasize direction and consensus
-            elif self.market_regime == 'ranging':
-                self.gate_intelligence['criteria_weights'] = [0.25, 0.20, 0.20, 0.20, 0.15]  # Balanced approach
-            else:  # noise or unknown
-                self.gate_intelligence['criteria_weights'] = [0.35, 0.20, 0.15, 0.15, 0.15]  # Very conservative
-            
-            # Adjust learning parameters
-            confidence_boost = regime_config.get('confidence_boost', 1.0)
-            self.decision_intelligence['adaptation_sensitivity'] *= confidence_boost
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "regime_adaptations")
+            # Volatility extraction (supports various shapes)
+            volatility_data = market_data.get("volatility_data", {})
+            self.curr_vol = self._extract_avg_volatility(volatility_data)
 
-    async def _analyze_member_performance_comprehensive(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze comprehensive member performance with advanced metrics"""
-        try:
-            performance_analysis = {
-                'member_updates': {},
-                'weight_changes': {},
-                'quality_assessments': {},
-                'specialization_analysis': {},
-                'coordination_effectiveness': 0.0
-            }
-            
-            recent_trades = market_data.get('recent_trades', [])
-            member_proposals = market_data.get('member_proposals', [])
-            member_confidences = market_data.get('member_confidences', [])
-            
-            # Calculate recent performance indicators
-            recent_success_rate = 0.5
-            recent_pnl = []
-            if recent_trades:
-                recent_pnl = [trade.get('pnl', 0) for trade in recent_trades[-10:]]
-                recent_success_rate = sum(1 for pnl in recent_pnl if pnl > 0) / len(recent_pnl)
-            
-            # Analyze each member's performance
-            for i, member in enumerate(self.members):
-                if i >= len(self.weights):
-                    continue
-                
-                member_analysis = await self._analyze_individual_member_performance(
-                    i, member, member_proposals, member_confidences, recent_success_rate
+            # Instruments sync (if changed upstream)
+            if isinstance(market_data.get("instruments"), (list, tuple)) and market_data["instruments"]:
+                self.instruments = list(market_data["instruments"])
+
+            self.market_context = dict(market_data.get("market_context", {}))
+
+            if old_regime != self.market_regime and old_regime != "unknown":
+                self.logger.info(
+                    format_operator_message(
+                        icon="[STATS]",
+                        message="Market regime transition detected",
+                        old_regime=old_regime,
+                        new_regime=self.market_regime,
+                        volatility=f"{self.curr_vol:.3f}",
+                        session=self.market_session,
+                        impact="Strategy weights will adapt",
+                    )
                 )
-                performance_analysis['member_updates'][i] = member_analysis
-                
-                # Update member weights based on performance
-                weight_update = await self._calculate_adaptive_weight_update(i, member_analysis)
-                if abs(weight_update) > 0.05:
-                    performance_analysis['weight_changes'][i] = {
-                        'old_weight': self.weights[i],
-                        'weight_change': weight_update,
-                        'reason': member_analysis.get('primary_factor', 'performance')
-                    }
-                    self.weights[i] = max(0.01, self.weights[i] + weight_update)
-            
-            # Renormalize weights
-            self.weights = self.weights / (self.weights.sum() + 1e-12)
-            
-            # Calculate coordination effectiveness
-            coordination_score = await self._calculate_coordination_effectiveness(performance_analysis)
-            performance_analysis['coordination_effectiveness'] = coordination_score
-            
-            return performance_analysis
-            
+                await self._apply_regime_adaptations()
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "member_performance_analysis")
-            return {'member_updates': {}, 'coordination_effectiveness': 0.5}
+            ctx = self.error_pinpointer.analyze_error(e, "market_state_update")
+            self.logger.warning(f"Market state update failed: {ctx}")
 
-    async def _analyze_individual_member_performance(self, member_idx: int, member: Any,
-                                                   proposals: List, confidences: List,
-                                                   recent_success_rate: float) -> Dict[str, Any]:
-        """Analyze individual member performance with detailed metrics"""
+    def _extract_avg_volatility(self, vol: Any) -> float:
         try:
-            perf_data = self.member_performance[member_idx]
-            
-            # Update basic counters
-            current_proposals = int(perf_data['proposals_made']) if isinstance(perf_data['proposals_made'], (int, float)) else 0
-            perf_data['proposals_made'] = current_proposals + 1
-            
-            # Calculate current confidence
-            current_confidence = 0.5
-            if member_idx < len(confidences):
-                current_confidence = max(0.1, min(1.0, confidences[member_idx]))
-            
-            # Update average confidence with exponential smoothing
-            old_conf = float(perf_data['avg_confidence']) if isinstance(perf_data['avg_confidence'], (int, float)) else 0.5
-            perf_data['avg_confidence'] = old_conf * 0.9 + current_confidence * 0.1
-            
-            # Analyze proposal quality
-            proposal_quality = 0.5
-            if member_idx < len(proposals) and len(proposals[member_idx]) > 0:
-                proposal = np.array(proposals[member_idx])
-                proposal_quality = await self._assess_proposal_quality(proposal, current_confidence)
-            
-            # Safely append to quality_scores with defensive type checking
-            quality_scores = perf_data.get('quality_scores')
+            if isinstance(vol, dict) and vol:
+                vals: List[float] = []
+                for v in vol.values():
+                    if isinstance(v, (int, float)):
+                        vals.append(float(v))
+                    elif isinstance(v, dict):
+                        for k in ("volatility", "atr", "sigma", "value", "vol"):
+                            if isinstance(v.get(k), (int, float)):
+                                vals.append(float(v[k]))
+                                break
+                if vals:
+                    return max(0.001, float(np.mean(vals)))
+            elif isinstance(vol, (int, float)):
+                return max(0.001, float(vol))
+            return 0.01
+        except Exception:
+            return 0.01
+
+    async def _apply_regime_adaptations(self) -> None:
+        try:
+            rm = self.market_adaptation["regime_multipliers"].get(self.market_regime, {})
+            if self.market_regime == "volatile":
+                self.gate_intelligence["criteria_weights"] = [0.30, 0.25, 0.15, 0.15, 0.15]
+            elif self.market_regime == "trending":
+                self.gate_intelligence["criteria_weights"] = [0.20, 0.15, 0.25, 0.25, 0.15]
+            elif self.market_regime == "ranging":
+                self.gate_intelligence["criteria_weights"] = [0.25, 0.20, 0.20, 0.20, 0.15]
+            else:
+                self.gate_intelligence["criteria_weights"] = [0.35, 0.20, 0.15, 0.15, 0.15]
+
+            boost = float(rm.get("confidence_boost", 1.0))
+            self.decision_intelligence["adaptation_sensitivity"] *= boost
+        except Exception as e:
+            _ = self.error_pinpointer.analyze_error(e, "regime_adaptations")
+
+    # ────────────────────────────
+    # PROPOSAL / BLENDING / SIGNALS
+    # ────────────────────────────
+    def _ensure_instruments(self) -> None:
+        """Ensure instruments universe is available."""
+        if getattr(self, "instruments", None):
+            return
+        try:
+            cfg_inst = self.config.get("instruments") if isinstance(self.config, dict) else None
+        except Exception:
+            cfg_inst = None
+        if isinstance(cfg_inst, (list, tuple)) and cfg_inst:
+            self.instruments = list(cfg_inst)
+            return
+
+        # Try bus
+        for key in ("instruments", "watched_instruments", "universe"):
+            vals = InfoBusManager.get_instance().get(key, "StrategyArbiter")
+            if isinstance(vals, (list, tuple)) and vals:
+                self.instruments = list(vals)
+                return
+
+        # Heuristic from vol keys
+        vol = InfoBusManager.get_instance().get("volatility_data", "StrategyArbiter") or {}
+        if isinstance(vol, dict) and vol:
+            cands = [k for k in vol.keys() if isinstance(k, str)]
+            if cands:
+                self.instruments = cands
+                return
+
+        self.instruments = ["XAU/USD", "EUR/USD"]
+
+    def _map_action_to_instrument_signals(self, action: np.ndarray) -> Dict[str, Dict[str, float]]:
+        """Map a vector to {instrument: {'intensity','confidence'}}."""
+        self._ensure_instruments()
+        action = np.asarray(action, dtype=np.float32).flatten()
+        n = len(self.instruments)
+
+        def _conf_default() -> float:
             try:
-                if isinstance(quality_scores, deque):
-                    quality_scores.append(proposal_quality)
-                elif isinstance(quality_scores, list):
-                    quality_scores.append(proposal_quality)
-                else:
-                    # Initialize as deque if it's not already a collection
-                    perf_data['quality_scores'] = deque([proposal_quality], maxlen=30)
-            except (AttributeError, TypeError):
-                # Fallback: initialize as new deque
-                perf_data['quality_scores'] = deque([proposal_quality], maxlen=30)
-            
-            # Calculate contribution score
-            contribution_score = (proposal_quality + current_confidence + recent_success_rate) / 3.0
-            perf_data['contribution_score'] = contribution_score
-            
-            # Update reliability index
-            quality_scores = perf_data['quality_scores']
-            if isinstance(quality_scores, deque) and len(quality_scores) >= 5:
-                recent_scores = list(quality_scores)[-5:]
-                quality_consistency = 1.0 - float(np.std(recent_scores))
-                perf_data['reliability_index'] = (perf_data['avg_confidence'] + quality_consistency) / 2.0
-            
-            # Calculate specialization score (how unique member's contributions are)
-            specialization = await self._calculate_member_specialization(member_idx, proposals)
-            perf_data['specialization_score'] = specialization
-            
-            return {
-                'contribution_score': contribution_score,
-                'proposal_quality': proposal_quality,
-                'confidence': current_confidence,
-                'reliability': perf_data['reliability_index'],
-                'specialization': specialization,
-                'primary_factor': 'contribution' if contribution_score > 0.7 else 'reliability'
+                return float(self.config.get("default_signal_confidence", 0.6))
+            except Exception:
+                return 0.6
+
+        out: Dict[str, Dict[str, float]] = {}
+        if action.size >= 2 * n:
+            for i, inst in enumerate(self.instruments):
+                out[inst] = {"intensity": float(np.clip(action[2 * i], -1.0, 1.0)), "confidence": _conf_default()}
+        elif action.size >= n:
+            for i, inst in enumerate(self.instruments):
+                out[inst] = {"intensity": float(np.clip(action[i], -1.0, 1.0)), "confidence": _conf_default()}
+        else:
+            for i, inst in enumerate(self.instruments):
+                v = float(action[i]) if i < action.size else 0.0
+                out[inst] = {"intensity": float(np.clip(v, -1.0, 1.0)), "confidence": _conf_default()}
+        return out
+
+    def _publish_instrument_signals(self, signals: Dict[str, Dict[str, float]]) -> None:
+        """Publish signals to multiple key variants for consumer robustness."""
+        now = dt.datetime.utcnow().isoformat()
+        for inst, payload in signals.items():
+            data = {
+                "intensity": float(payload.get("intensity", 0.0)),
+                "confidence": float(payload.get("confidence", 0.5)),
+                "timestamp": now,
+                "source": "StrategyArbiter",
             }
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "individual_member_analysis")
-            return {'contribution_score': 0.5, 'proposal_quality': 0.5, 'confidence': 0.5}
-
-    async def _assess_proposal_quality(self, proposal: np.ndarray, confidence: float) -> float:
-        """Assess the quality of a member's proposal"""
-        try:
-            quality_factors = []
-            
-            # Factor 1: Signal strength
-            signal_strength = np.linalg.norm(proposal)
-            normalized_strength = min(1.0, float(signal_strength / 2.0))  # Normalize to reasonable range
-            quality_factors.append(normalized_strength)
-            
-            # Factor 2: Confidence alignment
-            confidence_factor = confidence
-            quality_factors.append(confidence_factor)
-            
-            # Factor 3: Consistency (if we have history)
-            if self._last_proposals is not None and len(self._last_proposals) > 0:
-                consistency = 1.0 - float(np.linalg.norm(proposal - self._last_proposals[-1])) / 2.0
-                consistency = max(0.0, consistency)
-                quality_factors.append(consistency)
-            
-            # Factor 4: Market appropriateness
-            regime_appropriateness = 0.5
-            if self.market_regime == 'volatile' and signal_strength < 0.5:
-                regime_appropriateness = 0.8  # Conservative in volatile markets
-            elif self.market_regime == 'trending' and signal_strength > 0.3:
-                regime_appropriateness = 0.8  # Decisive in trending markets
-            quality_factors.append(regime_appropriateness)
-            
-            # Weighted average
-            weights = [0.3, 0.3, 0.2, 0.2][:len(quality_factors)]
-            quality_score = np.average(quality_factors, weights=weights)
-            
-            return float(np.clip(quality_score, 0.0, 1.0))
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "proposal_quality_assessment")
-            return 0.5
-
-    async def _calculate_member_specialization(self, member_idx: int, proposals: List) -> float:
-        """Calculate how specialized/unique a member's contributions are"""
-        try:
-            if member_idx >= len(proposals) or len(proposals) < 2:
-                return 0.5
-            
-            member_proposal = np.array(proposals[member_idx])
-            other_proposals = [np.array(proposals[i]) for i in range(len(proposals)) if i != member_idx]
-            
-            if not other_proposals:
-                return 0.5
-            
-            # Calculate uniqueness as average distance to other proposals
-            distances = []
-            for other_proposal in other_proposals:
-                if len(member_proposal) == len(other_proposal):
-                    distance = np.linalg.norm(member_proposal - other_proposal)
-                    distances.append(distance)
-            
-            if distances:
-                avg_distance = np.mean(distances)
-                # Normalize to 0-1 range (higher distance = more specialized)
-                specialization = min(1.0, float(avg_distance / 2.0))
-                return float(specialization)
-            
-            return 0.5
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "member_specialization_calculation")
-            return 0.5
-
-    async def _calculate_adaptive_weight_update(self, member_idx: int, analysis: Dict[str, Any]) -> float:
-        """Calculate adaptive weight update for a member"""
-        try:
-            contribution_score = analysis.get('contribution_score', 0.5)
-            reliability = analysis.get('reliability', 0.5)
-            specialization = analysis.get('specialization', 0.5)
-            
-            # Base weight change calculation
-            performance_factor = (contribution_score + reliability) / 2.0
-            
-            # Calculate desired weight change
-            current_weight = self.weights[member_idx]
-            target_weight = performance_factor / len(self.members)  # Ideal equal distribution baseline
-            
-            # Apply specialization bonus
-            if specialization > 0.7:
-                target_weight *= 1.2  # Reward unique contributors
-            
-            # Calculate change with adaptive learning rate
-            learning_rate = self.decision_intelligence['member_learning_rate']
-            weight_change = (target_weight - current_weight) * learning_rate
-            
-            # Apply regime-based adjustments
-            regime_factor = 1.0
-            if self.market_regime == 'volatile' and contribution_score > 0.8:
-                regime_factor = 1.3  # Reward good performance in volatile markets
-            elif self.market_regime == 'trending' and specialization > 0.6:
-                regime_factor = 1.2  # Reward specialists in trending markets
-            
-            weight_change *= regime_factor
-            
-            # Limit change magnitude
-            max_change = 0.1
-            weight_change = np.clip(weight_change, -max_change, max_change)
-            
-            return float(weight_change)
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "adaptive_weight_update")
-            return 0.0
-
-    async def _calculate_coordination_effectiveness(self, performance_analysis: Dict[str, Any]) -> float:
-        """Calculate overall coordination effectiveness"""
-        try:
-            member_updates = performance_analysis.get('member_updates', {})
-            
-            if not member_updates:
-                return 0.5
-            
-            # Calculate average contribution scores
-            contribution_scores = [update.get('contribution_score', 0.5) for update in member_updates.values()]
-            avg_contribution = np.mean(contribution_scores)
-            
-            # Calculate diversity (standard deviation of contributions)
-            contribution_diversity = np.std(contribution_scores) if len(contribution_scores) > 1 else 0.0
-            normalized_diversity = min(1.0, float(contribution_diversity * 2.0))
-            
-            # Calculate specialization spread
-            specialization_scores = [update.get('specialization', 0.5) for update in member_updates.values()]
-            avg_specialization = np.mean(specialization_scores)
-            
-            # Combine factors
-            coordination_effectiveness = (
-                0.4 * avg_contribution +
-                0.3 * normalized_diversity +
-                0.3 * avg_specialization
+            keys = (
+                f"signal_{inst}",
+                f"signal_{inst.replace('/', '')}",
+                f"signal_{inst.replace('/', '_')}",
+                f"signal_{inst.upper()}",
+                f"signal_{inst.replace('/', '').upper()}",
             )
-            
-            return float(np.clip(coordination_effectiveness, 0.0, 1.0))
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "coordination_effectiveness_calculation")
-            return 0.5
+            for k in keys:
+                self.smart_bus.set(k, data, module="StrategyArbiter", thesis=f"Arbiter signal {inst}: {data['intensity']:.3f}")
 
-    async def _update_voting_quality_metrics_comprehensive(self) -> Dict[str, Any]:
-        """Update comprehensive voting quality metrics"""
+    def _compute_blended_proposal(self, market_data: Dict[str, Any]) -> np.ndarray:
+        """Produce blended proposal vector (trim/pad to action_dim)."""
+        self._ensure_instruments()
         try:
-            quality_updates = {
-                'metric_changes': {},
-                'trend_analysis': {},
-                'quality_drivers': {}
-            }
-            
-            # Update gate effectiveness
-            if self._gate_attempts > 0:
-                new_gate_effectiveness = self._gate_passes / self._gate_attempts
-                old_effectiveness = self.voting_quality['gate_effectiveness']
-                self.voting_quality['gate_effectiveness'] = new_gate_effectiveness
-                
-                if abs(new_gate_effectiveness - old_effectiveness) > 0.1:
-                    quality_updates['metric_changes']['gate_effectiveness'] = {
-                        'old_value': old_effectiveness,
-                        'new_value': new_gate_effectiveness,
-                        'trend': 'improving' if new_gate_effectiveness > old_effectiveness else 'declining'
-                    }
-            
-            # Update decision confidence
-            if len(self.decision_history) >= 5:
-                recent_decisions = list(self.decision_history)[-5:]
-                confidence_scores = [d.get('signal_strength', 0.5) for d in recent_decisions]
-                avg_confidence = np.mean(confidence_scores)
-                self.voting_quality['decision_confidence'] = float(avg_confidence)
-            
-            # Update member diversity
-            if self.member_performance:
-                contribution_scores = [p.get('contribution_score', 0.5) for p in self.member_performance.values()]
-                if len(contribution_scores) > 1:
-                    diversity = np.std(contribution_scores)
-                    self.voting_quality['member_diversity'] = float(min(1.0, float(diversity * 2.0)))
-            
-            # Update learning efficiency
-            if len(self.learning_history) >= 10:
-                recent_rewards = [entry.get('reward', 0.0) for entry in list(self.learning_history)[-10:]]
-                if len(recent_rewards) > 1:
-                    learning_trend = np.polyfit(range(len(recent_rewards)), recent_rewards, 1)[0]
-                    learning_efficiency = 0.5 + np.tanh(learning_trend * 10) * 0.5
-                    self.voting_quality['learning_efficiency'] = learning_efficiency
-            
-            # Calculate adaptation rate
-            if len(self.decision_history) >= 20:
-                weight_changes = []
-                for i in range(1, min(20, len(self.decision_history))):
-                    if i < len(self.decision_history):
-                        # Could calculate weight change magnitude here if stored
-                        pass
-                
-                # Simplified adaptation rate
-                adaptation_rate = min(1.0, self.arbiter_stats.get('weight_adaptations', 0) / max(self._step_count, 1))
-                self.voting_quality['adaptation_rate'] = adaptation_rate
-            
-            return quality_updates
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "voting_quality_update")
-            return {'metric_changes': {}}
+            if not isinstance(self.action_dim, int) or self.action_dim <= 0:
+                self.action_dim = max(1, 2 * len(self.instruments))
+        except Exception:
+            self.action_dim = max(1, 2 * len(self.instruments))
 
-    async def _generate_intelligent_arbitration_recommendations(self, performance_analysis: Dict[str, Any],
-                                                              quality_updates: Dict[str, Any]) -> List[str]:
-        """Generate intelligent arbitration recommendations"""
         try:
-            recommendations = []
-            
-            # Performance-based recommendations
-            coordination_effectiveness = performance_analysis.get('coordination_effectiveness', 0.5)
-            if coordination_effectiveness < 0.4:
-                recommendations.append("LOW COORDINATION: Consider member rebalancing or additional training")
-            elif coordination_effectiveness > 0.8:
-                recommendations.append("HIGH COORDINATION: Excellent member performance - maintain current approach")
-            
-            # Gate effectiveness recommendations
-            gate_effectiveness = self.voting_quality.get('gate_effectiveness', 0.5)
-            if gate_effectiveness < 0.3:
-                recommendations.append("GATE RESTRICTIVE: Consider loosening gate criteria or reviewing thresholds")
-            elif gate_effectiveness > 0.8:
-                recommendations.append("GATE PERMISSIVE: Consider tightening criteria for better risk management")
-            
-            # Weight adaptation recommendations
-            weight_changes = performance_analysis.get('weight_changes', {})
-            if len(weight_changes) > len(self.members) * 0.6:
-                recommendations.append("HIGH ADAPTATION: Many members changing weights - ensure stability")
-            elif len(weight_changes) == 0 and self._step_count > self.bootstrap_steps:
-                recommendations.append("NO ADAPTATION: Weights static - consider increasing learning sensitivity")
-            
-            # Member diversity recommendations
-            member_diversity = self.voting_quality.get('member_diversity', 0.5)
-            if member_diversity < 0.3:
-                recommendations.append("LOW DIVERSITY: Members too similar - encourage specialization")
-            elif member_diversity > 0.8:
-                recommendations.append("HIGH DIVERSITY: Good member specialization - balance coordination")
-            
-            # Learning efficiency recommendations
-            learning_efficiency = self.voting_quality.get('learning_efficiency', 0.5)
-            if learning_efficiency < 0.3:
-                recommendations.append("LEARNING ISSUES: Poor learning convergence - review reward signals")
-            elif learning_efficiency > 0.8:
-                recommendations.append("LEARNING EFFECTIVE: Strong learning progress - consider advanced strategies")
-            
-            # Market regime recommendations
-            if self.market_regime == 'volatile':
-                recommendations.append("VOLATILE REGIME: Emphasize risk management and shorter horizons")
-            elif self.market_regime == 'trending':
-                recommendations.append("TRENDING REGIME: Favor momentum strategies and position sizing")
-            elif self.market_regime == 'noise':
-                recommendations.append("NOISE REGIME: Reduce position sizes and increase quality thresholds")
-            
-            # Bootstrap recommendations
-            if self._step_count < self.bootstrap_steps:
-                remaining = self.bootstrap_steps - self._step_count
-                recommendations.append(f"BOOTSTRAP MODE: {remaining} steps remaining for learning stabilization")
-            
-            # Default recommendation
-            if not recommendations:
-                recommendations.append("SYSTEM OPTIMAL: Strategy arbitration operating within normal parameters")
-            
-            return recommendations[:6]  # Limit to top 6 recommendations
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "arbitration_recommendations")
-            return [f"Recommendation generation failed: {error_context}"]
+            obs = self.get_observation_components()
+            if not isinstance(obs, np.ndarray):
+                obs = np.zeros(self.action_dim, dtype=np.float32)
+        except Exception:
+            obs = np.zeros(self.action_dim, dtype=np.float32)
 
-    async def _generate_comprehensive_arbitration_thesis(self, performance_analysis: Dict[str, Any],
-                                                        recommendations: List[str]) -> str:
-        """Generate comprehensive arbitration thesis"""
-        try:
-            # Core metrics
-            coordination_effectiveness = performance_analysis.get('coordination_effectiveness', 0.5)
-            gate_effectiveness = self.voting_quality.get('gate_effectiveness', 0.5)
-            learning_efficiency = self.voting_quality.get('learning_efficiency', 0.5)
-            
-            thesis_parts = []
-            
-            # Executive summary
-            coordination_level = "HIGH" if coordination_effectiveness > 0.7 else "MODERATE" if coordination_effectiveness > 0.4 else "LOW"
-            thesis_parts.append(
-                f"ARBITRATION STATUS: {coordination_level} coordination with {coordination_effectiveness:.1%} effectiveness"
-            )
-            
-            # Member dynamics
-            thesis_parts.append(
-                f"MEMBER DYNAMICS: {len(self.members)} experts with {self.voting_quality.get('member_diversity', 0.5):.1%} diversity"
-            )
-            
-            # Gate performance
-            gate_status = "EFFECTIVE" if gate_effectiveness > 0.6 else "RESTRICTIVE" if gate_effectiveness < 0.4 else "MODERATE"
-            thesis_parts.append(f"GATE PERFORMANCE: {gate_status} with {gate_effectiveness:.1%} pass rate")
-            
-            # Learning progress
-            learning_status = "STRONG" if learning_efficiency > 0.7 else "STABLE" if learning_efficiency > 0.4 else "WEAK"
-            thesis_parts.append(f"LEARNING STATUS: {learning_status} with {learning_efficiency:.1%} efficiency")
-            
-            # Market alignment
-            thesis_parts.append(f"MARKET ALIGNMENT: {self.market_regime.upper()} regime with {self.curr_vol:.2%} volatility")
-            
-            # Weight dynamics
-            weight_adaptations = self.arbiter_stats.get('weight_adaptations', 0)
-            thesis_parts.append(f"WEIGHT DYNAMICS: {weight_adaptations} adaptations across {self._step_count} decisions")
-            
-            # System performance
-            total_decisions = self.arbiter_stats.get('total_decisions', 0)
-            successful_decisions = self.arbiter_stats.get('successful_decisions', 0)
-            success_rate = (successful_decisions / max(total_decisions, 1)) if total_decisions > 0 else 0.0
-            thesis_parts.append(f"SYSTEM PERFORMANCE: {success_rate:.1%} success rate over {total_decisions} decisions")
-            
-            # Recommendations summary
-            priority_recommendations = [rec for rec in recommendations if any(keyword in rec 
-                                      for keyword in ['LOW', 'HIGH', 'CRITICAL', 'URGENT'])]
-            if priority_recommendations:
-                thesis_parts.append(f"ACTION ITEMS: {len(priority_recommendations)} priority recommendations")
-            
-            return " | ".join(thesis_parts)
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "arbitration_thesis_generation")
-            return f"Arbitration thesis generation failed: {error_context}"
-
-    async def _update_smartinfobus_comprehensive(self, results: Dict[str, Any], thesis: str):
-        """Update SmartInfoBus with comprehensive arbitration results"""
-        try:
-            # Core arbitration results
-            self.smart_bus.set('blended_action', results['blended_action'],
-                             module='StrategyArbiter', thesis=thesis)
-            
-            # Alpha weights
-            alpha_thesis = f"Alpha weights: {len(results['alpha_weights'])} member allocations computed"
-            self.smart_bus.set('alpha_weights', results['alpha_weights'],
-                             module='StrategyArbiter', thesis=alpha_thesis)
-            
-            # Member weights
-            weights_thesis = f"Member weights: {len(results['member_weights'])} experts balanced"
-            self.smart_bus.set('member_weights', results['member_weights'],
-                             module='StrategyArbiter', thesis=weights_thesis)
-            
-            # Gate decision
-            gate_thesis = f"Gate decision: {results['gate_decision'].get('decision', 'unknown')} with quality criteria"
-            self.smart_bus.set('gate_decision', results['gate_decision'],
-                             module='StrategyArbiter', thesis=gate_thesis)
-            
-            # Voting quality
-            quality_thesis = f"Voting quality: {len(results['voting_quality'])} metrics tracked"
-            self.smart_bus.set('voting_quality', results['voting_quality'],
-                             module='StrategyArbiter', thesis=quality_thesis)
-            
-            # Member performance
-            performance_thesis = f"Member performance: {len(results['member_performance'])} profiles analyzed"
-            self.smart_bus.set('member_performance', results['member_performance'],
-                             module='StrategyArbiter', thesis=performance_thesis)
-            
-            # Decision statistics
-            stats_thesis = f"Decision statistics: {results['decision_statistics']['total_decisions']} decisions processed"
-            self.smart_bus.set('decision_statistics', results['decision_statistics'],
-                             module='StrategyArbiter', thesis=stats_thesis)
-            
-            # Proposal analysis
-            proposal_thesis = f"Proposal analysis: Recent member proposals evaluated"
-            self.smart_bus.set('proposal_analysis', results['proposal_analysis'],
-                             module='StrategyArbiter', thesis=proposal_thesis)
-            
-            # Arbitration recommendations
-            rec_thesis = f"Arbitration recommendations: {len(results['arbiter_recommendations'])} insights generated"
-            self.smart_bus.set('arbiter_recommendations', results['arbiter_recommendations'],
-                             module='StrategyArbiter', thesis=rec_thesis)
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
-            self.logger.error(f"SmartInfoBus update failed: {error_context}")
+        proposal = self.propose(obs)  # legacy compatibility path
+        proposal = np.asarray(proposal, dtype=np.float32).flatten()
+        if proposal.size < self.action_dim:
+            proposal = np.pad(proposal, (0, self.action_dim - proposal.size))
+        elif proposal.size > self.action_dim:
+            proposal = proposal[: self.action_dim]
+        return proposal
 
     # ═══════════════════════════════════════════════════════════════════
-    # LEGACY COMPATIBILITY AND PUBLIC INTERFACE
+    # LEGACY PATHS (kept robust, productionized)
     # ═══════════════════════════════════════════════════════════════════
-
     def propose(self, obs: Any) -> np.ndarray:
-        """Legacy proposal interface for backward compatibility"""
+        """Legacy proposal interface for backward compatibility."""
         try:
-            # Run simplified proposal generation
             return self._simple_proposal_fallback(obs)
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "legacy_proposal")
-            self.logger.error(f"Legacy proposal failed: {error_context}")
+            ctx = self.error_pinpointer.analyze_error(e, "legacy_proposal")
+            self.logger.error(f"Legacy proposal failed: {ctx}")
             return np.zeros(self.action_dim, dtype=np.float32)
 
+    def _normalize_weights(self, w: np.ndarray) -> np.ndarray:
+        w = np.asarray(w, dtype=np.float32)
+        w = np.maximum(w, 1e-6)
+        s = float(w.sum())
+        return w / s if s > 0 else np.ones_like(w) / len(w)
+
+    def _evaluate_gate(self, action: np.ndarray, consensus: float, collusion: float) -> Tuple[bool, float, Dict[str, float]]:
+        """
+        Multi-criteria gate: blend absolute strength, consensus support, reliability proxy,
+        risk (volatility/collusion), novelty (change vs. previous).
+        """
+        try:
+            weights = self.gate_intelligence.get("criteria_weights", [0.25, 0.20, 0.20, 0.20, 0.15])
+            strength = float(np.clip(np.abs(action).mean(), 0.0, 1.0))
+            reliability = 1.0 - float(np.std(self.weights)) if len(self.weights) > 1 else 0.5
+            risk = float(np.clip(1.0 - (self.curr_vol * 5.0 + collusion), 0.0, 1.0))
+            novelty = 0.5
+            if self.decision_history:
+                prev = np.asarray(self.decision_history[-1].get("action", np.zeros_like(action)), dtype=np.float32)
+                novelty = float(np.clip(1.0 - min(1.0, float(np.linalg.norm(action - prev))), 0.0, 1.0))
+
+            crit = [strength, float(np.clip(consensus, 0.0, 1.0)), reliability, risk, novelty]
+            score = float(np.dot(np.array(crit, dtype=np.float32), np.array(weights, dtype=np.float32)))
+            # Adaptive baseline threshold
+            base_thr = _smart_gate(float(self.curr_vol), 0) if self._step_count >= self.bootstrap_steps else _BASE_GATE * 0.5
+            adj = self.market_adaptation["regime_multipliers"].get(self.market_regime, {}).get("gate_adjustment", 1.0)
+            threshold = float(np.clip(base_thr / adj, 0.05, 0.95))
+            return (score >= threshold), threshold, {
+                "strength": strength,
+                "consensus": float(np.clip(consensus, 0.0, 1.0)),
+                "reliability": reliability,
+                "risk": risk,
+                "novelty": novelty,
+                "gate_score": score,
+                "threshold": threshold,
+            }
+        except Exception:
+            # fallback to simple strength gating
+            s = float(np.abs(action).mean())
+            thr = _BASE_GATE * 0.5
+            return (s >= thr), thr, {"strength": s, "threshold": thr}
+
+    def _record_gate_decision(self, passed: bool, details: Dict[str, float], action: np.ndarray) -> None:
+        try:
+            self._gate_attempts += 1
+            if passed:
+                self._gate_passes += 1
+            self.gate_decisions.append(
+                {
+                    "decision": "pass" if passed else "block",
+                    "criteria": details,
+                    "timestamp": dt.datetime.now().isoformat(),
+                }
+            )
+            self.decision_history.append(
+                {
+                    "timestamp": dt.datetime.now().isoformat(),
+                    "action": action.tolist(),
+                    "signal_strength": float(np.abs(action).mean()),
+                    "passed": passed,
+                }
+            )
+            self.arbiter_stats["total_decisions"] += 1
+            self.arbiter_stats["gate_pass_rate"] = self._gate_passes / max(self._gate_attempts, 1)
+        except Exception:
+            pass
+
     def _simple_proposal_fallback(self, obs: Any) -> np.ndarray:
-        """Simple fallback proposal method"""
+        """Simple, safe blending & gating with confidence × weight alphas."""
         try:
             self._step_count += 1
-            
-            # Collect simplified proposals from members
-            proposals = []
-            confidences = []
-            
+
+            proposals: List[np.ndarray] = []
+            confidences: List[float] = []
+
             for i, member in enumerate(self.members):
                 try:
-                    if hasattr(member, 'propose_action'):
+                    if hasattr(member, "propose_action"):
                         prop = member.propose_action(obs)
-                    elif hasattr(member, 'propose'):
+                    elif hasattr(member, "propose"):
                         prop = member.propose(obs)
                     else:
                         prop = np.zeros(self.action_dim, dtype=np.float32)
-                    
+
                     prop = np.asarray(prop, dtype=np.float32).flatten()
                     if prop.size < self.action_dim:
                         prop = np.pad(prop, (0, self.action_dim - prop.size))
                     elif prop.size > self.action_dim:
-                        prop = prop[:self.action_dim]
-                    
+                        prop = prop[: self.action_dim]
                     proposals.append(prop)
-                    
-                    if hasattr(member, 'confidence'):
+
+                    if hasattr(member, "confidence"):
                         conf = float(member.confidence(obs))
                     else:
                         conf = 0.5
-                    
                     confidences.append(max(conf, self.min_confidence))
-                    
-                except Exception as e:
+                except Exception:
                     proposals.append(np.zeros(self.action_dim, dtype=np.float32))
                     confidences.append(self.min_confidence)
-            
-            # Simple weighted blend
-            if proposals:
-                w_norm = self.weights / (self.weights.sum() + 1e-12)
-                c_norm = np.array(confidences) / (np.sum(confidences) + 1e-12)
-                alpha = w_norm * c_norm
-                alpha = alpha / (alpha.sum() + 1e-12)
-                
-                self.last_alpha = alpha.copy()
-                
-                action = np.zeros(self.action_dim, dtype=np.float32)
-                for i, (prop, a) in enumerate(zip(proposals, alpha)):
-                    action += a * prop
-                
-                # Simple gate check
-                signal_strength = np.abs(action).mean()
-                gate_threshold = _smart_gate(float(self.curr_vol), 0) if self._step_count >= self.bootstrap_steps else _BASE_GATE * 0.5
-                
-                if signal_strength >= gate_threshold:
-                    self._gate_passes += 1
-                    final_action = action
-                else:
-                    final_action = action * 0.2
-                
-                self._gate_attempts += 1
-                
-                return final_action
-            
-            return np.zeros(self.action_dim, dtype=np.float32)
-            
+
+            if not proposals:
+                return np.zeros(self.action_dim, dtype=np.float32)
+
+            # Blend (weights × confidences)
+            w_norm = self._normalize_weights(self.weights)
+            c = np.asarray(confidences, dtype=np.float32)
+            c_norm = c / (float(c.sum()) + 1e-12)
+            alpha = w_norm * c_norm
+            alpha = alpha / (float(alpha.sum()) + 1e-12)
+            self.last_alpha = alpha.copy()
+
+            action = np.zeros(self.action_dim, dtype=np.float32)
+            for prop, a in zip(proposals, alpha):
+                action += a * prop
+
+            # Gate: include consensus & collusion from BUS if present
+            cons = self.smart_bus.get("consensus_score", "StrategyArbiter") or 0.5
+            coll = self.smart_bus.get("collusion_score", "StrategyArbiter") or 0.0
+            passed, threshold, crit = self._evaluate_gate(action, float(cons), float(coll))
+            final_action = action if passed else action * 0.25
+
+            self._record_gate_decision(passed, crit, final_action)
+            return final_action
+
         except Exception as e:
             self.logger.error(f"Simple proposal fallback failed: {e}")
             return np.zeros(self.action_dim, dtype=np.float32)
 
-    def update_weights(self, reward: float) -> None:
-        """Enhanced REINFORCE weight update with comprehensive tracking"""
-        if self.last_alpha is None:
-            return
-        
+    # ────────────────────────────
+    # ANALYTICS & ADAPTATION
+    # ────────────────────────────
+    async def _analyze_member_performance_comprehensive(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            # Update baseline
-            self._baseline = self._baseline_beta * self._baseline + (1 - self._baseline_beta) * reward
-            
-            # Calculate advantage
-            advantage = reward - self._baseline
-            
-            # REINFORCE update with adaptive learning rate
-            regime_lr_multiplier = self.market_adaptation['regime_multipliers'].get(
-                self.market_regime, {}
-            ).get('confidence_boost', 1.0)
-            
-            effective_lr = self.adapt_rate * regime_lr_multiplier
-            grad = advantage * (self.last_alpha - self.weights)
-            old_weights = self.weights.copy()
-            self.weights += effective_lr * grad
-            
-            # Ensure positive weights
-            self.weights = np.maximum(self.weights, 0.01)
-            
-            # Normalize
-            self.weights = self.weights / self.weights.sum()
-            
-            # Track learning
-            learning_entry = {
-                'timestamp': datetime.datetime.now().isoformat(),
-                'reward': reward,
-                'advantage': advantage,
-                'baseline': self._baseline,
-                'weight_change': np.linalg.norm(self.weights - old_weights),
-                'regime': self.market_regime
+            performance_analysis: Dict[str, Any] = {
+                "member_updates": {},
+                "weight_changes": {},
+                "quality_assessments": {},
+                "specialization_analysis": {},
+                "coordination_effectiveness": 0.0,
             }
-            self.learning_history.append(learning_entry)
-            
-            # Track significant adaptations
-            weight_change = np.linalg.norm(self.weights - old_weights)
-            if weight_change > 0.05:
-                self.arbiter_stats['weight_adaptations'] += 1
-                self.logger.info(format_operator_message(
-                    icon="[BALANCE]",
-                    message="Significant weight adaptation completed",
-                    reward=f"{reward:+.3f}",
-                    advantage=f"{advantage:+.3f}",
-                    change=f"{weight_change:.3f}",
-                    regime=self.market_regime
-                ))
-            
-            # Update success tracking
-            if reward > 0:
-                self.arbiter_stats['successful_decisions'] += 1
-            
-            # Update performance metrics
-            self._update_performance_metric('weight_adaptation_magnitude', float(weight_change))
-            self._update_performance_metric('learning_advantage', advantage)
-            self._update_performance_metric('baseline_estimate', self._baseline)
-            
+
+            recent_trades = market_data.get("recent_trades", [])
+            member_proposals = market_data.get("member_proposals", [])
+            member_confidences = market_data.get("member_confidences", [])
+
+            recent_pnl = [float(t.get("pnl", 0.0)) for t in recent_trades[-10:]] if recent_trades else []
+            recent_success_rate = (sum(1 for v in recent_pnl if v > 0) / len(recent_pnl)) if recent_pnl else 0.5
+
+            for i, _member in enumerate(self.members):
+                if i >= len(self.weights):
+                    continue
+                info = await self._analyze_individual_member_performance(
+                    i, member_proposals, member_confidences, recent_success_rate
+                )
+                performance_analysis["member_updates"][i] = info
+
+                # Adaptive weight update
+                dw = await self._calculate_adaptive_weight_update(i, info)
+                if abs(dw) > 0.05:
+                    performance_analysis["weight_changes"][i] = {
+                        "old_weight": float(self.weights[i]),
+                        "weight_change": float(dw),
+                        "reason": info.get("primary_factor", "performance"),
+                    }
+                    self.weights[i] = max(0.01, float(self.weights[i] + dw))
+
+            self.weights = self._normalize_weights(self.weights)
+            performance_analysis["coordination_effectiveness"] = await self._calculate_coordination_effectiveness(
+                performance_analysis
+            )
+            return performance_analysis
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "weight_update")
-            self.logger.error(f"Weight update failed: {error_context}")
+            _ = self.error_pinpointer.analyze_error(e, "member_performance_analysis")
+            return {"member_updates": {}, "coordination_effectiveness": 0.5}
 
-    def _update_performance_metric(self, metric_name: str, value: float) -> None:
-        """Update performance metric for tracking and analysis"""
+    async def _analyze_individual_member_performance(
+        self, member_idx: int, proposals: List[Any], confidences: List[Any], recent_success_rate: float
+    ) -> Dict[str, Any]:
         try:
-            if hasattr(self, 'performance_tracker') and self.performance_tracker:
-                self.performance_tracker.record_metric('StrategyArbiter', metric_name, value, True)
-            
-            # Also store in internal tracking for historical analysis
-            if not hasattr(self, '_performance_history'):
-                self._performance_history = defaultdict(lambda: deque(maxlen=100))
-            
-            self._performance_history[metric_name].append({
-                'timestamp': datetime.datetime.now().isoformat(),
-                'value': value
-            })
-            
-        except Exception as e:
-            # Don't let performance tracking failures affect main functionality
-            if hasattr(self, 'logger'):
-                self.logger.warning(f"Performance metric update failed for {metric_name}: {e}")
+            perf = self.member_performance[member_idx]
+            perf["proposals_made"] = int(perf.get("proposals_made", 0)) + 1
 
-    def _get_recent_gate_decision(self) -> Dict[str, Any]:
-        """Get most recent gate decision information"""
-        try:
-            if self.gate_decisions:
-                return dict(self.gate_decisions[-1])
-            else:
-                return {
-                    'decision': 'unknown',
-                    'criteria_met': 0,
-                    'total_criteria': 5,
-                    'timestamp': datetime.datetime.now().isoformat()
-                }
-        except Exception:
-            return {'decision': 'unknown'}
+            cur_conf = float(np.clip(confidences[member_idx], 0.1, 1.0)) if member_idx < len(confidences) else 0.5
+            old_conf = float(perf.get("avg_confidence", 0.5))
+            perf["avg_confidence"] = float(old_conf * 0.9 + cur_conf * 0.1)
 
-    def _get_member_performance_summary(self) -> Dict[str, Any]:
-        """Get summary of member performance"""
-        try:
-            summary = {}
-            
-            for member_idx, perf_data in self.member_performance.items():
-                quality_scores = perf_data.get('quality_scores', [0.5])
-                if isinstance(quality_scores, deque) and len(quality_scores) > 0:
-                    recent_quality = float(np.mean(list(quality_scores)[-5:]))
-                else:
-                    recent_quality = 0.5
-                    
-                summary[f'member_{member_idx}'] = {
-                    'contribution_score': perf_data.get('contribution_score', 0.5),
-                    'reliability_index': perf_data.get('reliability_index', 0.5),
-                    'specialization_score': perf_data.get('specialization_score', 0.5),
-                    'avg_confidence': perf_data.get('avg_confidence', 0.5),
-                    'proposals_made': perf_data.get('proposals_made', 0),
-                    'recent_quality': recent_quality
-                }
-            
-            return summary
-            
-        except Exception:
-            return {}
+            # Proposal quality
+            pq = 0.5
+            if member_idx < len(proposals) and isinstance(proposals[member_idx], (list, np.ndarray)):
+                pq = await self._assess_proposal_quality(np.asarray(proposals[member_idx], dtype=np.float32), cur_conf)
 
-    def _get_comprehensive_arbiter_stats(self) -> Dict[str, Any]:
-        """Get comprehensive arbitration statistics"""
-        return {
-            **self.arbiter_stats,
-            'current_weights': self.weights.tolist(),
-            'last_alpha': self.last_alpha.tolist() if self.last_alpha is not None else None,
-            'step_count': self._step_count,
-            'gate_passes': self._gate_passes,
-            'gate_attempts': self._gate_attempts,
-            'baseline_estimate': self._baseline,
-            'market_regime': self.market_regime,
-            'market_session': self.market_session,
-            'volatility': self.curr_vol,
-            'bootstrap_complete': self._step_count >= self.bootstrap_steps,
-            'learning_trend': self._calculate_learning_trend()
-        }
+            try:
+                perf["quality_scores"].append(pq)
+            except Exception:
+                perf["quality_scores"] = deque([pq], maxlen=30)
 
-    def _calculate_learning_trend(self) -> str:
-        """Calculate recent learning trend"""
-        try:
-            if len(self.learning_history) < 5:
-                return 'insufficient_data'
-            
-            recent_rewards = [entry.get('reward', 0.0) for entry in list(self.learning_history)[-5:]]
-            slope = np.polyfit(range(len(recent_rewards)), recent_rewards, 1)[0]
-            
-            if slope > 0.01:
-                return 'improving'
-            elif slope < -0.01:
-                return 'declining'
-            else:
-                return 'stable'
-                
-        except Exception:
-            return 'unknown'
+            contribution = float((pq + cur_conf + recent_success_rate) / 3.0)
+            perf["contribution_score"] = contribution
 
-    def _get_recent_proposal_analysis(self) -> Dict[str, Any]:
-        """Get analysis of recent proposals"""
-        try:
-            if not self.proposal_history:
-                return {'status': 'no_proposals'}
-            
-            recent_proposals = list(self.proposal_history)[-5:]
-            
-            analysis = {
-                'proposal_count': len(recent_proposals),
-                'avg_quality': np.mean([p.get('quality', 0.5) for p in recent_proposals]),
-                'quality_trend': 'stable',
-                'diversity_score': 0.5
+            if isinstance(perf.get("quality_scores"), deque) and len(perf["quality_scores"]) >= 5:
+                recent = list(perf["quality_scores"])[-5:]
+                consistency = float(np.clip(1.0 - float(np.std(recent)), 0.0, 1.0))
+                perf["reliability_index"] = float((perf["avg_confidence"] + consistency) / 2.0)
+
+            specialization = await self._calculate_member_specialization(member_idx, proposals)
+            perf["specialization_score"] = specialization
+
+            return {
+                "contribution_score": contribution,
+                "proposal_quality": pq,
+                "confidence": cur_conf,
+                "reliability": perf.get("reliability_index", 0.5),
+                "specialization": specialization,
+                "primary_factor": "contribution" if contribution > 0.7 else "reliability",
             }
-            
-            # Calculate quality trend
-            if len(recent_proposals) >= 3:
-                qualities = [p.get('quality', 0.5) for p in recent_proposals]
-                slope = np.polyfit(range(len(qualities)), qualities, 1)[0]
-                
-                if slope > 0.05:
-                    analysis['quality_trend'] = 'improving'
-                elif slope < -0.05:
-                    analysis['quality_trend'] = 'declining'
-            
-            return analysis
-            
-        except Exception:
-            return {'status': 'analysis_error'}
+        except Exception as e:
+            _ = self.error_pinpointer.analyze_error(e, "individual_member_analysis")
+            return {"contribution_score": 0.5, "proposal_quality": 0.5, "confidence": 0.5}
 
-    def get_observation_components(self) -> np.ndarray:
-        """Return arbitration features for RL observation"""
+    async def _assess_proposal_quality(self, proposal: np.ndarray, confidence: float) -> float:
         try:
-            features = [
-                float(self._gate_passes / max(self._gate_attempts, 1)),  # Gate pass rate
-                float(self.curr_vol),  # Current volatility
-                float(self._baseline),  # Learning baseline
-                float(self.voting_quality['avg_consensus']),  # Average consensus
-                float(self.voting_quality['decision_confidence']),  # Decision confidence
-                float(self.voting_quality['member_diversity']),  # Member diversity
-                float(len(self.decision_history) / 200),  # History fullness
-                float(self.arbiter_stats['weight_adaptations'] / max(self._step_count, 1))  # Adaptation rate
+            strength = float(min(1.0, float(np.linalg.norm(proposal)) / 2.0))
+            consistency = 0.5
+            if self.proposal_history:
+                prev = np.asarray(self.proposal_history[-1].get("proposal", proposal), dtype=np.float32)
+                consistency = float(max(0.0, 1.0 - float(np.linalg.norm(proposal - prev)) / 2.0))
+
+            # Regime appropriateness
+            regime_adj = 0.5
+            if self.market_regime == "volatile" and strength < 0.5:
+                regime_adj = 0.8
+            elif self.market_regime == "trending" and strength > 0.3:
+                regime_adj = 0.8
+
+            w = np.array([0.3, 0.3, 0.2, 0.2], dtype=np.float32)
+            vals = np.array([strength, float(confidence), consistency, regime_adj], dtype=np.float32)
+            return float(np.clip(float(np.dot(w[: len(vals)], vals[: len(vals)])), 0.0, 1.0))
+        except Exception:
+            return 0.5
+
+    async def _calculate_member_specialization(self, member_idx: int, proposals: List[Any]) -> float:
+        try:
+            if member_idx >= len(proposals) or len(proposals) < 2:
+                return 0.5
+            mp = np.asarray(proposals[member_idx], dtype=np.float32)
+            other = [np.asarray(p, dtype=np.float32) for i, p in enumerate(proposals) if i != member_idx and isinstance(p, (list, np.ndarray))]
+            if not other:
+                return 0.5
+            dists: List[float] = []
+            for q in other:
+                if q.size == mp.size:
+                    dists.append(float(np.linalg.norm(mp - q)))
+            if dists:
+                return float(min(1.0, float(np.mean(dists)) / 2.0))
+            return 0.5
+        except Exception:
+            return 0.5
+
+    async def _calculate_adaptive_weight_update(self, member_idx: int, analysis: Dict[str, Any]) -> float:
+        try:
+            contribution = float(analysis.get("contribution_score", 0.5))
+            reliability = float(analysis.get("reliability", 0.5))
+            specialization = float(analysis.get("specialization", 0.5))
+
+            performance_factor = (contribution + reliability) / 2.0
+            ideal = performance_factor / max(1, len(self.members))
+
+            if specialization > 0.7:
+                ideal *= 1.2
+
+            lr = float(self.decision_intelligence.get("member_learning_rate", 0.05))
+            delta = (ideal - float(self.weights[member_idx])) * lr
+
+            # Regime bonus
+            if self.market_regime == "volatile" and contribution > 0.8:
+                delta *= 1.3
+            elif self.market_regime == "trending" and specialization > 0.6:
+                delta *= 1.2
+
+            return float(np.clip(delta, -0.1, 0.1))
+        except Exception:
+            return 0.0
+
+    async def _calculate_coordination_effectiveness(self, perf: Dict[str, Any]) -> float:
+        try:
+            updates = perf.get("member_updates", {})
+            if not updates:
+                return 0.5
+            contrib = np.array([u.get("contribution_score", 0.5) for u in updates.values()], dtype=np.float32)
+            spec = np.array([u.get("specialization", 0.5) for u in updates.values()], dtype=np.float32)
+            avg_contrib = float(np.mean(contrib)) if contrib.size else 0.5
+            div = float(min(1.0, float(np.std(contrib)) * 2.0)) if contrib.size > 1 else 0.0
+            avg_spec = float(np.mean(spec)) if spec.size else 0.5
+            score = 0.4 * avg_contrib + 0.3 * div + 0.3 * avg_spec
+            self.coordination_analytics["coordination_effectiveness"] = float(np.clip(score, 0.0, 1.0))
+            return self.coordination_analytics["coordination_effectiveness"]
+        except Exception:
+            return 0.5
+
+    async def _update_voting_quality_metrics_comprehensive(self) -> Dict[str, Any]:
+        try:
+            updates: Dict[str, Any] = {"metric_changes": {}, "trend_analysis": {}, "quality_drivers": {}}
+
+            # Gate effectiveness
+            old_ge = float(self.voting_quality.get("gate_effectiveness", 0.5))
+            new_ge = self._gate_passes / max(self._gate_attempts, 1)
+            self.voting_quality["gate_effectiveness"] = float(new_ge)
+            if abs(new_ge - old_ge) > 0.1:
+                updates["metric_changes"]["gate_effectiveness"] = {
+                    "old_value": old_ge,
+                    "new_value": float(new_ge),
+                    "trend": "improving" if new_ge > old_ge else "declining",
+                }
+
+            # Decision confidence (recent)
+            if len(self.decision_history) >= 5:
+                confs = [float(d.get("signal_strength", 0.5)) for d in list(self.decision_history)[-5:]]
+                self.voting_quality["decision_confidence"] = float(np.mean(confs))
+
+            # Member diversity
+            if self.member_performance:
+                contribs = [float(p.get("contribution_score", 0.5)) for p in self.member_performance.values()]
+                if len(contribs) > 1:
+                    self.voting_quality["member_diversity"] = float(min(1.0, float(np.std(contribs)) * 2.0))
+
+            # Learning efficiency
+            if len(self.learning_history) >= 10:
+                rewards = [float(e.get("reward", 0.0)) for e in list(self.learning_history)[-10:]]
+                if len(rewards) > 1:
+                    try:
+                        slope = float(np.polyfit(range(len(rewards)), rewards, 1)[0])
+                    except Exception:
+                        slope = 0.0
+                    self.voting_quality["learning_efficiency"] = float(0.5 + np.tanh(slope * 10) * 0.5)
+
+            # Adaptation rate (simple proxy)
+            if self._step_count > 0:
+                self.voting_quality["adaptation_rate"] = float(
+                    self.arbiter_stats.get("weight_adaptations", 0) / self._step_count
+                )
+            return updates
+        except Exception:
+            return {"metric_changes": {}}
+
+    async def _generate_intelligent_arbitration_recommendations(
+        self, perf: Dict[str, Any], quality_updates: Dict[str, Any]
+    ) -> List[str]:
+        try:
+            recs: List[str] = []
+            coord = float(perf.get("coordination_effectiveness", 0.5))
+            gate_eff = float(self.voting_quality.get("gate_effectiveness", 0.5))
+            diversity = float(self.voting_quality.get("member_diversity", 0.5))
+            learn_eff = float(self.voting_quality.get("learning_efficiency", 0.5))
+
+            if coord < 0.4:
+                recs.append("LOW COORDINATION: Rebalance members or run sync workshop")
+            elif coord > 0.8:
+                recs.append("HIGH COORDINATION: Maintain current approach")
+
+            if gate_eff < 0.3:
+                recs.append("GATE RESTRICTIVE: Loosen criteria or recalibrate thresholds")
+            elif gate_eff > 0.8:
+                recs.append("GATE PERMISSIVE: Tighten criteria to manage risk")
+
+            if diversity < 0.3:
+                recs.append("LOW DIVERSITY: Encourage specialization or diversify models")
+            elif diversity > 0.8:
+                recs.append("HIGH DIVERSITY: Balance with coordination checks")
+
+            if learn_eff < 0.3:
+                recs.append("LEARNING ISSUES: Review reward signals and LR")
+            elif learn_eff > 0.8:
+                recs.append("LEARNING EFFECTIVE: Consider advanced strategies")
+
+            if self.market_regime == "volatile":
+                recs.append("VOLATILE REGIME: Emphasize risk management and shorter horizons")
+            elif self.market_regime == "trending":
+                recs.append("TRENDING REGIME: Favor momentum and sized entries")
+            elif self.market_regime == "noise":
+                recs.append("NOISE REGIME: Reduce sizes and raise quality thresholds")
+
+            if self._step_count < self.bootstrap_steps:
+                remaining = self.bootstrap_steps - self._step_count
+                recs.append(f"BOOTSTRAP MODE: {remaining} steps remaining for stabilization")
+
+            return recs[:6] if recs else ["SYSTEM OPTIMAL: Arbitration within normal parameters"]
+        except Exception as e:
+            ctx = self.error_pinpointer.analyze_error(e, "arbitration_recommendations")
+            return [f"Recommendation generation failed: {ctx}"]
+
+    async def _generate_comprehensive_arbitration_thesis(
+        self, perf: Dict[str, Any], recommendations: List[str]
+    ) -> str:
+        try:
+            coord = float(perf.get("coordination_effectiveness", 0.5))
+            gate_eff = float(self.voting_quality.get("gate_effectiveness", 0.5))
+            learning_eff = float(self.voting_quality.get("learning_efficiency", 0.5))
+            coordination_level = "HIGH" if coord > 0.7 else "MODERATE" if coord > 0.4 else "LOW"
+
+            parts = [
+                f"ARBITRATION: {coordination_level} coordination ({coord:.1%})",
+                f"MEMBERS: {len(self.members)} experts; diversity {self.voting_quality.get('member_diversity', 0.5):.1%}",
+                f"GATE: {'EFFECTIVE' if gate_eff > 0.6 else 'RESTRICTIVE' if gate_eff < 0.4 else 'MODERATE'} ({gate_eff:.1%} pass)",
+                f"LEARNING: {'STRONG' if learning_eff > 0.7 else 'STABLE' if learning_eff > 0.4 else 'WEAK'} ({learning_eff:.1%})",
+                f"MARKET: {self.market_regime.upper()} regime, vol {self.curr_vol:.2%}",
+                f"WEIGHTS: {self.arbiter_stats.get('weight_adaptations', 0)} adaptations over {self._step_count} steps",
             ]
-            
-            # Add normalized weights
-            features.extend(self.weights.tolist())
-            
-            observation = np.array(features, dtype=np.float32)
-            
-            # Validate for NaN/infinite values
-            if np.any(~np.isfinite(observation)):
-                self.logger.error(f"Invalid arbitration observation: {observation}")
-                observation = np.nan_to_num(observation, nan=0.5)
-            
-            return observation
-            
+            td = self.arbiter_stats.get("total_decisions", 0)
+            sd = self.arbiter_stats.get("successful_decisions", 0)
+            sr = (sd / td) if td > 0 else 0.0
+            parts.append(f"PERF: {sr:.1%} success across {td} decisions")
+
+            pri = [r for r in recommendations if any(k in r for k in ("LOW", "HIGH", "CRITICAL", "URGENT"))]
+            if pri:
+                parts.append(f"ACTION ITEMS: {len(pri)} priority recs")
+            return " | ".join(parts)
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "observation_generation")
-            self.logger.error(f"Arbitration observation generation failed: {error_context}")
-            # Return safe defaults
+            ctx = self.error_pinpointer.analyze_error(e, "arbitration_thesis_generation")
+            return f"Arbitration thesis generation failed: {ctx}"
+
+    async def _update_smartinfobus_comprehensive(self, results: Dict[str, Any], thesis: str) -> None:
+        try:
+            s = self.smart_bus.set
+            s("blended_action", results["blended_action"], module="StrategyArbiter", thesis=thesis)
+            s(
+                "alpha_weights",
+                results["alpha_weights"],
+                module="StrategyArbiter",
+                thesis=f"Alpha weights: {len(results['alpha_weights'])} member allocations",
+            )
+            s(
+                "member_weights",
+                results["member_weights"],
+                module="StrategyArbiter",
+                thesis=f"Member weights: {len(results['member_weights'])} experts balanced",
+            )
+            s(
+                "gate_decision",
+                results["gate_decision"],
+                module="StrategyArbiter",
+                thesis=f"Gate decision: {results['gate_decision'].get('decision', 'unknown')}",
+            )
+            s(
+                "voting_quality",
+                results["voting_quality"],
+                module="StrategyArbiter",
+                thesis=f"Voting quality: {len(results['voting_quality'])} metrics",
+            )
+            s(
+                "member_performance",
+                results["member_performance"],
+                module="StrategyArbiter",
+                thesis=f"Member performance: {len(results['member_performance'])} profiles",
+            )
+            s(
+                "decision_statistics",
+                results["decision_statistics"],
+                module="StrategyArbiter",
+                thesis=f"Decision stats: {results['decision_statistics'].get('total_decisions', 0)} decisions",
+            )
+            s(
+                "proposal_analysis",
+                results["proposal_analysis"],
+                module="StrategyArbiter",
+                thesis="Recent member proposals evaluated",
+            )
+            s(
+                "arbiter_recommendations",
+                results["arbiter_recommendations"],
+                module="StrategyArbiter",
+                thesis=f"Recommendations: {len(results['arbiter_recommendations'])}",
+            )
+
+            # Publish a convenient weights map
+            try:
+                names: List[str] = []
+                for i, m in enumerate(self.members):
+                    nm = None
+                    try:
+                        nm = getattr(m, "name", None) or getattr(m, "module_name", None)
+                    except Exception:
+                        nm = None
+                    names.append(nm if isinstance(nm, str) and nm else f"member_{i}")
+                weights_list = results.get("member_weights", self.weights.tolist())
+                weights_map = {names[i]: float(weights_list[i]) for i in range(min(len(names), len(weights_list)))}
+                s(
+                    "strategy_weights",
+                    {
+                        "by_member": weights_map,
+                        "members": names,
+                        "weights": weights_list,
+                        "timestamp": dt.datetime.utcnow().isoformat(),
+                    },
+                    module="StrategyArbiter",
+                    thesis="Current strategy/member weights",
+                )
+            except Exception:
+                pass
+        except Exception as e:
+            ctx = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
+            self.logger.error(f"SmartInfoBus update failed: {ctx}")
+
+    # ────────────────────────────
+    # PUBLIC INTERFACE
+    # ────────────────────────────
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+        try:
+            q = float(self.voting_quality_metrics.get("overall_quality_score", 0.5))
+            cons = float(self.member_analytics.get("performance_consistency", 0.5))
+            regime = float(self.regime_analytics.get("current_regime_fit", 0.5))
+            gate = self._gate_passes / max(self._gate_attempts, 1)
+            consensus_strength = 1.0 - float(np.std(self.weights)) if len(self.weights) > 1 else 0.5
+            conf = 0.3 * q + 0.25 * cons + 0.2 * regime + 0.15 * gate + 0.1 * consensus_strength
+            return float(np.clip(conf, 0.1, 0.95))
+        except Exception:
+            return 0.4
+
+    async def propose_action(self, **inputs) -> Dict[str, Any]:
+        """
+        Propose arbitration action and publish per-instrument intensities.
+        Mirrors process() path for signal publication; returns friendly diagnostics.
+        """
+        try:
+            market_data = await self._get_comprehensive_market_data()
+            await self._update_market_state_comprehensive(market_data)
+
+            blended_proposal = self._compute_blended_proposal(market_data)
+            signals = self._map_action_to_instrument_signals(blended_proposal)
+            self._publish_instrument_signals(signals)
+            self.smart_bus.set(
+                "instrument_signals",
+                signals,
+                module="StrategyArbiter",
+                thesis=f"Per-instrument intensities for {len(signals)} instruments",
+            )
+
+            voting_quality = self.voting_quality_metrics.get("overall_quality_score", 0.5)
+            member_coord = self.coordination_analytics.get("coordination_effectiveness", 0.5)
+            proposal_strength = float(np.linalg.norm(blended_proposal))
+
+            if voting_quality < 0.3:
+                action_type, signal_strength, reasoning = (
+                    "rebalance_members",
+                    0.8,
+                    f"Poor voting quality ({voting_quality:.3f}) requires member rebalancing",
+                )
+            elif member_coord < 0.4:
+                action_type, signal_strength, reasoning = (
+                    "improve_coordination",
+                    0.6,
+                    f"Low member coordination ({member_coord:.3f}) needs attention",
+                )
+            elif proposal_strength > 0.7:
+                action_type, signal_strength, reasoning = (
+                    "execute_proposal",
+                    min(proposal_strength, 0.9),
+                    f"Strong blended proposal (strength: {proposal_strength:.3f})",
+                )
+            else:
+                action_type, signal_strength, reasoning = ("monitor", 0.3, "Normal arbitration state — continue monitoring")
+
+            return {
+                "action": action_type,
+                "signal_strength": float(signal_strength),
+                "reasoning": reasoning,
+                "arbitration_metrics": {
+                    "voting_quality": float(voting_quality),
+                    "member_coordination": float(member_coord),
+                    "proposal_strength": float(proposal_strength),
+                    "member_count": len(self.members),
+                    "weight_distribution": self.weights.tolist() if hasattr(self.weights, "tolist") else [],
+                },
+                "blended_proposal": blended_proposal.tolist(),
+                "published_signals": signals,
+                "confidence": await self.calculate_confidence({}, **inputs),
+            }
+        except Exception as e:
+            self.logger.error(f"Action proposal failed: {e}")
+            return {"action": "abstain", "signal_strength": 0.0, "reasoning": f"Arbitration error: {str(e)}", "confidence": 0.1}
+
+    # ────────────────────────────
+    # REPORTING & HEALTH
+    # ────────────────────────────
+    def get_observation_components(self) -> np.ndarray:
+        try:
+            features: List[float] = [
+                float(self._gate_passes / max(self._gate_attempts, 1)),
+                float(self.curr_vol),
+                float(self._baseline),
+                float(self.voting_quality["avg_consensus"]),
+                float(self.voting_quality["decision_confidence"]),
+                float(self.voting_quality["member_diversity"]),
+                float(len(self.decision_history) / 200),
+                float(self.arbiter_stats["weight_adaptations"] / max(self._step_count, 1)),
+            ]
+            features.extend(self._normalize_weights(self.weights).tolist())
+            obs = np.array(features, dtype=np.float32)
+            if np.any(~np.isfinite(obs)):
+                self.logger.error(f"Invalid arbitration observation: {obs}")
+                obs = np.nan_to_num(obs, nan=0.5)
+            return obs
+        except Exception as e:
+            _ = self.error_pinpointer.analyze_error(e, "observation_generation")
             default_features = [0.5, 0.02, 0.0, 0.5, 0.5, 0.5, 0.0, 0.0]
-            default_features.extend([1.0 / len(self.members)] * len(self.members))
+            default_features.extend([1.0 / max(1, len(self.members))] * max(1, len(self.members)))
             return np.array(default_features, dtype=np.float32)
 
     def get_health_metrics(self) -> Dict[str, Any]:
-        """Get comprehensive health metrics for monitoring"""
         return {
-            'module_name': 'StrategyArbiter',
-            'status': 'disabled' if self.is_disabled else 'healthy',
-            'error_count': self.error_count,
-            'circuit_breaker_threshold': self.circuit_breaker_threshold,
-            'total_decisions': self.arbiter_stats.get('total_decisions', 0),
-            'successful_decisions': self.arbiter_stats.get('successful_decisions', 0),
-            'gate_pass_rate': self._gate_passes / max(self._gate_attempts, 1),
-            'weight_adaptations': self.arbiter_stats.get('weight_adaptations', 0),
-            'learning_baseline': self._baseline,
-            'coordination_effectiveness': self.voting_quality.get('member_diversity', 0.5),
-            'members_count': len(self.members),
-            'step_count': self._step_count,
-            'bootstrap_complete': self._step_count >= self.bootstrap_steps,
-            'market_regime': self.market_regime,
-            'session_duration': (datetime.datetime.now() - 
-                               datetime.datetime.fromisoformat(self.arbiter_stats['session_start'])).total_seconds() / 3600
+            "module_name": "StrategyArbiter",
+            "status": "disabled" if self.is_disabled else "healthy",
+            "error_count": int(self.error_count),
+            "circuit_breaker_threshold": int(self.circuit_breaker_threshold),
+            "total_decisions": int(self.arbiter_stats.get("total_decisions", 0)),
+            "successful_decisions": int(self.arbiter_stats.get("successful_decisions", 0)),
+            "gate_pass_rate": float(self._gate_passes / max(self._gate_attempts, 1)),
+            "weight_adaptations": int(self.arbiter_stats.get("weight_adaptations", 0)),
+            "learning_baseline": float(self._baseline),
+            "coordination_effectiveness": float(self.voting_quality.get("member_diversity", 0.5)),
+            "members_count": int(len(self.members)),
+            "step_count": int(self._step_count),
+            "bootstrap_complete": bool(self._step_count >= self.bootstrap_steps),
+            "market_regime": str(self.market_regime),
+            "consensus_score": float(self.smart_bus.get("consensus_score", "StrategyArbiter") or 0.5),
+            "session_duration": (
+                dt.datetime.now() - dt.datetime.fromisoformat(self.arbiter_stats["session_start"])
+            ).total_seconds()
+            / 3600.0,
         }
 
     def _get_health_metrics(self) -> Dict[str, Any]:
-        """Internal method for health metrics (for compatibility)"""
         return self.get_health_metrics()
 
     def get_arbiter_report(self) -> str:
-        """Generate comprehensive operator-friendly arbitration report"""
-        # Decision quality assessment
-        decision_conf = self.voting_quality['decision_confidence']
+        decision_conf = self.voting_quality["decision_confidence"]
         if decision_conf > 0.8:
             quality_status = "[OK] EXCELLENT"
         elif decision_conf > 0.6:
@@ -1276,50 +1199,36 @@ class StrategyArbiter(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
             quality_status = "[WARN] FAIR"
         else:
             quality_status = "[ALERT] POOR"
-        
-        # Gate effectiveness
-        gate_rate = self.voting_quality['gate_effectiveness']
+
+        gate_rate = self.voting_quality["gate_effectiveness"]
         if gate_rate > 0.7:
             gate_status = "[GREEN] EFFECTIVE"
         elif gate_rate > 0.4:
             gate_status = "[YELLOW] MODERATE"
         else:
             gate_status = "[RED] RESTRICTIVE"
-        
-        # Top performing members
-        member_lines = []
-        for member_idx, perf_data in list(self.member_performance.items())[:5]:
+
+        member_lines: List[str] = []
+        for member_idx, perf in list(self.member_performance.items())[:5]:
             if member_idx < len(self.weights):
-                weight = self.weights[member_idx]
-                contribution = perf_data.get('contribution_score', 0.5)
-                reliability = perf_data.get('reliability_index', 0.5)
-                
-                contribution_float = float(contribution) if isinstance(contribution, (int, float)) else 0.5
-                if contribution_float > 0.7:
-                    emoji = "🌟"
-                elif contribution_float > 0.5:
-                    emoji = "[FAST]"
-                else:
-                    emoji = "[WARN]"
-                
-                member_lines.append(f"  {emoji} Member {member_idx}: Weight {weight:.3f}, Contrib {contribution:.1%}, Rel {reliability:.1%}")
-        
-        # Learning status
-        learning_efficiency = self.voting_quality.get('learning_efficiency', 0.5)
-        if learning_efficiency > 0.7:
-            learning_status = "[CHART] Strong"
-        elif learning_efficiency > 0.4:
-            learning_status = "→ Stable"
-        else:
-            learning_status = "📉 Weak"
-        
+                weight = float(self.weights[member_idx])
+                contribution = float(perf.get("contribution_score", 0.5))
+                reliability = float(perf.get("reliability_index", 0.5))
+                emoji = "🌟" if contribution > 0.7 else "[FAST]" if contribution > 0.5 else "[WARN]"
+                member_lines.append(
+                    f"  {emoji} Member {member_idx}: Weight {weight:.3f}, Contrib {contribution:.1%}, Rel {reliability:.1%}"
+                )
+
+        learning_eff = float(self.voting_quality.get("learning_efficiency", 0.5))
+        learning_status = "[CHART] Strong" if learning_eff > 0.7 else "→ Stable" if learning_eff > 0.4 else "📉 Weak"
+
         return f"""
-🏛️ STRATEGY ARBITER v3.0
+🏛️ STRATEGY ARBITER v3.1
 ═══════════════════════════════════════════════════════════════
 [TARGET] Decision Quality: {quality_status} ({decision_conf:.1%})
 🚪 Gate Status: {gate_status} ({gate_rate:.1%})
 [STATS] Consensus Level: {self.voting_quality['avg_consensus']:.1%}
-[CHART] Learning Status: {learning_status} ({learning_efficiency:.1%})
+[CHART] Learning Status: {learning_status} ({learning_eff:.1%})
 
 [BALANCE] Committee Overview:
 • Total Members: {len(self.members)}
@@ -1333,7 +1242,7 @@ class StrategyArbiter(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
 • Session: {self.market_session.title()}
 • Volatility: {self.curr_vol:.2%}
 
-[TARGET] Voting Quality Metrics:
+[TARGET] Voting Quality:
 • Decision Confidence: {self.voting_quality['decision_confidence']:.1%}
 • Average Consensus: {self.voting_quality['avg_consensus']:.1%}
 • Member Diversity: {self.voting_quality['member_diversity']:.1%}
@@ -1342,7 +1251,7 @@ class StrategyArbiter(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
 • Proposal Quality: {self.voting_quality['proposal_quality']:.1%}
 • Learning Efficiency: {self.voting_quality['learning_efficiency']:.1%}
 
-[CHART] Performance Statistics:
+[CHART] Performance:
 • Total Decisions: {self.arbiter_stats['total_decisions']}
 • Successful Decisions: {self.arbiter_stats['successful_decisions']}
 • Success Rate: {(self.arbiter_stats['successful_decisions'] / max(self.arbiter_stats['total_decisions'], 1)):.1%}
@@ -1351,538 +1260,483 @@ class StrategyArbiter(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
 • Learning Trend: {self._calculate_learning_trend().title()}
 
 🚪 Gate Intelligence:
-• Gate Attempts: {self._gate_attempts}
-• Gate Passes: {self._gate_passes}
-• Pass Rate: {(self._gate_passes / max(self._gate_attempts, 1)):.1%}
+• Attempts: {self._gate_attempts} | Passes: {self._gate_passes} | Pass Rate: {(self._gate_passes / max(self._gate_attempts, 1)):.1%}
 • Criteria Weights: {', '.join([f'{w:.2f}' for w in self.gate_intelligence['criteria_weights']])}
 • Adaptive Threshold: {'[OK] Enabled' if self.gate_intelligence['adaptive_threshold'] else '[FAIL] Disabled'}
 
 👥 Top Performing Members:
 {chr(10).join(member_lines) if member_lines else "  📭 No member performance data available"}
 
-[TOOL] Configuration:
-• Adapt Rate: {self.adapt_rate:.4f}
-• Min Confidence: {self.min_confidence:.2f}
-• Bootstrap Steps: {self.bootstrap_steps}
-• REINFORCE Beta: {self._baseline_beta:.3f}
-• Learning Rate: {self.REINFORCE_LR:.4f}
-
-[STATS] Recent Activity:
-• Decision History: {len(self.decision_history)} entries
-• Learning History: {len(self.learning_history)} entries
-• Gate Decisions: {len(self.gate_decisions)} recorded
-• Proposal History: {len(self.proposal_history)} entries
+[TOOL] Config:
+• Adapt Rate: {self.adapt_rate:.4f} | Min Confidence: {self.min_confidence:.2f} | Bootstrap: {self.bootstrap_steps}
+• REINFORCE Beta: {self._baseline_beta:.3f} | LR: {self.REINFORCE_LR:.4f}
 
 [TOOL] System Health:
-• Error Count: {self.error_count}/{self.circuit_breaker_threshold}
-• Status: {'[ALERT] DISABLED' if self.is_disabled else '[OK] OPERATIONAL'}
-• Session Duration: {(datetime.datetime.now() - datetime.datetime.fromisoformat(self.arbiter_stats['session_start'])).total_seconds() / 3600:.1f} hours
-        """
+• Errors: {self.error_count}/{self.circuit_breaker_threshold} | Status: {'[ALERT] DISABLED' if self.is_disabled else '[OK] OPERATIONAL'}
+• Session Duration: {(dt.datetime.now() - dt.datetime.fromisoformat(self.arbiter_stats['session_start'])).total_seconds() / 3600:.1f}h
+"""
 
-    def get_health_status(self) -> Dict[str, Any]:
-        """Get health status for system monitoring"""
+    def _get_comprehensive_arbiter_stats(self) -> Dict[str, Any]:
         return {
-            'module_name': 'StrategyArbiter',
-            'status': 'disabled' if self.is_disabled else 'healthy',
-            'metrics': self._get_health_metrics(),
-            'alerts': self._generate_health_alerts(),
-            'recommendations': self._generate_health_recommendations()
+            **self.arbiter_stats,
+            "current_weights": self.weights.tolist(),
+            "last_alpha": self.last_alpha.tolist() if self.last_alpha is not None else None,
+            "step_count": self._step_count,
+            "gate_passes": self._gate_passes,
+            "gate_attempts": self._gate_attempts,
+            "baseline_estimate": self._baseline,
+            "market_regime": self.market_regime,
+            "market_session": self.market_session,
+            "volatility": self.curr_vol,
+            "bootstrap_complete": self._step_count >= self.bootstrap_steps,
+            "learning_trend": self._calculate_learning_trend(),
+        }
+
+    def _calculate_learning_trend(self) -> str:
+        try:
+            if len(self.learning_history) < 5:
+                return "insufficient_data"
+            rewards = [float(e.get("reward", 0.0)) for e in list(self.learning_history)[-5:]]
+            try:
+                slope = float(np.polyfit(range(len(rewards)), rewards, 1)[0])
+            except Exception:
+                slope = 0.0
+            if slope > 0.01:
+                return "improving"
+            if slope < -0.01:
+                return "declining"
+            return "stable"
+        except Exception:
+            return "unknown"
+
+    def _get_recent_gate_decision(self) -> Dict[str, Any]:
+        try:
+            if self.gate_decisions:
+                return dict(self.gate_decisions[-1])
+            return {
+                "decision": "unknown",
+                "criteria_met": 0,
+                "total_criteria": 5,
+                "timestamp": dt.datetime.now().isoformat(),
+            }
+        except Exception:
+            return {"decision": "unknown"}
+
+    def _get_member_performance_summary(self) -> Dict[str, Any]:
+        try:
+            out: Dict[str, Any] = {}
+            for idx, perf in self.member_performance.items():
+                qs = perf.get("quality_scores", [0.5])
+                recent_quality = float(np.mean(list(qs)[-5:])) if isinstance(qs, deque) and len(qs) > 0 else 0.5
+                out[f"member_{int(idx)}"] = {
+                    "contribution_score": float(perf.get("contribution_score", 0.5)),
+                    "reliability_index": float(perf.get("reliability_index", 0.5)),
+                    "specialization_score": float(perf.get("specialization_score", 0.5)),
+                    "avg_confidence": float(perf.get("avg_confidence", 0.5)),
+                    "proposals_made": int(perf.get("proposals_made", 0)),
+                    "recent_quality": float(recent_quality),
+                }
+            return out
+        except Exception:
+            return {}
+
+    def _get_recent_proposal_analysis(self) -> Dict[str, Any]:
+        try:
+            if not self.proposal_history:
+                return {"status": "no_proposals"}
+            recent = list(self.proposal_history)[-5:]
+            qualities = [float(p.get("quality", 0.5)) for p in recent]
+            analysis = {
+                "proposal_count": len(recent),
+                "avg_quality": float(np.mean(qualities)) if qualities else 0.5,
+                "quality_trend": "stable",
+                "diversity_score": 0.5,
+            }
+            if len(qualities) >= 3:
+                try:
+                    slope = float(np.polyfit(range(len(qualities)), qualities, 1)[0])
+                except Exception:
+                    slope = 0.0
+                analysis["quality_trend"] = "improving" if slope > 0.05 else "declining" if slope < -0.05 else "stable"
+            return analysis
+        except Exception:
+            return {"status": "analysis_error"}
+
+    # ────────────────────────────
+    # LEARNING LOOP
+    # ────────────────────────────
+    def update_weights(self, reward: float) -> None:
+        """Enhanced REINFORCE weight update with comprehensive tracking."""
+        if self.last_alpha is None:
+            return
+        try:
+            # Baseline & advantage
+            self._baseline = float(self._baseline_beta * self._baseline + (1 - self._baseline_beta) * reward)
+            advantage = float(reward - self._baseline)
+
+            rm = self.market_adaptation["regime_multipliers"].get(self.market_regime, {})
+            effective_lr = float(self.adapt_rate * rm.get("confidence_boost", 1.0))
+
+            grad = advantage * (self.last_alpha - self.weights)
+            old = self.weights.copy()
+            self.weights = self._normalize_weights(np.maximum(self.weights + effective_lr * grad, 0.01))
+
+            # Learning telemetry
+            change = float(np.linalg.norm(self.weights - old))
+            self.learning_history.append(
+                {
+                    "timestamp": dt.datetime.now().isoformat(),
+                    "reward": float(reward),
+                    "advantage": float(advantage),
+                    "baseline": float(self._baseline),
+                    "weight_change": change,
+                    "regime": self.market_regime,
+                }
+            )
+            if change > 0.05:
+                self.arbiter_stats["weight_adaptations"] += 1
+                self.logger.info(
+                    format_operator_message(
+                        icon="[BALANCE]",
+                        message="Significant weight adaptation",
+                        reward=f"{reward:+.3f}",
+                        advantage=f"{advantage:+.3f}",
+                        change=f"{change:.3f}",
+                        regime=self.market_regime,
+                    )
+                )
+            if reward > 0:
+                self.arbiter_stats["successful_decisions"] += 1
+
+            # Perf metrics
+            self._update_performance_metric("weight_adaptation_magnitude", change)
+            self._update_performance_metric("learning_advantage", advantage)
+            self._update_performance_metric("baseline_estimate", float(self._baseline))
+        except Exception as e:
+            ctx = self.error_pinpointer.analyze_error(e, "weight_update")
+            self.logger.error(f"Weight update failed: {ctx}")
+
+    def _update_performance_metric(self, metric_name: str, value: float) -> None:
+        try:
+            if hasattr(self, "performance_tracker") and self.performance_tracker:
+                self.performance_tracker.record_metric("StrategyArbiter", metric_name, float(value), True)
+            if not hasattr(self, "_metric_history"):
+                self._metric_history = defaultdict(lambda: deque(maxlen=100))
+            self._metric_history[metric_name].append({"timestamp": dt.datetime.now().isoformat(), "value": float(value)})
+        except Exception as e:
+            if hasattr(self, "logger"):
+                self.logger.warning(f"Performance metric update failed for {metric_name}: {e}")
+
+    # ────────────────────────────
+    # HEALTH & ERRORS
+    # ────────────────────────────
+    def get_health_status(self) -> Dict[str, Any]:
+        return {
+            "module_name": "StrategyArbiter",
+            "status": "disabled" if self.is_disabled else "healthy",
+            "metrics": self._get_health_metrics(),
+            "alerts": self._generate_health_alerts(),
+            "recommendations": self._generate_health_recommendations(),
         }
 
     def _generate_health_alerts(self) -> List[Dict[str, Any]]:
-        """Generate health-related alerts"""
-        alerts = []
-        
+        alerts: List[Dict[str, Any]] = []
         if self.is_disabled:
-            alerts.append({
-                'severity': 'critical',
-                'message': 'StrategyArbiter disabled due to errors',
-                'action': 'Investigate error logs and restart module'
-            })
-        
+            alerts.append(
+                {"severity": "critical", "message": "StrategyArbiter disabled due to errors", "action": "Inspect logs and restart"}
+            )
         if self.error_count > 2:
-            alerts.append({
-                'severity': 'warning',
-                'message': f'High error count: {self.error_count}',
-                'action': 'Monitor for recurring issues'
-            })
-        
-        # Gate effectiveness alerts
+            alerts.append({"severity": "warning", "message": f"Elevated error count: {self.error_count}", "action": "Monitor stability"})
         gate_rate = self._gate_passes / max(self._gate_attempts, 1)
         if gate_rate < 0.2:
-            alerts.append({
-                'severity': 'warning',
-                'message': f'Very low gate pass rate: {gate_rate:.1%}',
-                'action': 'Review gate criteria and thresholds'
-            })
+            alerts.append({"severity": "warning", "message": f"Very low gate pass rate: {gate_rate:.1%}", "action": "Review gate criteria"})
         elif gate_rate > 0.9:
-            alerts.append({
-                'severity': 'info',
-                'message': f'Very high gate pass rate: {gate_rate:.1%}',
-                'action': 'Consider tightening gate criteria for better risk management'
-            })
-        
-        # Learning alerts
-        learning_efficiency = self.voting_quality.get('learning_efficiency', 0.5)
+            alerts.append({"severity": "info", "message": f"Very high gate pass rate: {gate_rate:.1%}", "action": "Tighten criteria"})
+        learning_efficiency = self.voting_quality.get("learning_efficiency", 0.5)
         if learning_efficiency < 0.3:
-            alerts.append({
-                'severity': 'warning',
-                'message': f'Poor learning efficiency: {learning_efficiency:.1%}',
-                'action': 'Review reward signals and learning parameters'
-            })
-        
-        # Member coordination alerts
-        member_diversity = self.voting_quality.get('member_diversity', 0.5)
+            alerts.append(
+                {"severity": "warning", "message": f"Poor learning efficiency: {learning_efficiency:.1%}", "action": "Review rewards & LR"}
+            )
+        member_diversity = self.voting_quality.get("member_diversity", 0.5)
         if member_diversity < 0.2:
-            alerts.append({
-                'severity': 'info',
-                'message': f'Low member diversity: {member_diversity:.1%}',
-                'action': 'Encourage member specialization'
-            })
-        
+            alerts.append({"severity": "info", "message": f"Low member diversity: {member_diversity:.1%}", "action": "Encourage specialization"})
         return alerts
 
     def _generate_health_recommendations(self) -> List[str]:
-        """Generate health-related recommendations"""
-        recommendations = []
-        
+        recs: List[str] = []
         if self.is_disabled:
-            recommendations.append("Restart StrategyArbiter module after investigating errors")
-        
+            recs.append("Restart StrategyArbiter module after investigating errors")
         if self._step_count < self.bootstrap_steps:
-            remaining = self.bootstrap_steps - self._step_count
-            recommendations.append(f"Bootstrap mode: {remaining} steps remaining for learning stabilization")
-        
-        # Gate recommendations
+            recs.append(f"Bootstrap: {self.bootstrap_steps - self._step_count} steps to stabilization")
         gate_rate = self._gate_passes / max(self._gate_attempts, 1)
         if gate_rate < 0.3:
-            recommendations.append("Gate too restrictive - consider loosening criteria")
+            recs.append("Gate too restrictive — consider loosening criteria")
         elif gate_rate > 0.8:
-            recommendations.append("Gate too permissive - consider tightening criteria")
-        
-        # Learning recommendations
-        if len(self.learning_history) < 10:
-            recommendations.append("Insufficient learning history - continue operations to establish patterns")
-        
-        learning_trend = self._calculate_learning_trend()
-        if learning_trend == 'declining':
-            recommendations.append("Learning performance declining - review reward signals")
-        
-        # Weight adaptation recommendations
-        adaptation_rate = self.arbiter_stats.get('weight_adaptations', 0) / max(self._step_count, 1)
+            recs.append("Gate too permissive — consider tightening criteria")
+        if len(getattr(self, "learning_history", [])) < 10:
+            recs.append("Limited learning history — continue operations to build patterns")
+        if self._calculate_learning_trend() == "declining":
+            recs.append("Learning trend declining — review reward signal quality")
+        adaptation_rate = self.arbiter_stats.get("weight_adaptations", 0) / max(self._step_count, 1)
         if adaptation_rate > 0.2:
-            recommendations.append("High weight adaptation frequency - ensure stability")
+            recs.append("High weight adaptation frequency — ensure stability")
         elif adaptation_rate < 0.05 and self._step_count > self.bootstrap_steps:
-            recommendations.append("Low weight adaptation - consider increasing learning sensitivity")
-        
-        if not recommendations:
-            recommendations.append("StrategyArbiter operating within normal parameters")
-        
-        return recommendations
+            recs.append("Low weight adaptation — consider increasing sensitivity")
+        return recs or ["StrategyArbiter operating within normal parameters"]
 
     async def _handle_processing_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
-        """Handle processing errors with intelligent recovery"""
         self.error_count += 1
-        error_context = self.error_pinpointer.analyze_error(error, "StrategyArbiter")
-        
-        # Circuit breaker logic
+        ctx = self.error_pinpointer.analyze_error(error, "StrategyArbiter")
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
-            self.logger.error(format_operator_message(
-                icon="[ALERT]",
-                message="Strategy Arbiter disabled due to repeated errors",
-                error_count=self.error_count,
-                threshold=self.circuit_breaker_threshold
-            ))
-        
-        # Record error performance
-        processing_time = (time.time() - start_time) * 1000
-        self.performance_tracker.record_metric('StrategyArbiter', 'process_time', processing_time, False)
-        
+            self.logger.error(
+                format_operator_message(
+                    icon="[ALERT]",
+                    message="Strategy Arbiter disabled due to repeated errors",
+                    error_count=self.error_count,
+                    threshold=self.circuit_breaker_threshold,
+                )
+            )
+        self.performance_tracker.record_metric(
+            "StrategyArbiter", "process_time_ms", (time.time() - start_time) * 1000.0, False
+        )
         return {
-            'blended_action': [],
-            'alpha_weights': [],
-            'member_weights': self.weights.tolist(),
-            'gate_decision': {'decision': 'error', 'error_context': str(error_context)},
-            'voting_quality': {'error': str(error_context)},
-            'member_performance': {},
-            'decision_statistics': {'error': str(error_context)},
-            'proposal_analysis': {'error': str(error_context)},
-            'arbiter_recommendations': ["Investigate strategy arbiter errors"],
-            'health_metrics': {'status': 'error', 'error_context': str(error_context)}
+            "blended_action": [],
+            "alpha_weights": [],
+            "member_weights": self.weights.tolist(),
+            "gate_decision": {"decision": "error", "error_context": str(ctx)},
+            "voting_quality": {"error": str(ctx)},
+            "member_performance": {},
+            "decision_statistics": {"error": str(ctx)},
+            "proposal_analysis": {"error": str(ctx)},
+            "arbiter_recommendations": ["Investigate strategy arbiter errors"],
+            "health_metrics": {"status": "error", "error_context": str(ctx)},
+            "instrument_signals": {},
+            "_thesis": f"StrategyArbiter error: {ctx}",
         }
 
     def _get_safe_market_defaults(self) -> Dict[str, Any]:
-        """Get safe defaults when market data retrieval fails"""
         return {
-            'market_context': {}, 'recent_trades': [], 'current_positions': [],
-            'member_proposals': [], 'member_confidences': [], 'consensus_score': 0.5,
-            'collusion_score': 0.0, 'horizon_alignment': {}, 'volatility_data': {},
-            'market_regime': 'unknown', 'session_data': {}
+            "market_context": {},
+            "recent_trades": [],
+            "current_positions": [],
+            "member_proposals": [],
+            "member_confidences": [],
+            "consensus_score": 0.5,
+            "collusion_score": 0.0,
+            "horizon_alignment": {},
+            "volatility_data": {},
+            "market_regime": "unknown",
+            "session_data": {},
         }
 
     def _generate_disabled_response(self) -> Dict[str, Any]:
-        """Generate response when module is disabled"""
         return {
-            'blended_action': [],
-            'alpha_weights': [],
-            'member_weights': self.weights.tolist(),
-            'gate_decision': {'decision': 'disabled'},
-            'voting_quality': {'status': 'disabled'},
-            'member_performance': {},
-            'decision_statistics': {'status': 'disabled'},
-            'proposal_analysis': {'status': 'disabled'},
-            'arbiter_recommendations': ["Restart strategy arbiter system"],
-            'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'}
+            "blended_action": [],
+            "alpha_weights": [],
+            "member_weights": self.weights.tolist(),
+            "gate_decision": {"decision": "disabled"},
+            "voting_quality": {"status": "disabled"},
+            "member_performance": {},
+            "decision_statistics": {"status": "disabled"},
+            "proposal_analysis": {"status": "disabled"},
+            "arbiter_recommendations": ["Restart strategy arbiter system"],
+            "health_metrics": {"status": "disabled", "reason": "circuit_breaker_triggered"},
+            "instrument_signals": {},
+            "_thesis": "StrategyArbiter disabled due to circuit breaker",
         }
 
-    # ═══════════════════════════════════════════════════════════════════
-    # STATE MANAGEMENT AND HOT-RELOAD SUPPORT
-    # ═══════════════════════════════════════════════════════════════════
-
+    # ────────────────────────────
+    # STATE / HOT-RELOAD
+    # ────────────────────────────
     def get_state(self) -> Dict[str, Any]:
-        """Get complete state for hot-reload and persistence"""
         return {
-            'module_info': {
-                'name': 'StrategyArbiter',
-                'version': '3.0.0',
-                'last_updated': datetime.datetime.now().isoformat()
+            "module_info": {"name": "StrategyArbiter", "version": "3.1.0", "last_updated": dt.datetime.now().isoformat()},
+            "configuration": {
+                "action_dim": int(self.action_dim),
+                "adapt_rate": float(self.adapt_rate),
+                "min_confidence": float(self.min_confidence),
+                "bootstrap_steps": int(self.bootstrap_steps),
+                "debug": bool(self.debug),
             },
-            'configuration': {
-                'action_dim': self.action_dim,
-                'adapt_rate': self.adapt_rate,
-                'min_confidence': self.min_confidence,
-                'bootstrap_steps': self.bootstrap_steps,
-                'debug': self.debug
+            "arbitration_state": {
+                "weights": self.weights.tolist(),
+                "last_alpha": self.last_alpha.tolist() if self.last_alpha is not None else None,
+                "baseline": float(self._baseline),
+                "step_count": int(self._step_count),
+                "gate_passes": int(self._gate_passes),
+                "gate_attempts": int(self._gate_attempts),
             },
-            'arbitration_state': {
-                'weights': self.weights.tolist(),
-                'last_alpha': self.last_alpha.tolist() if self.last_alpha is not None else None,
-                'baseline': self._baseline,
-                'step_count': self._step_count,
-                'gate_passes': self._gate_passes,
-                'gate_attempts': self._gate_attempts
+            "market_state": {
+                "curr_vol": float(self.curr_vol),
+                "market_regime": str(self.market_regime),
+                "market_session": str(self.market_session),
+                "market_context": dict(self.market_context),
             },
-            'market_state': {
-                'curr_vol': self.curr_vol,
-                'market_regime': self.market_regime,
-                'market_session': self.market_session,
-                'market_context': self.market_context.copy()
+            "intelligence_state": {
+                "decision_intelligence": dict(self.decision_intelligence),
+                "gate_intelligence": dict(self.gate_intelligence),
+                "market_adaptation": dict(self.market_adaptation),
+                "voting_quality": dict(self.voting_quality),
             },
-            'intelligence_state': {
-                'decision_intelligence': self.decision_intelligence.copy(),
-                'gate_intelligence': self.gate_intelligence.copy(),
-                'market_adaptation': self.market_adaptation.copy(),
-                'voting_quality': self.voting_quality.copy()
+            "performance_state": {
+                "member_performance": {
+                    k: {
+                        "contribution_score": float(v.get("contribution_score", 0.5)),
+                        "reliability_index": float(v.get("reliability_index", 0.5)),
+                        "specialization_score": float(v.get("specialization_score", 0.5)),
+                        "avg_confidence": float(v.get("avg_confidence", 0.5)),
+                        "proposals_made": int(v.get("proposals_made", 0)),
+                        "quality_scores": [],  # keep small; consumers shouldn't restore long deques
+                    }
+                    for k, v in self.member_performance.items()
+                },
+                "arbiter_stats": dict(self.arbiter_stats),
             },
-            'performance_state': {
-                'member_performance': {k: {
-                    'contribution_score': v.get('contribution_score', 0.5),
-                    'reliability_index': v.get('reliability_index', 0.5),
-                    'specialization_score': v.get('specialization_score', 0.5),
-                    'avg_confidence': v.get('avg_confidence', 0.5),
-                    'proposals_made': v.get('proposals_made', 0),
-                    'quality_scores': []  # Simplified to avoid type issues
-                } for k, v in self.member_performance.items()},
-                'arbiter_stats': self.arbiter_stats.copy()
+            "history_state": {
+                "decision_history": list(self.decision_history)[-50:],
+                "learning_history": list(self.learning_history)[-30:],
+                "gate_decisions": list(self.gate_decisions)[-20:],
+                "proposal_history": list(self.proposal_history)[-20:],
+                "trace": self._trace[-20:] if self._trace else [],
             },
-            'history_state': {
-                'decision_history': list(self.decision_history)[-50:],
-                'learning_history': list(self.learning_history)[-30:],
-                'gate_decisions': list(self.gate_decisions)[-20:],
-                'proposal_history': list(self.proposal_history)[-20:],
-                'trace': self._trace[-20:] if self._trace else []
-            },
-            'error_state': {
-                'error_count': self.error_count,
-                'is_disabled': self.is_disabled
-            },
-            'performance_metrics': self.get_health_metrics()
+            "error_state": {"error_count": int(self.error_count), "is_disabled": bool(self.is_disabled)},
+            "performance_metrics": self.get_health_metrics(),
         }
 
     def set_state(self, state: Dict[str, Any]) -> None:
-        """Set state for hot-reload and persistence"""
         try:
-            # Load configuration
-            config = state.get("configuration", {})
-            self.action_dim = int(config.get("action_dim", self.action_dim))
-            self.adapt_rate = float(config.get("adapt_rate", self.adapt_rate))
-            self.min_confidence = float(config.get("min_confidence", self.min_confidence))
-            self.bootstrap_steps = int(config.get("bootstrap_steps", self.bootstrap_steps))
-            self.debug = bool(config.get("debug", self.debug))
-            
-            # Load arbitration state
-            arbitration_state = state.get("arbitration_state", {})
-            weights = arbitration_state.get("weights", self.weights.tolist())
-            self.weights = np.array(weights, dtype=np.float32)
-            
-            last_alpha = arbitration_state.get("last_alpha")
-            if last_alpha:
-                self.last_alpha = np.array(last_alpha, dtype=np.float32)
-            
-            self._baseline = float(arbitration_state.get("baseline", 0.0))
-            self._step_count = int(arbitration_state.get("step_count", 0))
-            self._gate_passes = int(arbitration_state.get("gate_passes", 0))
-            self._gate_attempts = int(arbitration_state.get("gate_attempts", 0))
-            
-            # Load market state
-            market_state = state.get("market_state", {})
-            self.curr_vol = float(market_state.get("curr_vol", 0.01))
-            self.market_regime = market_state.get("market_regime", "unknown")
-            self.market_session = market_state.get("market_session", "unknown")
-            self.market_context = market_state.get("market_context", {})
-            
-            # Load intelligence state
-            intelligence_state = state.get("intelligence_state", {})
-            self.decision_intelligence.update(intelligence_state.get("decision_intelligence", {}))
-            self.gate_intelligence.update(intelligence_state.get("gate_intelligence", {}))
-            self.market_adaptation.update(intelligence_state.get("market_adaptation", {}))
-            self.voting_quality.update(intelligence_state.get("voting_quality", {}))
-            
-            # Load performance state
-            performance_state = state.get("performance_state", {})
-            member_performance_data = performance_state.get("member_performance", {})
+            cfg = state.get("configuration", {})
+            self.action_dim = int(cfg.get("action_dim", self.action_dim))
+            self.adapt_rate = float(cfg.get("adapt_rate", self.adapt_rate))
+            self.min_confidence = float(cfg.get("min_confidence", self.min_confidence))
+            self.bootstrap_steps = int(cfg.get("bootstrap_steps", self.bootstrap_steps))
+            self.debug = bool(cfg.get("debug", self.debug))
+
+            arb = state.get("arbitration_state", {})
+            self.weights = np.asarray(arb.get("weights", self.weights.tolist()), dtype=np.float32)
+            la = arb.get("last_alpha")
+            if la is not None:
+                self.last_alpha = np.asarray(la, dtype=np.float32)
+            self._baseline = float(arb.get("baseline", self._baseline))
+            self._step_count = int(arb.get("step_count", self._step_count))
+            self._gate_passes = int(arb.get("gate_passes", self._gate_passes))
+            self._gate_attempts = int(arb.get("gate_attempts", self._gate_attempts))
+
+            mkt = state.get("market_state", {})
+            self.curr_vol = float(mkt.get("curr_vol", self.curr_vol))
+            self.market_regime = str(mkt.get("market_regime", self.market_regime))
+            self.market_session = str(mkt.get("market_session", self.market_session))
+            self.market_context = dict(mkt.get("market_context", self.market_context))
+
+            intel = state.get("intelligence_state", {})
+            self.decision_intelligence.update(intel.get("decision_intelligence", {}))
+            self.gate_intelligence.update(intel.get("gate_intelligence", {}))
+            self.market_adaptation.update(intel.get("market_adaptation", {}))
+            self.voting_quality.update(intel.get("voting_quality", {}))
+
+            perf = state.get("performance_state", {})
+            mp = perf.get("member_performance", {})
             self.member_performance.clear()
-            for member_id, perf_data in member_performance_data.items():
-                member_idx = int(member_id)
-                # Use regular dict instead of defaultdict to avoid type conflicts
-                restored_perf = {
-                    'proposals_made': perf_data.get('proposals_made', 0),
-                    'successful_proposals': perf_data.get('successful_proposals', 0),
-                    'avg_confidence': perf_data.get('avg_confidence', 0.5),
-                    'contribution_score': perf_data.get('contribution_score', 0.5),
-                    'reliability_index': perf_data.get('reliability_index', 0.5),
-                    'specialization_score': perf_data.get('specialization_score', 0.5),
-                    'recent_performance': deque(maxlen=20),
-                    'weight_evolution': deque(maxlen=50),
-                    'quality_scores': deque(perf_data.get('quality_scores', []), maxlen=30)
+            for k, v in mp.items():
+                idx = int(k)
+                self.member_performance[idx] = {
+                    "proposals_made": int(v.get("proposals_made", 0)),
+                    "successful_proposals": int(v.get("successful_proposals", 0)),
+                    "avg_confidence": float(v.get("avg_confidence", 0.5)),
+                    "contribution_score": float(v.get("contribution_score", 0.5)),
+                    "reliability_index": float(v.get("reliability_index", 0.5)),
+                    "specialization_score": float(v.get("specialization_score", 0.5)),
+                    "recent_performance": deque(maxlen=20),
+                    "weight_evolution": deque(maxlen=50),
+                    "quality_scores": deque(v.get("quality_scores", []), maxlen=30),
                 }
-                self.member_performance[member_idx] = restored_perf
-            
-            self.arbiter_stats.update(performance_state.get("arbiter_stats", {}))
-            
-            # Load history state
-            history_state = state.get("history_state", {})
-            
-            # Load decision history
-            self.decision_history.clear()
-            for entry in history_state.get("decision_history", []):
-                self.decision_history.append(entry)
-            
-            # Load learning history
-            self.learning_history.clear()
-            for entry in history_state.get("learning_history", []):
-                self.learning_history.append(entry)
-            
-            # Load gate decisions
-            self.gate_decisions.clear()
-            for entry in history_state.get("gate_decisions", []):
-                self.gate_decisions.append(entry)
-            
-            # Load proposal history
-            self.proposal_history.clear()
-            for entry in history_state.get("proposal_history", []):
-                self.proposal_history.append(entry)
-            
-            # Load trace
-            self._trace = history_state.get("trace", [])
-            
-            # Load error state
-            error_state = state.get("error_state", {})
-            self.error_count = error_state.get("error_count", 0)
-            self.is_disabled = error_state.get("is_disabled", False)
-            
-            self.logger.info(format_operator_message(
-                icon="[RELOAD]",
-                message="Strategy Arbiter state restored",
-                members=len(self.members),
-                action_dim=self.action_dim,
-                step_count=self._step_count,
-                total_decisions=self.arbiter_stats.get('total_decisions', 0)
-            ))
-            
+
+            self.arbiter_stats.update(perf.get("arbiter_stats", {}))
+
+            hist = state.get("history_state", {})
+            self.decision_history = deque(hist.get("decision_history", []), maxlen=200)
+            self.learning_history = deque(hist.get("learning_history", []), maxlen=100)
+            self.gate_decisions = deque(hist.get("gate_decisions", []), maxlen=150)
+            self.proposal_history = deque(hist.get("proposal_history", []), maxlen=100)
+            self._trace = list(hist.get("trace", []))
+
+            err = state.get("error_state", {})
+            self.error_count = int(err.get("error_count", self.error_count))
+            self.is_disabled = bool(err.get("is_disabled", self.is_disabled))
+
+            self.logger.info(
+                format_operator_message(
+                    icon="[RELOAD]",
+                    message="Strategy Arbiter state restored",
+                    members=len(self.members),
+                    action_dim=self.action_dim,
+                    step_count=self._step_count,
+                    total_decisions=self.arbiter_stats.get("total_decisions", 0),
+                )
+            )
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "state_restoration")
-            self.logger.error(f"State restoration failed: {error_context}")
+            ctx = self.error_pinpointer.analyze_error(e, "state_restoration")
+            self.logger.error(f"State restoration failed: {ctx}")
 
-    # ═══════════════════════════════════════════════════════════════════
-    # RESET AND CLEANUP METHODS
-    # ═══════════════════════════════════════════════════════════════════
-
+    # ────────────────────────────
+    # RESET & TEARDOWN
+    # ────────────────────────────
     def reset(self) -> None:
-        """Enhanced reset with comprehensive state cleanup"""
         super().reset()
-        
-        # Reset learning state
         self._baseline = 0.0
         self.last_alpha = None
-        
-        # Reset tracking
         self._gate_passes = 0
         self._gate_attempts = 0
         self._step_count = 0
-        
-        # Reset history
         self._trace.clear()
         self.decision_history.clear()
         self.proposal_history.clear()
         self.gate_decisions.clear()
         self.learning_history.clear()
-        
-        # Reset member tracking
         self.member_performance.clear()
-        
-        # Reset quality metrics
-        self.voting_quality = {
-            'avg_consensus': 0.5,
-            'collusion_risk': 0.0,
-            'gate_effectiveness': 0.5,
-            'member_diversity': 0.5,
-            'decision_confidence': 0.5,
-            'proposal_quality': 0.5,
-            'learning_efficiency': 0.5,
-            'adaptation_rate': 0.0
-        }
-        
-        # Reset statistics
+        self.voting_quality.update(
+            {
+                "avg_consensus": 0.5,
+                "collusion_risk": 0.0,
+                "gate_effectiveness": 0.5,
+                "member_diversity": 0.5,
+                "decision_confidence": 0.5,
+                "proposal_quality": 0.5,
+                "learning_efficiency": 0.5,
+                "adaptation_rate": 0.0,
+            }
+        )
         self.arbiter_stats = {
-            'total_decisions': 0,
-            'successful_decisions': 0,
-            'weight_adaptations': 0,
-            'consensus_failures': 0,
-            'collusion_detected': 0,
-            'gate_pass_rate': 0.0,
-            'avg_proposal_quality': 0.5,
-            'learning_convergence': 0.0,
-            'member_coordination': 0.5,
-            'decision_latency': 0.0,
-            'session_start': datetime.datetime.now().isoformat()
+            "total_decisions": 0,
+            "successful_decisions": 0,
+            "weight_adaptations": 0,
+            "consensus_failures": 0,
+            "collusion_detected": 0,
+            "gate_pass_rate": 0.0,
+            "avg_proposal_quality": 0.5,
+            "learning_convergence": 0.0,
+            "member_coordination": 0.5,
+            "decision_latency": 0.0,
+            "session_start": dt.datetime.now().isoformat(),
         }
-        
-        # Reset error state
         self.error_count = 0
         self.is_disabled = False
-        
-        self.logger.info(format_operator_message(
-            icon="[RELOAD]",
-            message="Strategy Arbiter reset completed",
-            status="All arbitration state cleared and systems reinitialized"
-        ))
+        self.logger.info(
+            format_operator_message(icon="[RELOAD]", message="Strategy Arbiter reset completed", status="All state cleared")
+        )
 
-    def __del__(self):
-        """Cleanup on destruction"""
+    def __del__(self) -> None:
         try:
-            if hasattr(self, 'logger') and self.logger:
-                self.logger.info(format_operator_message(
-                    icon="👋",
-                    message="Strategy Arbiter shutting down",
-                    total_decisions=self.arbiter_stats.get('total_decisions', 0),
-                    weight_adaptations=self.arbiter_stats.get('weight_adaptations', 0),
-                    gate_pass_rate=f"{(self._gate_passes / max(self._gate_attempts, 1)):.1%}"
-                ))
+            if hasattr(self, "logger") and self.logger:
+                self.logger.info(
+                    format_operator_message(
+                        icon="👋",
+                        message="Strategy Arbiter shutting down",
+                        total_decisions=self.arbiter_stats.get("total_decisions", 0),
+                        weight_adaptations=self.arbiter_stats.get("weight_adaptations", 0),
+                        gate_pass_rate=f"{(self._gate_passes / max(self._gate_attempts, 1)):.1%}",
+                    )
+                )
         except Exception:
-            pass  # Ignore cleanup errors
-
-    # ═══════════════════════════════════════════════════════════════════
-    # BASEMODULE ABSTRACT METHOD IMPLEMENTATIONS
-    # ═══════════════════════════════════════════════════════════════════
-
-    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
-        """Calculate confidence in strategy arbitration decisions"""
-        try:
-            # Base confidence from voting quality
-            voting_quality = self.voting_quality_metrics.get('overall_quality_score', 0.5)
-            
-            # Member performance consistency
-            member_consistency = self.member_analytics.get('performance_consistency', 0.5)
-            
-            # Market regime alignment
-            regime_alignment = self.regime_analytics.get('current_regime_fit', 0.5)
-            
-            # Recent gate decision success
-            recent_gate_success = self._gate_passes / max(self._gate_attempts, 1)
-            
-            # Consensus strength
-            consensus_strength = 1.0 - (np.std(self.weights) if len(self.weights) > 1 else 0.0)
-            
-            # Combine factors
-            confidence = (
-                voting_quality * 0.3 +
-                member_consistency * 0.25 +
-                regime_alignment * 0.2 +
-                recent_gate_success * 0.15 +
-                consensus_strength * 0.1
-            )
-            
-            # Ensure valid range
-            return float(max(0.1, min(0.95, float(confidence))))
-            
-        except Exception as e:
-            self.logger.warning(f"Confidence calculation failed: {e}")
-            return 0.4  # Conservative default
-
-    async def propose_action(self, **inputs) -> Dict[str, Any]:
-        """Propose arbitration action based on member coordination and market state"""
-        try:
-            # Get current market data
-            market_data = await self._get_comprehensive_market_data()
-            
-            # Analyze current arbitration state
-            voting_quality = self.voting_quality_metrics.get('overall_quality_score', 0.5)
-            member_coordination = self.coordination_analytics.get('coordination_effectiveness', 0.5)
-            
-            # Calculate blended proposal if members available
-            if len(self.members) > 0:
-                try:
-                    # Simple observation for demonstration
-                    obs = np.array([0.0, 0.0, 0.0, 0.0])  # Basic observation
-                    blended_proposal = self.propose(obs)
-                    proposal_strength = np.linalg.norm(blended_proposal)
-                except Exception:
-                    blended_proposal = np.array([0.0, 0.0, 0.0, 0.0])
-                    proposal_strength = 0.0
-            else:
-                blended_proposal = np.array([0.0, 0.0, 0.0, 0.0])
-                proposal_strength = 0.0
-            
-            # Determine action based on arbitration state
-            if voting_quality < 0.3:
-                action_type = 'rebalance_members'
-                signal_strength = 0.8
-                reasoning = f"Poor voting quality ({voting_quality:.3f}) requires member rebalancing"
-            elif member_coordination < 0.4:
-                action_type = 'improve_coordination'
-                signal_strength = 0.6
-                reasoning = f"Low member coordination ({member_coordination:.3f}) needs attention"
-            elif proposal_strength > 0.7:
-                action_type = 'execute_proposal'
-                signal_strength = min(float(proposal_strength), 0.9)
-                reasoning = f"Strong blended proposal (strength: {proposal_strength:.3f})"
-            else:
-                action_type = 'monitor'
-                signal_strength = 0.3
-                reasoning = f"Normal arbitration state - continue monitoring"
-            
-            return {
-                'action': action_type,
-                'signal_strength': signal_strength,
-                'reasoning': reasoning,
-                'arbitration_metrics': {
-                    'voting_quality': voting_quality,
-                    'member_coordination': member_coordination,
-                    'proposal_strength': proposal_strength,
-                    'member_count': len(self.members),
-                    'weight_distribution': self.weights.tolist() if hasattr(self.weights, 'tolist') else []
-                },
-                'blended_proposal': blended_proposal.tolist() if hasattr(blended_proposal, 'tolist') else [],
-                'confidence': await self.calculate_confidence({}, **inputs)
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Action proposal failed: {e}")
-            return {
-                'action': 'abstain',
-                'signal_strength': 0.0,
-                'reasoning': f'Arbitration error: {str(e)}',
-                'confidence': 0.1
-            }
+            pass

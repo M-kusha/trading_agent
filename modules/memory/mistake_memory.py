@@ -49,16 +49,23 @@ class MistakeConfig:
 
 @module(
     name="MistakeMemory",
-    version="3.0.0",
+    version="3.0.2",  # bump to reflect interface addition
     category="memory",
-    provides=["mistake_avoidance", "danger_zones", "pattern_recognition", "loss_prevention"],
-    requires=["trades", "features", "market_context", "risk_data"],
+    provides=[
+        "mistake_memory",        # summary for consumers expecting a single key
+        "mistake_avoidance",
+        "danger_zones",
+        "pattern_recognition",
+        "loss_prevention"
+    ],
+    requires=["trades", "features", "market_context"],  # removed 'risk_data' (now optional)
     description="Advanced mistake memory with clustering for loss avoidance and pattern recognition",
     thesis_required=True,
     health_monitoring=True,
     performance_tracking=True,
     error_handling=True
 )
+
 class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
     Advanced mistake memory with SmartInfoBus integration.
@@ -106,7 +113,7 @@ class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
             name="MistakeMemory", 
-            log_path="logs/mistake_memory.log", 
+            log_path="logs/memory/mistake_memory.log", 
             max_lines=3000, 
             operator_mode=True,
             plain_english=True
@@ -230,6 +237,19 @@ class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                 module='MistakeMemory',
                 thesis="Initial mistake memory and avoidance status"
             )
+
+            # Also publish a compact summary under the canonical key expected by consumers
+            self.smart_bus.set(
+                'mistake_memory',
+                {
+                    'current_score': 0.0,
+                    'consecutive_losses': 0,
+                    'avoidance_signal': 0.0,
+                    'last_updated': time.time()
+                },
+                module='MistakeMemory',
+                thesis="Initial mistake memory summary for consumers"
+            )
             
         except Exception as e:
             self.logger.error(f"Initialization failed: {e}")
@@ -267,7 +287,20 @@ class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
             self._record_success(processing_time)
             
             # Conform to provides contract
+            # Provide compact summary under canonical key expected by consumers
+            try:
+                current_score = float(np.clip(abs(self._avoidance_signal), 0.0, 1.0))
+            except Exception:
+                current_score = 0.0
+            mistake_summary = {
+                'current_score': current_score,
+                'consecutive_losses': self._consecutive_losses,
+                'avoidance_signal': float(self._avoidance_signal),
+                'last_updated': time.time()
+            }
+
             provides_payload = {
+                'mistake_memory': mistake_summary,
                 'mistake_avoidance': {
                     'avoidance_signal': self._avoidance_signal,
                     'consecutive_losses': self._consecutive_losses,
@@ -305,35 +338,33 @@ class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
             return await self._handle_mistake_error(e, start_time)
 
     async def _extract_learning_data(self, **inputs) -> Optional[Dict[str, Any]]:
-        """Extract learning data from SmartInfoBus"""
+        """Extract learning data from SmartInfoBus (risk input optional; prefer time_risk_analysis)."""
         try:
-            # Get trades data
             trades = self.smart_bus.get('trades', 'MistakeMemory') or []
-            
-            # Get features
             features = self.smart_bus.get('features', 'MistakeMemory')
-            
-            # Get market context
             market_context = self.smart_bus.get('market_context', 'MistakeMemory') or {}
-            
-            # Get risk data
-            risk_data = self.smart_bus.get('risk_data', 'MistakeMemory') or {}
-            
-            # Get current features if provided
+
+            # Prefer richer time-aware risk; fall back to legacy 'risk_data' if present.
+            risk_data = (
+                self.smart_bus.get('time_risk_analysis', 'MistakeMemory')  # canonical
+                or self.smart_bus.get('risk_data', 'MistakeMemory')        # legacy/compat from risk module
+                or {}
+            )
+
             current_features = inputs.get('features', features)
-            
+
             return {
                 'trades': trades,
                 'features': features,
                 'current_features': current_features,
                 'market_context': market_context,
-                'risk_data': risk_data,
+                'risk_data': risk_data,  # optional downstream
                 'timestamp': datetime.now().isoformat()
             }
-            
         except Exception as e:
             self.logger.error(f"Failed to extract learning data: {e}")
             return None
+
 
     async def _process_learning_data(self, learning_data: Dict[str, Any]) -> Dict[str, Any]:
         """Process learning data from trades"""
@@ -862,6 +893,27 @@ class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                 module='MistakeMemory',
                 thesis="Loss prevention effectiveness and learning metrics"
             )
+
+            # Provide a compact, canonical summary for consumers expecting 'mistake_memory'
+            # Use absolute avoidance signal magnitude as a [0,1]-bounded score
+            try:
+                current_score = float(np.clip(abs(self._avoidance_signal), 0.0, 1.0))
+            except Exception:
+                current_score = 0.0
+
+            mistake_summary = {
+                'current_score': current_score,
+                'consecutive_losses': self._consecutive_losses,
+                'avoidance_signal': float(self._avoidance_signal),
+                'last_updated': time.time()
+            }
+
+            self.smart_bus.set(
+                'mistake_memory',
+                mistake_summary,
+                module='MistakeMemory',
+                thesis="Summary score and basics for mistake memory consumers"
+            )
             
         except Exception as e:
             self.logger.error(f"Failed to update SmartInfoBus: {e}")
@@ -871,12 +923,25 @@ class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         self.logger.warning("No learning data available - using cached mistake memory")
         
         thesis = "No learning data available – serving cached mistake memory state"
+        # Summary for canonical key
+        try:
+            current_score = float(np.clip(abs(self._avoidance_signal), 0.0, 1.0))
+        except Exception:
+            current_score = 0.0
+        mistake_summary = {
+            'current_score': current_score,
+            'consecutive_losses': self._consecutive_losses,
+            'avoidance_signal': float(self._avoidance_signal),
+            'last_updated': time.time()
+        }
+
         return {
             'avoidance_signal': self._avoidance_signal,
             'total_loss_memories': len(self._loss_buf),
             'total_win_memories': len(self._win_buf),
             'consecutive_losses': self._consecutive_losses,
             'fallback_reason': 'no_learning_data',
+            'mistake_memory': mistake_summary,
             'mistake_avoidance': {
                 'avoidance_signal': self._avoidance_signal,
                 'consecutive_losses': self._consecutive_losses,

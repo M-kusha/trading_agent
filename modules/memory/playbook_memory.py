@@ -51,9 +51,9 @@ class PlaybookConfig:
 
 @module(
     name="PlaybookMemory",
-    version="3.0.0",
+    version="3.0.1",  # bump
     category="memory",
-    provides=["playbook_recall", "pattern_memory", "sequence_quality", "memory_analytics"],
+    provides=["playbook_recall", "pattern_memory", "playbook_quality", "memory_analytics"],  # changed here
     requires=["trades", "actions", "market_data", "prices"],
     description="Advanced playbook memory with context-aware pattern recognition and SmartInfoBus integration",
     thesis_required=True,
@@ -61,6 +61,7 @@ class PlaybookConfig:
     performance_tracking=True,
     error_handling=True
 )
+
 class PlaybookMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
     Advanced playbook memory system with SmartInfoBus integration.
@@ -260,7 +261,45 @@ class PlaybookMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin
             # Record success
             processing_time = (time.time() - start_time) * 1000
             self._record_success(processing_time)
-            
+
+            # Conform to provides contract in return
+            recall_data = {
+                'memory_entries': len(self._features),
+                'patterns_identified': len(self._pattern_effectiveness),
+                'recall_efficiency': self._recall_efficiency,
+                'prediction_accuracy': self._prediction_accuracy,
+                'last_recall': self._recall_history[-1] if self._recall_history else None
+            }
+            pattern_data = {
+                'total_patterns': len(self._pattern_effectiveness),
+                'pattern_effectiveness': dict(list(self._pattern_effectiveness.items())[:50]),
+                'pattern_diversity': self._pattern_diversity,
+                'top_pattern': max(self._pattern_effectiveness.items(), key=lambda x: x[1]['total_pnl'])[0]
+                            if self._pattern_effectiveness else None
+            }
+            quality_data = {
+                'memory_utilization': memory_result.get('memory_utilization', 0.0),
+                'quality_score': self._memory_quality_score,
+                'models_fitted': memory_result.get('models_fitted', False),
+                'adaptive_k': self._adaptive_params.get('dynamic_k', self.genome["k"])
+            }
+            analytics_data = {
+                'total_recalls': len(self._recall_history),
+                'recent_performance': (
+                    float(np.mean([r['confidence'] for r in list(self._recall_history)[-5:]]))
+                    if len(self._recall_history) >= 5 else 0.0
+                ),
+                'memory_health': self._health_status,
+                'circuit_breaker_state': self.circuit_breaker['state']
+            }
+            memory_result.update({
+                'playbook_recall': recall_data,
+                'pattern_memory': pattern_data,
+                'playbook_quality': quality_data,
+                'memory_analytics': analytics_data,
+                '_thesis': thesis
+            })
+
             return memory_result
             
         except Exception as e:
@@ -626,81 +665,111 @@ class PlaybookMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin
             return f"Memory thesis generation failed: {str(e)} - Pattern learning continuing"
 
     async def _update_memory_smart_bus(self, memory_result: Dict[str, Any], thesis: str):
-        """Update SmartInfoBus with memory results"""
+        """Update SmartInfoBus with playbook memory outputs (no 'sequence_quality' here)."""
         try:
-            # Playbook recall data
+            # Playbook recall status (same key as before)
             recall_data = {
                 'memory_entries': len(self._features),
-                'memory_quality': self._memory_quality_score,
-                'prediction_accuracy': self._prediction_accuracy,
+                'patterns_identified': len(self._pattern_effectiveness),
                 'recall_efficiency': self._recall_efficiency,
-                'last_recall': memory_result.get('expected_pnl', 0.0) if memory_result.get('recall_performed') else None
+                'prediction_accuracy': self._prediction_accuracy,
+                'last_recall': self._recall_history[-1] if self._recall_history else None
             }
-            
             self.smart_bus.set(
                 'playbook_recall',
                 recall_data,
                 module='PlaybookMemory',
-                thesis=thesis
+                thesis=f"Playbook recall across {len(self._features)} entries"
             )
-            
-            # Pattern memory
+
+            # Pattern memory snapshot (same key as before)
             pattern_data = {
                 'total_patterns': len(self._pattern_effectiveness),
-                'profitable_patterns': sum(1 for p in self._pattern_effectiveness.values() if p['total_pnl'] > 0),
+                'pattern_effectiveness': dict(list(self._pattern_effectiveness.items())[:50]),
                 'pattern_diversity': self._pattern_diversity,
-                'best_pattern': max(self._pattern_effectiveness.items(), 
-                                  key=lambda x: x[1]['total_pnl'])[0] if self._pattern_effectiveness else None
+                'top_pattern': max(self._pattern_effectiveness.items(), key=lambda x: x[1]['total_pnl'])[0]
+                            if self._pattern_effectiveness else None
             }
-            
             self.smart_bus.set(
                 'pattern_memory',
                 pattern_data,
                 module='PlaybookMemory',
                 thesis=f"Pattern memory: {pattern_data['total_patterns']} patterns identified"
             )
-            
-            # Sequence quality
+
+            # NEW: Playbook-specific quality (replaces the conflicting 'sequence_quality')
             quality_data = {
                 'memory_utilization': memory_result.get('memory_utilization', 0.0),
                 'quality_score': self._memory_quality_score,
                 'models_fitted': memory_result.get('models_fitted', False),
-                'adaptive_k': self._adaptive_params['dynamic_k']
+                'adaptive_k': self._adaptive_params.get('dynamic_k', self.genome["k"])
             }
-            
             self.smart_bus.set(
-                'sequence_quality',
+                'playbook_quality',
                 quality_data,
                 module='PlaybookMemory',
-                thesis="Memory sequence quality and model fitness assessment"
+                thesis="Playbook memory quality and model fitness"
             )
-            
-            # Memory analytics
+
+            # Analytics / health (unchanged semantics)
             analytics_data = {
                 'total_recalls': len(self._recall_history),
-                'recent_performance': np.mean([r['confidence'] for r in list(self._recall_history)[-5:]]) if len(self._recall_history) >= 5 else 0.0,
+                'recent_performance': (
+                    float(np.mean([r['confidence'] for r in list(self._recall_history)[-5:]]))
+                    if len(self._recall_history) >= 5 else 0.0
+                ),
                 'memory_health': self._health_status,
                 'circuit_breaker_state': self.circuit_breaker['state']
             }
-            
             self.smart_bus.set(
                 'memory_analytics',
                 analytics_data,
                 module='PlaybookMemory',
                 thesis="Memory analytics and system health monitoring"
             )
-            
+
         except Exception as e:
             self.logger.error(f"Failed to update SmartInfoBus: {e}")
 
     async def _handle_no_data_fallback(self) -> Dict[str, Any]:
-        """Handle case when no trade data is available"""
+        """Handle case when no trade data is available; include provides + _thesis."""
         self.logger.warning("No trade data available - using cached memory state")
-        
-        return {
-            'memory_size': len(self._features),
-            'memory_quality': self._memory_quality_score,
+        thesis = "No trade data available – serving cached playbook memory state"
+        recall_data = {
+            'memory_entries': len(self._features),
+            'patterns_identified': len(self._pattern_effectiveness),
+            'recall_efficiency': self._recall_efficiency,
+            'prediction_accuracy': self._prediction_accuracy,
+            'last_recall': self._recall_history[-1] if self._recall_history else None
+        }
+        pattern_data = {
             'total_patterns': len(self._pattern_effectiveness),
+            'pattern_effectiveness': dict(list(self._pattern_effectiveness.items())[:50]),
+            'pattern_diversity': self._pattern_diversity,
+            'top_pattern': max(self._pattern_effectiveness.items(), key=lambda x: x[1]['total_pnl'])[0]
+                        if self._pattern_effectiveness else None
+        }
+        quality_data = {
+            'memory_utilization': len(self._features) / self.genome["max_entries"],
+            'quality_score': self._memory_quality_score,
+            'models_fitted': self._nbrs is not None,
+            'adaptive_k': self._adaptive_params.get('dynamic_k', self.genome["k"])
+        }
+        analytics_data = {
+            'total_recalls': len(self._recall_history),
+            'recent_performance': (
+                float(np.mean([r['confidence'] for r in list(self._recall_history)[-5:]]))
+                if len(self._recall_history) >= 5 else 0.0
+            ),
+            'memory_health': self._health_status,
+            'circuit_breaker_state': self.circuit_breaker['state']
+        }
+        return {
+            'playbook_recall': recall_data,
+            'pattern_memory': pattern_data,
+            'playbook_quality': quality_data,
+            'memory_analytics': analytics_data,
+            '_thesis': thesis,
             'fallback_reason': 'no_trade_data'
         }
 

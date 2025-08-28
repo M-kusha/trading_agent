@@ -4,9 +4,12 @@
 # Advanced market simulation with SmartInfoBus integration and intelligent automation
 # ─────────────────────────────────────────────────────────────
 
+import os
 import asyncio
 import time
+import contextlib
 import threading
+import warnings
 import copy
 import numpy as np
 import torch
@@ -15,10 +18,12 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import datetime
 import random
-from typing import Any, Dict, Optional, List, Tuple, Union, cast
+from typing import Any, Dict, Optional, List, Tuple, Union, cast, TYPE_CHECKING
 from collections import deque, defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
+from threading import Event, Lock
+from contextlib import contextmanager
 
 from modules.core.module_base import BaseModule, module
 from modules.core.mixins import SmartInfoBusRiskMixin, SmartInfoBusStateMixin, SmartInfoBusTradingMixin
@@ -27,6 +32,14 @@ from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
+
+# Optional health monitor import (fallback stub if missing)
+try:
+    from modules.monitoring.health_monitor import HealthMonitor  # type: ignore
+except Exception:
+    class HealthMonitor:  # minimal no-op fallback
+        def record(self, name: str, status: str = "unknown", **kwargs):
+            pass
 
 
 class WorldModelMode(Enum):
@@ -84,22 +97,36 @@ class WorldModelConfig:
     min_training_quality: float = 0.7
     
     # Device and optimization
-    device: str = "cpu"
+    device: str = "auto"            # 'auto'|'cpu'|'cuda'|'mps'
     use_mixed_precision: bool = False
     compile_model: bool = False
+    deterministic: bool = False      # reproducibility
     
     # Monitoring parameters
     health_check_interval: int = 60
     performance_window: int = 100
     confidence_threshold: float = 0.5
 
+    # Persistence
+    save_dir: str = "artifacts/models/world_model"
+
+    # Convenience helpers
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: getattr(self, k) for k in self.__dataclass_fields__.keys()}
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "WorldModelConfig":
+        defaults = {k: getattr(WorldModelConfig, k, None) for k in WorldModelConfig.__dataclass_fields__.keys()}
+        merged = {**defaults, **(d or {})}
+        return WorldModelConfig(**merged)
+
 
 @module(
     name="EnhancedWorldModel",
-    version="4.0.0",
+    version="4.1.0",  # bump
     category="models",
     provides=["market_predictions", "scenario_generation", "world_model_analytics", "prediction_confidence"],
-    requires=["market_data", "risk_data", "trading_data", "performance_data"],
+    requires=["market_data"],  # keep minimal; everything else is soft/optional
     description="Advanced world model for market simulation with intelligent adaptation and comprehensive analytics",
     thesis_required=True,
     health_monitoring=True,
@@ -112,14 +139,23 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
     Provides intelligent market predictions, scenario generation, and comprehensive analytics.
     """
 
+    # Help Pylance treat self.config like WorldModelConfig for attribute access during type checking
+    if TYPE_CHECKING:
+        config: WorldModelConfig
+
     def __init__(self, 
-                 config: Optional[WorldModelConfig] = None,
+                 config: Optional[Union[WorldModelConfig, Dict[str, Any]]] = None,
                  genome: Optional[Dict[str, Any]] = None,
                  action_dim: int = 12,
                  **kwargs):
         
         # Store parameters for use in _initialize()
-        self._init_config = config or WorldModelConfig()
+        if isinstance(config, dict):
+            self._init_config = WorldModelConfig.from_dict(config)
+        elif isinstance(config, WorldModelConfig):
+            self._init_config = config
+        else:
+            self._init_config = WorldModelConfig()
         self._init_genome = genome
         self._init_action_dim = int(action_dim)
         self._init_kwargs = kwargs
@@ -133,7 +169,14 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
     def _initialize(self):
         """Initialize module-specific state (called by BaseModule.__init__)"""
         # Apply stored initialization parameters
-        self.config = self._init_config
+        # Keep a typed config alongside BaseModule's dict config
+        self.wm_config: WorldModelConfig = self._init_config
+        # Mirror into BaseModule.config (dict) for compatibility with the framework
+        try:
+            self.set_config(self.wm_config.to_dict())
+        except Exception:
+            # Fallback without logging failure
+            self.config = self.wm_config.to_dict()  # type: ignore[assignment]
         self.action_dim = self._init_action_dim
         
         # Apply genome parameters early for mixin initialization
@@ -155,18 +198,23 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         self.logger.info(format_operator_message(
             message="Enhanced world model ready",
             icon="🌍",
-            input_size=self.config.input_size,
-            hidden_size=self.config.hidden_size,
-            sequence_length=self.config.sequence_length,
-            device=self.config.device,
+            input_size=self.wm_config.input_size,
+            hidden_size=self.wm_config.hidden_size,
+            sequence_length=self.wm_config.sequence_length,
+            device=str(self.device),
             config_loaded=True
         ))
 
     def _apply_genome_early(self, genome: Dict[str, Any]):
         """Apply genome parameters that affect initialization"""
-        self.config.sequence_length = int(genome.get("sequence_length", self.config.sequence_length))
-        self.config.hidden_size = int(genome.get("hidden_size", self.config.hidden_size))
-        self.config.num_layers = int(genome.get("num_layers", self.config.num_layers))
+        self.wm_config.sequence_length = int(genome.get("sequence_length", self.wm_config.sequence_length))
+        self.wm_config.hidden_size = int(genome.get("hidden_size", self.wm_config.hidden_size))
+        self.wm_config.num_layers = int(genome.get("num_layers", self.wm_config.num_layers))
+        # Mirror changes to BaseModule's dict config for framework compatibility
+        try:
+            self.set_config(self.wm_config.to_dict())
+        except Exception:
+            self.config = self.wm_config.to_dict()  # type: ignore[assignment]
 
     def _initialize_advanced_systems(self):
         """Initialize advanced systems for world model"""
@@ -183,34 +231,56 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         self.english_explainer = EnglishExplainer()
         self.system_utilities = SystemUtilities()
         self.performance_tracker = PerformanceTracker()
+        self.health_monitor = HealthMonitor()
+
+        # Seed & determinism
+        if getattr(self._init_config, "deterministic", False):
+            np.random.seed(42)
+            random.seed(42)
+            torch.manual_seed(42)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(42)
+                try:
+                    torch.backends.cudnn.deterministic = True  # type: ignore[attr-defined]
+                    torch.backends.cudnn.benchmark = False     # type: ignore[attr-defined]
+                except Exception:
+                    pass
         
-        # Circuit breaker for model operations
+        # Circuit breaker for model operations (with HALF_OPEN)
         self.circuit_breaker = {
             'failures': 0,
-            'last_failure': 0,
-            'state': 'CLOSED',
-            'threshold': self.config.circuit_breaker_threshold
+            'last_failure': 0.0,
+            'state': 'CLOSED',  # CLOSED | OPEN | HALF_OPEN
+            'threshold': self.wm_config.circuit_breaker_threshold,
+            'reset_time': 300.0
         }
         
         # Health monitoring
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        # Note: _start_monitoring() moved to end of initialization
+
+        # Concurrency
+        self._monitoring_active: bool = False
+        self._monitor_evt: Event = Event()
+        self._monitor_evt.clear()
+        self._monitor_thread: Optional[threading.Thread] = None
+        self._train_lock: Lock = Lock()
+        self._predict_lock: Lock = Lock()
 
     def _initialize_world_model_state(self, genome: Optional[Dict[str, Any]]):
         """Initialize world model state"""
         # Initialize mixin states
         self._initialize_risk_state()
-        self._initialize_trading_state() 
+        self._initialize_trading_state()
         self._initialize_state_management()
-        
+
         # Current operational mode
         self.current_mode = WorldModelMode.INITIALIZATION
         self.mode_start_time = datetime.datetime.now()
-        
+
         # Genome and evolution
         self.genome = self._initialize_genome(genome)
-        
+
         # Model state
         self.is_trained = False
         self.model_confidence = 0.0
@@ -218,53 +288,61 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         self.training_quality = 0.0
         self.stability_score = 1.0
         self.last_training_time = None
-        
+
         # Data management
-        self.market_history = deque(maxlen=self.config.history_size)
-        self.feature_history = deque(maxlen=self.config.history_size)
-        self.prediction_history = deque(maxlen=self.config.performance_window)
+        self.market_history = deque(maxlen=self.wm_config.history_size)
+        self.feature_history = deque(maxlen=self.wm_config.history_size)
+        self.prediction_history = deque(maxlen=self.wm_config.performance_window)
         self.training_history = deque(maxlen=50)
-        
+
         # Performance tracking
-        self.prediction_errors = deque(maxlen=self.config.performance_window)
-        self.confidence_history = deque(maxlen=self.config.performance_window)
+        self.prediction_errors = deque(maxlen=self.wm_config.performance_window)
+        self.confidence_history = deque(maxlen=self.wm_config.performance_window)
         self.training_curves = {
             'loss': deque(maxlen=100),
             'val_loss': deque(maxlen=100),
             'accuracy': deque(maxlen=100),
             'gradient_norm': deque(maxlen=100)
         }
-        
+
         # Analytics and insights
         self.feature_importance = {}
         self.attention_patterns = deque(maxlen=50)
         self.scenario_cache = {}
         self.prediction_analytics = defaultdict(list)
-        
+
         # External integrations
         self.external_model_sources = {}
         self.ensemble_weights = {}
-        
-        # Device management
-        self.device = torch.device(
-            self.config.device if torch.cuda.is_available() and self.config.device != "cpu" else "cpu"
-        )
+
+        # Device management (auto)
+        req = (self.wm_config.device or "auto").lower()
+        if req == "auto":
+            if torch.cuda.is_available():
+                chosen = "cuda"
+            elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():  # type: ignore[attr-defined]
+                chosen = "mps"
+            else:
+                chosen = "cpu"
+        else:
+            chosen = req if req in ("cpu", "cuda", "mps") else "cpu"
+        self.device = torch.device(chosen)
 
     def _initialize_genome(self, genome: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Initialize evolutionary genome"""
         default_genome = {
-            "input_size": self.config.input_size,
-            "hidden_size": self.config.hidden_size,
-            "num_layers": self.config.num_layers,
-            "dropout": self.config.dropout,
-            "attention_heads": self.config.attention_heads,
-            "learning_rate": self.config.learning_rate,
-            "sequence_length": self.config.sequence_length,
-            "prediction_horizon": self.config.prediction_horizon,
-            "batch_size": self.config.batch_size,
-            "gradient_clip": self.config.gradient_clip,
-            "weight_decay": self.config.weight_decay,
-            "scenario_steps": self.config.scenario_steps
+            "input_size": self.wm_config.input_size,
+            "hidden_size": self.wm_config.hidden_size,
+            "num_layers": self.wm_config.num_layers,
+            "dropout": self.wm_config.dropout,
+            "attention_heads": self.wm_config.attention_heads,
+            "learning_rate": self.wm_config.learning_rate,
+            "sequence_length": self.wm_config.sequence_length,
+            "prediction_horizon": self.wm_config.prediction_horizon,
+            "batch_size": self.wm_config.batch_size,
+            "gradient_clip": self.wm_config.gradient_clip,
+            "weight_decay": self.wm_config.weight_decay,
+            "scenario_steps": self.wm_config.scenario_steps
         }
         
         if genome:
@@ -286,8 +364,13 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             
             # Apply validated genome to config
             for key, value in default_genome.items():
-                if hasattr(self.config, key):
-                    setattr(self.config, key, value)
+                if hasattr(self.wm_config, key):
+                    setattr(self.wm_config, key, value)
+            # Keep BaseModule dict config in sync
+            try:
+                self.set_config(self.wm_config.to_dict())
+            except Exception:
+                self.config = self.wm_config.to_dict()  # type: ignore[assignment]
         
         return default_genome
 
@@ -296,82 +379,92 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         try:
             # Main LSTM backbone
             self.lstm = nn.LSTM(
-                self.config.input_size,
-                self.config.hidden_size,
-                self.config.num_layers,
+                self.wm_config.input_size,
+                self.wm_config.hidden_size,
+                self.wm_config.num_layers,
                 batch_first=True,
-                dropout=self.config.dropout if self.config.num_layers > 1 else 0.0,
+                dropout=self.wm_config.dropout if self.wm_config.num_layers > 1 else 0.0,
                 bidirectional=False
             )
             
             # Multi-head attention for temporal patterns
             self.attention = nn.MultiheadAttention(
-                self.config.hidden_size, 
-                num_heads=self.config.attention_heads,
-                dropout=self.config.dropout,
+                self.wm_config.hidden_size, 
+                num_heads=self.wm_config.attention_heads,
+                dropout=self.wm_config.dropout,
                 batch_first=True
             )
             
             # Prediction heads with enhanced architecture
             self.price_head = nn.Sequential(
-                nn.Linear(self.config.hidden_size, self.config.hidden_size),
-                nn.LayerNorm(self.config.hidden_size),
+                nn.Linear(self.wm_config.hidden_size, self.wm_config.hidden_size),
+                nn.LayerNorm(self.wm_config.hidden_size),
                 nn.ReLU(),
-                nn.Dropout(self.config.dropout),
-                nn.Linear(self.config.hidden_size, self.config.hidden_size // 2),
+                nn.Dropout(self.wm_config.dropout),
+                nn.Linear(self.wm_config.hidden_size, self.wm_config.hidden_size // 2),
                 nn.ReLU(),
-                nn.Linear(self.config.hidden_size // 2, 4)  # 4 price predictions
+                nn.Linear(self.wm_config.hidden_size // 2, 4)  # 4 price predictions
             )
             
             self.volatility_head = nn.Sequential(
-                nn.Linear(self.config.hidden_size, self.config.hidden_size // 2),
-                nn.LayerNorm(self.config.hidden_size // 2),
+                nn.Linear(self.wm_config.hidden_size, self.wm_config.hidden_size // 2),
+                nn.LayerNorm(self.wm_config.hidden_size // 2),
                 nn.ReLU(),
-                nn.Dropout(self.config.dropout),
-                nn.Linear(self.config.hidden_size // 2, 4)  # 4 volatility predictions
+                nn.Dropout(self.wm_config.dropout),
+                nn.Linear(self.wm_config.hidden_size // 2, 4)  # 4 volatility predictions
             )
             
             self.regime_head = nn.Sequential(
-                nn.Linear(self.config.hidden_size, self.config.hidden_size // 2),
+                nn.Linear(self.wm_config.hidden_size, self.wm_config.hidden_size // 2),
                 nn.ReLU(),
-                nn.Dropout(self.config.dropout),
-                nn.Linear(self.config.hidden_size // 2, 4),  # 4 regime classes
+                nn.Dropout(self.wm_config.dropout),
+                nn.Linear(self.wm_config.hidden_size // 2, 4),  # 4 regime classes
                 nn.Softmax(dim=-1)
             )
             
             # Confidence estimation head
             self.confidence_head = nn.Sequential(
-                nn.Linear(self.config.hidden_size, self.config.hidden_size // 4),
+                nn.Linear(self.wm_config.hidden_size, self.wm_config.hidden_size // 4),
                 nn.ReLU(),
-                nn.Linear(self.config.hidden_size // 4, 1),
+                nn.Linear(self.wm_config.hidden_size // 4, 1),
                 nn.Sigmoid()
             )
             
             # Context integration network
             self.context_encoder = nn.Sequential(
-                nn.Linear(16, self.config.hidden_size // 2),  # 16 context features
-                nn.LayerNorm(self.config.hidden_size // 2),
+                nn.Linear(16, self.wm_config.hidden_size // 2),  # 16 context features
+                nn.LayerNorm(self.wm_config.hidden_size // 2),
                 nn.ReLU(),
-                nn.Dropout(self.config.dropout * 0.5),
-                nn.Linear(self.config.hidden_size // 2, self.config.hidden_size // 2)
+                nn.Dropout(self.wm_config.dropout * 0.5),
+                nn.Linear(self.wm_config.hidden_size // 2, self.wm_config.hidden_size // 2)
             )
             
             # Feature fusion layer
             self.fusion_layer = nn.Sequential(
-                nn.Linear(self.config.hidden_size + self.config.hidden_size // 2, self.config.hidden_size),
-                nn.LayerNorm(self.config.hidden_size),
+                nn.Linear(self.wm_config.hidden_size + self.wm_config.hidden_size // 2, self.wm_config.hidden_size),
+                nn.LayerNorm(self.wm_config.hidden_size),
                 nn.ReLU(),
-                nn.Dropout(self.config.dropout)
+                nn.Dropout(self.wm_config.dropout)
             )
             
-            # Move all components to device
-            self.to(self.device)
+            # Move all components to device (avoid ambiguous self.to typing)
+            try:
+                self.lstm.to(self.device)
+                self.attention.to(self.device)
+                self.price_head.to(self.device)
+                self.volatility_head.to(self.device)
+                self.regime_head.to(self.device)
+                self.confidence_head.to(self.device)
+                self.context_encoder.to(self.device)
+                self.fusion_layer.to(self.device)
+            except Exception:
+                pass
             
-            # Initialize optimizer with advanced settings
+            # Initialize optimizer with modern settings
             self.optimizer = optim.AdamW(
                 self.parameters(),
-                lr=self.config.learning_rate,
-                weight_decay=self.config.weight_decay,
+                lr=self.wm_config.learning_rate,
+                weight_decay=self.wm_config.weight_decay,
                 eps=1e-8,
                 betas=(0.9, 0.999)
             )
@@ -389,20 +482,38 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             self.huber_loss = nn.SmoothL1Loss()
             self.ce_loss = nn.CrossEntropyLoss()
             
+            # AMP support (CUDA only for stability) with new API
+            self._amp_enabled = bool(self.wm_config.use_mixed_precision) and (self.device.type == "cuda")
+            try:
+                if self._amp_enabled:
+                    # Prefer new API when available
+                    if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+                        self._scaler = torch.amp.GradScaler("cuda", enabled=True)  # type: ignore[call-arg]
+                    else:
+                        self._scaler = torch.cuda.amp.GradScaler(enabled=True)  # type: ignore[attr-defined]
+                else:
+                    # Do not instantiate any scaler when AMP is disabled to avoid deprecation warnings
+                    self._scaler = None
+            except Exception:
+                # Fallback: disable scaler on any error
+                self._scaler = None
+
             # Initialize weights
             self._initialize_weights()
             
             # Model compilation for performance (if supported)
-            if self.config.compile_model and hasattr(torch, 'compile'):
-                self.lstm = torch.compile(self.lstm)
-                self.price_head = torch.compile(self.price_head)
+            if self.wm_config.compile_model and hasattr(torch, 'compile'):
+                try:
+                    self.lstm = torch.compile(self.lstm)           # type: ignore[attr-defined]
+                    self.price_head = torch.compile(self.price_head)  # type: ignore[attr-defined]
+                except Exception as ce:
+                    warnings.warn(f"torch.compile failed: {ce}")
             
             self.logger.info("Neural components initialized successfully")
             
         except Exception as e:
             self.logger.error(f"Neural component initialization failed: {e}")
-            self.circuit_breaker['failures'] += 1
-            self.circuit_breaker['state'] = 'OPEN'
+            self._trip_circuit_breaker()
 
     def _initialize_weights(self):
         """Initialize neural network weights with advanced techniques"""
@@ -427,21 +538,45 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 nn.init.zeros_(module.bias)
 
     def _start_monitoring(self):
-        """Start background monitoring for world model"""
-        def monitoring_loop():
-            while getattr(self, '_monitoring_active', True):
-                try:
-                    self._update_model_health()
-                    self._analyze_prediction_effectiveness()
-                    self._adapt_model_parameters()
-                    self._cleanup_old_data()
-                    time.sleep(self.config.health_check_interval)
-                except Exception as e:
-                    self.logger.error(f"World model monitoring error: {e}")
-        
+        """Start background monitoring for world model (idempotent)."""
+        if getattr(self, "_monitoring_active", False):
+            return  # already running
+
         self._monitoring_active = True
-        monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
-        monitor_thread.start()
+        self._monitor_evt.clear()
+
+        def monitoring_loop():
+            try:
+                while self._monitoring_active and not self._monitor_evt.is_set():
+                    try:
+                        self._update_model_health()
+                        self._analyze_prediction_effectiveness()
+                        self._adapt_model_parameters()
+                        self._cleanup_old_data()
+                        # Lightweight heartbeat
+                        try:
+                            self.health_monitor.record("EnhancedWorldModel", status=self._health_status)
+                        except Exception:
+                            pass
+                    except Exception as inner_e:
+                        self.logger.error(f"World model monitoring error: {inner_e}")
+                    self._monitor_evt.wait(timeout=self.wm_config.health_check_interval)
+            except Exception as e:
+                self.logger.error(f"Monitoring loop failure: {e}")
+
+        self._monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
+        self._monitor_thread.start()
+
+    def _stop_monitoring_thread(self, timeout: float = 2.0):
+        """Internal: stop monitor thread."""
+        self._monitoring_active = False
+        self._monitor_evt.set()
+        try:
+            if hasattr(self, "_monitor_thread") and self._monitor_thread and self._monitor_thread.is_alive():
+                self._monitor_thread.join(timeout=timeout)
+        except Exception:
+            pass
+
 
     async def _initialize_smartinfobus(self):
         """Initialize module with SmartInfoBus integration"""
@@ -468,9 +603,27 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             self.logger.error(f"World model initialization failed: {e}")
             return False
 
+    def _maybe_half_open(self):
+        """Move circuit breaker to HALF_OPEN after reset window."""
+        if self.circuit_breaker['state'] == 'OPEN':
+            if time.time() - self.circuit_breaker['last_failure'] > self.circuit_breaker.get('reset_time', 300.0):
+                self.circuit_breaker['state'] = 'HALF_OPEN'
+                self.circuit_breaker['failures'] = 0
+                self.logger.info("[RELOAD] Circuit breaker moved to HALF_OPEN")
+
+    def _trip_circuit_breaker(self):
+        """Increment failures and open circuit if needed."""
+        self.circuit_breaker['failures'] += 1
+        self.circuit_breaker['last_failure'] = time.time()
+        if self.circuit_breaker['failures'] >= self.circuit_breaker['threshold']:
+            self.circuit_breaker['state'] = 'OPEN'
+            self._health_status = 'critical'
+            self.current_mode = WorldModelMode.ERROR_RECOVERY
+
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process world model operations with enhanced analytics"""
         start_time = time.time()
+        self._maybe_half_open()
         
         try:
             # Extract market data from SmartInfoBus
@@ -487,7 +640,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             
             # Generate predictions if model is ready
             prediction_result = {}
-            if self.is_trained and len(self.market_history) >= self.config.sequence_length:
+            if self.is_trained and len(self.market_history) >= self.wm_config.sequence_length:
                 prediction_result = await self._generate_predictions_async(market_data)
             
             # Train model if enough data and training is needed
@@ -559,11 +712,11 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
 
             analytics_data: Dict[str, Any] = {
                 'model_architecture': {
-                    'input_size': self.config.input_size,
-                    'hidden_size': self.config.hidden_size,
-                    'num_layers': self.config.num_layers,
-                    'sequence_length': self.config.sequence_length,
-                    'attention_heads': self.config.attention_heads
+                    'input_size': self.wm_config.input_size,
+                    'hidden_size': self.wm_config.hidden_size,
+                    'num_layers': self.wm_config.num_layers,
+                    'sequence_length': self.wm_config.sequence_length,
+                    'attention_heads': self.wm_config.attention_heads
                 },
                 'performance_metrics': {
                     'training_quality': self.training_quality,
@@ -595,7 +748,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             # Enrich classification and recommendations
             try:
                 confidence_data['confidence_classification'] = await self._classify_confidence_level_async(float(self.model_confidence))
-                confidence_data['is_reliable'] = self.model_confidence > self.config.confidence_threshold
+                confidence_data['is_reliable'] = self.model_confidence > self.wm_config.confidence_threshold
                 confidence_data['recommendations'] = await self._generate_confidence_recommendations_async()
             except Exception:
                 pass
@@ -617,33 +770,50 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             return await self._handle_world_model_error(e, start_time)
 
     async def _extract_market_data(self, **inputs) -> Optional[Dict[str, Any]]:
-        """Extract comprehensive market data from SmartInfoBus"""
+        """Extract comprehensive market data from SmartInfoBus (canonical-first, robust fallbacks)."""
         try:
-            # Get data from SmartInfoBus
+            # Core snapshot (hard requirement)
             market_data = self.smart_bus.get('market_data', 'EnhancedWorldModel') or {}
-            risk_data = self.smart_bus.get('risk_data', 'EnhancedWorldModel') or {}
-            trading_data = self.smart_bus.get('trading_data', 'EnhancedWorldModel') or {}
-            performance_data = self.smart_bus.get('performance_data', 'EnhancedWorldModel') or {}
-            
-            # Extract direct inputs (legacy compatibility)
+
+            # Canonical risk/context (preferred) with legacy fallbacks
+            time_risk       = self.smart_bus.get('time_risk_analysis', 'EnhancedWorldModel') or {}
+            market_cond     = self.smart_bus.get('market_conditions', 'EnhancedWorldModel') or {}
+            risk_data_legacy = self.smart_bus.get('risk_data', 'EnhancedWorldModel') or {}
+
+            # Optional activity/performance (soft)
+            trading_data    = self.smart_bus.get('trading_data', 'EnhancedWorldModel') or {}
+            performance_data = (
+                self.smart_bus.get('performance_metrics', 'EnhancedWorldModel')  # canonical
+                or self.smart_bus.get('performance_data', 'EnhancedWorldModel')  # legacy if present
+                or {}
+            )
+
+            # Direct inputs (compat)
             market_features = inputs.get('market_features', None)
-            prices = inputs.get('prices', {})
-            training_data = inputs.get('training_data', None)
-            
-            # Extract from SmartInfoBus data
+            prices          = inputs.get('prices', {})
+            training_data   = inputs.get('training_data', None)
+
+            # Extract from market_data (prices inside snapshot)
             market_snapshot = market_data.get('market_snapshot', {})
             if not prices and 'prices' in market_snapshot:
                 prices = market_snapshot['prices']
-            
-            risk_snapshot = risk_data.get('risk_snapshot', {})
+
+            # Snapshots for quick features (prefer canonical)
+            risk_snapshot = (
+                time_risk.get('risk_snapshot') or
+                market_cond.get('risk_snapshot') or
+                risk_data_legacy.get('risk_snapshot', {})
+            )
             trading_snapshot = trading_data.get('trading_snapshot', {})
-            
+
             return {
                 'market_features': market_features,
                 'prices': prices,
                 'training_data': training_data,
                 'market_data': market_data,
-                'risk_data': risk_data,
+                'time_risk_analysis': time_risk,
+                'market_conditions': market_cond,
+                'risk_data': risk_data_legacy,     # keep for legacy downstreams
                 'trading_data': trading_data,
                 'performance_data': performance_data,
                 'market_snapshot': market_snapshot,
@@ -652,26 +822,45 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 'timestamp': datetime.datetime.now().isoformat(),
                 'step_count': getattr(self, '_step_count', 0)
             }
-            
+
         except Exception as e:
             self.logger.error(f"Failed to extract market data: {e}")
             return None
 
     async def _update_market_context_async(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update market context awareness asynchronously"""
+        """Update market context awareness (canonical-first)."""
         try:
-            # Extract market context from SmartInfoBus
+            # Canonical feeds
+            regime_data   = self.smart_bus.get('regime_data', 'EnhancedWorldModel') or {}
+            market_regime = self.smart_bus.get('market_regime', 'EnhancedWorldModel')
+            vol_adj       = self.smart_bus.get('volatility_adjustment', 'EnhancedWorldModel') or {}
+            market_cond   = self.smart_bus.get('market_conditions', 'EnhancedWorldModel') or {}
+
+            # Legacy/compat
             market_context = self.smart_bus.get('market_context', 'EnhancedWorldModel') or {}
-            
-            # Extract contextual information
-            regime = market_context.get('regime', 'unknown')
-            session = market_context.get('session', 'unknown')
-            volatility_level = market_context.get('volatility_level', 'medium')
-            stress_level = market_context.get('stress_level', 0.0)
-            
-            # Update feature importance based on context
+
+            # Resolve regime/session/volatility with fallbacks
+            regime = (
+                market_regime
+                or regime_data.get('market_regime')
+                or market_context.get('regime', 'unknown')
+            )
+            session = (
+                market_cond.get('session')
+                or market_context.get('session', 'unknown')
+            )
+            volatility_level = (
+                vol_adj.get('volatility_regime')
+                or market_context.get('volatility_level', 'medium')
+            )
+            stress_level = (
+                market_cond.get('stress_level')
+                or market_context.get('stress_level', 0.0)
+            )
+
+            # Update feature importance based on resolved context
             await self._update_context_feature_importance_async(regime, session, volatility_level)
-            
+
             return {
                 'market_context_updated': True,
                 'regime': regime,
@@ -679,10 +868,11 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 'volatility_level': volatility_level,
                 'stress_level': stress_level
             }
-            
+
         except Exception as e:
             self.logger.error(f"Market context update failed: {e}")
             return {'market_context_updated': False, 'error': str(e)}
+
 
     async def _update_context_feature_importance_async(self, regime: str, session: str, volatility_level: str):
         """Update feature importance based on market context"""
@@ -760,7 +950,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
     async def _extract_comprehensive_features_async(self, market_data: Dict[str, Any]) -> Optional[np.ndarray]:
         """Extract comprehensive features from market data"""
         try:
-            features = []
+            features: List[float] = []
             
             # Price features (4 instruments)
             prices = market_data.get('prices', {})
@@ -824,10 +1014,10 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             features.extend(session_encoding.get(session, [0.25] * 4))
             
             # Extend or truncate to target input size
-            while len(features) < self.config.input_size:
+            while len(features) < self.wm_config.input_size:
                 features.append(0.0)
             
-            return np.array(features[:self.config.input_size], dtype=np.float32)
+            return np.array(features[:self.wm_config.input_size], dtype=np.float32)
             
         except Exception as e:
             self.logger.error(f"Feature extraction failed: {e}")
@@ -891,159 +1081,181 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
     async def _generate_predictions_async(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
         """Generate model predictions with enhanced analytics"""
         try:
-            if len(self.market_history) < self.config.sequence_length:
+            if len(self.market_history) < self.wm_config.sequence_length:
                 return {'predictions_generated': False, 'reason': 'insufficient_history'}
+
+            if not self._predict_lock.acquire(blocking=False):
+                return {'predictions_generated': False, 'reason': 'prediction_in_progress'}
             
-            # Prepare input sequence
-            sequence_features = [state['features'] for state in list(self.market_history)[-self.config.sequence_length:]]
-            X = np.vstack(sequence_features)
-            X_tensor = torch.from_numpy(X).unsqueeze(0).to(self.device)
-            
-            # Extract context
-            context_features = await self._encode_context_features_async(market_data)
-            context_tensor = torch.from_numpy(context_features).unsqueeze(0).to(self.device)
-            
-            self.eval()
-            with torch.no_grad():
-                # LSTM forward pass
-                lstm_out, (hidden, cell) = self.lstm(X_tensor)
+            try:
+                # Prepare input sequence
+                sequence_features = [state['features'] for state in list(self.market_history)[-self.wm_config.sequence_length:]]
+                X = np.vstack(sequence_features)
+                X_tensor = torch.from_numpy(X).unsqueeze(0).to(self.device)
                 
-                # Apply attention mechanism
-                attended_out, attention_weights = self.attention(
-                    lstm_out, lstm_out, lstm_out
-                )
+                # Extract context
+                context_features = await self._encode_context_features_async(market_data)
+                context_tensor = torch.from_numpy(context_features).unsqueeze(0).to(self.device)
                 
-                # Use last attended output
-                last_attended = attended_out[:, -1, :]
+                self.eval()
+                with torch.no_grad():
+                    # Use new autocast API when on CUDA; disabled on CPU
+                    autocast_ctx = (
+                        torch.amp.autocast(device_type="cuda", enabled=True)  # type: ignore[call-arg]
+                        if (self._amp_enabled and hasattr(torch, "amp") and hasattr(torch.amp, "autocast"))
+                        else contextlib.nullcontext()
+                    )
+                    with autocast_ctx:
+                        # LSTM forward pass
+                        lstm_out, (hidden, cell) = self.lstm(X_tensor)
+                        
+                        # Apply attention mechanism
+                        attended_out, attention_weights = self.attention(
+                            lstm_out, lstm_out, lstm_out
+                        )
+                        
+                        # Use last attended output
+                        last_attended = attended_out[:, -1, :]
+                        
+                        # Integrate context
+                        context_encoded = self.context_encoder(context_tensor)
+                        fused_features = self.fusion_layer(
+                            torch.cat([last_attended, context_encoded], dim=1)
+                        )
+                        
+                        # Generate predictions
+                        price_pred = self.price_head(fused_features)
+                        vol_pred = self.volatility_head(fused_features)
+                        regime_pred = self.regime_head(fused_features)
+                        confidence_pred = self.confidence_head(fused_features)
+                    
+                    # Calculate prediction confidence
+                    prediction_confidence = float(confidence_pred.detach().cpu().numpy()[0, 0])
+                    attention_confidence = await self._calculate_attention_confidence_async(attention_weights)
+                    combined_confidence = (prediction_confidence + attention_confidence) / 2.0
+                    
+                    predictions = {
+                        'price_changes': price_pred.detach().cpu().numpy()[0],
+                        'volatility_predictions': vol_pred.detach().cpu().numpy()[0],
+                        'regime_probabilities': regime_pred.detach().cpu().numpy()[0],
+                        'confidence': combined_confidence,
+                        'prediction_confidence': prediction_confidence,
+                        'attention_confidence': attention_confidence,
+                        'attention_weights': attention_weights.detach().cpu().numpy()[0],
+                        'timestamp': market_data.get('timestamp'),
+                        'predicted_regime': int(torch.argmax(regime_pred, dim=1).detach().cpu().numpy()[0]),
+                        'confidence_level': await self._classify_confidence_level_async(combined_confidence)
+                    }
                 
-                # Integrate context
-                context_encoded = self.context_encoder(context_tensor)
-                fused_features = self.fusion_layer(
-                    torch.cat([last_attended, context_encoded], dim=1)
-                )
+                # Store prediction
+                self.prediction_history.append(predictions.copy())
                 
-                # Generate predictions
-                price_pred = self.price_head(fused_features)
-                vol_pred = self.volatility_head(fused_features)
-                regime_pred = self.regime_head(fused_features)
-                confidence_pred = self.confidence_head(fused_features)
+                # Track prediction performance
+                await self._track_prediction_performance_async(predictions, market_data)
                 
-                # Calculate prediction confidence
-                prediction_confidence = float(confidence_pred.cpu().numpy()[0, 0])
-                attention_confidence = await self._calculate_attention_confidence_async(attention_weights)
-                combined_confidence = (prediction_confidence + attention_confidence) / 2.0
+                # Store attention patterns
+                self.attention_patterns.append(attention_weights.detach().cpu().numpy()[0])
                 
-                predictions = {
-                    'price_changes': price_pred.cpu().numpy()[0],
-                    'volatility_predictions': vol_pred.cpu().numpy()[0],
-                    'regime_probabilities': regime_pred.cpu().numpy()[0],
-                    'confidence': combined_confidence,
-                    'prediction_confidence': prediction_confidence,
-                    'attention_confidence': attention_confidence,
-                    'attention_weights': attention_weights.cpu().numpy()[0],
-                    'timestamp': market_data.get('timestamp'),
-                    'predicted_regime': int(torch.argmax(regime_pred, dim=1).cpu().numpy()[0]),
-                    'confidence_level': await self._classify_confidence_level_async(combined_confidence)
+                self.logger.info(format_operator_message(
+                    message="Predictions generated",
+                    icon="🔮",
+                    confidence=f"{combined_confidence:.3f}",
+                    regime=f"{predictions['predicted_regime']}",
+                    price_trend=f"{np.mean(predictions['price_changes']):.4f}",
+                    vol_avg=f"{np.mean(predictions['volatility_predictions']):.4f}"
+                ))
+                
+                return {
+                    'predictions_generated': True,
+                    'predictions': predictions,
+                    'sequence_length': self.wm_config.sequence_length,
+                    'model_confidence': self.model_confidence
                 }
-            
-            # Store prediction
-            self.prediction_history.append(predictions.copy())
-            
-            # Track prediction performance
-            await self._track_prediction_performance_async(predictions, market_data)
-            
-            # Store attention patterns
-            self.attention_patterns.append(attention_weights.cpu().numpy()[0])
-            
-            self.logger.info(format_operator_message(
-                message="Predictions generated",
-                icon="🔮",
-                confidence=f"{combined_confidence:.3f}",
-                regime=f"{predictions['predicted_regime']}",
-                price_trend=f"{np.mean(predictions['price_changes']):.4f}",
-                vol_avg=f"{np.mean(predictions['volatility_predictions']):.4f}"
-            ))
-            
-            return {
-                'predictions_generated': True,
-                'predictions': predictions,
-                'sequence_length': self.config.sequence_length,
-                'model_confidence': self.model_confidence
-            }
+            finally:
+                self._predict_lock.release()
             
         except Exception as e:
             self.logger.error(f"Prediction generation failed: {e}")
             return {'predictions_generated': False, 'error': str(e)}
 
     async def _encode_context_features_async(self, market_data: Dict[str, Any]) -> np.ndarray:
-        """Encode context into feature vector"""
+        """Encode context into fixed-size (16) vector; canonical-first with legacy fallbacks."""
         try:
-            features = []
-            
-            # Market context
+            feats: List[float] = []
+
+            # Canonical context
+            market_regime = self.smart_bus.get('market_regime', 'EnhancedWorldModel')
+            regime_data   = self.smart_bus.get('regime_data', 'EnhancedWorldModel') or {}
+            vol_adj       = self.smart_bus.get('volatility_adjustment', 'EnhancedWorldModel') or {}
+            market_cond   = self.smart_bus.get('market_conditions', 'EnhancedWorldModel') or {}
+
+            # Legacy
             market_context = self.smart_bus.get('market_context', 'EnhancedWorldModel') or {}
-            
-            # Regime encoding
-            regime = market_context.get('regime', 'unknown')
-            regime_values = {'trending': 1.0, 'volatile': 0.75, 'ranging': 0.5, 'unknown': 0.25}
-            features.append(regime_values.get(regime, 0.25))
-            
-            # Session encoding
-            session = market_context.get('session', 'unknown')
-            session_values = {'asian': 0.25, 'european': 0.5, 'american': 0.75, 'closed': 0.0}
-            features.append(session_values.get(session, 0.0))
-            
-            # Volatility level
-            vol_level = market_context.get('volatility_level', 'medium')
-            vol_values = {'low': 0.2, 'medium': 0.5, 'high': 0.8, 'extreme': 1.0}
-            features.append(vol_values.get(vol_level, 0.5))
-            
-            # Risk features
-            risk_snapshot = market_data.get('risk_snapshot', {})
-            features.extend([
+
+            # Regime scalar (ordinal proxy)
+            regime_val_map = {'trending': 1.0, 'volatile': 0.75, 'ranging': 0.5, 'unknown': 0.25}
+            regime = market_regime or regime_data.get('market_regime') or market_context.get('regime', 'unknown')
+            feats.append(regime_val_map.get(str(regime), 0.25))
+
+            # Session scalar
+            session_val_map = {'asian': 0.25, 'european': 0.5, 'american': 0.75, 'closed': 0.0}
+            session = market_cond.get('session') or market_context.get('session', 'unknown')
+            feats.append(session_val_map.get(str(session), 0.0))
+
+            # Volatility scalar
+            vol_val_map = {'low': 0.2, 'medium': 0.5, 'high': 0.8, 'extreme': 1.0}
+            vol_regime = vol_adj.get('volatility_regime') or market_context.get('volatility_level', 'medium')
+            feats.append(vol_val_map.get(str(vol_regime), 0.5))
+
+            # Risk snapshot (prefer canonical analysis/conditions)
+            risk_snapshot = (
+                market_data.get('risk_snapshot')
+                or market_cond.get('risk_snapshot', {})
+            )
+            feats.extend([
                 risk_snapshot.get('drawdown_pct', 0.0) / 100.0,
                 risk_snapshot.get('exposure_pct', 0.0) / 100.0,
                 min(1.0, risk_snapshot.get('position_count', 0) / 20.0),
                 risk_snapshot.get('risk_score', 0.0) / 100.0
             ])
-            
-            # Market stress indicators
-            features.extend([
-                market_context.get('stress_level', 0.0),
-                market_context.get('correlation_risk', 0.0),
-                market_context.get('liquidity_score', 1.0)
+
+            # Stress/correlation/liquidity (prefer canonical conditions)
+            feats.extend([
+                market_cond.get('stress_level', market_context.get('stress_level', 0.0)),
+                market_cond.get('correlation_risk', market_context.get('correlation_risk', 0.0)),
+                market_cond.get('liquidity_score', market_context.get('liquidity_score', 1.0))
             ])
-            
-            # Trading activity
+
+            # Trading snapshot (optional)
             trading_snapshot = market_data.get('trading_snapshot', {})
-            features.extend([
+            feats.extend([
                 min(1.0, trading_snapshot.get('trade_count', 0) / 100.0),
                 trading_snapshot.get('avg_trade_size', 0.0) / 1000.0,
                 trading_snapshot.get('direction_bias', 0.0)
             ])
-            
-            # Performance indicators
-            performance_data = market_data.get('performance_data', {})
-            features.extend([
-                performance_data.get('recent_pnl', 0.0) / 1000.0,
-                performance_data.get('win_rate', 0.5),
-                performance_data.get('sharpe_ratio', 0.0) / 3.0
+
+            # Performance (prefer canonical performance_metrics)
+            perf = market_data.get('performance_data', {})
+            feats.extend([
+                perf.get('recent_pnl', 0.0) / 1000.0,
+                perf.get('win_rate', 0.5),
+                perf.get('sharpe_ratio', 0.0) / 3.0
             ])
-            
-            # Ensure exactly 16 features
-            while len(features) < 16:
-                features.append(0.0)
-            
-            return np.array(features[:16], dtype=np.float32)
-            
+
+            # Pad/trim to 16
+            while len(feats) < 16:
+                feats.append(0.0)
+            return np.array(feats[:16], dtype=np.float32)
+
         except Exception as e:
             self.logger.warning(f"Context encoding failed: {e}")
             return np.zeros(16, dtype=np.float32)
 
+
     async def _calculate_attention_confidence_async(self, attention_weights: torch.Tensor) -> float:
         """Calculate confidence based on attention distribution"""
         try:
-            attention_probs = attention_weights.squeeze().cpu().numpy()
+            attention_probs = attention_weights.squeeze().detach().cpu().numpy()
             
             if len(attention_probs.shape) > 1:
                 attention_probs = attention_probs.mean(axis=0)
@@ -1119,7 +1331,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         """Determine if model training should be triggered"""
         try:
             # Check if we have enough data
-            if len(self.market_history) < self.config.min_training_samples:
+            if len(self.market_history) < self.wm_config.min_training_samples:
                 return False
             
             # Check if model needs retraining
@@ -1127,7 +1339,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 return True
             
             # Check prediction quality
-            if self.prediction_quality < self.config.min_prediction_quality:
+            if self.prediction_quality < self.wm_config.min_prediction_quality:
                 return True
             
             # Check if enough time has passed since last training
@@ -1147,6 +1359,9 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
 
     async def _train_model_async(self) -> Dict[str, Any]:
         """Train model asynchronously with enhanced monitoring"""
+        if not self._train_lock.acquire(blocking=False):
+            return {'training_completed': False, 'reason': 'training_in_progress'}
+
         try:
             self.current_mode = WorldModelMode.TRAINING
             
@@ -1157,7 +1372,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 return {'training_completed': False, 'reason': 'insufficient_data'}
             
             # Split data
-            split_idx = int(len(train_data['X']) * (1 - self.config.validation_split))
+            split_idx = int(len(train_data['X']) * (1 - self.wm_config.validation_split))
             
             train_X = train_data['X'][:split_idx]
             val_X = train_data['X'][split_idx:]
@@ -1177,7 +1392,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             )
             train_loader = DataLoader(
                 train_dataset, 
-                batch_size=self.config.batch_size, 
+                batch_size=self.wm_config.batch_size, 
                 shuffle=True,
                 num_workers=0,
                 pin_memory=True if self.device.type == 'cuda' else False
@@ -1190,8 +1405,8 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             patience = 5
             
             self.train()
-            training_losses = []
-            validation_losses = []
+            training_losses: List[float] = []
+            validation_losses: List[float] = []
             epochs_completed = 0
             
             for epoch in range(epochs):
@@ -1205,40 +1420,59 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                     batch_y_price = batch_y_price.to(self.device)
                     batch_y_vol = batch_y_vol.to(self.device)
                     batch_y_regime = batch_y_regime.to(self.device)
-                    
-                    self.optimizer.zero_grad()
-                    
-                    # Forward pass
-                    lstm_out, _ = self.lstm(batch_X)
-                    attended_out, _ = self.attention(lstm_out, lstm_out, lstm_out)
-                    hidden_state = attended_out[:, -1, :]
-                    
-                    # Predictions
-                    price_pred = self.price_head(hidden_state)
-                    vol_pred = self.volatility_head(hidden_state)
-                    regime_pred = self.regime_head(hidden_state)
-                    
-                    # Calculate losses
-                    price_loss = self.huber_loss(price_pred, batch_y_price)
-                    vol_loss = self.mse_loss(vol_pred, batch_y_vol)
-                    regime_loss = self.ce_loss(regime_pred, batch_y_regime.long())
-                    
-                    # Combined loss with weights
-                    total_loss = 0.5 * price_loss + 0.3 * vol_loss + 0.2 * regime_loss
-                    
-                    # Backward pass
-                    total_loss.backward()
-                    
-                    # Gradient clipping
-                    grad_norm = torch.nn.utils.clip_grad_norm_(self.parameters(), self.config.gradient_clip)
-                    
-                    self.optimizer.step()
-                    
-                    epoch_train_loss += total_loss.item()
+
+                    self.optimizer.zero_grad(set_to_none=True)
+
+                    if self._amp_enabled:
+                        # Use new autocast API if available
+                        autocast_ctx = (
+                            torch.amp.autocast(device_type="cuda", enabled=True)  # type: ignore[call-arg]
+                            if hasattr(torch, "amp") and hasattr(torch.amp, "autocast")
+                            else contextlib.nullcontext()
+                        )
+                        with autocast_ctx:
+                            lstm_out, _ = self.lstm(batch_X)
+                            attended_out, _ = self.attention(lstm_out, lstm_out, lstm_out)
+                            hidden_state = attended_out[:, -1, :]
+                            
+                            price_pred = self.price_head(hidden_state)
+                            vol_pred = self.volatility_head(hidden_state)
+                            regime_pred = self.regime_head(hidden_state)
+                            
+                            price_loss = self.huber_loss(price_pred, batch_y_price)
+                            vol_loss = self.mse_loss(vol_pred, batch_y_vol)
+                            regime_loss = self.ce_loss(regime_pred, batch_y_regime.long())
+                            total_loss = 0.5 * price_loss + 0.3 * vol_loss + 0.2 * regime_loss
+                        if self._scaler is not None:
+                            self._scaler.scale(total_loss).backward()
+                            torch.nn.utils.clip_grad_norm_(self.parameters(), self.wm_config.gradient_clip)
+                            self._scaler.step(self.optimizer)
+                            self._scaler.update()
+                        else:
+                            total_loss.backward()
+                            torch.nn.utils.clip_grad_norm_(self.parameters(), self.wm_config.gradient_clip)
+                            self.optimizer.step()
+                    else:
+                        lstm_out, _ = self.lstm(batch_X)
+                        attended_out, _ = self.attention(lstm_out, lstm_out, lstm_out)
+                        hidden_state = attended_out[:, -1, :]
+                        
+                        price_pred = self.price_head(hidden_state)
+                        vol_pred = self.volatility_head(hidden_state)
+                        regime_pred = self.regime_head(hidden_state)
+                        
+                        price_loss = self.huber_loss(price_pred, batch_y_price)
+                        vol_loss = self.mse_loss(vol_pred, batch_y_vol)
+                        regime_loss = self.ce_loss(regime_pred, batch_y_regime.long())
+                        total_loss = 0.5 * price_loss + 0.3 * vol_loss + 0.2 * regime_loss
+                        
+                        total_loss.backward()
+                        grad_norm = torch.nn.utils.clip_grad_norm_((self.parameters()), self.wm_config.gradient_clip)
+                        self.optimizer.step()
+                        self.training_curves['gradient_norm'].append(float(grad_norm))
+
+                    epoch_train_loss += float(total_loss.detach().cpu())
                     num_batches += 1
-                    
-                    # Store gradient norm
-                    self.training_curves['gradient_norm'].append(float(grad_norm))
                 
                 avg_train_loss = epoch_train_loss / num_batches if num_batches > 0 else float('inf')
                 training_losses.append(avg_train_loss)
@@ -1315,11 +1549,12 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 'model_confidence': self.model_confidence,
                 'training_samples': len(train_X)
             }
-            
         except Exception as e:
             self.logger.error(f"Model training failed: {e}")
             self.current_mode = WorldModelMode.ERROR_RECOVERY
             return {'training_completed': False, 'error': str(e)}
+        finally:
+            self._train_lock.release()
 
     async def _prepare_training_data_async(self) -> Dict[str, List]:
         """Prepare training data from market history"""
@@ -1328,9 +1563,9 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             
             history_list = list(self.market_history)
             
-            for i in range(self.config.sequence_length, len(history_list)):
+            for i in range(self.wm_config.sequence_length, len(history_list)):
                 # Input sequence
-                sequence = [state['features'] for state in history_list[i-self.config.sequence_length:i]]
+                sequence = [state['features'] for state in history_list[i-self.wm_config.sequence_length:i]]
                 X.append(torch.from_numpy(np.vstack(sequence)).float())
                 
                 # Target values
@@ -1448,7 +1683,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
     async def _generate_scenarios_async(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
         """Generate market scenarios asynchronously"""
         try:
-            if not self.is_trained or len(self.market_history) < self.config.sequence_length:
+            if not self.is_trained or len(self.market_history) < self.wm_config.sequence_length:
                 return {'scenarios_generated': False, 'reason': 'model_not_ready'}
             
             self.current_mode = WorldModelMode.SCENARIO_GENERATION
@@ -1458,7 +1693,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             
             for scenario_id in range(num_scenarios):
                 scenario = await self._generate_single_scenario_async(
-                    self.config.scenario_steps, scenario_id, num_scenarios, market_data
+                    self.wm_config.scenario_steps, scenario_id, num_scenarios, market_data
                 )
                 scenarios.append(scenario)
             
@@ -1467,7 +1702,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 'timestamp': datetime.datetime.now().isoformat(),
                 'scenarios': scenarios,
                 'parameters': {
-                    'steps': self.config.scenario_steps,
+                    'steps': self.wm_config.scenario_steps,
                     'num_scenarios': num_scenarios,
                     'model_confidence': self.model_confidence
                 }
@@ -1481,7 +1716,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             self.logger.info(format_operator_message(
                 message=f"Generated {num_scenarios} scenarios",
                 icon="🎭",
-                steps=self.config.scenario_steps,
+                steps=self.wm_config.scenario_steps,
                 diversity=f"{scenario_metrics['diversity']:.3f}",
                 avg_confidence=f"{scenario_metrics['avg_confidence']:.3f}"
             ))
@@ -1502,7 +1737,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         """Generate a single market scenario asynchronously"""
         try:
             # Start with current market state
-            current_sequence = [state['features'] for state in list(self.market_history)[-self.config.sequence_length:]]
+            current_sequence = [state['features'] for state in list(self.market_history)[-self.wm_config.sequence_length:]]
             scenario_path = []
             
             # Add scenario-specific noise for diversity
@@ -1525,17 +1760,17 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                     confidence_pred = self.confidence_head(hidden_state)
                     
                     # Add scenario-specific noise
-                    price_pred += torch.randn_like(price_pred) * noise_scale
-                    vol_pred += torch.randn_like(vol_pred) * noise_scale * 0.5
+                    price_pred = price_pred + torch.randn_like(price_pred) * noise_scale
+                    vol_pred = vol_pred + torch.randn_like(vol_pred) * noise_scale * 0.5
                     
                     # Create step prediction
                     step_prediction = {
                         'step': step,
-                        'price_changes': price_pred.cpu().numpy()[0],
-                        'volatility_predictions': vol_pred.cpu().numpy()[0],
-                        'regime_probabilities': regime_pred.cpu().numpy()[0],
-                        'confidence': float(confidence_pred.cpu().numpy()[0, 0]),
-                        'predicted_regime': int(torch.argmax(regime_pred, dim=1).cpu().numpy()[0])
+                        'price_changes': price_pred.detach().cpu().numpy()[0],
+                        'volatility_predictions': vol_pred.detach().cpu().numpy()[0],
+                        'regime_probabilities': regime_pred.detach().cpu().numpy()[0],
+                        'confidence': float(confidence_pred.detach().cpu().numpy()[0, 0]),
+                        'predicted_regime': int(torch.argmax(regime_pred, dim=1).detach().cpu().numpy()[0])
                     }
                     
                     scenario_path.append(step_prediction)
@@ -1770,11 +2005,11 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             
             # Determine new mode based on state
             if not self.is_trained:
-                if len(self.market_history) < self.config.min_training_samples:
+                if len(self.market_history) < self.wm_config.min_training_samples:
                     new_mode = WorldModelMode.DATA_COLLECTION
                 else:
                     new_mode = WorldModelMode.TRAINING
-            elif self.model_confidence < self.config.min_prediction_quality:
+            elif self.model_confidence < self.wm_config.min_prediction_quality:
                 new_mode = WorldModelMode.CALIBRATION
             elif self.prediction_quality > 0.8:
                 new_mode = WorldModelMode.OPTIMIZATION
@@ -1821,12 +2056,12 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 return
             
             # Check training quality
-            if self.is_trained and self.training_quality < self.config.min_training_quality:
+            if self.is_trained and self.training_quality < self.wm_config.min_training_quality:
                 self._health_status = 'warning'
                 return
             
             # Check prediction quality
-            if self.prediction_quality < self.config.min_prediction_quality:
+            if self.prediction_quality < self.wm_config.min_prediction_quality:
                 self._health_status = 'warning'
                 return
             
@@ -1882,18 +2117,23 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             # Adapt learning rate based on training progress
             if self.is_trained and len(self.training_curves['val_loss']) >= 10:
                 recent_val_losses = list(self.training_curves['val_loss'])[-10:]
-                val_loss_trend = np.polyfit(range(len(recent_val_losses)), recent_val_losses, 1)[0]
+                try:
+                    val_loss_trend = np.polyfit(range(len(recent_val_losses)), recent_val_losses, 1)[0]
+                except Exception:
+                    val_loss_trend = 0.0
                 
                 current_lr = self.optimizer.param_groups[0]['lr']
                 
                 if val_loss_trend > 0:  # Loss increasing
-                    new_lr = current_lr * 0.95
-                    for param_group in self.optimizer.param_groups:
-                        param_group['lr'] = max(new_lr, 1e-6)
-                elif val_loss_trend < -0.01:  # Loss decreasing significantly
-                    new_lr = current_lr * 1.02
-                    for param_group in self.optimizer.param_groups:
-                        param_group['lr'] = min(new_lr, 1e-2)
+                    new_lr = current_lr
+                    if val_loss_trend > 0:  # Loss increasing
+                        new_lr = current_lr * 0.95
+                        for param_group in self.optimizer.param_groups:
+                            param_group['lr'] = max(new_lr, 1e-6)
+                    elif val_loss_trend < -0.01:  # Loss decreasing significantly
+                        new_lr = current_lr * 1.02
+                        for param_group in self.optimizer.param_groups:
+                            param_group['lr'] = min(new_lr, 1e-2)
             
         except Exception as e:
             self.logger.warning(f"Model parameter adaptation failed: {e}")
@@ -1967,7 +2207,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 thesis_parts.append(f"Scenarios: {scenario_count} generated, {diversity:.2f} diversity")
             
             # Data status
-            data_sufficiency = len(self.market_history) / self.config.history_size
+            data_sufficiency = len(self.market_history) / self.wm_config.history_size
             thesis_parts.append(f"Data: {data_sufficiency:.0%} capacity utilized")
             
             # Performance indicators
@@ -2000,9 +2240,9 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 predictions = result['predictions']
                 predictions_data.update({
                     'latest_predictions': {
-                        'price_changes': predictions['price_changes'].tolist(),
-                        'volatility_predictions': predictions['volatility_predictions'].tolist(),
-                        'regime_probabilities': predictions['regime_probabilities'].tolist(),
+                        'price_changes': predictions['price_changes'].tolist() if hasattr(predictions['price_changes'], 'tolist') else list(predictions['price_changes']),
+                        'volatility_predictions': predictions['volatility_predictions'].tolist() if hasattr(predictions['volatility_predictions'], 'tolist') else list(predictions['volatility_predictions']),
+                        'regime_probabilities': predictions['regime_probabilities'].tolist() if hasattr(predictions['regime_probabilities'], 'tolist') else list(predictions['regime_probabilities']),
                         'confidence': predictions['confidence'],
                         'predicted_regime': predictions['predicted_regime'],
                         'confidence_level': predictions['confidence_level'],
@@ -2037,11 +2277,11 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             # World model analytics
             analytics_data = {
                 'model_architecture': {
-                    'input_size': self.config.input_size,
-                    'hidden_size': self.config.hidden_size,
-                    'num_layers': self.config.num_layers,
-                    'sequence_length': self.config.sequence_length,
-                    'attention_heads': self.config.attention_heads
+                    'input_size': self.wm_config.input_size,
+                    'hidden_size': self.wm_config.hidden_size,
+                    'num_layers': self.wm_config.num_layers,
+                    'sequence_length': self.wm_config.sequence_length,
+                    'attention_heads': self.wm_config.attention_heads
                 },
                 'performance_metrics': {
                     'training_quality': self.training_quality,
@@ -2079,7 +2319,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 'training_confidence': self.training_quality,
                 'confidence_history': list(self.confidence_history)[-20:] if self.confidence_history else [],
                 'confidence_classification': await self._classify_confidence_level_async(float(self.model_confidence)),
-                'is_reliable': self.model_confidence > self.config.confidence_threshold,
+                'is_reliable': self.model_confidence > self.wm_config.confidence_threshold,
                 'recommendations': await self._generate_confidence_recommendations_async()
             }
             
@@ -2110,7 +2350,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             if not self.is_trained:
                 recommendations.append("Model training required before reliable predictions")
             
-            if len(self.market_history) < self.config.min_training_samples:
+            if len(self.market_history) < self.wm_config.min_training_samples:
                 recommendations.append("Collect more market data for improved accuracy")
             
             if self.prediction_quality < 0.5:
@@ -2148,11 +2388,11 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         }
         analytics_data = {
             'model_architecture': {
-                'input_size': self.config.input_size,
-                'hidden_size': self.config.hidden_size,
-                'num_layers': self.config.num_layers,
-                'sequence_length': self.config.sequence_length,
-                'attention_heads': self.config.attention_heads
+                'input_size': self.wm_config.input_size,
+                'hidden_size': self.wm_config.hidden_size,
+                'num_layers': self.wm_config.num_layers,
+                'sequence_length': self.wm_config.sequence_length,
+                'attention_heads': self.wm_config.attention_heads
             },
             'performance_metrics': {
                 'training_quality': self.training_quality,
@@ -2177,7 +2417,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             'training_confidence': self.training_quality,
             'confidence_history': list(self.confidence_history)[-20:] if self.confidence_history else [],
             'confidence_classification': 'very_low',
-            'is_reliable': self.model_confidence > self.config.confidence_threshold,
+            'is_reliable': self.model_confidence > self.wm_config.confidence_threshold,
             'recommendations': ["Collect more market data for improved accuracy"]
         }
 
@@ -2196,13 +2436,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         processing_time = (time.time() - start_time) * 1000
         
         # Update circuit breaker
-        self.circuit_breaker['failures'] += 1
-        self.circuit_breaker['last_failure'] = time.time()
-        
-        if self.circuit_breaker['failures'] >= self.circuit_breaker['threshold']:
-            self.circuit_breaker['state'] = 'OPEN'
-            self._health_status = 'critical'
-            self.current_mode = WorldModelMode.ERROR_RECOVERY
+        self._trip_circuit_breaker()
         
         # Log error with context
         error_context = self.error_pinpointer.analyze_error(error, "EnhancedWorldModel")
@@ -2248,11 +2482,11 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         }
         analytics_data = {
             'model_architecture': {
-                'input_size': self.config.input_size,
-                'hidden_size': self.config.hidden_size,
-                'num_layers': self.config.num_layers,
-                'sequence_length': self.config.sequence_length,
-                'attention_heads': self.config.attention_heads
+                'input_size': self.wm_config.input_size,
+                'hidden_size': self.wm_config.hidden_size,
+                'num_layers': self.wm_config.num_layers,
+                'sequence_length': self.wm_config.sequence_length,
+                'attention_heads': self.wm_config.attention_heads
             },
             'performance_metrics': {
                 'training_quality': self.training_quality,
@@ -2294,20 +2528,26 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
 
     def _record_success(self, processing_time: float):
         """Record successful processing"""
-        self.performance_tracker.record_metric(
-            'EnhancedWorldModel', 'world_model_processing', processing_time, True
-        )
+        try:
+            self.performance_tracker.record_metric(
+                'EnhancedWorldModel', 'world_model_processing', processing_time, True
+            )
+        except Exception:
+            pass
         
-        # Reset circuit breaker on success
-        if self.circuit_breaker['state'] == 'OPEN':
+        # Reset circuit breaker on success (if HALF_OPEN -> CLOSED)
+        if self.circuit_breaker['state'] in ('OPEN', 'HALF_OPEN'):
             self.circuit_breaker['failures'] = 0
             self.circuit_breaker['state'] = 'CLOSED'
 
     def _record_failure(self, error: Exception):
         """Record processing failure"""
-        self.performance_tracker.record_metric(
-            'EnhancedWorldModel', 'world_model_processing', 0, False
-        )
+        try:
+            self.performance_tracker.record_metric(
+                'EnhancedWorldModel', 'world_model_processing', 0, False
+            )
+        except Exception:
+            pass
 
     # ================== PUBLIC INTERFACE METHODS ==================
 
@@ -2324,7 +2564,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             training_quality = self.training_quality
             
             # Data availability
-            data_sufficiency = min(1.0, len(self.market_history) / (self.config.sequence_length * 2))
+            data_sufficiency = min(1.0, len(self.market_history) / (self.wm_config.sequence_length * 2))
             
             # Recent prediction metrics
             latest_confidence = 0.0
@@ -2334,7 +2574,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             # Feature importance diversity
             feature_diversity = 0.0
             if self.feature_importance:
-                variances = [info.get('variance', 0.0) for info in self.feature_importance.values()]
+                variances = [info.get('variance', 0.0) for info in self.feature_importance.values() if isinstance(info, dict) and 'variance' in info]
                 feature_diversity = np.mean(variances) if variances else 0.0
             
             # Circuit breaker status
@@ -2497,7 +2737,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             base_confidence += self.stability_score * 0.2
             
             # Confidence from data sufficiency
-            data_confidence = min(0.1, len(self.market_history) / (self.config.sequence_length * 2) * 0.1)
+            data_confidence = min(0.1, len(self.market_history) / (self.wm_config.sequence_length * 2) * 0.1)
             base_confidence += data_confidence
             
             # Penalty for circuit breaker issues
@@ -2599,9 +2839,9 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             familiarity = 0.5  # Baseline
             
             # Check if we have sufficient historical data for these conditions
-            if len(self.market_history) > self.config.sequence_length:
+            if len(self.market_history) > self.wm_config.sequence_length:
                 # Simple heuristic: more data = more familiarity
-                data_sufficiency = min(1.0, len(self.market_history) / self.config.history_size)
+                data_sufficiency = min(1.0, len(self.market_history) / self.wm_config.history_size)
                 familiarity += data_sufficiency * 0.3
             
             # Check volatility familiarity
@@ -2649,9 +2889,9 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 self.logger.info(format_operator_message(
                     message="Rebuilding neural networks due to genome changes",
                     icon="🧬",
-                    hidden_size=self.config.hidden_size,
-                    num_layers=self.config.num_layers,
-                    attention_heads=self.config.attention_heads
+                    hidden_size=self.wm_config.hidden_size,
+                    num_layers=self.wm_config.num_layers,
+                    attention_heads=self.wm_config.attention_heads
                 ))
                 
                 # Reinitialize neural components
@@ -2670,8 +2910,8 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             
             # Update optimizer parameters even without architecture changes
             for param_group in self.optimizer.param_groups:
-                param_group['lr'] = self.config.learning_rate
-                param_group['weight_decay'] = self.config.weight_decay
+                param_group['lr'] = self.wm_config.learning_rate
+                param_group['weight_decay'] = self.wm_config.weight_decay
             
             self.logger.info(f"Genome updated: {len([k for k, v in genome.items() if old_config.get(k) != v])} parameters changed")
             
@@ -2690,8 +2930,8 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 # Prefer common sizes for efficiency
                 size_options = [32, 48, 64, 96, 128, 192, 256, 384, 512]
                 current_idx = size_options.index(old_val) if old_val in size_options else 2
-                new_idx = np.clip(current_idx + np.random.choice([-2, -1, 0, 1, 2]), 0, len(size_options) - 1)
-                g["hidden_size"] = size_options[new_idx]
+                new_idx = int(np.clip(current_idx + np.random.choice([-2, -1, 0, 1, 2]), 0, len(size_options) - 1))
+                g["hidden_size"] = int(size_options[new_idx])
                 mutations.append(f"hidden_size: {old_val} → {g['hidden_size']}")
                 
             if np.random.rand() < mutation_rate:
@@ -2702,7 +2942,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             if np.random.rand() < mutation_rate:
                 old_val = g["attention_heads"]
                 head_options = [2, 4, 8, 16]
-                g["attention_heads"] = np.random.choice(head_options)
+                g["attention_heads"] = int(np.random.choice(head_options))
                 mutations.append(f"attention_heads: {old_val} → {g['attention_heads']}")
                 
             if np.random.rand() < mutation_rate:
@@ -2713,7 +2953,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             # Hyperparameter mutations
             if np.random.rand() < mutation_rate:
                 old_val = g["learning_rate"]
-                multiplier = np.random.uniform(0.5, 2.0)
+                multiplier = float(np.random.uniform(0.5, 2.0))
                 g["learning_rate"] = float(np.clip(old_val * multiplier, 1e-5, 1e-2))
                 mutations.append(f"learning_rate: {old_val:.1e} → {g['learning_rate']:.1e}")
                 
@@ -2725,12 +2965,12 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             if np.random.rand() < mutation_rate:
                 old_val = g["batch_size"]
                 batch_options = [16, 24, 32, 48, 64, 96, 128]
-                g["batch_size"] = np.random.choice(batch_options)
+                g["batch_size"] = int(np.random.choice(batch_options))
                 mutations.append(f"batch_size: {old_val} → {g['batch_size']}")
             
             if np.random.rand() < mutation_rate:
                 old_val = g["weight_decay"]
-                multiplier = np.random.uniform(0.1, 10.0)
+                multiplier = float(np.random.uniform(0.1, 10.0))
                 g["weight_decay"] = float(np.clip(old_val * multiplier, 1e-6, 1e-3))
                 mutations.append(f"weight_decay: {old_val:.1e} → {g['weight_decay']:.1e}")
             
@@ -2819,17 +3059,17 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 
                 try:
                     with torch.no_grad():
-                        child_params = getattr(child, 'parameters', lambda: [])()
-                        self_params = getattr(self, 'parameters', lambda: [])()
-                        other_params = getattr(other, 'parameters', lambda: [])()
+                        child_params = list(cast(nn.Module, child).parameters())
+                        self_params = list(cast(nn.Module, self).parameters())
+                        other_params = list(cast(nn.Module, other).parameters())
                         
                         for child_param, self_param, other_param in zip(
                             child_params, self_params, other_params
                         ):
                             if child_param.shape == self_param.shape == other_param.shape:
                                 # Weighted combination instead of random selection
-                                alpha = self_weight + np.random.normal(0, 0.1)
-                                alpha = np.clip(alpha, 0, 1)
+                                alpha = float(self_weight + np.random.normal(0, 0.1))
+                                alpha = float(np.clip(alpha, 0, 1))
                                 child_param.data = alpha * self_param.data + (1 - alpha) * other_param.data
                     
                     self.logger.info("Neural weight crossover completed with weighted blending")
@@ -2869,6 +3109,9 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
     def reset(self) -> None:
         """Enhanced reset with comprehensive state cleanup"""
         super().reset()
+
+        # Stop monitoring while resetting
+        self._stop_monitoring_thread()
         
         # Reset mixin states (reset components directly)
         # Clear trading state
@@ -2917,11 +3160,14 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         self.external_model_sources.clear()
         self.ensemble_weights.clear()
         
+        # Restart monitoring
+        self._start_monitoring()
+
         self.logger.info("[RELOAD] Enhanced World Model reset - all state cleared")
 
     def stop_monitoring(self):
         """Stop background monitoring"""
-        self._monitoring_active = False
+        self._stop_monitoring_thread()
 
     def get_health_status(self) -> Dict[str, Any]:
         """Get comprehensive health status"""
@@ -2935,7 +3181,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             'training_quality': self.training_quality,
             'stability_score': self.stability_score,
             'is_trained': self.is_trained,
-            'data_sufficiency': len(self.market_history) / self.config.history_size
+            'data_sufficiency': len(self.market_history) / self.wm_config.history_size
         }
 
     def get_world_model_report(self) -> str:
@@ -2974,7 +3220,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         cb_status = "[RED] OPEN" if self.circuit_breaker['state'] == 'OPEN' else "[GREEN] CLOSED"
         
         # Data sufficiency
-        data_sufficiency = len(self.market_history) / self.config.history_size
+        data_sufficiency = len(self.market_history) / self.wm_config.history_size
         if data_sufficiency > 0.8:
             data_status = "[OK] Excellent"
         elif data_sufficiency > 0.5:
@@ -3011,7 +3257,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                     prediction_trend = "[STATS] Stable"
         
         return f"""
-🌍 ENHANCED WORLD MODEL v4.0
+🌍 ENHANCED WORLD MODEL v4.1
 ═══════════════════════════════════════════════════
 🧠 Model Status: {model_status} ({self.model_confidence:.3f})
 [TOOL] Current Mode: {mode_status}
@@ -3025,12 +3271,12 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
 • Data Quality: {data_status} ({data_sufficiency:.1%})
 
 🏗️ NEURAL ARCHITECTURE
-• Input Features: {self.config.input_size}
-• Hidden Units: {self.config.hidden_size}
-• LSTM Layers: {self.config.num_layers}
-• Attention Heads: {self.config.attention_heads}
-• Sequence Length: {self.config.sequence_length}
-• Dropout Rate: {self.config.dropout:.2f}
+• Input Features: {self.wm_config.input_size}
+• Hidden Units: {self.wm_config.hidden_size}
+• LSTM Layers: {self.wm_config.num_layers}
+• Attention Heads: {self.wm_config.attention_heads}
+• Sequence Length: {self.wm_config.sequence_length}
+• Dropout Rate: {self.wm_config.dropout:.2f}
 
 [STATS] PERFORMANCE METRICS
 • Model Confidence: {self.model_confidence:.3f}
@@ -3039,37 +3285,37 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
 • Stability Score: {self.stability_score:.3f}
 
 [SAVE] DATA STATUS
-• Market History: {len(self.market_history)}/{self.config.history_size}
+• Market History: {len(self.market_history)}/{self.wm_config.history_size}
 • Feature History: {len(self.feature_history)}
 • Prediction History: {len(self.prediction_history)}
 • Training Sessions: {len(self.training_history)}
 • Attention Patterns: {len(self.attention_patterns)}
 
 [TOOL] TRAINING CONFIGURATION
-• Learning Rate: {self.config.learning_rate:.1e}
-• Batch Size: {self.config.batch_size}
-• Weight Decay: {self.config.weight_decay:.1e}
-• Gradient Clip: {self.config.gradient_clip}
+• Learning Rate: {self.wm_config.learning_rate:.1e}
+• Batch Size: {self.wm_config.batch_size}
+• Weight Decay: {self.wm_config.weight_decay:.1e}
+• Gradient Clip: {self.wm_config.gradient_clip}
 • Device: {self.device}
 
 [CHART] RECENT ACTIVITY
-• Predictions (last hour): {len([p for p in self.prediction_history if (datetime.datetime.now() - datetime.datetime.fromisoformat(p['timestamp'])).total_seconds() < 3600])}
-• High-confidence predictions: {len([p for p in self.prediction_history if p['confidence'] > 0.7])}
+• Predictions (last hour): {len([p for p in self.prediction_history if ('timestamp' in p and (datetime.datetime.now() - datetime.datetime.fromisoformat(p['timestamp'])).total_seconds() < 3600)])}
+• High-confidence predictions: {len([p for p in self.prediction_history if p.get('confidence', 0) > 0.7])}
 • Scenario cache: {'Available' if self.scenario_cache else 'Empty'}
 • Feature importance: {len(self.feature_importance)} tracked features
 
 🧬 EVOLUTIONARY GENOME
-• Hidden Size: {self.genome['hidden_size']}
-• Layers: {self.genome['num_layers']}
-• Attention Heads: {self.genome['attention_heads']}
-• Sequence Length: {self.genome['sequence_length']}
-• Learning Rate: {self.genome['learning_rate']:.1e}
-• Dropout: {self.genome['dropout']:.2f}
+• Hidden Size: {self.genome.get('hidden_size')}
+• Layers: {self.genome.get('num_layers')}
+• Attention Heads: {self.genome.get('attention_heads')}
+• Sequence Length: {self.genome.get('sequence_length')}
+• Learning Rate: {self.genome.get('learning_rate'):.1e}
+• Dropout: {self.genome.get('dropout'):.2f}
 
 🎭 SCENARIO GENERATION
 • Last Generation: {self.scenario_cache.get('timestamp', 'Never') if self.scenario_cache else 'Never'}
 • Scenarios Available: {len(self.scenario_cache.get('scenarios', [])) if self.scenario_cache else 0}
-• Scenario Steps: {self.config.scenario_steps}
+• Scenario Steps: {self.wm_config.scenario_steps}
 
 🔗 EXTERNAL INTEGRATIONS
 • Model Sources: {len(self.external_model_sources)}
@@ -3127,7 +3373,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             'latest_session': latest_training,
             'training_quality': self.training_quality,
             'model_confidence': self.model_confidence,
-            'data_sufficiency': len(self.market_history) / self.config.min_training_samples
+            'data_sufficiency': len(self.market_history) / max(1, self.wm_config.min_training_samples)
         }
 
     def set_external_model_source(self, source_name: str, source_data: Dict[str, Any]) -> None:
@@ -3163,7 +3409,10 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             self.logger.error(f"Legacy step operation failed: {e}")
             return {'error': str(e)}
         finally:
-            loop.close()
+            try:
+                loop.close()
+            except Exception:
+                pass
 
     def fit_on_history(self, validation_split: float = 0.2, epochs: int = 10) -> Dict[str, float]:
         """Legacy training interface"""
@@ -3189,7 +3438,10 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             self.logger.error(f"Legacy training failed: {e}")
             return {'loss': float('inf'), 'val_loss': float('inf'), 'confidence': 0.0}
         finally:
-            loop.close()
+            try:
+                loop.close()
+            except Exception:
+                pass
 
     def simulate_scenarios(self, steps: int = 10, num_scenarios: int = 5) -> List[Dict[str, Any]]:
         """Legacy scenario generation interface"""
@@ -3200,14 +3452,22 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         
         try:
             # Set scenario parameters
-            old_steps = self.config.scenario_steps
-            self.config.scenario_steps = steps
+            old_steps = self.wm_config.scenario_steps
+            self.wm_config.scenario_steps = steps
+            try:
+                self.set_config(self.wm_config.to_dict())
+            except Exception:
+                self.config = self.wm_config.to_dict()  # type: ignore[assignment]
             
             # Generate scenarios
             result = loop.run_until_complete(self._generate_scenarios_async({}))
             
             # Restore original parameters
-            self.config.scenario_steps = old_steps
+            self.wm_config.scenario_steps = old_steps
+            try:
+                self.set_config(self.wm_config.to_dict())
+            except Exception:
+                self.config = self.wm_config.to_dict()  # type: ignore[assignment]
             
             if result.get('scenarios_generated'):
                 return result.get('scenarios', [])
@@ -3218,7 +3478,10 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             self.logger.error(f"Legacy scenario generation failed: {e}")
             return []
         finally:
-            loop.close()
+            try:
+                loop.close()
+            except Exception:
+                pass
 
     def fit(self, feature1: np.ndarray, feature2: np.ndarray, seq_len: int = 50,
             batch_size: int = 64, epochs: int = 5) -> float:
@@ -3227,7 +3490,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         for i, (f1, f2) in enumerate(zip(feature1, feature2)):
             market_state = {
                 'timestamp': datetime.datetime.now().isoformat(),
-                'features': np.array([f1, f2] + [0.0] * (self.config.input_size - 2), dtype=np.float32),
+                'features': np.array([f1, f2] + [0.0] * (self.wm_config.input_size - 2), dtype=np.float32),
                 'prices': {'instrument_1': f1 * 2000, 'instrument_2': f2 * 2000},
                 'market_snapshot': {},
                 'risk_snapshot': {},
@@ -3272,9 +3535,7 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
 
 def create_world_model_from_config(config_dict: Dict[str, Any]) -> EnhancedWorldModel:
     """Factory function to create world model from configuration"""
-    model = EnhancedWorldModel()
-    # Use setattr to avoid linter issues with attribute assignment
-    setattr(model, 'config', WorldModelConfig(**config_dict))
+    model = EnhancedWorldModel(WorldModelConfig.from_dict(config_dict).to_dict())
     if hasattr(model, 'set_genome'):
         model.set_genome(config_dict)  # type: ignore
     return model
@@ -3289,6 +3550,12 @@ def create_world_model_ensemble(configs: List[Dict[str, Any]]) -> List[EnhancedW
     
     return ensemble
 
-
-# Alias for backward compatibility
-RNNWorldModel = EnhancedWorldModel
+# Example usage:
+if __name__ == "__main__":
+    config = {
+        "input_size": 10,
+        "hidden_size": 20,
+        "output_size": 2
+    }
+    model = create_world_model_from_config(config)
+    print("World model created:", model)

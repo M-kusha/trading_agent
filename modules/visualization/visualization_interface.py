@@ -309,7 +309,27 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
         try:
             # Circuit breaker check
             if self.is_disabled:
-                return self._generate_disabled_response()
+                disabled = self._generate_disabled_response()
+                # Ensure provides contract with thesis
+                return {
+                    'visualization_data': {
+                        'total_records': 0,
+                        'performance_metrics': {},
+                        'recent_alerts': [],
+                        'dashboard_ready': False,
+                        'streaming_enabled': self.streaming_enabled,
+                        'statistics': self.viz_stats.copy(),
+                        'regime_analytics': {},
+                        'session_analytics': {}
+                    },
+                    'performance_metrics': {},
+                    'dashboard_data': {},
+                    'alert_timeline': [],
+                    'analytics_reports': {'status': 'disabled'},
+                    'streaming_data': {'enabled': self.streaming_enabled, 'clients': len(self.stream_clients)},
+                    'system_status': {'status': 'disabled', 'reason': disabled.get('reason', 'circuit_breaker_triggered')},
+                    '_thesis': 'VisualizationInterface disabled due to circuit breaker'
+                }
             
             # Process comprehensive data from SmartInfoBus
             data_results = await self._process_comprehensive_data()
@@ -330,7 +350,32 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
             # Reset error count on successful processing
             self.error_count = 0
             
-            return data_results
+            # Compose return payload to satisfy provides contract
+            thesis = f"Processed {data_results.get('records_processed', 0)} records; dashboard_ready={bool(self.dashboard_data)}"
+            return {
+                'visualization_data': {
+                    'total_records': len(self.records),
+                    'performance_metrics': {k: list(v)[-10:] for k, v in self.performance_metrics.items()},
+                    'recent_alerts': list(self.alert_history)[-5:],
+                    'dashboard_ready': bool(self.dashboard_data),
+                    'streaming_enabled': self.streaming_enabled,
+                    'statistics': self.viz_stats.copy(),
+                    'regime_analytics': dict(self.regime_analytics),
+                    'session_analytics': dict(self.session_analytics)
+                },
+                'performance_metrics': self.get_performance_summary(),
+                'dashboard_data': self.dashboard_data or {},
+                'alert_timeline': list(self.alert_history),
+                'analytics_reports': {
+                    'performance_report': self.generate_performance_report()
+                },
+                'streaming_data': {
+                    'enabled': self.streaming_enabled,
+                    'clients': len(self.stream_clients)
+                },
+                'system_status': self.get_health_status(),
+                '_thesis': thesis
+            }
             
         except Exception as e:
             return await self._handle_processing_error(e, start_time)
@@ -847,10 +892,27 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
                 threshold=self.circuit_breaker_threshold
             ))
         
+        thesis = f"Visualization processing error: {error_context}"
+        # Return minimal but complete provides payload with thesis
         return {
-            'records_processed': 0,
-            'error': str(error_context),
-            'status': 'error'
+            'visualization_data': {
+                'total_records': len(self.records),
+                'performance_metrics': {k: list(v)[-10:] for k, v in self.performance_metrics.items()},
+                'recent_alerts': list(self.alert_history)[-5:],
+                'dashboard_ready': bool(self.dashboard_data),
+                'streaming_enabled': self.streaming_enabled,
+                'statistics': self.viz_stats.copy(),
+                'regime_analytics': dict(self.regime_analytics),
+                'session_analytics': dict(self.session_analytics),
+                'status': 'error'
+            },
+            'performance_metrics': self.get_performance_summary(),
+            'dashboard_data': self.dashboard_data or {},
+            'alert_timeline': list(self.alert_history),
+            'analytics_reports': {'error': str(error_context)},
+            'streaming_data': {'enabled': self.streaming_enabled, 'clients': len(self.stream_clients)},
+            'system_status': {'status': 'error', 'error_count': self.error_count},
+            '_thesis': thesis
         }
 
     def _generate_disabled_response(self) -> Dict[str, Any]:

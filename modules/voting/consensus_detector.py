@@ -1,13 +1,16 @@
 """
-🤝 Enhanced Consensus Detector with SmartInfoBus Integration v3.0
-Advanced consensus analysis and agreement measurement for voting committees
+🤝 Enhanced Consensus Detector with SmartInfoBus Integration v3.1
+Production-grade consensus analysis and agreement measurement for voting committees.
 """
+
+from __future__ import annotations
 
 import asyncio
 import time
+import math
 import numpy as np
-import datetime
-from typing import Dict, Any, List, Optional, Tuple
+import datetime as dt
+from typing import Dict, Any, List, Optional, Tuple, Deque
 from collections import deque, defaultdict
 
 # ═══════════════════════════════════════════════════════════════════
@@ -25,176 +28,209 @@ from modules.monitoring.performance_tracker import PerformanceTracker
 
 @module(
     name="ConsensusDetector",
-    version="3.0.0",
+    version="3.1.0",
     category="voting",
     provides=[
-        "consensus_score", "consensus_quality", "consensus_components", "directional_consensus",
-        "magnitude_consensus", "confidence_consensus", "member_contributions", "consensus_trends",
-        "quality_metrics", "consensus_recommendations"
+        "consensus_score",
+        "consensus_quality",
+        "consensus_components",
+        "directional_consensus",
+        "magnitude_consensus",
+        "confidence_consensus",
+        "member_contributions",
+        "consensus_trends",
+        "quality_metrics",
+        "consensus_recommendations",
     ],
     requires=[
-        "votes", "raw_proposals", "member_confidences", "voting_summary", "alpha_weights",
-        "blended_action", "market_context", "agreement_score"
-        # Removed "consensus_direction" to break circular dependency
+        "votes",
+        "raw_proposals",
+        "member_confidences",
+        "voting_summary",
+        "alpha_weights",
+        "blended_action",
+        "market_context",
+        "agreement_score",
+        # IMPORTANT: do NOT require "consensus_direction" to avoid circular deps.
     ],
-    description="Advanced consensus analysis and agreement measurement for voting committees",
+    description="Production-grade consensus analysis and agreement measurement for voting committees",
     thesis_required=True,
     health_monitoring=True,
     performance_tracking=True,
     error_handling=True,
-    timeout_ms=80,
+    timeout_ms=90,
     priority=3,
     explainable=True,
-    hot_reload=True
+    hot_reload=True,
 )
 class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    🤝 PRODUCTION-GRADE Consensus Detector v3.0
-    
-    Advanced consensus detection system with:
-    - Multi-dimensional agreement analysis across directional, magnitude, and confidence metrics
-    - Adaptive quality weighting and temporal smoothing for robust consensus measurement
-    - Comprehensive member contribution tracking and influence analysis
-    - SmartInfoBus zero-wiring architecture
-    - Real-time consensus trend analysis and quality assessment
+    🤝 PRODUCTION-GRADE Consensus Detector v3.1
+
+    Key capabilities:
+    - Multi-dimensional agreement (direction, magnitude, confidence, network, temporal)
+    - Adaptive smoothing/weighting based on market regime & volatility
+    - Robust member contribution & reliability tracking
+    - Circuit breaker, health metrics, performance telemetry
+    - Zero-wiring SmartInfoBus integration with BUS-safe defaults
     """
 
-    def _initialize(self):
-        """Initialize advanced consensus detection systems"""
-        # Initialize base mixins
+    # ────────────────────────────
+    # INIT
+    # ────────────────────────────
+    def _initialize(self) -> None:
+        # Initialize core systems & mixins
         self._initialize_trading_state()
         self._initialize_state_management()
-        self._initialize_advanced_systems()
-        
-        # Enhanced consensus configuration
-        self.n_members = self.config.get('n_members', 5)
-        self.threshold = self.config.get('threshold', 0.6)
-        self.quality_weighting = self.config.get('quality_weighting', True)
-        self.temporal_smoothing = self.config.get('temporal_smoothing', True)
-        self.consensus_methods = self.config.get('consensus_methods', ['cosine_agreement', 'direction_alignment', 'confidence_weighted'])
-        self.debug = self.config.get('debug', False)
-        
-        # Initialize comprehensive consensus methods
-        self.consensus_algorithms = self._initialize_consensus_algorithms()
-        
-        # Core consensus state with enhanced tracking
-        self.last_consensus = 0.0
-        self.consensus_quality = 0.0
-        self.consensus_components = {}
-        self.consensus_history = deque(maxlen=100)
-        self.consensus_trends = deque(maxlen=50)
-        
-        # Advanced consensus dimensions
-        self.directional_consensus = 0.0
-        self.magnitude_consensus = 0.0
-        self.confidence_consensus = 0.0
-        self.temporal_stability = 0.0
-        self.network_consensus = 0.0
-        
-        # Member contribution and influence tracking
-        self.member_contributions = defaultdict(lambda: {
-            'avg_alignment': 0.5,
-            'consistency': 0.5,
-            'influence_weight': 1.0 / max(self.n_members, 1),
-            'consensus_contribution': 0.5,
-            'reliability_score': 0.5,
-            'coordination_factor': 0.0
-        })
-        
-        # Advanced quality and performance metrics
-        self.quality_metrics = {
-            'coherence': 0.5,
-            'stability': 0.5,
-            'diversity': 0.5,
-            'reliability': 0.5,
-            'predictive_accuracy': 0.5,
-            'temporal_consistency': 0.5
-        }
-        
-        # Consensus intelligence parameters
-        self.consensus_intelligence = {
-            'smoothing_alpha': 0.3,
-            'stability_window': 10,
-            'quality_threshold': 0.7,
-            'trend_sensitivity': 0.15,
-            'adaptation_rate': 0.12,
-            'confidence_weighting': 0.8,
-            'temporal_memory': 0.85
-        }
-        
-        # Market condition adaptation
-        self.market_adaptation = {
-            'regime_adjustments': {
-                'trending': {'weight_multiplier': 1.1, 'stability_factor': 1.2},
-                'ranging': {'weight_multiplier': 0.95, 'stability_factor': 0.9},
-                'volatile': {'weight_multiplier': 0.85, 'stability_factor': 0.7},
-                'breakout': {'weight_multiplier': 1.2, 'stability_factor': 1.3},
-                'reversal': {'weight_multiplier': 1.05, 'stability_factor': 1.1},
-                'unknown': {'weight_multiplier': 1.0, 'stability_factor': 1.0}
-            },
-            'volatility_adjustments': {
-                'very_low': 0.9,
-                'low': 0.95,
-                'medium': 1.0,
-                'high': 1.1,
-                'extreme': 1.2
-            }
-        }
-        
-        # Enhanced statistics and analytics
-        self.consensus_stats = {
-            'total_computations': 0,
-            'high_consensus_count': 0,
-            'low_consensus_count': 0,
-            'avg_consensus': 0.5,
-            'consensus_volatility': 0.0,
-            'quality_score': 0.5,
-            'trend_accuracy': 0.0,
-            'prediction_accuracy': 0.0,
-            'session_start': datetime.datetime.now().isoformat()
-        }
-        
-        # Temporal and regime analysis
-        self.regime_consensus_history = defaultdict(lambda: deque(maxlen=30))
-        self.consensus_patterns = defaultdict(list)
-        self.prediction_history = deque(maxlen=20)
-        
-        # Advanced analytics and insights
-        self.consensus_insights = {
-            'dominant_patterns': [],
-            'member_dynamics': {},
-            'consensus_predictors': {},
-            'quality_drivers': {}
-        }
-        
-        # Circuit breaker for error handling
-        self.error_count = 0
-        self.circuit_breaker_threshold = 5
-        self.is_disabled = False
-        
-        # Generate initialization thesis
-        self._generate_initialization_thesis()
-        
-        version = getattr(self.metadata, 'version', '3.0.0') if self.metadata else '3.0.0'
-        self.logger.info(format_operator_message(
-            icon="🤝",
-            message=f"Consensus Detector v{version} initialized",
-            members=self.n_members,
-            threshold=f"{self.threshold:.3f}",
-            methods=len(self.consensus_methods),
-            quality_weighting=self.quality_weighting,
-            temporal_smoothing=self.temporal_smoothing
-        ))
+        self._init_systems()
 
-    def _initialize_advanced_systems(self):
-        """Initialize all modern system components"""
+        # Config (with safe defaults)
+        self.n_members: int = int(self.config.get("n_members", 5))
+        self.threshold: float = float(self.config.get("threshold", 0.6))
+        self.quality_weighting: bool = bool(self.config.get("quality_weighting", True))
+        self.temporal_smoothing: bool = bool(self.config.get("temporal_smoothing", True))
+        self.consensus_methods: List[str] = list(
+            self.config.get(
+                "consensus_methods",
+                ["cosine_agreement", "direction_alignment", "confidence_weighted"],
+            )
+        )
+        self.debug: bool = bool(self.config.get("debug", False))
+
+        # Algorithms registry
+        self.consensus_algorithms = self._initialize_consensus_algorithms()
+
+        # Core state
+        self.last_consensus: float = 0.0
+        self.consensus_quality: float = 0.0
+        self.consensus_components: Dict[str, float] = {}
+        self.consensus_history: deque = deque(maxlen=150)
+        self.consensus_trends: deque = deque(maxlen=80)
+
+        # Dimensions
+        self.directional_consensus: float = 0.0
+        self.magnitude_consensus: float = 0.0
+        self.confidence_consensus: float = 0.0
+        self.temporal_stability: float = 0.0
+        self.network_consensus: float = 0.0
+
+        # Member analytics
+        self.member_contributions: Dict[int, Dict[str, float]] = defaultdict(
+            lambda: {
+                "avg_alignment": 0.5,
+                "consistency": 0.5,
+                "influence_weight": 1.0 / max(self.n_members, 1),
+                "consensus_contribution": 0.5,
+                "reliability_score": 0.5,
+                "coordination_factor": 0.0,
+            }
+        )
+
+        # Quality metrics (will be combined into 'overall_effectiveness')
+        self.quality_metrics: Dict[str, float] = {
+            "coherence": 0.5,
+            "stability": 0.5,
+            "diversity": 0.5,
+            "reliability": 0.5,
+            "predictive_accuracy": 0.5,
+            "temporal_consistency": 0.5,
+            "overall_effectiveness": 0.5,
+        }
+
+        # Intelligence knobs
+        self.consensus_intelligence: Dict[str, Any] = {
+            "smoothing_alpha": 0.3,
+            "stability_window": 10,
+            "quality_threshold": 0.7,
+            "trend_sensitivity": 0.15,
+            "adaptation_rate": 0.12,
+            "confidence_weighting": 0.8,
+            "temporal_memory": 0.85,
+            "max_dim": 256,  # cap padded vector length defensively
+        }
+
+        # Market adaptation
+        self.market_adaptation: Dict[str, Any] = {
+            "regime_adjustments": {
+                "trending": {"weight_multiplier": 1.10, "stability_factor": 1.20},
+                "ranging": {"weight_multiplier": 0.95, "stability_factor": 0.90},
+                "volatile": {"weight_multiplier": 0.85, "stability_factor": 0.70},
+                "breakout": {"weight_multiplier": 1.20, "stability_factor": 1.30},
+                "reversal": {"weight_multiplier": 1.05, "stability_factor": 1.10},
+                "unknown": {"weight_multiplier": 1.00, "stability_factor": 1.00},
+            },
+            "volatility_adjustments": {
+                "very_low": 0.90,
+                "low": 0.95,
+                "medium": 1.00,
+                "high": 1.10,
+                "extreme": 1.20,
+            },
+        }
+
+        # Stats & analysis
+        self.consensus_stats: Dict[str, Any] = {
+            "total_computations": 0,
+            "high_consensus_count": 0,
+            "low_consensus_count": 0,
+            "avg_consensus": 0.5,
+            "consensus_volatility": 0.0,
+            "quality_score": 0.5,
+            "trend_accuracy": 0.0,
+            "prediction_accuracy": 0.0,
+            "session_start": dt.datetime.now().isoformat(),
+        }
+        self.regime_consensus_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=40))
+        self.consensus_patterns: Dict[str, Any] = defaultdict(list)
+        self.prediction_history: deque = deque(maxlen=40)
+        self.consensus_insights: Dict[str, Any] = {
+            "dominant_patterns": [],
+            "member_dynamics": {},
+            "consensus_predictors": {},
+            "quality_drivers": {},
+        }
+
+        # Circuit breaker
+        self.error_count: int = 0
+        self.circuit_breaker_threshold: int = 5
+        self.is_disabled: bool = False
+
+        # Concurrency guard (avoid overlapping process() runs)
+        self._process_lock: asyncio.Lock = asyncio.Lock()
+
+        # Initialization thesis + early BUS publish
+        self._generate_initialization_thesis()
+        version = getattr(self.metadata, "version", "3.1.0") if self.metadata else "3.1.0"
+        self.logger.info(
+            format_operator_message(
+                icon="🤝",
+                message=f"Consensus Detector v{version} initialized",
+                members=self.n_members,
+                threshold=f"{self.threshold:.3f}",
+                methods=len(self.consensus_methods),
+                quality_weighting=self.quality_weighting,
+                temporal_smoothing=self.temporal_smoothing,
+            )
+        )
+        try:
+            self.smart_bus.set(
+                "consensus_score",
+                float(self.last_consensus),
+                module="ConsensusDetector",
+                thesis="Initial consensus score placeholder",
+            )
+        except Exception:
+            pass
+
+    def _init_systems(self) -> None:
+        """Initialize logging, error handling, telemetry, health."""
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
             name="ConsensusDetector",
             log_path="logs/voting/consensus_detector.log",
             max_lines=5000,
             operator_mode=True,
-            plain_english=True
+            plain_english=True,
         )
         self.error_pinpointer = ErrorPinpointer()
         self.error_handler = create_error_handler("ConsensusDetector", self.error_pinpointer)
@@ -204,1923 +240,1445 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
         self.health_monitor = HealthMonitor()
 
     def _initialize_consensus_algorithms(self) -> Dict[str, Dict[str, Any]]:
-        """Initialize comprehensive consensus algorithm definitions"""
+        """Definitions for algorithm metadata (used for dynamic weighting)."""
         return {
-            'cosine_agreement': {
-                'description': 'Cosine similarity analysis for directional agreement measurement',
-                'parameters': {'normalization': True, 'weight_threshold': 0.1},
-                'use_cases': ['directional_consensus', 'vector_alignment'],
-                'effectiveness_threshold': 0.7,
-                'computational_cost': 'low'
+            "cosine_agreement": {
+                "description": "Cosine similarity for directional agreement",
+                "parameters": {"normalization": True, "weight_threshold": 0.1},
+                "use_cases": ["directional_consensus", "vector_alignment"],
+                "effectiveness_threshold": 0.7,
+                "computational_cost": "low",
             },
-            'direction_alignment': {
-                'description': 'Binary direction alignment analysis for voting coherence',
-                'parameters': {'confidence_weighting': True, 'threshold_adaptive': True},
-                'use_cases': ['binary_voting', 'directional_coherence'],
-                'effectiveness_threshold': 0.8,
-                'computational_cost': 'low'
+            "direction_alignment": {
+                "description": "Binary direction alignment w/ confidence weighting",
+                "parameters": {"confidence_weighting": True, "threshold_adaptive": True},
+                "use_cases": ["binary_voting", "directional_coherence"],
+                "effectiveness_threshold": 0.8,
+                "computational_cost": "low",
             },
-            'confidence_weighted': {
-                'description': 'Confidence-weighted consensus with reliability factors',
-                'parameters': {'variance_penalty': 0.3, 'reliability_boost': 1.2},
-                'use_cases': ['quality_consensus', 'reliability_analysis'],
-                'effectiveness_threshold': 0.75,
-                'computational_cost': 'medium'
+            "confidence_weighted": {
+                "description": "Consensus weighted by member confidence & reliability",
+                "parameters": {"variance_penalty": 0.3, "reliability_boost": 1.2},
+                "use_cases": ["quality_consensus", "reliability_analysis"],
+                "effectiveness_threshold": 0.75,
+                "computational_cost": "medium",
             },
-            'magnitude_consensus': {
-                'description': 'Action magnitude similarity for strength agreement',
-                'parameters': {'cv_normalization': True, 'outlier_handling': True},
-                'use_cases': ['strength_consensus', 'magnitude_alignment'],
-                'effectiveness_threshold': 0.6,
-                'computational_cost': 'low'
+            "magnitude_consensus": {
+                "description": "Agreement on action magnitude/strength",
+                "parameters": {"cv_normalization": True, "outlier_handling": True},
+                "use_cases": ["strength_consensus", "magnitude_alignment"],
+                "effectiveness_threshold": 0.6,
+                "computational_cost": "low",
             },
-            'network_consensus': {
-                'description': 'Network-based consensus considering member interconnections',
-                'parameters': {'network_threshold': 0.5, 'influence_weighting': True},
-                'use_cases': ['network_analysis', 'influence_consensus'],
-                'effectiveness_threshold': 0.7,
-                'computational_cost': 'high'
+            "network_consensus": {
+                "description": "Network-based consensus considering pairwise similarities",
+                "parameters": {"network_threshold": 0.5, "influence_weighting": True},
+                "use_cases": ["network_analysis", "influence_consensus"],
+                "effectiveness_threshold": 0.7,
+                "computational_cost": "high",
             },
-            'temporal_consensus': {
-                'description': 'Time-series consensus analysis with trend consideration',
-                'parameters': {'window_size': 10, 'trend_weighting': 0.3},
-                'use_cases': ['temporal_analysis', 'trend_consensus'],
-                'effectiveness_threshold': 0.65,
-                'computational_cost': 'medium'
-            }
+            "temporal_consensus": {
+                "description": "Time-series stability & predictive agreement",
+                "parameters": {"window_size": 10, "trend_weighting": 0.3},
+                "use_cases": ["temporal_analysis", "trend_consensus"],
+                "effectiveness_threshold": 0.65,
+                "computational_cost": "medium",
+            },
         }
 
-    def _generate_initialization_thesis(self):
-        """Generate comprehensive initialization thesis"""
+    def _generate_initialization_thesis(self) -> None:
         thesis = f"""
-        Consensus Detector v3.0 Initialization Complete:
-        
-        Advanced Consensus Framework:
-        - Multi-member committee analysis: {self.n_members} members with {self.threshold:.1%} consensus threshold
-        - Comprehensive agreement algorithms with quality weighting and temporal smoothing
-        - Advanced member contribution tracking and influence analysis capabilities
-        - Market-aware consensus adaptation based on regime and volatility conditions
-        
-        Current Configuration:
-        - Consensus methods: {len(self.consensus_algorithms)} distinct approaches available
-        - Quality weighting: {'enabled' if self.quality_weighting else 'disabled'} with adaptive component weights
-        - Temporal smoothing: {'enabled' if self.temporal_smoothing else 'disabled'} with α={self.consensus_intelligence['smoothing_alpha']:.2f}
-        - Stability analysis: {self.consensus_intelligence['stability_window']}-step window for trend detection
-        
-        Consensus Intelligence Features:
-        - Market regime adaptation with volatility-aware scaling
-        - Multi-dimensional analysis across direction, magnitude, and confidence metrics
-        - Real-time member contribution and influence tracking
-        - Comprehensive quality metrics and performance analytics
-        
-        Advanced Capabilities:
-        - Network consensus analysis for complex member interactions
-        - Temporal consensus patterns with predictive accuracy measurement
-        - Adaptive quality thresholds based on market conditions
-        - Real-time consensus trend analysis and recommendation generation
-        
-        Expected Outcomes:
-        - Enhanced decision quality through comprehensive agreement measurement
-        - Improved voting coherence with member contribution optimization
-        - Optimal consensus sensitivity adapted to current market conditions
-        - Transparent consensus decisions with detailed quality analysis and actionable insights
-        """
-        
-        self.smart_bus.set('consensus_detector_initialization', {
-            'status': 'initialized',
-            'thesis': thesis,
-            'timestamp': datetime.datetime.now().isoformat(),
-            'configuration': {
-                'members': self.n_members,
-                'threshold': self.threshold,
-                'consensus_methods': list(self.consensus_algorithms.keys()),
-                'intelligence_parameters': self.consensus_intelligence
-            }
-        }, module='ConsensusDetector', thesis=thesis)
+Consensus Detector v3.1 Initialization:
+- Members={self.n_members}, Threshold={self.threshold:.3f}
+- Methods={len(self.consensus_algorithms)} (active: {', '.join(self.consensus_methods)})
+- Quality weighting={'on' if self.quality_weighting else 'off'}, Temporal smoothing={'on' if self.temporal_smoothing else 'off'} (α={self.consensus_intelligence['smoothing_alpha']:.2f})
+- Regime/volatility adaptive with stability window={self.consensus_intelligence['stability_window']} steps
+"""
+        self.smart_bus.set(
+            "consensus_detector_initialization",
+            {
+                "status": "initialized",
+                "thesis": thesis,
+                "timestamp": dt.datetime.now().isoformat(),
+                "configuration": {
+                    "members": self.n_members,
+                    "threshold": self.threshold,
+                    "consensus_methods": list(self.consensus_algorithms.keys()),
+                    "intelligence_parameters": self.consensus_intelligence,
+                },
+            },
+            module="ConsensusDetector",
+            thesis=thesis,
+        )
 
+    # ────────────────────────────
+    # MAIN PROCESS
+    # ────────────────────────────
     async def process(self, **inputs) -> Dict[str, Any]:
-        """
-        Modern async processing with comprehensive consensus analysis
-        
-        Returns:
-            Dict containing consensus results, quality metrics, and recommendations
-        """
-        start_time = time.time()
-        
-        try:
-            # Circuit breaker check
-            if self.is_disabled:
-                return self._generate_disabled_response()
-            
-            # Get comprehensive voting data from SmartInfoBus
-            voting_data = await self._get_comprehensive_voting_data()
-            
-            # Update consensus parameters based on market conditions
-            await self._update_consensus_parameters_comprehensive(voting_data)
-            
-            # Perform comprehensive consensus analysis
-            consensus_analysis = await self._perform_comprehensive_consensus_analysis(voting_data)
-            
-            # Update member contribution profiles
-            contribution_updates = await self._update_member_contributions_comprehensive(voting_data)
-            
-            # Analyze consensus trends and patterns
-            trend_analysis = await self._analyze_consensus_trends_comprehensive(voting_data)
-            
-            # Calculate comprehensive quality metrics
-            quality_analysis = await self._calculate_comprehensive_quality_metrics()
-            
-            # Generate intelligent consensus recommendations
-            recommendations = await self._generate_intelligent_consensus_recommendations(
-                consensus_analysis, quality_analysis, trend_analysis
-            )
-            
-            # Generate comprehensive thesis
-            thesis = await self._generate_comprehensive_consensus_thesis(
-                consensus_analysis, quality_analysis, recommendations
-            )
-            
-            # Create comprehensive results
-            results = {
-                'consensus_score': self.last_consensus,
-                'consensus_quality': self.consensus_quality,
-                'consensus_components': self.consensus_components.copy(),
-                'directional_consensus': self.directional_consensus,
-                'magnitude_consensus': self.magnitude_consensus,
-                'confidence_consensus': self.confidence_consensus,
-                'member_contributions': self._get_member_contributions_summary(),
-                'consensus_trends': self._get_consensus_trends_summary(),
-                'quality_metrics': quality_analysis,
-                'consensus_recommendations': recommendations,
-                'health_metrics': self._get_health_metrics()
-            }
-            
-            # Update SmartInfoBus with comprehensive thesis
-            await self._update_smartinfobus_comprehensive(results, thesis)
-            
-            # Record performance metrics
-            processing_time = (time.time() - start_time) * 1000
-            self.performance_tracker.record_metric('ConsensusDetector', 'process_time', processing_time, True)
-            
-            # Reset error count on successful processing
-            self.error_count = 0
-            
-            return results
-            
-        except Exception as e:
-            return await self._handle_processing_error(e, start_time)
+        """Run a full consensus pass with adaptation, analysis, and BUS updates."""
+        async with self._process_lock:
+            start = time.time()
+            try:
+                if self.is_disabled:
+                    return self._generate_disabled_response()
 
+                voting_data = await self._get_comprehensive_voting_data()
+                await self._update_consensus_parameters_comprehensive(voting_data)
+                consensus_analysis = await self._perform_comprehensive_consensus_analysis(voting_data)
+                contributions = await self._update_member_contributions_comprehensive(voting_data)
+                trends = await self._analyze_consensus_trends_comprehensive(voting_data)
+                quality = await self._calculate_comprehensive_quality_metrics()
+
+                recommendations = await self._generate_intelligent_consensus_recommendations(
+                    consensus_analysis, quality, trends
+                )
+                thesis = await self._generate_comprehensive_consensus_thesis(
+                    consensus_analysis, quality, recommendations
+                )
+
+                results: Dict[str, Any] = {
+                    "consensus_score": float(self.last_consensus),
+                    "consensus_quality": float(self.consensus_quality),
+                    "consensus_components": dict(self.consensus_components),
+                    "directional_consensus": float(self.directional_consensus),
+                    "magnitude_consensus": float(self.magnitude_consensus),
+                    "confidence_consensus": float(self.confidence_consensus),
+                    "member_contributions": self._get_member_contributions_summary(),
+                    "consensus_trends": self._get_consensus_trends_summary(),
+                    "quality_metrics": dict(self.quality_metrics),
+                    "consensus_recommendations": list(recommendations),
+                    "health_metrics": self._get_health_metrics(),
+                    "_thesis": thesis,
+                }
+
+                await self._update_smartinfobus_comprehensive(results, thesis)
+                self.performance_tracker.record_metric(
+                    "ConsensusDetector", "process_time_ms", (time.time() - start) * 1000.0, True
+                )
+                self.error_count = 0
+                return results
+
+            except Exception as e:
+                return await self._handle_processing_error(e, start)
+
+    # ────────────────────────────
+    # BUS IO
+    # ────────────────────────────
     async def _get_comprehensive_voting_data(self) -> Dict[str, Any]:
-        """Get comprehensive voting data using modern SmartInfoBus patterns"""
+        """Pull everything we may need from the bus with safe fallbacks."""
         try:
+            g = self.smart_bus.get
             return {
-                'votes': self.smart_bus.get('votes', 'ConsensusDetector') or [],
-                'raw_proposals': self.smart_bus.get('raw_proposals', 'ConsensusDetector') or [],
-                'member_confidences': self.smart_bus.get('member_confidences', 'ConsensusDetector') or [],
-                'voting_summary': self.smart_bus.get('voting_summary', 'ConsensusDetector') or {},
-                'alpha_weights': self.smart_bus.get('alpha_weights', 'ConsensusDetector') or [],
-                'blended_action': self.smart_bus.get('blended_action', 'ConsensusDetector') or [],
-                'market_context': self.smart_bus.get('market_context', 'ConsensusDetector') or {},
-                'agreement_score': self.smart_bus.get('agreement_score', 'ConsensusDetector') or 0.5,
-                'consensus_direction': self.smart_bus.get('consensus_direction', 'ConsensusDetector') or 'neutral',
-                'market_regime': self.smart_bus.get('market_regime', 'ConsensusDetector') or 'unknown',
-                'volatility_data': self.smart_bus.get('volatility_data', 'ConsensusDetector') or {}
+                "votes": g("votes", "ConsensusDetector") or [],
+                "raw_proposals": g("raw_proposals", "ConsensusDetector") or [],
+                "member_confidences": g("member_confidences", "ConsensusDetector") or [],
+                "voting_summary": g("voting_summary", "ConsensusDetector") or {},
+                "alpha_weights": g("alpha_weights", "ConsensusDetector") or [],
+                "blended_action": g("blended_action", "ConsensusDetector") or [],
+                "market_context": g("market_context", "ConsensusDetector") or {},
+                "agreement_score": g("agreement_score", "ConsensusDetector") or 0.5,
+                "consensus_direction": g("consensus_direction", "ConsensusDetector") or "neutral",
+                "market_regime": g("market_regime", "ConsensusDetector") or "unknown",
+                "volatility_data": g("volatility_data", "ConsensusDetector") or {},
             }
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "ConsensusDetector")
-            self.logger.warning(f"Voting data retrieval incomplete: {error_context}")
+            ctx = self.error_pinpointer.analyze_error(e, "ConsensusDetector")
+            self.logger.warning(f"Voting data retrieval incomplete: {ctx}")
             return self._get_safe_voting_defaults()
 
-    async def _update_consensus_parameters_comprehensive(self, voting_data: Dict[str, Any]):
-        """Update comprehensive consensus parameters with intelligent adaptation"""
+    # ────────────────────────────
+    # ADAPTIVE PARAMS
+    # ────────────────────────────
+    async def _update_consensus_parameters_comprehensive(self, voting_data: Dict[str, Any]) -> None:
+        """Adapt smoothing & internal weights to market conditions + agreement."""
         try:
-            # Extract market intelligence
-            market_context = voting_data.get('market_context', {})
-            regime = voting_data.get('market_regime', 'unknown')
-            volatility_data = voting_data.get('volatility_data', {})
-            agreement_score = voting_data.get('agreement_score', 0.5)
-            
-            # Calculate market consensus factors
-            market_consensus_factor = self._calculate_market_consensus_factor(voting_data)
-            
-            # Apply regime-based adaptations
-            regime_config = self.market_adaptation['regime_adjustments'].get(regime, {})
-            weight_multiplier = regime_config.get('weight_multiplier', 1.0)
-            stability_factor = regime_config.get('stability_factor', 1.0)
-            
-            # Apply volatility-based adaptations (robust to numeric or dict inputs)
-            volatility_level = self._extract_volatility_level(volatility_data)
-            volatility_multiplier = self.market_adaptation['volatility_adjustments'].get(volatility_level, 1.0)
-            
-            # Update smoothing parameters
-            old_alpha = self.consensus_intelligence['smoothing_alpha']
+            regime = str(voting_data.get("market_regime", "unknown"))
+            vol_level = self._extract_volatility_level(voting_data.get("volatility_data", {}))
+            agreement = float(voting_data.get("agreement_score", 0.5))
+
+            # Market consensus factor: combines agreement, regime & vol
+            mcf = self._calculate_market_consensus_factor(voting_data)
+
+            # Regime/volatility influence
             base_alpha = 0.3
-            
-            # Adjust smoothing based on market conditions
-            if regime == 'volatile' or volatility_level in ['high', 'extreme']:
-                # More smoothing in volatile conditions
+            if regime == "volatile" or vol_level in {"high", "extreme"}:
                 new_alpha = base_alpha * 0.7
-            elif regime == 'trending':
-                # Less smoothing in trending conditions (more responsive)
+            elif regime == "trending":
                 new_alpha = base_alpha * 1.3
             else:
                 new_alpha = base_alpha
-            
-            # Apply market consensus factor
-            new_alpha *= market_consensus_factor
-            new_alpha = np.clip(new_alpha, 0.1, 0.8)
-            
-            # Update with momentum
-            adaptation_rate = self.consensus_intelligence['adaptation_rate']
-            self.consensus_intelligence['smoothing_alpha'] = (
-                old_alpha * (1 - adaptation_rate) + new_alpha * adaptation_rate
-            )
-            
-            # Update stability window based on volatility
-            if volatility_level in ['high', 'extreme']:
-                self.consensus_intelligence['stability_window'] = min(15, self.consensus_intelligence['stability_window'] + 1)
-            elif volatility_level in ['very_low', 'low']:
-                self.consensus_intelligence['stability_window'] = max(5, self.consensus_intelligence['stability_window'] - 1)
-            
-            # Log significant parameter changes
-            alpha_change = abs(self.consensus_intelligence['smoothing_alpha'] - old_alpha)
-            if alpha_change > 0.05:
-                self.logger.info(format_operator_message(
-                    icon="⚙️",
-                    message="Consensus parameters adapted",
-                    old_alpha=f"{old_alpha:.3f}",
-                    new_alpha=f"{self.consensus_intelligence['smoothing_alpha']:.3f}",
-                    regime=regime,
-                    volatility=volatility_level,
-                    market_factor=f"{market_consensus_factor:.3f}"
-                ))
-                
+
+            # Adjust based on market consensus factor (more consensus → less smoothing)
+            new_alpha *= 0.9 + 0.2 * mcf  # clamp effect
+            new_alpha = float(np.clip(new_alpha, 0.1, 0.8))
+
+            # Smoothly adapt
+            old_alpha = float(self.consensus_intelligence["smoothing_alpha"])
+            rate = float(self.consensus_intelligence["adaptation_rate"])
+            self.consensus_intelligence["smoothing_alpha"] = float(old_alpha * (1 - rate) + new_alpha * rate)
+
+            # Adjust confidence weighting with agreement (more agreement → slightly higher weight)
+            old_cw = float(self.consensus_intelligence["confidence_weighting"])
+            target_cw = float(np.clip(0.6 + 0.6 * agreement, 0.6, 1.2))
+            self.consensus_intelligence["confidence_weighting"] = float(old_cw * (1 - rate) + target_cw * rate)
+
+            # Adjust stability window with volatility
+            if vol_level in {"high", "extreme"}:
+                self.consensus_intelligence["stability_window"] = int(min(18, self.consensus_intelligence["stability_window"] + 1))
+            elif vol_level in {"very_low", "low"}:
+                self.consensus_intelligence["stability_window"] = int(max(6, self.consensus_intelligence["stability_window"] - 1))
+
+            if abs(self.consensus_intelligence["smoothing_alpha"] - old_alpha) > 0.05:
+                self.logger.info(
+                    format_operator_message(
+                        icon="⚙️",
+                        message="Consensus parameters adapted",
+                        old_alpha=f"{old_alpha:.3f}",
+                        new_alpha=f"{self.consensus_intelligence['smoothing_alpha']:.3f}",
+                        confidence_weighting=f"{self.consensus_intelligence['confidence_weighting']:.2f}",
+                        regime=regime,
+                        volatility=vol_level,
+                        market_factor=f"{mcf:.3f}",
+                    )
+                )
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "consensus_parameters_update")
-            self.logger.warning(f"Consensus parameter update failed: {error_context}")
+            ctx = self.error_pinpointer.analyze_error(e, "consensus_parameters_update")
+            self.logger.warning(f"Consensus parameter update failed: {ctx}")
 
     def _calculate_market_consensus_factor(self, voting_data: Dict[str, Any]) -> float:
-        """Calculate comprehensive market consensus factor"""
+        """Blend agreement + regime + volatility + confidence into [0,1]."""
         try:
-            consensus_factors = []
-            
-            # Existing agreement factor
-            agreement_score = voting_data.get('agreement_score', 0.5)
-            consensus_factors.append(agreement_score)
-            
-            # Market regime factor
-            regime = voting_data.get('market_regime', 'unknown')
-            regime_factor = {
-                'trending': 0.8,    # Trending markets often have clearer consensus
-                'ranging': 0.6,     # Ranging markets have mixed consensus
-                'volatile': 0.3,    # Volatile markets have low consensus
-                'breakout': 0.9,    # Breakouts have high consensus
-                'reversal': 0.4,    # Reversals have conflicted consensus
-                'unknown': 0.5
-            }.get(regime, 0.5)
-            consensus_factors.append(regime_factor)
-            
-            # Volatility factor (accepts dict or numeric and normalizes to level)
-            volatility_data = voting_data.get('volatility_data', {})
-            volatility_level = self._extract_volatility_level(volatility_data)
-            volatility_factor = {
-                'very_low': 0.9, 'low': 0.8, 'medium': 0.6, 'high': 0.4, 'extreme': 0.2
-            }.get(volatility_level, 0.6)
-            consensus_factors.append(volatility_factor)
-            
-            # Member confidence factor
-            member_confidences = voting_data.get('member_confidences', [])
-            if member_confidences:
-                avg_confidence = np.mean(member_confidences)
-                confidence_consistency = 1.0 - np.std(member_confidences)
-                confidence_factor = (avg_confidence + confidence_consistency) / 2.0
-                consensus_factors.append(confidence_factor)
-            
-            # Weighted combination
-            if consensus_factors:
-                weights = [0.3, 0.25, 0.25, 0.2][:len(consensus_factors)]
-                weights = np.array(weights) / np.sum(weights)  # Normalize
-                total_factor = np.average(consensus_factors, weights=weights)
-            else:
-                total_factor = 0.5
-            
-            return np.clip(total_factor, 0.0, 1.0)
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "market_consensus_factor_calculation")
+            parts: List[float] = []
+
+            # 1) Agreement
+            parts.append(float(voting_data.get("agreement_score", 0.5)))
+
+            # 2) Regime
+            regime = str(voting_data.get("market_regime", "unknown"))
+            parts.append(
+                {
+                    "trending": 0.8,
+                    "ranging": 0.6,
+                    "volatile": 0.3,
+                    "breakout": 0.9,
+                    "reversal": 0.4,
+                    "unknown": 0.5,
+                }.get(regime, 0.5)
+            )
+
+            # 3) Volatility
+            vol_level = self._extract_volatility_level(voting_data.get("volatility_data", {}))
+            parts.append({"very_low": 0.9, "low": 0.8, "medium": 0.6, "high": 0.4, "extreme": 0.2}.get(vol_level, 0.6))
+
+            # 4) Confidence (avg & dispersion)
+            confidences = self._extract_member_confidences(voting_data)
+            if confidences:
+                avg_c = float(np.mean(confidences))
+                disp = float(np.std(confidences))
+                conf_factor = float(np.clip((avg_c + (1.0 - disp)) / 2.0, 0.0, 1.0))
+                parts.append(conf_factor)
+
+            w = np.array([0.30, 0.25, 0.25, 0.20][: len(parts)], dtype=np.float32)
+            w = w / float(w.sum()) if float(w.sum()) > 0 else w
+            return float(np.clip(float(np.dot(np.array(parts, dtype=np.float32), w)), 0.0, 1.0))
+        except Exception:
             return 0.5
 
     def _extract_volatility_level(self, volatility_data: Any) -> str:
-        """Normalize incoming volatility data to one of: very_low, low, medium, high, extreme.
-
-        Accepts either a dict with a 'level' key or a numeric value. Falls back to 'medium' if unknown.
-        """
+        """Map various volatility representations -> one of {very_low,low,medium,high,extreme}."""
         try:
-            # If already a mapping with a declared level, trust it
             if isinstance(volatility_data, dict):
-                level = volatility_data.get('level')
-                if isinstance(level, str) and level in {'very_low', 'low', 'medium', 'high', 'extreme'}:
+                level = volatility_data.get("level")
+                if isinstance(level, str) and level in {"very_low", "low", "medium", "high", "extreme"}:
                     return level
-                # Try common numeric fields
-                for key in ('value', 'atr', 'sigma', 'vol'):
+                for key in ("value", "atr", "sigma", "vol"):
                     if key in volatility_data:
-                        val = float(volatility_data[key])
-                        return self._map_numeric_volatility_to_level(val)
-                return 'medium'
-
-            # If it's a numeric type, map to a level
+                        return self._map_numeric_volatility_to_level(float(volatility_data[key]))
+                return "medium"
             if isinstance(volatility_data, (int, float, np.floating)):
                 return self._map_numeric_volatility_to_level(float(volatility_data))
-
-            return 'medium'
+            return "medium"
         except Exception:
-            return 'medium'
+            return "medium"
 
-    def _map_numeric_volatility_to_level(self, value: float) -> str:
-        """Map a numeric volatility value to a discrete level. Thresholds are heuristic and safe.
-
-        Assumes value is a non-negative number. The mapping is conservative to avoid overreacting.
-        """
+    def _map_numeric_volatility_to_level(self, v: float) -> str:
         try:
-            v = abs(float(value))
-            # Heuristic thresholds; adjust if config provides better ranges in future
+            v = abs(float(v))
             if v < 0.01:
-                return 'very_low'
-            elif v < 0.02:
-                return 'low'
-            elif v < 0.05:
-                return 'medium'
-            elif v < 0.1:
-                return 'high'
-            else:
-                return 'extreme'
+                return "very_low"
+            if v < 0.02:
+                return "low"
+            if v < 0.05:
+                return "medium"
+            if v < 0.10:
+                return "high"
+            return "extreme"
         except Exception:
-            return 'medium'
+            return "medium"
 
+    # ────────────────────────────
+    # CORE CONSENSUS
+    # ────────────────────────────
     async def _perform_comprehensive_consensus_analysis(self, voting_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Perform comprehensive consensus analysis with multiple algorithms"""
         try:
-            self.consensus_stats['total_computations'] += 1
-            
-            # Extract voting actions and confidences
+            self.consensus_stats["total_computations"] += 1
+
             actions = self._extract_voting_actions(voting_data)
             confidences = self._extract_member_confidences(voting_data)
-            
-            if len(actions) < 2:
-                return {'consensus_score': 0.5, 'analysis_status': 'insufficient_data'}
-            
-            # Validate and normalize inputs
-            actions, confidences = await self._validate_and_normalize_inputs(actions, confidences)
-            
-            # Calculate comprehensive consensus components
-            consensus_components = await self._calculate_comprehensive_consensus_components(actions, confidences)
-            
-            # Apply advanced consensus weighting
-            weighted_consensus = await self._apply_advanced_consensus_weighting(
-                consensus_components, actions, confidences, voting_data
-            )
-            
-            # Apply temporal smoothing if enabled
-            final_consensus = await self._apply_temporal_smoothing(weighted_consensus)
-            
-            # Update consensus state
-            await self._update_consensus_state_comprehensive(
-                final_consensus, consensus_components, actions, confidences
-            )
-            
-            # Calculate advanced consensus quality
-            consensus_quality = await self._calculate_advanced_consensus_quality(
-                actions, confidences, consensus_components
-            )
-            
-            # Record comprehensive consensus event
-            await self._record_consensus_event_comprehensive(
-                final_consensus, consensus_components, consensus_quality, voting_data
-            )
-            
-            return {
-                'consensus_score': final_consensus,
-                'consensus_components': consensus_components,
-                'consensus_quality': consensus_quality,
-                'analysis_status': 'complete',
-                'member_count': len(actions),
-                'avg_confidence': np.mean(confidences) if confidences else 0.0
-            }
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "consensus_analysis")
-            self.logger.error(f"Consensus analysis failed: {error_context}")
-            return {'consensus_score': 0.5, 'analysis_status': 'error', 'error': str(error_context)}
 
-    def _extract_voting_actions(self, voting_data: Dict[str, Any]) -> List[np.ndarray]:
-        """Extract voting actions from comprehensive voting data"""
-        try:
-            # Try raw proposals first (most detailed)
-            raw_proposals = voting_data.get('raw_proposals', [])
-            if raw_proposals and len(raw_proposals) >= 2:
-                actions = []
-                for proposal in raw_proposals[:self.n_members]:
-                    if isinstance(proposal, (list, np.ndarray)) and len(proposal) > 0:
-                        actions.append(np.array(proposal, dtype=np.float32))
-                if len(actions) >= 2:
-                    return actions
-            
-            # Fallback to blended action or votes
-            blended_action = voting_data.get('blended_action', [])
-            if blended_action:
-                # Create variations around blended action
-                base_action = np.array(blended_action, dtype=np.float32)
-                actions = [base_action]
-                for i in range(min(self.n_members - 1, 4)):
-                    noise = np.random.randn(*base_action.shape) * 0.1
-                    actions.append((base_action + noise).astype(np.float32))
-                return actions
-            
-            # Final fallback to votes
-            votes = voting_data.get('votes', [])
-            if votes and len(votes) >= 2:
-                return [np.array([float(vote)], dtype=np.float32) for vote in votes[:self.n_members]]
-            
-            return []
-            
+            if len(actions) < 2:
+                return {"consensus_score": 0.5, "analysis_status": "insufficient_data", "member_count": len(actions)}
+
+            actions, confidences = await self._validate_and_normalize_inputs(actions, confidences)
+
+            components = await self._calculate_comprehensive_consensus_components(actions, confidences)
+            weighted = await self._apply_advanced_consensus_weighting(components, actions, confidences, voting_data)
+            final = await self._apply_temporal_smoothing(weighted)
+
+            await self._update_consensus_state_comprehensive(final, components, actions, confidences)
+            q = await self._calculate_advanced_consensus_quality(actions, confidences, components)
+            await self._record_consensus_event_comprehensive(final, components, q, voting_data)
+
+            return {
+                "consensus_score": float(final),
+                "consensus_components": dict(components),
+                "consensus_quality": float(q),
+                "analysis_status": "complete",
+                "member_count": len(actions),
+                "avg_confidence": float(np.mean(confidences)) if confidences else 0.0,
+            }
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "voting_actions_extraction")
+            ctx = self.error_pinpointer.analyze_error(e, "consensus_analysis")
+            self.logger.error(f"Consensus analysis failed: {ctx}")
+            return {"consensus_score": 0.5, "analysis_status": "error", "error": str(ctx)}
+
+    # Input extraction & validation
+    def _extract_voting_actions(self, voting_data: Dict[str, Any]) -> List[np.ndarray]:
+        try:
+            raw = voting_data.get("raw_proposals", [])
+            if raw and len(raw) >= 2:
+                out: List[np.ndarray] = []
+                for p in raw[: self.n_members]:
+                    if isinstance(p, (list, np.ndarray)) and len(p) > 0:
+                        out.append(np.asarray(p, dtype=np.float32).flatten())
+                if len(out) >= 2:
+                    return out
+
+            blended = voting_data.get("blended_action", [])
+            if isinstance(blended, (list, np.ndarray)) and len(blended) > 0:
+                base = np.asarray(blended, dtype=np.float32).flatten()
+                out = [base]
+                # generate a few variants safely (cap dimensions)
+                for _ in range(min(self.n_members - 1, 4)):
+                    noise = np.random.normal(0.0, 0.1, size=min(len(base), self.consensus_intelligence["max_dim"]))
+                    out.append((base[: len(noise)] + noise).astype(np.float32))
+                return out
+
+            votes = voting_data.get("votes", [])
+            if votes and len(votes) >= 2:
+                return [np.array([float(v)], dtype=np.float32) for v in votes[: self.n_members]]
+
+            return []
+        except Exception:
             return []
 
     def _extract_member_confidences(self, voting_data: Dict[str, Any]) -> List[float]:
-        """Extract member confidences from voting data"""
         try:
-            # Try member confidences first
-            confidences = voting_data.get('member_confidences', [])
-            if confidences:
-                return [max(0.0, min(1.0, float(c))) for c in confidences[:self.n_members]]
-            
-            # Fallback to alpha weights as confidence proxy
-            alpha_weights = voting_data.get('alpha_weights', [])
-            if alpha_weights:
-                # Normalize alpha weights as confidence measures
-                weights = np.array(alpha_weights[:self.n_members])
-                if np.sum(weights) > 0:
-                    normalized_weights = weights / np.sum(weights)
-                    return [max(0.1, min(1.0, float(w) * self.n_members)) for w in normalized_weights]
-            
-            # Default to moderate confidence
+            confs = voting_data.get("member_confidences", [])
+            if confs:
+                return [float(np.clip(c, 0.0, 1.0)) for c in confs[: self.n_members]]
+            weights = voting_data.get("alpha_weights", [])
+            if weights:
+                w = np.asarray(weights[: self.n_members], dtype=np.float32)
+                s = float(w.sum())
+                if s > 0:
+                    w = w / s
+                    return [float(np.clip(v * self.n_members, 0.1, 1.0)) for v in w]
             return [0.5] * min(self.n_members, 5)
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "confidence_extraction")
+        except Exception:
             return [0.5] * min(self.n_members, 5)
 
-    async def _validate_and_normalize_inputs(self, actions: List[np.ndarray], 
-                                           confidences: List[float]) -> Tuple[List[np.ndarray], List[float]]:
-        """Validate and normalize voting inputs"""
+    async def _validate_and_normalize_inputs(
+        self, actions: List[np.ndarray], confidences: List[float]
+    ) -> Tuple[List[np.ndarray], List[float]]:
         try:
-            # Ensure equal lengths
-            min_len = min(len(actions), len(confidences), self.n_members)
-            actions = actions[:min_len]
-            confidences = confidences[:min_len]
-            
-            # Validate actions
-            validated_actions = []
-            for action in actions:
-                if isinstance(action, (list, np.ndarray)):
-                    action_array = np.array(action, dtype=np.float32).flatten()
-                    if len(action_array) > 0:
-                        validated_actions.append(action_array)
-            
-            # Validate confidences
-            validated_confidences = [max(0.0, min(1.0, float(c))) for c in confidences]
-            
-            # Ensure we have sufficient data
-            min_validated = min(len(validated_actions), len(validated_confidences))
-            if min_validated < 2:
-                # Create minimal valid data
-                default_action = np.array([0.0], dtype=np.float32)
-                validated_actions = [default_action, default_action.copy()]
-                validated_confidences = [0.5, 0.5]
-            
-            return validated_actions[:min_validated], validated_confidences[:min_validated]
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "input_validation")
-            # Return safe defaults
-            default_action = np.array([0.0], dtype=np.float32)
-            return [default_action, default_action.copy()], [0.5, 0.5]
+            m = min(len(actions), len(confidences), self.n_members)
+            actions = [np.asarray(a, dtype=np.float32).flatten() for a in actions[:m] if len(a) > 0]
+            confidences = [float(np.clip(c, 0.0, 1.0)) for c in confidences[:m]]
 
-    async def _calculate_comprehensive_consensus_components(self, actions: List[np.ndarray], 
-                                                          confidences: List[float]) -> Dict[str, float]:
-        """Calculate comprehensive consensus components using multiple algorithms"""
+            if len(actions) < 2 or len(confidences) < 2:
+                a = np.array([0.0], dtype=np.float32)
+                return [a, a.copy()], [0.5, 0.5]
+
+            # Cap vector dims for safety
+            capped_actions: List[np.ndarray] = []
+            cap = int(self.consensus_intelligence["max_dim"])
+            for a in actions:
+                if a.size > cap:
+                    capped_actions.append(a[:cap].copy())
+                else:
+                    capped_actions.append(a.copy())
+
+            return capped_actions, confidences
+        except Exception:
+            a = np.array([0.0], dtype=np.float32)
+            return [a, a.copy()], [0.5, 0.5]
+
+    # Component calculations
+    async def _calculate_comprehensive_consensus_components(
+        self, actions: List[np.ndarray], confidences: List[float]
+    ) -> Dict[str, float]:
         try:
-            components = {}
-            
-            # 1. Cosine agreement (directional consensus)
-            if 'cosine_agreement' in self.consensus_methods:
-                components['cosine_agreement'] = await self._calculate_cosine_agreement_advanced(actions, confidences)
-            
-            # 2. Direction alignment (binary consensus)
-            if 'direction_alignment' in self.consensus_methods:
-                components['direction_alignment'] = await self._calculate_direction_alignment_advanced(actions, confidences)
-            
-            # 3. Confidence-weighted consensus
-            if 'confidence_weighted' in self.consensus_methods:
-                components['confidence_weighted'] = await self._calculate_confidence_weighted_consensus_advanced(actions, confidences)
-            
-            # 4. Magnitude consensus
-            components['magnitude_consensus'] = await self._calculate_magnitude_consensus_advanced(actions, confidences)
-            
-            # 5. Network consensus (if enabled)
+            comp: Dict[str, float] = {}
+
+            if "cosine_agreement" in self.consensus_methods:
+                comp["cosine_agreement"] = await self._cosine_agreement(actions, confidences)
+
+            if "direction_alignment" in self.consensus_methods:
+                comp["direction_alignment"] = await self._direction_alignment(actions, confidences)
+
+            if "confidence_weighted" in self.consensus_methods:
+                comp["confidence_weighted"] = await self._confidence_weighted(actions, confidences)
+
+            comp["magnitude_consensus"] = await self._magnitude_consensus(actions, confidences)
+
             if len(actions) >= 3:
-                components['network_consensus'] = await self._calculate_network_consensus_advanced(actions, confidences)
-            
-            # 6. Temporal consensus (if sufficient history)
+                comp["network_consensus"] = await self._network_consensus(actions, confidences)
+
             if len(self.consensus_history) >= 3:
-                components['temporal_consensus'] = await self._calculate_temporal_consensus_advanced(actions, confidences)
-            
-            return components
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "consensus_components_calculation")
-            return {'fallback_consensus': 0.5}
+                comp["temporal_consensus"] = await self._temporal_consensus()
 
-    async def _calculate_cosine_agreement_advanced(self, actions: List[np.ndarray], 
-                                                 confidences: List[float]) -> float:
-        """Calculate advanced cosine agreement with confidence weighting"""
+            return comp
+        except Exception:
+            return {"fallback_consensus": 0.5}
+
+    def _pad_pair(self, a: np.ndarray, b: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        L = max(a.size, b.size)
+        if L == 0:
+            return a, b
+        if a.size < L:
+            a = np.pad(a, (0, L - a.size))
+        if b.size < L:
+            b = np.pad(b, (0, L - b.size))
+        return a, b
+
+    async def _cosine_agreement(self, actions: List[np.ndarray], confidences: List[float]) -> float:
         try:
-            agreements = []
-            weights = []
-            
+            vals: List[float] = []
+            ws: List[float] = []
             for i in range(len(actions)):
                 for j in range(i + 1, len(actions)):
-                    a1, a2 = actions[i], actions[j]
-                    
-                    # Ensure same dimensionality
-                    max_len = max(len(a1), len(a2))
-                    a1_padded = np.pad(a1, (0, max_len - len(a1)))
-                    a2_padded = np.pad(a2, (0, max_len - len(a2)))
-                    
-                    # Calculate cosine similarity
-                    norm1, norm2 = np.linalg.norm(a1_padded), np.linalg.norm(a2_padded)
-                    if norm1 > 1e-6 and norm2 > 1e-6:
-                        similarity = np.dot(a1_padded, a2_padded) / (norm1 * norm2)
-                        # Convert to 0-1 scale
-                        agreement = (similarity + 1.0) / 2.0
-                        
-                        # Advanced confidence weighting
-                        conf_weight = (confidences[i] * confidences[j]) ** 0.5  # Geometric mean
-                        quality_weight = min(confidences[i], confidences[j])    # Quality factor
-                        total_weight = conf_weight * quality_weight
-                        
-                        agreements.append(agreement)
-                        weights.append(total_weight)
-            
-            if agreements and sum(weights) > 0:
-                weighted_agreement = np.average(agreements, weights=weights)
-                return float(np.clip(weighted_agreement, 0.0, 1.0))
-            else:
-                return 0.5
-                
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "cosine_agreement_advanced")
+                    a1, a2 = self._pad_pair(actions[i], actions[j])
+                    n1 = float(np.linalg.norm(a1))
+                    n2 = float(np.linalg.norm(a2))
+                    if n1 > 1e-9 and n2 > 1e-9:
+                        sim = float(np.dot(a1, a2) / (n1 * n2))
+                        agree = (sim + 1.0) / 2.0
+                        cw = math.sqrt(max(0.0, confidences[i]) * max(0.0, confidences[j]))
+                        qw = min(confidences[i], confidences[j])
+                        vals.append(agree)
+                        ws.append(max(1e-9, cw * qw))
+            if vals and sum(ws) > 0:
+                return float(np.clip(float(np.average(vals, weights=ws)), 0.0, 1.0))
             return 0.5
-
-    async def _calculate_direction_alignment_advanced(self, actions: List[np.ndarray], 
-                                                    confidences: List[float]) -> float:
-        """Calculate advanced direction alignment with adaptive thresholds"""
-        try:
-            # Multi-dimensional direction analysis
-            alignment_scores = []
-            
-            # Analyze each dimension if multi-dimensional
-            max_dims = max(len(action) for action in actions)
-            
-            for dim in range(max_dims):
-                directions = []
-                valid_confidences = []
-                
-                for action, confidence in zip(actions, confidences):
-                    if dim < len(action) and abs(action[dim]) > 1e-6:
-                        directions.append(np.sign(action[dim]))
-                        valid_confidences.append(confidence)
-                
-                if len(directions) >= 2:
-                    # Calculate weighted directional agreement
-                    positive_weight = sum(conf for dir, conf in zip(directions, valid_confidences) if dir > 0)
-                    negative_weight = sum(conf for dir, conf in zip(directions, valid_confidences) if dir < 0)
-                    total_weight = positive_weight + negative_weight
-                    
-                    if total_weight > 0:
-                        alignment = abs(positive_weight - negative_weight) / total_weight
-                        alignment_scores.append(alignment)
-            
-            if alignment_scores:
-                # Average across dimensions
-                return float(np.mean(alignment_scores))
-            else:
-                return 0.5
-                
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "direction_alignment_advanced")
-            return 0.5
-
-    async def _calculate_confidence_weighted_consensus_advanced(self, actions: List[np.ndarray], 
-                                                              confidences: List[float]) -> float:
-        """Calculate advanced confidence-weighted consensus"""
-        try:
-            if not confidences:
-                return 0.5
-            
-            # Multiple confidence-based metrics
-            confidence_metrics = []
-            
-            # 1. Confidence variance (lower variance = higher consensus)
-            conf_variance = np.var(confidences)
-            conf_mean = np.mean(confidences)
-            if conf_mean > 0:
-                relative_variance = conf_variance / (conf_mean ** 2)
-                variance_consensus = max(0.0, 1.0 - float(relative_variance) * 1.5)
-                confidence_metrics.append(variance_consensus)
-            
-            # 2. High-confidence agreement (focus on confident members)
-            high_conf_threshold = np.percentile(confidences, 70)
-            high_conf_members = [i for i, c in enumerate(confidences) if c >= high_conf_threshold]
-            
-            if len(high_conf_members) >= 2:
-                high_conf_actions = [actions[i] for i in high_conf_members]
-                high_conf_agreement = await self._calculate_action_agreement(high_conf_actions)
-                confidence_metrics.append(high_conf_agreement)
-            
-            # 3. Confidence-action correlation
-            if len(actions) >= 3:
-                action_magnitudes = [np.linalg.norm(action) for action in actions]
-                if np.std(action_magnitudes) > 0 and np.std(confidences) > 0:
-                    correlation = np.corrcoef(confidences, action_magnitudes)[0, 1]
-                    if not np.isnan(correlation):
-                        # High correlation indicates confident members take stronger actions
-                        correlation_consensus = (abs(correlation) + 1.0) / 2.0
-                        confidence_metrics.append(correlation_consensus)
-            
-            if confidence_metrics:
-                return float(np.mean(confidence_metrics))
-            else:
-                return 0.5
-                
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "confidence_weighted_consensus_advanced")
-            return 0.5
-
-    async def _calculate_action_agreement(self, actions: List[np.ndarray]) -> float:
-        """Calculate agreement between a set of actions"""
-        try:
-            if len(actions) < 2:
-                return 0.5
-            
-            agreements = []
-            for i in range(len(actions)):
-                for j in range(i + 1, len(actions)):
-                    a1, a2 = actions[i], actions[j]
-                    
-                    # Ensure same dimensionality
-                    max_len = max(len(a1), len(a2))
-                    a1_padded = np.pad(a1, (0, max_len - len(a1)))
-                    a2_padded = np.pad(a2, (0, max_len - len(a2)))
-                    
-                    # Calculate similarity
-                    norm1, norm2 = np.linalg.norm(a1_padded), np.linalg.norm(a2_padded)
-                    if norm1 > 1e-6 and norm2 > 1e-6:
-                        similarity = np.dot(a1_padded, a2_padded) / (norm1 * norm2)
-                        agreement = (similarity + 1.0) / 2.0
-                        agreements.append(agreement)
-            
-            return float(np.mean(agreements)) if agreements else 0.5
-            
         except Exception:
             return 0.5
 
-    async def _calculate_magnitude_consensus_advanced(self, actions: List[np.ndarray], 
-                                                    confidences: List[float]) -> float:
-        """Calculate advanced magnitude consensus with outlier handling"""
+    async def _direction_alignment(self, actions: List[np.ndarray], confidences: List[float]) -> float:
         try:
-            magnitudes = [np.linalg.norm(action) for action in actions]
-            
-            if len(magnitudes) < 2:
-                return 0.5
-            
-            # Confidence-weighted magnitude analysis
-            weighted_magnitudes = []
-            for mag, conf in zip(magnitudes, confidences):
-                weighted_magnitudes.append(mag * conf)
-            
-            # Calculate multiple magnitude consensus metrics
-            magnitude_metrics = []
-            
-            # 1. Coefficient of variation (lower CV = higher consensus)
-            mean_magnitude = np.mean(weighted_magnitudes)
-            if mean_magnitude > 1e-6:
-                std_magnitude = np.std(weighted_magnitudes)
-                cv = std_magnitude / mean_magnitude
-                cv_consensus = max(0.0, 1.0 - float(cv))
-                magnitude_metrics.append(cv_consensus)
-            
-            # 2. Outlier-robust consensus (using median absolute deviation)
-            median_magnitude = np.median(magnitudes)
-            mad = np.median(np.abs(np.array(magnitudes) - median_magnitude))
-            if mad > 1e-6:
-                outlier_scores = np.abs(np.array(magnitudes) - median_magnitude) / mad
-                # Percentage of non-outliers (outlier threshold = 2.5 MADs)
-                non_outlier_ratio = np.mean(outlier_scores <= 2.5)
-                magnitude_metrics.append(non_outlier_ratio)
-            
-            # 3. Range-based consensus
-            if len(magnitudes) > 2:
-                mag_range = np.max(magnitudes) - np.min(magnitudes)
-                avg_magnitude = np.mean(magnitudes)
-                if avg_magnitude > 1e-6:
-                    relative_range = mag_range / avg_magnitude
-                    range_consensus = max(0.0, 1.0 - float(relative_range) / 2.0)
-                    magnitude_metrics.append(range_consensus)
-            
-            if magnitude_metrics:
-                return float(np.mean(magnitude_metrics))
-            else:
-                return 0.5
-                
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "magnitude_consensus_advanced")
+            max_dims = max((a.size for a in actions), default=1)
+            scores: List[float] = []
+            for k in range(max_dims):
+                dirs: List[int] = []
+                confs: List[float] = []
+                for a, c in zip(actions, confidences):
+                    if k < a.size and abs(float(a[k])) > 1e-9:
+                        dirs.append(1 if a[k] > 0 else -1)
+                        confs.append(c)
+                if len(dirs) >= 2:
+                    pos = sum(c for d, c in zip(dirs, confs) if d > 0)
+                    neg = sum(c for d, c in zip(dirs, confs) if d < 0)
+                    tot = pos + neg
+                    if tot > 0:
+                        scores.append(abs(pos - neg) / tot)
+            return float(np.mean(scores)) if scores else 0.5
+        except Exception:
             return 0.5
 
-    async def _calculate_network_consensus_advanced(self, actions: List[np.ndarray], 
-                                                  confidences: List[float]) -> float:
-        """Calculate network-based consensus considering member interconnections"""
+    async def _confidence_weighted(self, actions: List[np.ndarray], confidences: List[float]) -> float:
+        try:
+            if not confidences:
+                return 0.5
+            metrics: List[float] = []
+
+            # variance penalty
+            m = float(np.mean(confidences))
+            if m > 0:
+                rv = float(np.var(confidences) / (m**2))
+                metrics.append(max(0.0, 1.0 - 1.5 * rv))
+
+            # high-confidence sub-consensus
+            if len(confidences) >= 2:
+                t = float(np.percentile(confidences, 70))
+                idx = [i for i, c in enumerate(confidences) if c >= t]
+                if len(idx) >= 2:
+                    sub_actions = [actions[i] for i in idx]
+                    metrics.append(await self._pairwise_agreement(sub_actions))
+
+            # correlation between confidence & magnitude
+            if len(actions) >= 3:
+                mags = [float(np.linalg.norm(a)) for a in actions]
+                if np.std(mags) > 1e-9 and np.std(confidences) > 1e-9:
+                    corr = float(np.corrcoef(confidences, mags)[0, 1])
+                    if not math.isnan(corr):
+                        metrics.append((abs(corr) + 1.0) / 2.0)
+
+            return float(np.mean(metrics)) if metrics else 0.5
+        except Exception:
+            return 0.5
+
+    async def _pairwise_agreement(self, actions: List[np.ndarray]) -> float:
+        try:
+            vals: List[float] = []
+            for i in range(len(actions)):
+                for j in range(i + 1, len(actions)):
+                    a1, a2 = self._pad_pair(actions[i], actions[j])
+                    n1 = float(np.linalg.norm(a1))
+                    n2 = float(np.linalg.norm(a2))
+                    if n1 > 1e-9 and n2 > 1e-9:
+                        sim = float(np.dot(a1, a2) / (n1 * n2))
+                        vals.append((sim + 1.0) / 2.0)
+            return float(np.mean(vals)) if vals else 0.5
+        except Exception:
+            return 0.5
+
+    async def _magnitude_consensus(self, actions: List[np.ndarray], confidences: List[float]) -> float:
+        try:
+            mags = [float(np.linalg.norm(a)) for a in actions]
+            if len(mags) < 2:
+                return 0.5
+
+            metrics: List[float] = []
+
+            # CV of confidence-weighted magnitudes
+            wmags = [m * c for m, c in zip(mags, confidences)]
+            mu = float(np.mean(wmags))
+            if mu > 1e-9:
+                cv = float(np.std(wmags) / mu)
+                metrics.append(max(0.0, 1.0 - cv))
+
+            # MAD outlier ratio
+            med = float(np.median(mags))
+            mad = float(np.median(np.abs(np.asarray(mags) - med)))
+            if mad > 1e-9:
+                z = np.abs(np.asarray(mags) - med) / mad
+                metrics.append(float(np.mean(z <= 2.5)))
+
+            # Relative range
+            if len(mags) >= 3:
+                r = max(mags) - min(mags)
+                am = float(np.mean(mags))
+                if am > 1e-9:
+                    metrics.append(max(0.0, 1.0 - 0.5 * (r / am)))
+
+            return float(np.mean(metrics)) if metrics else 0.5
+        except Exception:
+            return 0.5
+
+    async def _network_consensus(self, actions: List[np.ndarray], confidences: List[float]) -> float:
         try:
             n = len(actions)
             if n < 3:
                 return 0.5
-            
-            # Build similarity matrix
-            similarity_matrix = np.zeros((n, n))
+
+            S = np.zeros((n, n), dtype=np.float32)
             for i in range(n):
-                for j in range(n):
-                    if i != j:
-                        a1, a2 = actions[i], actions[j]
-                        max_len = max(len(a1), len(a2))
-                        a1_padded = np.pad(a1, (0, max_len - len(a1)))
-                        a2_padded = np.pad(a2, (0, max_len - len(a2)))
-                        
-                        norm1, norm2 = np.linalg.norm(a1_padded), np.linalg.norm(a2_padded)
-                        if norm1 > 1e-6 and norm2 > 1e-6:
-                            similarity = np.dot(a1_padded, a2_padded) / (norm1 * norm2)
-                            similarity_matrix[i, j] = (similarity + 1.0) / 2.0
-            
-            # Weight by confidence
-            conf_weights = np.array(confidences)
-            weighted_similarity = similarity_matrix * np.outer(conf_weights, conf_weights)
-            
-            # Calculate network metrics
-            network_metrics = []
-            
-            # 1. Average network density
-            network_density = np.mean(weighted_similarity[weighted_similarity > 0])
-            network_metrics.append(network_density)
-            
-            # 2. Network clustering coefficient
-            clustering_scores = []
+                for j in range(i + 1, n):
+                    a1, a2 = self._pad_pair(actions[i], actions[j])
+                    n1 = float(np.linalg.norm(a1))
+                    n2 = float(np.linalg.norm(a2))
+                    if n1 > 1e-9 and n2 > 1e-9:
+                        sim = float(np.dot(a1, a2) / (n1 * n2))
+                        s = (sim + 1.0) / 2.0
+                    else:
+                        s = 0.0
+                    S[i, j] = S[j, i] = s
+
+            cw = np.outer(confidences, confidences).astype(np.float32)
+            W = S * cw
+
+            metrics: List[float] = []
+
+            # density over > 0 entries
+            positives = W[W > 0]
+            if positives.size > 0:
+                metrics.append(float(np.mean(positives)))
+
+            # clustering proxy: neighbor similarity avg
+            cluster_scores: List[float] = []
             for i in range(n):
-                neighbors = [j for j in range(n) if i != j and weighted_similarity[i, j] > 0.5]
+                neighbors = [j for j in range(n) if j != i and W[i, j] > 0.5]
                 if len(neighbors) >= 2:
-                    # Calculate clustering among neighbors
-                    neighbor_similarities = []
-                    for ni in neighbors:
-                        for nj in neighbors:
-                            if ni != nj:
-                                neighbor_similarities.append(weighted_similarity[ni, nj])
-                    if neighbor_similarities:
-                        clustering_scores.append(np.mean(neighbor_similarities))
-            
-            if clustering_scores:
-                network_clustering = np.mean(clustering_scores)
-                network_metrics.append(network_clustering)
-            
-            # 3. Network consensus strength
-            # Higher values when most members are similar to each other
-            consensus_strength = np.mean(weighted_similarity)
-            network_metrics.append(consensus_strength)
-            
-            if network_metrics:
-                return float(np.mean(network_metrics))
-            else:
-                return 0.5
-                
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "network_consensus_advanced")
+                    vals = []
+                    for u in neighbors:
+                        for v in neighbors:
+                            if u < v:
+                                vals.append(W[u, v])
+                    if vals:
+                        cluster_scores.append(float(np.mean(vals)))
+            if cluster_scores:
+                metrics.append(float(np.mean(cluster_scores)))
+
+            # overall strength
+            metrics.append(float(np.mean(W)))
+
+            return float(np.clip(float(np.mean(metrics)) if metrics else 0.5, 0.0, 1.0))
+        except Exception:
             return 0.5
 
-    async def _calculate_temporal_consensus_advanced(self, actions: List[np.ndarray], 
-                                                   confidences: List[float]) -> float:
-        """Calculate temporal consensus based on historical patterns"""
+    async def _temporal_consensus(self) -> float:
         try:
             if len(self.consensus_history) < 3:
                 return 0.5
-            
-            # Get recent consensus history
-            recent_consensus = [event.get('consensus', 0.5) for event in list(self.consensus_history)[-10:]]
-            
-            # Temporal consensus metrics
-            temporal_metrics = []
-            
-            # 1. Consensus stability (low variance = high temporal consensus)
-            consensus_variance = np.var(recent_consensus)
-            consensus_mean = np.mean(recent_consensus)
-            if consensus_mean > 0:
-                relative_variance = consensus_variance / (consensus_mean ** 2)
-                stability_consensus = max(0.0, 1.0 - float(relative_variance))
-                temporal_metrics.append(stability_consensus)
-            
-            # 2. Trend consistency
-            if len(recent_consensus) >= 5:
-                # Calculate trend slope
-                x = np.arange(len(recent_consensus))
-                slope = np.polyfit(x, recent_consensus, 1)[0]
-                
-                # Trend consistency (smaller slope = more stable)
-                trend_consistency = max(0.0, 1.0 - abs(slope) * 10)
-                temporal_metrics.append(trend_consistency)
-            
-            # 3. Predictive accuracy
-            if len(recent_consensus) >= 4:
-                # Simple prediction: next consensus = average of last 3
-                predicted_consensus = np.mean(recent_consensus[-3:])
-                actual_consensus = recent_consensus[-1]
-                prediction_error = abs(predicted_consensus - actual_consensus)
-                prediction_accuracy = max(0.0, 1.0 - prediction_error * 2)
-                temporal_metrics.append(prediction_accuracy)
-            
-            if temporal_metrics:
-                return float(np.mean(temporal_metrics))
-            else:
-                return 0.5
-                
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "temporal_consensus_advanced")
+            recent = [float(e.get("consensus", 0.5)) for e in list(self.consensus_history)[-10:]]
+            metrics: List[float] = []
+
+            # stability (variance scaled)
+            mu = float(np.mean(recent))
+            var = float(np.var(recent))
+            if mu > 1e-9:
+                metrics.append(max(0.0, 1.0 - float(var / (mu**2))))
+
+            # slope magnitude (smaller better)
+            if len(recent) >= 5:
+                x = np.arange(len(recent))
+                try:
+                    slope = float(np.polyfit(x, recent, 1)[0])
+                except Exception:
+                    slope = 0.0
+                metrics.append(max(0.0, 1.0 - 10.0 * abs(slope)))
+
+            # simple predictive accuracy
+            if len(recent) >= 4:
+                pred = float(np.mean(recent[-3:]))
+                err = abs(pred - recent[-1])
+                metrics.append(max(0.0, 1.0 - 2.0 * err))
+
+            return float(np.mean(metrics)) if metrics else 0.5
+        except Exception:
             return 0.5
 
-    async def _apply_advanced_consensus_weighting(self, consensus_components: Dict[str, float], 
-                                                actions: List[np.ndarray], confidences: List[float],
-                                                voting_data: Dict[str, Any]) -> float:
-        """Apply advanced weighting to consensus components"""
+    # Weighting, smoothing, state update
+    async def _apply_advanced_consensus_weighting(
+        self,
+        consensus_components: Dict[str, float],
+        actions: List[np.ndarray],
+        confidences: List[float],
+        voting_data: Dict[str, Any],
+    ) -> float:
         try:
             if not consensus_components:
                 return 0.5
-            
-            # Calculate dynamic weights based on data quality and context
-            weights = await self._calculate_dynamic_component_weights(
-                consensus_components, actions, confidences, voting_data
-            )
-            
-            # Apply weights
-            weighted_sum = 0.0
-            total_weight = 0.0
-            
-            for component, score in consensus_components.items():
-                weight = weights.get(component, 1.0)
-                weighted_sum += score * weight
-                total_weight += weight
-            
-            if total_weight > 0:
-                weighted_consensus = weighted_sum / total_weight
-            else:
-                weighted_consensus = np.mean(list(consensus_components.values()))
-            
-            return float(np.clip(weighted_consensus, 0.0, 1.0))
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "consensus_weighting")
+            weights = await self._dynamic_component_weights(consensus_components, actions, confidences, voting_data)
+
+            s = 0.0
+            wsum = 0.0
+            for k, v in consensus_components.items():
+                w = float(weights.get(k, 1.0))
+                s += float(v) * w
+                wsum += w
+            return float(np.clip(s / wsum if wsum > 0 else float(np.mean(list(consensus_components.values()))), 0.0, 1.0))
+        except Exception:
             return float(np.mean(list(consensus_components.values()))) if consensus_components else 0.5
 
-    async def _calculate_dynamic_component_weights(self, consensus_components: Dict[str, float],
-                                                 actions: List[np.ndarray], confidences: List[float],
-                                                 voting_data: Dict[str, Any]) -> Dict[str, float]:
-        """Calculate dynamic weights for consensus components"""
+    async def _dynamic_component_weights(
+        self,
+        consensus_components: Dict[str, float],
+        actions: List[np.ndarray],
+        confidences: List[float],
+        voting_data: Dict[str, Any],
+    ) -> Dict[str, float]:
         try:
-            weights = {}
-            
-            # Base weights from algorithm effectiveness
-            for component in consensus_components:
-                algo_info = self.consensus_algorithms.get(component, {})
-                effectiveness = algo_info.get('effectiveness_threshold', 0.5)
-                weights[component] = effectiveness
-            
-            # Adjust based on data characteristics
-            avg_confidence = np.mean(confidences) if confidences else 0.5
-            
-            # High confidence: trust directional measures more
-            if avg_confidence > 0.8:
-                weights['cosine_agreement'] = weights.get('cosine_agreement', 1.0) * 1.3
-                weights['direction_alignment'] = weights.get('direction_alignment', 1.0) * 1.2
-            
-            # Low confidence: rely more on robust measures
-            elif avg_confidence < 0.4:
-                weights['magnitude_consensus'] = weights.get('magnitude_consensus', 1.0) * 1.4
-                weights['network_consensus'] = weights.get('network_consensus', 1.0) * 1.2
-            
-            # Market regime adjustments
-            regime = voting_data.get('market_regime', 'unknown')
-            if regime == 'volatile':
-                # In volatile markets, trust temporal consensus less
-                weights['temporal_consensus'] = weights.get('temporal_consensus', 1.0) * 0.7
-            elif regime == 'trending':
-                # In trending markets, directional consensus is more important
-                weights['direction_alignment'] = weights.get('direction_alignment', 1.0) * 1.2
-            
-            # Normalize weights
-            total_weight = sum(weights.values())
-            if total_weight > 0:
-                weights = {k: v / total_weight * len(weights) for k, v in weights.items()}
-            
-            return weights
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "dynamic_weights_calculation")
-            return {component: 1.0 for component in consensus_components}
+            w: Dict[str, float] = {}
+            for c in consensus_components:
+                eff = float(self.consensus_algorithms.get(c, {}).get("effectiveness_threshold", 0.5))
+                w[c] = eff
+
+            avg_c = float(np.mean(confidences)) if confidences else 0.5
+            regime = str(voting_data.get("market_regime", "unknown"))
+            vol = self._extract_volatility_level(voting_data.get("volatility_data", {}))
+
+            if avg_c > 0.8:
+                w["cosine_agreement"] = w.get("cosine_agreement", 1.0) * 1.25
+                w["direction_alignment"] = w.get("direction_alignment", 1.0) * 1.15
+            elif avg_c < 0.4:
+                w["magnitude_consensus"] = w.get("magnitude_consensus", 1.0) * 1.35
+                w["network_consensus"] = w.get("network_consensus", 1.0) * 1.15
+
+            if regime == "volatile" or vol in {"high", "extreme"}:
+                w["temporal_consensus"] = w.get("temporal_consensus", 1.0) * 0.75
+            elif regime == "trending":
+                w["direction_alignment"] = w.get("direction_alignment", 1.0) * 1.15
+
+            total = float(sum(w.values()))
+            if total > 0:
+                # Normalize weights to keep average ~1.0
+                w = {k: (v / total) * len(w) for k, v in w.items()}
+            return w
+        except Exception:
+            return {k: 1.0 for k in consensus_components.keys()}
 
     async def _apply_temporal_smoothing(self, consensus: float) -> float:
-        """Apply temporal smoothing to consensus score"""
         try:
             if not self.temporal_smoothing or len(self.consensus_history) == 0:
-                return consensus
-            
-            # Get previous consensus
-            previous_consensus = self.consensus_history[-1].get('consensus', 0.5)
-            
-            # Apply exponential smoothing
-            alpha = self.consensus_intelligence['smoothing_alpha']
-            smoothed_consensus = alpha * consensus + (1 - alpha) * previous_consensus
-            
-            return float(np.clip(smoothed_consensus, 0.0, 1.0))
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "temporal_smoothing")
-            return consensus
+                return float(np.clip(consensus, 0.0, 1.0))
+            prev = float(self.consensus_history[-1].get("consensus", 0.5))
+            alpha = float(self.consensus_intelligence["smoothing_alpha"])
+            sm = float(alpha * consensus + (1 - alpha) * prev)
+            return float(np.clip(sm, 0.0, 1.0))
+        except Exception:
+            return float(np.clip(consensus, 0.0, 1.0))
 
-    async def _update_consensus_state_comprehensive(self, consensus: float, 
-                                                  consensus_components: Dict[str, float],
-                                                  actions: List[np.ndarray], 
-                                                  confidences: List[float]):
-        """Update comprehensive consensus state"""
+    async def _update_consensus_state_comprehensive(
+        self,
+        consensus: float,
+        components: Dict[str, float],
+        actions: List[np.ndarray],
+        confidences: List[float],
+    ) -> None:
         try:
-            # Update core consensus state
-            self.last_consensus = consensus
-            self.consensus_components = consensus_components.copy()
-            
-            # Update individual consensus dimensions
-            self.directional_consensus = consensus_components.get('direction_alignment', 0.5)
-            self.magnitude_consensus = consensus_components.get('magnitude_consensus', 0.5)
-            self.confidence_consensus = consensus_components.get('confidence_weighted', 0.5)
-            self.network_consensus = consensus_components.get('network_consensus', 0.5)
-            
-            # Calculate temporal stability
-            if len(self.consensus_history) >= self.consensus_intelligence['stability_window']:
-                recent_consensus = [
-                    event.get('consensus', 0.5) 
-                    for event in list(self.consensus_history)[-self.consensus_intelligence['stability_window']:]
-                ]
-                self.temporal_stability = 1.0 - np.std(recent_consensus)
-                self.temporal_stability = max(0.0, min(1.0, float(self.temporal_stability)))
-            
-            # Update statistics
-            await self._update_consensus_statistics_comprehensive(consensus, consensus_components)
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "consensus_state_update")
+            self.last_consensus = float(consensus)
+            self.consensus_components = dict(components)
 
-    async def _calculate_advanced_consensus_quality(self, actions: List[np.ndarray], 
-                                                  confidences: List[float],
-                                                  consensus_components: Dict[str, float]) -> float:
-        """Calculate advanced consensus quality metrics"""
+            self.directional_consensus = float(components.get("direction_alignment", 0.5))
+            self.magnitude_consensus = float(components.get("magnitude_consensus", 0.5))
+            self.confidence_consensus = float(components.get("confidence_weighted", 0.5))
+            self.network_consensus = float(components.get("network_consensus", 0.5))
+
+            if len(self.consensus_history) >= int(self.consensus_intelligence["stability_window"]):
+                recent = [float(e.get("consensus", 0.5)) for e in list(self.consensus_history)[-int(self.consensus_intelligence["stability_window"]):]]
+                self.temporal_stability = float(np.clip(1.0 - float(np.std(recent)), 0.0, 1.0))
+
+            await self._update_consensus_statistics_comprehensive(consensus, components)
+        except Exception:
+            pass
+
+    async def _calculate_advanced_consensus_quality(
+        self,
+        actions: List[np.ndarray],
+        confidences: List[float],
+        components: Dict[str, float],
+    ) -> float:
         try:
-            quality_components = []
-            
-            # 1. Component coherence (how well components agree)
-            if len(consensus_components) > 1:
-                component_values = list(consensus_components.values())
-                coherence = 1.0 - float(np.std(component_values)) / max(float(np.mean(component_values)), 1e-6)
-                self.quality_metrics['coherence'] = max(0.0, min(1.0, coherence))
-                quality_components.append(self.quality_metrics['coherence'])
-            
-            # 2. Temporal stability
-            if len(self.consensus_history) >= self.consensus_intelligence['stability_window']:
-                recent_consensus = [
-                    event.get('consensus', 0.5) 
-                    for event in list(self.consensus_history)[-self.consensus_intelligence['stability_window']:]
-                ]
-                stability = 1.0 - float(np.std(recent_consensus))
-                self.quality_metrics['stability'] = max(0.0, min(1.0, stability))
-                quality_components.append(self.quality_metrics['stability'])
-            
-            # 3. Input diversity (balanced inputs indicate higher quality)
-            if len(actions) > 1:
-                diversity = await self._calculate_input_diversity_advanced(actions)
-                self.quality_metrics['diversity'] = diversity
-                quality_components.append(diversity)
-            
-            # 4. Reliability (based on confidence levels and consistency)
+            q_parts: List[float] = []
+
+            # coherence
+            if len(components) > 1:
+                vals = list(components.values())
+                mu = float(np.mean(vals))
+                std = float(np.std(vals))
+                coherence = float(np.clip(1.0 - (std / max(mu, 1e-6)), 0.0, 1.0))
+                self.quality_metrics["coherence"] = coherence
+                q_parts.append(coherence)
+
+            # stability
+            if len(self.consensus_history) >= int(self.consensus_intelligence["stability_window"]):
+                recent = [float(e.get("consensus", 0.5)) for e in list(self.consensus_history)[-int(self.consensus_intelligence["stability_window"]):]]
+                stability = float(np.clip(1.0 - float(np.std(recent)), 0.0, 1.0))
+                self.quality_metrics["stability"] = stability
+                q_parts.append(stability)
+
+            # diversity
+            diversity = await self._input_diversity(actions)
+            self.quality_metrics["diversity"] = diversity
+            q_parts.append(diversity)
+
+            # reliability (confidence level + dispersion)
             if confidences:
-                avg_confidence = float(np.mean(confidences))
-                conf_consistency = 1.0 - float(np.std(confidences)) / max(float(np.mean(confidences)), 1e-6)
-                reliability = (avg_confidence + conf_consistency) / 2.0
-                self.quality_metrics['reliability'] = max(0.0, min(1.0, reliability))
-                quality_components.append(self.quality_metrics['reliability'])
-            
-            # 5. Predictive accuracy (if sufficient history)
+                avg_c = float(np.mean(confidences))
+                disp = float(np.std(confidences))
+                reliability = float(np.clip((avg_c + (1.0 - disp)) / 2.0, 0.0, 1.0))
+                self.quality_metrics["reliability"] = reliability
+                q_parts.append(reliability)
+
+            # predictive accuracy (history)
             if len(self.prediction_history) >= 3:
-                prediction_accuracy = await self._calculate_prediction_accuracy()
-                self.quality_metrics['predictive_accuracy'] = prediction_accuracy
-                quality_components.append(prediction_accuracy)
-            
-            # 6. Temporal consistency
+                pa = await self._prediction_accuracy()
+                self.quality_metrics["predictive_accuracy"] = pa
+                q_parts.append(pa)
+
+            # temporal consistency (autocorr proxy)
             if len(self.consensus_history) >= 5:
-                temporal_consistency = await self._calculate_temporal_consistency()
-                self.quality_metrics['temporal_consistency'] = temporal_consistency
-                quality_components.append(temporal_consistency)
-            
-            # Calculate overall quality
-            if quality_components:
-                overall_quality = np.mean(quality_components)
-            else:
-                overall_quality = 0.5
-            
-            self.consensus_quality = float(np.clip(overall_quality, 0.0, 1.0))
+                tc = await self._temporal_consistency_score()
+                self.quality_metrics["temporal_consistency"] = tc
+                q_parts.append(tc)
+
+            overall = float(np.mean(q_parts)) if q_parts else 0.5
+            self.consensus_quality = float(np.clip(overall, 0.0, 1.0))
+
+            # derive overall_effectiveness for reporting
+            weights = np.array([0.25, 0.20, 0.15, 0.20, 0.10, 0.10], dtype=np.float32)
+            values = np.array(
+                [
+                    self.quality_metrics.get("coherence", 0.5),
+                    self.quality_metrics.get("stability", 0.5),
+                    self.quality_metrics.get("diversity", 0.5),
+                    self.quality_metrics.get("reliability", 0.5),
+                    self.quality_metrics.get("predictive_accuracy", 0.5),
+                    self.quality_metrics.get("temporal_consistency", 0.5),
+                ],
+                dtype=np.float32,
+            )
+            self.quality_metrics["overall_effectiveness"] = float(np.dot(weights, values))
             return self.consensus_quality
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "consensus_quality_calculation")
+        except Exception:
             return 0.5
 
-    async def _calculate_input_diversity_advanced(self, actions: List[np.ndarray]) -> float:
-        """Calculate advanced input diversity metrics"""
+    async def _input_diversity(self, actions: List[np.ndarray]) -> float:
         try:
             if len(actions) < 2:
                 return 0.0
-            
-            diversity_metrics = []
-            
-            # 1. Pairwise distance diversity
-            distances = []
+            metrics: List[float] = []
+
+            # pairwise distances (normalized)
+            dists: List[float] = []
             for i in range(len(actions)):
                 for j in range(i + 1, len(actions)):
-                    a1, a2 = actions[i], actions[j]
-                    max_len = max(len(a1), len(a2))
-                    a1_padded = np.pad(a1, (0, max_len - len(a1)))
-                    a2_padded = np.pad(a2, (0, max_len - len(a2)))
-                    distance = np.linalg.norm(a1_padded - a2_padded)
-                    distances.append(distance)
-            
-            if distances:
-                # Normalize by maximum distance
-                max_distance = max(distances)
-                if max_distance > 0:
-                    avg_distance = np.mean(distances) / max_distance
-                    diversity_metrics.append(avg_distance)
-            
-            # 2. Direction diversity (entropy of directions)
-            if all(len(action) > 0 for action in actions):
-                directions = [np.sign(action[0]) for action in actions if abs(action[0]) > 1e-6]
-                if len(directions) > 1:
-                    unique_directions = len(set(directions))
-                    max_directions = min(2, len(directions))  # Binary directions
-                    direction_diversity = unique_directions / max_directions
-                    diversity_metrics.append(direction_diversity)
-            
-            # 3. Magnitude diversity
-            magnitudes = [np.linalg.norm(action) for action in actions]
-            if len(magnitudes) > 1 and np.mean(magnitudes) > 0:
-                magnitude_cv = np.std(magnitudes) / np.mean(magnitudes)
-                magnitude_diversity = min(1.0, float(magnitude_cv))
-                diversity_metrics.append(magnitude_diversity)
-            
-            if diversity_metrics:
-                return float(np.mean(diversity_metrics))
-            else:
-                return 0.5
-                
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "input_diversity_calculation")
+                    a1, a2 = self._pad_pair(actions[i], actions[j])
+                    dists.append(float(np.linalg.norm(a1 - a2)))
+            if dists:
+                dmax = max(dists)
+                if dmax > 1e-9:
+                    metrics.append(float(np.mean(dists) / dmax))
+
+            # direction entropy (1D sign diversity)
+            signs = [int(1 if a[0] > 0 else -1) for a in actions if a.size > 0 and abs(float(a[0])) > 1e-9]
+            if len(signs) > 1:
+                unique = len(set(signs))
+                metrics.append(float(unique / min(2, len(signs))))
+
+            # magnitude CV
+            mags = [float(np.linalg.norm(a)) for a in actions]
+            if len(mags) > 1 and float(np.mean(mags)) > 1e-9:
+                metrics.append(float(np.clip(float(np.std(mags) / np.mean(mags)), 0.0, 1.0)))
+
+            return float(np.mean(metrics)) if metrics else 0.5
+        except Exception:
             return 0.5
 
-    async def _calculate_prediction_accuracy(self) -> float:
-        """Calculate predictive accuracy based on historical predictions"""
+    async def _prediction_accuracy(self) -> float:
         try:
             if len(self.prediction_history) < 3:
                 return 0.5
-            
-            errors = []
-            for prediction_event in self.prediction_history:
-                predicted = prediction_event.get('predicted_consensus', 0.5)
-                actual = prediction_event.get('actual_consensus', 0.5)
-                error = abs(predicted - actual)
-                errors.append(error)
-            
+            errors: List[float] = []
+            for ev in self.prediction_history:
+                p = float(ev.get("predicted_consensus", 0.5))
+                a = float(ev.get("actual_consensus", 0.5))
+                errors.append(abs(p - a))
             if errors:
-                avg_error = np.mean(errors)
-                accuracy = max(0.0, 1.0 - float(avg_error) * 2)  # Scale error to accuracy
-                return float(accuracy)
-            else:
-                return 0.5
-                
+                return float(np.clip(1.0 - 2.0 * float(np.mean(errors)), 0.0, 1.0))
+            return 0.5
         except Exception:
             return 0.5
 
-    async def _calculate_temporal_consistency(self) -> float:
-        """Calculate temporal consistency of consensus measurements"""
+    async def _temporal_consistency_score(self) -> float:
         try:
             if len(self.consensus_history) < 5:
                 return 0.5
-            
-            # Get recent consensus values
-            recent_consensus = [
-                event.get('consensus', 0.5) 
-                for event in list(self.consensus_history)[-10:]
-            ]
-            
-            # Calculate autocorrelation at lag 1
-            if len(recent_consensus) >= 3:
-                lag1_correlation = np.corrcoef(recent_consensus[:-1], recent_consensus[1:])[0, 1]
-                if not np.isnan(lag1_correlation):
-                    # Convert correlation to consistency score
-                    consistency = (abs(lag1_correlation) + 1.0) / 2.0
-                    return float(consistency)
-            
+            recent = [float(e.get("consensus", 0.5)) for e in list(self.consensus_history)[-10:]]
+            if len(recent) >= 3:
+                c = float(np.corrcoef(recent[:-1], recent[1:])[0, 1])
+                if not math.isnan(c):
+                    return float((abs(c) + 1.0) / 2.0)
             return 0.5
-            
         except Exception:
             return 0.5
 
-    async def _record_consensus_event_comprehensive(self, consensus: float, 
-                                                  consensus_components: Dict[str, float],
-                                                  consensus_quality: float, 
-                                                  voting_data: Dict[str, Any]):
-        """Record comprehensive consensus event"""
+    async def _record_consensus_event_comprehensive(
+        self,
+        consensus: float,
+        components: Dict[str, float],
+        consensus_quality: float,
+        voting_data: Dict[str, Any],
+    ) -> None:
         try:
-            timestamp = datetime.datetime.now().isoformat()
-            
-            consensus_event = {
-                'timestamp': timestamp,
-                'consensus': consensus,
-                'consensus_quality': consensus_quality,
-                'components': consensus_components.copy(),
-                'directional_consensus': self.directional_consensus,
-                'magnitude_consensus': self.magnitude_consensus,
-                'confidence_consensus': self.confidence_consensus,
-                'network_consensus': self.network_consensus,
-                'temporal_stability': self.temporal_stability,
-                'member_count': len(voting_data.get('raw_proposals', [])),
-                'avg_confidence': np.mean(voting_data.get('member_confidences', [0.5])),
-                'market_regime': voting_data.get('market_regime', 'unknown'),
-                'agreement_score': voting_data.get('agreement_score', 0.5),
-                'quality_metrics': self.quality_metrics.copy()
-            }
-            
-            self.consensus_history.append(consensus_event)
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "consensus_event_recording")
+            self.consensus_history.append(
+                {
+                    "timestamp": dt.datetime.now().isoformat(),
+                    "consensus": float(consensus),
+                    "consensus_quality": float(consensus_quality),
+                    "components": dict(components),
+                    "directional_consensus": float(self.directional_consensus),
+                    "magnitude_consensus": float(self.magnitude_consensus),
+                    "confidence_consensus": float(self.confidence_consensus),
+                    "network_consensus": float(self.network_consensus),
+                    "temporal_stability": float(self.temporal_stability),
+                    "member_count": int(len(voting_data.get("raw_proposals", []))),
+                    "avg_confidence": float(np.mean(voting_data.get("member_confidences", [0.5]))),
+                    "market_regime": str(voting_data.get("market_regime", "unknown")),
+                    "agreement_score": float(voting_data.get("agreement_score", 0.5)),
+                    "quality_metrics": dict(self.quality_metrics),
+                }
+            )
+        except Exception:
+            pass
 
-    async def _update_consensus_statistics_comprehensive(self, consensus: float, 
-                                                       consensus_components: Dict[str, float]):
-        """Update comprehensive consensus statistics"""
+    async def _update_consensus_statistics_comprehensive(
+        self, consensus: float, components: Dict[str, float]
+    ) -> None:
         try:
-            # Update counts based on consensus levels
             if consensus > 0.7:
-                self.consensus_stats['high_consensus_count'] += 1
+                self.consensus_stats["high_consensus_count"] += 1
             elif consensus < 0.3:
-                self.consensus_stats['low_consensus_count'] += 1
-            
-            # Update running averages
-            total = self.consensus_stats['total_computations']
-            old_avg = self.consensus_stats['avg_consensus']
-            self.consensus_stats['avg_consensus'] = (old_avg * (total - 1) + consensus) / total
-            
-            # Update volatility
-            if len(self.consensus_history) >= 10:
-                recent_consensus = [
-                    event.get('consensus', 0.5) 
-                    for event in list(self.consensus_history)[-10:]
-                ]
-                self.consensus_stats['consensus_volatility'] = float(np.std(recent_consensus))
-            
-            # Update quality score
-            self.consensus_stats['quality_score'] = self.consensus_quality
-            
-            # Update performance metrics
-            self._update_performance_metric('consensus_score', consensus)
-            self._update_performance_metric('consensus_quality', float(self.consensus_quality))
-            self._update_performance_metric('directional_consensus', float(self.directional_consensus))
-            self._update_performance_metric('temporal_stability', float(self.temporal_stability))
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "consensus_statistics_update")
+                self.consensus_stats["low_consensus_count"] += 1
 
+            total = int(self.consensus_stats["total_computations"])
+            if total > 0:
+                self.consensus_stats["avg_consensus"] = float(
+                    (self.consensus_stats["avg_consensus"] * (total - 1) + consensus) / total
+                )
+
+            if len(self.consensus_history) >= 10:
+                recent = [float(e.get("consensus", 0.5)) for e in list(self.consensus_history)[-10:]]
+                self.consensus_stats["consensus_volatility"] = float(np.std(recent))
+
+            self.consensus_stats["quality_score"] = float(self.consensus_quality)
+
+            # perf metrics
+            self._update_performance_metric("consensus_score", float(consensus))
+            self._update_performance_metric("consensus_quality", float(self.consensus_quality))
+            self._update_performance_metric("directional_consensus", float(self.directional_consensus))
+            self._update_performance_metric("temporal_stability", float(self.temporal_stability))
+        except Exception:
+            pass
+
+    # ────────────────────────────
+    # MEMBER CONTRIBUTIONS
+    # ────────────────────────────
     async def _update_member_contributions_comprehensive(self, voting_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update comprehensive member contribution analysis"""
         try:
-            contribution_updates = {
-                'updated_members': [],
-                'influence_changes': {},
-                'reliability_updates': {}
-            }
-            
-            raw_proposals = voting_data.get('raw_proposals', [])
-            confidences = voting_data.get('member_confidences', [])
-            
-            if len(raw_proposals) < 2:
-                return contribution_updates
-            
-            # Analyze each member's contribution
-            for i, proposal in enumerate(raw_proposals[:self.n_members]):
+            updates = {"updated_members": [], "influence_changes": {}, "reliability_updates": {}}
+            raw = voting_data.get("raw_proposals", [])
+            confs = voting_data.get("member_confidences", [])
+
+            if len(raw) < 2:
+                return updates
+
+            mem = float(self.consensus_intelligence["temporal_memory"])
+
+            for i, proposal in enumerate(raw[: self.n_members]):
                 if not isinstance(proposal, (list, np.ndarray)) or len(proposal) == 0:
                     continue
-                
-                proposal_array = np.array(proposal, dtype=np.float32)
-                contribution = self.member_contributions[i]
-                
-                # Calculate alignment with other members
-                alignments = []
-                for j, other_proposal in enumerate(raw_proposals[:self.n_members]):
-                    if i != j and isinstance(other_proposal, (list, np.ndarray)) and len(other_proposal) > 0:
-                        other_array = np.array(other_proposal, dtype=np.float32)
-                        
-                        # Ensure same dimensionality
-                        max_len = max(len(proposal_array), len(other_array))
-                        prop_padded = np.pad(proposal_array, (0, max_len - len(proposal_array)))
-                        other_padded = np.pad(other_array, (0, max_len - len(other_array)))
-                        
-                        if np.linalg.norm(prop_padded) > 0 and np.linalg.norm(other_padded) > 0:
-                            alignment = np.dot(prop_padded, other_padded) / (
-                                np.linalg.norm(prop_padded) * np.linalg.norm(other_padded)
-                            )
-                            alignments.append((alignment + 1.0) / 2.0)  # Convert to 0-1
-                
-                if alignments:
-                    # Update member contribution metrics with exponential smoothing
-                    memory_factor = self.consensus_intelligence['temporal_memory']
-                    
-                    old_alignment = contribution.get('avg_alignment', 0.5)
-                    new_alignment = np.mean(alignments)
-                    contribution['avg_alignment'] = (
-                        old_alignment * memory_factor + new_alignment * (1 - memory_factor)
-                    )
-                    
-                    contribution['consistency'] = 1.0 - np.std(alignments)
-                    
-                    # Calculate consensus contribution (how much member helps overall consensus)
-                    consensus_contribution = await self._calculate_member_consensus_contribution(
-                        i, proposal_array, raw_proposals, confidences
-                    )
-                    contribution['consensus_contribution'] = consensus_contribution
-                    
-                    # Update reliability score
-                    if i < len(confidences):
-                        confidence = confidences[i]
-                        reliability = (confidence + contribution['consistency'] + contribution['avg_alignment']) / 3.0
-                        contribution['reliability_score'] = reliability
-                    
-                    # Calculate influence weight
-                    base_weight = 1.0 / max(self.n_members, 1)
-                    quality_multiplier = (contribution['reliability_score'] + contribution['consensus_contribution']) / 2.0
-                    contribution['influence_weight'] = base_weight * quality_multiplier
-                    
-                    # Track updates
-                    if abs(new_alignment - old_alignment) > 0.1:
-                        contribution_updates['updated_members'].append(i)
-                        contribution_updates['influence_changes'][i] = {
-                            'old_influence': base_weight,
-                            'new_influence': contribution['influence_weight'],
-                            'change_reason': 'alignment_update'
-                        }
-            
-            return contribution_updates
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "member_contributions_update")
-            return {'updated_members': [], 'influence_changes': {}, 'reliability_updates': {}}
+                p = np.asarray(proposal, dtype=np.float32).flatten()
+                aligns: List[float] = []
+                for j, other in enumerate(raw[: self.n_members]):
+                    if i == j or not isinstance(other, (list, np.ndarray)) or len(other) == 0:
+                        continue
+                    q = np.asarray(other, dtype=np.float32).flatten()
+                    a1, a2 = self._pad_pair(p, q)
+                    n1 = float(np.linalg.norm(a1))
+                    n2 = float(np.linalg.norm(a2))
+                    if n1 > 1e-9 and n2 > 1e-9:
+                        sim = float(np.dot(a1, a2) / (n1 * n2))
+                        aligns.append((sim + 1.0) / 2.0)
 
-    async def _calculate_member_consensus_contribution(self, member_idx: int, member_proposal: np.ndarray,
-                                                     all_proposals: List, confidences: List[float]) -> float:
-        """Calculate how much a member contributes to overall consensus"""
+                if not aligns:
+                    continue
+
+                contrib = self.member_contributions[i]
+                old_align = float(contrib.get("avg_alignment", 0.5))
+                new_align = float(np.mean(aligns))
+                contrib["avg_alignment"] = float(old_align * mem + new_align * (1 - mem))
+                contrib["consistency"] = float(np.clip(1.0 - float(np.std(aligns)), 0.0, 1.0))
+
+                # contribution delta (with vs without)
+                contrib["consensus_contribution"] = await self._member_contribution_delta(i, raw)
+
+                if i < len(confs):
+                    conf = float(np.clip(confs[i], 0.0, 1.0))
+                    contrib["reliability_score"] = float(
+                        np.clip((conf + contrib["consistency"] + contrib["avg_alignment"]) / 3.0, 0.0, 1.0)
+                    )
+
+                base_w = 1.0 / max(self.n_members, 1)
+                qual_mult = float((contrib["reliability_score"] + contrib["consensus_contribution"]) / 2.0)
+                old_w = float(contrib.get("influence_weight", base_w))
+                contrib["influence_weight"] = float(base_w * qual_mult)
+
+                if abs(new_align - old_align) > 0.1 or abs(contrib["influence_weight"] - old_w) > 0.05 * base_w:
+                    updates["updated_members"].append(i)
+                    updates["influence_changes"][i] = {
+                        "old_influence": old_w,
+                        "new_influence": contrib["influence_weight"],
+                        "change_reason": "alignment_update",
+                    }
+
+            return updates
+        except Exception:
+            return {"updated_members": [], "influence_changes": {}, "reliability_updates": {}}
+
+    async def _member_contribution_delta(self, idx: int, all_props: List[Any]) -> float:
         try:
-            # Calculate consensus with this member
-            proposals_with = [np.array(prop) for prop in all_proposals if isinstance(prop, (list, np.ndarray))]
-            if len(proposals_with) < 2:
+            with_idx = [np.asarray(p, dtype=np.float32).flatten() for p in all_props if isinstance(p, (list, np.ndarray))]
+            if len(with_idx) < 2:
                 return 0.5
-            
-            consensus_with = await self._calculate_action_agreement(proposals_with)
-            
-            # Calculate consensus without this member
-            proposals_without = [
-                np.array(prop) for i, prop in enumerate(all_proposals) 
-                if i != member_idx and isinstance(prop, (list, np.ndarray))
+            c_with = await self._pairwise_agreement(with_idx)
+
+            wo = [
+                np.asarray(p, dtype=np.float32).flatten()
+                for i, p in enumerate(all_props)
+                if i != idx and isinstance(p, (list, np.ndarray))
             ]
-            
-            if len(proposals_without) >= 2:
-                consensus_without = await self._calculate_action_agreement(proposals_without)
-                
-                # Contribution is the difference
-                contribution = consensus_with - consensus_without
-                # Normalize to 0-1 scale
-                contribution = (contribution + 1.0) / 2.0
-                return float(np.clip(contribution, 0.0, 1.0))
-            else:
-                return 0.5
-                
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "member_consensus_contribution")
+            if len(wo) >= 2:
+                c_wo = await self._pairwise_agreement(wo)
+                delta = float(np.clip(((c_with - c_wo) + 1.0) / 2.0, 0.0, 1.0))
+                return delta
+            return 0.5
+        except Exception:
             return 0.5
 
+    # ────────────────────────────
+    # TRENDS & QUALITY
+    # ────────────────────────────
     async def _analyze_consensus_trends_comprehensive(self, voting_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze comprehensive consensus trends and patterns"""
         try:
-            trend_analysis = {
-                'current_trend': 'stable',
-                'trend_strength': 0.0,
-                'prediction': {},
-                'pattern_analysis': {},
-                'regime_analysis': {}
+            out: Dict[str, Any] = {
+                "current_trend": "stable",
+                "trend_strength": 0.0,
+                "prediction": {},
+                "pattern_analysis": {},
+                "regime_analysis": {},
             }
-            
             if len(self.consensus_history) < 5:
-                trend_analysis['status'] = 'insufficient_history'
-                return trend_analysis
-            
-            # Calculate trend direction and strength
-            recent_consensus = [
-                event.get('consensus', 0.5) 
-                for event in list(self.consensus_history)[-10:]
-            ]
-            
-            if len(recent_consensus) >= 3:
-                x = np.arange(len(recent_consensus))
-                slope, intercept = np.polyfit(x, recent_consensus, 1)
-                
-                trend_analysis['trend_strength'] = abs(slope)
-                
+                out["status"] = "insufficient_history"
+                return out
+
+            recent = [float(e.get("consensus", 0.5)) for e in list(self.consensus_history)[-10:]]
+            if len(recent) >= 3:
+                x = np.arange(len(recent))
+                try:
+                    slope, intercept = np.polyfit(x, recent, 1)
+                except Exception:
+                    slope, intercept = 0.0, float(recent[-1])
+                out["trend_strength"] = float(abs(slope))
                 if slope > 0.02:
-                    trend_analysis['current_trend'] = 'increasing'
+                    out["current_trend"] = "increasing"
                 elif slope < -0.02:
-                    trend_analysis['current_trend'] = 'decreasing'
+                    out["current_trend"] = "decreasing"
                 else:
-                    trend_analysis['current_trend'] = 'stable'
-                
-                # Generate prediction for next consensus
-                next_consensus = slope * len(recent_consensus) + intercept
-                next_consensus = np.clip(next_consensus, 0.0, 1.0)
-                
-                trend_analysis['prediction'] = {
-                    'next_consensus': float(next_consensus),
-                    'confidence': min(1.0, 1.0 - trend_analysis['trend_strength'] * 5),
-                    'trend_slope': float(slope)
+                    out["current_trend"] = "stable"
+
+                nxt = float(np.clip(slope * len(recent) + intercept, 0.0, 1.0))
+                out["prediction"] = {
+                    "next_consensus": nxt,
+                    "confidence": float(np.clip(1.0 - 5.0 * abs(slope), 0.0, 1.0)),
+                    "trend_slope": float(slope),
                 }
-                
-                # Record prediction for future accuracy assessment
-                self.prediction_history.append({
-                    'timestamp': datetime.datetime.now().isoformat(),
-                    'predicted_consensus': next_consensus,
-                    'actual_consensus': self.last_consensus,
-                    'prediction_method': 'linear_trend'
-                })
-            
-            # Analyze patterns by market regime
-            regime = voting_data.get('market_regime', 'unknown')
-            self.regime_consensus_history[regime].append(self.last_consensus)
-            
+                self.prediction_history.append(
+                    {
+                        "timestamp": dt.datetime.now().isoformat(),
+                        "predicted_consensus": nxt,
+                        "actual_consensus": float(self.last_consensus),
+                        "prediction_method": "linear_trend",
+                    }
+                )
+
+            regime = str(voting_data.get("market_regime", "unknown"))
+            self.regime_consensus_history[regime].append(float(self.last_consensus))
             if len(self.regime_consensus_history[regime]) >= 3:
-                regime_consensus = list(self.regime_consensus_history[regime])
-                trend_analysis['regime_analysis'][regime] = {
-                    'avg_consensus': np.mean(regime_consensus),
-                    'consensus_volatility': np.std(regime_consensus),
-                    'sample_count': len(regime_consensus)
+                seq = list(self.regime_consensus_history[regime])
+                out["regime_analysis"][regime] = {
+                    "avg_consensus": float(np.mean(seq)),
+                    "consensus_volatility": float(np.std(seq)),
+                    "sample_count": int(len(seq)),
                 }
-            
-            # Store trend entry
-            trend_entry = {
-                'timestamp': datetime.datetime.now().isoformat(),
-                'trend_direction': trend_analysis['current_trend'],
-                'trend_strength': trend_analysis['trend_strength'],
-                'current_consensus': self.last_consensus,
-                'regime': regime,
-                'quality': self.consensus_quality
-            }
-            self.consensus_trends.append(trend_entry)
-            
-            return trend_analysis
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "consensus_trends_analysis")
-            return {'current_trend': 'unknown', 'status': 'analysis_error'}
+
+            self.consensus_trends.append(
+                {
+                    "timestamp": dt.datetime.now().isoformat(),
+                    "trend_direction": out["current_trend"],
+                    "trend_strength": out["trend_strength"],
+                    "current_consensus": float(self.last_consensus),
+                    "regime": regime,
+                    "quality": float(self.consensus_quality),
+                }
+            )
+            return out
+        except Exception:
+            return {"current_trend": "unknown", "status": "analysis_error"}
 
     async def _calculate_comprehensive_quality_metrics(self) -> Dict[str, Any]:
-        """Calculate comprehensive quality metrics for consensus system"""
         try:
-            # Quality metrics are updated in _calculate_advanced_consensus_quality
-            # Here we compile additional insights
-            
-            quality_analysis = {
+            out = {
                 **self.quality_metrics,
-                'overall_quality_score': self.consensus_quality,
-                'quality_trend': 'unknown',
-                'quality_drivers': {},
-                'improvement_areas': []
+                "overall_quality_score": float(self.consensus_quality),
+                "quality_trend": "unknown",
+                "quality_drivers": {},
+                "improvement_areas": [],
             }
-            
-            # Analyze quality trend
+
             if len(self.consensus_history) >= 5:
-                recent_quality = [
-                    event.get('consensus_quality', 0.5) 
-                    for event in list(self.consensus_history)[-5:]
-                ]
-                
-                if len(recent_quality) >= 3:
-                    x = np.arange(len(recent_quality))
-                    slope = np.polyfit(x, recent_quality, 1)[0]
-                    
-                    if slope > 0.02:
-                        quality_analysis['quality_trend'] = 'improving'
-                    elif slope < -0.02:
-                        quality_analysis['quality_trend'] = 'declining'
-                    else:
-                        quality_analysis['quality_trend'] = 'stable'
-            
-            # Identify quality drivers
-            quality_components = [(k, v) for k, v in self.quality_metrics.items() if v > 0.7]
-            quality_components.sort(key=lambda x: x[1], reverse=True)
-            quality_analysis['quality_drivers'] = dict(quality_components[:3])
-            
-            # Identify improvement areas
-            improvement_areas = [(k, v) for k, v in self.quality_metrics.items() if v < 0.5]
-            improvement_areas.sort(key=lambda x: x[1])
-            quality_analysis['improvement_areas'] = [k for k, v in improvement_areas[:3]]
-            
-            return quality_analysis
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "quality_metrics_calculation")
-            return {'overall_quality_score': 0.5, 'quality_trend': 'unknown'}
+                q_recent = [float(e.get("consensus_quality", 0.5)) for e in list(self.consensus_history)[-5:]]
+                if len(q_recent) >= 3:
+                    x = np.arange(len(q_recent))
+                    try:
+                        slope = float(np.polyfit(x, q_recent, 1)[0])
+                    except Exception:
+                        slope = 0.0
+                    out["quality_trend"] = "improving" if slope > 0.02 else "declining" if slope < -0.02 else "stable"
 
-    async def _generate_intelligent_consensus_recommendations(self, consensus_analysis: Dict[str, Any],
-                                                            quality_analysis: Dict[str, Any],
-                                                            trend_analysis: Dict[str, Any]) -> List[str]:
-        """Generate intelligent consensus recommendations"""
+            drivers = [(k, v) for k, v in self.quality_metrics.items() if k != "overall_effectiveness" and v > 0.7]
+            drivers.sort(key=lambda x: x[1], reverse=True)
+            out["quality_drivers"] = dict(drivers[:3])
+
+            improve = [(k, v) for k, v in self.quality_metrics.items() if k != "overall_effectiveness" and v < 0.5]
+            improve.sort(key=lambda x: x[1])
+            out["improvement_areas"] = [k for k, _ in improve[:3]]
+
+            return out
+        except Exception:
+            return {"overall_quality_score": 0.5, "quality_trend": "unknown"}
+
+    # ────────────────────────────
+    # RECOMMENDATIONS & THESIS
+    # ────────────────────────────
+    async def _generate_intelligent_consensus_recommendations(
+        self, consensus_analysis: Dict[str, Any], quality_analysis: Dict[str, Any], trend_analysis: Dict[str, Any]
+    ) -> List[str]:
         try:
-            recommendations = []
-            
-            # Consensus level recommendations
-            consensus_score = consensus_analysis.get('consensus_score', 0.5)
-            if consensus_score > 0.9:
-                recommendations.append("VERY HIGH CONSENSUS: Consider if decision-making is too homogeneous")
-            elif consensus_score > 0.8:
-                recommendations.append("HIGH CONSENSUS: Strong agreement detected - good for decisive action")
-            elif consensus_score < 0.3:
-                recommendations.append("LOW CONSENSUS: Significant disagreement - consider more discussion or analysis")
-            elif consensus_score < 0.2:
-                recommendations.append("CRITICAL: Very low consensus - decision may be premature")
-            
-            # Quality-based recommendations
-            overall_quality = quality_analysis.get('overall_quality_score', 0.5)
-            if overall_quality < 0.4:
-                recommendations.append("QUALITY: Low consensus quality detected - review member input methods")
-            
-            improvement_areas = quality_analysis.get('improvement_areas', [])
-            if 'reliability' in improvement_areas:
-                recommendations.append("RELIABILITY: Consider member confidence calibration or training")
-            if 'diversity' in improvement_areas:
-                recommendations.append("DIVERSITY: Encourage more diverse perspectives in committee")
-            if 'stability' in improvement_areas:
-                recommendations.append("STABILITY: High consensus volatility - review decision-making process")
-            
-            # Trend-based recommendations
-            current_trend = trend_analysis.get('current_trend', 'stable')
-            if current_trend == 'decreasing':
-                recommendations.append("TREND: Consensus declining - investigate source of disagreement")
-            elif current_trend == 'increasing':
-                recommendations.append("TREND: Consensus improving - current approach is working well")
-            
-            # Member contribution recommendations
-            low_contributors = [
-                member_id for member_id, contrib in self.member_contributions.items()
-                if contrib.get('consensus_contribution', 0.5) < 0.3
+            recs: List[str] = []
+            score = float(consensus_analysis.get("consensus_score", 0.5))
+            qual = float(quality_analysis.get("overall_quality_score", 0.5))
+            trend = str(trend_analysis.get("current_trend", "stable"))
+
+            if score > 0.9:
+                recs.append("VERY HIGH CONSENSUS: Ensure decisions aren't overly homogeneous")
+            elif score > 0.8:
+                recs.append("HIGH CONSENSUS: Suitable for decisive action")
+            elif score < 0.2:
+                recs.append("CRITICAL: Very low consensus — postpone decision or add analysis")
+            elif score < 0.3:
+                recs.append("LOW CONSENSUS: Facilitate discussion; explore dissenting views")
+
+            if qual < 0.4:
+                recs.append("QUALITY: Low consensus quality — review inputs & calibration")
+            for area in quality_analysis.get("improvement_areas", []):
+                if area == "reliability":
+                    recs.append("RELIABILITY: Calibrate or train members; review confidence usage")
+                if area == "diversity":
+                    recs.append("DIVERSITY: Encourage broader viewpoints or rotate members")
+                if area == "stability":
+                    recs.append("STABILITY: Consider slightly higher smoothing α or process tweaks")
+
+            if trend == "decreasing":
+                recs.append("TREND: Consensus declining — investigate sources of conflict")
+            elif trend == "increasing":
+                recs.append("TREND: Consensus improving — current approach appears effective")
+
+            # Member contribution check
+            low_contrib = [m for m, c in self.member_contributions.items() if c.get("consensus_contribution", 0.5) < 0.3]
+            if len(low_contrib) > max(1, self.n_members // 3):
+                recs.append(f"MEMBERS: {len(low_contrib)} members with low contribution — consider coaching/rotation")
+
+            # Param hints
+            alpha = float(self.consensus_intelligence.get("smoothing_alpha", 0.3))
+            if alpha > 0.6:
+                recs.append("PARAMETERS: High smoothing may mask important changes")
+            elif alpha < 0.1:
+                recs.append("PARAMETERS: Low smoothing may cause excess volatility")
+
+            return recs[:6] if recs else ["SYSTEM: Consensus detection within normal parameters"]
+        except Exception as e:
+            ctx = self.error_pinpointer.analyze_error(e, "consensus_recommendations")
+            return [f"Recommendation generation failed: {ctx}"]
+
+    async def _generate_comprehensive_consensus_thesis(
+        self, consensus_analysis: Dict[str, Any], quality_analysis: Dict[str, Any], recommendations: List[str]
+    ) -> str:
+        try:
+            score = float(consensus_analysis.get("consensus_score", self.last_consensus))
+            qual = float(quality_analysis.get("overall_quality_score", self.consensus_quality))
+            members = int(consensus_analysis.get("member_count", self.n_members))
+            lvl = "HIGH" if score > 0.7 else "MODERATE" if score > 0.4 else "LOW"
+            parts = [
+                f"CONSENSUS: {lvl} ({score:.1%})",
+                f"QUALITY: {qual:.1%} across {len(self.consensus_components)} components",
             ]
-            if len(low_contributors) > self.n_members // 3:
-                recommendations.append(f"MEMBERS: {len(low_contributors)} members have low consensus contribution")
-            
-            # Market adaptation recommendations
-            if hasattr(self, 'consensus_intelligence'):
-                alpha = self.consensus_intelligence.get('smoothing_alpha', 0.3)
-                if alpha > 0.6:
-                    recommendations.append("PARAMETERS: High smoothing may be masking important consensus changes")
-                elif alpha < 0.1:
-                    recommendations.append("PARAMETERS: Low smoothing may cause excessive consensus volatility")
-            
-            # Default recommendation
-            if not recommendations:
-                recommendations.append("SYSTEM: Consensus detection operating within normal parameters")
-            
-            return recommendations[:6]  # Limit to top 6 recommendations
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "consensus_recommendations")
-            return [f"Recommendation generation failed: {error_context}"]
-
-    async def _generate_comprehensive_consensus_thesis(self, consensus_analysis: Dict[str, Any],
-                                                     quality_analysis: Dict[str, Any],
-                                                     recommendations: List[str]) -> str:
-        """Generate comprehensive consensus thesis"""
-        try:
-            # Core metrics
-            consensus_score = consensus_analysis.get('consensus_score', 0.5)
-            consensus_quality = quality_analysis.get('overall_quality_score', 0.5)
-            member_count = consensus_analysis.get('member_count', self.n_members)
-            
-            thesis_parts = []
-            
-            # Executive summary
-            consensus_level = "HIGH" if consensus_score > 0.7 else "MODERATE" if consensus_score > 0.4 else "LOW"
-            thesis_parts.append(
-                f"CONSENSUS ANALYSIS: {consensus_level} agreement with {consensus_score:.1%} consensus score"
-            )
-            
-            # Quality assessment
-            thesis_parts.append(
-                f"QUALITY METRICS: {consensus_quality:.1%} overall quality across {len(self.consensus_components)} components"
-            )
-            
-            # Component breakdown
             if self.consensus_components:
-                best_component = max(self.consensus_components.items(), key=lambda x: x[1])
-                thesis_parts.append(
-                    f"COMPONENT ANALYSIS: {best_component[0]} leads with {best_component[1]:.1%} agreement"
-                )
-            
-            # Member dynamics
-            thesis_parts.append(
-                f"MEMBER DYNAMICS: {member_count} active members with {len(self.member_contributions)} tracked"
-            )
-            
-            # Temporal insights
+                k, v = max(self.consensus_components.items(), key=lambda kv: kv[1])
+                parts.append(f"LEADING COMPONENT: {k} at {v:.1%}")
+            parts.append(f"MEMBERS: {members} evaluated")
             if self.temporal_stability > 0:
-                thesis_parts.append(f"STABILITY: {self.temporal_stability:.1%} temporal stability measured")
-            
-            # System performance
-            total_computations = self.consensus_stats.get('total_computations', 0)
-            thesis_parts.append(f"SYSTEM PERFORMANCE: {total_computations} consensus computations completed")
-            
-            # Recommendations summary
-            priority_recommendations = [rec for rec in recommendations if any(keyword in rec 
-                                      for keyword in ['CRITICAL', 'HIGH', 'LOW CONSENSUS'])]
-            if priority_recommendations:
-                thesis_parts.append(f"ACTION ITEMS: {len(priority_recommendations)} priority recommendations")
-            
-            return " | ".join(thesis_parts)
-            
+                parts.append(f"STABILITY: {self.temporal_stability:.1%}")
+            parts.append(f"RUNS: {self.consensus_stats.get('total_computations', 0)} computations")
+            pri = [r for r in recommendations if any(s in r for s in ["CRITICAL", "HIGH", "LOW CONSENSUS"])]
+            if pri:
+                parts.append(f"ACTION ITEMS: {len(pri)} priority recs")
+            return " | ".join(parts)
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "consensus_thesis_generation")
-            return f"Consensus thesis generation failed: {error_context}"
+            ctx = self.error_pinpointer.analyze_error(e, "consensus_thesis_generation")
+            return f"Consensus thesis generation failed: {ctx}"
 
-    async def _update_smartinfobus_comprehensive(self, results: Dict[str, Any], thesis: str):
-        """Update SmartInfoBus with comprehensive consensus results"""
+    async def _update_smartinfobus_comprehensive(self, results: Dict[str, Any], thesis: str) -> None:
         try:
-            # Core consensus results
-            self.smart_bus.set('consensus_score', results['consensus_score'],
-                             module='ConsensusDetector', thesis=thesis)
-            
-            # Consensus quality
-            quality_thesis = f"Consensus quality: {results['consensus_quality']:.3f} across multiple quality dimensions"
-            self.smart_bus.set('consensus_quality', results['consensus_quality'],
-                             module='ConsensusDetector', thesis=quality_thesis)
-            
-            # Consensus components
-            components_thesis = f"Consensus components: {len(results['consensus_components'])} algorithms analyzed"
-            self.smart_bus.set('consensus_components', results['consensus_components'],
-                             module='ConsensusDetector', thesis=components_thesis)
-            
-            # Directional consensus
-            directional_thesis = f"Directional consensus: {results['directional_consensus']:.3f} alignment score"
-            self.smart_bus.set('directional_consensus', results['directional_consensus'],
-                             module='ConsensusDetector', thesis=directional_thesis)
-            
-            # Magnitude consensus
-            magnitude_thesis = f"Magnitude consensus: {results['magnitude_consensus']:.3f} strength agreement"
-            self.smart_bus.set('magnitude_consensus', results['magnitude_consensus'],
-                             module='ConsensusDetector', thesis=magnitude_thesis)
-            
-            # Confidence consensus
-            confidence_thesis = f"Confidence consensus: {results['confidence_consensus']:.3f} reliability score"
-            self.smart_bus.set('confidence_consensus', results['confidence_consensus'],
-                             module='ConsensusDetector', thesis=confidence_thesis)
-            
-            # Member contributions
-            contrib_thesis = f"Member contributions: {len(results['member_contributions'])} profiles analyzed"
-            self.smart_bus.set('member_contributions', results['member_contributions'],
-                             module='ConsensusDetector', thesis=contrib_thesis)
-            
-            # Consensus trends
-            trends_thesis = f"Consensus trends: {len(self.consensus_trends)} trend points tracked"
-            self.smart_bus.set('consensus_trends', results['consensus_trends'],
-                             module='ConsensusDetector', thesis=trends_thesis)
-            
-            # Quality metrics
-            quality_metrics_thesis = f"Quality metrics: {len(results['quality_metrics'])} dimensions evaluated"
-            self.smart_bus.set('quality_metrics', results['quality_metrics'],
-                             module='ConsensusDetector', thesis=quality_metrics_thesis)
-            
-            # Consensus recommendations
-            rec_thesis = f"Consensus recommendations: {len(results['consensus_recommendations'])} actionable insights"
-            self.smart_bus.set('consensus_recommendations', results['consensus_recommendations'],
-                             module='ConsensusDetector', thesis=rec_thesis)
-            
+            s = self.smart_bus.set
+            s("consensus_score", results["consensus_score"], module="ConsensusDetector", thesis=thesis)
+            s(
+                "consensus_quality",
+                results["consensus_quality"],
+                module="ConsensusDetector",
+                thesis=f"Consensus quality: {results['consensus_quality']:.3f}",
+            )
+            s(
+                "consensus_components",
+                results["consensus_components"],
+                module="ConsensusDetector",
+                thesis=f"Components analyzed: {len(results['consensus_components'])}",
+            )
+            s(
+                "directional_consensus",
+                results["directional_consensus"],
+                module="ConsensusDetector",
+                thesis=f"Directional alignment: {results['directional_consensus']:.3f}",
+            )
+            s(
+                "magnitude_consensus",
+                results["magnitude_consensus"],
+                module="ConsensusDetector",
+                thesis=f"Magnitude agreement: {results['magnitude_consensus']:.3f}",
+            )
+            s(
+                "confidence_consensus",
+                results["confidence_consensus"],
+                module="ConsensusDetector",
+                thesis=f"Confidence-weighted: {results['confidence_consensus']:.3f}",
+            )
+            s(
+                "member_contributions",
+                results["member_contributions"],
+                module="ConsensusDetector",
+                thesis=f"Member contributions: {len(results['member_contributions'])} profiles",
+            )
+            s(
+                "consensus_trends",
+                results["consensus_trends"],
+                module="ConsensusDetector",
+                thesis=f"Trends tracked: {len(self.consensus_trends)} points",
+            )
+            s(
+                "quality_metrics",
+                results["quality_metrics"],
+                module="ConsensusDetector",
+                thesis=f"Quality metrics: {len(results['quality_metrics'])} dimensions",
+            )
+            s(
+                "consensus_recommendations",
+                results["consensus_recommendations"],
+                module="ConsensusDetector",
+                thesis=f"Recommendations: {len(results['consensus_recommendations'])}",
+            )
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
-            self.logger.error(f"SmartInfoBus update failed: {error_context}")
+            ctx = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
+            self.logger.error(f"SmartInfoBus update failed: {ctx}")
 
-    # ═══════════════════════════════════════════════════════════════════
-    # LEGACY COMPATIBILITY AND PUBLIC INTERFACE
-    # ═══════════════════════════════════════════════════════════════════
-
+    # ────────────────────────────
+    # PUBLIC / LEGACY API
+    # ────────────────────────────
     def compute_consensus(self, actions: List[np.ndarray], confidences: List[float]) -> float:
-        """Legacy consensus computation interface for backward compatibility"""
+        """Synchronous wrapper for legacy callers."""
         try:
-            # Run async method synchronously
             import asyncio
-            
+
             if asyncio.get_event_loop().is_running():
-                # If already in async context, use simplified sync method
                 return self._simple_consensus_computation_fallback(actions, confidences)
-            else:
-                # Run async analysis
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    # Create minimal voting data
-                    voting_data = {
-                        'raw_proposals': actions,
-                        'member_confidences': confidences,
-                        'agreement_score': 0.5,
-                        'market_regime': 'unknown'
-                    }
-                    
-                    consensus_analysis = loop.run_until_complete(
-                        self._perform_comprehensive_consensus_analysis(voting_data)
-                    )
-                    return consensus_analysis.get('consensus_score', 0.5)
-                finally:
-                    loop.close()
-                    
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "legacy_consensus_computation")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                voting_data = {
+                    "raw_proposals": actions,
+                    "member_confidences": confidences,
+                    "agreement_score": 0.5,
+                    "market_regime": "unknown",
+                }
+                res = loop.run_until_complete(self._perform_comprehensive_consensus_analysis(voting_data))
+                return float(res.get("consensus_score", 0.5))
+            finally:
+                loop.close()
+        except Exception:
             return self._simple_consensus_computation_fallback(actions, confidences)
 
-    def _simple_consensus_computation_fallback(self, actions: List[np.ndarray], 
-                                             confidences: List[float]) -> float:
-        """Simple fallback consensus computation method"""
+    def _simple_consensus_computation_fallback(self, actions: List[np.ndarray], confidences: List[float]) -> float:
+        """Minimal, safe cosine-average fallback with optional confidence weighting."""
         try:
             if not actions or len(actions) < 2:
                 return 0.5
-            
-            # Simple cosine similarity calculation
-            agreements = []
-            weights = []
-            
+            vals: List[float] = []
+            ws: List[float] = []
             for i in range(len(actions)):
                 for j in range(i + 1, len(actions)):
-                    a1, a2 = actions[i], actions[j]
-                    
-                    # Ensure same dimensionality
-                    max_len = max(len(a1), len(a2))
-                    a1_padded = np.pad(a1, (0, max_len - len(a1)))
-                    a2_padded = np.pad(a2, (0, max_len - len(a2)))
-                    
-                    norm1, norm2 = np.linalg.norm(a1_padded), np.linalg.norm(a2_padded)
-                    if norm1 > 1e-6 and norm2 > 1e-6:
-                        similarity = np.dot(a1_padded, a2_padded) / (norm1 * norm2)
-                        agreement = (similarity + 1.0) / 2.0
-                        
-                        # Weight by confidence if available
+                    a1 = np.asarray(actions[i], dtype=np.float32).flatten()
+                    a2 = np.asarray(actions[j], dtype=np.float32).flatten()
+                    a1, a2 = self._pad_pair(a1, a2)
+                    n1 = float(np.linalg.norm(a1))
+                    n2 = float(np.linalg.norm(a2))
+                    if n1 > 1e-9 and n2 > 1e-9:
+                        sim = float(np.dot(a1, a2) / (n1 * n2))
+                        agree = (sim + 1.0) / 2.0
+                        vals.append(agree)
                         if i < len(confidences) and j < len(confidences):
-                            weight = confidences[i] * confidences[j]
+                            ws.append(float(confidences[i] * confidences[j]))
                         else:
-                            weight = 1.0
-                        
-                        agreements.append(agreement)
-                        weights.append(weight)
-            
-            if agreements and sum(weights) > 0:
-                consensus = np.average(agreements, weights=weights)
-                
-                # Apply temporal smoothing if enabled
+                            ws.append(1.0)
+            if vals and sum(ws) > 0:
+                c = float(np.average(vals, weights=ws))
                 if self.temporal_smoothing and len(self.consensus_history) > 0:
-                    previous_consensus = self.consensus_history[-1].get('consensus', 0.5)
-                    alpha = self.consensus_intelligence.get('smoothing_alpha', 0.3)
-                    consensus = alpha * consensus + (1 - alpha) * previous_consensus
-                
-                self.last_consensus = float(np.clip(consensus, 0.0, 1.0))
+                    prev = float(self.consensus_history[-1].get("consensus", 0.5))
+                    alpha = float(self.consensus_intelligence.get("smoothing_alpha", 0.3))
+                    c = float(alpha * c + (1 - alpha) * prev)
+                self.last_consensus = float(np.clip(c, 0.0, 1.0))
                 return self.last_consensus
-            else:
-                return 0.5
-                
+            return 0.5
         except Exception:
             return 0.5
 
     def resize(self, n_members: int) -> None:
-        """Resize for different number of members"""
-        old_members = self.n_members
+        old = self.n_members
         self.n_members = int(n_members)
-        
-        # Clear member-specific data if size changed significantly
-        if abs(self.n_members - old_members) > 2:
+        if abs(self.n_members - old) > 2:
             self.member_contributions.clear()
-            
-        self.logger.info(format_operator_message(
-            icon="[RELOAD]",
-            message="Consensus Detector resized",
-            old_members=old_members,
-            new_members=self.n_members
-        ))
+        self.logger.info(
+            format_operator_message(icon="[RELOAD]", message="Consensus Detector resized", old_members=old, new_members=self.n_members)
+        )
 
+    # ────────────────────────────
+    # SUMMARIES & HEALTH
+    # ────────────────────────────
     def _get_member_contributions_summary(self) -> Dict[str, Any]:
-        """Get summary of member contributions"""
         try:
-            summary = {}
-            
-            for member_id, contribution in self.member_contributions.items():
-                summary[f'member_{member_id}'] = {
-                    'avg_alignment': contribution.get('avg_alignment', 0.5),
-                    'consistency': contribution.get('consistency', 0.5),
-                    'influence_weight': contribution.get('influence_weight', 1.0 / max(self.n_members, 1)),
-                    'consensus_contribution': contribution.get('consensus_contribution', 0.5),
-                    'reliability_score': contribution.get('reliability_score', 0.5)
+            out: Dict[str, Any] = {}
+            for mid, c in self.member_contributions.items():
+                out[f"member_{int(mid)}"] = {
+                    "avg_alignment": float(c.get("avg_alignment", 0.5)),
+                    "consistency": float(c.get("consistency", 0.5)),
+                    "influence_weight": float(c.get("influence_weight", 1.0 / max(self.n_members, 1))),
+                    "consensus_contribution": float(c.get("consensus_contribution", 0.5)),
+                    "reliability_score": float(c.get("reliability_score", 0.5)),
                 }
-            
-            return summary
-            
+            return out
         except Exception:
             return {}
 
     def _get_consensus_trends_summary(self) -> Dict[str, Any]:
-        """Get summary of consensus trends"""
         try:
             if not self.consensus_trends:
-                return {'status': 'no_trends'}
-            
-            recent_trends = list(self.consensus_trends)[-5:]
-            
-            summary = {
-                'recent_trend_count': len(recent_trends),
-                'current_trend': recent_trends[-1].get('trend_direction', 'unknown') if recent_trends else 'unknown',
-                'trend_strength': recent_trends[-1].get('trend_strength', 0.0) if recent_trends else 0.0,
-                'avg_consensus_trend': np.mean([t.get('current_consensus', 0.5) for t in recent_trends]),
-                'consensus_volatility': np.std([t.get('current_consensus', 0.5) for t in recent_trends]) if len(recent_trends) > 1 else 0.0
+                return {"status": "no_trends"}
+            recent = list(self.consensus_trends)[-5:]
+            return {
+                "recent_trend_count": len(recent),
+                "current_trend": str(recent[-1].get("trend_direction", "unknown")),
+                "trend_strength": float(recent[-1].get("trend_strength", 0.0)),
+                "avg_consensus_trend": float(np.mean([t.get("current_consensus", 0.5) for t in recent])),
+                "consensus_volatility": float(np.std([t.get("current_consensus", 0.5) for t in recent])) if len(recent) > 1 else 0.0,
             }
-            
-            return summary
-            
         except Exception:
-            return {'status': 'analysis_error'}
+            return {"status": "analysis_error"}
 
     def get_observation_components(self) -> np.ndarray:
-        """Return consensus features for RL observation"""
         try:
-            features = [
-                float(self.last_consensus),
-                float(self.consensus_quality),
-                float(self.directional_consensus),
-                float(self.magnitude_consensus),
-                float(self.confidence_consensus),
-                float(self.temporal_stability),
-                float(len(self.consensus_history) / 100),  # History fullness
-                float(self.consensus_stats.get('consensus_volatility', 0.0))
-            ]
-            
-            observation = np.array(features, dtype=np.float32)
-            
-            # Validate for NaN/infinite values
-            if np.any(~np.isfinite(observation)):
-                self.logger.error(f"Invalid consensus observation: {observation}")
-                observation = np.nan_to_num(observation, nan=0.5)
-            
-            return observation
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "observation_generation")
-            self.logger.error(f"Consensus observation generation failed: {error_context}")
+            feats = np.asarray(
+                [
+                    float(self.last_consensus),
+                    float(self.consensus_quality),
+                    float(self.directional_consensus),
+                    float(self.magnitude_consensus),
+                    float(self.confidence_consensus),
+                    float(self.temporal_stability),
+                    float(len(self.consensus_history) / 150.0),
+                    float(self.consensus_stats.get("consensus_volatility", 0.0)),
+                ],
+                dtype=np.float32,
+            )
+            if np.any(~np.isfinite(feats)):
+                self.logger.error(f"Invalid consensus observation: {feats}")
+                feats = np.nan_to_num(feats, nan=0.5)
+            return feats
+        except Exception:
             return np.array([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.0, 0.0], dtype=np.float32)
 
     def get_health_metrics(self) -> Dict[str, Any]:
-        """Get comprehensive health metrics for monitoring"""
         return {
-            'module_name': 'ConsensusDetector',
-            'status': 'disabled' if self.is_disabled else 'healthy',
-            'error_count': self.error_count,
-            'circuit_breaker_threshold': self.circuit_breaker_threshold,
-            'total_computations': self.consensus_stats.get('total_computations', 0),
-            'consensus_score': self.last_consensus,
-            'consensus_quality': self.consensus_quality,
-            'consensus_volatility': self.consensus_stats.get('consensus_volatility', 0.0),
-            'high_consensus_count': self.consensus_stats.get('high_consensus_count', 0),
-            'low_consensus_count': self.consensus_stats.get('low_consensus_count', 0),
-            'member_contributions_tracked': len(self.member_contributions),
-            'consensus_history_length': len(self.consensus_history),
-            'temporal_stability': self.temporal_stability,
-            'session_duration': (datetime.datetime.now() - 
-                               datetime.datetime.fromisoformat(self.consensus_stats['session_start'])).total_seconds() / 3600
+            "module_name": "ConsensusDetector",
+            "status": "disabled" if self.is_disabled else "healthy",
+            "error_count": int(self.error_count),
+            "circuit_breaker_threshold": int(self.circuit_breaker_threshold),
+            "total_computations": int(self.consensus_stats.get("total_computations", 0)),
+            "consensus_score": float(self.last_consensus),
+            "consensus_quality": float(self.consensus_quality),
+            "consensus_volatility": float(self.consensus_stats.get("consensus_volatility", 0.0)),
+            "high_consensus_count": int(self.consensus_stats.get("high_consensus_count", 0)),
+            "low_consensus_count": int(self.consensus_stats.get("low_consensus_count", 0)),
+            "member_contributions_tracked": int(len(self.member_contributions)),
+            "consensus_history_length": int(len(self.consensus_history)),
+            "temporal_stability": float(self.temporal_stability),
+            "session_duration": (dt.datetime.now() - dt.datetime.fromisoformat(self.consensus_stats["session_start"])).total_seconds() / 3600.0,
         }
 
     def _get_health_metrics(self) -> Dict[str, Any]:
-        """Internal method for health metrics (for compatibility)"""
         return self.get_health_metrics()
 
     def get_consensus_report(self) -> str:
-        """Generate comprehensive operator-friendly consensus report"""
-        # Consensus level assessment
+        # Levels
         if self.last_consensus > 0.8:
-            consensus_level = "[GREEN] HIGH"
+            lvl = "[GREEN] HIGH"
         elif self.last_consensus > 0.6:
-            consensus_level = "[YELLOW] MODERATE"
+            lvl = "[YELLOW] MODERATE"
         elif self.last_consensus > 0.4:
-            consensus_level = "🟠 LOW-MODERATE"
+            lvl = "🟠 LOW-MODERATE"
         elif self.last_consensus > 0.2:
-            consensus_level = "🟠 LOW"
+            lvl = "🟠 LOW"
         else:
-            consensus_level = "[RED] VERY LOW"
-        
-        # Quality assessment
+            lvl = "[RED] VERY LOW"
+
         if self.consensus_quality > 0.8:
-            quality_level = "[OK] Excellent"
+            qlvl = "[OK] Excellent"
         elif self.consensus_quality > 0.6:
-            quality_level = "[FAST] Good"
+            qlvl = "[FAST] Good"
         elif self.consensus_quality > 0.4:
-            quality_level = "[WARN] Fair"
+            qlvl = "[WARN] Fair"
         else:
-            quality_level = "[ALERT] Poor"
-        
-        # Trend analysis
+            qlvl = "[ALERT] Poor"
+
+        trend_status = "📭 No data"
         if len(self.consensus_trends) > 0:
-            recent_trend = self.consensus_trends[-1]
-            trend_direction = recent_trend.get('trend_direction', 'unknown')
-            if trend_direction == 'increasing':
-                trend_status = "[CHART] Improving"
-            elif trend_direction == 'decreasing':
-                trend_status = "📉 Declining"
-            else:
-                trend_status = "→ Stable"
-        else:
-            trend_status = "📭 No data"
-        
-        # Component breakdown
-        component_lines = []
-        for method, score in self.consensus_components.items():
-            if score > 0.7:
-                emoji = "[OK]"
-            elif score > 0.5:
-                emoji = "[FAST]"
-            elif score > 0.3:
-                emoji = "[WARN]"
-            else:
-                emoji = "[ALERT]"
-            component_lines.append(f"  {emoji} {method.replace('_', ' ').title()}: {score:.1%}")
-        
-        # Member contributions summary
-        if self.member_contributions:
-            high_contributors = sum(1 for contrib in self.member_contributions.values() 
-                                  if contrib.get('consensus_contribution', 0.5) > 0.7)
-            low_contributors = sum(1 for contrib in self.member_contributions.values() 
-                                 if contrib.get('consensus_contribution', 0.5) < 0.3)
-            member_summary = f"{high_contributors} high, {low_contributors} low contributors"
-        else:
-            member_summary = "No contribution data"
-        
-        # System effectiveness
-        effectiveness = self.quality_metrics.get('overall_effectiveness', 0.0)
-        if effectiveness > 0.8:
-            effectiveness_status = "[OK] Excellent"
-        elif effectiveness > 0.6:
-            effectiveness_status = "[FAST] Good"
-        elif effectiveness > 0.4:
-            effectiveness_status = "[WARN] Fair"
-        else:
-            effectiveness_status = "[ALERT] Poor"
-        
+            td = self.consensus_trends[-1].get("trend_direction", "unknown")
+            trend_status = "[CHART] Improving" if td == "increasing" else "📉 Declining" if td == "decreasing" else "→ Stable"
+
+        comp_lines: List[str] = []
+        for m, s in self.consensus_components.items():
+            tag = "[OK]" if s > 0.7 else "[FAST]" if s > 0.5 else "[WARN]" if s > 0.3 else "[ALERT]"
+            comp_lines.append(f"  {tag} {m.replace('_', ' ').title()}: {s:.1%}")
+
+        eff = float(self.quality_metrics.get("overall_effectiveness", 0.0))
+        eff_status = "[OK] Excellent" if eff > 0.8 else "[FAST] Good" if eff > 0.6 else "[WARN] Fair" if eff > 0.4 else "[ALERT] Poor"
+
+        high_c = sum(1 for c in self.member_contributions.values() if c.get("consensus_contribution", 0.5) > 0.7)
+        low_c = sum(1 for c in self.member_contributions.values() if c.get("consensus_contribution", 0.5) < 0.3)
+
         return f"""
-🤝 CONSENSUS DETECTOR v3.0
+🤝 CONSENSUS DETECTOR v3.1
 ═══════════════════════════════════════════════════════════════
-[STATS] Current Consensus: {consensus_level} ({self.last_consensus:.1%})
-[TARGET] Quality Level: {quality_level} ({self.consensus_quality:.1%})
+[STATS] Current Consensus: {lvl} ({self.last_consensus:.1%})
+[TARGET] Quality Level: {qlvl} ({self.consensus_quality:.1%})
 [CHART] Trend: {trend_status}
 
 [STATS] Consensus Components:
-{chr(10).join(component_lines) if component_lines else "  📭 No components available"}
+{chr(10).join(comp_lines) if comp_lines else "  📭 No components available"}
 
 [TARGET] Advanced Metrics:
-• Directional Consensus: {self.directional_consensus:.1%}
-• Magnitude Consensus: {self.magnitude_consensus:.1%}
-• Confidence Consensus: {self.confidence_consensus:.1%}
-• Network Consensus: {self.network_consensus:.1%}
+• Directional: {self.directional_consensus:.1%}
+• Magnitude: {self.magnitude_consensus:.1%}
+• Confidence: {self.confidence_consensus:.1%}
+• Network: {self.network_consensus:.1%}
 • Temporal Stability: {self.temporal_stability:.1%}
 
 [TARGET] Quality Dimensions:
@@ -2130,6 +1688,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
 • Reliability: {self.quality_metrics.get('reliability', 0):.1%}
 • Predictive Accuracy: {self.quality_metrics.get('predictive_accuracy', 0):.1%}
 • Temporal Consistency: {self.quality_metrics.get('temporal_consistency', 0):.1%}
+• Overall Effectiveness: {eff_status} ({eff:.1%})
 
 [CHART] Performance Statistics:
 • Total Computations: {self.consensus_stats['total_computations']}
@@ -2137,13 +1696,12 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
 • Low Consensus Events: {self.consensus_stats['low_consensus_count']}
 • Average Consensus: {self.consensus_stats['avg_consensus']:.1%}
 • Consensus Volatility: {self.consensus_stats['consensus_volatility']:.3f}
-• Overall Effectiveness: {effectiveness_status} ({effectiveness:.1%})
 
 👥 Member Analysis:
 • Committee Size: {self.n_members} members
 • Contributions Tracked: {len(self.member_contributions)}
-• Contributor Summary: {member_summary}
-• Average Influence: {np.mean([c.get('influence_weight', 0) for c in self.member_contributions.values()]):.3f} (if available)
+• Contributor Summary: {high_c} high, {low_c} low contributors
+• Average Influence: {np.mean([c.get('influence_weight', 0) for c in self.member_contributions.values()]) if self.member_contributions else 0.0:.3f}
 
 ⚙️ System Configuration:
 • Consensus Threshold: {self.threshold:.1%}
@@ -2152,352 +1710,238 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
 • Temporal Smoothing: {'[OK] Enabled' if self.temporal_smoothing else '[FAIL] Disabled'}
 • Smoothing Alpha: {self.consensus_intelligence.get('smoothing_alpha', 0.3):.3f}
 • Stability Window: {self.consensus_intelligence.get('stability_window', 10)} steps
-
-[STATS] Intelligence Parameters:
-• Trend Sensitivity: {self.consensus_intelligence.get('trend_sensitivity', 0.15):.1%}
-• Adaptation Rate: {self.consensus_intelligence.get('adaptation_rate', 0.12):.1%}
-• Confidence Weighting: {self.consensus_intelligence.get('confidence_weighting', 0.8):.1%}
-• Temporal Memory: {self.consensus_intelligence.get('temporal_memory', 0.85):.1%}
-
-[STATS] Recent Activity:
-• Consensus History: {len(self.consensus_history)} entries
-• Trend Data Points: {len(self.consensus_trends)} tracked
-• Regime Patterns: {len(self.regime_consensus_history)} regimes
-• Prediction History: {len(self.prediction_history)} predictions
-
-[TOOL] System Health:
-• Error Count: {self.error_count}/{self.circuit_breaker_threshold}
-• Status: {'[ALERT] DISABLED' if self.is_disabled else '[OK] OPERATIONAL'}
-• Session Duration: {(datetime.datetime.now() - datetime.datetime.fromisoformat(self.consensus_stats['session_start'])).total_seconds() / 3600:.1f} hours
-• Data Quality: {quality_level}
-        """
+"""
 
     def get_health_status(self) -> Dict[str, Any]:
-        """Get health status for system monitoring"""
         return {
-            'module_name': 'ConsensusDetector',
-            'status': 'disabled' if self.is_disabled else 'healthy',
-            'metrics': self._get_health_metrics(),
-            'alerts': self._generate_health_alerts(),
-            'recommendations': self._generate_health_recommendations()
+            "module_name": "ConsensusDetector",
+            "status": "disabled" if self.is_disabled else "healthy",
+            "metrics": self._get_health_metrics(),
+            "alerts": self._generate_health_alerts(),
+            "recommendations": self._generate_health_recommendations(),
         }
 
     def _generate_health_alerts(self) -> List[Dict[str, Any]]:
-        """Generate health-related alerts"""
-        alerts = []
-        
+        alerts: List[Dict[str, Any]] = []
         if self.is_disabled:
-            alerts.append({
-                'severity': 'critical',
-                'message': 'ConsensusDetector disabled due to errors',
-                'action': 'Investigate error logs and restart module'
-            })
-        
+            alerts.append(
+                {
+                    "severity": "critical",
+                    "message": "ConsensusDetector disabled due to errors",
+                    "action": "Inspect logs and restart module",
+                }
+            )
         if self.error_count > 2:
-            alerts.append({
-                'severity': 'warning',
-                'message': f'High error count: {self.error_count}',
-                'action': 'Monitor for recurring issues'
-            })
-        
-        # Consensus level alerts
+            alerts.append({"severity": "warning", "message": f"Elevated error count: {self.error_count}", "action": "Monitor stability"})
         if self.last_consensus < 0.2:
-            alerts.append({
-                'severity': 'warning',
-                'message': f'Very low consensus detected: {self.last_consensus:.1%}',
-                'action': 'Review committee decision-making process'
-            })
-        elif self.last_consensus > 0.95:
-            alerts.append({
-                'severity': 'info',
-                'message': f'Extremely high consensus: {self.last_consensus:.1%}',
-                'action': 'Consider if decision-making lacks diversity'
-            })
-        
-        # Quality alerts
+            alerts.append({"severity": "warning", "message": f"Very low consensus: {self.last_consensus:.1%}", "action": "Facilitate mediation"})
         if self.consensus_quality < 0.3:
-            alerts.append({
-                'severity': 'warning',
-                'message': f'Low consensus quality: {self.consensus_quality:.1%}',
-                'action': 'Review consensus algorithms and member input quality'
-            })
-        
-        # Volatility alerts
-        volatility = self.consensus_stats.get('consensus_volatility', 0.0)
-        if volatility > 0.3:
-            alerts.append({
-                'severity': 'warning',
-                'message': f'High consensus volatility: {volatility:.3f}',
-                'action': 'Consider increasing temporal smoothing or reviewing decision stability'
-            })
-        
-        # Insufficient data
+            alerts.append({"severity": "warning", "message": f"Low consensus quality: {self.consensus_quality:.1%}", "action": "Review inputs & methods"})
+        if float(self.consensus_stats.get("consensus_volatility", 0.0)) > 0.3:
+            alerts.append({"severity": "warning", "message": "High consensus volatility", "action": "Increase smoothing or stabilize process"})
         if len(self.consensus_history) < 5:
-            alerts.append({
-                'severity': 'info',
-                'message': 'Insufficient consensus history for reliable analysis',
-                'action': 'Continue operations to build consensus baseline'
-            })
-        
+            alerts.append({"severity": "info", "message": "Limited history — reliability improving with time", "action": "Continue operations"})
         return alerts
 
     def _generate_health_recommendations(self) -> List[str]:
-        """Generate health-related recommendations"""
-        recommendations = []
-        
+        recs: List[str] = []
         if self.is_disabled:
-            recommendations.append("Restart ConsensusDetector module after investigating errors")
-        
+            recs.append("Restart ConsensusDetector after resolving errors")
         if len(self.consensus_history) < 10:
-            recommendations.append("Insufficient consensus history - continue operations to establish patterns")
-        
-        # Quality recommendations
+            recs.append("Build more history for robust analytics")
         if self.consensus_quality < 0.5:
-            recommendations.append("Low consensus quality - review algorithm weighting and member input methods")
-        
-        # Smoothing recommendations
-        alpha = self.consensus_intelligence.get('smoothing_alpha', 0.3)
+            recs.append("Tune algorithm weights & input quality")
+        alpha = float(self.consensus_intelligence.get("smoothing_alpha", 0.3))
         if alpha > 0.6:
-            recommendations.append("High smoothing factor may mask important consensus changes")
+            recs.append("High smoothing may hide signal changes")
         elif alpha < 0.1:
-            recommendations.append("Low smoothing factor may cause excessive consensus volatility")
-        
-        # Member contribution recommendations
-        if self.member_contributions:
-            low_contributors = sum(1 for contrib in self.member_contributions.values() 
-                                 if contrib.get('consensus_contribution', 0.5) < 0.3)
-            if low_contributors > self.n_members // 2:
-                recommendations.append(f"Many members ({low_contributors}) have low consensus contribution - consider member training")
-        
-        # Volatility recommendations
-        volatility = self.consensus_stats.get('consensus_volatility', 0.0)
-        if volatility > 0.4:
-            recommendations.append("High consensus volatility - consider process stabilization measures")
-        
-        if not recommendations:
-            recommendations.append("ConsensusDetector operating within normal parameters")
-        
-        return recommendations
+            recs.append("Low smoothing may cause excessive volatility")
+        low_contrib = sum(1 for c in self.member_contributions.values() if c.get("consensus_contribution", 0.5) < 0.3)
+        if low_contrib > max(1, self.n_members // 2):
+            recs.append(f"Many members ({low_contrib}) show low contribution — coaching/rotation suggested")
+        if float(self.consensus_stats.get("consensus_volatility", 0.0)) > 0.4:
+            recs.append("High volatility — consider process stabilization")
+        if not recs:
+            recs.append("ConsensusDetector operating within normal parameters")
+        return recs
 
+    # ────────────────────────────
+    # ERRORS & DISABLED RESPONSE
+    # ────────────────────────────
     async def _handle_processing_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
-        """Handle processing errors with intelligent recovery"""
         self.error_count += 1
-        error_context = self.error_pinpointer.analyze_error(error, "ConsensusDetector")
-        
-        # Circuit breaker logic
+        ctx = self.error_pinpointer.analyze_error(error, "ConsensusDetector")
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
-            self.logger.error(format_operator_message(
-                icon="[ALERT]",
-                message="Consensus Detector disabled due to repeated errors",
-                error_count=self.error_count,
-                threshold=self.circuit_breaker_threshold
-            ))
-        
-        # Record error performance
-        processing_time = (time.time() - start_time) * 1000
-        self.performance_tracker.record_metric('ConsensusDetector', 'process_time', processing_time, False)
-        
+            self.logger.error(
+                format_operator_message(
+                    icon="[ALERT]",
+                    message="Consensus Detector disabled due to repeated errors",
+                    error_count=self.error_count,
+                    threshold=self.circuit_breaker_threshold,
+                )
+            )
+        self.performance_tracker.record_metric("ConsensusDetector", "process_time_ms", (time.time() - start_time) * 1000.0, False)
+        return self._generate_error_response(ctx)
+
+    def _generate_error_response(self, ctx: Any) -> Dict[str, Any]:
         return {
-            'consensus_score': 0.5,
-            'consensus_quality': 0.5,
-            'consensus_components': {},
-            'directional_consensus': 0.5,
-            'magnitude_consensus': 0.5,
-            'confidence_consensus': 0.5,
-            'member_contributions': {},
-            'consensus_trends': {},
-            'quality_metrics': {'error': str(error_context)},
-            'consensus_recommendations': ["Investigate consensus detector errors"],
-            'health_metrics': {'status': 'error', 'error_context': str(error_context)}
+            "consensus_score": 0.5,
+            "consensus_quality": 0.5,
+            "consensus_components": {},
+            "directional_consensus": 0.5,
+            "magnitude_consensus": 0.5,
+            "confidence_consensus": 0.5,
+            "member_contributions": {},
+            "consensus_trends": {},
+            "quality_metrics": {"error": str(ctx)},
+            "consensus_recommendations": ["Investigate consensus detector errors"],
+            "health_metrics": {"status": "error", "error_context": str(ctx)},
+            "_thesis": f"ConsensusDetector error: {ctx}",
         }
 
     def _get_safe_voting_defaults(self) -> Dict[str, Any]:
-        """Get safe defaults when voting data retrieval fails"""
         return {
-            'votes': [], 'raw_proposals': [], 'member_confidences': [],
-            'voting_summary': {}, 'alpha_weights': [], 'blended_action': [],
-            'market_context': {}, 'agreement_score': 0.5, 'consensus_direction': 'neutral',
-            'market_regime': 'unknown', 'volatility_data': {}
+            "votes": [],
+            "raw_proposals": [],
+            "member_confidences": [],
+            "voting_summary": {},
+            "alpha_weights": [],
+            "blended_action": [],
+            "market_context": {},
+            "agreement_score": 0.5,
+            "consensus_direction": "neutral",
+            "market_regime": "unknown",
+            "volatility_data": {},
         }
 
     def _generate_disabled_response(self) -> Dict[str, Any]:
-        """Generate response when module is disabled"""
         return {
-            'consensus_score': 0.5,
-            'consensus_quality': 0.5,
-            'consensus_components': {},
-            'directional_consensus': 0.5,
-            'magnitude_consensus': 0.5,
-            'confidence_consensus': 0.5,
-            'member_contributions': {},
-            'consensus_trends': {},
-            'quality_metrics': {'status': 'disabled'},
-            'consensus_recommendations': ["Restart consensus detector system"],
-            'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'}
+            "consensus_score": 0.5,
+            "consensus_quality": 0.5,
+            "consensus_components": {},
+            "directional_consensus": 0.5,
+            "magnitude_consensus": 0.5,
+            "confidence_consensus": 0.5,
+            "member_contributions": {},
+            "consensus_trends": {},
+            "quality_metrics": {"status": "disabled"},
+            "consensus_recommendations": ["Restart consensus detector system"],
+            "health_metrics": {"status": "disabled", "reason": "circuit_breaker_triggered"},
+            "_thesis": "ConsensusDetector disabled due to circuit breaker",
         }
 
-    # ═══════════════════════════════════════════════════════════════════
-    # STATE MANAGEMENT AND HOT-RELOAD SUPPORT
-    # ═══════════════════════════════════════════════════════════════════
-
+    # ────────────────────────────
+    # STATE / HOT-RELOAD
+    # ────────────────────────────
     def get_state(self) -> Dict[str, Any]:
-        """Get complete state for hot-reload and persistence"""
         return {
-            'module_info': {
-                'name': 'ConsensusDetector',
-                'version': '3.0.0',
-                'last_updated': datetime.datetime.now().isoformat()
+            "module_info": {"name": "ConsensusDetector", "version": "3.1.0", "last_updated": dt.datetime.now().isoformat()},
+            "configuration": {
+                "n_members": int(self.n_members),
+                "threshold": float(self.threshold),
+                "quality_weighting": bool(self.quality_weighting),
+                "temporal_smoothing": bool(self.temporal_smoothing),
+                "consensus_methods": list(self.consensus_methods),
+                "debug": bool(self.debug),
             },
-            'configuration': {
-                'n_members': self.n_members,
-                'threshold': self.threshold,
-                'quality_weighting': self.quality_weighting,
-                'temporal_smoothing': self.temporal_smoothing,
-                'consensus_methods': self.consensus_methods,
-                'debug': self.debug
+            "consensus_state": {
+                "last_consensus": float(self.last_consensus),
+                "consensus_quality": float(self.consensus_quality),
+                "directional_consensus": float(self.directional_consensus),
+                "magnitude_consensus": float(self.magnitude_consensus),
+                "confidence_consensus": float(self.confidence_consensus),
+                "network_consensus": float(self.network_consensus),
+                "temporal_stability": float(self.temporal_stability),
+                "consensus_components": dict(self.consensus_components),
             },
-            'consensus_state': {
-                'last_consensus': self.last_consensus,
-                'consensus_quality': self.consensus_quality,
-                'directional_consensus': self.directional_consensus,
-                'magnitude_consensus': self.magnitude_consensus,
-                'confidence_consensus': self.confidence_consensus,
-                'network_consensus': self.network_consensus,
-                'temporal_stability': self.temporal_stability,
-                'consensus_components': self.consensus_components.copy()
+            "intelligence_state": {
+                "consensus_intelligence": dict(self.consensus_intelligence),
+                "market_adaptation": dict(self.market_adaptation),
+                "quality_metrics": dict(self.quality_metrics),
             },
-            'intelligence_state': {
-                'consensus_intelligence': self.consensus_intelligence.copy(),
-                'market_adaptation': self.market_adaptation.copy(),
-                'quality_metrics': self.quality_metrics.copy()
+            "member_state": {
+                "member_contributions": {int(k): dict(v) for k, v in self.member_contributions.items()},
+                "consensus_insights": dict(self.consensus_insights),
             },
-            'member_state': {
-                'member_contributions': {k: v.copy() for k, v in self.member_contributions.items()},
-                'consensus_insights': self.consensus_insights.copy()
+            "history_state": {
+                "consensus_history": list(self.consensus_history)[-80:],
+                "consensus_trends": list(self.consensus_trends)[-40:],
+                "prediction_history": list(self.prediction_history)[-40:],
+                "regime_consensus_history": {k: list(v)[-30:] for k, v in self.regime_consensus_history.items()},
+                "consensus_patterns": {k: list(v) for k, v in self.consensus_patterns.items()},
             },
-            'history_state': {
-                'consensus_history': list(self.consensus_history)[-50:],
-                'consensus_trends': list(self.consensus_trends)[-30:],
-                'prediction_history': list(self.prediction_history)[-20:],
-                'regime_consensus_history': {
-                    regime: list(history)[-20:] 
-                    for regime, history in self.regime_consensus_history.items()
-                },
-                'consensus_patterns': {k: v.copy() for k, v in self.consensus_patterns.items()}
-            },
-            'statistics_state': {
-                'consensus_stats': self.consensus_stats.copy()
-            },
-            'error_state': {
-                'error_count': self.error_count,
-                'is_disabled': self.is_disabled
-            },
-            'performance_metrics': self.get_health_metrics()
+            "statistics_state": {"consensus_stats": dict(self.consensus_stats)},
+            "error_state": {"error_count": int(self.error_count), "is_disabled": bool(self.is_disabled)},
+            "performance_metrics": self.get_health_metrics(),
         }
 
     def set_state(self, state: Dict[str, Any]) -> None:
-        """Set state for hot-reload and persistence"""
         try:
-            # Load configuration
-            config = state.get("configuration", {})
-            self.n_members = int(config.get("n_members", self.n_members))
-            self.threshold = float(config.get("threshold", self.threshold))
-            self.quality_weighting = bool(config.get("quality_weighting", self.quality_weighting))
-            self.temporal_smoothing = bool(config.get("temporal_smoothing", self.temporal_smoothing))
-            self.consensus_methods = config.get("consensus_methods", self.consensus_methods)
-            self.debug = bool(config.get("debug", self.debug))
-            
-            # Load consensus state
-            consensus_state = state.get("consensus_state", {})
-            self.last_consensus = float(consensus_state.get("last_consensus", 0.0))
-            self.consensus_quality = float(consensus_state.get("consensus_quality", 0.0))
-            self.directional_consensus = float(consensus_state.get("directional_consensus", 0.0))
-            self.magnitude_consensus = float(consensus_state.get("magnitude_consensus", 0.0))
-            self.confidence_consensus = float(consensus_state.get("confidence_consensus", 0.0))
-            self.network_consensus = float(consensus_state.get("network_consensus", 0.0))
-            self.temporal_stability = float(consensus_state.get("temporal_stability", 0.0))
-            self.consensus_components = consensus_state.get("consensus_components", {})
-            
-            # Load intelligence state
-            intelligence_state = state.get("intelligence_state", {})
-            self.consensus_intelligence.update(intelligence_state.get("consensus_intelligence", {}))
-            self.market_adaptation.update(intelligence_state.get("market_adaptation", {}))
-            self.quality_metrics.update(intelligence_state.get("quality_metrics", {}))
-            
-            # Load member state
-            member_state = state.get("member_state", {})
-            member_contributions_data = member_state.get("member_contributions", {})
+            cfg = state.get("configuration", {})
+            self.n_members = int(cfg.get("n_members", self.n_members))
+            self.threshold = float(cfg.get("threshold", self.threshold))
+            self.quality_weighting = bool(cfg.get("quality_weighting", self.quality_weighting))
+            self.temporal_smoothing = bool(cfg.get("temporal_smoothing", self.temporal_smoothing))
+            self.consensus_methods = list(cfg.get("consensus_methods", self.consensus_methods))
+            self.debug = bool(cfg.get("debug", self.debug))
+
+            cstate = state.get("consensus_state", {})
+            self.last_consensus = float(cstate.get("last_consensus", self.last_consensus))
+            self.consensus_quality = float(cstate.get("consensus_quality", self.consensus_quality))
+            self.directional_consensus = float(cstate.get("directional_consensus", self.directional_consensus))
+            self.magnitude_consensus = float(cstate.get("magnitude_consensus", self.magnitude_consensus))
+            self.confidence_consensus = float(cstate.get("confidence_consensus", self.confidence_consensus))
+            self.network_consensus = float(cstate.get("network_consensus", self.network_consensus))
+            self.temporal_stability = float(cstate.get("temporal_stability", self.temporal_stability))
+            self.consensus_components = dict(cstate.get("consensus_components", self.consensus_components))
+
+            intel = state.get("intelligence_state", {})
+            self.consensus_intelligence.update(intel.get("consensus_intelligence", {}))
+            self.market_adaptation.update(intel.get("market_adaptation", {}))
+            self.quality_metrics.update(intel.get("quality_metrics", {}))
+
+            memb = state.get("member_state", {})
             self.member_contributions.clear()
-            for member_id, contribution_data in member_contributions_data.items():
-                self.member_contributions[int(member_id)] = contribution_data
-            
-            self.consensus_insights.update(member_state.get("consensus_insights", {}))
-            
-            # Load history state
-            history_state = state.get("history_state", {})
-            
-            # Load consensus history
-            self.consensus_history.clear()
-            for entry in history_state.get("consensus_history", []):
-                self.consensus_history.append(entry)
-            
-            # Load consensus trends
-            self.consensus_trends.clear()
-            for entry in history_state.get("consensus_trends", []):
-                self.consensus_trends.append(entry)
-            
-            # Load prediction history
-            self.prediction_history.clear()
-            for entry in history_state.get("prediction_history", []):
-                self.prediction_history.append(entry)
-            
-            # Load regime consensus history
-            regime_history_data = history_state.get("regime_consensus_history", {})
+            for k, v in memb.get("member_contributions", {}).items():
+                self.member_contributions[int(k)] = dict(v)
+            self.consensus_insights.update(memb.get("consensus_insights", {}))
+
+            hist = state.get("history_state", {})
+            self.consensus_history = deque(hist.get("consensus_history", []), maxlen=150)
+            self.consensus_trends = deque(hist.get("consensus_trends", []), maxlen=80)
+            self.prediction_history = deque(hist.get("prediction_history", []), maxlen=40)
             self.regime_consensus_history.clear()
-            for regime, history_list in regime_history_data.items():
-                regime_deque = deque(maxlen=30)
-                for entry in history_list:
-                    regime_deque.append(entry)
-                self.regime_consensus_history[regime] = regime_deque
-            
-            # Load consensus patterns
-            self.consensus_patterns.clear()
-            patterns_data = history_state.get("consensus_patterns", {})
-            for key, pattern_data in patterns_data.items():
-                self.consensus_patterns[key] = pattern_data
-            
-            # Load statistics state
-            statistics_state = state.get("statistics_state", {})
-            self.consensus_stats.update(statistics_state.get("consensus_stats", {}))
-            
-            # Load error state
-            error_state = state.get("error_state", {})
-            self.error_count = error_state.get("error_count", 0)
-            self.is_disabled = error_state.get("is_disabled", False)
-            
-            self.logger.info(format_operator_message(
-                icon="[RELOAD]",
-                message="Consensus Detector state restored",
-                members=self.n_members,
-                threshold=f"{self.threshold:.3f}",
-                consensus_score=f"{self.last_consensus:.3f}",
-                total_computations=self.consensus_stats.get('total_computations', 0)
-            ))
-            
+            for k, v in hist.get("regime_consensus_history", {}).items():
+                self.regime_consensus_history[str(k)] = deque(v, maxlen=40)
+            self.consensus_patterns = defaultdict(list, hist.get("consensus_patterns", {}))
+
+            stats = state.get("statistics_state", {})
+            self.consensus_stats.update(stats.get("consensus_stats", {}))
+
+            err = state.get("error_state", {})
+            self.error_count = int(err.get("error_count", self.error_count))
+            self.is_disabled = bool(err.get("is_disabled", self.is_disabled))
+
+            self.logger.info(
+                format_operator_message(
+                    icon="[RELOAD]",
+                    message="Consensus Detector state restored",
+                    members=self.n_members,
+                    threshold=f"{self.threshold:.3f}",
+                    consensus_score=f"{self.last_consensus:.3f}",
+                    total_computations=self.consensus_stats.get("total_computations", 0),
+                )
+            )
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "state_restoration")
-            self.logger.error(f"State restoration failed: {error_context}")
+            ctx = self.error_pinpointer.analyze_error(e, "state_restoration")
+            self.logger.error(f"State restoration failed: {ctx}")
 
-    # ═══════════════════════════════════════════════════════════════════
-    # RESET AND CLEANUP METHODS
-    # ═══════════════════════════════════════════════════════════════════
-
+    # ────────────────────────────
+    # RESET & TEARDOWN
+    # ────────────────────────────
     def reset(self) -> None:
-        """Enhanced reset with comprehensive state cleanup"""
         super().reset()
-        
-        # Reset consensus state
         self.last_consensus = 0.0
         self.consensus_quality = 0.0
         self.directional_consensus = 0.0
@@ -2505,228 +1949,167 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
         self.confidence_consensus = 0.0
         self.network_consensus = 0.0
         self.temporal_stability = 0.0
-        
-        # Reset history
+
         self.consensus_history.clear()
         self.consensus_trends.clear()
         self.prediction_history.clear()
-        
-        # Reset member tracking
         self.member_contributions.clear()
         self.consensus_components.clear()
         self.consensus_patterns.clear()
         self.regime_consensus_history.clear()
-        
-        # Reset metrics
-        self.quality_metrics = {
-            'coherence': 0.5,
-            'stability': 0.5,
-            'diversity': 0.5,
-            'reliability': 0.5,
-            'predictive_accuracy': 0.5,
-            'temporal_consistency': 0.5
-        }
-        
-        # Reset statistics
+
+        self.quality_metrics.update(
+            {
+                "coherence": 0.5,
+                "stability": 0.5,
+                "diversity": 0.5,
+                "reliability": 0.5,
+                "predictive_accuracy": 0.5,
+                "temporal_consistency": 0.5,
+                "overall_effectiveness": 0.5,
+            }
+        )
         self.consensus_stats = {
-            'total_computations': 0,
-            'high_consensus_count': 0,
-            'low_consensus_count': 0,
-            'avg_consensus': 0.5,
-            'consensus_volatility': 0.0,
-            'quality_score': 0.5,
-            'trend_accuracy': 0.0,
-            'prediction_accuracy': 0.0,
-            'session_start': datetime.datetime.now().isoformat()
+            "total_computations": 0,
+            "high_consensus_count": 0,
+            "low_consensus_count": 0,
+            "avg_consensus": 0.5,
+            "consensus_volatility": 0.0,
+            "quality_score": 0.5,
+            "trend_accuracy": 0.0,
+            "prediction_accuracy": 0.0,
+            "session_start": dt.datetime.now().isoformat(),
         }
-        
-        # Reset insights
         self.consensus_insights = {
-            'dominant_patterns': [],
-            'member_dynamics': {},
-            'consensus_predictors': {},
-            'quality_drivers': {}
+            "dominant_patterns": [],
+            "member_dynamics": {},
+            "consensus_predictors": {},
+            "quality_drivers": {},
         }
-        
-        # Reset error state
         self.error_count = 0
         self.is_disabled = False
-        
-        self.logger.info(format_operator_message(
-            icon="[RELOAD]",
-            message="Consensus Detector reset completed",
-            status="All consensus state cleared and systems reinitialized"
-        ))
+
+        self.logger.info(
+            format_operator_message(
+                icon="[RELOAD]", message="Consensus Detector reset completed", status="All state cleared"
+            )
+        )
 
     def _update_performance_metric(self, metric_name: str, value: float) -> None:
-        """Update performance metric for tracking and analysis"""
         try:
-            if hasattr(self, 'performance_tracker') and self.performance_tracker:
-                self.performance_tracker.record_metric('ConsensusDetector', metric_name, value, True)
-            
-            # Also store in internal tracking for historical analysis
-            if not hasattr(self, '_performance_history'):
-                self._performance_history = defaultdict(lambda: deque(maxlen=50))
-            
-            self._performance_history[metric_name].append({
-                'timestamp': datetime.datetime.now().isoformat(),
-                'value': value
+            if hasattr(self, "performance_tracker") and self.performance_tracker:
+                self.performance_tracker.record_metric("ConsensusDetector", metric_name, float(value), True)
+            # Use a separate per-metric history map to avoid conflicting with BaseModule's deque _performance_history
+            if not hasattr(self, "_metric_history"):
+                self._metric_history = defaultdict(lambda: deque(maxlen=50))  # type: ignore[attr-defined]
+            self._metric_history[metric_name].append({  # type: ignore[attr-defined]
+                "timestamp": dt.datetime.now().isoformat(),
+                "value": float(value),
             })
-            
         except Exception as e:
-            # Don't let performance tracking failures affect main functionality
-            if hasattr(self, 'logger'):
+            if hasattr(self, "logger"):
                 self.logger.warning(f"Performance metric update failed for {metric_name}: {e}")
 
     def get_performance_history(self, metric_name: str) -> List[Dict[str, Any]]:
-        """Get historical performance data for a specific metric"""
         try:
-            if hasattr(self, '_performance_history'):
-                return list(self._performance_history.get(metric_name, []))
+            # Read from the dedicated per-metric history map if present
+            if hasattr(self, "_metric_history"):
+                return list(self._metric_history.get(metric_name, []))  # type: ignore[attr-defined]
             return []
         except Exception:
             return []
 
     def get_all_performance_metrics(self) -> Dict[str, Any]:
-        """Get all current performance metrics"""
         try:
-            metrics = {
-                'consensus_score': self.last_consensus,
-                'consensus_quality': self.consensus_quality,
-                'directional_consensus': self.directional_consensus,
-                'magnitude_consensus': self.magnitude_consensus,
-                'confidence_consensus': self.confidence_consensus,
-                'temporal_stability': self.temporal_stability,
-                'consensus_volatility': self.consensus_stats.get('consensus_volatility', 0.0),
-                'avg_consensus': self.consensus_stats.get('avg_consensus', 0.5),
-                'total_computations': self.consensus_stats.get('total_computations', 0),
-                'high_consensus_ratio': (
-                    self.consensus_stats.get('high_consensus_count', 0) / 
-                    max(self.consensus_stats.get('total_computations', 1), 1)
+            m = {
+                "consensus_score": float(self.last_consensus),
+                "consensus_quality": float(self.consensus_quality),
+                "directional_consensus": float(self.directional_consensus),
+                "magnitude_consensus": float(self.magnitude_consensus),
+                "confidence_consensus": float(self.confidence_consensus),
+                "temporal_stability": float(self.temporal_stability),
+                "consensus_volatility": float(self.consensus_stats.get("consensus_volatility", 0.0)),
+                "avg_consensus": float(self.consensus_stats.get("avg_consensus", 0.5)),
+                "total_computations": int(self.consensus_stats.get("total_computations", 0)),
+                "high_consensus_ratio": float(
+                    self.consensus_stats.get("high_consensus_count", 0) / max(self.consensus_stats.get("total_computations", 1), 1)
                 ),
-                'low_consensus_ratio': (
-                    self.consensus_stats.get('low_consensus_count', 0) / 
-                    max(self.consensus_stats.get('total_computations', 1), 1)
-                )
+                "low_consensus_ratio": float(
+                    self.consensus_stats.get("low_consensus_count", 0) / max(self.consensus_stats.get("total_computations", 1), 1)
+                ),
             }
-            
-            # Add quality metrics
-            metrics.update({f'quality_{k}': v for k, v in self.quality_metrics.items()})
-            
-            return metrics
-            
-        except Exception as e:
-            if hasattr(self, 'logger'):
-                self.logger.warning(f"Performance metrics retrieval failed: {e}")
+            m.update({f"quality_{k}": float(v) for k, v in self.quality_metrics.items()})
+            return m
+        except Exception:
             return {}
 
-    def __del__(self):
-        """Cleanup on destruction"""
+    def __del__(self) -> None:
         try:
-            if hasattr(self, 'logger') and self.logger:
-                self.logger.info(format_operator_message(
-                    icon="👋",
-                    message="Consensus Detector shutting down",
-                    total_computations=self.consensus_stats.get('total_computations', 0),
-                    avg_consensus=f"{self.consensus_stats.get('avg_consensus', 0.5):.1%}"
-                ))
+            if hasattr(self, "logger") and self.logger:
+                self.logger.info(
+                    format_operator_message(
+                        icon="👋",
+                        message="Consensus Detector shutting down",
+                        total_computations=self.consensus_stats.get("total_computations", 0),
+                        avg_consensus=f"{self.consensus_stats.get('avg_consensus', 0.5):.1%}",
+                    )
+                )
         except Exception:
-            pass  # Ignore cleanup errors
+            pass
 
-    # ═══════════════════════════════════════════════════════════════════
-    # BASEMODULE ABSTRACT METHOD IMPLEMENTATIONS
-    # ═══════════════════════════════════════════════════════════════════
-
+    # ────────────────────────────
+    # BASEMODULE ABSTRACTS
+    # ────────────────────────────
     async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
-        """Calculate confidence in consensus detection results"""
         try:
-            # Base confidence from consensus quality
-            consensus_quality = self.consensus_quality
-            
-            # Temporal stability factor
-            stability = self.temporal_stability
-            
-            # Member participation factor
-            participation = len(self.member_contributions) / max(self.n_members, 1)
-            
-            # Recent consensus trend
+            cq = float(self.consensus_quality)
+            stab = float(self.temporal_stability)
+            part = float(len(self.member_contributions) / max(self.n_members, 1))
             if len(self.consensus_history) > 5:
-                recent_consensus = [event.get('consensus', 0.5) for event in list(self.consensus_history)[-5:]]
-                trend_stability = 1.0 - (np.std(recent_consensus) / max(float(np.mean(recent_consensus)), 0.1))
+                recent = [float(e.get("consensus", 0.5)) for e in list(self.consensus_history)[-5:]]
+                mu = float(np.mean(recent)) if recent else 0.5
+                var = float(np.std(recent)) if recent else 0.0
+                trend_stab = float(np.clip(1.0 - var / max(mu, 0.1), 0.0, 1.0)) if mu > 0 else 0.5
             else:
-                trend_stability = 0.5
-            
-            # Combine factors
-            confidence = (
-                consensus_quality * 0.4 +
-                stability * 0.3 +
-                participation * 0.2 +
-                trend_stability * 0.1
-            )
-            
-            # Ensure valid range
-            return float(max(0.1, min(0.95, float(confidence))))
-            
-        except Exception as e:
-            if hasattr(self, 'logger'):
-                self.logger.warning(f"Confidence calculation failed: {e}")
-            return 0.4  # Conservative default
+                trend_stab = 0.5
+            conf = 0.4 * cq + 0.3 * stab + 0.2 * part + 0.1 * trend_stab
+            return float(np.clip(conf, 0.1, 0.95))
+        except Exception:
+            return 0.4
 
     async def propose_action(self, **inputs) -> Dict[str, Any]:
-        """Propose consensus-based action for voting coordination"""
         try:
-            # Analyze current consensus state
-            consensus_score = self.last_consensus
-            consensus_quality = self.consensus_quality
-            directional_consensus = self.directional_consensus
-            
-            # Determine action based on consensus metrics
-            if consensus_score > 0.8 and consensus_quality > 0.7:
-                action_type = 'strong_consensus'
-                signal_strength = min(consensus_score, 0.9)
-                reasoning = f"Strong consensus detected (score: {consensus_score:.3f}, quality: {consensus_quality:.3f})"
-            elif consensus_score > 0.6:
-                action_type = 'moderate_consensus'
-                signal_strength = consensus_score * 0.7
-                reasoning = f"Moderate consensus (score: {consensus_score:.3f})"
-            elif consensus_score < 0.3:
-                action_type = 'low_consensus'
-                signal_strength = 0.8
-                reasoning = f"Low consensus ({consensus_score:.3f}) - need coordination"
-            elif directional_consensus < 0.4:
-                action_type = 'directional_conflict'
-                signal_strength = 0.6
-                reasoning = f"Directional disagreement ({directional_consensus:.3f})"
+            cs = float(self.last_consensus)
+            cq = float(self.consensus_quality)
+            dc = float(self.directional_consensus)
+
+            if cs > 0.8 and cq > 0.7:
+                a, s, r = "strong_consensus", 0.9, f"Strong consensus (score={cs:.3f}, quality={cq:.3f})"
+            elif cs > 0.6:
+                a, s, r = "moderate_consensus", cs * 0.7, f"Moderate consensus (score={cs:.3f})"
+            elif cs < 0.3:
+                a, s, r = "low_consensus", 0.8, f"Low consensus ({cs:.3f}) — coordinate members"
+            elif dc < 0.4:
+                a, s, r = "directional_conflict", 0.6, f"Directional disagreement ({dc:.3f})"
             else:
-                action_type = 'monitor'
-                signal_strength = 0.3
-                reasoning = f"Moderate consensus state - continue monitoring"
-            
+                a, s, r = "monitor", 0.3, "Moderate consensus — continue monitoring"
+
             return {
-                'action': action_type,
-                'signal_strength': signal_strength,
-                'reasoning': reasoning,
-                'consensus_metrics': {
-                    'consensus_score': consensus_score,
-                    'consensus_quality': consensus_quality,
-                    'directional_consensus': directional_consensus,
-                    'magnitude_consensus': self.magnitude_consensus,
-                    'confidence_consensus': self.confidence_consensus,
-                    'temporal_stability': self.temporal_stability
+                "action": a,
+                "signal_strength": float(s),
+                "reasoning": r,
+                "consensus_metrics": {
+                    "consensus_score": cs,
+                    "consensus_quality": cq,
+                    "directional_consensus": dc,
+                    "magnitude_consensus": float(self.magnitude_consensus),
+                    "confidence_consensus": float(self.confidence_consensus),
+                    "temporal_stability": float(self.temporal_stability),
                 },
-                'member_stats': {
-                    'active_members': len(self.member_contributions),
-                    'target_members': self.n_members
-                },
-                'confidence': await self.calculate_confidence({}, **inputs)
+                "member_stats": {"active_members": int(len(self.member_contributions)), "target_members": int(self.n_members)},
+                "confidence": await self.calculate_confidence({}, **inputs),
             }
-            
         except Exception as e:
-            if hasattr(self, 'logger'):
+            if hasattr(self, "logger"):
                 self.logger.error(f"Action proposal failed: {e}")
-            return {
-                'action': 'abstain',
-                'signal_strength': 0.0,
-                'reasoning': f'Consensus detection error: {str(e)}',
-                'confidence': 0.1
-            }
+            return {"action": "abstain", "signal_strength": 0.0, "reasoning": f"Consensus detection error: {str(e)}", "confidence": 0.1}

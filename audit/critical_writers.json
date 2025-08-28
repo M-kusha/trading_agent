@@ -1,0 +1,37 @@
+[
+  {
+    "module": "FractalRegimeConfirmation",
+    "key": "market_regime",
+    "file": "modules/market/fractal_regime_confirmation.py"
+  },
+  {
+    "module": "info_bus",
+    "key": "market_regime",
+    "file": "modules/utils/info_bus.py"
+  },
+  {
+    "module": "RegimePerformanceMatrix",
+    "key": "performance_metrics",
+    "file": "modules/market/regime_performance_matrix.py"
+  },
+  {
+    "module": "PortfolioRiskSystem",
+    "key": "risk_data",
+    "file": "modules/risk/portofilio_risk_system.py"
+  },
+  {
+    "module": "HistoricalReplayAnalyzer",
+    "key": "sequence_quality",
+    "file": "modules/memory/historical_replay_analyzer.py"
+  },
+  {
+    "module": "EnhancedVotingCommitteeCoordinator",
+    "key": "trade_vote",
+    "file": "modules/voting/voting_wrappers.py"
+  },
+  {
+    "module": "PPOAgent",
+    "key": "training_metrics",
+    "file": "modules/meta/ppo_agent.py"
+  }
+]

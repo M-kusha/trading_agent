@@ -8,10 +8,9 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 import time
-import numpy as np
 import datetime
 from typing import Dict, Any, List, Optional, Tuple, TYPE_CHECKING
-from collections import  deque
+from collections import deque
 from functools import wraps
 from dataclasses import dataclass
 import threading
@@ -42,15 +41,16 @@ class MixinPerformanceMetrics:
     last_execution: Optional[float] = None
     health_status: str = "OK"  # OK, DEGRADED, FAILED
 
+
 class MixinStateManager:
     """State management for mixins with hot-reload support"""
-    
+
     def __init__(self, mixin_instance: Any):
         self.mixin_instance = mixin_instance
         self.state_lock = threading.RLock()
         self.performance_metrics = MixinPerformanceMetrics()
         self.explainer = EnglishExplainer()
-        
+
     def get_state(self) -> Dict[str, Any]:
         """Get complete mixin state for persistence (includes last_execution)."""
         with self.state_lock:
@@ -65,7 +65,6 @@ class MixinStateManager:
                 }
             }
 
-    
     def set_state(self, state: Dict[str, Any]):
         """Restore mixin state (robust to missing fields)."""
         with self.state_lock:
@@ -77,33 +76,32 @@ class MixinStateManager:
             self.performance_metrics.last_execution = metrics.get('last_execution')
             self.performance_metrics.health_status = metrics.get('health_status', 'OK')
 
-    
-def record_operation(self, operation_name: str, duration_ms: float, success: bool):
-    """Record operation performance with correct degradation thresholds."""
-    with self.state_lock:
-        self.performance_metrics.operation_count += 1
-        self.performance_metrics.last_execution = time.time()
+    def record_operation(self, operation_name: str, duration_ms: float, success: bool):
+        """Record operation performance with correct degradation thresholds (thread-safe)."""
+        with self.state_lock:
+            self.performance_metrics.operation_count += 1
+            self.performance_metrics.last_execution = time.time()
 
-        if success:
-            self.performance_metrics.success_count += 1
-            # Recover health if sustained success
-            if self.performance_metrics.health_status in ("DEGRADED", "FAILED"):
-                success_rate = self.performance_metrics.success_count / max(self.performance_metrics.operation_count, 1)
-                if success_rate > 0.8:
-                    self.performance_metrics.health_status = "OK"
-        else:
-            self.performance_metrics.failure_count += 1
-            # IMPORTANT: check higher threshold first
-            failure_rate = self.performance_metrics.failure_count / max(self.performance_metrics.operation_count, 1)
-            if failure_rate > 0.5:
-                self.performance_metrics.health_status = "FAILED"
-            elif failure_rate > 0.3:
-                self.performance_metrics.health_status = "DEGRADED"
+            if success:
+                self.performance_metrics.success_count += 1
+                # Recover health if sustained success
+                if self.performance_metrics.health_status in ("DEGRADED", "FAILED"):
+                    success_rate = self.performance_metrics.success_count / max(self.performance_metrics.operation_count, 1)
+                    if success_rate > 0.8:
+                        self.performance_metrics.health_status = "OK"
+            else:
+                self.performance_metrics.failure_count += 1
+                failure_rate = self.performance_metrics.failure_count / max(self.performance_metrics.operation_count, 1)
+                # IMPORTANT: check higher threshold first
+                if failure_rate > 0.5:
+                    self.performance_metrics.health_status = "FAILED"
+                elif failure_rate > 0.3:
+                    self.performance_metrics.health_status = "DEGRADED"
 
-        # Online average latency
-        total_ops = self.performance_metrics.operation_count
-        current_avg = self.performance_metrics.avg_latency_ms
-        self.performance_metrics.avg_latency_ms = ((current_avg * (total_ops - 1)) + duration_ms) / total_ops
+            # Online average latency
+            total_ops = self.performance_metrics.operation_count
+            current_avg = self.performance_metrics.avg_latency_ms
+            self.performance_metrics.avg_latency_ms = ((current_avg * (total_ops - 1)) + duration_ms) / total_ops
 
 
 def with_mixin_error_handling(operation_name: str):
@@ -172,7 +170,7 @@ def with_mixin_error_handling(operation_name: str):
 class SmartInfoBusTradingMixin(ABC):
     """
     PRODUCTION-GRADE trading mixin with complete SmartInfoBus integration.
-    
+
     FEATURES:
     - Mandatory thesis generation for all trades
     - Circuit breaker integration
@@ -181,11 +179,11 @@ class SmartInfoBusTradingMixin(ABC):
     - Performance tracking and health monitoring
     - Error handling with ErrorPinpointer integration
     """
-    
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._initialize_trading_state()
-    
+
     def _initialize_trading_state(self):
         """Initialize enhanced trading state with all integrations (idempotent)."""
         # Core state
@@ -208,7 +206,7 @@ class SmartInfoBusTradingMixin(ABC):
             self.state_manager = MixinStateManager(self)
 
         # Smart bus
-        self.smart_bus = getattr(self, 'smart_bus', InfoBusManager.get_instance())
+        self.smart_bus: SmartInfoBus = getattr(self, 'smart_bus', InfoBusManager.get_instance())
 
         # Logger setup (keep existing if present)
         if not getattr(self, 'logger', None):
@@ -219,7 +217,8 @@ class SmartInfoBusTradingMixin(ABC):
                 operator_mode=True
             )
 
-        # Circuit breaker state (preserve if existed)
+        # Circuit breaker state + lock
+        self._trading_cb_lock = getattr(self, "_trading_cb_lock", threading.RLock())
         self._trading_circuit_breaker = getattr(self, "_trading_circuit_breaker", {
             'failures': 0,
             'threshold': 5,
@@ -232,22 +231,21 @@ class SmartInfoBusTradingMixin(ABC):
             format_operator_message("🏗️", "TRADING MIXIN INITIALIZED", context="mixin_init")
         )
 
-    
     @abstractmethod
     async def propose_action(self, **inputs) -> Dict[str, Any]:
         """ASYNC trading action proposal - different from BaseModule sync version"""
         pass
-    
-    @abstractmethod  
+
+    @abstractmethod
     async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
         """ASYNC confidence calc - different from BaseModule sync version"""
         pass
-    
+
     @with_mixin_error_handling("process_trades")
     async def process_trades_with_thesis(self, **inputs) -> Dict[str, Any]:
         """
         Process trades with mandatory thesis generation and full error handling.
-        
+
         Returns:
             Dict containing processed trades, thesis, and performance metrics
         """
@@ -258,7 +256,7 @@ class SmartInfoBusTradingMixin(ABC):
                 'thesis': "Trading suspended due to emergency mode",
                 'emergency_mode': True
             }
-        
+
         # Check circuit breaker
         if not self._check_trading_circuit_breaker():
             return {
@@ -266,29 +264,29 @@ class SmartInfoBusTradingMixin(ABC):
                 'thesis': "Trading suspended due to circuit breaker",
                 'circuit_breaker_open': True
             }
-        
+
         trades = inputs.get('trades', [])
         if not trades:
             return {'trades': [], 'thesis': 'No trades to process'}
-        
+
         processed_trades = []
         processing_errors = []
-        
+
         for trade_idx, trade in enumerate(trades):
             try:
                 # Generate thesis for trade
                 thesis = await self._generate_trade_thesis(trade, inputs)
-                
+
                 # Process single trade
                 processed = await self._process_single_trade(trade, inputs)
                 if processed:
                     processed['thesis'] = thesis
                     processed['trade_index'] = trade_idx
                     processed_trades.append(processed)
-                    
+
                     # Update metrics
                     self._update_trading_metrics(processed)
-                    
+
                     # Store in SmartInfoBus with thesis
                     self.smart_bus.set(
                         f"trade_{processed['trade_id']}",
@@ -297,22 +295,22 @@ class SmartInfoBusTradingMixin(ABC):
                         thesis=thesis,
                         confidence=processed.get('confidence', 0.8)
                     )
-                    
+
             except Exception as e:
                 error_msg = f"Failed to process trade {trade_idx}: {str(e)}"
                 processing_errors.append(error_msg)
                 self.logger.error(error_msg)
-                
+
                 # Increment circuit breaker failures
                 self._record_trading_failure(str(e))
-        
+
         # Generate session summary
         session_thesis = await self._generate_trading_summary_thesis(processed_trades, processing_errors)
-        
+
         # Store summary in SmartInfoBus
         summary = self._get_trading_summary()
         summary['processing_errors'] = processing_errors
-        
+
         self.smart_bus.set(
             'trading_session_summary',
             summary,
@@ -320,7 +318,7 @@ class SmartInfoBusTradingMixin(ABC):
             thesis=session_thesis,
             confidence=0.9 if not processing_errors else 0.7
         )
-        
+
         return {
             'trades': processed_trades,
             'thesis': session_thesis,
@@ -328,23 +326,23 @@ class SmartInfoBusTradingMixin(ABC):
             'errors': processing_errors,
             'circuit_breaker_state': self._trading_circuit_breaker['state']
         }
-    
+
     async def _generate_trade_thesis(self, trade: Dict[str, Any], inputs: Dict[str, Any]) -> str:
         """Generate comprehensive trade thesis with market context"""
         symbol = trade.get('symbol', 'UNKNOWN')
         side = trade.get('side', 'unknown')
         size = trade.get('size', 0)
-        pnl = trade.get('pnl', 0)
-        
+        pnl = float(trade.get('pnl', 0) or 0)
+
         # Get enhanced context from SmartInfoBus
         regime = self.smart_bus.get('market_regime', self.__class__.__name__) or 'unknown'
-        risk_score = InfoBusExtractor.get_risk_score(inputs)
-        volatility = self.smart_bus.get('market_volatility', self.__class__.__name__) or 0.0
-        
+        risk_score = float(InfoBusExtractor.get_risk_score(inputs) or 0.0)
+        volatility = float(self.smart_bus.get('market_volatility', self.__class__.__name__) or 0.0)
+
         # Get current portfolio state
-        portfolio_exposure = self.smart_bus.get('portfolio_exposure', self.__class__.__name__) or 0.0
-        current_drawdown = self._current_drawdown
-        
+        portfolio_exposure = float(self.smart_bus.get('portfolio_exposure', self.__class__.__name__) or 0.0)
+        current_drawdown = float(self._current_drawdown or 0.0)
+
         thesis = f"""
 TRADE EXECUTION ANALYSIS: {symbol} {side.upper()}
 ================================================
@@ -360,42 +358,42 @@ MARKET ENVIRONMENT:
 - Current Drawdown: {current_drawdown:.1%}
 
 EXECUTION RATIONALE:
-"""
-        
+""".rstrip()
+
         if pnl > 0:
             thesis += f"""
 - [OK] PROFITABLE TRADE: Generated ${pnl:.2f} profit
 - Market conditions were favorable for {side} position
 - Risk level of {risk_score:.1%} was within acceptable parameters
 - Trade aligned with current {regime} market regime
-"""
+""".rstrip()
         else:
             thesis += f"""
 - [WARN] LOSING TRADE: Loss of ${abs(pnl):.2f}
 - Market moved against {side} position
 - Risk controls properly limited downside exposure
 - Trade execution was disciplined despite unfavorable outcome
-"""
-        
+""".rstrip()
+
         # Add risk assessment
         if risk_score > 0.7:
             thesis += "\n- [WARN] HIGH RISK ENVIRONMENT: Extra caution warranted"
         elif risk_score < 0.3:
             thesis += "\n- [OK] LOW RISK ENVIRONMENT: Favorable conditions"
-        
+
         # Add portfolio context
         if portfolio_exposure > 0.8:
             thesis += "\n- [WARN] HIGH PORTFOLIO EXPOSURE: Consider reducing positions"
-        
-        thesis += f"\n\nTRADE QUALITY: {'EXCELLENT' if pnl > 0 and risk_score < 0.5 else 'ACCEPTABLE' if pnl > 0 else 'MONITORED'}"
-        
+
+        thesis += f"\n\nTRADE QUALITY: {'EXCELLENT' if (pnl > 0 and risk_score < 0.5) else 'ACCEPTABLE' if pnl > 0 else 'MONITORED'}"
+
         return thesis.strip()
-    
+
     async def _process_single_trade(self, trade: Dict[str, Any], inputs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Process individual trade with enhanced context"""
         context = extract_standard_context(inputs)
-        risk_score = InfoBusExtractor.get_risk_score(inputs)
-        
+        risk_score = float(InfoBusExtractor.get_risk_score(inputs) or 0.0)
+
         # Enhance trade data
         processed = {
             'trade_id': f"{trade.get('symbol')}_{inputs.get('step_idx', int(time.time()))}",
@@ -403,20 +401,20 @@ EXECUTION RATIONALE:
             'side': trade.get('side'),
             'size': trade.get('size', 0),
             'price': trade.get('price', 0),
-            'pnl': trade.get('pnl', 0),
-            'commission': trade.get('commission', 0),
-            'slippage': trade.get('slippage', 0),
+            'pnl': float(trade.get('pnl', 0) or 0),
+            'commission': float(trade.get('commission', 0) or 0),
+            'slippage': float(trade.get('slippage', 0) or 0),
             'risk_at_entry': risk_score,
             'regime': context.get('regime'),
-            'confidence': trade.get('confidence', 0.5),
+            'confidence': float(trade.get('confidence', 0.5) or 0.5),
             'processed_at': datetime.datetime.now().isoformat(),
             'module': self.__class__.__name__,
             'execution_quality': self._assess_execution_quality(trade, context)
         }
-        
+
         # Update position tracking
         self._update_position_tracking(processed)
-        
+
         # Log significant trades
         if abs(processed['pnl']) > 100:
             self.logger.info(
@@ -428,25 +426,25 @@ EXECUTION RATIONALE:
                     context="trading"
                 )
             )
-        
+
         return processed
-    
+
     def _assess_execution_quality(self, trade: Dict[str, Any], context: Dict[str, Any]) -> str:
         """Assess trade execution quality"""
-        pnl = trade.get('pnl', 0)
-        slippage = abs(trade.get('slippage', 0))
-        commission = trade.get('commission', 0)
-        
+        pnl = float(trade.get('pnl', 0) or 0)
+        slippage = abs(float(trade.get('slippage', 0) or 0))
+        commission = float(trade.get('commission', 0) or 0)
+
         # Quality factors
         factors = []
-        
+
         if pnl > 0:
             factors.append("profitable")
         if slippage < 0.001:  # 10 bps
             factors.append("low_slippage")
-        if commission < abs(pnl) * 0.1:  # Commission < 10% of profit
+        if abs(pnl) > 0 and (commission < abs(pnl) * 0.1):  # Commission < 10% of profit
             factors.append("cost_efficient")
-        
+
         if len(factors) >= 3:
             return "EXCELLENT"
         elif len(factors) >= 2:
@@ -455,46 +453,46 @@ EXECUTION RATIONALE:
             return "ACCEPTABLE"
         else:
             return "POOR"
-    
+
     def _update_position_tracking(self, trade: Dict[str, Any]):
         """Update position tracking for portfolio management"""
         symbol = trade['symbol']
-        side = trade['side']
-        size = trade['size']
-        
+        side = (trade['side'] or '').lower()
+        size = float(trade.get('size', 0) or 0)
+
         # Get current position
         current_positions = self.smart_bus.get('current_positions', self.__class__.__name__) or {}
-        
+
         if symbol not in current_positions:
-            current_positions[symbol] = {'long': 0, 'short': 0, 'net': 0}
-        
+            current_positions[symbol] = {'long': 0.0, 'short': 0.0, 'net': 0.0}
+
         # Update position
-        if side.lower() == 'buy':
+        if side == 'buy':
             current_positions[symbol]['long'] += size
-        elif side.lower() == 'sell':
+        elif side == 'sell':
             current_positions[symbol]['short'] += size
-        
+
         current_positions[symbol]['net'] = (
-            current_positions[symbol]['long'] - current_positions[symbol]['short']
+            float(current_positions[symbol]['long']) - float(current_positions[symbol]['short'])
         )
-        
+
         # Store updated positions
         self.smart_bus.set(
             'current_positions',
             current_positions,
             module=self.__class__.__name__,
-            thesis=f"Updated positions after {symbol} {side} trade"
+            thesis=f"Updated positions after {symbol} {trade.get('side')} trade"
         )
-    
+
     async def _generate_trading_summary_thesis(self, trades: List[Dict], errors: List[str]) -> str:
         """Generate comprehensive trading session summary"""
         if not trades and not errors:
             return "No trading activity in this session"
-        
-        total_pnl = sum(t.get('pnl', 0) for t in trades)
-        total_commission = sum(t.get('commission', 0) for t in trades)
-        winning_trades = sum(1 for t in trades if t.get('pnl', 0) > 0)
-        
+
+        total_pnl = sum(float(t.get('pnl', 0) or 0) for t in trades)
+        total_commission = sum(float(t.get('commission', 0) or 0) for t in trades)
+        winning_trades = sum(1 for t in trades if float(t.get('pnl', 0) or 0) > 0)
+
         thesis = f"""
 TRADING SESSION PERFORMANCE ANALYSIS
 ===================================
@@ -510,13 +508,13 @@ FINANCIAL PERFORMANCE:
 - Average P&L per Trade: ${total_pnl/max(len(trades), 1):+.2f}
 
 EXECUTION QUALITY:
-"""
-        
+""".rstrip()
+
         if not errors:
-            thesis += "- [OK] CLEAN EXECUTION: No processing errors"
+            thesis += "\n- [OK] CLEAN EXECUTION: No processing errors"
         else:
-            thesis += f"- [WARN] EXECUTION ISSUES: {len(errors)} errors encountered"
-        
+            thesis += f"\n- [WARN] EXECUTION ISSUES: {len(errors)} errors encountered"
+
         # Performance assessment
         if total_pnl > 0 and not errors:
             thesis += "\n- [OK] EXCELLENT SESSION: Profitable with clean execution"
@@ -526,80 +524,82 @@ EXECUTION QUALITY:
             thesis += "\n- [WARN] CHALLENGING SESSION: Clean execution but losses"
         else:
             thesis += "\n- [ALERT] POOR SESSION: Losses with execution issues"
-        
+
         # Add circuit breaker status
         cb_state = self._trading_circuit_breaker['state']
         thesis += f"\n\nSYSTEM STATUS:\n- Circuit Breaker: {cb_state}"
-        
+
         if errors:
             thesis += f"\n\nERROR SUMMARY:\n" + "\n".join(f"- {e}" for e in errors[:3])
             if len(errors) > 3:
                 thesis += f"\n- ... and {len(errors)-3} more errors"
-        
+
         return thesis.strip()
-    
+
     def _update_trading_metrics(self, trade: Dict[str, Any]):
         """Update comprehensive trading metrics"""
-        pnl = trade.get('pnl', 0)
-        
+        pnl = float(trade.get('pnl', 0) or 0)
+
         self._trades_processed += 1
         self._total_pnl += pnl
-        
+
         if pnl > 0:
             self._winning_trades += 1
         elif pnl < 0:
             self._losing_trades += 1
-        
+
         # Update drawdown tracking
         self._peak_equity = max(self._peak_equity, self._total_pnl)
         self._current_drawdown = (self._peak_equity - self._total_pnl) / max(self._peak_equity, 1)
         self._max_drawdown = max(self._max_drawdown, self._current_drawdown)
-        
+
         # Store in history
         self._trade_history.append(trade)
         if 'thesis' in trade:
             self._trade_theses.append(trade['thesis'])
-    
+
     def _check_trading_circuit_breaker(self) -> bool:
         """Check if trading circuit breaker allows operations"""
-        cb = self._trading_circuit_breaker
-        current_time = time.time()
-        
-        if cb['state'] == 'OPEN':
-            # Check if we can move to half-open
-            if current_time - cb['last_failure'] > cb['reset_time']:
-                cb['state'] = 'HALF_OPEN'
-                cb['failures'] = 0
-                self.logger.info("Trading circuit breaker moved to HALF_OPEN")
-            else:
-                return False
-        
-        return cb['state'] in ['CLOSED', 'HALF_OPEN']
-    
+        with self._trading_cb_lock:
+            cb = self._trading_circuit_breaker
+            current_time = time.time()
+
+            if cb['state'] == 'OPEN':
+                # Check if we can move to half-open
+                if current_time - cb['last_failure'] > cb['reset_time']:
+                    cb['state'] = 'HALF_OPEN'
+                    cb['failures'] = 0
+                    self.logger.info("Trading circuit breaker moved to HALF_OPEN")
+                else:
+                    return False
+
+            return cb['state'] in ['CLOSED', 'HALF_OPEN']
+
     def _record_trading_failure(self, error: str):
         """Record trading failure for circuit breaker"""
-        cb = self._trading_circuit_breaker
-        cb['failures'] += 1
-        cb['last_failure'] = time.time()
-        
-        if cb['failures'] >= cb['threshold']:
-            cb['state'] = 'OPEN'
-            self.logger.warning(
-                format_operator_message(
-                    "[ALERT]", "TRADING CIRCUIT BREAKER OPENED",
-                    details=f"Failures: {cb['failures']}, Error: {error}",
-                    context="circuit_breaker"
+        with self._trading_cb_lock:
+            cb = self._trading_circuit_breaker
+            cb['failures'] += 1
+            cb['last_failure'] = time.time()
+
+            if cb['failures'] >= cb['threshold']:
+                cb['state'] = 'OPEN'
+                self.logger.warning(
+                    format_operator_message(
+                        "[ALERT]", "TRADING CIRCUIT BREAKER OPENED",
+                        details=f"Failures: {cb['failures']}, Error: {error}",
+                        context="circuit_breaker"
+                    )
                 )
-            )
-    
+
     def _is_emergency_mode(self) -> bool:
         """Check if system is in emergency mode"""
-        # Try to get emergency mode status from orchestrator
+        # Try to get emergency mode status from orchestrator / InfoBus
         emergency_status = self.smart_bus.get('emergency_mode_status', self.__class__.__name__)
-        if emergency_status:
-            return emergency_status.get('active', False)
+        if isinstance(emergency_status, dict):
+            return bool(emergency_status.get('active', False))
         return False
-    
+
     def _get_trading_summary(self) -> Dict[str, Any]:
         """Get comprehensive trading summary"""
         return {
@@ -615,12 +615,12 @@ EXECUTION QUALITY:
             'has_theses': len(self._trade_theses) > 0,
             'performance_health': self.state_manager.performance_metrics.health_status
         }
-    
+
     def _get_win_rate(self) -> float:
         """Calculate win rate"""
         total = self._winning_trades + self._losing_trades
         return self._winning_trades / max(total, 1)
-    
+
     def get_state(self) -> Dict[str, Any]:
         """Get trading mixin state for persistence"""
         base_state = self.state_manager.get_state()
@@ -637,11 +637,11 @@ EXECUTION QUALITY:
             'trade_theses': list(self._trade_theses)
         })
         return base_state
-    
+
     def set_state(self, state: Dict[str, Any]):
         """Restore trading mixin state"""
         self.state_manager.set_state(state)
-        
+
         # Restore trading-specific state
         self._total_pnl = state.get('total_pnl', 0.0)
         self._trades_processed = state.get('trades_processed', 0)
@@ -650,13 +650,14 @@ EXECUTION QUALITY:
         self._max_drawdown = state.get('max_drawdown', 0.0)
         self._current_drawdown = state.get('current_drawdown', 0.0)
         self._peak_equity = state.get('peak_equity', 0.0)
-        
+
         if 'circuit_breaker' in state:
-            self._trading_circuit_breaker.update(state['circuit_breaker'])
-        
+            with self._trading_cb_lock:
+                self._trading_circuit_breaker.update(state['circuit_breaker'])
+
         if 'trade_history' in state:
             self._trade_history = deque(state['trade_history'], maxlen=self._trade_history.maxlen)
-        
+
         if 'trade_theses' in state:
             self._trade_theses = deque(state['trade_theses'], maxlen=self._trade_theses.maxlen)
 
@@ -674,7 +675,7 @@ EXECUTION QUALITY:
 class SmartInfoBusRiskMixin(ABC):
     """
     PRODUCTION-GRADE risk management with complete SmartInfoBus integration.
-    
+
     FEATURES:
     - Comprehensive risk assessment with thesis generation
     - Real-time risk monitoring and alerting
@@ -682,11 +683,11 @@ class SmartInfoBusRiskMixin(ABC):
     - State management for hot-reload
     - Circuit breaker protection
     """
-    
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._initialize_risk_state()
-    
+
     def _initialize_risk_state(self):
         """Initialize enhanced risk management state (idempotent)."""
         # Core risk state
@@ -712,7 +713,7 @@ class SmartInfoBusRiskMixin(ABC):
             self.state_manager = MixinStateManager(self)
 
         # Smart bus
-        self.smart_bus = getattr(self, 'smart_bus', InfoBusManager.get_instance())
+        self.smart_bus: SmartInfoBus = getattr(self, 'smart_bus', InfoBusManager.get_instance())
 
         # Logger
         if not getattr(self, 'logger', None):
@@ -723,7 +724,8 @@ class SmartInfoBusRiskMixin(ABC):
                 operator_mode=True
             )
 
-        # Circuit breaker
+        # Circuit breaker + lock
+        self._risk_cb_lock = getattr(self, "_risk_cb_lock", threading.RLock())
         self._risk_circuit_breaker = getattr(self, "_risk_circuit_breaker", {
             'failures': 0,
             'threshold': 3,
@@ -736,12 +738,11 @@ class SmartInfoBusRiskMixin(ABC):
             format_operator_message("[SAFE]", "RISK MIXIN INITIALIZED", context="mixin_init")
         )
 
-    
     @with_mixin_error_handling("assess_risk")
     async def assess_risk_with_thesis(self, **inputs) -> Dict[str, Any]:
         """
         Comprehensive risk assessment with mandatory thesis generation.
-        
+
         Returns:
             Dict with risk level, score, alerts, thesis, and recommendations
         """
@@ -754,30 +755,30 @@ class SmartInfoBusRiskMixin(ABC):
                 'thesis': 'Risk assessment temporarily suspended due to system errors',
                 'circuit_breaker_open': True
             }
-        
+
         try:
             # Extract comprehensive risk context
             risk_context = await self._extract_enhanced_risk_context(inputs)
-            
+
             # Calculate risk components
             risk_components = await self._calculate_risk_components(risk_context)
-            
+
             # Determine overall risk level and score
             risk_level, risk_score = self._determine_risk_level(risk_components)
-            
+
             # Generate risk alerts
             alerts = await self._generate_risk_alerts(risk_context, risk_components)
-            
+
             # Generate comprehensive thesis
             thesis = await self._generate_risk_thesis(
                 risk_level, risk_score, risk_context, risk_components, alerts
             )
-            
+
             # Generate recommendations
             recommendations = await self._generate_risk_recommendations(
                 risk_level, risk_components, alerts
             )
-            
+
             # Store comprehensive risk assessment
             risk_assessment = {
                 'level': risk_level,
@@ -789,7 +790,7 @@ class SmartInfoBusRiskMixin(ABC):
                 'timestamp': datetime.datetime.now().isoformat(),
                 'module': self.__class__.__name__
             }
-            
+
             # Store in SmartInfoBus with thesis
             self.smart_bus.set(
                 'comprehensive_risk_assessment',
@@ -798,24 +799,24 @@ class SmartInfoBusRiskMixin(ABC):
                 thesis=thesis,
                 confidence=0.95
             )
-            
+
             # Record in history
             self._risk_history.append(risk_assessment)
             self._last_risk_check = time.time()
-            
+
             # Check for emergency conditions
             if risk_score > 0.9 or risk_level == "CRITICAL":
                 await self._trigger_emergency_risk_response(risk_assessment)
-            
+
             return {
                 **risk_assessment,
                 'thesis': thesis
             }
-            
+
         except Exception as e:
             self._record_risk_failure(str(e))
             raise
-    
+
     async def _extract_enhanced_risk_context(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Extract comprehensive risk context from inputs and SmartInfoBus (robust)."""
         # Base context (safe if extractor missing)
@@ -828,9 +829,9 @@ class SmartInfoBusRiskMixin(ABC):
 
         # SmartInfoBus data (graceful fallbacks)
         positions = self.smart_bus.get('current_positions', self.__class__.__name__) or {}
-        portfolio_value = self.smart_bus.get('portfolio_value', self.__class__.__name__) or 1_000_000
+        portfolio_value = float(self.smart_bus.get('portfolio_value', self.__class__.__name__) or 1_000_000)
         market_data = self.smart_bus.get('market_data', self.__class__.__name__) or {}
-        market_vol = market_data.get('volatility', 0.0)
+        market_vol = float(market_data.get('volatility', 0.0) or 0.0)
 
         # Compute exposure (price-aware if available)
         total_exposure = 0.0
@@ -838,9 +839,9 @@ class SmartInfoBusRiskMixin(ABC):
             price = 0.0
             md = market_data.get(symbol)
             if isinstance(md, dict):
-                price = md.get('price', 0.0)
+                price = float(md.get('price', 0.0) or 0.0)
             try:
-                total_exposure += abs(pos.get('net', 0)) * float(price)
+                total_exposure += abs(float(pos.get('net', 0) or 0.0)) * float(price)
             except Exception:
                 pass
 
@@ -851,7 +852,7 @@ class SmartInfoBusRiskMixin(ABC):
         except Exception:
             dd_pct = None
         if dd_pct is None:
-            dd_pct = float(context.get('drawdown_pct', 0.0))
+            dd_pct = float(context.get('drawdown_pct', 0.0) or 0.0)
 
         # Leverage
         leverage = (total_exposure / portfolio_value) if portfolio_value > 0 else 0.0
@@ -869,18 +870,17 @@ class SmartInfoBusRiskMixin(ABC):
             'correlation_risk': await self._calculate_correlation_risk(positions, market_data),
         }
 
-    
     async def _calculate_risk_components(self, context: Dict[str, Any]) -> Dict[str, float]:
         """Calculate individual risk components"""
         components = {}
-        
+
         # Market risk
-        components['market_risk'] = min(1.0, context.get('market_volatility', 0.0) * 5)
-        
+        components['market_risk'] = min(1.0, float(context.get('market_volatility', 0.0) or 0.0) * 5)
+
         # Concentration risk
         positions = context.get('positions', {})
         if positions:
-            position_weights = [abs(pos['net']) for pos in positions.values()]
+            position_weights = [abs(float(pos.get('net', 0.0) or 0.0)) for pos in positions.values()]
             total_weight = sum(position_weights)
             if total_weight > 0:
                 max_weight = max(position_weights) / total_weight
@@ -889,32 +889,32 @@ class SmartInfoBusRiskMixin(ABC):
                 components['concentration_risk'] = 0.0
         else:
             components['concentration_risk'] = 0.0
-        
+
         # Leverage risk
-        leverage = context.get('leverage', 0)
-        components['leverage_risk'] = min(1.0, leverage / self._risk_limits['max_leverage'])
-        
+        leverage = float(context.get('leverage', 0) or 0.0)
+        components['leverage_risk'] = min(1.0, leverage / float(self._risk_limits['max_leverage']))
+
         # Drawdown risk
-        drawdown = context.get('drawdown_pct', 0) / 100
-        components['drawdown_risk'] = min(1.0, drawdown / self._risk_limits['max_drawdown'])
-        
+        drawdown = float(context.get('drawdown_pct', 0) or 0.0) / 100.0
+        components['drawdown_risk'] = min(1.0, drawdown / float(self._risk_limits['max_drawdown']))
+
         # Liquidity risk (simplified)
         components['liquidity_risk'] = 0.3  # Default moderate liquidity risk
-        
+
         # Correlation risk
-        components['correlation_risk'] = context.get('correlation_risk', 0.0)
-        
+        components['correlation_risk'] = float(context.get('correlation_risk', 0.0) or 0.0)
+
         return components
-    
+
     async def _calculate_correlation_risk(self, positions: Dict, market_data: Dict) -> float:
         """Calculate portfolio correlation risk"""
         if len(positions) < 2:
             return 0.0
-        
+
         # Simplified correlation risk calculation
         # In production, this would use actual correlation matrices
         return min(1.0, len(positions) * 0.1)  # Assume 10% correlation risk per position
-    
+
     def _determine_risk_level(self, components: Dict[str, float]) -> Tuple[str, float]:
         """Determine overall risk level and score"""
         # Weight components
@@ -926,13 +926,13 @@ class SmartInfoBusRiskMixin(ABC):
             'liquidity_risk': 0.05,
             'correlation_risk': 0.05
         }
-        
+
         # Calculate weighted score
         risk_score = sum(
-            components.get(component, 0) * weight
+            float(components.get(component, 0)) * weight
             for component, weight in weights.items()
         )
-        
+
         # Determine level
         if risk_score >= 0.8:
             level = "CRITICAL"
@@ -944,43 +944,43 @@ class SmartInfoBusRiskMixin(ABC):
             level = "LOW"
         else:
             level = "MINIMAL"
-        
-        return level, risk_score
-    
+
+        return level, float(risk_score)
+
     async def _generate_risk_alerts(self, context: Dict[str, Any], components: Dict[str, float]) -> List[str]:
         """Generate specific risk alerts"""
-        alerts = []
-        
+        alerts: List[str] = []
+
         # Drawdown alerts
-        drawdown_pct = context.get('drawdown_pct', 0)
-        if drawdown_pct > self._risk_limits['max_drawdown'] * 100:
+        drawdown_pct = float(context.get('drawdown_pct', 0) or 0.0)
+        if drawdown_pct > float(self._risk_limits['max_drawdown']) * 100:
             alerts.append(f"[ALERT] Drawdown exceeds limit: {drawdown_pct:.1f}% > {self._risk_limits['max_drawdown']*100:.1f}%")
-        
+
         # Exposure alerts
-        exposure_pct = context.get('exposure_pct', 0)
+        exposure_pct = float(context.get('exposure_pct', 0) or 0.0)
         if exposure_pct > 90:
             alerts.append(f"[WARN] High portfolio exposure: {exposure_pct:.1f}%")
-        
+
         # Leverage alerts
-        leverage = context.get('leverage', 0)
-        if leverage > self._risk_limits['max_leverage']:
+        leverage = float(context.get('leverage', 0) or 0.0)
+        if leverage > float(self._risk_limits['max_leverage']):
             alerts.append(f"[ALERT] Leverage exceeds limit: {leverage:.1f}x > {self._risk_limits['max_leverage']:.1f}x")
-        
+
         # Concentration alerts
-        if components.get('concentration_risk', 0) > 0.7:
+        if float(components.get('concentration_risk', 0) or 0.0) > 0.7:
             alerts.append("[WARN] High position concentration detected")
-        
+
         # Market risk alerts
-        if components.get('market_risk', 0) > 0.8:
+        if float(components.get('market_risk', 0) or 0.0) > 0.8:
             alerts.append("[ALERT] Extreme market volatility detected")
-        
+
         return alerts
-    
-    async def _generate_risk_thesis(self, level: str, score: float, 
-                                  context: Dict[str, Any], components: Dict[str, float],
-                                  alerts: List[str]) -> str:
+
+    async def _generate_risk_thesis(self, level: str, score: float,
+                                    context: Dict[str, Any], components: Dict[str, float],
+                                    alerts: List[str]) -> str:
         """Generate comprehensive risk assessment thesis"""
-        
+
         thesis = f"""
 COMPREHENSIVE RISK ASSESSMENT
 ============================
@@ -996,14 +996,15 @@ PORTFOLIO METRICS:
 - Portfolio Value: ${context.get('portfolio_value', 0):,.0f}
 
 RISK COMPONENT ANALYSIS:
-"""
-        
+""".rstrip()
+
         for component, value in components.items():
-            status = "[ALERT]" if value > 0.8 else "[WARN]" if value > 0.6 else "[OK]"
-            thesis += f"- {component.replace('_', ' ').title()}: {status} {value:.1%}\n"
-        
-        thesis += f"\nRISK ASSESSMENT:\n"
-        
+            v = float(value or 0.0)
+            status = "[ALERT]" if v > 0.8 else "[WARN]" if v > 0.6 else "[OK]"
+            thesis += f"\n- {component.replace('_', ' ').title()}: {status} {v:.1%}"
+
+        thesis += f"\n\nRISK ASSESSMENT:\n"
+
         if level == "CRITICAL":
             thesis += """
 [ALERT] CRITICAL RISK LEVEL:
@@ -1011,7 +1012,7 @@ RISK COMPONENT ANALYSIS:
 - Consider halting new positions
 - Review and close high-risk positions
 - Activate emergency risk protocols
-"""
+""".rstrip()
         elif level == "HIGH":
             thesis += """
 [WARN] HIGH RISK LEVEL:
@@ -1019,7 +1020,7 @@ RISK COMPONENT ANALYSIS:
 - Limit new position sizes
 - Monitor positions closely
 - Prepare risk reduction measures
-"""
+""".rstrip()
         elif level == "MEDIUM":
             thesis += """
 [BALANCE] MEDIUM RISK LEVEL:
@@ -1027,7 +1028,7 @@ RISK COMPONENT ANALYSIS:
 - Monitor key risk metrics
 - Maintain diversification
 - Regular portfolio review
-"""
+""".rstrip()
         else:
             thesis += """
 [OK] LOW RISK LEVEL:
@@ -1035,43 +1036,43 @@ RISK COMPONENT ANALYSIS:
 - Normal trading operations can continue
 - Maintain current risk controls
 - Continue monitoring market conditions
-"""
-        
+""".rstrip()
+
         if alerts:
             thesis += f"\n\nSPECIFIC ALERTS:\n" + "\n".join(f"- {alert}" for alert in alerts)
-        
+
         # Add recommendations section
         thesis += f"\n\nRECOMMENDATIONS:\n"
         thesis += f"- Primary Action: {self._get_primary_risk_action(level, components)}\n"
         thesis += f"- Monitoring Focus: {self._get_monitoring_focus(components)}\n"
         thesis += f"- Next Review: {self._get_next_review_time(level)}"
-        
+
         return thesis.strip()
-    
+
     async def _generate_risk_recommendations(self, level: str, components: Dict[str, float], alerts: List[str]) -> List[str]:
         """Generate actionable risk management recommendations"""
-        recommendations = []
-        
+        recommendations: List[str] = []
+
         if level in ["CRITICAL", "HIGH"]:
             recommendations.append("Reduce portfolio exposure immediately")
             recommendations.append("Close highest-risk positions")
             recommendations.append("Implement position size limits")
-        
-        if components.get('concentration_risk', 0) > 0.6:
+
+        if float(components.get('concentration_risk', 0) or 0.0) > 0.6:
             recommendations.append("Diversify concentrated positions")
-        
-        if components.get('leverage_risk', 0) > 0.7:
+
+        if float(components.get('leverage_risk', 0) or 0.0) > 0.7:
             recommendations.append("Reduce leverage to acceptable levels")
-        
-        if components.get('drawdown_risk', 0) > 0.6:
+
+        if float(components.get('drawdown_risk', 0) or 0.0) > 0.6:
             recommendations.append("Implement stop-loss procedures")
-        
+
         if not recommendations:
             recommendations.append("Maintain current risk management practices")
             recommendations.append("Continue regular monitoring")
-        
+
         return recommendations
-    
+
     def _get_primary_risk_action(self, level: str, components: Dict[str, float]) -> str:
         """Get primary recommended action"""
         if level == "CRITICAL":
@@ -1082,12 +1083,12 @@ RISK COMPONENT ANALYSIS:
             return "MONITOR AND MAINTAIN CONTROLS"
         else:
             return "CONTINUE NORMAL OPERATIONS"
-    
+
     def _get_monitoring_focus(self, components: Dict[str, float]) -> str:
         """Get primary monitoring focus"""
-        max_component = max(components.items(), key=lambda x: x[1])
+        max_component = max(components.items(), key=lambda x: float(x[1] or 0.0))
         return max_component[0].replace('_', ' ').title()
-    
+
     def _get_next_review_time(self, level: str) -> str:
         """Get recommended next review time"""
         if level == "CRITICAL":
@@ -1098,7 +1099,7 @@ RISK COMPONENT ANALYSIS:
             return "Every 4 hours"
         else:
             return "Daily"
-    
+
     async def _trigger_emergency_risk_response(self, risk_assessment: Dict[str, Any]):
         """Trigger emergency risk response procedures"""
         self.logger.critical(
@@ -1108,7 +1109,7 @@ RISK COMPONENT ANALYSIS:
                 context="emergency_risk"
             )
         )
-        
+
         # Store emergency event
         self.smart_bus.set(
             'emergency_risk_event',
@@ -1125,38 +1126,40 @@ RISK COMPONENT ANALYSIS:
             module=self.__class__.__name__,
             thesis="Emergency risk response activated due to critical risk conditions"
         )
-    
+
     def _check_risk_circuit_breaker(self) -> bool:
         """Check if risk circuit breaker allows operations"""
-        cb = self._risk_circuit_breaker
-        current_time = time.time()
-        
-        if cb['state'] == 'OPEN':
-            if current_time - cb['last_failure'] > cb['reset_time']:
-                cb['state'] = 'HALF_OPEN'
-                cb['failures'] = 0
-                self.logger.info("Risk circuit breaker moved to HALF_OPEN")
-            else:
-                return False
-        
-        return cb['state'] in ['CLOSED', 'HALF_OPEN']
-    
+        with self._risk_cb_lock:
+            cb = self._risk_circuit_breaker
+            current_time = time.time()
+
+            if cb['state'] == 'OPEN':
+                if current_time - cb['last_failure'] > cb['reset_time']:
+                    cb['state'] = 'HALF_OPEN'
+                    cb['failures'] = 0
+                    self.logger.info("Risk circuit breaker moved to HALF_OPEN")
+                else:
+                    return False
+
+            return cb['state'] in ['CLOSED', 'HALF_OPEN']
+
     def _record_risk_failure(self, error: str):
         """Record risk assessment failure"""
-        cb = self._risk_circuit_breaker
-        cb['failures'] += 1
-        cb['last_failure'] = time.time()
-        
-        if cb['failures'] >= cb['threshold']:
-            cb['state'] = 'OPEN'
-            self.logger.warning(
-                format_operator_message(
-                    "[ALERT]", "RISK CIRCUIT BREAKER OPENED",
-                    details=f"Failures: {cb['failures']}, Error: {error}",
-                    context="circuit_breaker"
+        with self._risk_cb_lock:
+            cb = self._risk_circuit_breaker
+            cb['failures'] += 1
+            cb['last_failure'] = time.time()
+
+            if cb['failures'] >= cb['threshold']:
+                cb['state'] = 'OPEN'
+                self.logger.warning(
+                    format_operator_message(
+                        "[ALERT]", "RISK CIRCUIT BREAKER OPENED",
+                        details=f"Failures: {cb['failures']}, Error: {error}",
+                        context="circuit_breaker"
+                    )
                 )
-            )
-    
+
     def get_state(self) -> Dict[str, Any]:
         """Get risk mixin state for persistence"""
         base_state = self.state_manager.get_state()
@@ -1170,26 +1173,27 @@ RISK COMPONENT ANALYSIS:
             'risk_history': list(self._risk_history)[-100:]  # Keep last 100
         })
         return base_state
-    
+
     def set_state(self, state: Dict[str, Any]):
         """Restore risk mixin state"""
         self.state_manager.set_state(state)
-        
+
         self._risk_violations = state.get('risk_violations', 0)
         self._last_risk_check = state.get('last_risk_check')
-        
+
         if 'risk_limits' in state:
             self._risk_limits.update(state['risk_limits'])
-        
+
         if 'circuit_breaker' in state:
-            self._risk_circuit_breaker.update(state['circuit_breaker'])
-        
+            with self._risk_cb_lock:
+                self._risk_circuit_breaker.update(state['circuit_breaker'])
+
         if 'risk_alerts' in state:
             self._risk_alerts = deque(state['risk_alerts'], maxlen=self._risk_alerts.maxlen)
-        
+
         if 'risk_theses' in state:
             self._risk_theses = deque(state['risk_theses'], maxlen=self._risk_theses.maxlen)
-        
+
         if 'risk_history' in state:
             self._risk_history = deque(state['risk_history'], maxlen=self._risk_history.maxlen)
 
@@ -1207,7 +1211,7 @@ RISK COMPONENT ANALYSIS:
 class SmartInfoBusVotingMixin(ABC):
     """
     PRODUCTION-GRADE voting mixin with complete SmartInfoBus integration.
-    
+
     FEATURES:
     - Mandatory thesis generation for all votes
     - Weighted voting with confidence tracking
@@ -1215,11 +1219,11 @@ class SmartInfoBusVotingMixin(ABC):
     - State management for hot-reload
     - Performance tracking and circuit breaker protection
     """
-    
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._initialize_voting_state()
-    
+
     def _initialize_voting_state(self):
         """Initialize enhanced voting state (idempotent)."""
         max_history = getattr(getattr(self, "config", None), "max_history", 100)
@@ -1236,7 +1240,7 @@ class SmartInfoBusVotingMixin(ABC):
         if not hasattr(self, 'state_manager'):
             self.state_manager = MixinStateManager(self)
 
-        self.smart_bus = getattr(self, 'smart_bus', InfoBusManager.get_instance())
+        self.smart_bus: SmartInfoBus = getattr(self, 'smart_bus', InfoBusManager.get_instance())
 
         if not getattr(self, 'logger', None):
             self.logger = RotatingLogger(
@@ -1246,6 +1250,8 @@ class SmartInfoBusVotingMixin(ABC):
                 operator_mode=True
             )
 
+        # Circuit breaker + lock
+        self._voting_cb_lock = getattr(self, "_voting_cb_lock", threading.RLock())
         self._voting_circuit_breaker = getattr(self, "_voting_circuit_breaker", {
             'failures': 0,
             'threshold': 3,
@@ -1258,7 +1264,6 @@ class SmartInfoBusVotingMixin(ABC):
             format_operator_message("🗳️", "VOTING MIXIN INITIALIZED", context="mixin_init")
         )
 
-    
     @abstractmethod
     async def propose_action(self, **inputs) -> Dict[str, Any]:
         """
@@ -1266,17 +1271,17 @@ class SmartInfoBusVotingMixin(ABC):
         Must return dict with 'action', 'confidence', 'reasoning'
         """
         pass
-    
+
     @abstractmethod
     async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
         """Calculate confidence level for proposed action"""
         pass
-    
+
     @with_mixin_error_handling("prepare_vote")
     async def prepare_vote_with_thesis(self, **inputs) -> Dict[str, Any]:
         """
         Prepare comprehensive vote with mandatory thesis and consensus analysis.
-        
+
         Returns:
             Dict containing vote, thesis, consensus analysis, and metadata
         """
@@ -1287,58 +1292,58 @@ class SmartInfoBusVotingMixin(ABC):
                 'thesis': 'Voting suspended due to circuit breaker',
                 'circuit_breaker_open': True
             }
-        
+
         try:
             # Get action proposal
             action_proposal = await self.propose_action(**inputs)
             confidence = await self.calculate_confidence(action_proposal, **inputs)
-            
+
             # Analyze current consensus if available
             consensus_analysis = await self._analyze_consensus(inputs)
-            
+
             # Generate comprehensive thesis
             thesis = await self._generate_vote_thesis(action_proposal, confidence, inputs, consensus_analysis)
-            
+
             # Create enhanced vote
             vote = {
                 'module': self.__class__.__name__,
                 'action': action_proposal,
-                'confidence': confidence,
+                'confidence': float(confidence or 0.0),
                 'reasoning': thesis,
                 'timestamp': datetime.datetime.now().isoformat(),
                 'step': inputs.get('step_idx', 0),
-                'risk_score': InfoBusExtractor.get_risk_score(inputs),
-                'consensus_alignment': consensus_analysis.get('alignment_score', 0.5),
-                'vote_weight': self._calculate_vote_weight(confidence, consensus_analysis),
+                'risk_score': float(InfoBusExtractor.get_risk_score(inputs) or 0.0),
+                'consensus_alignment': float(consensus_analysis.get('alignment_score', 0.5) or 0.5),
+                'vote_weight': self._calculate_vote_weight(float(confidence or 0.0), consensus_analysis),
                 'metadata': {
                     'market_regime': self.smart_bus.get('market_regime', self.__class__.__name__),
                     'portfolio_state': self._get_portfolio_context(inputs),
                     'historical_accuracy': self._vote_accuracy
                 }
             }
-            
+
             # Validate vote quality
             vote_quality = await self._assess_vote_quality(vote, inputs)
             vote['quality_score'] = vote_quality
-            
+
             # Record vote
             self._record_vote(vote)
-            
+
             # Store in SmartInfoBus with thesis
             self.smart_bus.set(
                 f'vote_{self.__class__.__name__}_{self._votes_cast}',
                 vote,
                 module=self.__class__.__name__,
                 thesis=thesis,
-                confidence=confidence
+                confidence=float(confidence or 0.0)
             )
-            
+
             # Add to InfoBus votes
             InfoBusUpdater.add_vote(inputs, vote)
-            
+
             # Update consensus tracking
             await self._update_consensus_tracking(vote, inputs)
-            
+
             return {
                 'vote': vote,
                 'thesis': thesis,
@@ -1346,11 +1351,11 @@ class SmartInfoBusVotingMixin(ABC):
                 'quality_score': vote_quality,
                 'circuit_breaker_state': self._voting_circuit_breaker['state']
             }
-            
+
         except Exception as e:
             self._record_voting_failure(str(e))
             raise
-    
+
     async def _analyze_consensus(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Analyze current voting consensus and conflicts (numpy-optional)."""
         existing_votes = inputs.get('votes', [])
@@ -1363,7 +1368,7 @@ class SmartInfoBusVotingMixin(ABC):
             }
 
         actions = [v.get('action') for v in existing_votes if v.get('action') is not None]
-        confidences = [float(v.get('confidence', 0.5)) for v in existing_votes]
+        confidences = [float(v.get('confidence', 0.5) or 0.5) for v in existing_votes]
 
         if not actions:
             return {
@@ -1394,7 +1399,6 @@ class SmartInfoBusVotingMixin(ABC):
             'avg_confidence': avg_conf
         }
 
-    
     def _assess_conflict_level(self, consensus_strength: float) -> str:
         """Assess level of voting conflict"""
         if consensus_strength > 0.8:
@@ -1405,14 +1409,13 @@ class SmartInfoBusVotingMixin(ABC):
             return "HIGH"
         else:
             return "SEVERE"
-    
+
     async def _generate_vote_thesis(self, action: Dict[str, Any], confidence: float,
                                     inputs: Dict[str, Any], consensus_analysis: Dict[str, Any]) -> str:
         """Generate comprehensive voting thesis (works without NumPy)."""
         context = extract_standard_context(inputs)
 
         # Action description – robust across types
-        action_desc: str
         try:
             if isinstance(action, dict):
                 action_desc = f"Action: {action.get('type', 'Unknown')} with parameters {list(action.keys())}"
@@ -1421,7 +1424,6 @@ class SmartInfoBusVotingMixin(ABC):
                     length = int(action.shape[0])  # type: ignore[attr-defined]
                 except Exception:
                     length = len(action) if hasattr(action, '__len__') else 0
-                # argmax of |signal|
                 try:
                     max_idx = max(range(length), key=lambda i: abs(float(action[i]))) if length > 0 else 0
                 except Exception:
@@ -1440,64 +1442,65 @@ class SmartInfoBusVotingMixin(ABC):
             action_desc = f"Action: {str(action)}"
 
         thesis = f"""
-    VOTING DECISION ANALYSIS
-    ========================
-    Module: {self.__class__.__name__}
-    Vote Confidence: {confidence:.1%}
-    {action_desc}
-    Decision Time: {datetime.datetime.now().isoformat()}
+VOTING DECISION ANALYSIS
+========================
+Module: {self.__class__.__name__}
+Vote Confidence: {float(confidence or 0.0):.1%}
+{action_desc}
+Decision Time: {datetime.datetime.now().isoformat()}
 
-    MARKET CONTEXT:
-    - Market Regime: {context.get('regime', 'Unknown')}
-    - Risk Level: {context.get('risk_score', 0):.1%}
-    - Portfolio Positions: {context.get('position_count', 0)}
-    - System Health: {inputs.get('system_health', 'Unknown')}
+MARKET CONTEXT:
+- Market Regime: {context.get('regime', 'Unknown')}
+- Risk Level: {float(context.get('risk_score', 0) or 0.0):.1%}
+- Portfolio Positions: {context.get('position_count', 0)}
+- System Health: {inputs.get('system_health', 'Unknown')}
 
-    CONSENSUS ANALYSIS:
-    """
+CONSENSUS ANALYSIS:
+""".rstrip()
 
         if consensus_analysis.get('consensus_exists'):
             thesis += f"""
-    - [OK] CONSENSUS PRESENT: {consensus_analysis.get('alignment_score', 0.0):.1%} agreement
-    - Dominant Action: {consensus_analysis.get('dominant_action')}
-    - Conflict Level: {consensus_analysis.get('conflict_level')}
-    - My Position: {'ALIGNED' if consensus_analysis.get('alignment_score', 0.0) > 0.6 else 'CONTRARIAN'}
-    """
+- [OK] CONSENSUS PRESENT: {float(consensus_analysis.get('alignment_score', 0.0) or 0.0):.1%} agreement
+- Dominant Action: {consensus_analysis.get('dominant_action')}
+- Conflict Level: {consensus_analysis.get('conflict_level')}
+- My Position: {'ALIGNED' if float(consensus_analysis.get('alignment_score', 0.0) or 0.0) > 0.6 else 'CONTRARIAN'}
+""".rstrip()
         else:
             thesis += """
-    - [WARN] NO CONSENSUS: First vote or highly divided opinions
-    - Vote Weight: Higher due to early position
-    - Market Leadership: Taking initiative in uncertain conditions
-    """
+- [WARN] NO CONSENSUS: First vote or highly divided opinions
+- Vote Weight: Higher due to early position
+- Market Leadership: Taking initiative in uncertain conditions
+""".rstrip()
 
         thesis += f"\n\nDECISION RATIONALE:\n"
 
-        if confidence > 0.8:
+        c = float(confidence or 0.0)
+        if c > 0.8:
             thesis += f"""
-    🔥 HIGH CONFIDENCE VOTE:
-    - Strong conviction based on robust analysis
-    - Clear market signals support this action
-    - Risk/reward profile highly favorable
-    - Historical accuracy: {self._vote_accuracy:.1%}
-    """
-        elif confidence > 0.5:
+🔥 HIGH CONFIDENCE VOTE:
+- Strong conviction based on robust analysis
+- Clear market signals support this action
+- Risk/reward profile highly favorable
+- Historical accuracy: {self._vote_accuracy:.1%}
+""".rstrip()
+        elif c > 0.5:
             thesis += f"""
-    [BALANCE] MODERATE CONFIDENCE VOTE:
-    - Balanced view with mixed signals
-    - Acceptable risk/reward trade-off
-    - Following systematic approach
-    - Monitoring for confirmation signals
-    """
+[BALANCE] MODERATE CONFIDENCE VOTE:
+- Balanced view with mixed signals
+- Acceptable risk/reward trade-off
+- Following systematic approach
+- Monitoring for confirmation signals
+""".rstrip()
         else:
             thesis += f"""
-    🤔 LOW CONFIDENCE VOTE:
-    - Uncertain market conditions
-    - Limited conviction in current signals
-    - Defensive positioning preferred
-    - Ready to adjust based on new information
-    """
+🤔 LOW CONFIDENCE VOTE:
+- Uncertain market conditions
+- Limited conviction in current signals
+- Defensive positioning preferred
+- Ready to adjust based on new information
+""".rstrip()
 
-        alignment = consensus_analysis.get('alignment_score', 0.5)
+        alignment = float(consensus_analysis.get('alignment_score', 0.5) or 0.5)
         if alignment > 0.8:
             thesis += "\n\n🤝 STRONG CONSENSUS: Vote aligns with majority view"
         elif alignment < 0.3:
@@ -1505,15 +1508,14 @@ class SmartInfoBusVotingMixin(ABC):
         else:
             thesis += "\n\n[BALANCE] MIXED CONSENSUS: Moderate alignment with existing votes"
 
-        risk_score = context.get('risk_score', 0)
-        if isinstance(risk_score, (int, float)) and risk_score > 0.7:
-            thesis += f"\n\n[WARN] HIGH RISK ENVIRONMENT: Vote considers elevated risk level of {float(risk_score):.1%}"
+        risk_score = float(context.get('risk_score', 0) or 0.0)
+        if risk_score > 0.7:
+            thesis += f"\n\n[WARN] HIGH RISK ENVIRONMENT: Vote considers elevated risk level of {risk_score:.1%}"
 
-        thesis += f"\n\nVOTE QUALITY: {await self._get_vote_quality_description(confidence, consensus_analysis)}"
+        thesis += f"\n\nVOTE QUALITY: {await self._get_vote_quality_description(float(confidence or 0.0), consensus_analysis)}"
 
         return thesis.strip()
 
-    
     async def _get_vote_quality_description(self, confidence: float, consensus_analysis: Dict[str, Any]) -> str:
         """Get vote quality description"""
         if confidence > 0.8 and consensus_analysis.get('consensus_exists', False):
@@ -1526,60 +1528,60 @@ class SmartInfoBusVotingMixin(ABC):
             return "ACCEPTABLE - Moderate confidence, independent view"
         else:
             return "CAUTIOUS - Low confidence, defensive positioning"
-    
+
     def _calculate_vote_weight(self, confidence: float, consensus_analysis: Dict[str, Any]) -> float:
         """Calculate voting weight based on confidence and consensus"""
-        base_weight = confidence
-        
+        base_weight = float(confidence or 0.0)
+
         # Adjust for consensus
         if consensus_analysis.get('consensus_exists', False):
-            alignment = consensus_analysis.get('alignment_score', 0.5)
+            alignment = float(consensus_analysis.get('alignment_score', 0.5) or 0.5)
             if alignment > 0.8:  # Strong consensus alignment
                 base_weight *= 1.1  # Slight boost for consensus
             elif alignment < 0.3:  # Contrarian position
                 base_weight *= 0.9  # Slight penalty for contrarian
-        
+
         # Adjust for historical accuracy
         if self._vote_accuracy > 0.7:
             base_weight *= 1.2  # Boost for good track record
         elif self._vote_accuracy < 0.4:
             base_weight *= 0.8  # Penalty for poor track record
-        
+
         return min(1.0, max(0.1, base_weight))  # Clamp between 0.1 and 1.0
-    
+
     def _get_portfolio_context(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Get portfolio context for vote"""
         return {
             'total_positions': len(self.smart_bus.get('current_positions', self.__class__.__name__) or {}),
             'portfolio_value': self.smart_bus.get('portfolio_value', self.__class__.__name__),
             'current_pnl': self.smart_bus.get('current_pnl', self.__class__.__name__),
-            'exposure_level': InfoBusExtractor.get_risk_score(inputs)
+            'exposure_level': float(InfoBusExtractor.get_risk_score(inputs) or 0.0)
         }
-    
+
     async def _assess_vote_quality(self, vote: Dict[str, Any], inputs: Dict[str, Any]) -> float:
         """Assess overall vote quality"""
         quality_score = 0.0
-        
+
         # Confidence component (40%)
-        quality_score += vote['confidence'] * 0.4
-        
+        quality_score += float(vote.get('confidence', 0.0) or 0.0) * 0.4
+
         # Consensus alignment component (20%)
-        alignment = vote.get('consensus_alignment', 0.5)
+        alignment = float(vote.get('consensus_alignment', 0.5) or 0.5)
         if alignment > 0.8 or alignment < 0.2:  # Either strong consensus or strong contrarian
             quality_score += 0.2
         else:
             quality_score += alignment * 0.2
-        
+
         # Historical accuracy component (20%)
-        quality_score += self._vote_accuracy * 0.2
-        
+        quality_score += float(self._vote_accuracy or 0.0) * 0.2
+
         # Market timing component (20%)
-        risk_score = vote.get('risk_score', 0.5)
+        risk_score = float(vote.get('risk_score', 0.5) or 0.5)
         timing_score = 1.0 - abs(risk_score - 0.5) * 2  # Best at moderate risk
         quality_score += timing_score * 0.2
-        
-        return min(1.0, max(0.0, quality_score))
-    
+
+        return float(min(1.0, max(0.0, quality_score)))
+
     async def _update_consensus_tracking(self, vote: Dict[str, Any], inputs: Dict[str, Any]):
         """Update consensus tracking and analysis"""
         consensus_update = {
@@ -1590,9 +1592,9 @@ class SmartInfoBusVotingMixin(ABC):
             'consensus_alignment': vote['consensus_alignment'],
             'quality_score': vote['quality_score']
         }
-        
+
         self._consensus_history.append(consensus_update)
-        
+
         # Store consensus analysis in SmartInfoBus
         self.smart_bus.set(
             'consensus_tracking_update',
@@ -1600,56 +1602,58 @@ class SmartInfoBusVotingMixin(ABC):
             module=self.__class__.__name__,
             thesis=f"Consensus tracking updated after {self.__class__.__name__} vote"
         )
-    
+
     def _record_vote(self, vote: Dict[str, Any]):
         """Record vote with enhanced tracking"""
         self._votes_cast += 1
         self._vote_history.append(vote)
-        self._confidence_history.append(vote['confidence'])
-        
+        self._confidence_history.append(float(vote.get('confidence', 0.0) or 0.0))
+
         if 'reasoning' in vote:
-            self._vote_theses.append(vote['reasoning'])
-        
+            self._vote_theses.append(str(vote['reasoning']))
+
         # Update voting performance metrics (simplified)
         # In production, this would track actual outcomes
-        if vote['confidence'] > 0.7:
+        if float(vote.get('confidence', 0.0) or 0.0) > 0.7:
             self._successful_votes += 1
-        
+
         # Update accuracy estimate
         if self._votes_cast > 0:
             self._vote_accuracy = self._successful_votes / self._votes_cast
-    
+
     def _check_voting_circuit_breaker(self) -> bool:
         """Check if voting circuit breaker allows operations"""
-        cb = self._voting_circuit_breaker
-        current_time = time.time()
-        
-        if cb['state'] == 'OPEN':
-            if current_time - cb['last_failure'] > cb['reset_time']:
-                cb['state'] = 'HALF_OPEN'
-                cb['failures'] = 0
-                self.logger.info("Voting circuit breaker moved to HALF_OPEN")
-            else:
-                return False
-        
-        return cb['state'] in ['CLOSED', 'HALF_OPEN']
-    
+        with self._voting_cb_lock:
+            cb = self._voting_circuit_breaker
+            current_time = time.time()
+
+            if cb['state'] == 'OPEN':
+                if current_time - cb['last_failure'] > cb['reset_time']:
+                    cb['state'] = 'HALF_OPEN'
+                    cb['failures'] = 0
+                    self.logger.info("Voting circuit breaker moved to HALF_OPEN")
+                else:
+                    return False
+
+            return cb['state'] in ['CLOSED', 'HALF_OPEN']
+
     def _record_voting_failure(self, error: str):
         """Record voting failure for circuit breaker"""
-        cb = self._voting_circuit_breaker
-        cb['failures'] += 1
-        cb['last_failure'] = time.time()
-        
-        if cb['failures'] >= cb['threshold']:
-            cb['state'] = 'OPEN'
-            self.logger.warning(
-                format_operator_message(
-                    "[ALERT]", "VOTING CIRCUIT BREAKER OPENED",
-                    details=f"Failures: {cb['failures']}, Error: {error}",
-                    context="circuit_breaker"
+        with self._voting_cb_lock:
+            cb = self._voting_circuit_breaker
+            cb['failures'] += 1
+            cb['last_failure'] = time.time()
+
+            if cb['failures'] >= cb['threshold']:
+                cb['state'] = 'OPEN'
+                self.logger.warning(
+                    format_operator_message(
+                        "[ALERT]", "VOTING CIRCUIT BREAKER OPENED",
+                        details=f"Failures: {cb['failures']}, Error: {error}",
+                        context="circuit_breaker"
+                    )
                 )
-            )
-    
+
     def get_state(self) -> Dict[str, Any]:
         """Get voting mixin state for persistence"""
         base_state = self.state_manager.get_state()
@@ -1665,28 +1669,29 @@ class SmartInfoBusVotingMixin(ABC):
             'consensus_history': list(self._consensus_history)
         })
         return base_state
-    
+
     def set_state(self, state: Dict[str, Any]):
         """Restore voting mixin state"""
         self.state_manager.set_state(state)
-        
+
         self._votes_cast = state.get('votes_cast', 0)
         self._successful_votes = state.get('successful_votes', 0)
         self._vote_accuracy = state.get('vote_accuracy', 0.0)
         self._consensus_participation = state.get('consensus_participation', 0.0)
-        
+
         if 'circuit_breaker' in state:
-            self._voting_circuit_breaker.update(state['circuit_breaker'])
-        
+            with self._voting_cb_lock:
+                self._voting_circuit_breaker.update(state['circuit_breaker'])
+
         if 'vote_history' in state:
             self._vote_history = deque(state['vote_history'], maxlen=self._vote_history.maxlen)
-        
+
         if 'confidence_history' in state:
             self._confidence_history = deque(state['confidence_history'], maxlen=self._confidence_history.maxlen)
-        
+
         if 'vote_theses' in state:
             self._vote_theses = deque(state['vote_theses'], maxlen=self._vote_theses.maxlen)
-        
+
         if 'consensus_history' in state:
             self._consensus_history = deque(state['consensus_history'], maxlen=self._consensus_history.maxlen)
 
@@ -1704,18 +1709,18 @@ class SmartInfoBusVotingMixin(ABC):
 class SmartInfoBusStateMixin(ABC):
     """
     PRODUCTION-GRADE state management mixin for hot-reload support.
-    
+
     FEATURES:
     - Complete state persistence and restoration
     - State validation and integrity checking
     - Version compatibility management
     - Performance state tracking
     """
-    
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._initialize_state_management()
-    
+
     def _initialize_state_management(self):
         """Initialize state management infrastructure (non-destructive)."""
         if not hasattr(self, 'state_manager'):
@@ -1725,7 +1730,7 @@ class SmartInfoBusStateMixin(ABC):
         self._state_integrity_hash = getattr(self, "_state_integrity_hash", None)
 
         # Smart bus integration
-        self.smart_bus = getattr(self, 'smart_bus', InfoBusManager.get_instance())
+        self.smart_bus: SmartInfoBus = getattr(self, 'smart_bus', InfoBusManager.get_instance())
 
         if not getattr(self, 'logger', None):
             self.logger = RotatingLogger(
@@ -1735,7 +1740,6 @@ class SmartInfoBusStateMixin(ABC):
                 operator_mode=True
             )
 
-    
     def get_complete_state(self) -> Dict[str, Any]:
         """Get complete state including all mixin states"""
         state = {
@@ -1744,31 +1748,31 @@ class SmartInfoBusStateMixin(ABC):
             'module_class': self.__class__.__name__,
             'module_path': self.__class__.__module__
         }
-        
+
         # Get base state manager state
         if hasattr(self, 'state_manager'):
             state['base_state'] = self.state_manager.get_state()
-        
+
         # Get trading state if available
         if hasattr(self, '_initialize_trading_state'):
             state['trading_state'] = self._get_trading_state()
-        
+
         # Get risk state if available
         if hasattr(self, '_initialize_risk_state'):
             state['risk_state'] = self._get_risk_state()
-        
+
         # Get voting state if available
         if hasattr(self, '_initialize_voting_state'):
             state['voting_state'] = self._get_voting_state()
-        
+
         # Calculate integrity hash
         import hashlib
         import json
         state_json = json.dumps(state, sort_keys=True, default=str)
         state['integrity_hash'] = hashlib.sha256(state_json.encode()).hexdigest()
-        
+
         return state
-    
+
     def set_complete_state(self, state: Dict[str, Any]) -> bool:
         """Restore complete state with validation (does not mutate input)."""
         try:
@@ -1818,19 +1822,18 @@ class SmartInfoBusStateMixin(ABC):
             self.logger.error(f"Failed to restore state: {e}")
             return False
 
-    
     def _get_trading_state(self) -> Dict[str, Any]:
         """Get trading-specific state"""
         if not hasattr(self, '_total_pnl'):
             return {}
-        
+
         return {
             'total_pnl': getattr(self, '_total_pnl', 0.0),
             'trades_processed': getattr(self, '_trades_processed', 0),
             'winning_trades': getattr(self, '_winning_trades', 0),
             'losing_trades': getattr(self, '_losing_trades', 0)
         }
-    
+
     def _set_trading_state(self, state: Dict[str, Any]):
         """Set trading-specific state"""
         for base in self.__class__.__mro__:
@@ -1842,29 +1845,29 @@ class SmartInfoBusStateMixin(ABC):
         """Get risk-specific state"""
         if not hasattr(self, '_risk_violations'):
             return {}
-        
+
         return {
             'risk_violations': getattr(self, '_risk_violations', 0),
             'last_risk_check': getattr(self, '_last_risk_check', None)
         }
-    
+
     def _set_risk_state(self, state: Dict[str, Any]):
         """Set risk-specific state"""
         for base in self.__class__.__mro__:
             if base.__name__ == "SmartInfoBusRiskMixin":
                 base.set_state(self, state)
                 break
-    
+
     def _get_voting_state(self) -> Dict[str, Any]:
         """Get voting-specific state"""
         if not hasattr(self, '_votes_cast'):
             return {}
-        
+
         return {
             'votes_cast': getattr(self, '_votes_cast', 0),
             'vote_accuracy': getattr(self, '_vote_accuracy', 0.0)
         }
-    
+
     def _set_voting_state(self, state: Dict[str, Any]):
         """Set voting-specific state"""
         for base in self.__class__.__mro__:
@@ -1884,7 +1887,7 @@ class InfoBusFullIntegrationMixin(
 ):
     """
     Complete SmartInfoBus integration with all enhanced features.
-    
+
     This mixin provides:
     - Trading operations with thesis generation
     - Risk management with comprehensive assessment
@@ -1894,11 +1897,11 @@ class InfoBusFullIntegrationMixin(
     - Performance tracking
     - Emergency mode integration
     """
-    
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._initialize_full_integration()
-    
+
     def _initialize_full_integration(self):
         """Initialize all mixin components"""
         # Core logging
@@ -1910,7 +1913,7 @@ class InfoBusFullIntegrationMixin(
             info_bus_aware=True,
             plain_english=True
         )
-        
+
         # Register with orchestrator if available
         try:
             from modules.core.module_system import ModuleOrchestrator
@@ -1919,13 +1922,14 @@ class InfoBusFullIntegrationMixin(
                 # Register error handling integration
                 if hasattr(orchestrator, 'error_pinpointer'):
                     self.error_pinpointer = orchestrator.error_pinpointer
-                
+
                 # Register health monitoring
                 if hasattr(orchestrator, 'health_monitor'):
                     self.health_monitor = orchestrator.health_monitor
-        except:
-            pass  # Orchestrator not available
-        
+        except Exception:
+            # Orchestrator not available; proceed gracefully
+            pass
+
         self.logger.info(
             format_operator_message(
                 "[ROCKET]", "FULL INTEGRATION MIXIN INITIALIZED",
@@ -1933,32 +1937,32 @@ class InfoBusFullIntegrationMixin(
                 context="mixin_init"
             )
         )
-    
+
     async def process_full_cycle(self, **inputs) -> Dict[str, Any]:
         """
         Process a complete cycle: risk assessment, trading, and voting.
         """
-        results = {}
-        
+        results: Dict[str, Any] = {}
+
         try:
             # 1. Risk Assessment
             risk_assessment = await self.assess_risk_with_thesis(**inputs)
             results['risk_assessment'] = risk_assessment
-            
+
             # 2. Trading (if risk allows)
-            if risk_assessment['level'] not in ['CRITICAL']:
+            if risk_assessment.get('level') not in ['CRITICAL']:
                 trading_results = await self.process_trades_with_thesis(**inputs)
                 results['trading'] = trading_results
             else:
                 results['trading'] = {'suspended': True, 'reason': 'Risk level too high'}
-            
+
             # 3. Voting
             vote_results = await self.prepare_vote_with_thesis(**inputs)
             results['voting'] = vote_results
-            
+
             # 4. Generate comprehensive summary
             summary_thesis = await self._generate_cycle_summary_thesis(results)
-            
+
             # Store complete cycle results
             self.smart_bus.set(
                 f'full_cycle_{int(time.time())}',
@@ -1967,24 +1971,24 @@ class InfoBusFullIntegrationMixin(
                 thesis=summary_thesis,
                 confidence=0.9
             )
-            
+
             results['cycle_thesis'] = summary_thesis
-            
+
             return results
-            
+
         except Exception as e:
             self.logger.error(f"Full cycle processing failed: {e}")
             if hasattr(self, 'error_pinpointer'):
                 self.error_pinpointer.analyze_error(e, self.__class__.__name__)
             raise
-    
+
     async def _generate_cycle_summary_thesis(self, results: Dict[str, Any]) -> str:
         """Generate summary thesis for complete cycle"""
-        
+
         risk_level = results.get('risk_assessment', {}).get('level', 'UNKNOWN')
         trading_suspended = results.get('trading', {}).get('suspended', False)
-        vote_confidence = results.get('voting', {}).get('vote', {}).get('confidence', 0.0)
-        
+        vote_confidence = results.get('voting', {}).get('vote', {}).get('confidence', 0.0) or 0.0
+
         thesis = f"""
 COMPLETE PROCESSING CYCLE SUMMARY
 =================================
@@ -1994,11 +1998,11 @@ Module: {self.__class__.__name__}
 COMPONENT RESULTS:
 - Risk Assessment: {risk_level}
 - Trading Status: {'SUSPENDED' if trading_suspended else 'ACTIVE'}
-- Vote Confidence: {vote_confidence:.1%}
+- Vote Confidence: {float(vote_confidence):.1%}
 
 INTEGRATED ANALYSIS:
-"""
-        
+""".rstrip()
+
         if risk_level == 'CRITICAL':
             thesis += """
 [ALERT] DEFENSIVE POSTURE:
@@ -2006,7 +2010,7 @@ INTEGRATED ANALYSIS:
 - Trading operations suspended
 - Focus on risk reduction and protection
 - Conservative voting approach recommended
-"""
+""".rstrip()
         elif risk_level == 'HIGH':
             thesis += """
 [WARN] CAUTIOUS APPROACH:
@@ -2014,7 +2018,7 @@ INTEGRATED ANALYSIS:
 - Limited trading activity
 - Careful position management
 - Risk-aware voting decisions
-"""
+""".rstrip()
         else:
             thesis += """
 [OK] NORMAL OPERATIONS:
@@ -2022,37 +2026,37 @@ INTEGRATED ANALYSIS:
 - Trading operations proceeding
 - Standard voting participation
 - Monitoring conditions for changes
-"""
-        
+""".rstrip()
+
         # Add performance summary
         if hasattr(self, '_get_trading_summary'):
             trading_summary = self._get_trading_summary()
             thesis += f"""
 
 PERFORMANCE METRICS:
-- Total P&L: ${trading_summary.get('total_pnl', 0):+.2f}
-- Win Rate: {trading_summary.get('win_rate', 0):.1%}
+- Total P&L: ${float(trading_summary.get('total_pnl', 0) or 0):+.2f}
+- Win Rate: {float(trading_summary.get('win_rate', 0) or 0):.1%}
 - Votes Cast: {getattr(self, '_votes_cast', 0)}
 - Health Status: {self.state_manager.performance_metrics.health_status}
-"""
-        
+""".rstrip()
+
         thesis += f"\n\nCYCLE QUALITY: {self._assess_cycle_quality(results)}"
-        
+
         return thesis.strip()
-    
+
     def _assess_cycle_quality(self, results: Dict[str, Any]) -> str:
         """Assess overall cycle processing quality"""
         issues = []
-        
+
         if results.get('trading', {}).get('suspended'):
             issues.append("trading_suspended")
-        
+
         if results.get('risk_assessment', {}).get('level') == 'CRITICAL':
             issues.append("critical_risk")
-        
+
         if results.get('voting', {}).get('circuit_breaker_open'):
             issues.append("voting_issues")
-        
+
         if not issues:
             return "EXCELLENT - All components operating normally"
         elif len(issues) == 1:
@@ -2064,47 +2068,47 @@ PERFORMANCE METRICS:
 # LEGACY COMPATIBILITY LAYER
 # ═══════════════════════════════════════════════════════════════════
 
-# Provide legacy aliases for backward compatibility
-TradingMixin = SmartInfoBusTradingMixin
-RiskMixin = SmartInfoBusRiskMixin
-VotingMixin = SmartInfoBusVotingMixin
-StateMixin = SmartInfoBusStateMixin
+# # Provide legacy aliases for backward compatibility
+# TradingMixin = SmartInfoBusTradingMixin
+# RiskMixin = SmartInfoBusRiskMixin
+# VotingMixin = SmartInfoBusVotingMixin
+# StateMixin = SmartInfoBusStateMixin
 
-class InfoBusTradingAnalysisMixin(SmartInfoBusTradingMixin):
-    """Legacy composite - maps to enhanced SmartInfoBus trading"""
-    pass
+# class InfoBusTradingAnalysisMixin(SmartInfoBusTradingMixin):
+#     """Legacy composite - maps to enhanced SmartInfoBus trading"""
+#     pass
 
-class InfoBusRiskAnalysisMixin(SmartInfoBusRiskMixin):
-    """Legacy composite - maps to enhanced SmartInfoBus risk"""
-    pass
+# class InfoBusRiskAnalysisMixin(SmartInfoBusRiskMixin):
+#     """Legacy composite - maps to enhanced SmartInfoBus risk"""
+#     pass
 
-class InfoBusVotingAnalysisMixin(SmartInfoBusVotingMixin):
-    """Legacy composite - maps to enhanced SmartInfoBus voting"""
-    pass
+# class InfoBusVotingAnalysisMixin(SmartInfoBusVotingMixin):
+#     """Legacy composite - maps to enhanced SmartInfoBus voting"""
+#     pass
 
-# ═══════════════════════════════════════════════════════════════════
-# MAIN EXPORTS
-# ═══════════════════════════════════════════════════════════════════
+# # ═══════════════════════════════════════════════════════════════════
+# # MAIN EXPORTS
+# # ═══════════════════════════════════════════════════════════════════
 
-__all__ = [
-    # Enhanced mixins
-    'SmartInfoBusTradingMixin',
-    'SmartInfoBusRiskMixin', 
-    'SmartInfoBusVotingMixin',
-    'SmartInfoBusStateMixin',
-    'InfoBusFullIntegrationMixin',
-    
-    # Utility classes
-    'MixinStateManager',
-    'MixinPerformanceMetrics',
-    'with_mixin_error_handling',
-    
-    # Legacy compatibility
-    'TradingMixin',
-    'RiskMixin',
-    'VotingMixin',
-    'StateMixin',
-    'InfoBusTradingAnalysisMixin',
-    'InfoBusRiskAnalysisMixin',
-    'InfoBusVotingAnalysisMixin'
-]
+# __all__ = [
+#     # Enhanced mixins
+#     'SmartInfoBusTradingMixin',
+#     'SmartInfoBusRiskMixin',
+#     'SmartInfoBusVotingMixin',
+#     'SmartInfoBusStateMixin',
+#     'InfoBusFullIntegrationMixin',
+
+#     # Utility classes
+#     'MixinStateManager',
+#     'MixinPerformanceMetrics',
+#     'with_mixin_error_handling',
+
+#     # Legacy compatibility
+#     'TradingMixin',
+#     'RiskMixin',
+#     'VotingMixin',
+#     'StateMixin',
+#     'InfoBusTradingAnalysisMixin',
+#     'InfoBusRiskAnalysisMixin',
+#     'InfoBusVotingAnalysisMixin'
+# ]

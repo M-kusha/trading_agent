@@ -1,40 +1,67 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/monitoring/performance_tracker.py
 # [ROCKET] Performance tracking for SmartInfoBus with plain English reports
+# v2.3 — config-driven thresholds, contract-aware helpers, bus-safe publishing
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
+
 import time
-import numpy as np
-from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
+import threading
+import json
+from typing import Dict, List, Any, Optional, TYPE_CHECKING, Callable, Deque, Tuple
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
-from dataclasses import dataclass
-import json
+from dataclasses import dataclass, asdict
+import contextlib
 
-from modules.utils.info_bus import  InfoBusManager
+# numpy is optional — degrade gracefully
+try:
+    import numpy as np  # type: ignore
+except Exception:  # pragma: no cover
+    np = None  # type: ignore
+
+# psutil is optional for memory sampling
+try:
+    import psutil  # type: ignore
+except Exception:  # pragma: no cover
+    psutil = None  # type: ignore
+
+from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import format_operator_message, RotatingLogger
 from modules.utils.system_utilities import EnglishExplainer
+
+# ConfigurationManager is optional; we fall back to sane defaults if unavailable
+try:
+    from modules.core.configuration_manager import ConfigurationManager
+except Exception:  # pragma: no cover
+    ConfigurationManager = None  # type: ignore
 
 if TYPE_CHECKING:
     from modules.core.module_system import ModuleOrchestrator
 
 
+# ─────────────────────────────────────────────────────────────
+# Data models
+# ─────────────────────────────────────────────────────────────
+
 @dataclass
 class PerformanceMetric:
-    """Single performance measurement"""
-    timestamp: float
+    """Single performance measurement."""
+    timestamp: float            # wall-clock epoch seconds
+    monotonic_ns: int           # monotonic for stable ordering
     module: str
     operation: str
     duration_ms: float
     success: bool
     error: Optional[str] = None
     memory_mb: Optional[float] = None
-    
+
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary"""
         return {
             'timestamp': self.timestamp,
+            'datetime': datetime.fromtimestamp(self.timestamp).isoformat(),
+            'monotonic_ns': self.monotonic_ns,
             'module': self.module,
             'operation': self.operation,
             'duration_ms': self.duration_ms,
@@ -46,7 +73,6 @@ class PerformanceMetric:
 
 @dataclass
 class PerformanceReport:
-    """Comprehensive performance report"""
     period_start: datetime
     period_end: datetime
     module_metrics: Dict[str, Dict[str, float]]
@@ -56,52 +82,80 @@ class PerformanceReport:
     summary: str
 
 
+# ─────────────────────────────────────────────────────────────
+# Tracker (singleton, thread-safe)
+# ─────────────────────────────────────────────────────────────
+
 class PerformanceTracker:
     """
     Tracks and analyzes system performance with plain English reporting.
-    Identifies bottlenecks and provides optimization recommendations.
+    **Singleton** to prevent duplicate SmartInfoBus subscriptions/log spam.
+    Config-driven: pulls monitoring knobs from ConfigurationManager when available.
     """
-    
+
+    _singleton: Optional["PerformanceTracker"] = None
+    _singleton_lock = threading.Lock()
+
+    # default thresholds (overridden by ConfigurationManager.get_monitoring_config())
+    _DEFAULTS = {
+        'response_time_ms': {'excellent': 50, 'good': 100, 'acceptable': 200, 'poor': 500},
+        'error_rate': {'excellent': 0.001, 'good': 0.01, 'acceptable': 0.05, 'poor': 0.10},
+        'throughput_per_min': {'excellent': 100, 'good': 50, 'acceptable': 20, 'poor': 10},
+        'trend_window': 100,
+        'anomaly_threshold': 3.0,
+        'min_ms_for_anomaly': 10.0,
+        'publish_interval_s': 15,      # bus publishing interval
+        'alert_cooldown_s': 15,        # suppress repeated alerts
+        'bus_namespace': 'perf',       # root namespace on SmartInfoBus
+        'max_metrics': 10_000,         # global ring size
+        'per_module_max': 1_000,       # per-module ring size
+    }
+
+    def __new__(cls, *args, **kwargs):
+        if cls._singleton is None:
+            with cls._singleton_lock:
+                if cls._singleton is None:
+                    cls._singleton = super().__new__(cls)
+        return cls._singleton
+
     def __init__(self, orchestrator: Optional[ModuleOrchestrator] = None):
+        # prevent re-initialization
+        if getattr(self, "_initialized", False):
+            return
+        self._initialized = True
+
+        # wiring
         self.orchestrator = orchestrator
         self.smart_bus = InfoBusManager.get_instance()
         self.explainer = EnglishExplainer()
-        
-        # Performance metrics storage
-        self.metrics: deque = deque(maxlen=10000)
-        self.module_metrics: Dict[str, deque] = defaultdict(lambda: deque(maxlen=1000))
-        
-        # Aggregated statistics
+
+        # configuration (pull from ConfigurationManager if present)
+        self._config = self._load_runtime_config()
+
+        # Thread-safety
+        self._lock = threading.RLock()
+
+        # Storage
+        self.metrics: Deque[PerformanceMetric] = deque(maxlen=int(self._config['max_metrics']))
+        self.module_metrics: Dict[str, Deque[PerformanceMetric]] = defaultdict(
+            lambda: deque(maxlen=int(self._config['per_module_max']))
+        )
+
+        # Aggregates
         self.hourly_stats: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
         self.daily_stats: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
-        
-        # Performance thresholds
+
+        # thresholds + analysis settings
         self.thresholds = {
-            'response_time_ms': {
-                'excellent': 50,
-                'good': 100,
-                'acceptable': 200,
-                'poor': 500
-            },
-            'error_rate': {
-                'excellent': 0.001,
-                'good': 0.01,
-                'acceptable': 0.05,
-                'poor': 0.1
-            },
-            'throughput_per_min': {
-                'excellent': 100,
-                'good': 50,
-                'acceptable': 20,
-                'poor': 10
-            }
+            'response_time_ms': dict(self._config['response_time_ms']),
+            'error_rate': dict(self._config['error_rate']),
+            'throughput_per_min': dict(self._config['throughput_per_min'])
         }
-        
-        # Trend analysis
-        self.trend_window = 100  # Number of samples for trend
-        self.anomaly_threshold = 3  # Standard deviations for anomaly
-        
-        # Setup logging
+        self.trend_window: int = int(self._config['trend_window'])
+        self.anomaly_threshold: float = float(self._config['anomaly_threshold'])
+        self._min_ms_for_anomaly: float = float(self._config['min_ms_for_anomaly'])
+
+        # operator logging (rotating)
         self.logger = RotatingLogger(
             name="PerformanceTracker",
             log_path="logs/monitoring/performance.log",
@@ -109,100 +163,210 @@ class PerformanceTracker:
             operator_mode=True,
             plain_english=True
         )
-        
-        # Subscribe to SmartInfoBus events
+
+        # subscriptions & cooldown anti-spam
+        self._subscribed = False
+        self._event_cooldowns: Dict[Tuple[str, str], float] = {}
+        self._event_cooldown_seconds = float(self._config['alert_cooldown_s'])
         self._subscribe_to_events()
-    
-    def record_metric(self, module: str, operation: str, duration_ms: float,
-                     success: bool = True, error: Optional[str] = None,
-                     memory_mb: Optional[float] = None):
-        """Record a performance metric"""
+
+        # background publisher to SmartInfoBus (debounced)
+        self._publisher_shutdown = False
+        self._publisher_thread = threading.Thread(
+            target=self._publisher_loop, daemon=True, name="PerfPublisher"
+        )
+        self._publisher_thread.start()
+
+    # ─────────────────────────────────────────────────────────
+    # Config
+    # ─────────────────────────────────────────────────────────
+    def _load_runtime_config(self) -> Dict[str, Any]:
+        cfg = dict(self._DEFAULTS)
+        if ConfigurationManager is not None:
+            try:
+                cm = ConfigurationManager.get_instance()
+                mon = cm.get_monitoring_config()  # new helper in upgraded CM
+                # overlay known keys (shallow merge for simple structure)
+                for k in ('response_time_ms', 'error_rate', 'throughput_per_min',
+                          'trend_window', 'anomaly_threshold', 'min_ms_for_anomaly',
+                          'publish_interval_s', 'alert_cooldown_s',
+                          'bus_namespace', 'max_metrics', 'per_module_max'):
+                    if k in mon:
+                        cfg[k] = mon[k]
+            except Exception:
+                pass
+        return cfg
+
+    # ─────────────────────────────────────────────────────────
+    # Helpers
+    # ─────────────────────────────────────────────────────────
+    def _snapshot_deque(self, dq: Deque) -> List[Any]:
+        with self._lock:
+            return list(dq)
+
+    def _snapshot_module_keys(self) -> List[str]:
+        with self._lock:
+            return list(self.module_metrics.keys())
+
+    def _safe_percentile(self, values: List[float], pct: float) -> float:
+        if not values:
+            return 0.0
+        try:
+            if np is not None:
+                return float(np.percentile(values, pct))
+        except Exception:
+            pass
+        # fallback
+        sorted_vals = sorted(values)
+        idx = int(round((pct / 100.0) * (len(sorted_vals) - 1)))
+        return float(sorted_vals[max(0, min(idx, len(sorted_vals) - 1))])
+
+    # ─────────────────────────────────────────────────────────
+    # Instrumentation helpers (zero-boilerplate)
+    # ─────────────────────────────────────────────────────────
+    @contextlib.contextmanager
+    def track(self, module: str, operation: str, *, capture_memory: bool = False):
+        """
+        Context manager to measure a code block:
+            with tracker.track("PPOAgent", "step"):
+                agent.step(obs)
+        """
+        t0 = time.perf_counter()
+        mem0 = self._memory_mb() if (capture_memory and psutil) else None
+        success = True
+        err: Optional[str] = None
+        try:
+            yield
+        except Exception as e:
+            success = False
+            err = str(e)
+            raise
+        finally:
+            dt_ms = (time.perf_counter() - t0) * 1000.0
+            mem_mb = None
+            if capture_memory and psutil:
+                mem1 = self._memory_mb()
+                if mem0 is not None and mem1 is not None:
+                    mem_mb = max(0.0, mem1 - mem0)
+            self.record_metric(module, operation, dt_ms, success=success, error=err, memory_mb=mem_mb)
+
+    def wrap(self, module: str, operation: str, *, capture_memory: bool = False) -> Callable:
+        """
+        Decorator to time a function:
+            @tracker.wrap("PPOAgent", "step")
+            def step(...): ...
+        """
+        def decorator(fn: Callable):
+            def inner(*args, **kwargs):
+                with self.track(module, operation, capture_memory=capture_memory):
+                    return fn(*args, **kwargs)
+            inner.__name__ = getattr(fn, "__name__", "wrapped")
+            inner.__doc__ = getattr(fn, "__doc__", "")
+            return inner
+        return decorator
+
+    def _memory_mb(self) -> Optional[float]:
+        try:
+            if psutil is None:
+                return None
+            proc = psutil.Process()
+            return float(proc.memory_info().rss) / (1024.0 * 1024.0)
+        except Exception:
+            return None
+
+    # ─────────────────────────────────────────────────────────
+    # Public API
+    # ─────────────────────────────────────────────────────────
+    def record_metric(
+        self,
+        module: str,
+        operation: str,
+        duration_ms: float,
+        success: bool = True,
+        error: Optional[str] = None,
+        memory_mb: Optional[float] = None
+    ):
+        """Record a metric (thread-safe, clamps small negative jitter)."""
+        try:
+            d = float(duration_ms)
+        except Exception:
+            d = 0.0
+        if -1.0 < d < 0.0:
+            d = 0.0  # clamp tiny negative jitter
+
         metric = PerformanceMetric(
             timestamp=time.time(),
-            module=module,
-            operation=operation,
-            duration_ms=duration_ms,
-            success=success,
+            monotonic_ns=time.perf_counter_ns(),
+            module=str(module),
+            operation=str(operation),
+            duration_ms=d,
+            success=bool(success),
             error=error,
             memory_mb=memory_mb
         )
-        
-        self.metrics.append(metric)
-        self.module_metrics[module].append(metric)
-        
-        # Update SmartInfoBus
-        self.smart_bus.record_module_timing(module, duration_ms)
-        
-        # Check for performance issues
+
+        with self._lock:
+            self.metrics.append(metric)
+            self.module_metrics[module].append(metric)
+
+        # Best-effort SmartInfoBus timing record (if provided by your bus)
+        try:
+            if hasattr(self.smart_bus, "record_module_timing"):
+                self.smart_bus.record_module_timing(module, d)
+        except Exception:
+            pass
+
         self._check_performance_issues(module, metric)
-        
-        # Update aggregated stats
         self._update_aggregated_stats(metric)
-    
-    def get_module_performance(self, module: str, 
-                              window_minutes: int = 60) -> Dict[str, Any]:
-        """Get performance metrics for a specific module"""
+
+    def get_module_performance(self, module: str, window_minutes: int = 60) -> Dict[str, Any]:
         cutoff = time.time() - (window_minutes * 60)
-        module_metrics = [m for m in self.module_metrics[module] 
-                         if m.timestamp > cutoff]
-        
-        if not module_metrics:
+        with self._lock:
+            module_deque = self.module_metrics.get(module, deque())
+            metrics_list = [m for m in module_deque if m.timestamp > cutoff]
+
+        if not metrics_list:
             return {
-                'avg_time_ms': 0,
-                'max_time_ms': 0,
-                'min_time_ms': 0,
-                'p95_time_ms': 0,
-                'error_rate': 0,
-                'success_count': 0,
-                'error_count': 0,
-                'throughput_per_min': 0
+                'avg_time_ms': 0.0, 'max_time_ms': 0.0, 'min_time_ms': 0.0, 'p95_time_ms': 0.0,
+                'error_rate': 0.0, 'success_count': 0, 'error_count': 0,
+                'throughput_per_min': 0.0, 'trend': 'insufficient_data'
             }
-        
-        durations = [m.duration_ms for m in module_metrics]
-        errors = sum(1 for m in module_metrics if not m.success)
-        total = len(module_metrics)
-        
-        # Calculate time range in minutes
-        time_range = (module_metrics[-1].timestamp - module_metrics[0].timestamp) / 60
-        throughput = total / max(time_range, 1)
-        
+
+        durations = [m.duration_ms for m in metrics_list]
+        total = len(metrics_list)
+        errors = sum(1 for m in metrics_list if not m.success)
+        # use actual time span to compute throughput; guard against tiny windows
+        span_min = max((metrics_list[-1].timestamp - metrics_list[0].timestamp) / 60.0, 1.0)
+        throughput = total / span_min
+
         return {
-            'avg_time_ms': np.mean(durations),
+            'avg_time_ms': (float(np.mean(durations)) if (np and durations) else (sum(durations)/len(durations))),
             'max_time_ms': max(durations),
             'min_time_ms': min(durations),
-            'p95_time_ms': np.percentile(durations, 95),
-            'error_rate': errors / total,
+            'p95_time_ms': self._safe_percentile(durations, 95),
+            'error_rate': (errors / total),
             'success_count': total - errors,
             'error_count': errors,
             'throughput_per_min': throughput,
             'trend': self._calculate_trend(durations)
         }
-    
+
     def generate_performance_report(self, period_hours: int = 24) -> PerformanceReport:
-        """Generate comprehensive performance report"""
         period_start = datetime.now() - timedelta(hours=period_hours)
         period_end = datetime.now()
-        cutoff = period_start.timestamp()
-        
-        # Collect metrics for all modules
-        module_metrics = {}
-        for module in self.module_metrics:
+        modules = self._snapshot_module_keys()
+
+        module_metrics: Dict[str, Dict[str, float]] = {}
+        for module in modules:
             metrics = self.get_module_performance(module, period_hours * 60)
-            if metrics['success_count'] > 0:  # Only include active modules
+            if metrics['success_count'] > 0 or metrics['error_count'] > 0:
                 module_metrics[module] = metrics
-        
-        # Identify bottlenecks
+
         bottlenecks = self._identify_bottlenecks(module_metrics)
-        
-        # Calculate trends
         trends = self._analyze_trends(module_metrics)
-        
-        # Generate recommendations
         recommendations = self._generate_recommendations(module_metrics, bottlenecks)
-        
-        # Create summary
         summary = self._create_performance_summary(module_metrics, period_hours)
-        
+
         return PerformanceReport(
             period_start=period_start,
             period_end=period_end,
@@ -212,12 +376,9 @@ class PerformanceTracker:
             recommendations=recommendations,
             summary=summary
         )
-    
+
     def get_plain_english_report(self, period_hours: int = 24) -> str:
-        """Generate plain English performance report"""
         report = self.generate_performance_report(period_hours)
-        
-        # Use explainer to format the report
         return self.explainer.explain_performance(
             module_name="System Overall",
             metrics={
@@ -229,17 +390,91 @@ class PerformanceTracker:
             },
             period=f"Last {period_hours} hours"
         ) + self._format_detailed_findings(report)
-    
+
+    def export_metrics(self, filepath: str, period_hours: int = 24):
+        cutoff = time.time() - (period_hours * 3600)
+        with self._lock:
+            metrics_snapshot = [m.to_dict() for m in self.metrics if m.timestamp > cutoff]
+
+        metrics_data = {
+            'export_time': datetime.now().isoformat(),
+            'period_hours': period_hours,
+            'metrics': metrics_snapshot,
+            'summary': asdict(self.generate_performance_report(period_hours))
+        }
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(metrics_data, f, indent=2, ensure_ascii=False, default=str)
+
+    def get_realtime_dashboard_data(self) -> Dict[str, Any]:
+        cutoff = time.time() - 300  # 5 minutes
+        with self._lock:
+            recent_metrics = [m for m in self.metrics if m.timestamp > cutoff]
+            module_keys = list(self.module_metrics.keys())
+            module_current: Dict[str, Any] = {}
+            for module in module_keys:
+                dq = self.module_metrics[module]
+                module_recent = [m for m in dq if m.timestamp > cutoff]
+                if module_recent:
+                    durations = [m.duration_ms for m in module_recent]
+                    module_current[module] = {
+                        'avg_time': (float(np.mean(durations)) if (np and durations) else (sum(durations)/len(durations) if durations else 0.0)),
+                        'count': len(module_recent),
+                        'errors': sum(1 for m in module_recent if not m.success)
+                    }
+
+        if recent_metrics:
+            current_throughput = len(recent_metrics) / 5.0
+            current_error_rate = sum(1 for m in recent_metrics if not m.success) / len(recent_metrics)
+            avg_list = [m.duration_ms for m in recent_metrics]
+            current_avg_time = (float(np.mean(avg_list)) if (np and avg_list) else (sum(avg_list)/len(avg_list) if avg_list else 0.0))
+        else:
+            current_throughput = 0.0
+            current_error_rate = 0.0
+            current_avg_time = 0.0
+
+        recent_errors = [
+            {'module': m.module, 'operation': m.operation, 'error': m.error or '<no details>', 'timestamp': m.timestamp}
+            for m in recent_metrics if not m.success
+        ][-10:]
+
+        return {
+            'timestamp': time.time(),
+            'current_throughput': current_throughput,
+            'current_error_rate': current_error_rate,
+            'current_avg_time': current_avg_time,
+            'module_performance': module_current,
+            'recent_errors': recent_errors
+        }
+
+    # ─────────────────────────────────────────────────────────
+    # SmartInfoBus subscriptions (one-time + cooldown)
+    # ─────────────────────────────────────────────────────────
     def _subscribe_to_events(self):
-        """Subscribe to SmartInfoBus performance events"""
-        self.smart_bus.subscribe('performance_warning', self._handle_performance_warning)
-        self.smart_bus.subscribe('module_disabled', self._handle_module_disabled)
-    
+        if self._subscribed:
+            return
+        try:
+            self.smart_bus.subscribe('performance_warning', self._handle_performance_warning)
+            self.smart_bus.subscribe('module_disabled', self._handle_module_disabled)
+            self._subscribed = True
+        except Exception:
+            # Bus might not be ready; avoid crashing
+            pass
+
+    def _cooldown_allows(self, key: Tuple[str, str]) -> bool:
+        now = time.time()
+        last = self._event_cooldowns.get(key, 0.0)
+        if now - last >= self._event_cooldown_seconds:
+            self._event_cooldowns[key] = now
+            return True
+        return False
+
     def _handle_performance_warning(self, data: Dict[str, Any]):
-        """Handle performance warning from SmartInfoBus"""
-        module = data.get('module', 'Unknown')
-        avg_latency = data.get('avg_latency_ms', 0)
-        
+        module = str(data.get('module', 'Unknown'))
+        avg_latency = float(data.get('avg_latency_ms', 0.0))
+        key = ('performance_warning', module)
+        if not self._cooldown_allows(key):
+            return
         self.logger.warning(
             format_operator_message(
                 "[WARN]", "PERFORMANCE WARNING",
@@ -248,12 +483,13 @@ class PerformanceTracker:
                 context="performance"
             )
         )
-    
+
     def _handle_module_disabled(self, data: Dict[str, Any]):
-        """Handle module disabled event"""
-        module = data.get('module', 'Unknown')
-        failures = data.get('failures', 0)
-        
+        module = str(data.get('module', 'Unknown'))
+        failures = int(data.get('failures', 0))
+        key = ('module_disabled', module)
+        if not self._cooldown_allows(key):
+            return
         self.logger.error(
             format_operator_message(
                 "🚫", "MODULE DISABLED",
@@ -262,345 +498,273 @@ class PerformanceTracker:
                 context="circuit_breaker"
             )
         )
-    
+
+    # ─────────────────────────────────────────────────────────
+    # Internals: analysis & aggregation
+    # ─────────────────────────────────────────────────────────
     def _check_performance_issues(self, module: str, metric: PerformanceMetric):
-        """Check for performance issues in real-time"""
-        # Check response time
         if metric.duration_ms > self.thresholds['response_time_ms']['poor']:
             self.logger.warning(
-                f"Slow operation: {module}.{metric.operation} "
-                f"took {metric.duration_ms:.0f}ms"
+                f"Slow operation: {module}.{metric.operation} took {metric.duration_ms:.0f}ms"
             )
-        
-        # Check for errors
+
         if not metric.success:
             self.logger.error(
-                f"Operation failed: {module}.{metric.operation} - {metric.error}"
+                f"Operation failed: {module}.{metric.operation} - {metric.error or '<no error details>'}"
             )
-        
-        # Check for anomalies
+
         if self._is_anomaly(module, metric.duration_ms):
             self.logger.warning(
-                f"Performance anomaly detected: {module}.{metric.operation} "
-                f"({metric.duration_ms:.0f}ms is unusual)"
+                f"Performance anomaly detected: {module}.{metric.operation} ({metric.duration_ms:.0f}ms is unusual)"
             )
-    
+
     def _is_anomaly(self, module: str, duration_ms: float) -> bool:
-        """Detect performance anomalies"""
-        recent = [m.duration_ms for m in list(self.module_metrics[module])[-100:]]
-        
+        # ignore ultra-fast ops to avoid noisy spam
+        if duration_ms < self._min_ms_for_anomaly:
+            return False
+        with self._lock:
+            recent = [m.duration_ms for m in list(self.module_metrics[module])[-100:]]
         if len(recent) < 10:
             return False
-        
-        mean = np.mean(recent[:-1])  # Exclude current
-        std = np.std(recent[:-1])
-        
-        if std == 0:
+        baseline = recent[:-1] if len(recent) > 1 else recent
+        if not baseline:
             return False
-        
-        z_score = abs((duration_ms - mean) / std)
-        return bool(z_score > self.anomaly_threshold)
-    
+        # stats
+        if np is not None:
+            mean = float(np.mean(baseline))
+            std = float(np.std(baseline))
+        else:
+            mean = sum(baseline) / len(baseline)
+            var = sum((x - mean) ** 2 for x in baseline) / max(1, len(baseline))
+            std = var ** 0.5
+        if std == 0.0:
+            return False
+        z = abs((duration_ms - mean) / std)
+        return bool(z > self.anomaly_threshold)
+
     def _update_aggregated_stats(self, metric: PerformanceMetric):
-        """Update hourly and daily aggregated statistics"""
-        # Get hour and day keys
         dt = datetime.fromtimestamp(metric.timestamp)
         hour_key = dt.strftime('%Y-%m-%d %H:00')
         day_key = dt.strftime('%Y-%m-%d')
-        
-        # Update hourly stats
-        if hour_key not in self.hourly_stats[metric.module]:
-            self.hourly_stats[metric.module][hour_key] = {
-                'count': 0,
-                'errors': 0,
-                'total_time': 0,
-                'max_time': 0
-            }
-        
-        stats = self.hourly_stats[metric.module][hour_key]
-        stats['count'] += 1
-        stats['total_time'] += metric.duration_ms
-        stats['max_time'] = max(stats['max_time'], metric.duration_ms)
-        if not metric.success:
-            stats['errors'] += 1
-    
+        with self._lock:
+            h = self.hourly_stats[metric.module].setdefault(
+                hour_key, {'count': 0, 'errors': 0, 'total_time': 0.0, 'max_time': 0.0}
+            )
+            h['count'] += 1
+            h['total_time'] += metric.duration_ms
+            h['max_time'] = max(h['max_time'], metric.duration_ms)
+            if not metric.success:
+                h['errors'] += 1
+
+            d = self.daily_stats[metric.module].setdefault(
+                day_key, {'count': 0, 'errors': 0, 'total_time': 0.0, 'max_time': 0.0}
+            )
+            d['count'] += 1
+            d['total_time'] += metric.duration_ms
+            d['max_time'] = max(d['max_time'], metric.duration_ms)
+            if not metric.success:
+                d['errors'] += 1
+
     def _identify_bottlenecks(self, module_metrics: Dict[str, Dict[str, float]]) -> List[str]:
-        """Identify performance bottlenecks"""
-        bottlenecks = []
-        
-        # Sort by average response time
+        if not module_metrics:
+            return []
         sorted_modules = sorted(
             module_metrics.items(),
-            key=lambda x: x[1]['avg_time_ms'],
+            key=lambda x: x[1].get('avg_time_ms', 0.0),
             reverse=True
         )
-        
-        for module, metrics in sorted_modules:
-            # Check various bottleneck conditions
-            if metrics['avg_time_ms'] > self.thresholds['response_time_ms']['acceptable']:
-                bottlenecks.append(
-                    f"{module}: Slow average response time ({metrics['avg_time_ms']:.0f}ms)"
-                )
-            
-            if metrics['error_rate'] > self.thresholds['error_rate']['acceptable']:
-                bottlenecks.append(
-                    f"{module}: High error rate ({metrics['error_rate']:.1%})"
-                )
-            
-            if metrics['max_time_ms'] > self.thresholds['response_time_ms']['poor'] * 2:
-                bottlenecks.append(
-                    f"{module}: Extreme outliers (max {metrics['max_time_ms']:.0f}ms)"
-                )
-        
-        return bottlenecks[:10]  # Top 10 bottlenecks
-    
+        out: List[str] = []
+        for module, m in sorted_modules:
+            avg_ms = m.get('avg_time_ms', 0.0)
+            err_rate = m.get('error_rate', 0.0)
+            max_ms = m.get('max_time_ms', 0.0)
+            if avg_ms > self.thresholds['response_time_ms']['acceptable']:
+                out.append(f"{module}: Slow average response time ({avg_ms:.0f}ms)")
+            if err_rate > self.thresholds['error_rate']['acceptable']:
+                out.append(f"{module}: High error rate ({err_rate:.1%})")
+            if max_ms > self.thresholds['response_time_ms']['poor'] * 2:
+                out.append(f"{module}: Extreme outliers (max {max_ms:.0f}ms)")
+        return out[:10]
+
     def _analyze_trends(self, module_metrics: Dict[str, Dict[str, float]]) -> Dict[str, str]:
-        """Analyze performance trends"""
-        trends = {}
-        
-        for module, metrics in module_metrics.items():
-            trend = metrics.get('trend', 'stable')
-            if trend != 'stable':
-                trends[module] = trend
-        
+        trends: Dict[str, str] = {}
+        for module, m in module_metrics.items():
+            trend = m.get('trend', 'stable')
+            if trend and trend != 'stable':
+                trends[module] = str(trend)
         return trends
-    
+
     def _calculate_trend(self, values: List[float]) -> str:
-        """Calculate trend direction"""
         if len(values) < 10:
             return 'insufficient_data'
-        
-        # Use linear regression on recent values
-        x = np.arange(len(values))
-        slope, _ = np.polyfit(x, values, 1)
-        
-        # Calculate percentage change
-        mean_value = np.mean(values)
-        if mean_value == 0:
+        window = values[-self.trend_window:] if len(values) > self.trend_window else values
+        x = list(range(len(window)))
+        try:
+            if np is not None:
+                slope, _ = np.polyfit(np.arange(len(window), dtype=float), window, 1)
+            else:
+                # simple least-squares slope without numpy
+                n = float(len(window))
+                sum_x = sum(x)
+                sum_y = sum(window)
+                sum_xx = sum(i * i for i in x)
+                sum_xy = sum(i * y for i, y in zip(x, window))
+                denom = (n * sum_xx - sum_x * sum_x) or 1.0
+                slope = (n * sum_xy - sum_x * sum_y) / denom
+        except Exception:
             return 'stable'
-        
-        change_per_sample = slope / mean_value
-        
-        if change_per_sample > 0.01:  # 1% increase per sample
+        mean_val = (float(np.mean(window)) if (np and window) else (sum(window)/len(window)))
+        if mean_val == 0.0:
+            return 'stable'
+        change = slope / mean_val
+        if change > 0.01:
             return 'degrading'
-        elif change_per_sample < -0.01:  # 1% decrease per sample
+        elif change < -0.01:
             return 'improving'
-        else:
-            return 'stable'
-    
-    def _generate_recommendations(self, module_metrics: Dict[str, Dict[str, float]], 
-                                bottlenecks: List[str]) -> List[str]:
-        """Generate performance improvement recommendations"""
-        recommendations = []
-        
-        # Analyze overall system performance
+        return 'stable'
+
+    def _generate_recommendations(self, module_metrics: Dict[str, Dict[str, float]], bottlenecks: List[str]) -> List[str]:
+        recs: List[str] = []
         avg_response = self._calculate_system_average(module_metrics)
-        error_rate = self._calculate_system_error_rate(module_metrics)
-        
+        err_rate = self._calculate_system_error_rate(module_metrics)
+
         if avg_response > self.thresholds['response_time_ms']['good']:
-            recommendations.append(
-                "System response times are higher than optimal. "
-                "Consider profiling slow modules and optimizing algorithms."
-            )
-        
-        if error_rate > self.thresholds['error_rate']['good']:
-            recommendations.append(
-                f"Error rate ({error_rate:.1%}) exceeds target. "
-                "Investigate error patterns and add better error handling."
-            )
-        
-        # Module-specific recommendations
-        for module, metrics in module_metrics.items():
-            if metrics['avg_time_ms'] > self.thresholds['response_time_ms']['acceptable']:
-                recommendations.append(
-                    f"Optimize {module}: Consider caching, parallel processing, "
-                    f"or algorithm improvements (currently {metrics['avg_time_ms']:.0f}ms avg)"
-                )
-            
-            if metrics['error_rate'] > 0.1:
-                recommendations.append(
-                    f"Fix {module}: Critical error rate {metrics['error_rate']:.1%} "
-                    "indicates serious issues"
-                )
-        
-        # Bottleneck-specific recommendations
+            recs.append("System response times are higher than optimal. Profile slow modules and optimize algorithms.")
+        if err_rate > self.thresholds['error_rate']['good']:
+            recs.append(f"Error rate ({err_rate:.1%}) exceeds target. Investigate error patterns and add better handling.")
+
+        for module, m in module_metrics.items():
+            if m['avg_time_ms'] > self.thresholds['response_time_ms']['acceptable']:
+                recs.append(f"Optimize {module}: consider caching/parallelism/algorithmic improvements (~{m['avg_time_ms']:.0f}ms avg).")
+            if m['error_rate'] > 0.10:
+                recs.append(f"Fix {module}: critical error rate {m['error_rate']:.1%} indicates serious issues.")
+
         if len(bottlenecks) > 5:
-            recommendations.append(
-                "Multiple bottlenecks detected. Consider architectural review "
-                "to improve system design."
-            )
-        
-        return recommendations[:10]  # Top 10 recommendations
-    
-    def _create_performance_summary(self, module_metrics: Dict[str, Dict[str, float]], 
-                                  period_hours: int) -> str:
-        """Create performance summary"""
-        total_operations = sum(
-            m['success_count'] + m['error_count'] 
-            for m in module_metrics.values()
-        )
-        
+            recs.append("Multiple bottlenecks detected. Consider an architectural review to improve system design.")
+
+        return recs[:10]
+
+    def _create_performance_summary(self, module_metrics: Dict[str, Dict[str, float]], period_hours: int) -> str:
+        total_ops = sum(m.get('success_count', 0) + m.get('error_count', 0) for m in module_metrics.values())
         avg_response = self._calculate_system_average(module_metrics)
-        error_rate = self._calculate_system_error_rate(module_metrics)
-        
-        # Determine overall status
-        if error_rate > 0.1 or avg_response > 500:
+        err_rate = self._calculate_system_error_rate(module_metrics)
+
+        if err_rate > 0.10 or avg_response > 500:
             status = "Critical - Immediate attention required"
-        elif error_rate > 0.05 or avg_response > 200:
+        elif err_rate > 0.05 or avg_response > 200:
             status = "Degraded - Performance issues detected"
-        elif error_rate > 0.01 or avg_response > 100:
+        elif err_rate > 0.01 or avg_response > 100:
             status = "Fair - Room for improvement"
         else:
             status = "Good - System performing well"
-        
-        return f"""
-Performance Summary ({period_hours} hours)
-Status: {status}
-Total Operations: {total_operations:,}
-Active Modules: {len(module_metrics)}
-Average Response Time: {avg_response:.1f}ms
-System Error Rate: {error_rate:.2%}
-"""
-    
+
+        return (
+            f"\nPerformance Summary ({period_hours} hours)\n"
+            f"Status: {status}\n"
+            f"Total Operations: {total_ops:,}\n"
+            f"Active Modules: {len(module_metrics)}\n"
+            f"Average Response Time: {avg_response:.1f}ms\n"
+            f"System Error Rate: {err_rate:.2%}\n"
+        )
+
     def _calculate_system_average(self, module_metrics: Dict[str, Dict[str, float]]) -> float:
-        """Calculate system-wide average response time"""
-        total_time = sum(
-            m['avg_time_ms'] * (m['success_count'] + m['error_count'])
-            for m in module_metrics.values()
-        )
-        total_ops = sum(
-            m['success_count'] + m['error_count']
-            for m in module_metrics.values()
-        )
-        
-        return total_time / max(total_ops, 1)
-    
+        total_time = 0.0
+        total_ops = 0
+        for m in module_metrics.values():
+            ops = m.get('success_count', 0) + m.get('error_count', 0)
+            total_time += m.get('avg_time_ms', 0.0) * ops
+            total_ops += ops
+        return (total_time / total_ops) if total_ops > 0 else 0.0
+
     def _calculate_system_error_rate(self, module_metrics: Dict[str, Dict[str, float]]) -> float:
-        """Calculate system-wide error rate"""
-        total_errors = sum(m['error_count'] for m in module_metrics.values())
-        total_ops = sum(
-            m['success_count'] + m['error_count']
-            for m in module_metrics.values()
-        )
-        
-        return total_errors / max(total_ops, 1)
-    
+        total_errors = sum(m.get('error_count', 0) for m in module_metrics.values())
+        total_ops = sum(m.get('success_count', 0) + m.get('error_count', 0) for m in module_metrics.values())
+        return (total_errors / total_ops) if total_ops > 0 else 0.0
+
     def _calculate_system_throughput(self, module_metrics: Dict[str, Dict[str, float]]) -> float:
-        """Calculate system-wide throughput"""
-        return sum(m['throughput_per_min'] for m in module_metrics.values())
-    
+        return float(sum(m.get('throughput_per_min', 0.0) for m in module_metrics.values()))
+
     def _format_detailed_findings(self, report: PerformanceReport) -> str:
-        """Format detailed findings section"""
-        lines = [
-            "\n\nDETAILED FINDINGS:",
-            "=" * 50
+        lines = ["\n\nDETAILED FINDINGS:", "=" * 50]
+        fastest = sorted(report.module_metrics.items(), key=lambda x: x[1].get('avg_time_ms', 0.0))
+        if fastest:
+            lines += ["\nFastest Modules:", "-" * 20]
+            for module, m in fastest[:3]:
+                lines.append(f"• {module}: {m.get('avg_time_ms', 0.0):.1f}ms average")
+
+        problems = [
+            (mod, m) for mod, m in report.module_metrics.items()
+            if m.get('error_rate', 0.0) > 0.05 or m.get('avg_time_ms', 0.0) > 200.0
         ]
-        
-        # Top performers
-        sorted_by_speed = sorted(
-            report.module_metrics.items(),
-            key=lambda x: x[1]['avg_time_ms']
-        )
-        
-        if sorted_by_speed:
-            lines.extend([
-                "\nFastest Modules:",
-                "-" * 20
-            ])
-            for module, metrics in sorted_by_speed[:3]:
-                lines.append(
-                    f"• {module}: {metrics['avg_time_ms']:.1f}ms average"
-                )
-        
-        # Problem modules
-        problem_modules = [
-            (m, metrics) for m, metrics in report.module_metrics.items()
-            if metrics['error_rate'] > 0.05 or metrics['avg_time_ms'] > 200
-        ]
-        
-        if problem_modules:
-            lines.extend([
-                "\nModules Needing Attention:",
-                "-" * 30
-            ])
-            for module, metrics in problem_modules:
+        if problems:
+            lines += ["\nModules Needing Attention:", "-" * 30]
+            for module, m in problems:
                 issues = []
-                if metrics['error_rate'] > 0.05:
-                    issues.append(f"{metrics['error_rate']:.1%} errors")
-                if metrics['avg_time_ms'] > 200:
-                    issues.append(f"{metrics['avg_time_ms']:.0f}ms avg response")
+                if m.get('error_rate', 0.0) > 0.05:
+                    issues.append(f"{m['error_rate']:.1%} errors")
+                if m.get('avg_time_ms', 0.0) > 200.0:
+                    issues.append(f"{m['avg_time_ms']:.0f}ms avg response")
                 lines.append(f"• {module}: {', '.join(issues)}")
-        
-        # Trends
+
         if report.trends:
-            lines.extend([
-                "\nPerformance Trends:",
-                "-" * 20
-            ])
+            lines += ["\nPerformance Trends:", "-" * 20]
             for module, trend in report.trends.items():
-                trend_symbol = "↗" if trend == "improving" else "↘" if trend == "degrading" else "→"
-                lines.append(f"• {module}: {trend} {trend_symbol}")
-        
+                symbol = "↗" if trend == "improving" else "↘" if trend == "degrading" else "→"
+                lines.append(f"• {module}: {trend} {symbol}")
         return "\n".join(lines)
-    
-    def export_metrics(self, filepath: str, period_hours: int = 24):
-        """Export performance metrics for analysis"""
-        cutoff = time.time() - (period_hours * 3600)
-        
-        metrics_data = {
-            'export_time': datetime.now().isoformat(),
-            'period_hours': period_hours,
-            'metrics': [
-                m.to_dict() for m in self.metrics 
-                if m.timestamp > cutoff
-            ],
-            'summary': self.generate_performance_report(period_hours).__dict__
-        }
-        
-        with open(filepath, 'w') as f:
-            json.dump(metrics_data, f, indent=2, default=str)
-    
-    def get_realtime_dashboard_data(self) -> Dict[str, Any]:
-        """Get data for real-time performance dashboard"""
-        # Last 5 minutes of data
-        cutoff = time.time() - 300
-        recent_metrics = [m for m in self.metrics if m.timestamp > cutoff]
-        
-        # Calculate real-time stats
-        if recent_metrics:
-            current_throughput = len(recent_metrics) / 5  # per minute
-            current_error_rate = sum(1 for m in recent_metrics if not m.success) / len(recent_metrics)
-            current_avg_time = np.mean([m.duration_ms for m in recent_metrics])
-        else:
-            current_throughput = 0
-            current_error_rate = 0
-            current_avg_time = 0
-        
-        # Module-specific current performance
-        module_current = {}
-        for module in self.module_metrics:
-            module_recent = [m for m in self.module_metrics[module] if m.timestamp > cutoff]
-            if module_recent:
-                module_current[module] = {
-                    'avg_time': np.mean([m.duration_ms for m in module_recent]),
-                    'count': len(module_recent),
-                    'errors': sum(1 for m in module_recent if not m.success)
-                }
-        
-        return {
-            'timestamp': time.time(),
-            'current_throughput': current_throughput,
-            'current_error_rate': current_error_rate,
-            'current_avg_time': current_avg_time,
-            'module_performance': module_current,
-            'recent_errors': [
-                {
-                    'module': m.module,
-                    'operation': m.operation,
-                    'error': m.error,
-                    'timestamp': m.timestamp
-                }
-                for m in recent_metrics 
-                if not m.success
-            ][-10:]  # Last 10 errors
-        }
+
+    # ─────────────────────────────────────────────────────────
+    # SmartInfoBus publisher (debounced)
+    # ─────────────────────────────────────────────────────────
+    def _publisher_loop(self):
+        ns = str(self._config.get('bus_namespace', 'perf')).strip('/')  # e.g., 'perf'
+        interval = max(5, int(self._config.get('publish_interval_s', 15)))
+        while not self._publisher_shutdown:
+            try:
+                dashboard = self.get_realtime_dashboard_data()
+                # Top-level summary
+                self.smart_bus.set(
+                    f"{ns}/summary",
+                    {
+                        'timestamp': dashboard['timestamp'],
+                        'throughput_per_min': dashboard['current_throughput'],
+                        'error_rate': dashboard['current_error_rate'],
+                        'avg_time_ms': dashboard['current_avg_time'],
+                    },
+                    module="PerformanceTracker",
+                    thesis="Realtime performance summary"
+                )
+                # Per-module snapshots (lightweight)
+                per_mod = dashboard.get('module_performance', {})
+                for mod, m in list(per_mod.items())[:50]:  # cap fanout
+                    self.smart_bus.set(
+                        f"{ns}/modules/{mod}",
+                        m,
+                        module="PerformanceTracker",
+                        thesis=f"Realtime performance for {mod}"
+                    )
+                # Recent errors list
+                recent_errors = dashboard.get('recent_errors', [])
+                if recent_errors:
+                    self.smart_bus.set(
+                        f"{ns}/recent_errors",
+                        recent_errors[-10:],
+                        module="PerformanceTracker",
+                        thesis="Recent performance errors"
+                    )
+            except Exception:
+                # never let bus issues crash the publisher
+                pass
+            time.sleep(interval)
+
+    # ─────────────────────────────────────────────────────────
+    # Lifecycle
+    # ─────────────────────────────────────────────────────────
+    def shutdown(self):
+        """Graceful shutdown for publisher thread."""
+        self._publisher_shutdown = True
+        try:
+            if self._publisher_thread.is_alive():
+                self._publisher_thread.join(timeout=1.0)
+        except Exception:
+            pass

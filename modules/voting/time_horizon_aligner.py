@@ -1,5 +1,5 @@
 """
-🕐 Enhanced Time Horizon Aligner with SmartInfoBus Integration v3.0
+🕐 Enhanced Time Horizon Aligner with SmartInfoBus Integration v3.1
 Advanced time-based weight scaling for voting committees with market adaptation
 """
 
@@ -25,7 +25,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
 
 @module(
     name="TimeHorizonAligner",
-    version="3.0.0",
+    version="3.1.0",
     category="voting",
     provides=[
         "aligned_weights", "horizon_distances", "horizon_multipliers", "regime_adjustments",
@@ -34,61 +34,51 @@ from modules.monitoring.performance_tracker import PerformanceTracker
     ],
     requires=[
         "market_regime", "session_type", "volatility_data", "market_context"
-        # Removed "voting_weights", "time_of_day", "performance_feedback", "member_confidences" to break circular deps
+        # optional: voting_weights, time_of_day, performance_feedback, member_confidences, recent_trades, expert_performance
     ],
     description="Advanced time-based weight scaling for voting committees with market adaptation",
     thesis_required=True,
     health_monitoring=True,
     performance_tracking=True,
     error_handling=True,
-    timeout_ms=50,
+    timeout_ms=80,
     priority=4,
     explainable=True,
     hot_reload=True
 )
 class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    🕐 PRODUCTION-GRADE Time Horizon Aligner v3.0
-    
-    Advanced time-based weight scaling system with:
-    - Multi-dimensional horizon analysis across short, medium, and long-term perspectives
-    - Adaptive market regime adjustments with volatility-aware scaling
-    - Session-based cyclical pattern recognition and optimization
-    - Performance feedback integration with expert contribution tracking
-    - SmartInfoBus zero-wiring architecture with comprehensive analytics
+    🕐 PRODUCTION-GRADE Time Horizon Aligner v3.1
     """
 
+    # ------------------------------ INIT ------------------------------
     def _initialize(self):
-        """Initialize advanced time horizon alignment systems"""
-        # Initialize base mixins
+        # mixins
         self._initialize_trading_state()
         self._initialize_state_management()
         self._initialize_advanced_systems()
-        
-        # Core horizon configuration
+
+        # core horizon config
         default_horizons = [1, 3, 5, 10, 15, 30, 60, 120, 240]
-        self.horizons = np.array(
-            self.config.get('horizons', default_horizons), 
-            dtype=np.float32
-        )
-        self.adaptive_scaling = self.config.get('adaptive_scaling', True)
-        self.regime_awareness = self.config.get('regime_awareness', True)
-        self.performance_feedback = self.config.get('performance_feedback', True)
-        self.debug = self.config.get('debug', False)
-        
-        # Time tracking and clock management
+        self.horizons = np.array(self.config.get('horizons', default_horizons), dtype=np.float32)
+        self.adaptive_scaling = bool(self.config.get('adaptive_scaling', True))
+        self.regime_awareness = bool(self.config.get('regime_awareness', True))
+        self.performance_feedback = bool(self.config.get('performance_feedback', True))
+        self.debug = bool(self.config.get('debug', False))
+
+        # time & session
         self.clock = 0
         self.session_start = 0
         self.last_alignment_time = datetime.datetime.now()
-        
-        # Core alignment state
+
+        # alignment state
         self.current_distances = np.ones_like(self.horizons)
         self.base_distances = np.ones_like(self.horizons)
         self.adaptive_multipliers = np.ones_like(self.horizons)
         self.performance_multipliers = np.ones_like(self.horizons)
         self.cyclical_adjustments = np.ones_like(self.horizons)
-        
-        # Advanced market adaptation
+
+        # regime multipliers
         self.regime_multipliers = {
             'trending': np.ones_like(self.horizons),
             'volatile': np.ones_like(self.horizons),
@@ -98,36 +88,25 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'reversal': np.ones_like(self.horizons),
             'unknown': np.ones_like(self.horizons)
         }
-        
-        # Horizon performance tracking with enhanced analytics
-        self.horizon_performance = defaultdict(lambda: {
-            'total_weight': 0.0,
-            'successful_weight': 0.0,
-            'performance_score': 0.5,
-            'recent_scores': deque(maxlen=30),
-            'effectiveness_ratio': 0.5,
-            'consistency_score': 0.5,
-            'adaptation_count': 0,
-            'last_update': datetime.datetime.now().isoformat()
-        })
-        
-        # Session and cyclical intelligence
+
+        # session patterns (includes 'overlap')
         self.session_patterns = {
             'american': np.ones_like(self.horizons),
             'european': np.ones_like(self.horizons),
             'asian': np.ones_like(self.horizons),
             'rollover': np.ones_like(self.horizons),
             'weekend': np.ones_like(self.horizons),
+            'overlap': np.ones_like(self.horizons),
             'unknown': np.ones_like(self.horizons)
         }
-        
-        # Market state awareness
+
+        # market state
         self.current_regime = 'unknown'
         self.current_session = 'unknown'
         self.current_volatility = 0.02
         self.volatility_history = deque(maxlen=50)
-        
-        # Advanced alignment intelligence
+
+        # intelligence
         self.alignment_intelligence = {
             'learning_rate': 0.12,
             'adaptation_threshold': 0.15,
@@ -136,25 +115,37 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'session_memory': 0.85,
             'volatility_adaptation': 0.7,
             'horizon_decay': 0.95,
-            'performance_momentum': 0.9
+            'performance_momentum': 0.9,
+            'impact_ema_beta': 0.9  # <- for avg_alignment_impact smoothing
         }
-        
-        # Quality and effectiveness metrics
+
+        # quality
         self.alignment_quality = {
             'effectiveness': 0.5,
             'consistency': 0.5,
             'adaptability': 0.5,
             'regime_alignment': 0.5,
             'session_optimization': 0.5,
-            'performance_correlation': 0.5
+            'performance_correlation': 0.5,
+            'overall_quality': 0.5  # <- tracked explicitly
         }
-        
-        # Comprehensive tracking
+
+        # tracking
         self.alignment_history = deque(maxlen=200)
         self.adaptation_events = deque(maxlen=100)
         self.performance_history = deque(maxlen=150)
-        
-        # Statistics and analytics
+        self.horizon_performance = deque(maxlen=100)
+
+        # volatility adaptation bands
+        self.volatility_adaptation = {
+            'extreme': {'horizon_bias': 'short', 'multiplier_range': (0.3, 1.8)},
+            'high': {'horizon_bias': 'short', 'multiplier_range': (0.5, 1.6)},
+            'medium': {'horizon_bias': 'balanced', 'multiplier_range': (0.7, 1.4)},
+            'low': {'horizon_bias': 'long', 'multiplier_range': (0.8, 1.3)},
+            'very_low': {'horizon_bias': 'long', 'multiplier_range': (0.9, 1.2)}
+        }
+
+        # stats
         self.alignment_stats = {
             'total_alignments': 0,
             'significant_adaptations': 0,
@@ -166,30 +157,20 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'adaptation_accuracy': 0.5,
             'session_start_time': datetime.datetime.now().isoformat()
         }
-        
-        # Volatility and market condition adaptation
-        self.volatility_adaptation = {
-            'extreme': {'horizon_bias': 'short', 'multiplier_range': (0.3, 1.8)},
-            'high': {'horizon_bias': 'short', 'multiplier_range': (0.5, 1.6)},
-            'medium': {'horizon_bias': 'balanced', 'multiplier_range': (0.7, 1.4)},
-            'low': {'horizon_bias': 'long', 'multiplier_range': (0.8, 1.3)},
-            'very_low': {'horizon_bias': 'long', 'multiplier_range': (0.9, 1.2)}
-        }
-        
-        # Circuit breaker and error handling
-        self.error_count = 0
-        self.circuit_breaker_threshold = 5
-        
-        # Missing analytics attributes
+
+        # analytics surfaces (kept for API parity)
         self.alignment_analytics = {'overall_alignment_quality': 0.5}
         self.regime_analytics = {'regime_alignment_score': 0.5, 'regime_stability_score': 0.5}
         self.performance_analytics = {'recent_alignment_performance': 0.5}
+
+        # errors/circuit
+        self.error_count = 0
+        self.circuit_breaker_threshold = 5
         self.is_disabled = False
-        
-        # Generate initialization thesis
+
+        # thesis & boot log
         self._generate_initialization_thesis()
-        
-        version = getattr(self.metadata, 'version', '3.0.0') if self.metadata else '3.0.0'
+        version = getattr(self.metadata, 'version', '3.1.0') if self.metadata else '3.1.0'
         self.logger.info(format_operator_message(
             icon="🕐",
             message=f"Time Horizon Aligner v{version} initialized",
@@ -200,7 +181,6 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         ))
 
     def _initialize_advanced_systems(self):
-        """Initialize all modern system components"""
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
             name="TimeHorizonAligner",
@@ -217,41 +197,12 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         self.health_monitor = HealthMonitor()
 
     def _generate_initialization_thesis(self):
-        """Generate comprehensive initialization thesis"""
         thesis = f"""
-        Time Horizon Aligner v3.0 Initialization Complete:
-        
-        Advanced Horizon Management Framework:
-        - Multi-scale temporal analysis across {len(self.horizons)} time horizons
-        - Adaptive scaling with market regime awareness and volatility adjustments
-        - Session-based cyclical pattern optimization for different market sessions
-        - Performance feedback integration with expert contribution tracking
-        
-        Current Configuration:
-        - Time horizons: {self.horizons.tolist()} (steps)
-        - Adaptive scaling: {'enabled' if self.adaptive_scaling else 'disabled'} with learning rate {self.alignment_intelligence['learning_rate']:.2f}
-        - Regime awareness: {'enabled' if self.regime_awareness else 'disabled'} with {len(self.regime_multipliers)} regime profiles
-        - Performance feedback: {'enabled' if self.performance_feedback else 'disabled'} with {self.alignment_intelligence['performance_window']}-step window
-        
-        Intelligence Parameters:
-        - Adaptation threshold: {self.alignment_intelligence['adaptation_threshold']:.2f} for significant changes
-        - Regime sensitivity: {self.alignment_intelligence['regime_sensitivity']:.2f} for market condition response
-        - Session memory: {self.alignment_intelligence['session_memory']:.2f} for cyclical pattern retention
-        - Performance momentum: {self.alignment_intelligence['performance_momentum']:.2f} for feedback integration
-        
-        Advanced Features:
-        - Volatility-aware horizon biasing with {len(self.volatility_adaptation)} volatility regimes
-        - Session-specific pattern recognition for optimal time-of-day alignment
-        - Performance-driven horizon effectiveness tracking and adaptation
-        - Real-time alignment quality assessment and optimization recommendations
-        
-        Expected Outcomes:
-        - Enhanced temporal decision quality through intelligent horizon weighting
-        - Improved market timing with adaptive regime and session awareness
-        - Optimal expert weight distribution based on time horizon effectiveness
-        - Transparent alignment decisions with comprehensive quality analysis and actionable insights
+        Time Horizon Aligner v3.1 Initialization Complete:
+        • {len(self.horizons)} horizons {self.horizons.tolist()}
+        • Regime/session aware; perf feedback window {self.alignment_intelligence['performance_window']}
+        • Adaptation threshold {self.alignment_intelligence['adaptation_threshold']:.2f}
         """
-        
         self.smart_bus.set('time_horizon_aligner_initialization', {
             'status': 'initialized',
             'thesis': thesis,
@@ -265,53 +216,31 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             }
         }, module='TimeHorizonAligner', thesis=thesis)
 
+    # ----------------------------- PROCESS -----------------------------
     async def process(self, **inputs) -> Dict[str, Any]:
-        """
-        Modern async processing with comprehensive horizon alignment
-        
-        Returns:
-            Dict containing alignment results, quality metrics, and analytics
-        """
         start_time = time.time()
-        
         try:
-            # Circuit breaker check
             if self.is_disabled:
                 return self._generate_disabled_response()
-            
-            # Increment clock and update timing
+
             self.clock += 1
             current_time = datetime.datetime.now()
-            
-            # Get comprehensive data from SmartInfoBus
             alignment_data = await self._get_comprehensive_alignment_data()
-            
-            # Update market state and conditions
             await self._update_market_state_comprehensive(alignment_data)
-            
-            # Update horizon performance tracking
+
             if self.performance_feedback:
                 await self._update_horizon_performance_comprehensive(alignment_data)
-            
-            # Calculate distance-based alignment
-            await self._calculate_comprehensive_distance_alignment()
-            
-            # Apply regime and session adaptations
-            await self._apply_regime_and_session_adaptations(alignment_data)
-            
-            # Update cyclical patterns
-            await self._update_cyclical_patterns_comprehensive(alignment_data)
-            
-            # Calculate alignment quality metrics
-            quality_analysis = await self._calculate_comprehensive_alignment_quality()
-            
-            # Generate alignment recommendations
-            recommendations = await self._generate_intelligent_alignment_recommendations(quality_analysis)
 
-            # Compute aligned weights using current voting weights or safe defaults
+            await self._calculate_comprehensive_distance_alignment()
+            await self._apply_regime_and_session_adaptations(alignment_data)
+            await self._update_cyclical_patterns_comprehensive(alignment_data)
+
+            quality_analysis = await self._calculate_comprehensive_alignment_quality()
+            _ = await self._generate_intelligent_alignment_recommendations(quality_analysis)
+
+            # base weights (neutral if missing)
             raw_weights = alignment_data.get('voting_weights') or []
-            if not isinstance(raw_weights, (list, tuple, np.ndarray)) or len(raw_weights) == 0:
-                # Default to equal weights over horizons if no voting weights available
+            if not isinstance(raw_weights, (list, tuple, np.ndarray)) or (hasattr(raw_weights, '__len__') and len(raw_weights) == 0):
                 safe_weights = np.ones_like(self.horizons, dtype=np.float32)
                 safe_weights = safe_weights / (safe_weights.sum() + 1e-12)
             else:
@@ -321,18 +250,18 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 aligned = await self.apply_alignment(safe_weights)
                 aligned_list = aligned.astype(float).tolist()
             except Exception:
-                # Fallback to neutral if alignment fails
                 fallback = np.ones_like(self.horizons, dtype=np.float32)
                 fallback = fallback / (fallback.sum() + 1e-12)
                 aligned_list = fallback.astype(float).tolist()
-            
-            # Create comprehensive results
+
             results = {
                 'aligned_weights': aligned_list,
                 'horizon_distances': self.current_distances.tolist(),
                 'horizon_multipliers': self._get_combined_multipliers().tolist(),
-                'regime_adjustments': self.regime_multipliers[self.current_regime].tolist(),
-                'session_patterns': self.session_patterns[self.current_session].tolist(),
+                'regime_adjustments': self.regime_multipliers.get(
+                    self.current_regime, np.ones_like(self.horizons)
+                ).tolist(),
+                'session_patterns': self._safe_session_vector().tolist(),
                 'alignment_quality': quality_analysis,
                 'performance_metrics': self._get_performance_metrics_summary(),
                 'adaptation_status': self._get_adaptation_status(),
@@ -343,68 +272,77 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     'regime': self.current_regime,
                     'session': self.current_session
                 },
-                '_thesis': ''  # populated below
+                '_thesis': ''  # set below
             }
-            
-            # Generate comprehensive thesis
+
             thesis = await self._generate_comprehensive_alignment_thesis(results, quality_analysis)
             results['_thesis'] = thesis
-            
-            # Update SmartInfoBus with comprehensive results
             await self._update_smartinfobus_comprehensive(results, thesis)
-            
-            # Record performance metrics
+
             processing_time = (time.time() - start_time) * 1000
             self.performance_tracker.record_metric('TimeHorizonAligner', 'process_time', processing_time, True)
-            
-            # Reset error count on successful processing
             self.error_count = 0
             self.last_alignment_time = current_time
-            
             return results
-            
+
         except Exception as e:
             return await self._handle_processing_error(e, start_time)
 
-    async def _get_comprehensive_alignment_data(self) -> Dict[str, Any]:
-        """Get comprehensive data for horizon alignment"""
+    # ----------------------- MARKET/SESSION STATE ----------------------
+    def _normalize_session(self, s: Optional[str]) -> str:
+        s = (s or 'unknown').lower()
+        mapping = {
+            'us': 'american', 'americas': 'american', 'ny': 'american', 'new_york': 'american',
+            'eu': 'european', 'london': 'european', 'europe': 'european',
+            'asia': 'asian', 'apac': 'asian', 'tokyo': 'asian',
+            'overlap': 'overlap', 'london_newyork_overlap': 'overlap', 'ny_london_overlap': 'overlap',
+            'roll': 'rollover', 'rollover': 'rollover',
+            'weekend': 'weekend'
+        }
+        return mapping.get(s, s if s in mapping.values() else 'unknown')
+
+    def _safe_session_vector(self, session: Optional[str] = None) -> np.ndarray:
+        key = self._normalize_session(session or self.current_session)
+        vec = self.session_patterns.get(key)
+        if vec is None:
+            vec = self.session_patterns.get('unknown')
         try:
+            return np.asarray(vec, dtype=np.float32)
+        except Exception:
+            return np.ones_like(self.horizons, dtype=np.float32)
+
+    async def _get_comprehensive_alignment_data(self) -> Dict[str, Any]:
+        try:
+            get = self.smart_bus.get
             return {
-                'voting_weights': self.smart_bus.get('voting_weights', 'TimeHorizonAligner') or [],
-                'market_regime': self.smart_bus.get('market_regime', 'TimeHorizonAligner') or 'unknown',
-                'session_type': self.smart_bus.get('session_type', 'TimeHorizonAligner') or 'unknown',
-                'volatility_data': self.smart_bus.get('volatility_data', 'TimeHorizonAligner') or {},
-                'market_context': self.smart_bus.get('market_context', 'TimeHorizonAligner') or {},
-                'time_of_day': self.smart_bus.get('time_of_day', 'TimeHorizonAligner') or 0,
-                'performance_feedback': self.smart_bus.get('performance_feedback', 'TimeHorizonAligner') or {},
-                'member_confidences': self.smart_bus.get('member_confidences', 'TimeHorizonAligner') or [],
-                'recent_trades': self.smart_bus.get('recent_trades', 'TimeHorizonAligner') or [],
-                'expert_performance': self.smart_bus.get('expert_performance', 'TimeHorizonAligner') or {}
+                'voting_weights': get('voting_weights', 'TimeHorizonAligner') or [],
+                'market_regime': get('market_regime', 'TimeHorizonAligner') or 'unknown',
+                'session_type': get('session_type', 'TimeHorizonAligner') or 'unknown',
+                'volatility_data': get('volatility_data', 'TimeHorizonAligner') or {},
+                'market_context': get('market_context', 'TimeHorizonAligner') or {},
+                'time_of_day': get('time_of_day', 'TimeHorizonAligner') or 0,  # minutes since session start
+                'performance_feedback': get('performance_feedback', 'TimeHorizonAligner') or {},
+                'member_confidences': get('member_confidences', 'TimeHorizonAligner') or [],
+                'recent_trades': get('recent_trades', 'TimeHorizonAligner') or [],
+                'expert_performance': get('expert_performance', 'TimeHorizonAligner') or {}
             }
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "TimeHorizonAligner")
-            self.logger.warning(f"Alignment data retrieval incomplete: {error_context}")
+            err = self.error_pinpointer.analyze_error(e, "TimeHorizonAligner")
+            self.logger.warning(f"Alignment data retrieval incomplete: {err}")
             return self._get_safe_alignment_defaults()
 
     async def _update_market_state_comprehensive(self, alignment_data: Dict[str, Any]):
-        """Update comprehensive market state tracking"""
         try:
-            # Track regime changes
             old_regime = self.current_regime
             self.current_regime = alignment_data.get('market_regime', 'unknown')
-            
+
             if old_regime != self.current_regime and old_regime != 'unknown':
                 self.alignment_stats['regime_switches'] += 1
                 self.logger.info(format_operator_message(
-                    icon="[STATS]",
-                    message="Market regime changed",
-                    old_regime=old_regime,
-                    new_regime=self.current_regime,
-                    clock=self.clock,
+                    icon="[STATS]", message="Market regime changed",
+                    old_regime=old_regime, new_regime=self.current_regime, clock=self.clock,
                     impact="Horizon multipliers will adapt"
                 ))
-                
-                # Record regime change event
                 self.adaptation_events.append({
                     'timestamp': datetime.datetime.now().isoformat(),
                     'type': 'regime_change',
@@ -412,584 +350,352 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     'new_value': self.current_regime,
                     'clock': self.clock
                 })
-            
-            # Track session changes
+
             old_session = self.current_session
-            self.current_session = alignment_data.get('session_type', 'unknown')
-            
+            self.current_session = self._normalize_session(alignment_data.get('session_type', 'unknown'))
             if old_session != self.current_session and old_session != 'unknown':
                 self.alignment_stats['session_transitions'] += 1
                 self.logger.info(format_operator_message(
-                    icon="🕐",
-                    message="Trading session changed",
-                    old_session=old_session,
-                    new_session=self.current_session,
-                    clock=self.clock
+                    icon="🕐", message="Trading session changed",
+                    old_session=old_session, new_session=self.current_session, clock=self.clock
                 ))
-            
-            # Update volatility tracking (robust to numeric, list, or dict inputs)
+
             volatility_data = alignment_data.get('volatility_data', {})
             current_vol = self._extract_numeric_volatility(volatility_data)
             self.volatility_history.append(current_vol)
             self.current_volatility = current_vol
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "market_state_update")
-            self.logger.warning(f"Market state update failed: {error_context}")
 
+        except Exception as e:
+            err = self.error_pinpointer.analyze_error(e, "market_state_update")
+            self.logger.warning(f"Market state update failed: {err}")
+
+    # --------------------------- ALIGNMENT CORE ------------------------
     async def apply_alignment(self, weights: np.ndarray) -> np.ndarray:
-        """
-        Enhanced time-based scaling to weights with comprehensive adjustments
-        
-        Args:
-            weights: Current voting weights to adjust
-            
-        Returns:
-            Adjusted weights based on time horizons and market conditions
-        """
         try:
             self.alignment_stats['total_alignments'] += 1
-            
-            # Validate and normalize inputs
             weights = np.asarray(weights, dtype=np.float32)
-            
-            # Handle dimension mismatch gracefully
+
             if len(weights) != len(self.horizons):
                 weights = await self._handle_dimension_mismatch(weights)
-            
-            # Calculate comprehensive alignment factors
+
             distance_factors = await self._calculate_distance_factors()
             regime_factors = await self._get_regime_factors()
             session_factors = await self._get_session_factors()
             performance_factors = await self._get_performance_factors()
             volatility_factors = await self._get_volatility_factors()
-            
-            # Combine all factors with intelligent weighting
+
             combined_factors = await self._combine_alignment_factors(
-                distance_factors, regime_factors, session_factors, 
+                distance_factors, regime_factors, session_factors,
                 performance_factors, volatility_factors
             )
-            
-            # Apply alignment
+
             aligned_weights = weights * combined_factors
-            
-            # Ensure positive and normalized
             aligned_weights = np.maximum(aligned_weights, 0.01)
             aligned_weights = aligned_weights / (aligned_weights.sum() + 1e-12)
-            
-            # Track alignment impact and quality
-            impact = np.linalg.norm(aligned_weights - weights)
-            await self._track_alignment_impact(weights.tolist(), aligned_weights.tolist(), {'impact_score': float(impact)})
-            
-            # Record alignment event
-            await self._record_alignment_event_comprehensive(
-                weights, aligned_weights, combined_factors, impact
-            )
-            
+
+            impact = float(np.linalg.norm(aligned_weights - weights))
+            await self._track_alignment_impact(weights.tolist(), aligned_weights.tolist(), {'impact_score': impact})
+            await self._record_alignment_event_comprehensive(weights, aligned_weights, combined_factors, impact)
             return aligned_weights
-            
+
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "alignment_application")
-            self.logger.error(f"Horizon alignment failed: {error_context}")
+            err = self.error_pinpointer.analyze_error(e, "alignment_application")
+            self.logger.error(f"Horizon alignment failed: {err}")
             return np.asarray(weights, dtype=np.float32)
 
     async def _handle_dimension_mismatch(self, weights: np.ndarray) -> np.ndarray:
-        """Handle dimension mismatch between weights and horizons"""
         try:
             self.logger.warning(format_operator_message(
-                icon="[TOOL]",
-                message="Dimension mismatch detected",
-                weights_dim=len(weights),
-                horizons_dim=len(self.horizons),
-                action="Auto-adjusting"
+                icon="[TOOL]", message="Dimension mismatch detected",
+                weights_dim=len(weights), horizons_dim=len(self.horizons), action="Auto-adjusting"
             ))
-            
             if len(weights) > len(self.horizons):
-                # Truncate weights
                 adjusted_weights = weights[:len(self.horizons)]
-                self.logger.info(f"Truncated weights to {len(adjusted_weights)}")
-                
-            elif len(weights) < len(self.horizons):
-                # Pad weights with defaults
-                missing_count = len(self.horizons) - len(weights)
-                default_weight = 1.0 / len(self.horizons)
-                padding = np.full(missing_count, default_weight, dtype=np.float32)
-                adjusted_weights = np.concatenate([weights, padding])
-                self.logger.info(f"Padded weights to {len(adjusted_weights)}")
-                
             else:
-                adjusted_weights = weights
-            
+                missing = len(self.horizons) - len(weights)
+                default_weight = 1.0 / max(1, len(self.horizons))
+                padding = np.full(missing, default_weight, dtype=np.float32)
+                adjusted_weights = np.concatenate([weights, padding])
             return adjusted_weights
-            
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "dimension_mismatch_handling")
+            _ = self.error_pinpointer.analyze_error(e, "dimension_mismatch_handling")
             return weights
 
     async def _calculate_comprehensive_distance_alignment(self):
-        """Calculate comprehensive distance-based alignment"""
         try:
-            # Time-based distance calculation
             time_distances = 1.0 / (1.0 + np.abs(self.clock - self.horizons))
-            
-            # Volatility-adjusted distances
             vol_adjustment = 1.0 + self.current_volatility * 2.0
-            adjusted_distances = time_distances * vol_adjustment
-            
-            # Normalize distances
-            self.current_distances = adjusted_distances / (adjusted_distances.sum() + 1e-12)
+            adjusted = time_distances * vol_adjustment
+            self.current_distances = adjusted / (adjusted.sum() + 1e-12)
             self.base_distances = self.current_distances.copy()
-            
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "distance_calculation")
+            _ = self.error_pinpointer.analyze_error(e, "distance_calculation")
             self.current_distances = np.ones_like(self.horizons) / len(self.horizons)
 
     async def _apply_regime_and_session_adaptations(self, alignment_data: Dict[str, Any]):
-        """Apply regime and session-based adaptations"""
         try:
             if not self.regime_awareness:
                 return
-            
-            # Update regime multipliers
             await self._update_regime_multipliers_comprehensive(alignment_data)
-            
-            # Update session patterns
             await self._update_session_patterns_comprehensive(alignment_data)
-            
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "regime_session_adaptation")
+            _ = self.error_pinpointer.analyze_error(e, "regime_session_adaptation")
 
     async def _update_regime_multipliers_comprehensive(self, alignment_data: Dict[str, Any]):
-        """Update comprehensive regime-based multipliers"""
         try:
             regime = self.current_regime
             volatility_level = self._determine_volatility_level()
-            
-            # Enhanced regime-specific horizon preferences
+
             if regime == 'trending':
-                # Favor longer horizons in trending markets
-                multipliers = np.array([
-                    0.7 if h < 5 else 1.4 if h > 30 else 1.1 
-                    for h in self.horizons
-                ])
-                
+                multipliers = np.array([0.7 if h < 5 else 1.4 if h > 30 else 1.1 for h in self.horizons])
             elif regime == 'volatile':
-                # Favor shorter horizons in volatile markets
-                multipliers = np.array([
-                    1.5 if h < 8 else 0.6 if h > 25 else 1.0 
-                    for h in self.horizons
-                ])
-                
+                multipliers = np.array([1.5 if h < 8 else 0.6 if h > 25 else 1.0 for h in self.horizons])
             elif regime == 'ranging':
-                # Balanced approach with slight medium-term bias
-                multipliers = np.array([
-                    1.2 if 8 <= h <= 20 else 0.8 
-                    for h in self.horizons
-                ])
-                
+                multipliers = np.array([1.2 if 8 <= h <= 20 else 0.8 for h in self.horizons])
             elif regime == 'breakout':
-                # Very short-term bias for breakout capture
-                multipliers = np.array([
-                    1.6 if h < 5 else 0.5 if h > 15 else 0.9 
-                    for h in self.horizons
-                ])
-                
+                multipliers = np.array([1.6 if h < 5 else 0.5 if h > 15 else 0.9 for h in self.horizons])
             elif regime == 'reversal':
-                # Medium-term bias for reversal confirmation
-                multipliers = np.array([
-                    0.8 if h < 10 else 1.3 if 10 <= h <= 30 else 0.9 
-                    for h in self.horizons
-                ])
-                
+                multipliers = np.array([0.8 if h < 10 else 1.3 if 10 <= h <= 30 else 0.9 for h in self.horizons])
             elif regime == 'noise':
-                # Very conservative, slight short-term bias
-                multipliers = np.array([
-                    1.3 if h < 3 else 0.7 if h > 20 else 1.0 
-                    for h in self.horizons
-                ])
-                
-            else:  # unknown
-                multipliers = np.ones_like(self.horizons)
-            
-            # Apply volatility adjustments
-            vol_config = self.volatility_adaptation.get(volatility_level, {})
-            vol_bias = vol_config.get('horizon_bias', 'balanced')
-            
-            if vol_bias == 'short':
-                multipliers *= np.array([
-                    1.3 if h < 10 else 0.7 if h > 20 else 1.0 
-                    for h in self.horizons
-                ])
-            elif vol_bias == 'long':
-                multipliers *= np.array([
-                    0.8 if h < 5 else 1.2 if h > 15 else 1.0 
-                    for h in self.horizons
-                ])
-            
-            # Smooth transition using exponential moving average
-            if regime in self.regime_multipliers:
-                alpha = self.alignment_intelligence['regime_sensitivity']
-                old_multipliers = self.regime_multipliers[regime]
-                self.regime_multipliers[regime] = (
-                    alpha * multipliers + (1 - alpha) * old_multipliers
-                )
+                multipliers = np.array([1.3 if h < 3 else 0.7 if h > 20 else 1.0 for h in self.horizons])
             else:
-                self.regime_multipliers[regime] = multipliers.astype(np.float32)
-            
+                multipliers = np.ones_like(self.horizons)
+
+            vol_bias = self.volatility_adaptation.get(volatility_level, {}).get('horizon_bias', 'balanced')
+            if vol_bias == 'short':
+                multipliers *= np.array([1.3 if h < 10 else 0.7 if h > 20 else 1.0 for h in self.horizons])
+            elif vol_bias == 'long':
+                multipliers *= np.array([0.8 if h < 5 else 1.2 if h > 15 else 1.0 for h in self.horizons])
+
+            alpha = float(self.alignment_intelligence['regime_sensitivity'])
+            old = self.regime_multipliers.get(regime, np.ones_like(self.horizons))
+            self.regime_multipliers[regime] = (alpha * multipliers + (1 - alpha) * old).astype(np.float32)
+
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "regime_multipliers_update")
+            _ = self.error_pinpointer.analyze_error(e, "regime_multipliers_update")
 
     def _determine_volatility_level(self) -> str:
-        """Determine current volatility level"""
         try:
-            if self.current_volatility > 0.05:
-                return 'extreme'
-            elif self.current_volatility > 0.03:
-                return 'high'
-            elif self.current_volatility > 0.015:
-                return 'medium'
-            elif self.current_volatility > 0.008:
-                return 'low'
-            else:
-                return 'very_low'
+            v = float(self.current_volatility)
+            if v > 0.05: return 'extreme'
+            if v > 0.03: return 'high'
+            if v > 0.015: return 'medium'
+            if v > 0.008: return 'low'
+            return 'very_low'
         except Exception:
             return 'medium'
 
     def _extract_numeric_volatility(self, volatility_data: Any) -> float:
-        """Normalize incoming volatility data to a numeric value.
-
-        Accepts:
-        - float/int/np.floating: returns abs(value)
-        - list/tuple/np.ndarray: returns mean of numeric entries
-        - dict: if 'value'/'atr'/'sigma'/'vol' present, use it; else average numeric values; if 'level' present, map to numeric
-        Fallback to a conservative default (0.02).
-        """
         try:
-            # Numeric inputs
             if isinstance(volatility_data, (int, float, np.floating)):
                 return float(abs(volatility_data))
-
-            # Sequence inputs
             if isinstance(volatility_data, (list, tuple, np.ndarray)):
                 arr = np.asarray(volatility_data, dtype=np.float64)
-                if arr.size > 0 and np.isfinite(arr).any():
-                    return float(np.nanmean(arr))
-                return 0.02
-
-            # Mapping inputs
+                return float(np.nanmean(arr)) if arr.size else 0.02
             if isinstance(volatility_data, dict):
-                # Direct numeric fields
                 for key in ('value', 'atr', 'sigma', 'vol'):
                     if key in volatility_data:
-                        try:
-                            return float(abs(volatility_data[key]))
-                        except Exception:
-                            pass
-                # Level mapping
+                        try: return float(abs(volatility_data[key]))
+                        except Exception: pass
                 level = volatility_data.get('level')
                 if isinstance(level, str):
                     return self._map_level_to_numeric(level)
-                # Average numeric values if available
                 numeric_vals = [float(v) for v in volatility_data.values() if isinstance(v, (int, float, np.floating))]
-                if numeric_vals:
-                    return float(np.mean(numeric_vals))
-                return 0.02
-
-            # Unknown type
+                return float(np.mean(numeric_vals)) if numeric_vals else 0.02
             return 0.02
         except Exception:
             return 0.02
 
     def _map_level_to_numeric(self, level: str) -> float:
-        """Map a volatility level string to a representative numeric value."""
         lvl = (level or '').lower()
-        if lvl == 'very_low':
-            return 0.005
-        if lvl == 'low':
-            return 0.01
-        if lvl == 'medium':
-            return 0.02
-        if lvl == 'high':
-            return 0.035
-        if lvl == 'extreme':
-            return 0.06
-        return 0.02
+        return {
+            'very_low': 0.005, 'low': 0.01, 'medium': 0.02, 'high': 0.035, 'extreme': 0.06
+        }.get(lvl, 0.02)
 
+    # --------------------------- QUALITY/ANALYTICS ---------------------
     async def _calculate_comprehensive_alignment_quality(self) -> Dict[str, Any]:
-        """Calculate comprehensive alignment quality metrics"""
         try:
-            quality_analysis = {}
-            
-            # Effectiveness (how well alignment improves outcomes)
+            # effectiveness from recent performance
             if len(self.performance_history) >= 10:
-                recent_performance = [p.get('improvement', 0.0) for p in list(self.performance_history)[-10:]]
-                effectiveness = np.mean(recent_performance) if recent_performance else 0.5
-                self.alignment_quality['effectiveness'] = float(effectiveness)
-            
-            # Consistency (stability of alignment decisions)
+                recent = [p.get('improvement', 0.0) for p in list(self.performance_history)[-10:]]
+                self.alignment_quality['effectiveness'] = float(np.mean(recent)) if recent else 0.5
+
+            # consistency from impact variance
             if len(self.alignment_history) >= 5:
-                recent_impacts = [a.get('impact', 0.0) for a in list(self.alignment_history)[-10:]]
-                consistency = 1.0 - np.std(recent_impacts) if recent_impacts else 0.5
-                self.alignment_quality['consistency'] = float(max(0.0, min(1.0, float(consistency))))
-            
-            # Adaptability (responsiveness to market changes)
-            adaptation_score = min(1.0, self.alignment_stats['significant_adaptations'] / max(1, self.alignment_stats['total_alignments']))
-            self.alignment_quality['adaptability'] = adaptation_score
-            
-            # Regime alignment (how well aligned with current regime)
-            regime_score = self._calculate_regime_alignment_score()
-            self.alignment_quality['regime_alignment'] = regime_score
-            
-            # Overall quality score
-            quality_values = list(self.alignment_quality.values())
-            overall_quality = np.mean(quality_values) if quality_values else 0.5
-            
+                impacts = [float(a.get('impact', {}).get('impact_score', 0.0)) if isinstance(a.get('impact'), dict) else float(a.get('impact', 0.0))
+                           for a in list(self.alignment_history)[-10:]]
+                var = np.std(impacts) if impacts else 0.0
+                var_f = float(var)
+                self.alignment_quality['consistency'] = float(max(0.0, min(1.0, 1.0 - var_f)))
+
+            # adaptability (rate of meaningful changes)
+            total = max(1, self.alignment_stats.get('total_alignments', 1))
+            self.alignment_quality['adaptability'] = min(1.0, self.alignment_stats.get('significant_adaptations', 0) / total)
+
+            # regime alignment similarity
+            self.alignment_quality['regime_alignment'] = self._calculate_regime_alignment_score()
+
+            # performance correlation (stub -> tie to effectiveness for now)
+            self.alignment_quality['performance_correlation'] = self.alignment_quality['effectiveness']
+
+            # session optimization proxy (mean of session vector)
+            self.alignment_quality['session_optimization'] = float(np.mean(self._safe_session_vector()))
+
+            # overall
+            vals = list(self.alignment_quality.values())
+            self.alignment_quality['overall_quality'] = float(np.mean(vals)) if vals else 0.5
+
             quality_analysis = {
                 **self.alignment_quality,
-                'overall_quality': overall_quality,
                 'quality_trend': self._determine_quality_trend(),
                 'improvement_areas': self._identify_improvement_areas()
             }
-            
             return quality_analysis
-            
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "alignment_quality_calculation")
+            _ = self.error_pinpointer.analyze_error(e, "alignment_quality_calculation")
             return {'overall_quality': 0.5, 'quality_trend': 'unknown'}
 
     def _calculate_regime_alignment_score(self) -> float:
-        """Calculate how well current alignment matches regime expectations"""
         try:
             regime = self.current_regime
-            if regime not in self.regime_multipliers:
+            expected = self.regime_multipliers.get(regime)
+            if expected is None:
                 return 0.5
-            
-            expected_multipliers = self.regime_multipliers[regime]
-            current_combined = self._get_combined_multipliers()
-            
-            # Calculate similarity
-            similarity = 1.0 - np.mean(np.abs(expected_multipliers - current_combined)) / 2.0
+            current = self._get_combined_multipliers()
+            similarity = 1.0 - np.mean(np.abs(expected - current)) / 2.0
             return float(max(0.0, min(1.0, float(similarity))))
-            
         except Exception:
             return 0.5
 
     def _get_combined_multipliers(self) -> np.ndarray:
-        """Get combined multipliers from all sources"""
         try:
             combined = self.adaptive_multipliers.copy()
-            
-            # Apply regime multipliers
             if self.current_regime in self.regime_multipliers:
                 combined *= self.regime_multipliers[self.current_regime]
-            
-            # Apply performance multipliers
             if self.performance_feedback:
                 combined *= self.performance_multipliers
-            
-            # Apply session patterns
-            if self.current_session in self.session_patterns:
-                combined *= self.session_patterns[self.current_session]
-            
-            # Apply cyclical adjustments
+            combined *= self._safe_session_vector()
             combined *= self.cyclical_adjustments
-            
             return combined
-            
         except Exception:
             return np.ones_like(self.horizons)
 
-    async def _generate_comprehensive_alignment_thesis(self, results: Dict[str, Any], 
-                                                     quality_analysis: Dict[str, Any]) -> str:
-        """Generate comprehensive alignment thesis"""
+    async def _generate_comprehensive_alignment_thesis(self, results: Dict[str, Any], quality_analysis: Dict[str, Any]) -> str:
         try:
-            overall_quality = quality_analysis.get('overall_quality', 0.5)
-            
-            # Core metrics
-            thesis_parts = []
-            
-            # Executive summary
-            alignment_effectiveness = "HIGH" if overall_quality > 0.7 else "MODERATE" if overall_quality > 0.4 else "LOW"
-            thesis_parts.append(
-                f"HORIZON ALIGNMENT: {alignment_effectiveness} effectiveness with {overall_quality:.1%} quality score"
-            )
-            
-            # Market adaptation
-            thesis_parts.append(
-                f"MARKET ADAPTATION: {self.current_regime} regime with {self.current_session} session patterns"
-            )
-            
-            # Performance impact
+            q = quality_analysis.get('overall_quality', 0.5)
+            label = "HIGH" if q > 0.7 else "MODERATE" if q > 0.4 else "LOW"
             avg_impact = self.alignment_stats.get('avg_alignment_impact', 0.0)
-            thesis_parts.append(f"ALIGNMENT IMPACT: {avg_impact:.3f} average weight adjustment magnitude")
-            
-            # System performance
-            total_alignments = self.alignment_stats.get('total_alignments', 0)
+            total = self.alignment_stats.get('total_alignments', 0)
             adaptations = self.alignment_stats.get('significant_adaptations', 0)
-            thesis_parts.append(f"SYSTEM PERFORMANCE: {total_alignments} alignments with {adaptations} adaptations")
-            
-            return " | ".join(thesis_parts)
-            
+            return " | ".join([
+                f"HORIZON ALIGNMENT: {label} effectiveness ({q:.1%})",
+                f"MARKET ADAPTATION: {self.current_regime} regime, {self.current_session} session",
+                f"ALIGNMENT IMPACT: {avg_impact:.3f} avg Δw",
+                f"SYSTEM PERFORMANCE: {total} alignments, {adaptations} adaptations"
+            ])
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "alignment_thesis_generation")
-            return f"Alignment thesis generation failed: {error_context}"
+            _ = self.error_pinpointer.analyze_error(e, "alignment_thesis_generation")
+            return "Alignment thesis generation failed"
 
     async def _update_smartinfobus_comprehensive(self, results: Dict[str, Any], thesis: str):
-        """Update SmartInfoBus with comprehensive alignment results"""
         try:
-            # Core alignment results
+            sb = self.smart_bus.set
             if results.get('aligned_weights') is not None:
-                self.smart_bus.set('aligned_weights', results['aligned_weights'],
-                                 module='TimeHorizonAligner', thesis=thesis)
-            
-            # Horizon distances and multipliers
-            self.smart_bus.set('horizon_distances', results['horizon_distances'],
-                             module='TimeHorizonAligner', 
-                             thesis=f"Horizon distances: {len(results['horizon_distances'])} time scales analyzed")
-            
-            self.smart_bus.set('horizon_multipliers', results['horizon_multipliers'],
-                             module='TimeHorizonAligner',
-                             thesis=f"Horizon multipliers: Combined scaling factors for {len(results['horizon_multipliers'])} horizons")
-            
-            # Regime and session adaptations
-            self.smart_bus.set('regime_adjustments', results['regime_adjustments'],
-                             module='TimeHorizonAligner',
-                             thesis=f"Regime adjustments: {self.current_regime} market regime adaptations")
-            
-            self.smart_bus.set('session_patterns', results['session_patterns'],
-                             module='TimeHorizonAligner',
-                             thesis=f"Session patterns: {self.current_session} session optimizations")
-            
-            # Quality and performance metrics
-            self.smart_bus.set('alignment_quality', results['alignment_quality'],
-                             module='TimeHorizonAligner',
-                             thesis=f"Alignment quality: {results['alignment_quality'].get('overall_quality', 0.5):.1%} effectiveness")
-            
-            self.smart_bus.set('performance_metrics', results['performance_metrics'],
-                             module='TimeHorizonAligner',
-                             thesis=f"Performance metrics: Comprehensive alignment analytics")
-
-            # Publish combined horizon_alignment bundle for downstream validators
-            self.smart_bus.set('horizon_alignment', results['horizon_alignment'],
-                             module='TimeHorizonAligner',
-                             thesis='Combined horizon alignment bundle (distances, multipliers, regime, session)')
-            
+                sb('aligned_weights', results['aligned_weights'], module='TimeHorizonAligner', thesis=thesis)
+            sb('horizon_distances', results['horizon_distances'], module='TimeHorizonAligner',
+               thesis=f"Horizon distances: {len(results['horizon_distances'])} time scales analyzed")
+            sb('horizon_multipliers', results['horizon_multipliers'], module='TimeHorizonAligner',
+               thesis=f"Horizon multipliers: Combined scaling factors for {len(results['horizon_multipliers'])} horizons")
+            sb('regime_adjustments', results['regime_adjustments'], module='TimeHorizonAligner',
+               thesis=f"Regime adjustments: {self.current_regime} market regime adaptations")
+            sb('session_patterns', results['session_patterns'], module='TimeHorizonAligner',
+               thesis=f"Session patterns: {self.current_session} session optimizations")
+            sb('alignment_quality', results['alignment_quality'], module='TimeHorizonAligner',
+               thesis=f"Alignment quality: {results['alignment_quality'].get('overall_quality', 0.5):.1%} effectiveness")
+            sb('performance_metrics', results['performance_metrics'], module='TimeHorizonAligner',
+               thesis=f"Performance metrics: Comprehensive alignment analytics")
+            sb('horizon_alignment', results['horizon_alignment'], module='TimeHorizonAligner',
+               thesis='Combined horizon alignment bundle (distances, multipliers, regime, session)')
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
-            self.logger.error(f"SmartInfoBus update failed: {error_context}")
+            _ = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
+            self.logger.error("SmartInfoBus update failed")
 
-    # ═══════════════════════════════════════════════════════════════════
-    # LEGACY COMPATIBILITY AND PUBLIC INTERFACE
-    # ═══════════════════════════════════════════════════════════════════
-
+    # ------------------------- LEGACY INTERFACE ------------------------
     def apply(self, weights: np.ndarray) -> np.ndarray:
-        """Legacy apply interface for backward compatibility"""
         try:
-            import asyncio
-            
-            if asyncio.get_event_loop().is_running():
-                # Already in async context - use simplified sync method
-                return self._simple_alignment_fallback(weights)
-            else:
-                # Run async alignment
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    return self._simple_alignment_fallback(weights)
+            except RuntimeError:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                try:
-                    return loop.run_until_complete(self.apply_alignment(weights))
-                finally:
+            try:
+                return loop.run_until_complete(self.apply_alignment(weights))
+            finally:
+                if loop and not loop.is_running():
                     loop.close()
-                    
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "legacy_apply")
+        except Exception:
             return self._simple_alignment_fallback(weights)
 
     def _simple_alignment_fallback(self, weights: np.ndarray) -> np.ndarray:
-        """Simple fallback alignment method"""
         try:
             weights = np.asarray(weights, dtype=np.float32)
-            
-            # Handle dimension mismatch
             if len(weights) != len(self.horizons):
                 if len(weights) > len(self.horizons):
                     weights = weights[:len(self.horizons)]
-                elif len(weights) < len(self.horizons):
+                else:
                     missing = len(self.horizons) - len(weights)
-                    weights = np.concatenate([weights, np.ones(missing) / len(self.horizons)])
-            
-            # Simple distance-based scaling
+                    weights = np.concatenate([weights, np.ones(missing, dtype=np.float32) / max(1, len(self.horizons))])
             distances = 1.0 / (1.0 + np.abs(self.clock - self.horizons))
             distances = distances / (distances.sum() + 1e-12)
-            
-            # Apply basic regime multiplier
             regime_mult = self.regime_multipliers.get(self.current_regime, np.ones_like(self.horizons))
-            
-            # Combine factors
-            aligned_weights = weights * distances * regime_mult
-            aligned_weights = np.maximum(aligned_weights, 0.01)
-            aligned_weights = aligned_weights / (aligned_weights.sum() + 1e-12)
-            
-            return aligned_weights
-            
+            aligned = weights * distances * regime_mult
+            aligned = np.maximum(aligned, 0.01)
+            return aligned / (aligned.sum() + 1e-12)
         except Exception:
             return np.asarray(weights, dtype=np.float32)
 
     def resize(self, new_horizons: List[int]) -> None:
-        """Resize for different time horizons"""
-        old_horizons = self.horizons.copy()
+        old = self.horizons.copy()
         self.horizons = np.array(new_horizons, dtype=np.float32)
-        
-        # Reinitialize arrays
         self.current_distances = np.ones_like(self.horizons)
         self.base_distances = np.ones_like(self.horizons)
         self.adaptive_multipliers = np.ones_like(self.horizons)
         self.performance_multipliers = np.ones_like(self.horizons)
         self.cyclical_adjustments = np.ones_like(self.horizons)
-        
-        # Reinitialize regime multipliers
         for regime in self.regime_multipliers:
             self.regime_multipliers[regime] = np.ones_like(self.horizons)
-        
-        # Reinitialize session patterns
         for session in self.session_patterns:
             self.session_patterns[session] = np.ones_like(self.horizons)
-        
         self.logger.info(format_operator_message(
-            icon="[RELOAD]",
-            message="Time Horizon Aligner resized",
-            old_horizons=old_horizons.tolist(),
-            new_horizons=self.horizons.tolist()
+            icon="[RELOAD]", message="Time Horizon Aligner resized",
+            old_horizons=old.tolist(), new_horizons=self.horizons.tolist()
         ))
 
+    # ------------------------------ RL OBS -----------------------------
     def get_observation_components(self) -> np.ndarray:
-        """Return horizon alignment features for RL observation"""
         try:
             features = [
-                float(self.clock % 1000) / 1000.0,  # Normalized clock
+                float(self.clock % 1000) / 1000.0,
                 float(self.alignment_stats.get('avg_alignment_impact', 0.0)),
                 float(np.mean(self.current_distances)),
                 float(np.mean(self.adaptive_multipliers)),
                 float(np.mean(self.performance_multipliers)),
                 float(self.alignment_quality.get('overall_quality', 0.5)),
-                float(len(self.alignment_history) / 200.0),  # History fullness
-                float(self.current_volatility * 10.0)  # Scaled volatility
+                float(len(self.alignment_history) / 200.0),
+                float(self.current_volatility * 10.0)
             ]
-            
-            observation = np.array(features, dtype=np.float32)
-            
-            # Validate for NaN/infinite values
-            if np.any(~np.isfinite(observation)):
-                self.logger.error(f"Invalid alignment observation: {observation}")
-                observation = np.nan_to_num(observation, nan=0.5)
-            
-            return observation
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "observation_generation")
-            self.logger.error(f"Alignment observation generation failed: {error_context}")
+            obs = np.array(features, dtype=np.float32)
+            if np.any(~np.isfinite(obs)):
+                self.logger.error(f"Invalid alignment observation: {obs}")
+                obs = np.nan_to_num(obs, nan=0.5)
+            return obs
+        except Exception:
             return np.array([0.5, 0.0, 1.0, 1.0, 1.0, 0.5, 0.0, 0.2], dtype=np.float32)
 
+    # ------------------------------ HEALTH ----------------------------
     def get_health_metrics(self) -> Dict[str, Any]:
-        """Get comprehensive health metrics for monitoring"""
         return {
             'module_name': 'TimeHorizonAligner',
             'status': 'disabled' if self.is_disabled else 'healthy',
@@ -1004,16 +710,16 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'horizons_count': len(self.horizons),
             'adaptation_count': self.alignment_stats.get('significant_adaptations', 0),
             'regime_switches': self.alignment_stats.get('regime_switches', 0),
-            'session_duration': (datetime.datetime.now() - 
-                               datetime.datetime.fromisoformat(self.alignment_stats['session_start_time'])).total_seconds() / 3600
+            'session_duration': (datetime.datetime.now() -
+                                 datetime.datetime.fromisoformat(self.alignment_stats['session_start_time'])).total_seconds() / 3600
         }
 
-    # ═══════════════════════════════════════════════════════════════════
-    # ADDITIONAL HELPER METHODS AND STATE MANAGEMENT
-    # ═══════════════════════════════════════════════════════════════════
+    def _get_health_metrics(self) -> Dict[str, Any]:
+        # kept for internal compatibility
+        return self.get_health_metrics()
 
+    # ----------------------- HELPERS & DEFAULTS -----------------------
     def _get_safe_alignment_defaults(self) -> Dict[str, Any]:
-        """Get safe defaults when data retrieval fails"""
         return {
             'voting_weights': [], 'market_regime': 'unknown', 'session_type': 'unknown',
             'volatility_data': {}, 'market_context': {}, 'time_of_day': 0,
@@ -1022,7 +728,6 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         }
 
     def _get_performance_metrics_summary(self) -> Dict[str, Any]:
-        """Get summary of performance metrics"""
         try:
             return {
                 'total_alignments': self.alignment_stats.get('total_alignments', 0),
@@ -1037,7 +742,6 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             return {}
 
     def _get_adaptation_status(self) -> Dict[str, Any]:
-        """Get current adaptation status"""
         try:
             return {
                 'adaptive_scaling': self.adaptive_scaling,
@@ -1052,79 +756,68 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         except Exception:
             return {'status': 'error'}
 
+    # --------------------------- ERROR PATH ---------------------------
     async def _handle_processing_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
-        """Handle processing errors with intelligent recovery"""
         self.error_count += 1
         error_context = self.error_pinpointer.analyze_error(error, "TimeHorizonAligner")
-        
-        # Circuit breaker logic
+
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
             self.logger.error(format_operator_message(
-                icon="[ALERT]",
-                message="Time Horizon Aligner disabled due to repeated errors",
-                error_count=self.error_count,
-                threshold=self.circuit_breaker_threshold
+                icon="[ALERT]", message="Time Horizon Aligner disabled due to repeated errors",
+                error_count=self.error_count, threshold=self.circuit_breaker_threshold
             ))
-        
-        # Record error performance
+
         processing_time = (time.time() - start_time) * 1000
-        self.performance_tracker.record_metric('TimeHorizonAligner', 'process_time', processing_time, False)
-        
+        self.performance_tracker.record_metric(
+            'TimeHorizonAligner', 'process_time', processing_time, success=False, error=str(error_context)
+        )
+
+        ones = np.ones_like(self.horizons).tolist()
         return {
             'aligned_weights': None,
-            'horizon_distances': np.ones_like(self.horizons).tolist(),
-            'horizon_multipliers': np.ones_like(self.horizons).tolist(),
-            'regime_adjustments': np.ones_like(self.horizons).tolist(),
-            'session_patterns': np.ones_like(self.horizons).tolist(),
+            'horizon_distances': ones,
+            'horizon_multipliers': ones,
+            'regime_adjustments': ones,
+            'session_patterns': ones,
             'alignment_quality': {'overall_quality': 0.5, 'error': str(error_context)},
             'performance_metrics': {'error': str(error_context)},
             'adaptation_status': {'status': 'error', 'error_context': str(error_context)},
             'health_metrics': {'status': 'error', 'error_context': str(error_context)},
             'horizon_alignment': {
-                'distances': np.ones_like(self.horizons).tolist(),
-                'multipliers': np.ones_like(self.horizons).tolist(),
+                'distances': ones, 'multipliers': ones,
                 'regime': getattr(self, 'current_regime', 'unknown'),
                 'session': getattr(self, 'current_session', 'unknown')
             },
             '_thesis': f"TimeHorizonAligner encountered an error and returned safe defaults: {error_context}"
         }
 
+    # ------------------------------- RESET ---------------------------
     def reset(self) -> None:
-        """Enhanced reset with comprehensive state cleanup"""
         super().reset()
-        
-        # Reset time tracking
         self.clock = 0
         self.session_start = 0
-        
-        # Reset alignment state
         self.current_distances = np.ones_like(self.horizons)
         self.base_distances = np.ones_like(self.horizons)
         self.adaptive_multipliers = np.ones_like(self.horizons)
         self.performance_multipliers = np.ones_like(self.horizons)
         self.cyclical_adjustments = np.ones_like(self.horizons)
-        
-        # Reset market state
+
         self.current_regime = 'unknown'
         self.current_session = 'unknown'
         self.current_volatility = 0.02
-        
-        # Reset multipliers to neutral
+
         for regime in self.regime_multipliers:
             self.regime_multipliers[regime] = np.ones_like(self.horizons)
-        
         for session in self.session_patterns:
             self.session_patterns[session] = np.ones_like(self.horizons)
-        
-        # Reset history and tracking
+
         self.alignment_history.clear()
         self.adaptation_events.clear()
         self.performance_history.clear()
         self.volatility_history.clear()
         self.horizon_performance.clear()
-        
-        # Reset statistics
+
         self.alignment_stats = {
             'total_alignments': 0,
             'significant_adaptations': 0,
@@ -1136,96 +829,46 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'adaptation_accuracy': 0.5,
             'session_start_time': datetime.datetime.now().isoformat()
         }
-        
-        # Reset quality metrics
-        self.alignment_quality = {
-            'effectiveness': 0.5,
-            'consistency': 0.5,
-            'adaptability': 0.5,
-            'regime_alignment': 0.5,
-            'session_optimization': 0.5,
-            'performance_correlation': 0.5
-        }
-        
-        # Reset error state
+
+        self.alignment_quality.update({
+            'effectiveness': 0.5, 'consistency': 0.5, 'adaptability': 0.5,
+            'regime_alignment': 0.5, 'session_optimization': 0.5,
+            'performance_correlation': 0.5, 'overall_quality': 0.5
+        })
+
         self.error_count = 0
         self.is_disabled = False
-        
+
         self.logger.info(format_operator_message(
-            icon="[RELOAD]",
-            message="Time Horizon Aligner reset completed",
+            icon="[RELOAD]", message="Time Horizon Aligner reset completed",
             status="All alignment state cleared and systems reinitialized"
         ))
 
-    # ═══════════════════════════════════════════════════════════════════
-    # BASEMODULE ABSTRACT METHOD IMPLEMENTATIONS
-    # ═══════════════════════════════════════════════════════════════════
-
+    # ------------------------------ BASEMODULE ------------------------
     async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
-        """Calculate confidence in time horizon alignment recommendations"""
         try:
-            # Base confidence from alignment quality
-            alignment_quality = self.alignment_analytics.get('overall_alignment_quality', 0.5)
-            
-            # Adjust for regime stability
-            regime_alignment = self.regime_analytics.get('regime_alignment_score', 0.5)
-            
-            # Consider recent performance
-            recent_performance = self.performance_analytics.get('recent_alignment_performance', 0.5)
-            
-            # Market uncertainty factor
-            volatility_level = self._determine_volatility_level()
-            volatility_confidence = {
-                'very_low': 0.9,
-                'low': 0.8,
-                'medium': 0.7,
-                'high': 0.5,
-                'extreme': 0.3
-            }.get(volatility_level, 0.6)
-            
-            # Combine factors
-            confidence = (
-                alignment_quality * 0.4 +
-                regime_alignment * 0.3 +
-                recent_performance * 0.2 +
-                volatility_confidence * 0.1
-            )
-            
-            # Ensure valid range
-            return max(0.1, min(0.95, confidence))
-            
-        except Exception as e:
-            self.logger.warning(f"Confidence calculation failed: {e}")
-            return 0.4  # Conservative default
+            aq = float(self.alignment_analytics.get('overall_alignment_quality', 0.5))
+            ra = float(self.regime_analytics.get('regime_alignment_score', 0.5))
+            rp = float(self.performance_analytics.get('recent_alignment_performance', 0.5))
+            vol_level = self._determine_volatility_level()
+            vol_conf = {'very_low': 0.9, 'low': 0.8, 'medium': 0.7, 'high': 0.5, 'extreme': 0.3}.get(vol_level, 0.6)
+            conf = aq * 0.4 + ra * 0.3 + rp * 0.2 + vol_conf * 0.1
+            return float(max(0.1, min(0.95, conf)))
+        except Exception:
+            return 0.4
 
     async def propose_action(self, **inputs) -> Dict[str, Any]:
-        """Propose horizon alignment action for time-based weight optimization"""
         try:
-            # Get current alignment data
-            alignment_data = await self._get_comprehensive_alignment_data()
-            
-            # Analyze current alignment quality
-            alignment_quality = self.alignment_analytics.get('overall_alignment_quality', 0.5)
-            regime_stability = self.regime_analytics.get('regime_stability_score', 0.5)
-            
-            # Determine action based on alignment state
+            alignment_quality = float(self.alignment_analytics.get('overall_alignment_quality', 0.5))
+            regime_stability = float(self.regime_analytics.get('regime_stability_score', 0.5))
             if alignment_quality < 0.4:
-                action_type = 'realign'
-                signal_strength = 0.8
-                reasoning = f"Poor alignment quality ({alignment_quality:.3f}) requires immediate realignment"
+                action_type, signal_strength, reasoning = 'realign', 0.8, f"Poor alignment quality ({alignment_quality:.3f})"
             elif regime_stability < 0.3:
-                action_type = 'adapt'
-                signal_strength = 0.6
-                reasoning = f"Low regime stability ({regime_stability:.3f}) suggests need for adaptation"
+                action_type, signal_strength, reasoning = 'adapt', 0.6, f"Low regime stability ({regime_stability:.3f})"
             elif alignment_quality > 0.8 and regime_stability > 0.7:
-                action_type = 'maintain'
-                signal_strength = 0.4
-                reasoning = f"Excellent alignment (quality: {alignment_quality:.3f}, stability: {regime_stability:.3f})"
+                action_type, signal_strength, reasoning = 'maintain', 0.4, f"Excellent alignment (q={alignment_quality:.3f}, s={regime_stability:.3f})"
             else:
-                action_type = 'optimize'
-                signal_strength = 0.5
-                reasoning = f"Moderate alignment metrics suggest optimization opportunity"
-            
+                action_type, signal_strength, reasoning = 'optimize', 0.5, "Moderate metrics suggest optimization"
             return {
                 'action': action_type,
                 'signal_strength': signal_strength,
@@ -1238,180 +881,222 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 },
                 'confidence': await self.calculate_confidence({}, **inputs)
             }
-            
         except Exception as e:
             self.logger.error(f"Action proposal failed: {e}")
-            return {
-                'action': 'abstain',
-                'signal_strength': 0.0,
-                'reasoning': f'Alignment error: {str(e)}',
-                'confidence': 0.1
-            }
+            return {'action': 'abstain', 'signal_strength': 0.0, 'reasoning': f'Alignment error: {str(e)}', 'confidence': 0.1}
 
-    # ═══════════════════════════════════════════════════════════════════
-    # MISSING METHOD IMPLEMENTATIONS (STUBS)
-    # ═══════════════════════════════════════════════════════════════════
-    
+    # ---------------------- IMPROVED PREVIOUS STUBS -------------------
     def _generate_disabled_response(self) -> Dict[str, Any]:
-        """Generate response when module is disabled"""
+        neutral = (np.ones_like(self.horizons) / max(1, len(self.horizons))).tolist()
         return {
-            'alignment_weights': [1.0] * len(getattr(self, 'horizon_weights', [1.0])),
-            'quality_score': 0.5,
+            'aligned_weights': neutral,
+            'alignment_quality': {'overall_quality': 0.5},
             'disabled': True,
             'reason': 'Module disabled',
             'horizon_alignment': {
-                'distances': self.current_distances.tolist() if hasattr(self, 'current_distances') else [],
-                'multipliers': self._get_combined_multipliers().tolist() if hasattr(self, 'horizons') else [],
+                'distances': self.current_distances.tolist(),
+                'multipliers': self._get_combined_multipliers().tolist(),
                 'regime': getattr(self, 'current_regime', 'unknown'),
                 'session': getattr(self, 'current_session', 'unknown')
             },
             '_thesis': 'TimeHorizonAligner disabled by circuit breaker; returning neutral horizon alignment bundle'
         }
-    
+
     async def _update_horizon_performance_comprehensive(self, alignment_data: Dict[str, Any]) -> None:
-        """Update horizon performance metrics"""
+        """
+        Lightweight performance feedback:
+        - Uses `performance_feedback.get('horizon_scores', {minutes: score})` if present.
+        - Else decays to 1.0 with EMA momentum, nudged by recent trade PnL sign if `holding_time` is available.
+        """
         try:
-            # Stub implementation - just log for now
-            self.logger.debug("Horizon performance update called")
+            lr = float(self.alignment_intelligence['learning_rate'])
+            momentum = float(self.alignment_intelligence['performance_momentum'])
+
+            pf = alignment_data.get('performance_feedback', {}) or {}
+            horizon_scores: Dict[Any, float] = pf.get('horizon_scores', {}) or {}
+
+            vec = np.ones_like(self.horizons, dtype=np.float32)
+            if horizon_scores:
+                for i, h in enumerate(self.horizons):
+                    score = float(horizon_scores.get(int(h), 1.0))
+                    vec[i] = np.clip(score, 0.5, 1.5)
+            else:
+                # infer a weak signal from recent_trades if they carry 'holding_time' and 'pnl'
+                trades = alignment_data.get('recent_trades', []) or []
+                if trades:
+                    # build a simple kernel by proximity of trade holding_time to horizons
+                    holds, pnls = [], []
+                    for t in trades[-self.alignment_intelligence['performance_window']:]:
+                        ht = t.get('holding_time') or t.get('duration') or None
+                        pnl = t.get('pnl', 0.0)
+                        if isinstance(ht, (int, float)) and np.isfinite(ht):
+                            holds.append(float(ht))
+                            pnls.append(float(pnl))
+                    if holds:
+                        holds = np.asarray(holds, dtype=np.float32)
+                        pnls = np.asarray(pnls, dtype=np.float32)
+                        for i, h in enumerate(self.horizons):
+                            w = np.exp(-np.abs(holds - h) / max(1.0, h))  # proximity kernel
+                            s = float(np.sum(w * np.sign(pnls)) / (np.sum(w) + 1e-9))
+                            vec[i] = np.clip(1.0 + 0.2 * s, 0.8, 1.2)
+
+            # EMA update of performance multipliers
+            self.performance_multipliers = (momentum * self.performance_multipliers + (1 - momentum) * vec).astype(np.float32)
+            self.alignment_stats['performance_adjustments'] += 1
+
         except Exception as e:
             self.logger.warning(f"Horizon performance update failed: {e}")
-    
+
     async def _update_session_patterns_comprehensive(self, alignment_data: Dict[str, Any]) -> None:
-        """Update session pattern analysis"""
+        """
+        Session shaping:
+        - american/overlap → slight short-term tilt
+        - asian → slight longer-term tilt
+        - european → balanced, mid-term tilt
+        - rollover/weekend → neutral to conservative
+        """
         try:
-            # Stub implementation - just log for now
-            self.logger.debug("Session pattern update called")
+            sess = self._normalize_session(alignment_data.get('session_type', self.current_session))
+            base = np.ones_like(self.horizons, dtype=np.float32)
+
+            if sess in ('american', 'overlap'):
+                pattern = np.array([1.15 if h <= 15 else 0.95 if h >= 60 else 1.0 for h in self.horizons], dtype=np.float32)
+            elif sess == 'asian':
+                pattern = np.array([0.95 if h <= 10 else 1.10 if h >= 60 else 1.0 for h in self.horizons], dtype=np.float32)
+            elif sess == 'european':
+                pattern = np.array([1.05 if 10 <= h <= 30 else 0.98 for h in self.horizons], dtype=np.float32)
+            elif sess in ('rollover', 'weekend'):
+                pattern = base
+            else:
+                pattern = base
+
+            # smooth update
+            alpha = float(self.alignment_intelligence['session_memory'])
+            old = self.session_patterns.get(sess, base)
+            self.session_patterns[sess] = (alpha * pattern + (1 - alpha) * old).astype(np.float32)
+
         except Exception as e:
             self.logger.warning(f"Session pattern update failed: {e}")
-    
+
     async def _update_cyclical_patterns_comprehensive(self, alignment_data: Dict[str, Any]) -> None:
-        """Update cyclical pattern analysis"""
+        """
+        Cyclical nudges over the trading day:
+        - Slight sinus modulation across horizons using time_of_day (minutes).
+        - Keeps multipliers close to 1.0 (±5%).
+        """
         try:
-            # Stub implementation - just log for now
-            self.logger.debug("Cyclical pattern update called")
+            tod = float(alignment_data.get('time_of_day', 0.0) or 0.0)  # minutes
+            # project hours into [0, 2π]
+            phase = 2.0 * np.pi * (tod % (24 * 60)) / (24.0 * 60.0)
+            # horizon-specific offsets to avoid lockstep
+            offsets = (self.horizons / (self.horizons.max() + 1e-9)) * np.pi
+            wave = 1.0 + 0.05 * np.sin(phase + offsets)
+            self.cyclical_adjustments = np.asarray(wave, dtype=np.float32)
         except Exception as e:
             self.logger.warning(f"Cyclical pattern update failed: {e}")
-    
+
     async def _generate_intelligent_alignment_recommendations(self, quality_analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate intelligent alignment recommendations"""
         try:
-            quality_score = quality_analysis.get('quality_score', 0.5)
-            
-            if quality_score < 0.4:
-                recommendation = 'increase_short_term_weight'
-                priority = 'high'
-            elif quality_score > 0.8:
-                recommendation = 'balance_horizons'
-                priority = 'low'
+            q = float(quality_analysis.get('overall_quality', 0.5))
+            if q < 0.4:
+                rec, pr = 'increase_short_term_weight', 'high'
+            elif q > 0.8:
+                rec, pr = 'balance_horizons', 'low'
             else:
-                recommendation = 'maintain_current_alignment'
-                priority = 'medium'
-            
-            return {
-                'recommendation': recommendation,
-                'priority': priority,
-                'confidence': quality_score,
-                'reasoning': f'Based on quality score: {quality_score:.3f}'
-            }
-        except Exception as e:
-            self.logger.warning(f"Recommendation generation failed: {e}")
+                rec, pr = 'maintain_current_alignment', 'medium'
+            return {'recommendation': rec, 'priority': pr, 'confidence': q, 'reasoning': f'Overall quality {q:.2f}'}
+        except Exception:
             return {'recommendation': 'maintain_current_alignment', 'priority': 'medium', 'confidence': 0.5}
-    
-    def _get_health_metrics(self) -> Dict[str, Any]:
-        """Get health metrics for the module"""
-        return {
-            'status': getattr(self, '_health_status', 'healthy'),
-            'last_update': datetime.datetime.now().isoformat(),
-            'alignment_quality': getattr(self, 'quality_score', 0.5),
-            'processing_count': getattr(self, 'clock', 0)
-        }
-    
-    async def _calculate_distance_factors(self) -> Dict[str, float]:
-        """Calculate distance-based weighting factors"""
-        return {
-            'short_term': 1.0,
-            'medium_term': 0.8,
-            'long_term': 0.6
-        }
-    
-    async def _get_regime_factors(self) -> Dict[str, float]:
-        """Get regime-based adjustment factors"""
-        return {
-            'volatile': 1.2,
-            'trending': 0.9,
-            'ranging': 1.1,
-            'normal': 1.0
-        }
-    
-    async def _get_session_factors(self) -> Dict[str, float]:
-        """Get session-based adjustment factors"""
-        current_hour = datetime.datetime.now().hour
-        if 8 <= current_hour <= 17:  # Business hours
-            return {'session_factor': 1.0}
-        else:
-            return {'session_factor': 0.8}
-    
-    async def _get_performance_factors(self) -> Dict[str, float]:
-        """Get performance-based adjustment factors"""
-        return {
-            'performance_consistency': getattr(self, 'quality_score', 0.5),
-            'adaptation_success': 0.7
-        }
-    
-    async def _get_volatility_factors(self) -> Dict[str, float]:
-        """Get volatility-based adjustment factors"""
-        volatility_regime = getattr(self, 'volatility_regime', 'medium')
-        volatility_map = {
-            'low': 0.8,
-            'medium': 1.0,
-            'high': 1.3,
-            'extreme': 1.5
-        }
-        return {'volatility_factor': volatility_map.get(volatility_regime, 1.0)}
-    
-    async def _combine_alignment_factors(self, distance_factors: Dict[str, float], 
-                                       regime_factors: Dict[str, float],
-                                       session_factors: Dict[str, float],
-                                       performance_factors: Dict[str, float],
-                                       volatility_factors: Dict[str, float]) -> Dict[str, float]:
-        """Combine all alignment factors"""
-        combined = {}
-        
-        # Simple combination of factors
-        base_weight = 1.0
-        for factor_dict in [regime_factors, session_factors, performance_factors, volatility_factors]:
-            for key, value in factor_dict.items():
-                base_weight *= value
-        
-        combined['combined_factor'] = base_weight
-        return combined
-    
-    async def _track_alignment_impact(self, original_weights: List[float], 
-                                    aligned_weights: List[float], 
-                                    impact: Dict[str, Any]) -> None:
-        """Track the impact of alignment adjustments"""
+
+    async def _calculate_distance_factors(self) -> np.ndarray:
+        return np.asarray(self.current_distances, dtype=np.float32)
+
+    async def _get_regime_factors(self) -> np.ndarray:
+        return np.asarray(self.regime_multipliers.get(self.current_regime, np.ones_like(self.horizons)), dtype=np.float32)
+
+    async def _get_session_factors(self) -> np.ndarray:
+        return self._safe_session_vector()
+
+    async def _get_performance_factors(self) -> np.ndarray:
+        return np.asarray(self.performance_multipliers, dtype=np.float32)
+
+    async def _get_volatility_factors(self) -> np.ndarray:
+        level = self._determine_volatility_level()
+        scalar = {'very_low': 0.95, 'low': 0.98, 'medium': 1.00, 'high': 1.10, 'extreme': 1.20}.get(level, 1.00)
+        return np.full_like(self.horizons, scalar, dtype=np.float32)
+
+    async def _combine_alignment_factors(
+        self,
+        distance_factors: np.ndarray,
+        regime_factors: np.ndarray,
+        session_factors: np.ndarray,
+        performance_factors: np.ndarray,
+        volatility_factors: np.ndarray
+    ) -> np.ndarray:
+        combined = np.ones_like(self.horizons, dtype=np.float32)
+        for arr in (distance_factors, regime_factors, session_factors, performance_factors, volatility_factors):
+            a = np.asarray(arr, dtype=np.float32)
+            if a.shape != combined.shape:
+                a = np.full_like(combined, float(np.mean(a)))
+            combined *= a
+        return np.clip(combined, 0.01, None)
+
+    async def _track_alignment_impact(self, original_weights: List[float], aligned_weights: List[float], impact: Dict[str, Any]) -> None:
         try:
-            if hasattr(self, 'alignment_history'):
-                self.alignment_history.append({
-                    'timestamp': datetime.datetime.now(),
-                    'original_weights': original_weights,
-                    'aligned_weights': aligned_weights,
-                    'impact': impact
-                })
+            rec = {
+                'timestamp': datetime.datetime.now().isoformat(),
+                'original_weights': original_weights,
+                'aligned_weights': aligned_weights,
+                'impact': impact
+            }
+            self.alignment_history.append(rec)
+            # update EMA avg impact
+            beta = float(self.alignment_intelligence.get('impact_ema_beta', 0.9))
+            prev = float(self.alignment_stats.get('avg_alignment_impact', 0.0))
+            new = float(impact.get('impact_score', 0.0))
+            self.alignment_stats['avg_alignment_impact'] = beta * prev + (1 - beta) * new
         except Exception as e:
             self.logger.warning(f"Alignment impact tracking failed: {e}")
-    
-    async def _record_alignment_event_comprehensive(self, *args, **kwargs) -> None:
-        """Record alignment event (stub implementation)"""
+
+    async def _record_alignment_event_comprehensive(self, weights: np.ndarray, aligned: np.ndarray, factors: np.ndarray, impact: float) -> None:
         try:
-            self.logger.debug("Alignment event recorded")
+            evt = {
+                'timestamp': datetime.datetime.now().isoformat(),
+                'type': 'alignment',
+                'impact': impact,
+                'clock': self.clock,
+                'regime': self.current_regime,
+                'session': self.current_session
+            }
+            self.adaptation_events.append(evt)
+            if impact >= float(self.alignment_intelligence['adaptation_threshold']):
+                self.alignment_stats['significant_adaptations'] += 1
         except Exception as e:
             self.logger.warning(f"Alignment event recording failed: {e}")
-    
+
     def _determine_quality_trend(self) -> str:
-        """Determine quality trend (stub implementation)"""
-        return "stable"
-    
+        try:
+            # compute slope of overall_quality over last N alignment_history entries
+            vals = [float(self.alignment_quality.get('overall_quality', 0.5))]
+            # supplement with historical overall qualities if we stored them (approx via impacts)
+            if len(self.alignment_history) >= 5:
+                # proxy: lower impact variance → improving
+                impacts = [float(a.get('impact', {}).get('impact_score', 0.0)) if isinstance(a.get('impact'), dict) else float(a.get('impact', 0.0))
+                           for a in list(self.alignment_history)[-10:]]
+                slope = np.polyfit(np.arange(len(impacts)), impacts, 1)[0] if len(impacts) > 1 else 0.0
+                return 'improving' if slope < -0.005 else 'declining' if slope > 0.005 else 'stable'
+            return 'stable'
+        except Exception:
+            return 'unknown'
+
     def _identify_improvement_areas(self) -> List[str]:
-        """Identify improvement areas (stub implementation)"""
-        return ["horizon_balance", "regime_adaptation"]
+        areas = []
+        if self.alignment_quality.get('regime_alignment', 0.5) < 0.45:
+            areas.append("regime_adaptation")
+        if self.alignment_quality.get('consistency', 0.5) < 0.45:
+            areas.append("stability_control")
+        if self.alignment_quality.get('performance_correlation', 0.5) < 0.45:
+            areas.append("feedback_signal")
+        if not areas:
+            areas.append("horizon_balance")
+        return areas

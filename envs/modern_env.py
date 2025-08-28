@@ -1,21 +1,23 @@
+# envs/modern_env.py
 """
 Modern SmartInfoBus Trading Environment
 Zero-wiring architecture with automatic module discovery
-Fixed for modern Gymnasium compatibility
+Gymnasium-compatible (hardened) + non-blocking orchestrator execution
 """
 from __future__ import annotations
 
 import copy
 import warnings
-from typing import Any, Dict, Optional, Tuple, List
 import asyncio
 import threading
 import time
+from typing import Any, Dict, Optional, Tuple, List, Set, cast
 
 import numpy as np
 import pandas as pd
 import gymnasium as gym
 from gymnasium import spaces
+from concurrent.futures import Future
 
 # Configuration
 from .config import TradingConfig, MarketState, EpisodeMetrics
@@ -25,32 +27,33 @@ try:
     from modules.utils.info_bus import InfoBusManager
     from modules.utils.audit_utils import RotatingLogger
     SMARTINFOBUS_AVAILABLE = True
-except ImportError:
-    InfoBusManager = None
-    RotatingLogger = None
+except Exception:
+    InfoBusManager = None  # type: ignore
+    RotatingLogger = None  # type: ignore
     SMARTINFOBUS_AVAILABLE = False
 
 # Core module system
 try:
     from modules.core.module_system import ModuleOrchestrator
     MODULE_SYSTEM_AVAILABLE = True
-except ImportError:
-    ModuleOrchestrator = None
+except Exception:
+    ModuleOrchestrator = None  # type: ignore
     MODULE_SYSTEM_AVAILABLE = False
 
-# Suppress warnings for cleaner logs
-warnings.filterwarnings('ignore', category=RuntimeWarning)
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 
 class ModernTradingEnv(gym.Env):
     """
-    Modern SmartInfoBus-integrated trading environment.
-    Zero-wiring architecture - modules auto-discover and self-organize.
-    Full Gymnasium v0.26+ compatibility
+    SmartInfoBus-integrated trading env (zero-wiring).
+    Gymnasium v0.26+ API: reset()->(obs, info), step()->(obs, reward, terminated, truncated, info).
     """
 
     metadata = {"render_modes": ["human", "rgb_array"]}
 
+    # ──────────────────────────────────────────────────────────────
+    # Init
+    # ──────────────────────────────────────────────────────────────
     def __init__(
         self,
         data_dict: Dict[str, Dict[str, pd.DataFrame]],
@@ -58,617 +61,668 @@ class ModernTradingEnv(gym.Env):
     ):
         super().__init__()
 
-        # ═══════════════════════════════════════════════════════════
-        # Core Configuration
-        # ═══════════════════════════════════════════════════════════
+        # Config & state
         self.config = config or TradingConfig()
         self.current_step = 0
-        
-        # ═══════════════════════════════════════════════════════════
-        # Logging (Initialize first to avoid circular dependencies)
-        # ═══════════════════════════════════════════════════════════
+
+        # Logger first (avoid circular deps)
         self.logger = self._create_logger()
-        
-        # ═══════════════════════════════════════════════════════════
-        # SmartInfoBus & Module System (with timeout protection)
-        # ═══════════════════════════════════════════════════════════
-        
-        self.smart_bus = None
+
+        # SmartInfoBus / Orchestrator handles
+        self.smart_bus = None  # type: ignore[assignment]
         self.smart_bus_enabled = False
-        self.orchestrator = None
+        self.orchestrator = None  # type: ignore[assignment]
         self.orchestrator_enabled = False
-        # New: readiness events
+
+        # Background asyncio loop (to avoid blocking .step() / .reset())
+        self._aio_loop = None  # type: Optional[asyncio.AbstractEventLoop]
+        self._aio_thread = None  # type: Optional[threading.Thread]
+        self._aio_ready = threading.Event()
+        # Track scheduled orchestrator futures to cancel/drain on close
+        self._pending_futures = set()  # type: Set[Future]
+        self._pend_lock = threading.Lock()
+
+        # readiness events for late enabling
         self._bus_ready = threading.Event()
         self._orch_ready = threading.Event()
-        
-        # Initialize systems with timeout protection
+
+        # Bring systems up (with timeouts + fallbacks)
         self._initialize_systems()
 
-        # ═══════════════════════════════════════════════════════════
-        # Market Data & State
-        # ═══════════════════════════════════════════════════════════
-        self.orig_data = data_dict
-        self.data = copy.deepcopy(data_dict)
-        self.instruments = list(self.data.keys())
+        # Data
+        self.orig_data = data_dict  # type: Dict[str, Dict[str, pd.DataFrame]]
+        self.data = copy.deepcopy(data_dict)  # type: Dict[str, Dict[str, pd.DataFrame]]
+        self.instruments = list(self.data.keys())  # type: List[str]
         self._validate_data()
-        
+
         # Market state
-        initial_balance = self.config.initial_balance
+        initial_balance = float(self.config.initial_balance)
         self.market_state = MarketState(
             balance=initial_balance,
             peak_balance=initial_balance,
             current_step=0,
             current_drawdown=0.0,
         )
-        
+
         # Episode tracking
         self.episode_count = 0
         self.episode_metrics = EpisodeMetrics()
-        
-        # ═══════════════════════════════════════════════════════════
-        # Action & Observation Spaces
-        # ═══════════════════════════════════════════════════════════
+
+        # Spaces
         self.action_dim = 2 * len(self.instruments)
         self.action_space = spaces.Box(
             low=-1.0, high=1.0, shape=(self.action_dim,), dtype=np.float32
         )
-        
-        # Dynamic observation space - let modules determine size
         self.observation_space = self._get_observation_space()
-        
-        # ═══════════════════════════════════════════════════════════
-        # Initialize System
-        # ═══════════════════════════════════════════════════════════
+
+        # Setup env & publish initial context
         self._setup_environment()
-        
-        # Log initialization status
-        module_count = len(self.orchestrator.modules) if self.orchestrator else 0
+
+        # Start dedicated event loop thread for the orchestrator
+        self._start_event_loop_thread()
+
+        modules = len(self.orchestrator.modules) if (self.orchestrator and hasattr(self.orchestrator, "modules")) else 0
         self.logger.info(
-            f"🚀 MODERN_ENV_INITIALIZED: {len(self.instruments)} instruments, {module_count} modules - "
-            f"{'Zero-wiring architecture active' if self.orchestrator_enabled else 'Async init/fallback mode active'}"
+            f"🚀 MODERN_ENV_INITIALIZED: {len(self.instruments)} instruments, {modules} modules - Zero-wiring architecture active"
         )
 
+    # ──────────────────────────────────────────────────────────────
+    # Logging
+    # ──────────────────────────────────────────────────────────────
     def _create_logger(self):
-        """Create logger with fallback"""
         try:
             if SMARTINFOBUS_AVAILABLE and RotatingLogger:
                 return RotatingLogger(
                     name="ModernTradingEnv",
                     log_path="logs/modern_env.log",
                     max_lines=2000,
-                    operator_mode=True
+                    operator_mode=True,
                 )
-            else:
-                # Fallback logger
-                import logging
-                logger = logging.getLogger("ModernTradingEnv")
-                if not logger.handlers:
-                    handler = logging.StreamHandler()
-                    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-                    handler.setFormatter(formatter)
-                    logger.addHandler(handler)
-                    logger.setLevel(logging.INFO)
-                return logger
+            # Fallback std logger
+            import logging
+            lg = logging.getLogger("ModernTradingEnv")
+            if not lg.handlers:
+                h = logging.StreamHandler()
+                fmt = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+                h.setFormatter(fmt)
+                lg.addHandler(h)
+                lg.setLevel(logging.INFO)
+            return lg
         except Exception as e:
-            print(f"Failed to create logger: {e}")
-            # Create simple fallback logger
-            class FallbackLogger:
-                def info(self, msg): print(f"INFO: {msg}")
-                def warning(self, msg): print(f"WARNING: {msg}")
-                def error(self, msg): print(f"ERROR: {msg}")
-                def debug(self, msg): print(f"DEBUG: {msg}")
-            return FallbackLogger()
+            print(f"[WARN] Failed to create logger: {e}")
 
+            class Fallback:
+                def info(self, m): print(f"[INFO] {m}")
+                def warning(self, m): print(f"[WARN] {m}")
+                def error(self, m): print(f"[ERROR] {m}")
+                def debug(self, m): print(f"[DBG] {m}")
+            return Fallback()
+
+    # ──────────────────────────────────────────────────────────────
+    # SmartInfoBus / Orchestrator bring-up
+    # ──────────────────────────────────────────────────────────────
     def _initialize_systems(self):
-        """Initialize SmartInfoBus and Module systems with timeout protection"""
-        
-        # Try to initialize SmartInfoBus with timeout
+        # SmartInfoBus
         if SMARTINFOBUS_AVAILABLE and InfoBusManager:
             try:
-                def init_smart_bus():
+                IB = cast(Any, InfoBusManager)
+                def init_bus():
                     try:
-                        if InfoBusManager is not None:
-                            self.smart_bus = InfoBusManager.get_instance()
-                            self.smart_bus_enabled = True
-                            self._bus_ready.set()
-                        else:
-                            self.smart_bus = None
-                            self.smart_bus_enabled = False
+                        # Pylance: InfoBusManager can be None at import-time; we guard and cast.
+                        self.smart_bus = IB.get_instance()  # type: ignore[attr-defined]
+                        self.smart_bus_enabled = True
                     except Exception as e:
-                        self.logger.warning(f"SmartInfoBus initialization failed: {e}")
+                        self.logger.warning(f"SmartInfoBus init failed: {e}")
                         self.smart_bus = None
                         self.smart_bus_enabled = False
-                
-                # Start SmartInfoBus initialization in background
-                bus_thread = threading.Thread(target=init_smart_bus, daemon=True)
-                bus_thread.start()
-                bus_thread.join(timeout=self.config.info_bus_init_timeout)
-                
-                if bus_thread.is_alive():
-                    self.logger.warning("SmartInfoBus initialization taking too long - using fallback until ready (async)")
-                    self.smart_bus = None
-                    self.smart_bus_enabled = False
-                
+                    finally:
+                        self._bus_ready.set()
+
+                t = threading.Thread(target=init_bus, daemon=True)
+                t.start()
+                t.join(timeout=max(0.5, float(getattr(self.config, "info_bus_init_timeout", 2.0))))
             except Exception as e:
-                self.logger.warning(f"Failed to start SmartInfoBus: {e}")
-                self.smart_bus = None
-                self.smart_bus_enabled = False
-        
-        # Create fallback SmartInfoBus if needed
-        if not self.smart_bus_enabled:
+                self.logger.warning(f"SmartInfoBus bring-up error: {e}")
+
+        if not self.smart_bus_enabled or self.smart_bus is None:
+            # Fallback in-process bus (thread-safe)
             self.smart_bus = self._create_fallback_smart_bus()
             self.smart_bus_enabled = True
-        
-        # Try to initialize ModuleOrchestrator with timeout
+            self._bus_ready.set()
+
+        # Orchestrator
         if MODULE_SYSTEM_AVAILABLE and ModuleOrchestrator:
             try:
-                def init_orchestrator():
+                MO = cast(Any, ModuleOrchestrator)
+                def init_orch():
                     try:
-                        if ModuleOrchestrator is not None:
-                            orchestrator = ModuleOrchestrator()
-                            orchestrator.initialize()
-                            self.orchestrator = orchestrator
-                            self.orchestrator_enabled = True
-                            self._orch_ready.set()
-                        else:
-                            self.orchestrator = None
-                            self.orchestrator_enabled = False
+                        # Pylance: ModuleOrchestrator may be None; we guard and cast.
+                        orch = MO()  # type: ignore[call-arg]
+                        if hasattr(orch, "initialize"):
+                            orch.initialize()
+                        self.orchestrator = orch
+                        self.orchestrator_enabled = True
                     except Exception as e:
-                        self.logger.warning(f"ModuleOrchestrator initialization failed: {e}")
+                        self.logger.warning(f"Orchestrator init failed: {e}")
                         self.orchestrator = None
                         self.orchestrator_enabled = False
-                
-                # Start orchestrator initialization in background
-                orchestrator_thread = threading.Thread(target=init_orchestrator, daemon=True)
-                orchestrator_thread.start()
-                orchestrator_thread.join(timeout=self.config.orchestrator_init_timeout)
-                
-                if orchestrator_thread.is_alive():
-                    # Async init path: do not disable, just wait in background
-                    if self.config.orchestrator_async_init:
-                        self.logger.info("ModuleOrchestrator still initializing - continuing in fallback; will enable when ready")
-                    else:
-                        self.logger.warning("ModuleOrchestrator initialization taking too long - continuing without it")
-                        self.orchestrator = None
-                        self.orchestrator_enabled = False
-                
+                    finally:
+                        self._orch_ready.set()
+
+                t = threading.Thread(target=init_orch, daemon=True)
+                t.start()
+                t.join(timeout=max(1.0, float(getattr(self.config, "orchestrator_init_timeout", 2.0))))
             except Exception as e:
-                self.logger.warning(f"Failed to start ModuleOrchestrator: {e}")
-                self.orchestrator = None
-                self.orchestrator_enabled = False
-        
-        # Start a background monitor to switch from fallback to real systems when ready
+                self.logger.warning(f"Orchestrator bring-up error: {e}")
+
+        # Post-init monitor to flip from fallback -> real when ready
         self._start_post_init_monitor()
 
+    def _start_event_loop_thread(self):
+        """Run a dedicated asyncio loop in a background thread for orchestrator coroutines."""
+        def runner():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                self._aio_loop = loop
+                self._aio_ready.set()
+                loop.run_forever()
+            except Exception as e:
+                self.logger.warning(f"Async loop thread error: {e}")
+
+        if self._aio_thread and self._aio_thread.is_alive():
+            return
+        self._aio_thread = threading.Thread(target=runner, daemon=True)
+        self._aio_thread.start()
+        self._aio_ready.wait(timeout=1.5)
+
+    # ──────────────────────────────────────────────────────────────
+    # Data / spaces / setup
+    # ──────────────────────────────────────────────────────────────
     def _validate_data(self):
-        """Validate market data"""
-        required_columns = {"open", "high", "low", "close"}
-        
-        for inst in self.instruments:
-            if inst not in self.data:
-                raise ValueError(f"Missing data for instrument: {inst}")
-                
-            for tf, df in self.data[inst].items():
-                missing = required_columns - set(df.columns)
+        required = {"open", "high", "low", "close"}
+        for inst, tfs in self.data.items():
+            if not isinstance(tfs, dict) or not tfs:
+                raise ValueError(f"Empty timeframes for instrument {inst}")
+            for tf, df in tfs.items():
+                if not isinstance(df, pd.DataFrame) or df.empty:
+                    raise ValueError(f"Empty DataFrame for {inst}/{tf}")
+                missing = required - set(df.columns)
                 if missing:
                     raise ValueError(f"Missing columns for {inst}/{tf}: {missing}")
-                
-                # Add volume if missing
-                if 'volume' not in df.columns:
-                    self.data[inst][tf]['volume'] = 1.0
-    
-    def _get_observation_space(self) -> spaces.Box:
-        """Get observation space from modules"""
-        # Start with a reasonable default
-        default_size = 256
-        
-        return spaces.Box(
-            low=-np.inf, 
-            high=np.inf, 
-            shape=(default_size,), 
-            dtype=np.float32
-        )
-    
-    def _setup_environment(self):
-        """Setup environment for trading"""
-        # Store basic environment data in SmartInfoBus
-        if self.smart_bus:
-            self.smart_bus.set(
-                'environment_config',
-                {
-                    'instruments': self.instruments,
-                    'initial_balance': self.config.initial_balance,
-                    'action_dim': self.action_dim,
-                    'max_steps': self.config.max_steps,
-                },
-                module='Environment',
-                thesis="Environment configuration for module access"
-            )
-        
-        # Initialize market data in SmartInfoBus
-        self._store_market_data()
-    
-    def _store_market_data(self):
-        """Store current market data in SmartInfoBus"""
-        step = self.market_state.current_step
-        
-        for instrument in self.instruments:
-            for timeframe in ['H1', 'H4', 'D1']:
-                if timeframe in self.data[instrument]:
-                    df = self.data[instrument][timeframe]
-                    if step < len(df):
-                        # Current price
-                        current_price = float(df['close'].iloc[step])
-                        if self.smart_bus:
-                            self.smart_bus.set(
-                                f'price_{instrument}_{timeframe}',
-                                current_price,
-                                module='Environment',
-                                thesis=f"Current {instrument} price at step {step}"
-                            )
-                        
-                        # OHLCV window
-                        window_size = min(100, step + 1)
-                        start_idx = max(0, step - window_size + 1)
-                        end_idx = step + 1
-                        
-                        ohlcv_data = {
-                            'open': df['open'].iloc[start_idx:end_idx].values,
-                            'high': df['high'].iloc[start_idx:end_idx].values,
-                            'low': df['low'].iloc[start_idx:end_idx].values,
-                            'close': df['close'].iloc[start_idx:end_idx].values,
-                            'volume': df['volume'].iloc[start_idx:end_idx].values,
-                            'step': step,
-                            'instrument': instrument,
-                            'timeframe': timeframe
-                        }
-                        
-                        if self.smart_bus:
-                            self.smart_bus.set(
-                                f'market_data_{instrument}_{timeframe}',
-                                ohlcv_data,
-                                module='Environment',
-                                thesis=f"Market data window for {instrument} {timeframe}"
-                            )
+                if "volume" not in df.columns:
+                    self.data[inst][tf]["volume"] = 1.0
+                try:
+                    if not df.index.is_monotonic_increasing:
+                        self.logger.warning(f"Index not monotonic for {inst}/{tf}")
+                except Exception:
+                    pass
 
+    def _get_observation_space(self) -> spaces.Box:
+        default_size = 256
+        try:
+            if self.smart_bus:
+                sz = self.smart_bus.get("environment_observation_size", "Environment")
+                if isinstance(sz, int) and sz > 0:
+                    default_size = sz
+        except Exception:
+            pass
+        return spaces.Box(low=-np.inf, high=np.inf, shape=(default_size,), dtype=np.float32)
+
+    def _setup_environment(self):
+        try:
+            if self.smart_bus:
+                self.smart_bus.set(
+                    "environment_config",
+                    {
+                        "instruments": self.instruments,
+                        "initial_balance": float(self.config.initial_balance),
+                        "action_dim": self.action_dim,
+                        "max_steps": int(self.config.max_steps),
+                    },
+                    module="Environment",
+                    thesis="Environment configuration for module access",
+                )
+        except Exception as e:
+            self.logger.warning(f"Failed to publish environment_config: {e}")
+
+        self._store_market_data()
+
+    def _store_market_data(self):
+        step = int(self.market_state.current_step)
+        if not self.smart_bus:
+            return
+        for instrument in self.instruments:
+            for timeframe in ["H1", "H4", "D1"]:
+                try:
+                    if timeframe not in self.data[instrument]:
+                        continue
+                    df = self.data[instrument][timeframe]
+                    if step >= len(df):
+                        continue
+                    price = float(df["close"].iloc[step])
+                    self.smart_bus.set(
+                        f"price_{instrument}_{timeframe}",
+                        price,
+                        module="Environment",
+                        thesis=f"Current {instrument} price at step {step}",
+                    )
+                    # publish small rolling window (best-effort)
+                    w = min(100, step + 1)
+                    s = max(0, step - w + 1)
+                    ohlcv = {
+                        "open": df["open"].iloc[s:step + 1].values,
+                        "high": df["high"].iloc[s:step + 1].values,
+                        "low": df["low"].iloc[s:step + 1].values,
+                        "close": df["close"].iloc[s:step + 1].values,
+                        "volume": df["volume"].iloc[s:step + 1].values,
+                        "step": step,
+                        "instrument": instrument,
+                        "timeframe": timeframe,
+                    }
+                    self.smart_bus.set(
+                        f"market_data_{instrument}_{timeframe}",
+                        ohlcv,
+                        module="Environment",
+                        thesis=f"Market data window for {instrument} {timeframe}",
+                    )
+                except Exception:
+                    # keep quiet to avoid spam during tight loops
+                    pass
+
+    # ──────────────────────────────────────────────────────────────
+    # Gymnasium API
+    # ──────────────────────────────────────────────────────────────
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict] = None):
-        """Reset environment to initial state (Gymnasium v0.26+ compatible)"""
         super().reset(seed=seed)
-        
-        # Handle seeding for Gymnasium compatibility
         if seed is not None:
             np.random.seed(seed)
-        
-        self.logger.info(
-            f"🔄 ENVIRONMENT_RESET: Episode {self.episode_count + 1}"
-        )
-        
-        # Reset episode tracking
+
+        self.logger.info(f"🔄 ENVIRONMENT_RESET: Episode {self.episode_count + 1}")
+
+        # episode tracking
         self.episode_count += 1
         self.episode_metrics = EpisodeMetrics()
-        
-        # Reset data
+
+        # reset data snapshot
         self.data = copy.deepcopy(self.orig_data)
-        
-        # Reset market state
-        initial_balance = self.config.initial_balance
+
+        # market state
+        initial_balance = float(self.config.initial_balance)
         self.market_state = MarketState(
             balance=initial_balance,
             peak_balance=initial_balance,
             current_step=self._select_starting_step(),
             current_drawdown=0.0,
         )
-        self.current_step = self.market_state.current_step
-        
-        # Reset SmartInfoBus for new episode
-        if self.smart_bus:
-            self.smart_bus.set(
-                'episode_info',
-                {
-                    'episode': self.episode_count,
-                    'step': self.current_step,
-                    'balance': self.market_state.balance,
-                    'reset': True
-                },
-                module='Environment',
-                thesis=f"Episode {self.episode_count} reset information"
-            )
-        
-        # Store initial market data
+        self.current_step = int(self.market_state.current_step)
+
+        # publish reset info
+        try:
+            if self.smart_bus:
+                self.smart_bus.set(
+                    "episode_info",
+                    {
+                        "episode": self.episode_count,
+                        "step": self.current_step,
+                        "balance": self.market_state.balance,
+                        "reset": True,
+                    },
+                    module="Environment",
+                    thesis=f"Episode {self.episode_count} reset information",
+                )
+        except Exception:
+            pass
+
         self._store_market_data()
-        
-        # Get initial observation from modules
+        # Publish environment observation sizing for downstream modules
+        try:
+            if self.smart_bus:
+                self.smart_bus.set(
+                    "environment_observation_size",
+                    int(self.observation_space.shape[0]) if self.observation_space.shape else 256,
+                    module="Environment",
+                    thesis="Declared observation vector size"
+                )
+        except Exception:
+            pass
         obs = self._get_observation()
-        
-        # Create reset info
-        modules_active = len(self.orchestrator.modules) if self.orchestrator else 0
+        # Publish initial observation for consumers needing it at reset
+        try:
+            if self.smart_bus is not None:
+                self.smart_bus.set(
+                    "environment_observation",
+                    obs,
+                    module="Environment",
+                    thesis="Initial environment observation"
+                )
+        except Exception:
+            pass
+
+        modules = len(self.orchestrator.modules) if (self.orchestrator and hasattr(self.orchestrator, "modules")) else 0
         info = {
-            'episode': self.episode_count,
-            'step': self.current_step,
-            'balance': self.market_state.balance,
-            'modules_active': modules_active,
-            'reset': True
+            "episode": self.episode_count,
+            "step": self.current_step,
+            "balance": self.market_state.balance,
+            "modules_active": modules,
+            "reset": True,
         }
-        
         return obs, info
-    
+
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
-        """Execute one environment step"""
+        # normalize action
+        if not isinstance(action, np.ndarray):
+            action = np.asarray(action, dtype=np.float32)
+        action = action.astype(np.float32).reshape(self.action_dim,)
+
         self.current_step += 1
-        self.market_state.current_step = self.current_step
-        
-        # Store action in SmartInfoBus
-        if self.smart_bus:
-            self.smart_bus.set(
-                'agent_action',
-                action,
-                module='Environment',
-                thesis=f"Agent action at step {self.current_step}"
-            )
-        
-        # Store updated market data
+        self.market_state.current_step = int(self.current_step)
+
+        # publish action
+        try:
+            if self.smart_bus:
+                self.smart_bus.set(
+                    "agent_action",
+                    action,
+                    module="Environment",
+                    thesis=f"Agent action at step {self.current_step}",
+                )
+                # Surface the final_trading_action alias for compatibility
+                self.smart_bus.set(
+                    "final_trading_action",
+                    action,
+                    module="Environment",
+                    thesis="Environment echo of action as final_trading_action"
+                )
+        except Exception:
+            pass
+
+        # update market data + state snapshot
         self._store_market_data()
-        
-        # Store current market state
-        if self.smart_bus:
-            self.smart_bus.set(
-                'market_state',
-                {
-                    'balance': self.market_state.balance,
-                    'step': self.current_step,
-                    'drawdown': self.market_state.current_drawdown,
-                    'peak_balance': self.market_state.peak_balance
-                },
-                module='Environment',
-                thesis="Current market state for modules"
-            )
-        
-        # Execute modules through orchestrator (if available)
-        if self.orchestrator_enabled and self.orchestrator:
-            try:
-                asyncio.run(self.orchestrator.execute_step({}))
-            except Exception as e:
-                self.logger.error(f"Module execution failed: {e}")
-        
-        # Get final trading decision from SmartInfoBus
-        final_action = (self.smart_bus.get('final_trading_action', 'Environment') if self.smart_bus else None) or action
-        
-        # Execute trade and calculate reward
-        reward = self._execute_step(final_action)
-        
-        # Get next observation
+        try:
+            if self.smart_bus:
+                self.smart_bus.set(
+                    "market_state",
+                    {
+                        "balance": self.market_state.balance,
+                        "step": self.current_step,
+                        "drawdown": self.market_state.current_drawdown,
+                        "peak_balance": self.market_state.peak_balance,
+                    },
+                    module="Environment",
+                    thesis="Current market state for modules",
+                )
+        except Exception:
+            pass
+
+        # Non-blocking orchestrator execution (fire-and-forget)
+        if self.orchestrator_enabled and self.orchestrator and hasattr(self.orchestrator, "execute_step"):
+            self._run_orchestrator_step({})  # inputs can be extended later
+
+        # allow modules to override final action
+        try:
+            final_action = self.smart_bus.get("final_trading_action", "Environment") if self.smart_bus else None
+            if final_action is None:
+                final_action = action
+        except Exception:
+            final_action = action
+
+        reward = float(self._execute_step(final_action))
         obs = self._get_observation()
-        
-        # Check termination
+        # Publish observation each step for downstream consumers
+        try:
+            if self.smart_bus:
+                self.smart_bus.set(
+                    "environment_observation",
+                    obs,
+                    module="Environment",
+                    thesis=f"Environment observation at step {self.current_step}"
+                )
+        except Exception:
+            pass
         terminated, truncated = self._check_termination()
-        
-        # Create step info
-        modules_executed = len(self.orchestrator.modules) if self.orchestrator else 0
+
+        modules = len(self.orchestrator.modules) if (self.orchestrator and hasattr(self.orchestrator, "modules")) else 0
         info = {
-            'step': self.current_step,
-            'balance': self.market_state.balance,
-            'drawdown': self.market_state.current_drawdown,
-            'reward': reward,
-            'modules_executed': modules_executed,
-            'terminated': terminated,
-            'truncated': truncated
+            "step": self.current_step,
+            "balance": self.market_state.balance,
+            "drawdown": self.market_state.current_drawdown,
+            "reward": reward,
+            "modules_executed": modules,
+            "terminated": terminated,
+            "truncated": truncated,
         }
-        
         return obs, reward, terminated, truncated, info
-    
+
+    # ──────────────────────────────────────────────────────────────
+    # Internals
+    # ──────────────────────────────────────────────────────────────
+    def _run_orchestrator_step(self, inputs: Dict[str, Any]) -> None:
+        """
+        Schedule orchestrator.execute_step(inputs) on the dedicated loop thread.
+        Never blocks the env (prevents hangs in quick tests / evals).
+        """
+        try:
+            coro = self.orchestrator.execute_step(inputs)  # type: ignore[attr-defined]
+        except Exception as e:
+            self.logger.warning(f"Cannot build orchestrator coroutine: {e}")
+            return
+
+        loop = self._aio_loop
+        if loop and loop.is_running():
+            try:
+                fut = asyncio.run_coroutine_threadsafe(coro, loop)
+                # track for graceful shutdown
+                with self._pend_lock:
+                    self._pending_futures.add(fut)
+
+                def _on_done(t: Future):
+                    # log if failed and remove from tracking
+                    try:
+                        exc = t.exception()
+                        if exc:
+                            self.logger.error(f"Orchestrator step failed: {exc}")
+                    except Exception:
+                        # accessing exception() can itself raise if cancelled; ignore
+                        pass
+                    finally:
+                        with self._pend_lock:
+                            self._pending_futures.discard(t)
+
+                fut.add_done_callback(_on_done)
+            except Exception as e:
+                self.logger.warning(f"Failed to schedule orchestrator step: {e}")
+        else:
+            # Last-resort: run in a throwaway thread (still non-blocking)
+            threading.Thread(target=lambda: asyncio.run(coro), daemon=True).start()
+
     def _select_starting_step(self) -> int:
-        """Select random starting step"""
         if not self.instruments:
             return 0
-        
-        # Find minimum data length across all instruments
-        min_length = float('inf')
-        for instrument in self.instruments:
-            for timeframe, df in self.data[instrument].items():
-                min_length = min(min_length, len(df))
-        
-        if min_length == float('inf') or min_length < 100:
+        min_len = min((len(df) for inst in self.instruments for df in self.data[inst].values()), default=0)
+        if min_len < 100:
             return 0
-        
-        # Random start between 50 and (length - max_steps - 50)
-        max_start = max(50, int(min_length) - self.config.max_steps - 50)
-        
-        return np.random.randint(50, int(max_start))
-    
+        max_start = max(50, int(min_len) - int(self.config.max_steps) - 50)
+        if max_start <= 50:
+            return 0
+        return int(np.random.randint(50, max_start))
+
     def _get_observation(self) -> np.ndarray:
-        """Get observation from SmartInfoBus"""
-        # Check if modules produced an observation
-        obs = self.smart_bus.get('environment_observation', 'Environment') if self.smart_bus else None
-        
-        if obs is not None and isinstance(obs, np.ndarray):
-            # Ensure observation matches expected size
-            expected_size = self.observation_space.shape[0] if self.observation_space.shape else 256
-            if obs.size != expected_size:
-                if obs.size < expected_size:
-                    # Pad with zeros
-                    padded_obs = np.zeros(expected_size, dtype=np.float32)
-                    padded_obs[:obs.size] = obs.flatten()
-                    return padded_obs
-                else:
-                    # Truncate
-                    return obs.flatten()[:expected_size]
-            return obs.flatten()
-        
-        # Fallback: create basic observation
-        return self._create_fallback_observation()
-    
-    def _create_fallback_observation(self) -> np.ndarray:
-        """Create MULTI-TIMEFRAME observation if modules don't provide one"""
-        features = []
-        
-        # Market state features
-        features.extend([
-            self.market_state.balance / 10000.0,  # Normalized balance
-            self.market_state.current_drawdown,
-            float(self.current_step) / 1000.0,   # Normalized step
+        # try module-provided observation
+        expected = self.observation_space.shape[0] if self.observation_space.shape else 256
+        try:
+            obs = self.smart_bus.get("environment_observation", "Environment") if self.smart_bus else None
+        except Exception:
+            obs = None
+
+        if obs is not None:
+            if isinstance(obs, np.ndarray):
+                flat = obs.astype(np.float32).flatten()
+            elif isinstance(obs, (list, tuple)):
+                flat = np.asarray(obs, dtype=np.float32).flatten()
+            else:
+                flat = None
+
+            if flat is not None:
+                if flat.size < expected:
+                    out = np.zeros(expected, dtype=np.float32)
+                    out[:flat.size] = flat
+                    return out
+                return flat[:expected]
+
+        # fallback engineered obs
+        return self._create_fallback_observation(expected)
+
+    def _create_fallback_observation(self, expected_size: int) -> np.ndarray:
+        feats: List[float] = []
+        feats.extend([
+            self.market_state.balance / 10000.0,
+            float(self.market_state.current_drawdown),
+            float(self.current_step) / 1000.0,
         ])
-        
-        # Multi-timeframe price features for each instrument
+
         for instrument in self.instruments:
-            # Add features from ALL timeframes for comprehensive analysis
-            for timeframe in ['H1', 'H4', 'D1']:
+            for timeframe in ["H1", "H4", "D1"]:
                 if timeframe in self.data[instrument]:
                     df = self.data[instrument][timeframe]
                     if self.current_step < len(df):
-                        current_bar = {
-                            'open': df['open'].iloc[self.current_step],
-                            'high': df['high'].iloc[self.current_step],
-                            'low': df['low'].iloc[self.current_step],
-                            'close': df['close'].iloc[self.current_step],
-                            'volume': df['volume'].iloc[self.current_step]
-                        }
-                        
-                        # Add normalized OHLCV features
-                        base_price = current_bar['close']
-                        features.extend([
-                            current_bar['close'] / 10000.0,  # Normalized close
-                            (current_bar['high'] - current_bar['low']) / base_price if base_price > 0 else 0,  # HL range %
-                            (current_bar['close'] - current_bar['open']) / base_price if base_price > 0 else 0,  # OC change %
-                            current_bar['volume'] / 1000.0,  # Normalized volume
+                        close_ = float(df["close"].iloc[self.current_step])
+                        open_ = float(df["open"].iloc[self.current_step])
+                        high_ = float(df["high"].iloc[self.current_step])
+                        low_ = float(df["low"].iloc[self.current_step])
+                        vol_ = float(df["volume"].iloc[self.current_step])
+
+                        base = max(close_, 1e-12)
+                        feats.extend([
+                            close_ / 10000.0,
+                            (high_ - low_) / base,
+                            (close_ - open_) / base,
+                            vol_ / 1000.0,
                         ])
-                        
-                        # Add momentum features (if enough history)
+
+                        # momentum (5)
                         if self.current_step >= 5:
-                            prev_close = df['close'].iloc[self.current_step - 5]
-                            momentum = (current_bar['close'] - prev_close) / prev_close if prev_close > 0 else 0
-                            features.append(momentum)
+                            prev = float(df["close"].iloc[self.current_step - 5])
+                            feats.append((close_ - prev) / max(prev, 1e-12))
                         else:
-                            features.append(0.0)
-                            
-                        # Add volatility feature (20-period if available)
+                            feats.append(0.0)
+
+                        # volatility (20)
                         if self.current_step >= 20:
-                            recent_closes = df['close'].iloc[self.current_step-19:self.current_step+1]
-                            volatility = recent_closes.std() / recent_closes.mean() if recent_closes.mean() > 0 else 0
-                            features.append(volatility)
+                            recent = df["close"].iloc[self.current_step - 19:self.current_step + 1].to_numpy(dtype=np.float64)
+                            m = float(np.mean(recent, dtype=np.float64))
+                            v = float(np.std(recent, dtype=np.float64) / m) if m > 0 else 0.0
+                            feats.append(v)
                         else:
-                            features.append(0.01)  # Default volatility
-                            
+                            feats.append(0.01)
                     else:
-                        # Fill with zeros if no data
-                        features.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+                        feats.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
                 else:
-                    # Fill with zeros if timeframe not available
-                    features.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-        
-        # Add cross-timeframe analysis features
-        # Compare H1 vs H4 vs D1 trends for each instrument
+                    feats.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+
+        # cross-timeframe trend alignments
         for instrument in self.instruments:
-            h1_trend = h4_trend = d1_trend = 0.0
-            
-            # Calculate simple trend for each timeframe
-            for tf_name, trend_var in [('H1', 'h1_trend'), ('H4', 'h4_trend'), ('D1', 'd1_trend')]:
-                if tf_name in self.data[instrument] and self.current_step >= 5:
-                    df = self.data[instrument][tf_name]
-                    if self.current_step < len(df):
-                        current_price = df['close'].iloc[self.current_step]
-                        past_price = df['close'].iloc[max(0, self.current_step - 5)]
-                        trend = (current_price - past_price) / past_price if past_price > 0 else 0
-                        locals()[trend_var] = trend
-            
-            # Add trend alignment features
-            features.extend([
-                h1_trend,
-                h4_trend, 
-                d1_trend,
-                1.0 if (h1_trend > 0 and h4_trend > 0 and d1_trend > 0) else 0.0,  # All timeframes bullish
-                1.0 if (h1_trend < 0 and h4_trend < 0 and d1_trend < 0) else 0.0,  # All timeframes bearish
-            ])
-        
-        # Pad to expected size
-        obs_array = np.array(features, dtype=np.float32)
-        expected_size = self.observation_space.shape[0] if self.observation_space.shape else 256
-        
-        if obs_array.size < expected_size:
-            padded_obs = np.zeros(expected_size, dtype=np.float32)
-            padded_obs[:obs_array.size] = obs_array
-            return padded_obs
-        elif obs_array.size > expected_size:
-            return obs_array[:expected_size]
-        else:
-            return obs_array
-        
-        return obs_array[:expected_size]
-    
+            h1 = h4 = d1 = 0.0
+            if "H1" in self.data[instrument] and 5 <= self.current_step < len(self.data[instrument]["H1"]):
+                df = self.data[instrument]["H1"]
+                cur, past = float(df["close"].iloc[self.current_step]), float(df["close"].iloc[self.current_step - 5])
+                h1 = (cur - past) / max(past, 1e-12)
+            if "H4" in self.data[instrument] and 5 <= self.current_step < len(self.data[instrument]["H4"]):
+                df = self.data[instrument]["H4"]
+                cur, past = float(df["close"].iloc[self.current_step]), float(df["close"].iloc[self.current_step - 5])
+                h4 = (cur - past) / max(past, 1e-12)
+            if "D1" in self.data[instrument] and 5 <= self.current_step < len(self.data[instrument]["D1"]):
+                df = self.data[instrument]["D1"]
+                cur, past = float(df["close"].iloc[self.current_step]), float(df["close"].iloc[self.current_step - 5])
+                d1 = (cur - past) / max(past, 1e-12)
+            feats.extend([h1, h4, d1, 1.0 if (h1 > 0 and h4 > 0 and d1 > 0) else 0.0, 1.0 if (h1 < 0 and h4 < 0 and d1 < 0) else 0.0])
+
+        arr = np.asarray(feats, dtype=np.float32)
+        if arr.size < expected_size:
+            out = np.zeros(expected_size, dtype=np.float32)
+            out[:arr.size] = arr
+            return out
+        return arr[:expected_size]
+
     def _execute_step(self, action: np.ndarray) -> float:
-        """Execute trading step and return reward"""
-        # Get trading result from SmartInfoBus
-        trading_result = self.smart_bus.get('trading_result', 'Environment') if self.smart_bus else None
-        
-        if trading_result:
-            pnl = trading_result.get('pnl', 0.0)
-            
-            # Update balance
+        # Prefer module-provided trading result if any
+        try:
+            tr = self.smart_bus.get("trading_result", "Environment") if self.smart_bus else None
+        except Exception:
+            tr = None
+
+        if tr:
+            pnl = float(tr.get("pnl", 0.0))
             self.market_state.balance += pnl
-            
-            # Update peak and drawdown
             if self.market_state.balance > self.market_state.peak_balance:
                 self.market_state.peak_balance = self.market_state.balance
                 self.market_state.current_drawdown = 0.0
             else:
-                drawdown = (self.market_state.peak_balance - self.market_state.balance) / self.market_state.peak_balance
-                self.market_state.current_drawdown = drawdown
-            
-            return pnl / 100.0  # Normalized reward
-        
-        # Default: small negative reward for no action
+                denom = max(self.market_state.peak_balance, 1e-12)
+                self.market_state.current_drawdown = (self.market_state.peak_balance - self.market_state.balance) / denom
+            return pnl / 100.0
+
+        # No result: mild penalty to encourage producing signals
+        # Also publish a minimal trading_result placeholder for compatibility
+        try:
+            if self.smart_bus:
+                self.smart_bus.set(
+                    "trading_result",
+                    {"pnl": 0.0, "source": "Environment", "step": int(self.current_step)},
+                    module="Environment",
+                    thesis="Placeholder trading result (no external provider)"
+                )
+        except Exception:
+            pass
         return -0.01
-    
+
     def _check_termination(self) -> Tuple[bool, bool]:
-        """Check if episode should terminate"""
-        # Check drawdown limit
-        if self.market_state.current_drawdown > self.config.max_drawdown:
-            return True, False  # Terminated due to drawdown
-        
-        # Check max steps
-        if self.current_step >= self.config.max_steps:
-            return False, True  # Truncated due to time limit
-        
-        # Check balance
+        if self.market_state.current_drawdown > float(self.config.max_drawdown):
+            return True, False
+        if int(self.current_step) >= int(self.config.max_steps):
+            return False, True
         if self.market_state.balance <= 0:
-            return True, False  # Terminated due to bankruptcy
-        
+            return True, False
         return False, False
-    
+
+    # ──────────────────────────────────────────────────────────────
+    # Fallback SmartBus + post-init monitor
+    # ──────────────────────────────────────────────────────────────
     def _create_fallback_smart_bus(self):
-        """Create a fallback SmartInfoBus implementation"""
         class FallbackSmartBus:
             def __init__(self):
-                self._data = {}
+                self._store = {}
+                self._lock = threading.Lock()
                 self._module_disabled = set()
-                self._data_store = {}
+                self._data_store = self._store  # for external status probes
                 self._is_fallback = True
-            
+
             def set(self, key, value, module=None, thesis=None):
-                self._data[key] = value
-                self._data_store[key] = value
-            
+                with self._lock:
+                    self._store[key] = value
+
             def get(self, key, module=None):
-                return self._data.get(key)
-            
-            def register_provider(self, module, keys):
-                pass
-            
-            def register_consumer(self, module, keys):
-                pass
-            
+                with self._lock:
+                    return self._store.get(key)
+
+            def register_provider(self, module, keys): return True
+            def register_consumer(self, module, keys): return True
+
             def get_performance_metrics(self):
-                return {}
-        
+                with self._lock:
+                    return {
+                        "active": True,
+                        "data_keys": len(self._store),
+                        "disabled_modules": list(self._module_disabled),
+                    }
         return FallbackSmartBus()
-    
+
     def _start_post_init_monitor(self):
-        """Background monitor to switch from fallback bus and enable orchestrator when ready"""
         def monitor():
             try:
-                # Wait for real SmartInfoBus to become ready
                 if not self._bus_ready.is_set():
-                    self._bus_ready.wait(timeout=max(1.0, self.config.info_bus_init_timeout * 5))
-                if self._bus_ready.is_set() and getattr(self.smart_bus, '_is_fallback', False):
+                    self._bus_ready.wait(timeout=max(1.0, float(getattr(self.config, "info_bus_init_timeout", 2.0)) * 5))
+                if self._bus_ready.is_set() and getattr(self.smart_bus, "_is_fallback", False):
                     try:
                         real_bus = InfoBusManager.get_instance() if (SMARTINFOBUS_AVAILABLE and InfoBusManager) else None
                         if real_bus is not None:
@@ -676,57 +730,117 @@ class ModernTradingEnv(gym.Env):
                             self.logger.info("SmartInfoBus is ready - switched from fallback to real bus")
                     except Exception as e:
                         self.logger.warning(f"Failed switching to real SmartInfoBus: {e}")
-                
-                # Wait for orchestrator readiness
+
                 if not self._orch_ready.is_set():
-                    # If async init is enabled, wait longer in background
-                    wait_time = self.config.orchestrator_init_timeout * (3 if self.config.orchestrator_async_init else 1)
+                    wait_time = float(getattr(self.config, "orchestrator_init_timeout", 2.0)) * (3 if bool(getattr(self.config, "orchestrator_async_init", True)) else 1)
                     self._orch_ready.wait(timeout=max(2.0, wait_time))
+
                 if self._orch_ready.is_set() and self.orchestrator and not self.orchestrator_enabled:
                     self.orchestrator_enabled = True
                     self.logger.info("ModuleOrchestrator is ready - enabling orchestrator execution")
             except Exception as e:
-                self.logger.warning(f"Post-init monitor encountered an error: {e}")
-        
-        t = threading.Thread(target=monitor, daemon=True)
-        t.start()
-    
-    def get_smartinfobus_status(self) -> Dict[str, Any]:
-        """Get SmartInfoBus system status"""
-        modules_active = len(self.orchestrator.modules) if self.orchestrator else 0
-        return {
-            'performance_metrics': self.smart_bus.get_performance_metrics() if self.smart_bus else {},
-            'modules_active': modules_active,
-            'modules_disabled': list(self.smart_bus._module_disabled) if self.smart_bus else [],
-            'data_keys': len(self.smart_bus._data_store) if self.smart_bus else 0,
-            'current_step': self.current_step,
-            'episode': self.episode_count
-        }
-    
-    def render(self, mode: str = "human"):
-        """Render environment"""
-        if mode == "human":
-            print(f"Step: {self.current_step}, Balance: ${self.market_state.balance:.2f}, "
-                  f"Drawdown: {self.market_state.current_drawdown:.1%}")
-    
-    def close(self):
-        """Close environment"""
-        self.logger.info("Environment closed")
+                self.logger.warning(f"Post-init monitor error: {e}")
 
-    # ════════════════════════════════════════════════════════════════════
-    # Legacy Compatibility Methods (for Stable-Baselines3 compatibility)
-    # ════════════════════════════════════════════════════════════════════
-    
+        threading.Thread(target=monitor, daemon=True).start()
+
+    # ──────────────────────────────────────────────────────────────
+    # Diagnostics & rendering
+    # ──────────────────────────────────────────────────────────────
+    def get_smartinfobus_status(self) -> Dict[str, Any]:
+        modules_active = len(self.orchestrator.modules) if self.orchestrator and hasattr(self.orchestrator, "modules") else 0
+        bus = self.smart_bus
+        data_keys = len(getattr(bus, "_data_store", {})) if bus else 0
+        disabled = list(getattr(bus, "_module_disabled", [])) if bus else []
+        try:
+            metrics = bus.get_performance_metrics() if bus else {}
+        except Exception:
+            metrics = {}
+        return {
+            "performance_metrics": metrics,
+            "modules_active": modules_active,
+            "modules_disabled": disabled,
+            "data_keys": data_keys,
+            "current_step": self.current_step,
+            "episode": self.episode_count,
+        }
+
+    def render(self, mode: str = "human"):
+        if mode == "human":
+            print(
+                f"Step: {self.current_step}, "
+                f"Balance: ${self.market_state.balance:.2f}, "
+                f"Drawdown: {self.market_state.current_drawdown:.1%}"
+            )
+
+    def close(self):
+        self.logger.info("Environment closed")
+        # prevent new schedules
+        try:
+            self.orchestrator_enabled = False
+        except Exception:
+            pass
+
+        # allow orchestrator to perform its own shutdown steps
+        try:
+            if self.orchestrator and hasattr(self.orchestrator, "shutdown"):
+                # synchronous shutdown; cancels internal monitors, saves state
+                self.orchestrator.shutdown()
+        except Exception as e:
+            try:
+                self.logger.warning(f"Orchestrator shutdown warning: {e}")
+            except Exception:
+                pass
+
+        # Cancel any pending orchestrator futures and drain the loop once
+        loop = self._aio_loop
+        try:
+            if loop and loop.is_running():
+                # snapshot and cancel
+                with self._pend_lock:
+                    to_cancel = list(self._pending_futures)
+                for fut in to_cancel:
+                    try:
+                        fut.cancel()
+                    except Exception:
+                        pass
+                # tick the loop to process cancellations
+                try:
+                    tick = asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop)
+                    tick.result(timeout=0.5)
+                except Exception:
+                    pass
+                # finally stop the loop
+                loop.call_soon_threadsafe(loop.stop)
+        except Exception:
+            pass
+
+        # join background thread
+        try:
+            if self._aio_thread and self._aio_thread.is_alive():
+                self._aio_thread.join(timeout=1.5)
+        except Exception:
+            pass
+
+        # clear references
+        try:
+            with self._pend_lock:
+                self._pending_futures.clear()
+        except Exception:
+            pass
+        self._aio_loop = None
+        self._aio_thread = None
+
+    # ──────────────────────────────────────────────────────────────
+    # Legacy helpers (SB3 compatibility)
+    # ──────────────────────────────────────────────────────────────
     def seed(self, seed: Optional[int] = None):
-        """
-        Legacy seed method for compatibility with older environments.
-        This is deprecated in favor of passing seed to reset().
-        """
         if seed is not None:
             np.random.seed(seed)
         return [seed]
-    
+
     @property
     def unwrapped(self):
-        """Return unwrapped environment (for compatibility)"""
         return self
+
+
+__all__ = ["ModernTradingEnv"]

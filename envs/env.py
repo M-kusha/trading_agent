@@ -1,12 +1,15 @@
 """
 Enhanced Trading Environment - Modern SmartInfoBus Version
-Simplified wrapper around ModernTradingEnv
+Simplified wrapper around ModernTradingEnv (backward compatible)
 """
+from __future__ import annotations
+
+from typing import List
+
 from .modern_env import ModernTradingEnv
 from .config import TradingConfig
 
-# For backward compatibility
+# Backward compatibility alias
 EnhancedTradingEnv = ModernTradingEnv
 
-# Export the modern environment as the default
-__all__ = ['ModernTradingEnv', 'EnhancedTradingEnv', 'TradingConfig']
+__all__: List[str] = ["ModernTradingEnv", "EnhancedTradingEnv", "TradingConfig"]

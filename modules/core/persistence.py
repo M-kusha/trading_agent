@@ -2,7 +2,12 @@
 # File: modules/core/persistence.py
 # [ROCKET] PRODUCTION-READY SmartInfoBus Persistence & Replay System
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
-# FIXED: State validation, health checks, version compatibility
+# ENHANCED 2025-08:
+#   - Serializer-aware validation (pickle-first, JSON fallback)
+#   - Checksum bound to chosen serialization method
+#   - Periodic auto-save of all module states
+#   - SmartInfoBus snapshot on startup/shutdown
+#   - Safer health checks & robust replay stats without NumPy
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -184,13 +189,20 @@ class ReplaySession:
             duration = self.events[i].timestamp - self.events[i-1].timestamp
             durations.append(duration)
         
+        def _mean(vals):
+            if not vals:
+                return 0.0
+            if NUMPY_AVAILABLE and np is not None:
+                return float(np.mean(vals))
+            return sum(vals)/len(vals)
+        
         return {
             'session_id': self.session_id,
             'duration_seconds': self.duration_seconds,
             'total_events': self.event_count,
             'event_types': dict(event_types),
             'module_activity': dict(module_activity),
-            'avg_event_interval': float(np.mean(durations)) if durations and NUMPY_AVAILABLE and np is not None else (sum(durations) / len(durations) if durations else 0),
+            'avg_event_interval': _mean(durations) if durations else 0.0,
             'max_event_interval': max(durations) if durations else 0,
             'unique_modules': len(module_activity),
             'unique_event_types': len(event_types),
@@ -200,6 +212,75 @@ class ReplaySession:
         }
 
 # ═══════════════════════════════════════════════════════════════════
+# SMARTINFOBUS SNAPSHOT HELPERS (persistence of shared memory)
+# ═══════════════════════════════════════════════════════════════════
+
+def save_infobus_snapshot(path: str = "state/infobus.json") -> bool:
+    """Persist a lightweight snapshot of SmartInfoBus key/value memory.
+
+    Uses getattr + callable checks so static analyzers don't complain about
+    optional/unknown attributes like `export_snapshot`.
+    """
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        bus: Any = InfoBusManager.get_instance()  # type: ignore[assignment]
+
+        # Prefer a public exporter if present; otherwise fall back to internal store
+        exporter = getattr(bus, "export_snapshot", None)
+        if callable(exporter):
+            snapshot = exporter()
+        else:
+            store = getattr(bus, "_data_store", None)
+            snapshot = dict(store) if isinstance(store, dict) else {}
+
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(snapshot, indent=2, default=str))
+        return True
+    except Exception:
+        return False
+
+
+def load_infobus_snapshot(path: str = "state/infobus.json") -> bool:
+    """Load a previously persisted SmartInfoBus snapshot.
+
+    Avoids direct attribute access; prefers a `set`-style API if available,
+    otherwise updates an internal dict store when present.
+    """
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        p = Path(path)
+        if not p.exists():
+            return False
+
+        data = json.loads(p.read_text())
+        bus: Any = InfoBusManager.get_instance()  # type: ignore[assignment]
+
+        setter = getattr(bus, "set", None)
+        if callable(setter):
+            for k, v in data.items():
+                try:
+                    setter(k, v, module="Bootstrap", thesis="Restored from snapshot", confidence=0.9)
+                except Exception:
+                    pass
+        else:
+            store = getattr(bus, "_data_store", None)
+            if isinstance(store, dict):
+                try:
+                    store.update(data)
+                except Exception:
+                    # last-ditch: copy in a new dict if store is a proxy
+                    try:
+                        for k, v in data.items():
+                            store[k] = v  # type: ignore[index]
+                    except Exception:
+                        return False
+        return True
+    except Exception:
+        return False
+
+
+# ═══════════════════════════════════════════════════════════════════
 # PRODUCTION-GRADE STATE MANAGER WITH VALIDATION
 # ═══════════════════════════════════════════════════════════════════
 
@@ -207,12 +288,11 @@ class StateManager:
     """
     PRODUCTION-GRADE state management with complete validation.
     
-    FIXED FEATURES:
-    - Complete state validation before save/restore
-    - Module version compatibility checking
-    - System health validation before restoration
-    - Atomic operations with rollback
-    - Compression and encryption support
+    ENHANCED:
+    - Serializer-aware validation (pickle-first, JSON fallback)
+    - Checksum bound to chosen serialization method
+    - Atomic disk writes with backups + compression
+    - Save/restore all modules in one call
     """
     
     def __init__(self, state_dir: str = "state/modules"):
@@ -269,16 +349,16 @@ class StateManager:
         )
     
     def _initialize_validation_rules(self) -> Dict[str, Callable]:
-        """Initialize state validation rules"""
+        """Initialize state validation rules (serializer-aware)."""
         return {
-            'required_fields': lambda state: all(
-                field in state for field in ['module_name', 'timestamp', 'version', 'state']
+            'required_fields': lambda envelope: all(
+                field in envelope for field in ['module_name', 'timestamp', 'version', 'state']
             ),
-            'checksum_valid': lambda state: self._validate_checksum(state),
-            'version_format': lambda state: isinstance(state.get('version'), (int, str)),
-            'state_type': lambda state: isinstance(state.get('state'), dict),
-            'timestamp_valid': lambda state: self._validate_timestamp(state.get('timestamp')),
-            'size_limit': lambda state: self._check_state_size(state) < 100 * 1024 * 1024  # 100MB
+            'checksum_valid': lambda envelope: self._validate_checksum(envelope),
+            'version_format': lambda envelope: isinstance(envelope.get('version'), (int, str)),
+            'state_type': lambda envelope: isinstance(envelope.get('state'), dict),
+            'timestamp_valid': lambda envelope: self._validate_timestamp(envelope.get('timestamp')),
+            'size_limit': lambda envelope: self._check_state_size(envelope.get('state')) < 100 * 1024 * 1024  # 100MB (logical)
         }
     
     def _initialize_version_compatibility(self):
@@ -293,24 +373,26 @@ class StateManager:
         """
         Save module state with comprehensive validation.
 
-        ENHANCED: Complete validation before save. Records the serialization
-        method in the envelope so on-disk format and in-memory format stay
-        in lockstep.
+        ENHANCED: Serializer-aware checksum and envelope; supports arbitrary
+        Python objects (e.g., model weights, replay buffers) via pickle.
         """
         module_name = module.__class__.__name__
 
         with self._lock:
             try:
-                # Get state from module
+                # Get state from module (prefer explicit API)
                 if hasattr(module, 'get_state'):
                     state = module.get_state()
                 else:
                     state = self._extract_safe_attributes(module)
 
-                # Pre-save validation
+                # Pre-save validation (serializer-aware smoke test)
                 validation = self._validate_state_for_save(state, module)
                 if not validation.is_valid:
                     raise ValueError(f"State validation failed: {validation.errors}")
+
+                # Decide serialization method by probing the raw state
+                _probe_blob, method = self._serialize_state({'state': state})
 
                 # Module version
                 module_version = getattr(module.metadata, 'version', '1.0.0') if hasattr(module, 'metadata') else '1.0.0'
@@ -333,21 +415,20 @@ class StateManager:
                         'health_status': state.get('health_status', 'unknown')
                     },
                     'system_context': self._get_system_context(),
-                    'validation': validation.__dict__
+                    'validation': validation.__dict__,
+                    'serialization_method': method
                 }
 
-                # Checksum
-                state_json = json.dumps(state, sort_keys=True, default=str)
-                checksum = hashlib.sha256(state_json.encode()).hexdigest()
-                state_with_metadata['checksum'] = checksum
-
-                # Serialize (no compression here); remember method in envelope
-                serialized, method = self._serialize_state(state_with_metadata)
-                state_with_metadata['serialization_method'] = method
+                # Checksum bound to method
+                if method == 'json':
+                    payload = json.dumps(state, sort_keys=True, default=str).encode()
+                else:
+                    payload = pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL)
+                state_with_metadata['checksum'] = hashlib.sha256(payload).hexdigest()
 
                 # Track in-memory
                 self.state_versions[module_name] = version
-                self.state_checksums[module_name] = checksum
+                self.state_checksums[module_name] = state_with_metadata['checksum']
                 self.state_cache[module_name] = state_with_metadata
 
                 # Persist to disk (uses serialization_method to pick the writer/ext)
@@ -357,56 +438,63 @@ class StateManager:
                     format_operator_message(
                         "[SAVE]", "STATE SAVED",
                         instrument=module_name,
-                        details=f"v{version} ({len(serialized)} bytes)",
+                        details=f"v{version} ({len(payload)} bytes, {method})",
                         context="state_management"
                     )
                 )
-                return serialized
+                return payload
 
             except Exception as e:
                 self.logger.error(f"[CRASH] Failed to save state for {module_name}: {e}")
                 raise RuntimeError(f"State save failed for {module_name}: {e}")
 
-    
+    def save_all_module_states(self, orchestrator: 'ModuleOrchestrator') -> Dict[str, bool]:
+        """Save state for all modules registered in the orchestrator."""
+        results: Dict[str, bool] = {}
+        for name, module in orchestrator.modules.items():
+            try:
+                self.save_module_state(module)
+                results[name] = True
+            except Exception as e:
+                self.logger.error(f"Save failed for {name}: {e}")
+                results[name] = False
+        return results
+
     def _validate_state_for_save(self, state: Dict[str, Any], module: 'BaseModule') -> StateValidation:
-        """Validate state before saving"""
-        validation = StateValidation(is_valid=True)
-        
-        # Check state structure
+        """Validate state before saving (serializer-aware, no hard JSON requirement)."""
+        v = StateValidation(is_valid=True)
+
         if not isinstance(state, dict):
-            validation.is_valid = False
-            validation.errors.append("State must be a dictionary")
-            return validation
-        
-        # Check for required fields
-        required_fields = ['class_name', 'version', 'step_count', 'health_status']
-        for field in required_fields:
+            v.is_valid = False
+            v.errors.append("State must be a dictionary")
+            return v
+
+        # Recommended fields (warnings only)
+        for field in ['class_name', 'version', 'step_count', 'health_status']:
             if field not in state:
-                validation.warnings.append(f"Missing recommended field: {field}")
-        
-        # Check state size
-        state_size = self._check_state_size(state)
-        if state_size > 50 * 1024 * 1024:  # 50MB warning
-            validation.warnings.append(f"Large state size: {state_size / 1024 / 1024:.1f}MB")
-        
-        # Check serialization
+                v.warnings.append(f"Missing recommended field: {field}")
+
+        # Probe actual serializer we will use
         try:
-            json.dumps(state, default=str)
+            _bytes, _method = self._serialize_state({'state': state})
+            # size warning based on serialized payload
+            if len(_bytes) > 50 * 1024 * 1024:
+                v.warnings.append(f"Large serialized state: {len(_bytes)/1024/1024:.1f}MB")
         except Exception as e:
-            validation.is_valid = False
-            validation.errors.append(f"State not JSON serializable: {e}")
-        
-        # Module-specific validation
+            v.is_valid = False
+            v.errors.append(f"Serialization failed: {e}")
+            return v
+
+        # Module-specific validation (optional)
         if hasattr(module, 'validate_state'):
             try:
-                module_validation = module.validate_state(state)
-                if not module_validation:
-                    validation.is_valid = False
-                    validation.errors.append("Module-specific validation failed")
+                if not module.validate_state(state):
+                    v.is_valid = False
+                    v.errors.append("Module-specific validation failed")
             except Exception as e:
-                validation.warnings.append(f"Module validation check failed: {e}")
-        
-        return validation
+                v.warnings.append(f"Module validation check failed: {e}")
+
+        return v
     
     def reload_module(self, module_name: str, orchestrator: 'ModuleOrchestrator') -> bool:
         """
@@ -553,7 +641,7 @@ class StateManager:
         try:
             # Check emergency mode
             emergency_status = orchestrator.get_emergency_mode_status()
-            if emergency_status['active']:
+            if emergency_status.get('active'):
                 self.logger.warning("System in emergency mode")
                 return False
             
@@ -566,7 +654,7 @@ class StateManager:
             # Check circuit breakers
             cb_status = orchestrator.get_circuit_breaker_status()
             open_breakers = sum(1 for cb in cb_status.values() if cb['state'] == 'OPEN')
-            if open_breakers > len(cb_status) * 0.3:  # More than 30% open
+            if cb_status and open_breakers > len(cb_status) * 0.3:  # More than 30% open
                 self.logger.warning("Too many circuit breakers open")
                 return False
             
@@ -676,18 +764,12 @@ class StateManager:
         for migration in migrations:
             try:
                 if migration == 'add_new_fields':
-                    # Add any new required fields with defaults
                     migrated_state.setdefault('new_field', None)
-                
                 elif migration == 'restructure_data':
-                    # Example restructuring
                     if 'old_structure' in migrated_state:
                         migrated_state['new_structure'] = migrated_state.pop('old_structure')
                 
-                # Add more migration handlers as needed
-                
                 self.logger.info(f"Applied migration '{migration}' for {module_name}")
-                
             except Exception as e:
                 self.logger.error(f"Migration '{migration}' failed: {e}")
         
@@ -719,18 +801,21 @@ class StateManager:
             orchestrator.module_classes[module_name] = checkpoint['module_class']
             
             self.logger.info(f"Restored module {module_name} from checkpoint")
-            
         except Exception as e:
             self.logger.error(f"Failed to restore from checkpoint: {e}")
     
     def _validate_checksum(self, state_data: Dict[str, Any]) -> bool:
-        """Validate state checksum"""
+        """Validate state checksum using the recorded serialization_method."""
         if 'checksum' not in state_data or 'state' not in state_data:
             return False
         
         try:
-            state_json = json.dumps(state_data['state'], sort_keys=True, default=str)
-            expected_checksum = hashlib.sha256(state_json.encode()).hexdigest()
+            method = state_data.get('serialization_method', 'pickle')
+            if method == 'json':
+                payload = json.dumps(state_data['state'], sort_keys=True, default=str).encode()
+            else:
+                payload = pickle.dumps(state_data['state'], protocol=pickle.HIGHEST_PROTOCOL)
+            expected_checksum = hashlib.sha256(payload).hexdigest()
             return state_data['checksum'] == expected_checksum
         except Exception:
             return False
@@ -748,11 +833,14 @@ class StateManager:
             return False
     
     def _check_state_size(self, state: Any) -> int:
-        """Check size of state data"""
+        """Check size of state data (approximate if not JSONable)"""
         try:
             return len(json.dumps(state, default=str).encode())
         except Exception:
-            return sys.getsizeof(state)
+            try:
+                return len(pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL))
+            except Exception:
+                return sys.getsizeof(state)
     
     def _get_system_context(self) -> Dict[str, Any]:
         """Get current system context for state metadata"""
@@ -770,21 +858,15 @@ class StateManager:
     
     def _serialize_state(self, state_data: Dict[str, Any]) -> Tuple[bytes, str]:
         """
-        Serialize without compression and return (blob, method),
-        where method ∈ {"pickle", "json"}.
-
-        The on-disk writer will re-serialize using the same method so that
-        runtime bytes and persisted format remain consistent.
+        Serialize (pickle → fallback json). Returns (blob, method).
         """
         try:
-            blob = pickle.dumps(state_data)
+            blob = pickle.dumps(state_data, protocol=pickle.HIGHEST_PROTOCOL)
             return blob, "pickle"
         except Exception:
             blob = json.dumps(state_data, default=str).encode("utf-8")
             return blob, "json"
 
-
-    
     def _extract_safe_attributes(self, module: 'BaseModule') -> Dict[str, Any]:
         """Extract safe attributes from module"""
         safe_state = {}
@@ -813,18 +895,19 @@ class StateManager:
     
     def _save_to_disk_with_backup(self, module_name: str, state_data: Dict[str, Any]):
         """Save state to disk with atomic operation and backup."""
-        # Determine file format (must match the method used in _serialize_state)
+        # Determine file format (must match the method used in checksum)
         method = state_data.get('serialization_method', 'pickle')
         if method == 'json':
             file_ext = '.json'
             data_to_write = json.dumps(state_data, indent=2, default=str).encode('utf-8')
         else:
             file_ext = '.pkl'
-            data_to_write = pickle.dumps(state_data)
+            data_to_write = pickle.dumps(state_data, protocol=pickle.HIGHEST_PROTOCOL)
 
         # Optional compression
         if self.compression_enabled:
             compressed = zlib.compress(data_to_write, level=self.compression_level)
+            # keep compressed only if it saves at least 10%
             if len(compressed) < len(data_to_write) * 0.9:
                 data_to_write = compressed
                 file_ext += '.gz'
@@ -919,14 +1002,12 @@ class StateManager:
     def restore_all_states(self, orchestrator: 'ModuleOrchestrator') -> Dict[str, bool]:
         """
         Restore states for all modules with health validation.
-        
-        ENHANCED: System health check before restoration.
         """
         with self._lock:
             # Check system health first
             if not self._check_system_health_for_operation(orchestrator):
                 self.logger.warning("System health check failed - limited restoration only")
-                # Continue with restoration but be more conservative
+                # Continue with restoration but be conservative
             
             results = {}
             
@@ -1006,8 +1087,6 @@ class StateManager:
     def create_checkpoint(self, orchestrator: 'ModuleOrchestrator', checkpoint_name: str = "manual") -> bool:
         """
         Create comprehensive system checkpoint with validation.
-        
-        ENHANCED: Health validation and integrity checks.
         """
         with self._lock:
             checkpoint_id = f"{checkpoint_name}_{int(time.time())}"
@@ -1114,8 +1193,6 @@ class StateManager:
     def restore_checkpoint(self, orchestrator: 'ModuleOrchestrator', checkpoint_id: str) -> bool:
         """
         Restore system from checkpoint with health validation.
-        
-        ENHANCED: Complete system health check before restoration.
         """
         with self._lock:
             checkpoint_path = self.checkpoint_dir / checkpoint_id
@@ -1158,13 +1235,6 @@ class StateManager:
                 self.logger.info(
                     f"[RELOAD] Restoring checkpoint '{checkpoint_id}' from {checkpoint_data['timestamp']}"
                 )
-                
-                # Check if system state has diverged significantly
-                saved_health = checkpoint_data.get('system_health', {})
-                current_metrics = orchestrator.get_execution_metrics()
-                
-                if saved_health.get('emergency_mode', {}).get('active'):
-                    self.logger.warning("Checkpoint was created during emergency mode")
                 
                 success_count = 0
                 failed_modules = []
@@ -1242,30 +1312,30 @@ class StateManager:
     
     def list_checkpoints(self) -> List[Dict[str, Any]]:
         """List available checkpoints with metadata"""
-        checkpoints = []
-        
+        checkpoints: List[Dict[str, Any]] = []
+
         # Check for compressed archives
         for archive_file in self.checkpoint_dir.glob("*.tar.gz"):
-            checkpoint_id = archive_file.stem
+            # FIX: remove both .gz and .tar to get the real folder name
+            checkpoint_id = Path(archive_file.stem).stem
             try:
-                # Extract temporarily to read metadata
                 with tempfile.TemporaryDirectory() as temp_dir:
                     shutil.unpack_archive(str(archive_file), temp_dir)
                     metadata_file = Path(temp_dir) / checkpoint_id / "checkpoint.json"
-                    
+
                     if metadata_file.exists():
                         with open(metadata_file, 'r') as f:
                             metadata = json.load(f)
-                        
-                        # Add file info
+
+                        # Ensure id present even if missing in file
+                        metadata.setdefault('checkpoint_id', checkpoint_id)
                         metadata['file_size_mb'] = archive_file.stat().st_size / 1024 / 1024
                         metadata['compressed'] = True
-                        
                         checkpoints.append(metadata)
-                        
+
             except Exception as e:
-                self.logger.error(f"Failed to read archived checkpoint {checkpoint_id}: {e}")
-        
+                self.logger.error(f"Failed to read archived checkpoint {archive_file.name}: {e}")
+
         # Check for uncompressed directories
         for checkpoint_dir in self.checkpoint_dir.iterdir():
             if checkpoint_dir.is_dir():
@@ -1274,20 +1344,23 @@ class StateManager:
                     try:
                         with open(metadata_file, 'r') as f:
                             metadata = json.load(f)
-                        
-                        # Calculate directory size
-                        total_size = sum(f.stat().st_size for f in checkpoint_dir.rglob('*') if f.is_file())
+
+                        metadata.setdefault('checkpoint_id', checkpoint_dir.name)
+                        total_size = sum(
+                            f.stat().st_size for f in checkpoint_dir.rglob('*') if f.is_file()
+                        )
                         metadata['file_size_mb'] = total_size / 1024 / 1024
                         metadata['compressed'] = False
-                        
+
                         checkpoints.append(metadata)
                     except Exception as e:
                         self.logger.error(f"Failed to read checkpoint {checkpoint_dir.name}: {e}")
-        
+
         # Sort by timestamp (newest first)
         checkpoints.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
-        
+
         return checkpoints
+
     
     def cleanup_old_states(self, days_to_keep: int = 7):
         """Clean up old state files and checkpoints"""
@@ -1416,8 +1489,6 @@ class ReplayEngine:
     def start_recording(self, session_id: Optional[str] = None) -> str:
         """
         Start recording a new session with system health tracking.
-        
-        ENHANCED: Captures system health state.
         """
         with self._lock:
             if self.is_recording:
@@ -1474,8 +1545,6 @@ class ReplayEngine:
     def stop_recording(self) -> Optional[ReplaySession]:
         """
         Stop recording and save session with validation.
-        
-        ENHANCED: Includes health analysis.
         """
         with self._lock:
             if not self.is_recording:
@@ -1645,12 +1714,19 @@ class ReplayEngine:
         if not self.health_snapshots:
             return {}
         
+        def _mean(vals):
+            if not vals:
+                return 0.0
+            if NUMPY_AVAILABLE and np is not None:
+                return float(np.mean(vals))
+            return sum(vals)/len(vals)
+
         analysis = {
             'snapshot_count': len(self.health_snapshots),
-            'avg_health_score': float(np.mean([h.get('overall_score', 0) for h in self.health_snapshots])) if self.health_snapshots and NUMPY_AVAILABLE and np is not None else (sum([h.get('overall_score', 0) for h in self.health_snapshots]) / len(self.health_snapshots) if self.health_snapshots else 0),
+            'avg_health_score': _mean([h.get('overall_score', 0) for h in self.health_snapshots]),
             'min_health_score': min(h.get('overall_score', 1) for h in self.health_snapshots) if self.health_snapshots else 0,
             'max_memory_mb': max(h.get('memory_usage_mb', 0) for h in self.health_snapshots) if self.health_snapshots else 0,
-            'avg_cpu_percent': float(np.mean([h.get('cpu_percent', 0) for h in self.health_snapshots])) if self.health_snapshots and NUMPY_AVAILABLE and np is not None else (sum([h.get('cpu_percent', 0) for h in self.health_snapshots]) / len(self.health_snapshots) if self.health_snapshots else 0),
+            'avg_cpu_percent': _mean([h.get('cpu_percent', 0) for h in self.health_snapshots]),
             'emergency_mode_activations': sum(1 for h in self.health_snapshots if h.get('emergency_mode')),
             'health_degradation_events': 0
         }
@@ -1916,7 +1992,7 @@ class ReplayEngine:
         state = {
             'timestamp': time.time(),
             'smartinfobus_metrics': self.smart_bus.get_performance_metrics(),
-            'data_keys': list(self.smart_bus._data_store.keys())[:50],  # First 50 keys
+            'data_keys': list(getattr(self.smart_bus, "_data_store", {}).keys())[:50],  # First 50 keys
             'active_modules': []
         }
         
@@ -1932,8 +2008,8 @@ class ReplayEngine:
                     if name in self.orchestrator.circuit_breakers:
                         cb = self.orchestrator.circuit_breakers[name]
                         state['circuit_breaker_states'][name] = {
-                            'state': cb.state,
-                            'failure_count': cb.failure_count
+                            'state': getattr(cb, 'state', 'CLOSED'),
+                            'failure_count': getattr(cb, 'failure_count', 0)
                         }
                     
                     if hasattr(module, 'get_state'):
@@ -1957,8 +2033,6 @@ class ReplayEngine:
                    validate_health: bool = True):
         """
         Play session with health monitoring.
-        
-        ENHANCED: Validates system health during replay.
         """
         if not self.current_session:
             raise ValueError("No session loaded")
@@ -1978,7 +2052,7 @@ class ReplayEngine:
             # Get initial health if validating
             if validate_health and self.orchestrator:
                 initial_health = self._capture_system_health()
-                if initial_health['overall_score'] < 0.5:
+                if initial_health.get('overall_score', 1) < 0.5:
                     self.logger.warning("System health poor at replay start")
             
             # Calculate timing for replay
@@ -2046,7 +2120,7 @@ class ReplayEngine:
                 # Periodic health check
                 if validate_health and events_replayed % health_check_interval == 0:
                     current_health = self._capture_system_health()
-                    if current_health['overall_score'] < 0.3:
+                    if current_health.get('overall_score', 1) < 0.3:
                         self.logger.warning("System health degraded during replay - pausing")
                         await self.pause()
                 
@@ -2062,7 +2136,7 @@ class ReplayEngine:
             # Final health check
             if validate_health and self.orchestrator:
                 final_health = self._capture_system_health()
-                health_summary = f", final health: {final_health['overall_score']:.1%}"
+                health_summary = f", final health: {final_health.get('overall_score', 0):.1%}"
             else:
                 health_summary = ""
             
@@ -2078,8 +2152,6 @@ class ReplayEngine:
             self.is_playing = False
             self.logger.error(f"[CRASH] Replay failed: {e}")
             raise
-    
-    # Rest of the ReplayEngine methods remain the same but with thread safety...
     
     async def _replay_event(self, event: ReplayEvent):
         """Replay a single event with type-specific handling"""
@@ -2119,7 +2191,6 @@ class ReplayEngine:
             elif event.event_type in ['recording_started', 'recording_stopped']:
                 # Skip meta events during replay
                 pass
-                
             else:
                 # Generic event replay
                 self.logger.debug(f"Replaying generic event: {event.event_type} from {event.module}")
@@ -2415,11 +2486,14 @@ class PersistenceManager:
         
         # Unified configuration
         self.config = {
-            'auto_checkpoint_interval': 3600,  # 1 hour
+            'auto_checkpoint_interval': 3600,     # 1 hour
+            'auto_state_interval': 300,           # 5 minutes (save all module states)
             'max_session_age_days': 30,
             'compression_enabled': True,
             'validation_enabled': True,
-            'health_check_enabled': True
+            'health_check_enabled': True,
+            'persist_infobus': True,
+            'infobus_snapshot_path': f"{state_dir}/infobus.json"
         }
         
         # Background tasks
@@ -2433,6 +2507,12 @@ class PersistenceManager:
             max_lines=5000,
             operator_mode=True
         )
+
+        # Load SmartInfoBus snapshot (if requested)
+        if self.config['persist_infobus']:
+            loaded = load_infobus_snapshot(self.config['infobus_snapshot_path'])
+            if loaded:
+                self.logger.info("[SAVE] SmartInfoBus snapshot loaded")
         
         # Start background maintenance
         self._start_background_maintenance()
@@ -2482,12 +2562,29 @@ class PersistenceManager:
                 except Exception as e:
                     self.logger.error(f"Periodic cleanup failed: {e}")
 
+        async def auto_state_save():
+            while not self._shutdown_event.is_set():
+                try:
+                    await asyncio.sleep(self.config['auto_state_interval'])
+                    if self.orchestrator:
+                        results = self.state_manager.save_all_module_states(self.orchestrator)
+                        ok = sum(1 for v in results.values() if v)
+                        self.logger.info(f"[SAVE] Auto-saved {ok}/{len(results)} module states")
+                        # Also snapshot InfoBus (lightweight)
+                        if self.config['persist_infobus']:
+                            save_infobus_snapshot(self.config['infobus_snapshot_path'])
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    self.logger.error(f"Auto-state-save failed: {e}")
+
         # Start tasks only if a loop exists
         try:
             loop = asyncio.get_running_loop()
             self._background_tasks = [
                 loop.create_task(auto_checkpoint()),
-                loop.create_task(periodic_cleanup())
+                loop.create_task(periodic_cleanup()),
+                loop.create_task(auto_state_save())
             ]
         except RuntimeError:
             self.logger.info("No running event loop; background tasks not started")
@@ -2495,26 +2592,26 @@ class PersistenceManager:
 
     
     def _cleanup_old_sessions(self):
-            """Cleanup old replay sessions"""
-            cutoff_time = time.time() - (self.config['max_session_age_days'] * 24 * 3600)
-            cleaned_count = 0
-            
-            for session_file in self.replay_engine.session_dir.glob("*.replay"):
-                if session_file.stat().st_mtime < cutoff_time:
-                    try:
-                        session_file.unlink()
-                        
-                        # Also remove metadata file
-                        meta_file = session_file.with_suffix('.meta.json')
-                        if meta_file.exists():
-                            meta_file.unlink()
-                        
-                        cleaned_count += 1
-                    except Exception as e:
-                        self.logger.error(f"Failed to remove old session {session_file}: {e}")
-            
-            if cleaned_count > 0:
-                self.logger.info(f"Cleaned up {cleaned_count} old sessions")
+        """Cleanup old replay sessions"""
+        cutoff_time = time.time() - (self.config['max_session_age_days'] * 24 * 3600)
+        cleaned_count = 0
+        
+        for session_file in self.replay_engine.session_dir.glob("*.replay"):
+            if session_file.stat().st_mtime < cutoff_time:
+                try:
+                    session_file.unlink()
+                    
+                    # Also remove metadata file
+                    meta_file = session_file.with_suffix('.meta.json')
+                    if meta_file.exists():
+                        meta_file.unlink()
+                    
+                    cleaned_count += 1
+                except Exception as e:
+                    self.logger.error(f"Failed to remove old session {session_file}: {e}")
+        
+        if cleaned_count > 0:
+            self.logger.info(f"Cleaned up {cleaned_count} old sessions")
     
     async def shutdown(self):
         """Graceful shutdown of persistence manager (robust if tasks absent)."""
@@ -2539,6 +2636,21 @@ class PersistenceManager:
                 await asyncio.gather(*self._background_tasks, return_exceptions=True)
             except Exception:
                 pass
+
+        # Final save-all if orchestrator available
+        if self.orchestrator:
+            try:
+                self.state_manager.save_all_module_states(self.orchestrator)
+            except Exception as e:
+                self.logger.error(f"Final state save failed: {e}")
+
+        # Final InfoBus snapshot
+        if self.config['persist_infobus']:
+            try:
+                save_infobus_snapshot(self.config['infobus_snapshot_path'])
+                self.logger.info("[SAVE] SmartInfoBus snapshot saved")
+            except Exception as e:
+                self.logger.error(f"InfoBus snapshot failed: {e}")
 
         # Final checkpoint if orchestrator available
         if self.orchestrator:
@@ -2566,6 +2678,9 @@ class PersistenceManager:
         replay_size_mb = sum(
             f.stat().st_size for f in self.replay_engine.session_dir.rglob('*') if f.is_file()
         ) / 1024 / 1024
+
+        infobus_snapshot = Path(self.config['infobus_snapshot_path'])
+        infobus_info = "present" if infobus_snapshot.exists() else "absent"
         
         lines = [
             "PERSISTENCE SYSTEM STATUS",
@@ -2584,12 +2699,17 @@ class PersistenceManager:
             f"  Session Directory: {self.replay_engine.session_dir}",
             f"  Storage Used: {replay_size_mb:.1f} MB",
             "",
+            f"InfoBus:",
+            f"  Snapshot: {infobus_info} ({self.config['infobus_snapshot_path']})",
+            "",
             f"Configuration:",
             f"  Auto-checkpoint Interval: {self.config['auto_checkpoint_interval']}s",
+            f"  Auto-state Save Interval: {self.config['auto_state_interval']}s",
             f"  Max Session Age: {self.config['max_session_age_days']} days",
             f"  Compression: {self.config['compression_enabled']}",
             f"  Validation: {self.config['validation_enabled']}",
             f"  Health Checks: {self.config['health_check_enabled']}",
+            f"  Persist InfoBus: {self.config['persist_infobus']}",
             "",
             f"Total Storage: {state_size_mb + replay_size_mb:.1f} MB"
         ]
@@ -2599,136 +2719,182 @@ class PersistenceManager:
     def create_system_backup(self, backup_name: str = "system_backup") -> bool:
         """Create complete system backup including states and sessions"""
         try:
-            backup_id = f"{backup_name}_{int(time.time())}"
-            backup_dir = Path("backups") / backup_id
+            ts = int(time.time())
+            backup_id = f"{backup_name}_{ts}"
+            backup_root = Path("backups")
+            backup_root.mkdir(parents=True, exist_ok=True)
+            backup_dir = backup_root / backup_id
             backup_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Create checkpoint
+
+            # Create checkpoint (best-effort)
             if self.orchestrator:
                 self.state_manager.create_checkpoint(self.orchestrator, backup_name)
-            
+
             # Copy state files
             state_backup = backup_dir / "states"
             shutil.copytree(self.state_manager.state_dir, state_backup)
-            
+
             # Copy replay sessions
             replay_backup = backup_dir / "replays"
             shutil.copytree(self.replay_engine.session_dir, replay_backup)
-            
+
+            # Copy InfoBus snapshot if present
+            try:
+                ib_path = Path(self.config['infobus_snapshot_path'])
+                if ib_path.exists():
+                    ib_dst = backup_dir / "infobus"
+                    ib_dst.mkdir(exist_ok=True)
+                    shutil.copy2(ib_path, ib_dst / ib_path.name)
+            except Exception:
+                # Snapshot copy is optional
+                pass
+
             # Create backup metadata
             metadata = {
                 'backup_id': backup_id,
                 'backup_name': backup_name,
                 'timestamp': datetime.now().isoformat(),
-                'state_files': len(list(state_backup.rglob('*'))),
-                'replay_files': len(list(replay_backup.rglob('*'))),
+                'state_root': str(self.state_manager.state_dir),
+                'replay_root': str(self.replay_engine.session_dir),
+                'infobus_snapshot': Path(self.config['infobus_snapshot_path']).exists(),
+                'state_files': len([p for p in (backup_dir / "states").rglob('*') if p.is_file()]),
+                'replay_files': len([p for p in (backup_dir / "replays").rglob('*') if p.is_file()]),
                 'system_info': {
                     'orchestrator_available': self.orchestrator is not None,
                     'module_count': len(self.orchestrator.modules) if self.orchestrator else 0
                 }
             }
-            
             with open(backup_dir / "backup_metadata.json", 'w') as f:
-                json.dump(metadata, f, indent=2)
-            
-            # Compress backup
-            archive_path = Path("backups") / f"{backup_id}.tar.gz"
-            shutil.make_archive(str(archive_path.with_suffix('')), 'gztar', backup_dir)
-            
-            # Remove uncompressed directory
-            shutil.rmtree(backup_dir)
-            
-            self.logger.info(f"[OK] System backup created: {archive_path}")
+                json.dump(metadata, f, indent=2, default=str)
+
+            # Compress backup to .tar.gz
+            archive_base = backup_root / backup_id
+            try:
+                shutil.make_archive(
+                    str(archive_base),
+                    'gztar',
+                    root_dir=backup_root,
+                    base_dir=backup_id
+                )
+                # Remove uncompressed directory after successful compression
+                shutil.rmtree(backup_dir)
+            except Exception as e:
+                self.logger.error(f"Compression failed: {e}")
+                # Keep uncompressed directory for inspection
+
+            self.logger.info(f"[OK] System backup created: {archive_base}.tar.gz")
             return True
-            
+
         except Exception as e:
             self.logger.error(f"System backup failed: {e}")
             return False
-    
+
+
     def restore_system_backup(self, backup_id: str) -> bool:
-        """Restore complete system from backup"""
+        """Restore complete system from backup (states, replays, InfoBus snapshot)."""
         try:
             archive_path = Path("backups") / f"{backup_id}.tar.gz"
-            
             if not archive_path.exists():
                 self.logger.error(f"Backup not found: {backup_id}")
                 return False
-            
-            # Extract backup
+
             with tempfile.TemporaryDirectory() as temp_dir:
                 shutil.unpack_archive(str(archive_path), temp_dir)
                 backup_dir = Path(temp_dir) / backup_id
-                
+
                 # Read metadata
-                with open(backup_dir / "backup_metadata.json", 'r') as f:
-                    metadata = json.load(f)
-                
-                self.logger.info(f"Restoring backup from {metadata['timestamp']}")
-                
+                meta_path = backup_dir / "backup_metadata.json"
+                if meta_path.exists():
+                    with open(meta_path, 'r') as f:
+                        metadata = json.load(f)
+                    self.logger.info(f"Restoring backup from {metadata.get('timestamp','unknown time')}")
+                else:
+                    metadata = {}
+                    self.logger.warning("Backup metadata.json missing; continuing with best effort.")
+
                 # Backup current state before restore
-                self.create_system_backup("pre_restore_backup")
-                
+                try:
+                    self.create_system_backup("pre_restore_backup")
+                except Exception as e:
+                    self.logger.warning(f"Pre-restore backup failed (continuing): {e}")
+
                 # Restore state files
-                if (backup_dir / "states").exists():
+                src_states = backup_dir / "states"
+                if src_states.exists():
                     shutil.rmtree(self.state_manager.state_dir, ignore_errors=True)
-                    shutil.copytree(backup_dir / "states", self.state_manager.state_dir)
-                
+                    shutil.copytree(src_states, self.state_manager.state_dir)
+                else:
+                    self.logger.warning("States folder missing in backup")
+
                 # Restore replay sessions
-                if (backup_dir / "replays").exists():
+                src_replays = backup_dir / "replays"
+                if src_replays.exists():
                     shutil.rmtree(self.replay_engine.session_dir, ignore_errors=True)
-                    shutil.copytree(backup_dir / "replays", self.replay_engine.session_dir)
-                
-                # Restore module states if orchestrator available
+                    shutil.copytree(src_replays, self.replay_engine.session_dir)
+                else:
+                    self.logger.warning("Replays folder missing in backup")
+
+                # Restore InfoBus snapshot (if present)
+                ib_src_dir = backup_dir / "infobus"
+                if ib_src_dir.exists():
+                    try:
+                        dest = Path(self.config['infobus_snapshot_path'])
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        # copy first *.json file found (there should be exactly one)
+                        for p in ib_src_dir.glob("*.json"):
+                            shutil.copy2(p, dest)
+                            break
+                        loaded = load_infobus_snapshot(self.config['infobus_snapshot_path'])
+                        self.logger.info(f"InfoBus snapshot restore: {'ok' if loaded else 'skipped'}")
+                    except Exception as e:
+                        self.logger.error(f"Failed to restore InfoBus snapshot: {e}")
+
+                # Restore module states into orchestrator (if available)
                 if self.orchestrator:
                     self.state_manager.restore_all_states(self.orchestrator)
-                
+
                 self.logger.info(f"[OK] System restored from backup: {backup_id}")
                 return True
-                
+
         except Exception as e:
             self.logger.error(f"System restore failed: {e}")
             return False
-    
+
     def get_checkpoint_details(self, checkpoint_id: str) -> Optional[Dict[str, Any]]:
-        """Get detailed information about a specific checkpoint"""
+        """Get detailed information about a specific checkpoint."""
         checkpoints = self.state_manager.list_checkpoints()
-        
         for checkpoint in checkpoints:
             if checkpoint.get('checkpoint_id') == checkpoint_id:
                 return checkpoint
-        
         return None
-    
+
     def get_session_details(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Get detailed information about a specific replay session"""
+        """Get detailed information about a specific replay session."""
         sessions = self.replay_engine.list_sessions()
-        
         for session in sessions:
             if session.get('session_id') == session_id:
                 return session
-        
         return None
-    
+
     def export_diagnostics(self, output_path: str = "diagnostics"):
-        """Export comprehensive system diagnostics"""
+        """Export comprehensive system diagnostics (status, checkpoints, sessions, config)."""
         try:
             diag_dir = Path(output_path)
-            diag_dir.mkdir(exist_ok=True)
-            
+            diag_dir.mkdir(parents=True, exist_ok=True)
+
             # Export status report
-            with open(diag_dir / "status_report.txt", 'w') as f:
-                f.write(self.get_status_report())
-            
+            (diag_dir / "status_report.txt").write_text(self.get_status_report())
+
             # Export checkpoints list
             checkpoints = self.state_manager.list_checkpoints()
             with open(diag_dir / "checkpoints.json", 'w') as f:
                 json.dump(checkpoints, f, indent=2, default=str)
-            
+
             # Export sessions list
             sessions = self.replay_engine.list_sessions()
             with open(diag_dir / "sessions.json", 'w') as f:
                 json.dump(sessions, f, indent=2, default=str)
-            
+
             # Export configuration
             config_data = {
                 'persistence_config': self.config,
@@ -2739,44 +2905,48 @@ class PersistenceManager:
                 }
             }
             with open(diag_dir / "configuration.json", 'w') as f:
-                json.dump(config_data, f, indent=2)
-            
+                json.dump(config_data, f, indent=2, default=str)
+
+            # Copy InfoBus snapshot if present
+            try:
+                ib_path = Path(self.config['infobus_snapshot_path'])
+                if ib_path.exists():
+                    shutil.copy2(ib_path, diag_dir / ib_path.name)
+            except Exception:
+                pass
+
             self.logger.info(f"[STATS] Diagnostics exported to {diag_dir}")
-            
+
         except Exception as e:
             self.logger.error(f"Failed to export diagnostics: {e}")
-    
+
     def verify_system_integrity(self) -> Dict[str, Any]:
-        """Verify integrity of all persisted data"""
+        """Verify integrity of all persisted data (checkpoints + sessions)."""
         results = {
             'timestamp': datetime.now().isoformat(),
             'checkpoints': {'total': 0, 'valid': 0, 'corrupted': []},
             'sessions': {'total': 0, 'valid': 0, 'corrupted': []},
             'overall_integrity': True
         }
-        
-        # Verify checkpoints
+
+        # Verify checkpoints (basic integrity presence)
         checkpoints = self.state_manager.list_checkpoints()
         results['checkpoints']['total'] = len(checkpoints)
-        
         for checkpoint in checkpoints:
             checkpoint_id = checkpoint.get('checkpoint_id', 'unknown')
             try:
-                # Verify integrity field exists and matches
                 if 'integrity' in checkpoint:
                     results['checkpoints']['valid'] += 1
                 else:
                     results['checkpoints']['corrupted'].append(checkpoint_id)
             except Exception as e:
                 results['checkpoints']['corrupted'].append(f"{checkpoint_id}: {str(e)}")
-        
-        # Verify replay sessions
+
+        # Verify replay sessions by loading & validating
         for session_meta in self.replay_engine.list_sessions():
             session_id = session_meta.get('session_id', 'unknown')
             results['sessions']['total'] += 1
-            
             try:
-                # Try to load and validate session
                 session = self.replay_engine.load_session(session_id)
                 if session.validate_integrity():
                     results['sessions']['valid'] += 1
@@ -2784,137 +2954,124 @@ class PersistenceManager:
                     results['sessions']['corrupted'].append(session_id)
             except Exception as e:
                 results['sessions']['corrupted'].append(f"{session_id}: {str(e)}")
-        
-        # Overall integrity check
+
         if results['checkpoints']['corrupted'] or results['sessions']['corrupted']:
             results['overall_integrity'] = False
-        
+
         return results
-    
+
     def repair_corrupted_data(self) -> Dict[str, Any]:
-        """Attempt to repair corrupted data"""
+        """Attempt to repair corrupted data (placeholder – logs items that need manual action)."""
         repair_results = {
             'checkpoints_repaired': 0,
             'sessions_repaired': 0,
             'failed_repairs': []
         }
-        
-        # Get integrity results
+
         integrity = self.verify_system_integrity()
-        
-        # Attempt to repair corrupted checkpoints
+
+        # Attempt to repair corrupted checkpoints (future: re-hash module files, etc.)
         for corrupted_checkpoint in integrity['checkpoints']['corrupted']:
             try:
-                # For now, just log - could implement actual repair logic
                 self.logger.warning(f"Would repair checkpoint: {corrupted_checkpoint}")
-                # repair_results['checkpoints_repaired'] += 1
+                # Implement actual repair steps as needed
             except Exception as e:
                 repair_results['failed_repairs'].append(f"Checkpoint {corrupted_checkpoint}: {e}")
-        
-        # Attempt to repair corrupted sessions
+
+        # Attempt to repair corrupted sessions (future: rebuild from meta.json)
         for corrupted_session in integrity['sessions']['corrupted']:
             try:
-                # For now, just log - could implement actual repair logic
                 self.logger.warning(f"Would repair session: {corrupted_session}")
-                # repair_results['sessions_repaired'] += 1
+                # Implement actual repair steps as needed
             except Exception as e:
                 repair_results['failed_repairs'].append(f"Session {corrupted_session}: {e}")
-        
+
         return repair_results
-    
+
     def get_module_state_history(self, module_name: str) -> List[Dict[str, Any]]:
-        """Get historical states for a specific module"""
-        history = []
-        
-        # Check all checkpoints for this module's state
+        """Get historical states for a specific module from checkpoint metadata."""
+        history: List[Dict[str, Any]] = []
         checkpoints = self.state_manager.list_checkpoints()
-        
         for checkpoint in checkpoints:
-            if 'modules' in checkpoint and module_name in checkpoint['modules']:
+            modules = checkpoint.get('modules')
+            if isinstance(modules, dict) and module_name in modules:
                 history.append({
                     'checkpoint_id': checkpoint.get('checkpoint_id'),
                     'timestamp': checkpoint.get('timestamp'),
-                    'state_version': checkpoint['modules'][module_name].get('version', 0)
+                    'state_version': modules[module_name].get('version', 0)
                 })
-        
-        # Sort by timestamp
-        history.sort(key=lambda x: x['timestamp'], reverse=True)
-        
+        history.sort(key=lambda x: x['timestamp'] or '', reverse=True)
         return history
-    
+
     async def continuous_recording_mode(self, max_duration_hours: float = 24):
-        """Run continuous recording with automatic session rotation"""
+        """Run continuous recording with automatic session rotation (1 hour chunks)."""
         start_time = time.time()
         max_duration_seconds = max_duration_hours * 3600
         session_number = 1
-        
+
         try:
             while time.time() - start_time < max_duration_seconds:
                 # Start new recording session
                 session_id = f"continuous_{datetime.now().strftime('%Y%m%d_%H%M%S')}_part{session_number}"
                 self.replay_engine.start_recording(session_id)
-                
+
                 # Record for 1 hour or until stopped
                 await asyncio.sleep(3600)
-                
+
                 # Stop and save session
                 session = self.replay_engine.stop_recording()
                 if session:
                     self.logger.info(f"Continuous recording saved: {session.session_id}")
-                
+
                 session_number += 1
-                
+
                 # Brief pause between sessions
                 await asyncio.sleep(1)
-                
+
         except asyncio.CancelledError:
             # Stop current recording if cancelled
             if self.replay_engine.is_recording:
                 self.replay_engine.stop_recording()
             raise
-        
+
         self.logger.info(f"Continuous recording completed: {session_number-1} sessions")
+
 
 # ═══════════════════════════════════════════════════════════════════
 # CONVENIENCE FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════
 
 def create_persistence_manager(orchestrator: Optional['ModuleOrchestrator'] = None) -> PersistenceManager:
-    """Create and initialize a persistence manager"""
+    """Create and initialize a persistence manager."""
     return PersistenceManager(orchestrator)
 
 def quick_checkpoint(orchestrator: 'ModuleOrchestrator', name: str = "quick") -> bool:
-    """Create a quick checkpoint of the system"""
+    """Create a quick checkpoint of the system."""
     manager = StateManager()
     return manager.create_checkpoint(orchestrator, name)
 
 def quick_restore(orchestrator: 'ModuleOrchestrator', checkpoint_id: str) -> bool:
-    """Quickly restore from a checkpoint"""
+    """Quickly restore from a checkpoint."""
     manager = StateManager()
     return manager.restore_checkpoint(orchestrator, checkpoint_id)
 
 async def record_session(duration_seconds: float = 60, session_id: Optional[str] = None) -> Optional[ReplaySession]:
-    """Record a session for specified duration"""
+    """Record a session for specified duration."""
     engine = ReplayEngine()
-    
-    # Start recording
     actual_id = engine.start_recording(session_id)
-    
-    # Wait for duration
     await asyncio.sleep(duration_seconds)
-    
-    # Stop and return session
     return engine.stop_recording()
 
 def list_all_checkpoints() -> List[Dict[str, Any]]:
-    """List all available checkpoints"""
+    """List all available checkpoints."""
     manager = StateManager()
     return manager.list_checkpoints()
 
 def list_all_sessions() -> List[Dict[str, Any]]:
-    """List all available replay sessions"""
+    """List all available replay sessions."""
     engine = ReplayEngine()
     return engine.list_sessions()
+
 
 # ═══════════════════════════════════════════════════════════════════
 # MAIN ENTRY POINT FOR TESTING
@@ -2923,24 +3080,31 @@ def list_all_sessions() -> List[Dict[str, Any]]:
 if __name__ == "__main__":
     # Example usage
     import asyncio
-    
+
     async def test_persistence():
-        """Test persistence functionality"""
-        
-        # Create persistence manager
+        """Test persistence functionality."""
         pm = PersistenceManager()
-        
+
         # Show status
         print(pm.get_status_report())
-        
+
         # Verify integrity
         integrity = pm.verify_system_integrity()
         print(f"\nSystem Integrity: {integrity['overall_integrity']}")
-        
+        if not integrity['overall_integrity']:
+            print(json.dumps(integrity, indent=2))
+
         # Export diagnostics
         pm.export_diagnostics()
-        
+
+        # Create & restore backup (quick smoke test without orchestrator)
+        ok = pm.create_system_backup("smoke_test_backup")
+        print(f"\nBackup created: {ok}")
+        if ok:
+            pm.restore_system_backup("smoke_test_backup_" + str(int(time.time())))  # likely won't exist (only example)
+
         print("\nPersistence system test completed!")
-    
-    # Run test
+
     asyncio.run(test_persistence())
+    
+            

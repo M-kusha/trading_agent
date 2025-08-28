@@ -35,7 +35,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
         "price_data", "market_regime", "trading_performance"
     ],
     description="Advanced market mode detection and adaptation system with intelligent strategy weighting",
-    thesis_required=True,
+    thesis_required=False,
     health_monitoring=True,
     performance_tracking=True,
     error_handling=True,

@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
-# File: modules/voting/enhanced_voting_wrappers.py  
-# 🚀 Enhanced Voting Wrappers with SmartInfoBus Integration v4.0
+# File: modules/voting/enhanced_voting_wrappers.py
+# 🚀 Enhanced Voting Wrappers with SmartInfoBus Integration v4.1
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # ─────────────────────────────────────────────────────────────
 
@@ -10,12 +10,12 @@ import numpy as np
 import datetime
 import math
 import inspect
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, Type, cast
 from collections import deque, defaultdict
 from abc import ABC, abstractmethod
 
 # ═══════════════════════════════════════════════════════════════════
-# MODERN SMARTINFOBUS IMPORTS  
+# MODERN SMARTINFOBUS IMPORTS
 # ═══════════════════════════════════════════════════════════════════
 from modules.core.module_base import BaseModule, module
 from modules.core.mixins import (
@@ -36,16 +36,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
 
 class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVotingMixin, SmartInfoBusStateMixin):
     """
-    🚀 PRODUCTION-GRADE Enhanced Voting Expert Base v4.0
-    
-    Modern base class for all voting experts with:
-    - Complete SmartInfoBus integration with zero-wiring architecture
-    - Async processing with comprehensive error handling and recovery
-    - State persistence for hot-reload capability
-    - Performance tracking and health monitoring
-    - Circuit breaker protection and emergency mode awareness
-    - Mandatory thesis generation for explainable AI
-    - Advanced confidence calculation with market awareness
+    🚀 PRODUCTION-GRADE Enhanced Voting Expert Base v4.1
     """
 
     def _initialize(self):
@@ -55,29 +46,29 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
         self._initialize_voting_state()
         self._initialize_state_management()
         self._initialize_modern_systems()
-        
+
         # Core expert configuration
-        self.max_signal_strength = self.config.get('max_signal_strength', 1.0)
-        self.confidence_threshold = self.config.get('confidence_threshold', 0.3)
-        self.adaptive_scaling = self.config.get('adaptive_scaling', True)
-        self.market_awareness = self.config.get('market_awareness', True)
-        self.emergency_mode_sensitivity = self.config.get('emergency_mode_sensitivity', 0.8)
-        
+        self.max_signal_strength = float(self.config.get('max_signal_strength', 1.0))
+        self.confidence_threshold = float(self.config.get('confidence_threshold', 0.3))
+        self.adaptive_scaling = bool(self.config.get('adaptive_scaling', True))
+        self.market_awareness = bool(self.config.get('market_awareness', True))
+        self.emergency_mode_sensitivity = float(self.config.get('emergency_mode_sensitivity', 0.8))
+
         # Enhanced state tracking
         self.action_history = deque(maxlen=self.config.get('max_history', 100))
         self.confidence_history = deque(maxlen=100)
         self.performance_metrics = defaultdict(lambda: {'count': 0, 'success': 0, 'avg_confidence': 0.5})
-        
+
         # Market context awareness
         self.market_context = {
             'regime': 'unknown',
-            'session': 'unknown', 
+            'session': 'unknown',
             'volatility_level': 'medium',
             'risk_score': 0.0,
             'emergency_mode': False,
             'market_open': True
         }
-        
+
         # Expert-specific intelligence parameters
         self.intelligence_parameters = {
             'learning_rate': 0.1,
@@ -87,7 +78,7 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
             'confidence_momentum': 0.85,
             'emergency_response_factor': 0.3
         }
-        
+
         # Performance and quality tracking
         self.expert_analytics = {
             'total_actions': 0,
@@ -98,7 +89,7 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
             'emergency_activations': 0,
             'circuit_breaker_activations': 0
         }
-        
+
         # Circuit breaker and error handling
         self.circuit_breaker = {
             'failure_count': 0,
@@ -107,7 +98,7 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
             'last_failure': 0,
             'state': 'CLOSED'  # CLOSED, OPEN, HALF_OPEN
         }
-        
+
         # Generate initialization thesis
         self._generate_initialization_thesis()
 
@@ -131,42 +122,16 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
     def _generate_initialization_thesis(self):
         """Generate comprehensive initialization thesis"""
         expert_type = self.__class__.__name__.replace('Expert', '').replace('Enhanced', '')
-        
+
         thesis = f"""
-        Enhanced {expert_type} Voting Expert v4.0 Initialization Complete:
-        
-        Modern Architecture Framework:
-        - SmartInfoBus zero-wiring integration with advanced data access patterns
-        - Async processing with comprehensive error handling and recovery mechanisms
-        - State persistence enabling hot-reload capability for zero-downtime updates
-        - Performance tracking with detailed analytics and health monitoring
-        
-        Expert Configuration:
-        - Maximum signal strength: {self.max_signal_strength}
-        - Confidence threshold: {self.confidence_threshold:.1%}
-        - Adaptive scaling: {'enabled' if self.adaptive_scaling else 'disabled'}
-        - Market awareness: {'enabled' if self.market_awareness else 'disabled'}
-        - Emergency sensitivity: {self.emergency_mode_sensitivity:.1%}
-        
-        Intelligence Parameters:
-        - Learning rate: {self.intelligence_parameters['learning_rate']:.2f}
-        - Market sensitivity: {self.intelligence_parameters['market_sensitivity']:.2f}
-        - Performance memory: {self.intelligence_parameters['performance_memory']:.2f}
-        - Emergency response factor: {self.intelligence_parameters['emergency_response_factor']:.2f}
-        
-        Advanced Features:
-        - Circuit breaker protection with {self.circuit_breaker['threshold']} failure threshold
-        - Market regime and session awareness for optimal timing
-        - Emergency mode integration with automatic risk adjustment
-        - Comprehensive thesis generation for transparent decision-making
-        
-        Expected Outcomes:
-        - High-quality voting signals with market-aware confidence scoring
-        - Robust error handling with graceful degradation under stress
-        - Transparent decision process with detailed explanations
-        - Optimal performance across different market conditions and sessions
+        Enhanced {expert_type} Voting Expert v4.1 Initialization Complete:
+
+        • SmartInfoBus zero-wiring integration; async + hot-reload
+        • Max signal: {self.max_signal_strength}; confidence threshold: {self.confidence_threshold:.1%}
+        • Market-aware; emergency sensitivity: {self.emergency_mode_sensitivity:.1%}
+        • Circuit breaker threshold: {self.circuit_breaker['threshold']}
         """
-        
+
         self.smart_bus.set(f'{self.__class__.__name__}_initialization', {
             'status': 'initialized',
             'thesis': thesis,
@@ -183,35 +148,35 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
     async def process(self, **inputs) -> Dict[str, Any]:
         """
         Modern async processing with comprehensive voting integration
-        
+
         Returns:
             Dict containing voting proposal, confidence, and analytics
         """
         start_time = time.time()
-        
+
         try:
             # Circuit breaker check
             if not self._check_circuit_breaker():
                 return self._generate_circuit_breaker_response()
-            
+
             # Get comprehensive market data
             market_data = await self._get_comprehensive_market_data()
-            
+
             # Update market context
             await self._update_market_context_comprehensive(market_data)
-            
+
             # Check emergency mode
             emergency_status = await self._check_emergency_mode(market_data)
-            
+
             # Generate voting proposal
             voting_proposal = await self._generate_voting_proposal(market_data, emergency_status)
-            
+
             # Calculate enhanced confidence
             confidence = await self._calculate_enhanced_confidence(voting_proposal, market_data)
-            
+
             # Generate comprehensive thesis
             thesis = await self._generate_comprehensive_thesis(voting_proposal, confidence, market_data)
-            
+
             # Create comprehensive results
             results = {
                 'voting_proposal': voting_proposal,
@@ -222,19 +187,21 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
                 'emergency_status': emergency_status,
                 'health_metrics': self._get_health_metrics()
             }
-            
+
             # Update SmartInfoBus
             await self._update_smartinfobus_comprehensive(results, thesis)
-            
+
             # Record performance
             processing_time = (time.time() - start_time) * 1000
             self.performance_tracker.record_metric(self.__class__.__name__, 'process_time', processing_time, True)
-            
-            # Reset circuit breaker on success
+
+            # Reset circuit breaker on success (also move HALF_OPEN -> CLOSED)
             self.circuit_breaker['failure_count'] = 0
-            
+            if self.circuit_breaker['state'] == 'HALF_OPEN':
+                self.circuit_breaker['state'] = 'CLOSED'
+
             return results
-            
+
         except Exception as e:
             return await self._handle_processing_error(e, start_time)
 
@@ -270,18 +237,19 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
     async def _get_comprehensive_market_data(self) -> Dict[str, Any]:
         """Get comprehensive market data from SmartInfoBus"""
         try:
+            get = self.smart_bus.get
             return {
-                'market_regime': self.smart_bus.get('market_regime', self.__class__.__name__) or 'unknown',
-                'session_type': self.smart_bus.get('session_type', self.__class__.__name__) or 'unknown',
-                'volatility_data': self.smart_bus.get('volatility_data', self.__class__.__name__) or {},
-                'risk_score': self.smart_bus.get('risk_score', self.__class__.__name__) or 0.0,
-                'market_open': self.smart_bus.get('market_open', self.__class__.__name__, default=True),
-                'emergency_mode': self.smart_bus.get('emergency_mode', self.__class__.__name__, default=False),
-                'portfolio_state': self.smart_bus.get('portfolio_state', self.__class__.__name__) or {},
-                'recent_trades': self.smart_bus.get('recent_trades', self.__class__.__name__) or [],
-                'expert_performance': self.smart_bus.get('expert_performance', self.__class__.__name__) or {},
-                'voting_consensus': self.smart_bus.get('voting_consensus', self.__class__.__name__) or {},
-                'system_health': self.smart_bus.get('system_health', self.__class__.__name__) or {}
+                'market_regime': get('market_regime', self.__class__.__name__) or 'unknown',
+                'session_type': get('session_type', self.__class__.__name__) or 'unknown',
+                'volatility_data': get('volatility_data', self.__class__.__name__) or {},
+                'risk_score': get('risk_score', self.__class__.__name__) or 0.0,
+                'market_open': get('market_open', self.__class__.__name__, default=True),
+                'emergency_mode': get('emergency_mode', self.__class__.__name__, default=False),
+                'portfolio_state': get('portfolio_state', self.__class__.__name__) or {},
+                'recent_trades': get('recent_trades', self.__class__.__name__) or [],
+                'expert_performance': get('expert_performance', self.__class__.__name__) or {},
+                'voting_consensus': get('voting_consensus', self.__class__.__name__) or {},
+                'system_health': get('system_health', self.__class__.__name__) or {}
             }
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "market_data_retrieval")
@@ -292,16 +260,16 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
         """Update comprehensive market context tracking"""
         try:
             old_context = self.market_context.copy()
-            
+
             self.market_context.update({
                 'regime': market_data.get('market_regime', 'unknown'),
                 'session': market_data.get('session_type', 'unknown'),
                 'volatility_level': self._determine_volatility_level(market_data.get('volatility_data', {})),
-                'risk_score': market_data.get('risk_score', 0.0),
-                'emergency_mode': market_data.get('emergency_mode', False),
-                'market_open': market_data.get('market_open', True)
+                'risk_score': float(market_data.get('risk_score', 0.0) or 0.0),
+                'emergency_mode': bool(market_data.get('emergency_mode', False)),
+                'market_open': bool(market_data.get('market_open', True))
             })
-            
+
             # Log significant context changes
             if old_context.get('regime') != self.market_context['regime']:
                 self.logger.info(format_operator_message(
@@ -311,7 +279,7 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
                     new_regime=self.market_context['regime'],
                     impact="Expert strategy will adapt"
                 ))
-            
+
             if old_context.get('emergency_mode') != self.market_context['emergency_mode']:
                 self.logger.warning(format_operator_message(
                     icon="[ALERT]" if self.market_context['emergency_mode'] else "ℹ️",
@@ -319,10 +287,10 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
                     emergency_active=self.market_context['emergency_mode'],
                     impact="Risk parameters will adjust"
                 ))
-                
+
                 if self.market_context['emergency_mode']:
                     self.expert_analytics['emergency_activations'] += 1
-                    
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "market_context_update")
             self.logger.warning(f"Market context update failed: {error_context}")
@@ -330,13 +298,11 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
     async def _check_emergency_mode(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
         """Check and respond to emergency mode conditions"""
         try:
-            emergency_active = market_data.get('emergency_mode', False)
-            risk_score = market_data.get('risk_score', 0.0)
-            
-            # Determine emergency response level
+            emergency_active = bool(market_data.get('emergency_mode', False))
+            risk_score = float(market_data.get('risk_score', 0.0) or 0.0)
+
             if emergency_active or risk_score > self.emergency_mode_sensitivity:
                 response_level = 'HIGH' if risk_score > 0.9 else 'MEDIUM' if risk_score > 0.7 else 'LOW'
-                
                 return {
                     'emergency_active': True,
                     'response_level': response_level,
@@ -344,7 +310,7 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
                     'recommended_action': self._determine_emergency_action(response_level),
                     'signal_adjustment': self._calculate_emergency_signal_adjustment(risk_score)
                 }
-            
+
             return {
                 'emergency_active': False,
                 'response_level': 'NORMAL',
@@ -352,45 +318,38 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
                 'recommended_action': 'continue_normal',
                 'signal_adjustment': 1.0
             }
-            
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "emergency_mode_check")
             return {'emergency_active': False, 'response_level': 'UNKNOWN', 'signal_adjustment': 0.5}
 
     def _determine_emergency_action(self, response_level: str) -> str:
         """Determine appropriate emergency action"""
-        emergency_actions = {
-            'HIGH': 'reduce_positions',
-            'MEDIUM': 'conservative_sizing', 
-            'LOW': 'cautious_monitoring'
-        }
+        emergency_actions = {'HIGH': 'reduce_positions', 'MEDIUM': 'conservative_sizing', 'LOW': 'cautious_monitoring'}
         return emergency_actions.get(response_level, 'monitor')
 
     def _calculate_emergency_signal_adjustment(self, risk_score: float) -> float:
         """Calculate signal strength adjustment for emergency conditions"""
-        base_factor = self.intelligence_parameters['emergency_response_factor']
-        # Stronger reduction as risk increases
-        adjustment = 1.0 - (risk_score * base_factor * 2.0)
+        base_factor = float(self.intelligence_parameters['emergency_response_factor'])
+        adjustment = 1.0 - (float(risk_score) * base_factor * 2.0)
         return max(0.1, min(1.0, adjustment))
 
     async def _generate_voting_proposal(self, market_data: Dict[str, Any], emergency_status: Dict[str, Any]) -> Dict[str, Any]:
         """Generate comprehensive voting proposal"""
         try:
-            # Get expert-specific proposal
             base_proposal = await self._generate_expert_specific_proposal(market_data)
-            
+
             # Apply emergency adjustments
-            if emergency_status['emergency_active']:
+            if emergency_status.get('emergency_active', False):
                 base_proposal = self._apply_emergency_adjustments(base_proposal, emergency_status)
-            
+
             # Apply market context adjustments
             adjusted_proposal = await self._apply_market_context_adjustments(base_proposal, market_data)
-            
+
             # Record proposal
             self._record_action_proposal(adjusted_proposal)
-            
             return adjusted_proposal
-            
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "voting_proposal_generation")
             self.logger.error(f"Voting proposal generation failed: {error_context}")
@@ -399,32 +358,31 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
     def _apply_emergency_adjustments(self, proposal: Dict[str, Any], emergency_status: Dict[str, Any]) -> Dict[str, Any]:
         """Apply emergency mode adjustments to proposal"""
         try:
-            adjustment_factor = emergency_status.get('signal_adjustment', 0.5)
+            adjustment_factor = float(emergency_status.get('signal_adjustment', 0.5))
             response_level = emergency_status.get('response_level', 'LOW')
-            
-            if 'signal_strength' in proposal:
+
+            if 'signal_strength' in proposal and isinstance(proposal['signal_strength'], (int, float)):
                 proposal['signal_strength'] *= adjustment_factor
-            
-            if 'position_size' in proposal:
+
+            if 'position_size' in proposal and isinstance(proposal['position_size'], (int, float)):
                 proposal['position_size'] *= adjustment_factor
-            
-            # Add emergency metadata
+
             proposal['emergency_adjustment'] = {
                 'applied': True,
                 'response_level': response_level,
                 'adjustment_factor': adjustment_factor,
                 'reason': f'Emergency mode active with {response_level} response level'
             }
-            
+
             self.logger.warning(format_operator_message(
                 icon="[ALERT]",
                 message="Emergency adjustments applied to proposal",
                 response_level=response_level,
                 adjustment_factor=f"{adjustment_factor:.2f}"
             ))
-            
+
             return proposal
-            
+
         except Exception as e:
             self.logger.error(f"Emergency adjustment failed: {e}")
             return proposal
@@ -435,92 +393,57 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
             regime = self.market_context.get('regime', 'unknown')
             session = self.market_context.get('session', 'unknown')
             volatility = self.market_context.get('volatility_level', 'medium')
-            
-            # Regime-based adjustments
+
             regime_multipliers = {
-                'trending': 1.2,
-                'volatile': 0.8,
-                'ranging': 1.0,
-                'breakout': 1.3,
-                'reversal': 0.9,
-                'noise': 0.6,
-                'unknown': 0.8
+                'trending': 1.2, 'volatile': 0.8, 'ranging': 1.0,
+                'breakout': 1.3, 'reversal': 0.9, 'noise': 0.6, 'unknown': 0.8
             }
-            
-            # Session-based adjustments
             session_multipliers = {
-                'american': 1.1,
-                'european': 1.0,
-                'asian': 0.9,
-                'rollover': 0.4,
-                'weekend': 0.2,
-                'unknown': 0.8
+                'american': 1.1, 'european': 1.0, 'asian': 0.9,
+                'rollover': 0.4, 'weekend': 0.2, 'unknown': 0.8
             }
-            
-            # Volatility-based adjustments
             volatility_multipliers = {
-                'extreme': 0.5,
-                'high': 0.7,
-                'medium': 1.0,
-                'low': 1.2,
-                'very_low': 1.3
+                'extreme': 0.5, 'high': 0.7, 'medium': 1.0, 'low': 1.2, 'very_low': 1.3
             }
-            
-            # Apply adjustments
-            regime_mult = regime_multipliers.get(regime, 0.8)
-            session_mult = session_multipliers.get(session, 0.8)
-            vol_mult = volatility_multipliers.get(volatility, 1.0)
-            
-            combined_multiplier = regime_mult * session_mult * vol_mult
-            
-            if 'signal_strength' in proposal:
+
+            combined_multiplier = (
+                regime_multipliers.get(regime, 0.8)
+                * session_multipliers.get(session, 0.8)
+                * volatility_multipliers.get(volatility, 1.0)
+            )
+
+            if 'signal_strength' in proposal and isinstance(proposal['signal_strength'], (int, float)):
                 proposal['signal_strength'] *= combined_multiplier
-            
-            # Add adjustment metadata
+
             proposal['market_adjustments'] = {
-                'regime_multiplier': regime_mult,
-                'session_multiplier': session_mult,
-                'volatility_multiplier': vol_mult,
+                'regime_multiplier': regime_multipliers.get(regime, 0.8),
+                'session_multiplier': session_multipliers.get(session, 0.8),
+                'volatility_multiplier': volatility_multipliers.get(volatility, 1.0),
                 'combined_multiplier': combined_multiplier,
                 'regime': regime,
                 'session': session,
                 'volatility_level': volatility
             }
-            
+
             return proposal
-            
+
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "market_context_adjustments")
+            _ = self.error_pinpointer.analyze_error(e, "market_context_adjustments")
             return proposal
 
     async def _calculate_enhanced_confidence(self, proposal: Dict[str, Any], market_data: Dict[str, Any]) -> float:
         """Calculate enhanced confidence with market awareness"""
         try:
-            # Get base confidence from expert implementation
             base_confidence = await self._calculate_expert_specific_confidence(proposal, market_data)
-            
-            # Apply market context adjustments
             context_adjusted = self._apply_confidence_context_adjustments(base_confidence, market_data)
-            
-            # Apply performance-based adjustments
             performance_adjusted = self._apply_confidence_performance_adjustments(context_adjusted)
-            
-            # Apply emergency mode adjustments
             emergency_adjusted = self._apply_confidence_emergency_adjustments(
                 performance_adjusted, market_data.get('emergency_mode', False)
             )
-            
-            # Ensure valid range
-            final_confidence = max(0.0, min(1.0, emergency_adjusted))
-            
-            # Record confidence
+            final_confidence = max(0.0, min(1.0, float(emergency_adjusted)))
             self.confidence_history.append(final_confidence)
-            
             return final_confidence
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "confidence_calculation")
-            self.logger.error(f"Confidence calculation failed: {error_context}")
+        except Exception:
             return max(0.1, self.confidence_threshold)
 
     def _apply_confidence_context_adjustments(self, base_confidence: float, market_data: Dict[str, Any]) -> float:
@@ -528,37 +451,24 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
         try:
             regime = self.market_context.get('regime', 'unknown')
             session = self.market_context.get('session', 'unknown')
-            risk_score = market_data.get('risk_score', 0.0)
-            
-            # Regime confidence adjustments
+            risk_score = float(market_data.get('risk_score', 0.0) or 0.0)
+
             regime_confidence_factors = {
-                'trending': 1.1,
-                'volatile': 0.8,
-                'ranging': 0.9,
-                'breakout': 1.2,
-                'reversal': 0.7,
-                'noise': 0.6,
-                'unknown': 0.7
+                'trending': 1.1, 'volatile': 0.8, 'ranging': 0.9,
+                'breakout': 1.2, 'reversal': 0.7, 'noise': 0.6, 'unknown': 0.7
             }
-            
-            # Session confidence adjustments
             session_confidence_factors = {
-                'american': 1.0,
-                'european': 0.95,
-                'asian': 0.9,
-                'rollover': 0.5,
-                'weekend': 0.3,
-                'unknown': 0.8
+                'american': 1.0, 'european': 0.95, 'asian': 0.9,
+                'rollover': 0.5, 'weekend': 0.3, 'unknown': 0.8
             }
-            
+
             regime_factor = regime_confidence_factors.get(regime, 0.7)
             session_factor = session_confidence_factors.get(session, 0.8)
-            risk_factor = 1.0 - (risk_score * 0.3)  # Reduce confidence as risk increases
-            
-            adjusted_confidence = base_confidence * regime_factor * session_factor * risk_factor
+            risk_factor = 1.0 - (risk_score * 0.3)
+
+            adjusted_confidence = float(base_confidence) * regime_factor * session_factor * risk_factor
             return max(0.1, min(1.0, adjusted_confidence))
-            
-        except Exception as e:
+        except Exception:
             return base_confidence
 
     def _apply_confidence_performance_adjustments(self, confidence: float) -> float:
@@ -566,61 +476,38 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
         try:
             if len(self.confidence_history) < 5:
                 return confidence
-            
-            # Calculate recent performance trend
             recent_confidences = list(self.confidence_history)[-10:]
-            avg_recent_confidence = float(np.mean(recent_confidences))
-            
-            # Apply momentum adjustment
-            momentum = self.intelligence_parameters['confidence_momentum']
-            performance_factor = (avg_recent_confidence - 0.5) * momentum + 1.0
-            
-            adjusted = confidence * performance_factor
+            avg_recent = float(np.mean(recent_confidences))
+            momentum = float(self.intelligence_parameters['confidence_momentum'])
+            performance_factor = (avg_recent - 0.5) * momentum + 1.0
+            adjusted = float(confidence) * performance_factor
             return max(0.1, min(1.0, adjusted))
-            
-        except Exception as e:
+        except Exception:
             return confidence
 
     def _apply_confidence_emergency_adjustments(self, confidence: float, emergency_mode: bool) -> float:
         """Apply emergency mode confidence adjustments"""
         if emergency_mode:
-            # Reduce confidence during emergency
-            emergency_factor = 1.0 - self.intelligence_parameters['emergency_response_factor']
-            return confidence * emergency_factor
-        return confidence
+            emergency_factor = 1.0 - float(self.intelligence_parameters['emergency_response_factor'])
+            return float(confidence) * emergency_factor
+        return float(confidence)
 
     async def _generate_comprehensive_thesis(self, proposal: Dict[str, Any], confidence: float, market_data: Dict[str, Any]) -> str:
         """Generate comprehensive decision thesis"""
         try:
             expert_type = self.__class__.__name__.replace('Enhanced', '').replace('Expert', '')
-            
-            thesis_parts = []
-            
-            # Executive summary
-            confidence_desc = "HIGH" if confidence > 0.7 else "MODERATE" if confidence > 0.4 else "LOW"
-            thesis_parts.append(f"{expert_type.upper()} EXPERT DECISION: {confidence_desc} confidence ({confidence:.1%})")
-            
-            # Proposal summary
-            action = proposal.get('action', 'unknown')
-            thesis_parts.append(f"PROPOSED ACTION: {action}")
-            
-            # Market context
-            regime = self.market_context.get('regime', 'unknown')
-            session = self.market_context.get('session', 'unknown')
-            thesis_parts.append(f"MARKET CONTEXT: {regime} regime during {session} session")
-            
-            # Emergency status
+            parts = []
+            label = "HIGH" if confidence > 0.7 else "MODERATE" if confidence > 0.4 else "LOW"
+            parts.append(f"{expert_type.upper()} EXPERT DECISION: {label} confidence ({confidence:.1%})")
+            parts.append(f"PROPOSED ACTION: {proposal.get('action', 'unknown')}")
+            parts.append(f"MARKET CONTEXT: {self.market_context.get('regime','unknown')} regime during {self.market_context.get('session','unknown')} session")
             if market_data.get('emergency_mode', False):
-                thesis_parts.append("EMERGENCY MODE: Active risk management protocols engaged")
-            
-            # Performance context
+                parts.append("EMERGENCY MODE: Active risk protocols engaged")
             total_actions = self.expert_analytics.get('total_actions', 0)
             if total_actions > 0:
-                success_rate = self.expert_analytics.get('successful_actions', 0) / total_actions
-                thesis_parts.append(f"EXPERT PERFORMANCE: {success_rate:.1%} success rate over {total_actions} actions")
-            
-            return " | ".join(thesis_parts)
-            
+                sr = self.expert_analytics.get('successful_actions', 0) / total_actions
+                parts.append(f"EXPERT PERFORMANCE: {sr:.1%} success over {total_actions} actions")
+            return " | ".join(parts)
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "thesis_generation")
             return f"Thesis generation failed: {error_context}"
@@ -628,40 +515,11 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
     async def _update_smartinfobus_comprehensive(self, results: Dict[str, Any], thesis: str):
         """Update SmartInfoBus with comprehensive results"""
         try:
-            expert_name = self.__class__.__name__
-            
-            # Core voting results
-            self.smart_bus.set(
-                f'{expert_name}_voting_proposal',
-                results['voting_proposal'],
-                module=expert_name,
-                thesis=thesis,
-                confidence=results['confidence']
-            )
-            
-            self.smart_bus.set(
-                f'{expert_name}_confidence',
-                results['confidence'],
-                module=expert_name,
-                thesis=f"{expert_name} confidence: {results['confidence']:.1%}"
-            )
-            
-            # Market context
-            self.smart_bus.set(
-                f'{expert_name}_market_context',
-                results['market_context'],
-                module=expert_name,
-                thesis=f"Market context awareness for {expert_name}"
-            )
-            
-            # Expert analytics
-            self.smart_bus.set(
-                f'{expert_name}_analytics',
-                results['expert_analytics'],
-                module=expert_name,
-                thesis=f"Performance analytics for {expert_name}"
-            )
-            
+            name = self.__class__.__name__
+            self.smart_bus.set(f'{name}_voting_proposal', results['voting_proposal'], module=name, thesis=thesis, confidence=results['confidence'])
+            self.smart_bus.set(f'{name}_confidence', results['confidence'], module=name, thesis=f"{name} confidence: {results['confidence']:.1%}")
+            self.smart_bus.set(f'{name}_market_context', results['market_context'], module=name, thesis=f"Market context awareness for {name}")
+            self.smart_bus.set(f'{name}_analytics', results['expert_analytics'], module=name, thesis=f"Performance analytics for {name}")
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
             self.logger.error(f"SmartInfoBus update failed: {error_context}")
@@ -677,23 +535,20 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
             }
             self.action_history.append(record)
             self.expert_analytics['total_actions'] += 1
-            
         except Exception as e:
             self.logger.warning(f"Action recording failed: {e}")
 
     def _check_circuit_breaker(self) -> bool:
         """Check circuit breaker status"""
         cb = self.circuit_breaker
-        current_time = time.time()
-        
+        now = time.time()
         if cb['state'] == 'OPEN':
-            if current_time - cb['last_failure'] > cb['reset_time']:
+            if now - cb['last_failure'] > cb['reset_time']:
                 cb['state'] = 'HALF_OPEN'
                 cb['failure_count'] = 0
                 self.logger.info("Circuit breaker moved to HALF_OPEN")
             else:
                 return False
-        
         return cb['state'] in ['CLOSED', 'HALF_OPEN']
 
     def _generate_circuit_breaker_response(self) -> Dict[str, Any]:
@@ -712,17 +567,14 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
         """Handle processing errors with intelligent recovery"""
         self.circuit_breaker['failure_count'] += 1
         self.circuit_breaker['last_failure'] = time.time()
-        
         if self.circuit_breaker['failure_count'] >= self.circuit_breaker['threshold']:
             self.circuit_breaker['state'] = 'OPEN'
             self.expert_analytics['circuit_breaker_activations'] += 1
-            
+
         error_context = self.error_pinpointer.analyze_error(error, self.__class__.__name__)
-        
-        # Record error performance
         processing_time = (time.time() - start_time) * 1000
-        self.performance_tracker.record_metric(self.__class__.__name__, 'process_time', processing_time, False)
-        
+        self.performance_tracker.record_metric(self.__class__.__name__, 'process_time', processing_time, False, error=str(error_context))
+
         return {
             'voting_proposal': {'action': 'abstain', 'reason': f'processing_error: {str(error_context)}'},
             'confidence': 0.1,
@@ -747,48 +599,44 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
         try:
             if not volatility_data:
                 return 'medium'
-            
-            avg_volatility = float(np.mean(list(volatility_data.values())))
-            
-            if avg_volatility > 0.05:
-                return 'extreme'
-            elif avg_volatility > 0.03:
-                return 'high'
-            elif avg_volatility > 0.015:
-                return 'medium'
-            elif avg_volatility > 0.008:
-                return 'low'
-            else:
-                return 'very_low'
+            vals = [float(v) for v in volatility_data.values() if isinstance(v, (int, float))]
+            avg = float(np.mean(vals)) if vals else 0.02
+            if avg > 0.05: return 'extreme'
+            if avg > 0.03: return 'high'
+            if avg > 0.015: return 'medium'
+            if avg > 0.008: return 'low'
+            return 'very_low'
         except Exception:
             return 'medium'
 
     def _get_analytics_summary(self) -> Dict[str, Any]:
         """Get expert analytics summary"""
         try:
+            total = int(self.expert_analytics.get('total_actions', 0))
+            success = int(self.expert_analytics.get('successful_actions', 0))
             return {
-                'total_actions': self.expert_analytics.get('total_actions', 0),
-                'successful_actions': self.expert_analytics.get('successful_actions', 0),
-                'success_rate': (self.expert_analytics.get('successful_actions', 0) / 
-                               max(1, self.expert_analytics.get('total_actions', 1))),
-                'avg_confidence': self.expert_analytics.get('avg_confidence', 0.5),
-                'emergency_activations': self.expert_analytics.get('emergency_activations', 0),
-                'circuit_breaker_activations': self.expert_analytics.get('circuit_breaker_activations', 0)
+                'total_actions': total,
+                'successful_actions': success,
+                'success_rate': (success / max(1, total)),
+                'avg_confidence': float(self.expert_analytics.get('avg_confidence', 0.5)),
+                'emergency_activations': int(self.expert_analytics.get('emergency_activations', 0)),
+                'circuit_breaker_activations': int(self.expert_analytics.get('circuit_breaker_activations', 0))
             }
         except Exception:
             return {'status': 'error'}
 
     def _get_health_metrics(self) -> Dict[str, Any]:
         """Get health metrics for monitoring"""
+        total = int(self.expert_analytics.get('total_actions', 0))
+        success = int(self.expert_analytics.get('successful_actions', 0))
         return {
             'module_name': self.__class__.__name__,
             'status': 'circuit_breaker_open' if self.circuit_breaker['state'] == 'OPEN' else 'healthy',
             'circuit_breaker_state': self.circuit_breaker['state'],
             'failure_count': self.circuit_breaker['failure_count'],
-            'total_actions': self.expert_analytics.get('total_actions', 0),
-            'success_rate': (self.expert_analytics.get('successful_actions', 0) / 
-                           max(1, self.expert_analytics.get('total_actions', 1))),
-            'avg_confidence': self.expert_analytics.get('avg_confidence', 0.5),
+            'total_actions': total,
+            'success_rate': (success / max(1, total)),
+            'avg_confidence': float(self.expert_analytics.get('avg_confidence', 0.5)),
             'market_regime': self.market_context.get('regime', 'unknown'),
             'emergency_mode': self.market_context.get('emergency_mode', False)
         }
@@ -796,31 +644,22 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
     def reset(self):
         """Enhanced reset with comprehensive state cleanup"""
         super().reset()
-        
-        # Reset core state
         self.action_history.clear()
         self.confidence_history.clear()
         self.performance_metrics.clear()
-        
-        # Reset market context
         self.market_context = {
             'regime': 'unknown', 'session': 'unknown', 'volatility_level': 'medium',
             'risk_score': 0.0, 'emergency_mode': False, 'market_open': True
         }
-        
-        # Reset analytics
         self.expert_analytics = {
             'total_actions': 0, 'successful_actions': 0, 'avg_confidence': 0.5,
             'market_regime_performance': defaultdict(float), 'session_performance': defaultdict(float),
             'emergency_activations': 0, 'circuit_breaker_activations': 0
         }
-        
-        # Reset circuit breaker
         self.circuit_breaker = {
             'failure_count': 0, 'threshold': 5, 'reset_time': 300,
             'last_failure': 0, 'state': 'CLOSED'
         }
-        
         self.logger.info(format_operator_message(
             icon="[RELOAD]",
             message=f"{self.__class__.__name__} reset completed",
@@ -834,10 +673,25 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
 
 @module(
     name="EnhancedThemeExpert",
-    version="4.0.0",
+    version="4.1.0",
     category="voting",
-    provides=["theme_voting_proposal", "theme_confidence", "theme_analysis", "voting_summary", "strategy_arbiter_weights", "consensus_direction", "agreement_score", "raw_proposals", "member_confidences", "voting_summary", "strategy_arbiter_weights", "consensus_direction", "agreement_score", "raw_proposals", "member_confidences"],
-    requires=["market_data", "theme_detection", "market_regime"],
+    provides=[
+        "theme_voting_proposal",
+        "theme_confidence",
+        "theme_analysis",
+        "voting_summary",
+        "strategy_arbiter_weights",
+        "consensus_direction",
+        "agreement_score",
+        "raw_proposals",
+        "member_confidences",
+    ],
+    requires=[
+        "market_data",
+        "theme_detection",
+        "market_regime",
+        "risk_data",
+    ],
     description="Enhanced theme-based trading expert with modern InfoBus integration",
     is_voting_member=True,
     thesis_required=True,
@@ -851,24 +705,22 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
 )
 class EnhancedThemeExpert(EnhancedVotingExpertBase):
     """
-    🎭 PRODUCTION-GRADE Enhanced Theme Expert v4.0
-    
-    Advanced theme-based trading expert with:
-    - Market theme detection and regime analysis
-    - Adaptive signal generation based on theme strength
-    - Session-aware theme interpretation 
-    - Emergency mode theme override protocols
+    🎭 PRODUCTION-GRADE Enhanced Theme Expert v4.1
     """
 
     def _initialize(self):
         """Initialize enhanced theme expert"""
         super()._initialize()
-        
+
+        if not hasattr(self, 'performance_tracker') or self.performance_tracker is None:
+            from modules.monitoring.performance_tracker import PerformanceTracker
+            self.performance_tracker = PerformanceTracker()
+
         # Theme-specific configuration
-        self.theme_sensitivity = self.config.get('theme_sensitivity', 0.8)
-        self.theme_momentum = self.config.get('theme_momentum', 0.9)
-        self.theme_decay_factor = self.config.get('theme_decay_factor', 0.95)
-        
+        self.theme_sensitivity = float(self.config.get('theme_sensitivity', 0.8))
+        self.theme_momentum = float(self.config.get('theme_momentum', 0.9))
+        self.theme_decay_factor = float(self.config.get('theme_decay_factor', 0.95))
+
         # Theme state tracking
         self.current_theme = 0
         self.theme_strength = 0.0
@@ -879,100 +731,96 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
             2: {'signals': 0, 'success': 0, 'avg_strength': 0.0},  # High volatility
             3: {'signals': 0, 'success': 0, 'avg_strength': 0.0},  # Trending
         }
-        
+
         self.logger.info(format_operator_message(
             icon="🎭",
-            message="Enhanced Theme Expert v4.0 initialized",
+            message="Enhanced Theme Expert v4.1 initialized",
             theme_sensitivity=self.theme_sensitivity,
             theme_momentum=self.theme_momentum
         ))
 
-
     async def process(self, **inputs) -> Dict[str, Any]:
-            """
-            Contract-compliant process for EnhancedThemeExpert.
-            Produces: theme_voting_proposal, theme_confidence, theme_analysis, voting_summary,
-                    strategy_arbiter_weights, consensus_direction, agreement_score,
-                    raw_proposals, member_confidences, and _thesis.
-            """
-            start = time.time()
-            try:
-                base = await super().process(**inputs)
+        """
+        Contract-compliant process for EnhancedThemeExpert.
+        Produces: theme_voting_proposal, theme_confidence, theme_analysis, voting_summary,
+                  strategy_arbiter_weights, consensus_direction, agreement_score,
+                  raw_proposals, member_confidences, and _thesis.
+        """
+        start = time.time()
+        try:
+            base = await super().process(**inputs)
 
-                proposal = dict(base.get('voting_proposal') or {})
-                confidence = float(base.get('confidence', 0.0))
-                thesis = base.get('thesis', 'Theme expert thesis unavailable')
-                mc = dict(base.get('market_context') or {})
-                analytics = dict(base.get('expert_analytics') or {})
-                emergency = dict(base.get('emergency_status') or {})
-                health = dict(base.get('health_metrics') or {})
+            proposal = dict(base.get('voting_proposal') or {})
+            confidence = float(base.get('confidence', 0.0))
+            thesis = base.get('thesis', 'Theme expert thesis unavailable')
+            mc = dict(base.get('market_context') or {})
+            analytics = dict(base.get('expert_analytics') or {})
+            emergency = dict(base.get('emergency_status') or {})
+            health = dict(base.get('health_metrics') or {})
 
-                expert_name = self.__class__.__name__
-                member_confidences = {expert_name: confidence}
-                raw_proposals = {expert_name: proposal}
-                strategy_weights = {expert_name: 1.0}
+            expert_name = self.__class__.__name__
+            member_confidences = {expert_name: confidence}
+            raw_proposals = {expert_name: proposal}
+            strategy_weights = {expert_name: 1.0}
 
-                voting_summary = {
-                    'expert': expert_name,
-                    'action': proposal.get('action', 'abstain'),
-                    'signal_strength': float(proposal.get('signal_strength', 0.0)),
-                    'position_size': float(proposal.get('position_size', 0.0)),
-                    'duration': proposal.get('duration', 'unknown'),
-                    'theme_type': proposal.get('theme_type', 'unknown'),
-                    'confidence': confidence,
-                    'regime': mc.get('regime', 'unknown'),
-                    'session': mc.get('session', 'unknown'),
-                }
+            voting_summary = {
+                'expert': expert_name,
+                'action': proposal.get('action', 'abstain'),
+                'signal_strength': float(proposal.get('signal_strength', 0.0) or 0.0),
+                'position_size': float(proposal.get('position_size', 0.0) or 0.0),
+                'duration': proposal.get('duration', 'unknown'),
+                'theme_type': proposal.get('theme_type', 'unknown'),
+                'confidence': confidence,
+                'regime': mc.get('regime', 'unknown'),
+                'session': mc.get('session', 'unknown'),
+            }
 
-                theme_analysis = {
-                    'market_context': mc,
-                    'expert_analytics': analytics,
-                    'emergency_status': emergency,
-                    'health_metrics': health,
-                    'theme_metadata': proposal.get('theme_metadata', {}),
-                }
+            theme_analysis = {
+                'market_context': mc,
+                'expert_analytics': analytics,
+                'emergency_status': emergency,
+                'health_metrics': health,
+                'theme_metadata': proposal.get('theme_metadata', {}),
+            }
 
-                out = {
-                    'theme_voting_proposal': proposal,
-                    'theme_confidence': confidence,
-                    'theme_analysis': theme_analysis,
-                    'voting_summary': voting_summary,
-                    'strategy_arbiter_weights': strategy_weights,
-                    'consensus_direction': proposal.get('action', 'neutral'),
-                    'agreement_score': 1.0,
-                    'raw_proposals': raw_proposals,
-                    'member_confidences': member_confidences,
-                    '_thesis': thesis,
-                }
-                self.performance_tracker.record_metric(self.__class__.__name__, 'process', (time.time() - start) * 1000, True)
-                return out
+            out = {
+                'theme_voting_proposal': proposal,
+                'theme_confidence': confidence,
+                'theme_analysis': theme_analysis,
+                'voting_summary': voting_summary,
+                'strategy_arbiter_weights': strategy_weights,
+                'consensus_direction': proposal.get('action', 'neutral'),
+                'agreement_score': 1.0,
+                'raw_proposals': raw_proposals,
+                'member_confidences': member_confidences,
+                '_thesis': thesis,
+            }
+            self.performance_tracker.record_metric(self.__class__.__name__, 'process', (time.time() - start) * 1000, True)
+            return out
 
-            except Exception as e:
-                self.logger.error(f"[FAIL] Theme process error: {e}")
-                return {
-                    'theme_voting_proposal': {'action': 'abstain', 'reason': f'error:{str(e)}'},
-                    'theme_confidence': 0.1,
-                    'theme_analysis': {'status': 'error', 'error': str(e)},
-                    'voting_summary': {'expert': self.__class__.__name__, 'action': 'abstain'},
-                    'strategy_arbiter_weights': {self.__class__.__name__: 1.0},
-                    'consensus_direction': 'neutral',
-                    'agreement_score': 0.0,
-                    'raw_proposals': {},
-                    'member_confidences': {},
-                    '_thesis': f"Theme expert failed: {str(e)}",
-                }
-
+        except Exception as e:
+            self.logger.error(f"[FAIL] Theme process error: {e}")
+            return {
+                'theme_voting_proposal': {'action': 'abstain', 'reason': f'error:{str(e)}'},
+                'theme_confidence': 0.1,
+                'theme_analysis': {'status': 'error', 'error': str(e)},
+                'voting_summary': {'expert': self.__class__.__name__, 'action': 'abstain'},
+                'strategy_arbiter_weights': {self.__class__.__name__: 1.0},
+                'consensus_direction': 'neutral',
+                'agreement_score': 0.0,
+                'raw_proposals': {},
+                'member_confidences': {},
+                '_thesis': f"Theme expert failed: {str(e)}",
+            }
 
     async def _generate_expert_specific_proposal(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
         """Generate theme-based voting proposal"""
         try:
-            # Get theme detection data
             theme_data = self.smart_bus.get('theme_detection', self.__class__.__name__) or {}
-            self.current_theme = theme_data.get('current_theme', 0)
-            self.theme_strength = theme_data.get('theme_strength', 0.0)
-            
-            # Generate theme-specific action
-            if self.current_theme == 0:  # Risk-on theme
+            self.current_theme = int(theme_data.get('current_theme', 0))
+            self.theme_strength = float(theme_data.get('theme_strength', 0.0) or 0.0)
+
+            if self.current_theme == 0:  # Risk-on
                 proposal = {
                     'action': 'long_risk_assets',
                     'signal_strength': self.theme_strength * 0.8,
@@ -980,8 +828,7 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
                     'duration': 'medium',
                     'theme_type': 'risk_on'
                 }
-                
-            elif self.current_theme == 1:  # Risk-off theme
+            elif self.current_theme == 1:  # Risk-off
                 proposal = {
                     'action': 'safe_haven_rotation',
                     'signal_strength': self.theme_strength * 0.9,
@@ -989,8 +836,7 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
                     'duration': 'long',
                     'theme_type': 'risk_off'
                 }
-                
-            elif self.current_theme == 2:  # High volatility theme
+            elif self.current_theme == 2:  # High volatility
                 proposal = {
                     'action': 'volatility_hedging',
                     'signal_strength': self.theme_strength * 0.6,
@@ -998,8 +844,7 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
                     'duration': 'short',
                     'theme_type': 'high_volatility'
                 }
-                
-            elif self.current_theme == 3:  # Trending theme
+            elif self.current_theme == 3:  # Trending
                 proposal = {
                     'action': 'trend_following',
                     'signal_strength': self.theme_strength,
@@ -1007,7 +852,6 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
                     'duration': 'long',
                     'theme_type': 'trending'
                 }
-                
             else:
                 proposal = {
                     'action': 'neutral',
@@ -1016,54 +860,36 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
                     'duration': 'short',
                     'theme_type': 'unknown'
                 }
-            
-            # Add theme metadata
+
             proposal['theme_metadata'] = {
                 'current_theme': self.current_theme,
                 'theme_strength': self.theme_strength,
                 'theme_performance': self.theme_performance.get(self.current_theme, {}),
                 'theme_momentum': self._calculate_theme_momentum()
             }
-            
-            # Record theme signal
+
             self._record_theme_signal()
-            
             return proposal
-            
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "theme_proposal_generation")
-            return {
-                'action': 'abstain',
-                'reason': f'Theme analysis failed: {error_context}',
-                'signal_strength': 0.0
-            }
+            return {'action': 'abstain', 'reason': f'Theme analysis failed: {error_context}', 'signal_strength': 0.0}
 
     async def _calculate_expert_specific_confidence(self, proposal: Dict[str, Any], market_data: Dict[str, Any]) -> float:
         """Calculate theme-specific confidence"""
         try:
-            # Base confidence from theme strength
-            base_confidence = self.theme_strength * self.theme_sensitivity
-            
-            # Adjust for theme performance history
-            theme_perf = self.theme_performance.get(self.current_theme, {})
-            if theme_perf.get('signals', 0) > 5:
-                success_rate = theme_perf.get('success', 0) / theme_perf['signals']
-                performance_adjustment = 0.5 + success_rate * 0.5
-                base_confidence *= performance_adjustment
-            
-            # Adjust for theme momentum
+            base = float(self.theme_strength) * float(self.theme_sensitivity)
+            perf = self.theme_performance.get(self.current_theme, {})
+            if perf.get('signals', 0) > 5:
+                sr = perf.get('success', 0) / perf['signals']
+                base *= (0.5 + sr * 0.5)
             momentum = self._calculate_theme_momentum()
-            momentum_adjustment = 0.8 + momentum * 0.4
-            base_confidence *= momentum_adjustment
-            
-            # Market regime alignment bonus
+            base *= (0.8 + momentum * 0.4)
             regime = market_data.get('market_regime', 'unknown')
             if self._is_theme_regime_aligned(self.current_theme, regime):
-                base_confidence *= 1.2
-            
-            return max(0.1, min(1.0, base_confidence))
-            
-        except Exception as e:
+                base *= 1.2
+            return max(0.1, min(1.0, base))
+        except Exception:
             return 0.5
 
     def _calculate_theme_momentum(self) -> float:
@@ -1071,28 +897,23 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
         try:
             if len(self.theme_history) < 3:
                 return 0.5
-            
-            recent_themes = [entry['theme'] for entry in list(self.theme_history)[-5:]]
-            theme_consistency = recent_themes.count(self.current_theme) / len(recent_themes)
-            
-            recent_strengths = [entry['strength'] for entry in list(self.theme_history)[-3:]]
-            strength_trend = np.polyfit(range(len(recent_strengths)), recent_strengths, 1)[0]
-            
-            momentum = (theme_consistency + max(0, strength_trend)) / 2
+            recent_themes = [e['theme'] for e in list(self.theme_history)[-5:]]
+            consistency = recent_themes.count(self.current_theme) / len(recent_themes)
+            recent_strengths = [e['strength'] for e in list(self.theme_history)[-3:]]
+            trend = np.polyfit(range(len(recent_strengths)), recent_strengths, 1)[0]
+            momentum = (consistency + max(0.0, float(trend))) / 2.0
             return max(0.0, min(1.0, momentum))
-            
         except Exception:
             return 0.5
 
     def _is_theme_regime_aligned(self, theme: int, regime: str) -> bool:
-        """Check if theme is aligned with current market regime"""
         alignments = {
-            0: ['trending', 'breakout'],  # Risk-on themes
-            1: ['volatile', 'reversal'],  # Risk-off themes  
-            2: ['volatile', 'noise'],     # High volatility themes
-            3: ['trending', 'breakout']   # Trending themes
+            0: ['trending', 'breakout'],
+            1: ['volatile', 'reversal'],
+            2: ['volatile', 'noise'],
+            3: ['trending', 'breakout']
         }
-        return regime in alignments.get(theme, [])
+        return regime in alignments.get(int(theme), [])
 
     def _record_theme_signal(self):
         """Record theme signal for performance tracking"""
@@ -1104,17 +925,11 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
                 'market_context': self.market_context.copy()
             }
             self.theme_history.append(signal_record)
-            
-            # Update theme performance tracking
             if self.current_theme in self.theme_performance:
-                perf_data = self.theme_performance[self.current_theme]
-                perf_data['signals'] += 1
-                
-                # Update average strength
-                count = perf_data['signals']
-                old_avg = perf_data['avg_strength']
-                perf_data['avg_strength'] = (old_avg * (count - 1) + self.theme_strength) / count
-                
+                d = self.theme_performance[self.current_theme]
+                d['signals'] += 1
+                count = d['signals']
+                d['avg_strength'] = (d['avg_strength'] * (count - 1) + self.theme_strength) / count
         except Exception as e:
             self.logger.warning(f"Theme signal recording failed: {e}")
 
@@ -1125,10 +940,10 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
 
 @module(
     name="EnhancedSeasonalityRiskExpert",
-    version="4.0.0",
+    version="4.1.0",
     category="voting",
     provides=["seasonality_voting_proposal", "seasonality_confidence", "seasonality_analysis"],
-    requires=["market_data", "time_risk_data", "session_type"],
+    requires=["market_data", "risk_data", "session_type"],
     description="Enhanced seasonality-based risk expert with modern InfoBus integration",
     is_voting_member=True,
     thesis_required=True,
@@ -1142,25 +957,17 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
 )
 class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
     """
-    🕐 PRODUCTION-GRADE Enhanced Seasonality Risk Expert v4.0
-    
-    Advanced seasonality-based risk expert with:
-    - Time-based risk pattern recognition
-    - Session-aware risk adjustments
-    - Cyclical market behavior analysis
-    - Dynamic seasonality factor optimization
+    🕐 PRODUCTION-GRADE Enhanced Seasonality Risk Expert v4.1
     """
 
     def _initialize(self):
         """Initialize enhanced seasonality expert"""
         super()._initialize()
-        
-        # Seasonality-specific configuration
-        self.base_signal_strength = self.config.get('base_signal_strength', 0.3)
-        self.seasonality_sensitivity = self.config.get('seasonality_sensitivity', 0.7)
-        self.session_bias_strength = self.config.get('session_bias_strength', 0.8)
-        
-        # Seasonality state tracking
+
+        self.base_signal_strength = float(self.config.get('base_signal_strength', 0.3))
+        self.seasonality_sensitivity = float(self.config.get('seasonality_sensitivity', 0.7))
+        self.session_bias_strength = float(self.config.get('session_bias_strength', 0.8))
+
         self.current_seasonality_factor = 1.0
         self.seasonality_history = deque(maxlen=100)
         self.session_performance = {
@@ -1169,76 +976,69 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
             'asian': {'signals': 0, 'success': 0, 'avg_factor': 1.0},
             'rollover': {'signals': 0, 'success': 0, 'avg_factor': 1.0}
         }
-        
+
         self.logger.info(format_operator_message(
             icon="🕐",
-            message="Enhanced Seasonality Risk Expert v4.0 initialized",
+            message="Enhanced Seasonality Risk Expert v4.1 initialized",
             base_signal_strength=self.base_signal_strength,
             seasonality_sensitivity=self.seasonality_sensitivity
         ))
 
-
     async def process(self, **inputs) -> Dict[str, Any]:
-            """
-            Contract-compliant process for EnhancedSeasonalityRiskExpert.
-            Produces: seasonality_voting_proposal, seasonality_confidence, seasonality_analysis, _thesis.
-            """
-            start = time.time()
-            try:
-                base = await super().process(**inputs)
+        """
+        Contract-compliant process for EnhancedSeasonalityRiskExpert.
+        Produces: seasonality_voting_proposal, seasonality_confidence, seasonality_analysis, _thesis.
+        """
+        start = time.time()
+        try:
+            base = await super().process(**inputs)
 
-                proposal = dict(base.get('voting_proposal') or {})
-                confidence = float(base.get('confidence', 0.0))
-                thesis = base.get('thesis', 'Seasonality expert thesis unavailable')
-                mc = dict(base.get('market_context') or {})
-                analytics = dict(base.get('expert_analytics') or {})
-                emergency = dict(base.get('emergency_status') or {})
-                health = dict(base.get('health_metrics') or {})
+            proposal = dict(base.get('voting_proposal') or {})
+            confidence = float(base.get('confidence', 0.0))
+            thesis = base.get('thesis', 'Seasonality expert thesis unavailable')
+            mc = dict(base.get('market_context') or {})
+            analytics = dict(base.get('expert_analytics') or {})
+            emergency = dict(base.get('emergency_status') or {})
+            health = dict(base.get('health_metrics') or {})
 
-                seasonality_analysis = {
-                    'market_context': mc,
-                    'expert_analytics': analytics,
-                    'emergency_status': emergency,
-                    'health_metrics': health,
-                    'seasonality_metadata': proposal.get('seasonality_metadata', {}),
-                    'session_adjustment': proposal.get('session_adjustment', {}),
-                }
+            seasonality_analysis = {
+                'market_context': mc,
+                'expert_analytics': analytics,
+                'emergency_status': emergency,
+                'health_metrics': health,
+                'seasonality_metadata': proposal.get('seasonality_metadata', {}),
+                'session_adjustment': proposal.get('session_adjustment', {}),
+            }
 
-                out = {
-                    'seasonality_voting_proposal': proposal,
-                    'seasonality_confidence': confidence,
-                    'seasonality_analysis': seasonality_analysis,
-                    '_thesis': thesis,
-                }
-                self.performance_tracker.record_metric(self.__class__.__name__, 'process', (time.time() - start) * 1000, True)
-                return out
+            out = {
+                'seasonality_voting_proposal': proposal,
+                'seasonality_confidence': confidence,
+                'seasonality_analysis': seasonality_analysis,
+                '_thesis': thesis,
+            }
+            self.performance_tracker.record_metric(self.__class__.__name__, 'process', (time.time() - start) * 1000, True)
+            return out
 
-            except Exception as e:
-                self.logger.error(f"[FAIL] Seasonality process error: {e}")
-                return {
-                    'seasonality_voting_proposal': {'action': 'abstain', 'reason': f'error:{str(e)}'},
-                    'seasonality_confidence': 0.1,
-                    'seasonality_analysis': {'status': 'error', 'error': str(e)},
-                    '_thesis': f"Seasonality expert failed: {str(e)}",
-                }
-
+        except Exception as e:
+            self.logger.error(f"[FAIL] Seasonality process error: {e}")
+            return {
+                'seasonality_voting_proposal': {'action': 'abstain', 'reason': f'error:{str(e)}'},
+                'seasonality_confidence': 0.1,
+                'seasonality_analysis': {'status': 'error', 'error': str(e)},
+                '_thesis': f"Seasonality expert failed: {str(e)}",
+            }
 
     async def _generate_expert_specific_proposal(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
         """Generate seasonality-based voting proposal"""
         try:
-            # Get seasonality data
-            time_risk_data = self.smart_bus.get('time_risk_data', self.__class__.__name__) or {}
-            self.current_seasonality_factor = time_risk_data.get('seasonality_factor', 1.0)
-            
-            # Ensure valid factor
+            risk_data = self.smart_bus.get('risk_data', self.__class__.__name__) or {}
+            self.current_seasonality_factor = float(risk_data.get('seasonality_factor', 1.0) or 1.0)
             if not math.isfinite(self.current_seasonality_factor):
                 self.current_seasonality_factor = 1.0
-            
-            current_session = market_data.get('session_type', 'unknown')
-            
-            # Generate seasonality-adjusted proposal
+
+            current_session = str(market_data.get('session_type', 'unknown'))
+
             if self.current_seasonality_factor > 1.2:
-                # Strong positive seasonality
                 proposal = {
                     'action': 'seasonal_long_bias',
                     'signal_strength': self.base_signal_strength * self.current_seasonality_factor,
@@ -1246,9 +1046,7 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
                     'duration': 'medium',
                     'seasonality_type': 'strong_positive'
                 }
-                
             elif self.current_seasonality_factor < 0.8:
-                # Strong negative seasonality
                 proposal = {
                     'action': 'seasonal_short_bias',
                     'signal_strength': self.base_signal_strength * (2.0 - self.current_seasonality_factor),
@@ -1256,9 +1054,7 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
                     'duration': 'medium',
                     'seasonality_type': 'strong_negative'
                 }
-                
             else:
-                # Neutral seasonality
                 proposal = {
                     'action': 'seasonal_neutral',
                     'signal_strength': self.base_signal_strength * 0.5,
@@ -1266,94 +1062,64 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
                     'duration': 'short',
                     'seasonality_type': 'neutral'
                 }
-            
-            # Apply session-specific adjustments
+
             proposal = self._apply_session_seasonality_adjustments(proposal, current_session)
-            
-            # Add seasonality metadata
+
             proposal['seasonality_metadata'] = {
                 'seasonality_factor': self.current_seasonality_factor,
                 'session': current_session,
                 'session_performance': self.session_performance.get(current_session, {}),
                 'seasonality_trend': self._calculate_seasonality_trend()
             }
-            
-            # Record seasonality signal
+
             self._record_seasonality_signal(current_session)
-            
             return proposal
-            
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "seasonality_proposal_generation")
-            return {
-                'action': 'abstain',
-                'reason': f'Seasonality analysis failed: {error_context}',
-                'signal_strength': 0.0
-            }
+            return {'action': 'abstain', 'reason': f'Seasonality analysis failed: {error_context}', 'signal_strength': 0.0}
 
     async def _calculate_expert_specific_confidence(self, proposal: Dict[str, Any], market_data: Dict[str, Any]) -> float:
         """Calculate seasonality-specific confidence"""
         try:
-            # Base confidence from seasonality factor deviation
-            factor_deviation = abs(self.current_seasonality_factor - 1.0)
-            base_confidence = 0.5 + factor_deviation * self.seasonality_sensitivity
-            
-            # Adjust for session performance
-            current_session = market_data.get('session_type', 'unknown')
-            session_perf = self.session_performance.get(current_session, {})
-            if session_perf.get('signals', 0) > 5:
-                success_rate = session_perf.get('success', 0) / session_perf['signals']
-                performance_adjustment = 0.7 + success_rate * 0.6
-                base_confidence *= performance_adjustment
-            
-            # Adjust for seasonality trend
+            deviation = abs(self.current_seasonality_factor - 1.0)
+            base = 0.5 + deviation * self.seasonality_sensitivity
+
+            session = str(market_data.get('session_type', 'unknown'))
+            perf = self.session_performance.get(session, {})
+            if perf.get('signals', 0) > 5:
+                sr = perf.get('success', 0) / perf['signals']
+                base *= (0.7 + sr * 0.6)
+
             trend = self._calculate_seasonality_trend()
-            if trend > 0.1:  # Strengthening seasonality
-                base_confidence *= 1.1
-            elif trend < -0.1:  # Weakening seasonality
-                base_confidence *= 0.9
-            
-            return max(0.2, min(0.9, base_confidence))
-            
-        except Exception as e:
+            if trend > 0.1: base *= 1.1
+            elif trend < -0.1: base *= 0.9
+
+            return max(0.2, min(0.9, base))
+        except Exception:
             return 0.5
 
     def _apply_session_seasonality_adjustments(self, proposal: Dict[str, Any], session: str) -> Dict[str, Any]:
         """Apply session-specific seasonality adjustments"""
         try:
             session_multipliers = {
-                'american': 1.0,    # Base session
-                'european': 0.9,    # Slightly lower impact
-                'asian': 0.8,       # Lower volatility session
-                'rollover': 0.3,    # Very conservative during rollover
-                'unknown': 0.7      # Conservative default
+                'american': 1.0, 'european': 0.9, 'asian': 0.8, 'rollover': 0.3, 'unknown': 0.7
             }
-            
-            multiplier = session_multipliers.get(session, 0.7)
-            
-            # Apply session bias based on historical performance
-            session_perf = self.session_performance.get(session, {})
-            if session_perf.get('signals', 0) > 10:
-                avg_factor = session_perf.get('avg_factor', 1.0)
-                if avg_factor > 1.1:
-                    multiplier *= 1.1  # Boost good-performing sessions
-                elif avg_factor < 0.9:
-                    multiplier *= 0.9  # Reduce poor-performing sessions
-            
-            # Adjust proposal
-            proposal['signal_strength'] *= multiplier
-            proposal['position_size'] *= multiplier
-            
-            # Add session adjustment metadata
-            proposal['session_adjustment'] = {
-                'session': session,
-                'multiplier': multiplier,
-                'session_performance': session_perf
-            }
-            
+            mult = session_multipliers.get(session, 0.7)
+            perf = self.session_performance.get(session, {})
+            if perf.get('signals', 0) > 10:
+                avg = perf.get('avg_factor', 1.0)
+                if avg > 1.1: mult *= 1.1
+                elif avg < 0.9: mult *= 0.9
+
+            if isinstance(proposal.get('signal_strength', None), (int, float)):
+                proposal['signal_strength'] *= mult
+            if isinstance(proposal.get('position_size', None), (int, float)):
+                proposal['position_size'] *= mult
+
+            proposal['session_adjustment'] = {'session': session, 'multiplier': mult, 'session_performance': perf}
             return proposal
-            
-        except Exception as e:
+        except Exception:
             return proposal
 
     def _calculate_seasonality_trend(self) -> float:
@@ -1361,36 +1127,27 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
         try:
             if len(self.seasonality_history) < 5:
                 return 0.0
-            
-            recent_factors = [entry['factor'] for entry in list(self.seasonality_history)[-10:]]
-            trend = np.polyfit(range(len(recent_factors)), recent_factors, 1)[0]
-            
-            return max(-0.5, min(0.5, trend))
-            
+            recent = [e['factor'] for e in list(self.seasonality_history)[-10:]]
+            trend = np.polyfit(range(len(recent)), recent, 1)[0]
+            return max(-0.5, min(0.5, float(trend)))
         except Exception:
             return 0.0
 
     def _record_seasonality_signal(self, session: str):
         """Record seasonality signal for performance tracking"""
         try:
-            signal_record = {
+            rec = {
                 'timestamp': datetime.datetime.now().isoformat(),
                 'factor': self.current_seasonality_factor,
                 'session': session,
                 'market_context': self.market_context.copy()
             }
-            self.seasonality_history.append(signal_record)
-            
-            # Update session performance tracking
+            self.seasonality_history.append(rec)
             if session in self.session_performance:
-                session_data = self.session_performance[session]
-                session_data['signals'] += 1
-                
-                # Update average factor
-                count = session_data['signals']
-                old_avg = session_data['avg_factor']
-                session_data['avg_factor'] = (old_avg * (count - 1) + self.current_seasonality_factor) / count
-                
+                d = self.session_performance[session]
+                d['signals'] += 1
+                count = d['signals']
+                d['avg_factor'] = (d['avg_factor'] * (count - 1) + self.current_seasonality_factor) / count
         except Exception as e:
             self.logger.warning(f"Seasonality signal recording failed: {e}")
 
@@ -1402,57 +1159,43 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
 def create_enhanced_voting_experts(config: Dict[str, Any]) -> List[EnhancedVotingExpertBase]:
     """
     Create all enhanced voting experts with modern InfoBus integration.
-    
-    Args:
-        config: Configuration dictionary for expert initialization
-        
-    Returns:
-        List of enhanced voting expert instances
     """
-    experts = []
-    
+    experts: List[EnhancedVotingExpertBase] = []
     try:
-        # Initialize available expert classes
-        expert_classes = [
+        expert_classes: List[Type[BaseModule]] = [
             EnhancedThemeExpert,
             EnhancedSeasonalityRiskExpert,
             # Add more expert classes as they are implemented
         ]
-        
-        for expert_class in expert_classes:
+        for cls in expert_classes:
             try:
-                expert_config = config.get(expert_class.__name__, {})
-                expert = expert_class(config=expert_config)
-                experts.append(expert)
-                
-                print(f"✅ Created {expert_class.__name__}")
-                
+                expert_config = config.get(cls.__name__, {})
+                instance = cast(EnhancedVotingExpertBase, cls(config=expert_config))
+                experts.append(instance)
+                print(f"✅ Created {cls.__name__}")
             except Exception as e:
-                print(f"❌ Failed to create {expert_class.__name__}: {e}")
-        
+                print(f"❌ Failed to create {cls.__name__}: {e}")
         print(f"🎯 Successfully created {len(experts)} enhanced voting experts")
-        
         return experts
-        
     except Exception as e:
         print(f"❌ Enhanced voting expert creation failed: {e}")
         return []
 
 
 # ═══════════════════════════════════════════════════════════════════
-# ENHANCED VOTING COMMITTEE COORDINATOR  
+# ENHANCED VOTING COMMITTEE COORDINATOR
 # ═══════════════════════════════════════════════════════════════════
 
 @module(
     name="EnhancedVotingCommitteeCoordinator",
-    version="4.0.0",
+    version="4.1.0",
     category="voting",
     provides=[
         "committee_decision", "voting_consensus", "committee_confidence",
-        "voting_summary", "strategy_arbiter_weights", "consensus_direction", 
+        "voting_summary", "strategy_arbiter_weights", "consensus_direction",
         "agreement_score", "raw_proposals", "member_confidences", "votes",
         "member_proposals", "voting_weights", "time_of_day", "performance_feedback",
-        "horizon_alignment"
+        "horizon_alignment", "trade_vote"
     ],
     requires=["expert_votes", "market_context", "system_health"],
     description="Enhanced voting committee coordinator with modern InfoBus integration",
@@ -1467,32 +1210,26 @@ def create_enhanced_voting_experts(config: Dict[str, Any]) -> List[EnhancedVotin
 )
 class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, SmartInfoBusStateMixin):
     """
-    🗳️ PRODUCTION-GRADE Enhanced Voting Committee Coordinator v4.0
-    
-    Advanced committee coordination with:
-    - Weighted consensus calculation with confidence-based voting
-    - Dynamic expert weighting based on performance and market conditions
-    - Conflict resolution and minority opinion analysis
-    - Emergency mode committee override protocols
+    🗳️ PRODUCTION-GRADE Enhanced Voting Committee Coordinator v4.1
     """
 
     def _initialize(self):
         """Initialize enhanced voting committee coordinator"""
         self._initialize_voting_state()
         self._initialize_state_management()
-        
+
         # Committee configuration
-        self.consensus_threshold = self.config.get('consensus_threshold', 0.6)
-        self.minimum_voters = self.config.get('minimum_voters', 2)
-        self.performance_weighting = self.config.get('performance_weighting', True)
-        self.emergency_override = self.config.get('emergency_override', True)
-        
+        self.consensus_threshold = float(self.config.get('consensus_threshold', 0.6))
+        self.minimum_voters = int(self.config.get('minimum_voters', 2))
+        self.performance_weighting = bool(self.config.get('performance_weighting', True))
+        self.emergency_override = bool(self.config.get('emergency_override', True))
+
         # Committee state
-        self.active_experts = []
-        self.expert_weights = {}
+        self.active_experts: List[str] = []
+        self.expert_weights: Dict[str, float] = {}
         self.voting_history = deque(maxlen=100)
         self.consensus_history = deque(maxlen=50)
-        
+
         # Committee analytics
         self.committee_analytics = {
             'total_decisions': 0,
@@ -1501,7 +1238,7 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
             'average_confidence': 0.5,
             'expert_performance': defaultdict(float)
         }
-        
+
         # Initialize modern systems
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
@@ -1512,13 +1249,24 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
         )
         self.error_pinpointer = ErrorPinpointer()
         self.performance_tracker = PerformanceTracker()
-        
+
         self.logger.info(format_operator_message(
             icon="🗳️",
-            message="Enhanced Voting Committee Coordinator v4.0 initialized",
+            message="Enhanced Voting Committee Coordinator v4.1 initialized",
             consensus_threshold=f"{self.consensus_threshold:.1%}",
             minimum_voters=self.minimum_voters
         ))
+
+        # Publish an initial empty expert_performance map to prevent early BUS MISS
+        try:
+            self.smart_bus.set(
+                'expert_performance',
+                dict(self.committee_analytics.get('expert_performance', {})),
+                module=self.__class__.__name__,
+                thesis='Initialized empty expert performance map'
+            )
+        except Exception:
+            pass
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process committee voting with enhanced coordination (contract-compliant)."""
@@ -1530,12 +1278,11 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
 
             # 2) Committee decisions & metrics
             decision = await self._determine_committee_decision(expert_votes, expert_weights)
-            committee_confidence = await self._calculate_committee_confidence(expert_votes, expert_weights)
             consensus = await self._analyze_voting_consensus(expert_votes, expert_weights)
+            committee_confidence = await self._calculate_committee_confidence(expert_votes, expert_weights, consensus)
             thesis = await self._generate_committee_thesis(decision, committee_confidence, consensus, expert_votes)
 
-            # 3) Build all declared outputs
-            # voting_summary (required by orchestrator)
+            # 3) Build declared outputs
             voting_summary = {
                 'action': decision.get('action', 'abstain'),
                 'decision_type': decision.get('decision_type', 'unknown'),
@@ -1543,27 +1290,28 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                 'consensus_exists': bool(consensus.get('consensus_exists', False)),
                 'vote_count': int(consensus.get('vote_count', len(expert_votes))),
             }
-
-            # strategy_arbiter_weights (mirror normalized expert weights)
             strategy_arbiter_weights = dict(expert_weights)
-
-            # consensus_direction & agreement_score
             consensus_direction = decision.get('action', 'neutral')
             agreement_score = float(consensus.get('consensus_strength', 0.0))
 
-            # raw_proposals & member_confidences
             raw_proposals = {v['expert']: dict(v['vote'] or {}) for v in expert_votes}
             member_confidences = {v['expert']: float(v.get('confidence', 0.0)) for v in expert_votes}
 
-            # Extra keys declared in provides (fill safely)
             votes = list(expert_votes)
             member_proposals = dict(raw_proposals)
             voting_weights = dict(expert_weights)
-            time_of_day = datetime.datetime.now().strftime("%H:%M:%S")
-            performance_feedback = {'average_confidence': float(self.committee_analytics.get('average_confidence', 0.5))}
-            horizon_alignment = {'status': 'neutral', 'reason': 'no explicit horizon data'}
 
-            # 4) Update SmartInfoBus (side-effect)
+            # minutes since midnight (numeric; better for downstream consumers like the Aligner)
+            now = datetime.datetime.now()
+            time_of_day = now.hour * 60 + now.minute + now.second / 60.0
+
+            performance_feedback = {
+                'average_confidence': float(self.committee_analytics.get('average_confidence', 0.5)),
+                'per_expert_confidence': member_confidences
+            }
+            horizon_alignment = {'status': 'neutral', 'reason': 'no explicit horizon vector'}
+
+            # 4) Update SmartInfoBus (side-effect) — include downstream-friendly keys
             await self._update_smartinfobus_committee({
                 'committee_decision': decision,
                 'voting_consensus': consensus,
@@ -1571,6 +1319,11 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                 'expert_votes': expert_votes,
                 'expert_weights': expert_weights,
                 'committee_analytics': self.committee_analytics.copy(),
+                # downstream:
+                'voting_weights': voting_weights,
+                'time_of_day': time_of_day,
+                'performance_feedback': performance_feedback,
+                'member_confidences': member_confidences
             }, thesis)
 
             # 5) Record and return
@@ -1588,8 +1341,8 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                 'expert_votes': expert_votes,
                 'expert_weights': expert_weights,
                 'committee_analytics': self.committee_analytics.copy(),
-                'voting_summary': voting_summary,                      # ✅ required
-                'strategy_arbiter_weights': strategy_arbiter_weights, # ✅ advertised
+                'voting_summary': voting_summary,
+                'strategy_arbiter_weights': strategy_arbiter_weights,
                 'consensus_direction': consensus_direction,
                 'agreement_score': agreement_score,
                 'raw_proposals': raw_proposals,
@@ -1600,9 +1353,15 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                 'time_of_day': time_of_day,
                 'performance_feedback': performance_feedback,
                 'horizon_alignment': horizon_alignment,
-                '_thesis': thesis,                                     # explainable modules need this
+                # Canonical trade_vote publication for downstream consumers
+                'trade_vote': {
+                    'action': decision.get('action', 'abstain'),
+                    'confidence': float(committee_confidence),
+                    'reason': decision.get('reason', ''),
+                    'timestamp': datetime.datetime.now().isoformat()
+                },
+                '_thesis': thesis,
             }
-            # perf
             self.performance_tracker.record_metric(self.__class__.__name__, 'process', (time.time() - start_time) * 1000, True)
             return out
 
@@ -1624,51 +1383,42 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                 'votes': [],
                 'member_proposals': {},
                 'voting_weights': {},
-                'time_of_day': datetime.datetime.now().strftime("%H:%M:%S"),
+                'time_of_day': datetime.datetime.now().hour * 60,
                 'performance_feedback': {'error': str(error_context)},
                 'horizon_alignment': {'status': 'unknown'},
                 '_thesis': f"Committee coordination failed: {error_context}",
             }
             return fail
 
-
     async def _collect_expert_votes(self) -> List[Dict[str, Any]]:
         """Collect votes from all active voting experts"""
         try:
-            expert_votes = []
-            
-            # Get votes from SmartInfoBus
+            expert_votes: List[Dict[str, Any]] = []
             voting_experts = [
                 'EnhancedThemeExpert',
                 'EnhancedSeasonalityRiskExpert',
-                # Add more as they are implemented
             ]
-            
             for expert_name in voting_experts:
                 try:
                     vote_data = self.smart_bus.get(f'{expert_name}_voting_proposal', self.__class__.__name__)
                     confidence = self.smart_bus.get(f'{expert_name}_confidence', self.__class__.__name__)
-                    
-                    if vote_data and confidence is not None:
+                    if vote_data is not None and confidence is not None:
                         expert_votes.append({
                             'expert': expert_name,
-                            'vote': vote_data,
-                            'confidence': confidence,
+                            'vote': dict(vote_data),
+                            'confidence': float(confidence),
                             'timestamp': datetime.datetime.now().isoformat()
                         })
-                        
                 except Exception as e:
                     self.logger.warning(f"Failed to collect vote from {expert_name}: {e}")
-            
+
             self.logger.info(format_operator_message(
                 icon="📊",
                 message="Expert votes collected",
                 vote_count=len(expert_votes),
                 experts=len(voting_experts)
             ))
-            
             return expert_votes
-            
         except Exception as e:
             self.logger.error(f"Vote collection failed: {e}")
             return []
@@ -1676,35 +1426,34 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
     async def _calculate_expert_weights(self, expert_votes: List[Dict[str, Any]]) -> Dict[str, float]:
         """Calculate dynamic expert weights based on performance and confidence"""
         try:
-            weights = {}
-            
-            for vote in expert_votes:
-                expert_name = vote['expert']
-                confidence = vote['confidence']
-                
-                # Base weight from confidence
-                base_weight = confidence
-                
-                # Performance adjustment if available
+            weights: Dict[str, float] = {}
+            if not expert_votes:
+                return weights
+
+            for v in expert_votes:
+                name = v['expert']
+                conf = float(v.get('confidence', 0.0))
+                base = max(0.0, conf)
+
                 if self.performance_weighting:
-                    expert_performance = self.committee_analytics['expert_performance'].get(expert_name, 0.5)
-                    performance_multiplier = 0.5 + expert_performance
-                    base_weight *= performance_multiplier
-                
-                # Market condition adjustment
-                market_regime = self.smart_bus.get('market_regime', self.__class__.__name__)
-                regime_adjustment = self._get_expert_regime_adjustment(expert_name, market_regime)
-                base_weight *= regime_adjustment
-                
-                weights[expert_name] = max(0.1, min(2.0, base_weight))
-            
-            # Normalize weights
-            total_weight = sum(weights.values()) if weights else 1.0
-            for expert in weights:
-                weights[expert] /= total_weight
-            
+                    perf = float(self.committee_analytics['expert_performance'].get(name, 0.5))
+                    base *= (0.5 + perf)  # 0.5..1.5x
+
+                regime = self.smart_bus.get('market_regime', self.__class__.__name__) or 'unknown'
+                base *= self._get_expert_regime_adjustment(name, regime)
+
+                weights[name] = max(0.0, min(2.0, base))
+
+            total = sum(weights.values())
+            if total <= 0:
+                # fallback equal weights
+                n = len(expert_votes)
+                return {v['expert']: 1.0 / n for v in expert_votes}
+
+            for k in list(weights.keys()):
+                weights[k] = weights[k] / total
             return weights
-            
+
         except Exception as e:
             self.logger.error(f"Expert weight calculation failed: {e}")
             return {}
@@ -1712,244 +1461,210 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
     def _get_expert_regime_adjustment(self, expert_name: str, regime: str) -> float:
         """Get expert performance adjustment based on market regime"""
         regime_adjustments = {
-            'EnhancedThemeExpert': {
-                'trending': 1.2, 'volatile': 0.9, 'ranging': 1.0, 'unknown': 0.8
-            },
-            'EnhancedSeasonalityRiskExpert': {
-                'trending': 1.0, 'volatile': 1.1, 'ranging': 1.2, 'unknown': 0.9
-            }
+            'EnhancedThemeExpert': {'trending': 1.2, 'volatile': 0.9, 'ranging': 1.0, 'unknown': 0.8},
+            'EnhancedSeasonalityRiskExpert': {'trending': 1.0, 'volatile': 1.1, 'ranging': 1.2, 'unknown': 0.9}
         }
-        
-        expert_adjustments = regime_adjustments.get(expert_name, {})
-        return expert_adjustments.get(regime, 1.0)
+        return regime_adjustments.get(expert_name, {}).get(regime, 1.0)
 
-    async def _determine_committee_decision(self, expert_votes: List[Dict[str, Any]], 
-                                          expert_weights: Dict[str, float]) -> Dict[str, Any]:
+    async def _determine_committee_decision(self, expert_votes: List[Dict[str, Any]],
+                                            expert_weights: Dict[str, float]) -> Dict[str, Any]:
         """Determine final committee decision using weighted voting"""
         try:
             if not expert_votes:
                 return {'action': 'abstain', 'reason': 'no_expert_votes'}
-            
-            # Aggregate weighted votes
+
             weighted_actions = defaultdict(float)
             total_weight = 0.0
-            
-            for vote in expert_votes:
-                expert_name = vote['expert']
-                weight = expert_weights.get(expert_name, 1.0)
-                action = vote['vote'].get('action', 'abstain')
-                
-                weighted_actions[action] += weight
-                total_weight += weight
-            
-            # Find highest weighted action
-            if weighted_actions:
-                best_action = max(weighted_actions.items(), key=lambda x: x[1])
-                consensus_strength = best_action[1] / total_weight if total_weight > 0 else 0
-                
-                return {
-                    'action': best_action[0],
-                    'consensus_strength': consensus_strength,
-                    'total_weight': total_weight,
-                    'action_weights': dict(weighted_actions),
-                    'decision_type': 'consensus' if consensus_strength >= self.consensus_threshold else 'plurality'
-                }
-            
-            return {'action': 'abstain', 'reason': 'no_valid_actions'}
-            
+            for v in expert_votes:
+                name = v['expert']
+                w = float(expert_weights.get(name, 1.0))
+                action = v.get('vote', {}).get('action', 'abstain')
+                weighted_actions[action] += w
+                total_weight += w
+
+            if not weighted_actions or total_weight <= 0.0:
+                return {'action': 'abstain', 'reason': 'no_valid_actions'}
+
+            best_action, best_weight = max(weighted_actions.items(), key=lambda x: x[1])
+            consensus_strength = best_weight / total_weight if total_weight > 0 else 0.0
+            return {
+                'action': best_action,
+                'consensus_strength': consensus_strength,
+                'total_weight': total_weight,
+                'action_weights': dict(weighted_actions),
+                'decision_type': 'consensus' if consensus_strength >= self.consensus_threshold else 'plurality'
+            }
+
         except Exception as e:
             self.logger.error(f"Committee decision determination failed: {e}")
             return {'action': 'abstain', 'reason': f'decision_error: {str(e)}'}
 
-    async def _calculate_committee_confidence(self, expert_votes: List[Dict[str, Any]], 
-                                            expert_weights: Dict[str, float]) -> float:
-        """Calculate overall committee confidence"""
+    async def _calculate_committee_confidence(self, expert_votes: List[Dict[str, Any]],
+                                              expert_weights: Dict[str, float],
+                                              consensus: Optional[Dict[str, Any]] = None) -> float:
+        """Calculate overall committee confidence (weight-adjusted × consensus strength)"""
         try:
-            if not expert_votes:
+            if not expert_votes or not expert_weights:
                 return 0.1
-            
-            # Weight-adjusted confidence
-            weighted_confidence = 0.0
-            total_weight = 0.0
-            
-            for vote in expert_votes:
-                expert_name = vote['expert']
-                confidence = vote['confidence']
-                weight = expert_weights.get(expert_name, 1.0)
-                
-                weighted_confidence += confidence * weight
-                total_weight += weight
-            
-            if total_weight > 0:
-                avg_confidence = weighted_confidence / total_weight
-                
-                # Adjust for consensus strength
-                consensus_strength = len(expert_votes) / max(1, len(expert_weights))
-                consensus_adjustment = 0.8 + consensus_strength * 0.4
-                
-                final_confidence = avg_confidence * consensus_adjustment
-                return max(0.1, min(1.0, final_confidence))
-            
-            return 0.5
-            
-        except Exception as e:
+
+            weighted_conf = 0.0
+            total_w = 0.0
+            for v in expert_votes:
+                name = v['expert']
+                conf = float(v.get('confidence', 0.0))
+                w = float(expert_weights.get(name, 1.0))
+                weighted_conf += conf * w
+                total_w += w
+
+            avg_conf = (weighted_conf / total_w) if total_w > 0 else 0.0
+
+            if consensus is None:
+                # compute a quick consensus proxy
+                action_w = defaultdict(float)
+                for v in expert_votes:
+                    action_w[v.get('vote', {}).get('action', 'abstain')] += expert_weights.get(v['expert'], 1.0)
+                total = sum(action_w.values())
+                dom = max(action_w.values()) if action_w else 0.0
+                consensus_strength = (dom / total) if total > 0 else 0.0
+            else:
+                consensus_strength = float(consensus.get('consensus_strength', 0.0))
+
+            final = avg_conf * (0.7 + 0.6 * consensus_strength)  # scale 0.7..1.3x
+            return max(0.1, min(1.0, final))
+        except Exception:
             return 0.3
 
-    async def _analyze_voting_consensus(self, expert_votes: List[Dict[str, Any]], 
-                                      expert_weights: Dict[str, float]) -> Dict[str, Any]:
+    async def _analyze_voting_consensus(self, expert_votes: List[Dict[str, Any]],
+                                        expert_weights: Dict[str, float]) -> Dict[str, Any]:
         """Analyze voting consensus and identify conflicts"""
         try:
             if not expert_votes:
                 return {'consensus_exists': False, 'reason': 'no_votes'}
-            
-            # Action distribution
+
             action_weights = defaultdict(float)
-            for vote in expert_votes:
-                expert_name = vote['expert']
-                action = vote['vote'].get('action', 'abstain')
-                weight = expert_weights.get(expert_name, 1.0)
-                action_weights[action] += weight
-            
+            for v in expert_votes:
+                action = v.get('vote', {}).get('action', 'abstain')
+                w = float(expert_weights.get(v['expert'], 1.0))
+                action_weights[action] += w
+
             total_weight = sum(action_weights.values())
-            
-            if total_weight == 0:
+            if total_weight <= 0:
                 return {'consensus_exists': False, 'reason': 'zero_weight'}
-            
-            # Find dominant action
-            dominant_action = max(action_weights.items(), key=lambda x: x[1])
-            consensus_strength = dominant_action[1] / total_weight
-            
-            # Analyze conflicts
+
+            dominant_action, dom_w = max(action_weights.items(), key=lambda x: x[1])
+            consensus_strength = dom_w / total_weight
+
             conflict_level = self._assess_voting_conflict_level(action_weights, total_weight)
-            
-            consensus_analysis = {
+
+            return {
                 'consensus_exists': consensus_strength >= self.consensus_threshold,
                 'consensus_strength': consensus_strength,
-                'dominant_action': dominant_action[0],
+                'dominant_action': dominant_action,
                 'action_distribution': dict(action_weights),
                 'conflict_level': conflict_level,
                 'vote_count': len(expert_votes),
                 'total_weight': total_weight
             }
-            
-            return consensus_analysis
-            
         except Exception as e:
             return {'consensus_exists': False, 'error': str(e)}
 
     def _assess_voting_conflict_level(self, action_weights: Dict[str, float], total_weight: float) -> str:
-        """Assess level of voting conflict"""
+        """Assess level of voting conflict via entropy of the action distribution"""
         try:
             if len(action_weights) <= 1:
                 return 'NONE'
-            
-            # Calculate distribution entropy
-            probabilities = [weight / total_weight for weight in action_weights.values()]
-            entropy = -sum(p * np.log2(p) for p in probabilities if p > 0)
+            probs = [w / total_weight for w in action_weights.values() if total_weight > 0]
+            entropy = -sum(p * np.log2(p) for p in probs if p > 0)
             max_entropy = np.log2(len(action_weights))
-            
-            normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0
-            
-            if normalized_entropy < 0.3:
-                return 'LOW'
-            elif normalized_entropy < 0.6:
-                return 'MEDIUM'
-            elif normalized_entropy < 0.8:
-                return 'HIGH'
-            else:
-                return 'SEVERE'
-                
+            ne = (entropy / max_entropy) if max_entropy > 0 else 0.0
+            if ne < 0.3: return 'LOW'
+            if ne < 0.6: return 'MEDIUM'
+            if ne < 0.8: return 'HIGH'
+            return 'SEVERE'
         except Exception:
             return 'UNKNOWN'
 
     async def _generate_committee_thesis(self, decision: Dict[str, Any], confidence: float,
-                                       consensus: Dict[str, Any], expert_votes: List[Dict[str, Any]]) -> str:
+                                         consensus: Dict[str, Any], expert_votes: List[Dict[str, Any]]) -> str:
         """Generate comprehensive committee decision thesis"""
         try:
-            thesis_parts = []
-            
-            # Executive summary
+            parts = []
             action = decision.get('action', 'unknown')
-            consensus_strength = consensus.get('consensus_strength', 0)
-            confidence_desc = "HIGH" if confidence > 0.7 else "MODERATE" if confidence > 0.4 else "LOW"
-            
-            thesis_parts.append(f"COMMITTEE DECISION: {action.upper()} with {confidence_desc} confidence ({confidence:.1%})")
-            
-            # Consensus analysis
+            cs = float(consensus.get('consensus_strength', 0.0))
+            label = "HIGH" if confidence > 0.7 else "MODERATE" if confidence > 0.4 else "LOW"
+            parts.append(f"COMMITTEE DECISION: {action.upper()} with {label} confidence ({confidence:.1%})")
+
             if consensus.get('consensus_exists', False):
-                thesis_parts.append(f"STRONG CONSENSUS: {consensus_strength:.1%} agreement among {len(expert_votes)} experts")
+                parts.append(f"STRONG CONSENSUS: {cs:.1%} agreement among {len(expert_votes)} experts")
             else:
-                conflict_level = consensus.get('conflict_level', 'UNKNOWN')
-                thesis_parts.append(f"DIVIDED OPINION: {conflict_level} conflict level, plurality decision")
-            
-            # Expert participation
-            thesis_parts.append(f"EXPERT PARTICIPATION: {len(expert_votes)} voting experts active")
-            
-            # Decision quality
-            decision_type = decision.get('decision_type', 'unknown')
-            thesis_parts.append(f"DECISION TYPE: {decision_type.upper()} based on weighted voting")
-            
-            return " | ".join(thesis_parts)
-            
+                parts.append(f"DIVIDED OPINION: {consensus.get('conflict_level', 'UNKNOWN')} conflict, plurality decision")
+
+            parts.append(f"EXPERT PARTICIPATION: {len(expert_votes)} voting experts active")
+            parts.append(f"DECISION TYPE: {decision.get('decision_type', 'unknown').upper()} via weighted voting")
+            return " | ".join(parts)
         except Exception as e:
             return f"Committee thesis generation failed: {e}"
 
     async def _update_smartinfobus_committee(self, results: Dict[str, Any], thesis: str):
         """Update SmartInfoBus with committee results"""
         try:
-            # Committee decision
-            self.smart_bus.set(
-                'committee_decision',
-                results['committee_decision'],
-                module=self.__class__.__name__,
-                thesis=thesis,
-                confidence=results['committee_confidence']
-            )
-            
-            # Voting consensus
-            self.smart_bus.set(
-                'voting_consensus',
-                results['voting_consensus'],
-                module=self.__class__.__name__,
-                thesis=f"Voting consensus analysis: {results['voting_consensus'].get('consensus_strength', 0):.1%} agreement"
-            )
-            
-            # Committee confidence
-            self.smart_bus.set(
-                'committee_confidence',
-                results['committee_confidence'],
-                module=self.__class__.__name__,
-                thesis=f"Committee confidence: {results['committee_confidence']:.1%}"
-            )
-            
+            self.smart_bus.set('committee_decision', results['committee_decision'], module=self.__class__.__name__, thesis=thesis, confidence=results['committee_confidence'])
+            self.smart_bus.set('voting_consensus', results['voting_consensus'], module=self.__class__.__name__, thesis=f"Voting consensus: {results['voting_consensus'].get('consensus_strength', 0):.1%} agreement")
+            self.smart_bus.set('committee_confidence', results['committee_confidence'], module=self.__class__.__name__, thesis=f"Committee confidence: {results['committee_confidence']:.1%}")
+
+            # Canonical trade_vote publication (single-writer policy is audited by bus pre-hook)
+            try:
+                trade_vote = {
+                    'action': results['committee_decision'].get('action', 'abstain'),
+                    'confidence': float(results['committee_confidence']),
+                    'source': self.__class__.__name__,
+                    'consensus_strength': float(results.get('voting_consensus', {}).get('consensus_strength', 0.0)),
+                    'timestamp': datetime.datetime.now().isoformat()
+                }
+                self.smart_bus.set('trade_vote', trade_vote, module=self.__class__.__name__, thesis='Canonical trade vote from committee coordination', confidence=float(results['committee_confidence']))
+            except Exception as e:
+                self.logger.warning(f"Trade vote publish soft-fail: {e}")
+
+            # Publish for downstream modules (Aligner, dashboards, etc.)
+            try:
+                expert_perf = dict(results.get('committee_analytics', {}).get('expert_performance', {}))
+                self.smart_bus.set('expert_performance', expert_perf, module=self.__class__.__name__, thesis='Committee-tracked per-expert performance metrics')
+            except Exception:
+                pass
+
+            # Explicitly publish commonly-consumed signals
+            try:
+                self.smart_bus.set('voting_weights', dict(results.get('voting_weights', {})), module=self.__class__.__name__, thesis='Normalized per-expert voting weights')
+                self.smart_bus.set('time_of_day', float(results.get('time_of_day', 0.0)), module=self.__class__.__name__, thesis='Minutes since midnight (float)')
+                self.smart_bus.set('performance_feedback', dict(results.get('performance_feedback', {})), module=self.__class__.__name__, thesis='Committee performance feedback bundle')
+                self.smart_bus.set('member_confidences', dict(results.get('member_confidences', {})), module=self.__class__.__name__, thesis='Per-expert confidence snapshot')
+            except Exception as e:
+                self.logger.warning(f"Downstream signal publish soft-fail: {e}")
+
         except Exception as e:
             self.logger.error(f"SmartInfoBus committee update failed: {e}")
 
     def _record_committee_decision(self, results: Dict[str, Any]):
         """Record committee decision for analytics"""
         try:
-            decision_record = {
+            rec = {
                 'timestamp': datetime.datetime.now().isoformat(),
                 'decision': results['committee_decision'],
                 'confidence': results['committee_confidence'],
                 'consensus': results['voting_consensus'],
                 'expert_count': len(results['expert_votes'])
             }
-            
-            self.voting_history.append(decision_record)
+            self.voting_history.append(rec)
             self.committee_analytics['total_decisions'] += 1
-            
+
             if results['voting_consensus'].get('consensus_exists', False):
                 self.committee_analytics['consensus_decisions'] += 1
-            
-            # Update average confidence
-            total_decisions = self.committee_analytics['total_decisions']
-            old_avg = self.committee_analytics['average_confidence']
-            new_confidence = results['committee_confidence']
-            self.committee_analytics['average_confidence'] = (
-                old_avg * (total_decisions - 1) + new_confidence
-            ) / total_decisions
-            
+
+            n = self.committee_analytics['total_decisions']
+            old = float(self.committee_analytics.get('average_confidence', 0.5))
+            newc = float(results['committee_confidence'])
+            self.committee_analytics['average_confidence'] = (old * (n - 1) + newc) / n
+
         except Exception as e:
             self.logger.warning(f"Committee decision recording failed: {e}")
 
@@ -1965,6 +1680,6 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
         """SmartInfoBusVotingMixin implementation"""
         try:
             results = await self.process()
-            return results.get('committee_confidence', 0.3)
-        except Exception as e:
+            return float(results.get('committee_confidence', 0.3))
+        except Exception:
             return 0.2

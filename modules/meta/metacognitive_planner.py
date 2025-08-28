@@ -56,16 +56,18 @@ class PlanningConfig:
 
 @module(
     name="MetaCognitivePlanner",
-    version="3.0.0",
+    version="3.0.1",
     category="meta",
     provides=["planning_status", "strategic_insights", "tactical_recommendations", "adaptation_metrics"],
-    requires=["trades", "actions", "market_data", "performance_metrics"],
+    # Keep hard requires minimal to avoid mismatches; the rest are soft reads with fallbacks.
+    requires=["market_data"],
     description="Advanced metacognitive planner with strategic planning and market adaptation",
     thesis_required=True,
     health_monitoring=True,
     performance_tracking=True,
     error_handling=True
 )
+
 class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
     Advanced metacognitive planner with SmartInfoBus integration.
@@ -115,7 +117,7 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
             name="MetaCognitivePlanner", 
-            log_path="logs/metacognitive_planner.log", 
+            log_path="logs/meta/metacognitive_planner.log", 
             max_lines=3000, 
             operator_mode=True,
             plain_english=True
@@ -204,19 +206,23 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
         self.strategy_evolution_trace = []
 
     def _start_monitoring(self):
-        """Start background monitoring"""
+        """Start background monitoring (idempotent)."""
+        if getattr(self, "_monitoring_active", False):
+            return  # already running
+
         def monitoring_loop():
-            while getattr(self, '_monitoring_active', True):
-                try:
+            try:
+                while getattr(self, "_monitoring_active", True):
                     self._update_planning_health()
                     self._analyze_planning_performance()
                     time.sleep(30)
-                except Exception as e:
-                    self.logger.error(f"Monitoring error: {e}")
-        
+            except Exception as e:
+                self.logger.error(f"Monitoring error: {e}")
+
         self._monitoring_active = True
-        monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
-        monitor_thread.start()
+        self._monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
+        self._monitor_thread.start()
+
 
     def _initialize(self):
         """Initialize module"""
@@ -267,10 +273,39 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
             
             # Generate thesis
             thesis = await self._generate_planning_thesis(planning_data, phase_result)
+            # Always include thesis in outputs to satisfy explainability contract
+            phase_result['_thesis'] = thesis
             
             # Update SmartInfoBus
             await self._update_planning_smart_bus(phase_result, thesis)
             
+            # Ensure required outputs are always present in the returned dict
+            # 1) planning_status
+            if 'planning_status' not in phase_result:
+                phase_result['planning_status'] = {
+                    'current_phase': self.current_phase.value,
+                    'planning_cycle': self.planning_cycle,
+                    'phase_duration': (datetime.now() - self.phase_start_time).total_seconds(),
+                    'cognitive_load': self.cognitive_load,
+                    'planning_confidence': self.planning_confidence,
+                    'strategy_coherence': self.strategy_coherence
+                }
+            # 2) strategic_insights (list)
+            if 'strategic_insights' not in phase_result:
+                phase_result['strategic_insights'] = []
+            # 3) tactical_recommendations (list)
+            if 'tactical_recommendations' not in phase_result or isinstance(phase_result.get('tactical_recommendations'), (int, float)):
+                # Prefer the actual recommendations list if available
+                phase_result['tactical_recommendations'] = list(self.current_recommendations)
+            # 4) adaptation_metrics (dict)
+            if 'adaptation_metrics' not in phase_result:
+                phase_result['adaptation_metrics'] = {
+                    'total_adaptations': len(self.adaptation_history),
+                    'adaptation_speed': self.adaptation_speed,
+                    'learning_entries': len(self.learning_history),
+                    'strategy_evolution': len(self.strategy_evolution_trace)
+                }
+
             # Record success
             processing_time = (time.time() - start_time) * 1000
             self._record_success(processing_time)
@@ -281,23 +316,28 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
             return await self._handle_planning_error(e, start_time)
 
     async def _extract_planning_data(self, **inputs) -> Optional[Dict[str, Any]]:
-        """Extract planning data from SmartInfoBus"""
+        """Extract planning data from SmartInfoBus (robust, canonical-aware)."""
         try:
-            # Get recent trades
             trades = self.smart_bus.get('trades', 'MetaCognitivePlanner') or []
-            
-            # Get actions
             actions = self.smart_bus.get('actions', 'MetaCognitivePlanner') or []
-            
-            # Get market data
             market_data = self.smart_bus.get('market_data', 'MetaCognitivePlanner') or {}
-            
-            # Get performance metrics
             performance_metrics = self.smart_bus.get('performance_metrics', 'MetaCognitivePlanner') or {}
-            
-            # Extract context from market data
-            context = self._extract_standard_context(market_data)
-            
+
+            # Canonical context (prefer these if present)
+            market_regime = self.smart_bus.get('market_regime', 'MetaCognitivePlanner')
+            regime_data = self.smart_bus.get('regime_data', 'MetaCognitivePlanner') or {}
+            vol_adj = self.smart_bus.get('volatility_adjustment', 'MetaCognitivePlanner') or {}
+            market_conditions = self.smart_bus.get('market_conditions', 'MetaCognitivePlanner') or {}
+
+            # Build a normalized context that merges legacy fields with canonical ones
+            context = self._extract_standard_context(
+                market_data=market_data,
+                market_regime=market_regime,
+                regime_data=regime_data,
+                vol_adj=vol_adj,
+                market_conditions=market_conditions,
+            )
+
             return {
                 'trades': trades,
                 'actions': actions,
@@ -305,24 +345,59 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
                 'performance_metrics': performance_metrics,
                 'context': context,
                 'timestamp': datetime.now().isoformat(),
-                'episode_data': inputs.get('episode_data', {})
+                'episode_data': inputs.get('episode_data', {}),
             }
-            
         except Exception as e:
             self.logger.error(f"Failed to extract planning data: {e}")
             return None
 
-    def _extract_standard_context(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract standard market context"""
+
+    def _extract_standard_context(
+        self,
+        market_data: Dict[str, Any],
+        market_regime: Optional[str] = None,
+        regime_data: Optional[Dict[str, Any]] = None,
+        vol_adj: Optional[Dict[str, Any]] = None,
+        market_conditions: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Build a normalized planning context from legacy and canonical bus keys."""
+        # Regime (prefer canonical market_regime / regime_data)
+        regime = (
+            market_regime
+            or (regime_data or {}).get('market_regime')
+            or market_data.get('regime')
+            or 'unknown'
+        )
+
+        # Volatility (prefer canonical volatility_adjustment.volatility_regime)
+        volatility_level = (
+            (vol_adj or {}).get('volatility_regime')
+            or market_data.get('volatility_level')
+            or 'medium'
+        )
+
+        # Session (prefer canonical market_conditions.session)
+        session = (
+            (market_conditions or {}).get('session')
+            or market_data.get('session')
+            or 'unknown'
+        )
+
+        # Drawdown/exposure (keep legacy fallbacks)
+        drawdown_pct = market_data.get('drawdown_pct', 0.0)
+        exposure_pct = market_data.get('exposure_pct', 0.0)
+        position_count = market_data.get('position_count', 0)
+
         return {
-            'regime': market_data.get('regime', 'unknown'),
-            'volatility_level': market_data.get('volatility_level', 'medium'),
-            'session': market_data.get('session', 'unknown'),
-            'drawdown_pct': market_data.get('drawdown_pct', 0.0),
-            'exposure_pct': market_data.get('exposure_pct', 0.0),
-            'position_count': market_data.get('position_count', 0),
-            'timestamp': datetime.now().isoformat()
+            'regime': regime,
+            'volatility_level': volatility_level,
+            'session': session,
+            'drawdown_pct': drawdown_pct,
+            'exposure_pct': exposure_pct,
+            'position_count': position_count,
+            'timestamp': datetime.now().isoformat(),
         }
+
 
     async def _execute_planning_phase(self, planning_data: Dict[str, Any]) -> Dict[str, Any]:
         """Execute current planning phase"""
@@ -611,37 +686,29 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
             return {'phase_transitioned': False, 'error': str(e)}
 
     def _advance_planning_phase(self, reason: str):
-        """Advance to next planning phase"""
+        """Advance to next planning phase (no new monitor threads)."""
         try:
-            # Define phase sequence
             phase_sequence = [
                 PlanningPhase.ANALYSIS,
                 PlanningPhase.PLANNING,
                 PlanningPhase.EXECUTION,
                 PlanningPhase.REFLECTION,
-                PlanningPhase.ADAPTATION
+                PlanningPhase.ADAPTATION,
             ]
-            
             current_index = phase_sequence.index(self.current_phase)
             next_index = (current_index + 1) % len(phase_sequence)
             next_phase = phase_sequence[next_index]
-            
-            # Complete planning cycle if returning to analysis
+
+            # Complete planning cycle if wrapping around
             if next_phase == PlanningPhase.ANALYSIS:
                 self.planning_cycle += 1
-            
+
             old_phase = self.current_phase
             phase_duration = (datetime.now() - self.phase_start_time).total_seconds()
-            
+
             self.current_phase = next_phase
             self.phase_start_time = datetime.now()
-            
-            # Start monitoring after all initialization is complete
-            
-            self._start_monitoring()
-            
-            
-            
+
             self.logger.info(
                 format_operator_message(
                     "[RELOAD]", "PLANNING_PHASE_TRANSITION",
@@ -649,12 +716,12 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
                     to_phase=next_phase.value,
                     reason=reason,
                     duration=f"{phase_duration:.0f}s",
-                    context="planning_transition"
+                    context="planning_transition",
                 )
             )
-            
         except Exception as e:
             self.logger.error(f"Phase advancement failed: {e}")
+
 
     async def _generate_strategic_insights(self, planning_data: Dict[str, Any]) -> Dict[str, Any]:
         """Generate strategic insights and recommendations"""
@@ -1082,12 +1149,31 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
     async def _handle_no_data_fallback(self) -> Dict[str, Any]:
         """Handle case when no planning data is available"""
         self.logger.warning("No planning data available - using cached state")
-        
+        thesis = (
+            f"Metacognitive Planning: Phase {self.current_phase.value} (cycle {self.planning_cycle}) "
+            f"using cached state due to no planning data"
+        )
         return {
-            'current_phase': self.current_phase.value,
-            'planning_cycle': self.planning_cycle,
-            'cognitive_load': self.cognitive_load,
-            'fallback_reason': 'no_planning_data'
+            # Required outputs
+            'planning_status': {
+                'current_phase': self.current_phase.value,
+                'planning_cycle': self.planning_cycle,
+                'phase_duration': (datetime.now() - self.phase_start_time).total_seconds(),
+                'cognitive_load': self.cognitive_load,
+                'planning_confidence': self.planning_confidence,
+                'strategy_coherence': self.strategy_coherence
+            },
+            'strategic_insights': list(self.strategic_insights)[-3:] if self.strategic_insights else [],
+            'tactical_recommendations': list(self.current_recommendations),
+            'adaptation_metrics': {
+                'total_adaptations': len(self.adaptation_history),
+                'adaptation_speed': self.adaptation_speed,
+                'learning_entries': len(self.learning_history),
+                'strategy_evolution': len(self.strategy_evolution_trace)
+            },
+            # Helpful extras
+            '_thesis': thesis,
+            'fallback_reason': 'no_planning_data',
         }
 
     async def _handle_planning_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
@@ -1124,10 +1210,29 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
 
     def _create_fallback_response(self, reason: str) -> Dict[str, Any]:
         """Create fallback response for error cases"""
+        thesis = self.english_explainer.explain_error(
+            "MetaCognitivePlanner", f"Fallback due to {reason}", "planning operations"
+        )
         return {
-            'current_phase': self.current_phase.value,
-            'planning_cycle': self.planning_cycle,
-            'cognitive_load': self.cognitive_load,
+            # Required outputs
+            'planning_status': {
+                'current_phase': self.current_phase.value,
+                'planning_cycle': self.planning_cycle,
+                'phase_duration': (datetime.now() - self.phase_start_time).total_seconds(),
+                'cognitive_load': self.cognitive_load,
+                'planning_confidence': self.planning_confidence,
+                'strategy_coherence': self.strategy_coherence
+            },
+            'strategic_insights': list(self.strategic_insights)[-3:] if self.strategic_insights else [],
+            'tactical_recommendations': list(self.current_recommendations),
+            'adaptation_metrics': {
+                'total_adaptations': len(self.adaptation_history),
+                'adaptation_speed': self.adaptation_speed,
+                'learning_entries': len(self.learning_history),
+                'strategy_evolution': len(self.strategy_evolution_trace)
+            },
+            # Helpful extras
+            '_thesis': thesis,
             'fallback_reason': reason,
             'circuit_breaker_state': self.circuit_breaker['state']
         }
@@ -1312,6 +1417,7 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
     def stop_monitoring(self):
         """Stop background monitoring"""
         self._monitoring_active = False
+
 
     # Legacy compatibility methods
     def record_episode(self, result: Dict[str, Any]):

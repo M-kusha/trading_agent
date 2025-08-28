@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────
-# File: modules/market/liquidity_heatmap_layer.py  
+# File: modules/market/liquidity_heatmap_layer.py
 # [ROCKET] PRODUCTION-GRADE Liquidity Heatmap Analysis with Neural Networks
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # MODERNIZED: Complete SmartInfoBus integration with PyTorch neural networks
@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Any, List, Optional, Tuple, Union
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 
 # Core infrastructure
 from modules.core.module_base import BaseModule, module
@@ -28,350 +28,350 @@ from modules.monitoring.performance_tracker import PerformanceTracker
 @dataclass
 class LiquidityConfig:
     """Configuration for Liquidity Heatmap Layer"""
-    lstm_units: int = 64
-    sequence_length: int = 20
-    hidden_dim: int = 32
+    lstm_units: int = 64                 # LSTM hidden size
+    sequence_length: int = 20            # timesteps fed to LSTM
+    hidden_dim: int = 32                 # predictor MLP hidden
     dropout_rate: float = 0.2
     learning_rate: float = 0.001
     enable_gpu: bool = True
     prediction_horizon: int = 5
-    
+
     # Liquidity thresholds
     high_liquidity_threshold: float = 0.8
     low_liquidity_threshold: float = 0.3
-    
+
     # Market depth analysis
     depth_levels: int = 10
     spread_analysis_window: int = 50
 
 
 class LiquidityLSTM(nn.Module):
-    """LSTM neural network for liquidity prediction"""
-    
-    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, dropout_rate: float = 0.2):
+    """LSTM + attention head for short-horizon liquidity features."""
+    def __init__(self, input_dim: int, lstm_units: int, output_dim: int, dropout_rate: float = 0.2, mlp_hidden: int = 32):
         super().__init__()
-        
-        self.hidden_dim = hidden_dim
-        self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True, dropout=dropout_rate)
-        
-        self.attention = nn.MultiheadAttention(hidden_dim, num_heads=4, batch_first=True)
-        
+        # LSTM dropout only active when num_layers > 1; use 0.0 for single-layer to silence warning.
+        self.lstm = nn.LSTM(
+            input_dim,
+            lstm_units,
+            batch_first=True,
+            dropout=0.0,
+        )
+        self.attention = nn.MultiheadAttention(lstm_units, num_heads=4, batch_first=True)
         self.predictor = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(lstm_units, mlp_hidden),
             nn.ReLU(),
             nn.Dropout(dropout_rate),
-            nn.Linear(hidden_dim, output_dim)
+            nn.Linear(mlp_hidden, output_dim),
         )
-        
-    def forward(self, x):
-        # LSTM processing
-        lstm_out, _ = self.lstm(x)
-        
-        # Attention mechanism
-        attn_out, _ = self.attention(lstm_out, lstm_out, lstm_out)
-        
-        # Use last time step
-        final_hidden = attn_out[:, -1, :]
-        
-        # Prediction
-        output = self.predictor(final_hidden)
-        
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [B, T, F]
+        lstm_out, _ = self.lstm(x)                      # [B, T, H]
+        attn_out, _ = self.attention(lstm_out, lstm_out, lstm_out)  # [B, T, H]
+        final_hidden = attn_out[:, -1, :]               # last timestep, [B, H]
+        output = self.predictor(final_hidden)           # [B, O]
         return output
 
 
 @module(
     name="LiquidityHeatmapLayer",
-    version="3.0.0",
+    version="3.0.2",
     category="market",
     provides=[
-        "liquidity_score", "market_depth", "spread_analysis", "liquidity_prediction",
-        "trading_sessions", "session_data"
+        "liquidity_score",
+        "market_depth",
+        "spread_analysis",
+        "liquidity_prediction",
+        "trading_sessions",
+        "session_data",
+        "liquidity_thesis",
+        "liquidity_capabilities",
     ],
-    requires=["market_data", "price_data"],
+    requires=[
+        "bid_ask_data",
+        "price_data",
+        "prices",
+    ],
     description="Advanced liquidity heatmap analysis with neural network predictions",
     thesis_required=True,
     health_monitoring=True,
     performance_tracking=True,
-    error_handling=True
+    error_handling=True,
 )
 class LiquidityHeatmapLayer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    [ROCKET] PRODUCTION-GRADE Liquidity Heatmap Analysis with Neural Networks
-    
-    FEATURES:
-    - PyTorch LSTM with attention mechanism for liquidity prediction
-    - Real-time market depth analysis
-    - Bid-ask spread monitoring
-    - Complete SmartInfoBus integration
-    - ErrorPinpointer for neural network debugging
-    - English explanations for liquidity conditions
-    - State management for hot-reload
-    - Circuit breaker protection
+    PRODUCTION-GRADE Liquidity Heatmap Analysis with Neural Networks
     """
 
-    def __init__(self, config: Optional[Union[LiquidityConfig, Dict[str, Any]]] = None, **kwargs):
-        
-        # Handle both dict and LiquidityConfig
-        if isinstance(config, dict):
-            processed_config = LiquidityConfig(**config)
+    # ── Strict output normalizer ─────────────────────────────────────────
+    def _format_declared_outputs(
+        self,
+        *,
+        liquidity_score: Optional[float] = None,
+        market_depth: Optional[Dict[str, Any]] = None,
+        spread_analysis: Optional[Dict[str, Any]] = None,
+        liquidity_prediction: Optional[Dict[str, Any]] = None,
+        trading_sessions: Optional[Dict[str, Any]] = None,
+        session_data: Optional[Dict[str, Any]] = None,
+        thesis: Optional[str] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        # liquidity_score
+        try:
+            ls = float(liquidity_score if liquidity_score is not None else getattr(self, "current_liquidity_score", 0.5))
+            out["liquidity_score"] = float(np.clip(ls, 0.0, 1.0))
+        except Exception:
+            out["liquidity_score"] = 0.5
+
+        # dict blocks
+        out["market_depth"] = market_depth if isinstance(market_depth, dict) else {
+            "current_depth": float(getattr(self, "current_depth", 0.0)),
+            "analysis": {},
+            "condition": "unknown",
+            "status": "fallback",
+        }
+
+        out["spread_analysis"] = spread_analysis if isinstance(spread_analysis, dict) else {
+            "current_spread": float(getattr(self, "current_spread", 0.0)),
+            "analysis": {},
+            "condition": "unknown",
+            "status": "fallback",
+        }
+
+        # liquidity_prediction must exist and be a dict
+        if not isinstance(liquidity_prediction, dict):
+            out["liquidity_prediction"] = {
+                "predictions": {},
+                "confidence": 0.0,
+                "horizon_steps": int(getattr(self._cfg, "prediction_horizon", 5)),
+                "status": "unavailable",
+            }
         else:
-            processed_config = config or LiquidityConfig()
-        
-        # Set config early and mark as not fully initialized
-        self.config = processed_config
-        self._fully_initialized = False
-            
-        # Initialize advanced systems first
+            out["liquidity_prediction"] = liquidity_prediction
+
+        out["trading_sessions"] = trading_sessions if isinstance(trading_sessions, dict) else {"active": "unknown"}
+        out["session_data"] = session_data if isinstance(session_data, dict) else {"active_session": "unknown"}
+
+        # thesis + extras
+        out["thesis"] = thesis or "Liquidity analysis completed."
+        out["_thesis"] = out["thesis"]
+        # explicit provide for orchestrator contract matching
+        out["liquidity_thesis"] = out["thesis"]
+        if isinstance(extra, dict):
+            try:
+                out.update(extra)
+            except Exception:
+                pass
+
+        # fail-fast on essentials we promise
+        for key in ("liquidity_score", "market_depth", "spread_analysis", "liquidity_prediction", "trading_sessions", "session_data"):
+            if key not in out:
+                raise ValueError(f"Critical output '{key}' missing in LiquidityHeatmapLayer")
+        return out
+
+    # ── Lifecycle ───────────────────────────────────────────────────────
+    def __init__(self, config: Optional[Union[LiquidityConfig, Dict[str, Any]]] = None, **kwargs):
+        # Normalize config to dataclass (typed) + keep dict for BaseModule
+        self._cfg: LiquidityConfig = LiquidityConfig(**config) if isinstance(config, dict) else (config or LiquidityConfig())
+
+        # Initialize advanced systems first (need _cfg for device)
         self._initialize_advanced_systems()
-        
-        # Call parent init first
-        super().__init__(config={})
-        
-        # Then override with our processed config
-        self.config = processed_config
-        
-        # Initialize neural networks
+
+        # Parent init expects a dict-like config; pass a plain dict
+        super().__init__(config=asdict(self._cfg))
+
+        # Initialize neural networks, state, monitoring
         self._initialize_neural_networks()
-        
-        # Initialize liquidity state
         self._initialize_liquidity_state()
-        
-        # Start monitoring
         self._start_monitoring()
-        
-        # Mark as fully initialized
-        self._fully_initialized = True
-        
-        # Now call _initialize properly
-        self._initialize()
-        
+
+        # Optionally publish capabilities immediately (avoid calling abstract _initialize here)
+        self._publish_capabilities()
+
         self.logger.info(
             format_operator_message(
-                "💧", "LIQUIDITY_HEATMAP_INITIALIZED",
-                details=f"LSTM units: {self.config.lstm_units}, Device: {self.device}",
+                "💧",
+                "LIQUIDITY_HEATMAP_INITIALIZED",
+                details=f"LSTM units: {self._cfg.lstm_units}, Device: {self.device}",
                 result="Advanced liquidity analysis active",
-                context="liquidity_engine_startup"
+                context="liquidity_engine_startup",
             )
         )
-    
+
     def _initialize_advanced_systems(self):
-        """Initialize all advanced systems"""
-        # Core systems
+        """Initialize all advanced systems."""
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
             name="LiquidityHeatmapLayer",
             log_path="logs/market/liquidity_heatmap.log",
             max_lines=5000,
             operator_mode=True,
-            plain_english=True
+            plain_english=True,
         )
-        
+
         # Device setup
-        self.device = torch.device("cuda" if torch.cuda.is_available() and self.config.enable_gpu else "cpu")
-        
+        self.device = torch.device("cuda" if torch.cuda.is_available() and self._cfg.enable_gpu else "cpu")
+
         # Advanced systems
         self.error_pinpointer = ErrorPinpointer()
         self.error_handler = create_error_handler("LiquidityHeatmapLayer", self.error_pinpointer)
         self.english_explainer = EnglishExplainer()
         self.system_utilities = SystemUtilities()
         self.performance_tracker = PerformanceTracker()
-        
+
         # Circuit breaker for neural operations
-        self.neural_circuit_breaker = {
-            'failures': 0,
-            'last_failure': 0,
-            'state': 'CLOSED',
-            'threshold': 3
-        }
+        self.neural_circuit_breaker = {"failures": 0, "last_failure": 0, "state": "CLOSED", "threshold": 3}
 
     def _initialize_neural_networks(self):
-        """Initialize PyTorch neural network components"""
-        
+        """Initialize PyTorch neural network components."""
         try:
-            # Input: [spread, depth, volume, volatility]
+            # Input feature vector per timestep: [spread, depth, price_liquidity, volume_volatility]
             input_dim = 4
             output_dim = 3  # [liquidity_score, depth_prediction, spread_prediction]
-            
+
             self.lstm_model = LiquidityLSTM(
                 input_dim=input_dim,
-                hidden_dim=self.config.hidden_dim,
+                lstm_units=self._cfg.lstm_units,
                 output_dim=output_dim,
-                dropout_rate=self.config.dropout_rate
-            )
-            
-            # Move to device
-            self.lstm_model = self.lstm_model.to(self.device)
-            
-            # Optimizer
-            self.optimizer = torch.optim.Adam(
-                self.lstm_model.parameters(),
-                lr=self.config.learning_rate
-            )
-            
-            # Loss function
+                dropout_rate=self._cfg.dropout_rate,
+                mlp_hidden=self._cfg.hidden_dim,
+            ).to(self.device)
+
+            # Optimizer & Loss
+            self.optimizer = torch.optim.Adam(self.lstm_model.parameters(), lr=self._cfg.learning_rate)
             self.criterion = nn.MSELoss()
-            
+
             self.logger.info(f"Neural networks initialized on {self.device}")
-            
         except Exception as e:
             self.logger.error(f"Neural network initialization failed: {e}")
             raise
 
     def _initialize_liquidity_state(self):
-        """Initialize liquidity-specific state"""
-        
+        """Initialize liquidity-specific state."""
         # Market data buffers
         self.price_history = deque(maxlen=500)
         self.spread_history = deque(maxlen=200)
         self.depth_history = deque(maxlen=200)
         self.volume_history = deque(maxlen=200)
-        
+
         # Neural network data
-        self.sequence_data = deque(maxlen=self.config.sequence_length)
+        self.sequence_data = deque(maxlen=self._cfg.sequence_length)
         self.training_data = deque(maxlen=1000)
-        
+
         # Current state
         self.current_liquidity_score = 0.5
         self.current_spread = 0.0
         self.current_depth = 0.0
         self.market_session = "unknown"
-        
-        # Performance tracking
-        self.liquidity_stats = {
-            'predictions_made': 0,
-            'successful_predictions': 0,
-            'avg_prediction_accuracy': 0.0,
-            'neural_forward_passes': 0,
-            'model_training_episodes': 0
-        }
-        
-        # Health metrics
-        self.liquidity_health = {
-            'model_health_score': 100.0,
-            'data_quality_score': 100.0,
-            'prediction_confidence': 0.0,
-            'last_update': time.time()
-        }
-    
-    def _start_monitoring(self):
-        """Start background monitoring tasks"""
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self._liquidity_monitoring_loop())
-        except RuntimeError:
-            # No event loop running
-            pass
-    
-    def _initialize(self):
-        """Initialize module - called by orchestrator"""
-        # Check if we're fully initialized yet
-        if not getattr(self, '_fully_initialized', False):
-            return
-            
-        super()._initialize()
-        
-        # Store liquidity capabilities
-        self.smart_bus.set(
-            'liquidity_capabilities',
-            {
-                'prediction_horizon': self.config.prediction_horizon,
-                'sequence_length': self.config.sequence_length,
-                'device': str(self.device),
-                'depth_levels': self.config.depth_levels,
-                'neural_model': 'LSTM_with_attention'
-            },
-            module='LiquidityHeatmapLayer',
-            thesis="Liquidity analysis capabilities for market assessment"
-        )
 
-    # ── NEW: trading session helpers ──────────────────────────────────────────
+        # Stats
+        self.liquidity_stats = {
+            "predictions_made": 0,
+            "successful_predictions": 0,
+            "avg_prediction_accuracy": 0.0,  # 0..1
+            "neural_forward_passes": 0,
+            "model_training_episodes": 0,
+        }
+
+        # Health
+        self.liquidity_health = {
+            "model_health_score": 100.0,  # 0..100
+            "data_quality_score": 100.0,  # 0..100
+            "prediction_confidence": 0.0,  # 0..1
+            "last_update": time.time(),
+        }
+
+        # Bookkeeping
+        self.last_prediction_time: Optional[float] = None
+
+    def _publish_capabilities(self):
+        """Publish capabilities to SmartInfoBus (safe from __init__)."""
+        try:
+            self.smart_bus.set(
+                "liquidity_capabilities",
+                {
+                    "prediction_horizon": self._cfg.prediction_horizon,
+                    "sequence_length": self._cfg.sequence_length,
+                    "device": str(self.device),
+                    "depth_levels": self._cfg.depth_levels,
+                    "neural_model": "LSTM_with_attention",
+                },
+                module="LiquidityHeatmapLayer",
+                thesis="Liquidity analysis capabilities for market assessment",
+            )
+        except Exception:
+            pass
+
+    # Match BaseModule abstract signature to silence Pylance
+    def _initialize(self, **kwargs) -> None:
+        """Called by orchestrator; keep idempotent."""
+        # We already published capabilities in __init__, but do it again to be safe.
+        self._publish_capabilities()
+
+    # ── Trading session helpers ─────────────────────────────────────────
     def _compute_trading_sessions(self, market_data: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """
-        Compute current trading session snapshot.
-        Returns:
-          sessions_map: dict with per-session booleans & scores
-          session_meta: dict with active session, windows, and liquidity bias
-        """
-        # Use "now" (UTC) – if your system provides a timestamp in market_data, you can swap this in.
+        """Compute current trading session snapshot."""
         import datetime as _dt
         now = _dt.datetime.utcnow()
         weekday = now.weekday()  # 0=Mon .. 6=Sun
-        hour = now.hour + now.minute/60.0
+        hour = now.hour + now.minute / 60.0
 
-        # Weekend handling (approx: Fri 22:00–Sun 21:00 UTC is thin)
         weekend = (weekday == 5) or (weekday == 6) or (weekday == 4 and hour >= 22.0) or (weekday == 6 and hour < 21.0)
 
-        # Simple UTC windows (approximate, widely used):
-        # Asian:     23:00–07:00
-        # European:  07:00–16:00
-        # American:  12:00–21:00
-        # Rollover:  21:00–23:00
         def in_window(h, start, end):
             return (h >= start and h < end) if start < end else (h >= start or h < end)
 
-        asian     = in_window(hour, 23.0, 7.0) and not weekend
-        european  = (hour >= 7.0 and hour < 16.0) and not weekend
-        american  = (hour >= 12.0 and hour < 21.0) and not weekend
-        rollover  = (hour >= 21.0 and hour < 23.0) and not weekend
+        asian = in_window(hour, 23.0, 7.0) and not weekend
+        european = (7.0 <= hour < 16.0) and not weekend
+        american = (12.0 <= hour < 21.0) and not weekend
+        rollover = (21.0 <= hour < 23.0) and not weekend
 
-        # pick the most likely active (priority: rollover > american > european > asian)
         if weekend:
-            active = 'weekend'
-            bias = 0.3
+            active, bias = "weekend", 0.3
         elif rollover:
-            active = 'rollover'
-            bias = 0.4
+            active, bias = "rollover", 0.4
         elif american:
-            active = 'american'
-            bias = 1.0
+            active, bias = "american", 1.0
         elif european:
-            active = 'european'
-            bias = 0.9
+            active, bias = "european", 0.9
         elif asian:
-            active = 'asian'
-            bias = 0.7
+            active, bias = "asian", 0.7
         else:
-            # fall back to closest bucket
-            active = 'unknown'
-            bias = 0.6
+            active, bias = "unknown", 0.6
 
-        sessions_map = {
-            'asian': bool(asian),
-            'european': bool(european),
-            'american': bool(american),
-            'rollover': bool(rollover),
-            'weekend': bool(weekend),
-            'active': active,
-        }
-
+        sessions_map = {"asian": bool(asian), "european": bool(european), "american": bool(american), "rollover": bool(rollover), "weekend": bool(weekend), "active": active}
         session_meta = {
-            'active_session': active,
-            'utc_time': now.isoformat() + 'Z',
-            'windows_utc': {
-                'asian':    {'start': '23:00', 'end': '07:00'},
-                'european': {'start': '07:00', 'end': '16:00'},
-                'american': {'start': '12:00', 'end': '21:00'},
-                'rollover': {'start': '21:00', 'end': '23:00'},
+            "active_session": active,
+            "utc_time": now.isoformat() + "Z",
+            "windows_utc": {
+                "asian": {"start": "23:00", "end": "07:00"},
+                "european": {"start": "07:00", "end": "16:00"},
+                "american": {"start": "12:00", "end": "21:00"},
+                "rollover": {"start": "21:00", "end": "23:00"},
             },
-            'liquidity_bias': bias,  # heuristic multiplier (used in thesis/action if needed)
+            "liquidity_bias": bias,
         }
         return sessions_map, session_meta
 
-    
+    # ── Main processing ────────────────────────────────────────────────
     async def process(self, **inputs) -> Dict[str, Any]:
         """Main processing function for liquidity analysis (contract-compliant)."""
-        process_start_time = time.time()
+        t0 = time.time()
 
-        # Circuit breaker check
+        # Circuit breaker
         if not self._check_neural_circuit_breaker():
-            # still satisfy provides
-            fallback = self._create_liquidity_fallback_response("Neural circuit breaker open")
-            # add contract keys
             sessions_map, session_meta = self._compute_trading_sessions({})
-            fallback['trading_sessions'] = sessions_map
-            fallback['session_data'] = session_meta
-            fallback['_thesis'] = fallback.get('thesis', 'Liquidity analysis fallback')
-            return fallback
+            return self._format_declared_outputs(
+                liquidity_score=self.current_liquidity_score,
+                market_depth={"status": "fallback", "current_depth": self.current_depth, "analysis": {}, "condition": "unknown"},
+                spread_analysis={"status": "fallback", "current_spread": self.current_spread, "analysis": {}, "condition": "unknown"},
+                liquidity_prediction={"predictions": {}, "confidence": 0.0, "horizon_steps": self._cfg.prediction_horizon, "status": "unavailable"},
+                trading_sessions=sessions_map,
+                session_data=session_meta,
+                thesis="Liquidity analysis fallback: neural circuit breaker open.",
+                extra={"success": False, "processing_time_ms": (time.time() - t0) * 1000.0},
+            )
 
         try:
             # 1) Extract market data
@@ -384,351 +384,312 @@ class LiquidityHeatmapLayer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             # 3) Session snapshot
             sessions_map, session_meta = self._compute_trading_sessions(market_data)
 
-            # 4) Thesis (augment with session)
+            # 4) Thesis
             thesis = await self._generate_liquidity_thesis(market_data, liquidity_metrics, prediction_result)
             thesis = f"{thesis}\n\nSession: {session_meta['active_session'].upper()} (UTC {session_meta['utc_time']})"
 
-            # 5) Update SmartInfoBus (also writes sessions)
+            # 5) Update SmartInfoBus
             await self._update_liquidity_smart_bus(liquidity_metrics, prediction_result, thesis, sessions_map, session_meta)
 
             # 6) Record success
-            self._record_liquidity_success(time.time() - process_start_time)
+            self._record_liquidity_success(time.time() - t0)
 
-            # 7) Return all declared provides
-            return {
-                'success': True,
-                'liquidity_score': liquidity_metrics['liquidity_score'],
-                'market_depth': liquidity_metrics['depth_analysis'],
-                'spread_analysis': liquidity_metrics['spread_analysis'],
-                'liquidity_prediction': prediction_result,   # matches provides
-                'trading_sessions': sessions_map,            # ✅ now provided
-                'session_data': session_meta,                # ✅ now provided
-                'thesis': thesis,
-                '_thesis': thesis,                           # helpful for explainable orchestrators
-                'processing_time_ms': (time.time() - process_start_time) * 1000.0,
-            }
+            # 7) Return (strict, contract-compliant)
+            outputs = self._format_declared_outputs(
+                liquidity_score=liquidity_metrics["liquidity_score"],
+                market_depth=liquidity_metrics["depth_analysis"],
+                spread_analysis=liquidity_metrics["spread_analysis"],
+                liquidity_prediction=prediction_result,
+                trading_sessions=sessions_map,
+                session_data=session_meta,
+                thesis=thesis,
+                extra={"success": True, "processing_time_ms": (time.time() - t0) * 1000.0},
+            )
+            # include capabilities declared provide explicitly in returns
+            try:
+                caps = self.smart_bus.get("liquidity_capabilities", "LiquidityHeatmapLayer")
+            except Exception:
+                caps = None
+            if not isinstance(caps, dict):
+                caps = {
+                    "prediction_horizon": self._cfg.prediction_horizon,
+                    "sequence_length": self._cfg.sequence_length,
+                    "device": str(self.device),
+                    "depth_levels": self._cfg.depth_levels,
+                    "neural_model": "LSTM_with_attention",
+                }
+            outputs["liquidity_capabilities"] = caps
+            return outputs
 
         except Exception as e:
-            # keep contract even on failure
-            fail = await self._handle_liquidity_error(e, process_start_time)
+            fail = await self._handle_liquidity_error(e, t0)
             sessions_map, session_meta = self._compute_trading_sessions({})
-            fail['trading_sessions'] = sessions_map
-            fail['session_data'] = session_meta
-            fail['_thesis'] = fail.get('thesis', f"Liquidity analysis error: {e}")
-            return fail
+            return self._format_declared_outputs(
+                liquidity_score=fail.get("liquidity_score"),
+                market_depth=fail.get("market_depth"),
+                spread_analysis=fail.get("spread_analysis"),
+                liquidity_prediction=fail.get("liquidity_prediction"),
+                trading_sessions=sessions_map,
+                session_data=session_meta,
+                thesis=fail.get("thesis", f"Liquidity analysis error: {e}"),
+                extra={"success": False, "processing_time_ms": (time.time() - t0) * 1000.0, "reason": fail.get("reason")},
+            )
 
-    
+    # ── Data extraction ────────────────────────────────────────────────
     async def _extract_market_data(self, **inputs) -> Dict[str, Any]:
-        """Extract market data from SmartInfoBus and inputs"""
-        
-        market_data = {
-            'prices': [],
-            'volumes': [],
-            'timestamps': [],
-            'bid_ask_spreads': [],
-            'market_depth': {}
-        }
-        
-        # Get data from SmartInfoBus
-        for instrument in ['EUR/USD', 'XAU/USD', 'GBP/USD', 'USD/JPY']:
-            price_data = self.smart_bus.get(f'price_{instrument}', 'LiquidityHeatmapLayer')
-            if price_data:
-                market_data['prices'].append(price_data)
-        
-        # Get market data from inputs
-        if 'market_data' in inputs:
-            input_data = inputs['market_data']
-            if isinstance(input_data, dict):
-                market_data.update(input_data)
-        
-        # Fallback to synthetic data if needed
-        if not market_data['prices']:
+        """Extract market data from SmartInfoBus and inputs."""
+        market_data: Dict[str, Any] = {"prices": [], "volumes": [], "timestamps": [], "bid_ask_spreads": [], "market_depth": {}}
+
+        def _canon(sym: str) -> str:
+            return sym.replace("/", "").upper().strip()
+
+        bus_prices = self.smart_bus.get("prices", "LiquidityHeatmapLayer") or {}
+        bus_price_data = self.smart_bus.get("price_data", "LiquidityHeatmapLayer") or {}
+        bus_bid_ask = self.smart_bus.get("bid_ask_data", "LiquidityHeatmapLayer") or {}
+
+        for instrument in ["EUR/USD", "XAU/USD"]:
+            code = _canon(instrument)
+            # price
+            if isinstance(bus_prices, dict) and code in bus_prices:
+                market_data["prices"].append(bus_prices[code])
+            elif isinstance(bus_price_data, dict) and code in bus_price_data:
+                pdict = bus_price_data.get(code) or {}
+                close_val = pdict.get("close")
+                if close_val is not None:
+                    market_data["prices"].append(close_val)
+            # spread
+            if isinstance(bus_bid_ask, dict) and code in bus_bid_ask:
+                spread = (bus_bid_ask.get(code) or {}).get("spread")
+                if spread is not None:
+                    market_data["bid_ask_spreads"].append(spread)
+
+        # Merge explicit inputs
+        if "market_data" in inputs and isinstance(inputs["market_data"], dict):
+            inp_md = inputs["market_data"]
+            if isinstance(inp_md.get("prices"), list):
+                market_data["prices"].extend(inp_md["prices"])
+            if isinstance(inp_md.get("bid_ask_spreads"), list):
+                market_data["bid_ask_spreads"].extend(inp_md["bid_ask_spreads"])
+            for k in ["volumes", "timestamps", "market_depth"]:
+                if k in inp_md and market_data.get(k) in (None, [], {}):
+                    market_data[k] = inp_md[k]
+
+        # Fallback synthetic
+        if not market_data["prices"]:
             market_data = self._generate_synthetic_market_data()
-            
+
         return market_data
-    
+
     def _generate_synthetic_market_data(self) -> Dict[str, Any]:
-        """Generate synthetic market data for testing"""
-        
-        # Generate realistic market data
+        """Generate synthetic market data for testing."""
         prices = np.random.normal(1.1000, 0.001, 50).tolist()
         volumes = np.random.exponential(1000, 50).tolist()
         spreads = np.random.uniform(0.0001, 0.0005, 50).tolist()
-        
         return {
-            'prices': prices,
-            'volumes': volumes,
-            'timestamps': list(range(50)),
-            'bid_ask_spreads': spreads,
-            'market_depth': {
-                'bids': [(1.0999, 1000), (1.0998, 1500)],
-                'asks': [(1.1001, 1200), (1.1002, 1800)]
-            }
+            "prices": prices,
+            "volumes": volumes,
+            "timestamps": list(range(50)),
+            "bid_ask_spreads": spreads,
+            "market_depth": {"bids": [(1.0999, 1000), (1.0998, 1500)], "asks": [(1.1001, 1200), (1.1002, 1800)]},
         }
-    
+
+    # ── Analytics ──────────────────────────────────────────────────────
     async def _analyze_liquidity(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze current liquidity conditions"""
-        
+        """Analyze current liquidity conditions."""
         try:
-            # Extract current metrics
-            if market_data['prices']:
-                current_price = market_data['prices'][-1] if market_data['prices'] else 1.0
-                self.price_history.append(current_price)
-            
-            # Calculate spread
-            if market_data['bid_ask_spreads']:
-                current_spread = market_data['bid_ask_spreads'][-1]
-                self.spread_history.append(current_spread)
-                self.current_spread = current_spread
-            
-            # Calculate depth
-            depth_info = market_data.get('market_depth', {})
+            if market_data["prices"]:
+                current_price = market_data["prices"][-1]
+                self.price_history.append(float(current_price))
+
+            if market_data["bid_ask_spreads"]:
+                self.current_spread = float(market_data["bid_ask_spreads"][-1])
+                self.spread_history.append(self.current_spread)
+
+            depth_info = market_data.get("market_depth", {})
             if depth_info:
-                bid_depth = sum(volume for _, volume in depth_info.get('bids', []))
-                ask_depth = sum(volume for _, volume in depth_info.get('asks', []))
-                total_depth = bid_depth + ask_depth
-                self.depth_history.append(total_depth)
-                self.current_depth = total_depth
-            
-            # Calculate liquidity score
+                bid_depth = sum(float(v) for _, v in depth_info.get("bids", []))
+                ask_depth = sum(float(v) for _, v in depth_info.get("asks", []))
+                self.current_depth = float(bid_depth + ask_depth)
+                self.depth_history.append(self.current_depth)
+
             liquidity_score = self._calculate_liquidity_score()
-            
-            # Volume analysis
-            volume_analysis = self._analyze_volume_patterns(market_data.get('volumes', []))
-            
-            # Spread analysis
+            volume_analysis = self._analyze_volume_patterns(market_data.get("volumes", []))
             spread_analysis = self._analyze_spread_patterns()
-            
-            # Depth analysis
             depth_analysis = self._analyze_depth_patterns()
-            
+
             return {
-                'liquidity_score': liquidity_score,
-                'spread_analysis': spread_analysis,
-                'depth_analysis': depth_analysis,
-                'volume_analysis': volume_analysis,
-                'current_spread': self.current_spread,
-                'current_depth': self.current_depth
+                "liquidity_score": liquidity_score,
+                "spread_analysis": spread_analysis,
+                "depth_analysis": {
+                    "current_depth": self.current_depth,
+                    "analysis": depth_analysis,
+                    "condition": depth_analysis.get("condition", "unknown"),
+                },
+                "volume_analysis": volume_analysis,
+                "current_spread": self.current_spread,
+                "current_depth": self.current_depth,
             }
-            
         except Exception as e:
             self.logger.error(f"Liquidity analysis failed: {e}")
             return {
-                'liquidity_score': 0.5,
-                'spread_analysis': {'status': 'error'},
-                'depth_analysis': {'status': 'error'},
-                'volume_analysis': {'status': 'error'},
-                'current_spread': 0.0,
-                'current_depth': 0.0
+                "liquidity_score": 0.5,
+                "spread_analysis": {"status": "error"},
+                "depth_analysis": {"status": "error"},
+                "volume_analysis": {"status": "error"},
+                "current_spread": 0.0,
+                "current_depth": 0.0,
             }
-    
+
     def _calculate_liquidity_score(self) -> float:
-        """Calculate overall liquidity score"""
-        
-        score_components = []
-        
-        # Spread component (lower spread = higher liquidity)
+        """Calculate overall liquidity score."""
+        comps: List[float] = []
+
+        # Spread (lower is better)
         if self.spread_history:
-            avg_spread = np.mean(list(self.spread_history)[-20:])
-            spread_score = 1.0 - min(float(avg_spread) / 0.001, 1.0)  # Normalize to typical forex spread
-            score_components.append(spread_score * 0.4)
-        
-        # Depth component (higher depth = higher liquidity)
+            avg_spread = float(np.mean(list(self.spread_history)[-min(20, len(self.spread_history)) :]))
+            spread_score = 1.0 - min(avg_spread / 0.001, 1.0)  # normalize to typical FX spread
+            comps.append(spread_score * 0.4)
+
+        # Depth (higher is better)
         if self.depth_history:
-            avg_depth = np.mean(list(self.depth_history)[-20:])
-            depth_score = min(float(avg_depth) / 10000, 1.0)  # Normalize to typical depth
-            score_components.append(depth_score * 0.4)
-        
-        # Volatility component (stable prices = higher liquidity)
+            avg_depth = float(np.mean(list(self.depth_history)[-min(20, len(self.depth_history)) :]))
+            depth_score = min(avg_depth / 10000.0, 1.0)
+            comps.append(depth_score * 0.4)
+
+        # Volatility (lower is better → more liquid)
         if len(self.price_history) > 10:
-            price_volatility = np.std(list(self.price_history)[-20:])
-            volatility_score = 1.0 - min(float(price_volatility) / 0.01, 1.0)
-            score_components.append(volatility_score * 0.2)
-        
-        # Calculate final score
-        if score_components:
-            liquidity_score = sum(score_components)
-            self.current_liquidity_score = np.clip(liquidity_score, 0.0, 1.0)
-        else:
-            self.current_liquidity_score = 0.5
-        
-        return float(self.current_liquidity_score)
-    
+            price_vol = float(np.std(list(self.price_history)[-min(20, len(self.price_history)) :]))
+            volatility_score = 1.0 - min(price_vol / 0.01, 1.0)
+            comps.append(volatility_score * 0.2)
+
+        self.current_liquidity_score = float(np.clip(sum(comps) if comps else 0.5, 0.0, 1.0))
+        return self.current_liquidity_score
+
     def _analyze_volume_patterns(self, volumes: List[float]) -> Dict[str, Any]:
-        """Analyze volume patterns"""
-        
+        """Analyze volume patterns."""
         if not volumes:
-            return {'status': 'no_data'}
-        
-        recent_volumes = volumes[-20:] if len(volumes) >= 20 else volumes
-        avg_volume = np.mean(recent_volumes)
-        volume_trend = 'increasing' if len(recent_volumes) > 5 and recent_volumes[-1] > recent_volumes[-5] else 'decreasing'
-        
-        return {
-            'average_volume': float(avg_volume),
-            'trend': volume_trend,
-            'volatility': float(np.std(recent_volumes)) if len(recent_volumes) > 1 else 0.0,
-            'status': 'analyzed'
-        }
-    
+            return {"status": "no_data"}
+        rv = volumes[-20:] if len(volumes) >= 20 else volumes
+        avg_volume = float(np.mean(rv))
+        trend = "increasing" if len(rv) > 5 and rv[-1] > rv[-5] else "decreasing"
+        return {"average_volume": avg_volume, "trend": trend, "volatility": float(np.std(rv)) if len(rv) > 1 else 0.0, "status": "analyzed"}
+
     def _analyze_spread_patterns(self) -> Dict[str, Any]:
-        """Analyze bid-ask spread patterns"""
-        
+        """Analyze bid-ask spread patterns."""
         if len(self.spread_history) < 5:
-            return {'status': 'insufficient_data'}
-        
+            return {"status": "insufficient_data"}
         spreads = list(self.spread_history)
-        avg_spread = np.mean(spreads)
-        spread_volatility = np.std(spreads)
-        
-        # Classify spread condition
-        if avg_spread < self.config.low_liquidity_threshold * 0.001:
-            condition = 'tight'
-        elif avg_spread > self.config.high_liquidity_threshold * 0.001:
-            condition = 'wide'
+        avg_spread = float(np.mean(spreads))
+        spread_vol = float(np.std(spreads))
+        if avg_spread < self._cfg.low_liquidity_threshold * 0.001:
+            condition = "tight"
+        elif avg_spread > self._cfg.high_liquidity_threshold * 0.001:
+            condition = "wide"
         else:
-            condition = 'normal'
-        
+            condition = "normal"
         return {
-            'average_spread': float(avg_spread),
-            'spread_volatility': float(spread_volatility),
-            'condition': condition,
-            'trend': 'widening' if spreads[-1] > spreads[-5] else 'tightening',
-            'status': 'analyzed'
+            "average_spread": avg_spread,
+            "spread_volatility": spread_vol,
+            "condition": condition,
+            "trend": "widening" if spreads[-1] > spreads[-5] else "tightening",
+            "status": "analyzed",
         }
-    
+
     def _analyze_depth_patterns(self) -> Dict[str, Any]:
-        """Analyze market depth patterns"""
-        
+        """Analyze market depth patterns."""
         if len(self.depth_history) < 5:
-            return {'status': 'insufficient_data'}
-        
+            return {"status": "insufficient_data"}
         depths = list(self.depth_history)
-        avg_depth = np.mean(depths)
-        depth_stability = 1.0 - (float(np.std(depths)) / max(float(avg_depth), 1.0))
-        
-        # Classify depth condition
+        avg_depth = float(np.mean(depths))
+        depth_stability = 1.0 - (float(np.std(depths)) / max(avg_depth, 1.0))
         if avg_depth > 50000:
-            condition = 'deep'
+            condition = "deep"
         elif avg_depth < 10000:
-            condition = 'shallow'
+            condition = "shallow"
         else:
-            condition = 'moderate'
-        
+            condition = "moderate"
         return {
-            'average_depth': float(avg_depth),
-            'stability_score': float(np.clip(depth_stability, 0.0, 1.0)),
-            'condition': condition,
-            'trend': 'deepening' if depths[-1] > depths[-5] else 'shallowing',
-            'status': 'analyzed'
+            "average_depth": avg_depth,
+            "stability_score": float(np.clip(depth_stability, 0.0, 1.0)),
+            "condition": condition,
+            "trend": "deepening" if depths[-1] > depths[-5] else "shallowing",
+            "status": "analyzed",
         }
-    
+
+    # ── Neural prediction ──────────────────────────────────────────────
     async def _neural_liquidity_prediction(self, liquidity_metrics: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate neural network predictions for liquidity"""
-        
+        """Generate neural network predictions for liquidity."""
         try:
-            # Prepare input sequence
+            # features: [spread, depth_norm, liquidity_score, volume_volatility]
             current_features = [
-                liquidity_metrics['current_spread'],
-                liquidity_metrics['current_depth'] / 10000,  # Normalize
-                liquidity_metrics['liquidity_score'],
-                liquidity_metrics.get('volume_analysis', {}).get('volatility', 0.0)
+                float(liquidity_metrics["current_spread"]),
+                float(liquidity_metrics["current_depth"]) / 10000.0,
+                float(liquidity_metrics["liquidity_score"]),
+                float(liquidity_metrics.get("volume_analysis", {}).get("volatility", 0.0)),
             ]
-            
-            self.sequence_data.append(np.array(current_features))
-            
-            # Need enough sequence data for prediction
-            if len(self.sequence_data) < self.config.sequence_length:
-                return {
-                    'predictions': [],
-                    'confidence': 0.0,
-                    'status': 'insufficient_sequence_data'
-                }
-            
-            # Prepare tensor
-            sequence_array = np.array(list(self.sequence_data))
-            input_tensor = torch.tensor(sequence_array, dtype=torch.float32, device=self.device)
-            input_tensor = input_tensor.unsqueeze(0)  # Add batch dimension
-            
-            # Neural prediction
+            self.sequence_data.append(np.array(current_features, dtype=np.float32))
+
+            if len(self.sequence_data) < self._cfg.sequence_length:
+                return {"predictions": {}, "confidence": 0.0, "horizon_steps": self._cfg.prediction_horizon, "status": "insufficient_sequence_data"}
+
+            seq = np.array(list(self.sequence_data), dtype=np.float32)  # [T, F]
+            x = torch.tensor(seq, dtype=torch.float32, device=self.device).unsqueeze(0)  # [1, T, F]
+
             self.lstm_model.eval()
             with torch.no_grad():
-                predictions = self.lstm_model(input_tensor)
-                predictions_np = predictions.cpu().numpy().flatten()
-            
-            # Interpret predictions
-            predicted_liquidity = float(np.clip(predictions_np[0], 0.0, 1.0))
-            predicted_depth = float(max(predictions_np[1] * 10000, 0))  # Denormalize
-            predicted_spread = float(max(predictions_np[2], 0))
-            
-            # Calculate confidence based on recent accuracy
+                pred = self.lstm_model(x).squeeze(0).detach().cpu().numpy()  # [3]
+
+            predicted_liquidity = float(np.clip(pred[0], 0.0, 1.0))
+            predicted_depth = float(max(pred[1] * 10000.0, 0.0))
+            predicted_spread = float(max(pred[2], 0.0))
+
             confidence = self._calculate_prediction_confidence()
-            
-            self.liquidity_stats['neural_forward_passes'] += 1
-            
+            self.liquidity_stats["neural_forward_passes"] += 1
+            self.last_prediction_time = time.time()
+
             return {
-                'predictions': {
-                    'liquidity_score': predicted_liquidity,
-                    'depth': predicted_depth,
-                    'spread': predicted_spread
-                },
-                'confidence': confidence,
-                'horizon_steps': self.config.prediction_horizon,
-                'status': 'success'
+                "predictions": {"liquidity_score": predicted_liquidity, "depth": predicted_depth, "spread": predicted_spread},
+                "confidence": confidence,
+                "horizon_steps": self._cfg.prediction_horizon,
+                "status": "success",
             }
-            
         except Exception as e:
             self.logger.error(f"Neural liquidity prediction failed: {e}")
-            return {
-                'predictions': {},
-                'confidence': 0.0,
-                'status': 'error',
-                'error': str(e)
-            }
-    
+            return {"predictions": {}, "confidence": 0.0, "horizon_steps": self._cfg.prediction_horizon, "status": "error", "error": str(e)}
+
     def _calculate_prediction_confidence(self) -> float:
-        """Calculate confidence in predictions based on recent performance"""
-        
-        if self.liquidity_stats['predictions_made'] == 0:
-            return 0.5
-        
-        accuracy = self.liquidity_stats['successful_predictions'] / self.liquidity_stats['predictions_made']
-        
-        # Adjust confidence based on data quality and model health
-        data_quality_factor = self.liquidity_health['data_quality_score'] / 100.0
-        model_health_factor = self.liquidity_health['model_health_score'] / 100.0
-        
-        confidence = accuracy * data_quality_factor * model_health_factor
-        
-        return float(np.clip(confidence, 0.0, 1.0))
-    
-    async def _generate_liquidity_thesis(self, market_data: Dict[str, Any], 
-                                       liquidity_metrics: Dict[str, Any],
-                                       prediction_result: Dict[str, Any]) -> str:
-        """Generate comprehensive thesis for liquidity analysis"""
-        
+        """Confidence based on recent performance and health."""
+        if self.liquidity_stats["predictions_made"] == 0:
+            baseline = 0.5
+        else:
+            baseline = self.liquidity_stats["successful_predictions"] / max(1, self.liquidity_stats["predictions_made"])
+        data_q = float(self.liquidity_health["data_quality_score"]) / 100.0
+        model_h = float(self.liquidity_health["model_health_score"]) / 100.0
+        return float(np.clip(baseline * data_q * model_h, 0.0, 1.0))
+
+    # ── Thesis & Bus updates ───────────────────────────────────────────
+    async def _generate_liquidity_thesis(self, market_data: Dict[str, Any], liquidity_metrics: Dict[str, Any], prediction_result: Dict[str, Any]) -> str:
+        """Human-friendly summary."""
         try:
-            liquidity_score = liquidity_metrics['liquidity_score']
-            spread_condition = liquidity_metrics['spread_analysis'].get('condition', 'unknown')
-            depth_condition = liquidity_metrics['depth_analysis'].get('condition', 'unknown')
-            
-            # Classify market liquidity
-            if liquidity_score > self.config.high_liquidity_threshold:
-                liquidity_assessment = "High liquidity environment"
-            elif liquidity_score < self.config.low_liquidity_threshold:
-                liquidity_assessment = "Low liquidity conditions"
+            liquidity_score = liquidity_metrics["liquidity_score"]
+            spread_condition = liquidity_metrics["spread_analysis"].get("condition", "unknown")
+            depth_condition = liquidity_metrics["depth_analysis"].get("condition", "unknown")
+
+            if liquidity_score > self._cfg.high_liquidity_threshold:
+                assessment = "High liquidity environment"
+            elif liquidity_score < self._cfg.low_liquidity_threshold:
+                assessment = "Low liquidity conditions"
             else:
-                liquidity_assessment = "Moderate liquidity conditions"
-            
-            # Neural prediction analysis
-            prediction_confidence = prediction_result.get('confidence', 0.0)
-            prediction_status = prediction_result.get('status', 'unknown')
-            
+                assessment = "Moderate liquidity conditions"
+
+            prediction_conf = float(prediction_result.get("confidence", 0.0))
+            prediction_status = prediction_result.get("status", "unknown")
+
             thesis = f"""
 Liquidity Heatmap Analysis:
 
 Current Market Conditions:
-- {liquidity_assessment} (score: {liquidity_score:.3f})
+- {assessment} (score: {liquidity_score:.3f})
 - Spread condition: {spread_condition}
 - Market depth: {depth_condition}
 - Current spread: {liquidity_metrics['current_spread']:.6f}
@@ -736,7 +697,7 @@ Current Market Conditions:
 
 Neural Network Analysis:
 - Prediction status: {prediction_status}
-- Model confidence: {prediction_confidence:.1%}
+- Model confidence: {prediction_conf:.1%}
 - Forward passes completed: {self.liquidity_stats['neural_forward_passes']}
 - Model health: {self.liquidity_health['model_health_score']:.1f}%
 
@@ -747,7 +708,7 @@ Market Assessment:
 
 Liquidity Forecast:
 {'Neural predictions available' if prediction_result.get('predictions') else 'Insufficient data for prediction'}
-- Prediction horizon: {self.config.prediction_horizon} steps
+- Prediction horizon: {self._cfg.prediction_horizon} steps
 - Circuit breaker: {self.neural_circuit_breaker['state']}
 
 Trading Implications:
@@ -755,424 +716,323 @@ Trading Implications:
 - Recommended position sizing: {'Normal' if liquidity_score > 0.6 else 'Reduced' if liquidity_score > 0.4 else 'Minimal'}
 - Market impact assessment: {'Low' if liquidity_score > 0.7 else 'Medium' if liquidity_score > 0.5 else 'High'}
             """.strip()
-            
             return thesis
-            
         except Exception as e:
             return f"Liquidity analysis completed. Thesis generation failed: {str(e)}"
-    
-    async def _update_liquidity_smart_bus(self, liquidity_metrics: Dict[str, Any],
-                                          prediction_result: Dict[str, Any],
-                                          thesis: str,
-                                          sessions_map: Optional[Dict[str, Any]] = None,
-                                          session_meta: Optional[Dict[str, Any]] = None):
-        """Update SmartInfoBus with liquidity analysis results + sessions."""
 
-        # Main liquidity score
+    async def _update_liquidity_smart_bus(
+        self,
+        liquidity_metrics: Dict[str, Any],
+        prediction_result: Dict[str, Any],
+        thesis: str,
+        sessions_map: Optional[Dict[str, Any]] = None,
+        session_meta: Optional[Dict[str, Any]] = None,
+    ):
+        """Update SmartInfoBus with results + sessions."""
         self.smart_bus.set(
-            'liquidity_score',
-            liquidity_metrics['liquidity_score'],
-            module='LiquidityHeatmapLayer',
-            thesis=f"Current market liquidity: {liquidity_metrics['liquidity_score']:.3f}"
+            "liquidity_score",
+            liquidity_metrics["liquidity_score"],
+            module="LiquidityHeatmapLayer",
+            thesis=f"Current market liquidity: {liquidity_metrics['liquidity_score']:.3f}",
         )
 
-        # Market depth analysis
         self.smart_bus.set(
-            'market_depth',
+            "market_depth",
             {
-                'current_depth': liquidity_metrics['current_depth'],
-                'analysis': liquidity_metrics['depth_analysis'],
-                'condition': liquidity_metrics['depth_analysis'].get('condition', 'unknown')
+                "current_depth": liquidity_metrics["current_depth"],
+                "analysis": liquidity_metrics["depth_analysis"],
+                "condition": liquidity_metrics["depth_analysis"].get("condition", "unknown"),
             },
-            module='LiquidityHeatmapLayer',
-            thesis=f"Market depth: {liquidity_metrics['depth_analysis'].get('condition', 'unknown')}"
+            module="LiquidityHeatmapLayer",
+            thesis=f"Market depth: {liquidity_metrics['depth_analysis'].get('condition', 'unknown')}",
         )
 
-        # Spread analysis
         self.smart_bus.set(
-            'spread_analysis',
+            "spread_analysis",
             {
-                'current_spread': liquidity_metrics['current_spread'],
-                'analysis': liquidity_metrics['spread_analysis'],
-                'condition': liquidity_metrics['spread_analysis'].get('condition', 'normal')
+                "current_spread": liquidity_metrics["current_spread"],
+                "analysis": liquidity_metrics["spread_analysis"],
+                "condition": liquidity_metrics["spread_analysis"].get("condition", "normal"),
             },
-            module='LiquidityHeatmapLayer',
-            thesis=f"Spread condition: {liquidity_metrics['spread_analysis'].get('condition', 'normal')}"
+            module="LiquidityHeatmapLayer",
+            thesis=f"Spread condition: {liquidity_metrics['spread_analysis'].get('condition', 'normal')}",
         )
 
-        # Neural predictions
-        if prediction_result.get('predictions'):
+        if prediction_result.get("predictions"):
             self.smart_bus.set(
-                'liquidity_prediction',
+                "liquidity_prediction",
                 {
-                    'predictions': prediction_result['predictions'],
-                    'confidence': prediction_result.get('confidence', 0.0),
-                    'horizon': self.config.prediction_horizon,
-                    'timestamp': time.time()
+                    "predictions": prediction_result["predictions"],
+                    "confidence": prediction_result.get("confidence", 0.0),
+                    "horizon": self._cfg.prediction_horizon,
+                    "timestamp": time.time(),
                 },
-                module='LiquidityHeatmapLayer',
-                thesis=f"Liquidity prediction with {prediction_result.get('confidence', 0.0):.1%} confidence"
+                module="LiquidityHeatmapLayer",
+                thesis=f"Liquidity prediction with {prediction_result.get('confidence', 0.0):.1%} confidence",
+            )
+        else:
+            self.smart_bus.set(
+                "liquidity_prediction",
+                {"predictions": {}, "confidence": 0.0, "horizon": self._cfg.prediction_horizon, "timestamp": time.time()},
+                module="LiquidityHeatmapLayer",
+                thesis="Liquidity prediction unavailable (insufficient data / circuit breaker).",
             )
 
-        # Sessions (NEW)
         if sessions_map is not None:
-            self.smart_bus.set(
-                'trading_sessions',
-                sessions_map,
-                module='LiquidityHeatmapLayer',
-                thesis=f"Active session: {sessions_map.get('active', 'unknown')}"
-            )
+            self.smart_bus.set("trading_sessions", sessions_map, module="LiquidityHeatmapLayer", thesis=f"Active session: {sessions_map.get('active', 'unknown')}")
         if session_meta is not None:
-            self.smart_bus.set(
-                'session_data',
-                session_meta,
-                module='LiquidityHeatmapLayer',
-                thesis=f"Session metadata: {session_meta.get('active_session', 'unknown')}"
-            )
+            self.smart_bus.set("session_data", session_meta, module="LiquidityHeatmapLayer", thesis=f"Session metadata: {session_meta.get('active_session', 'unknown')}")
 
-        # Optional: store the thesis for explainability dashboards
-        self.smart_bus.set(
-            'liquidity_thesis',
-            thesis,
-            module='LiquidityHeatmapLayer',
-            thesis="LiquidityHeatmapLayer analysis thesis"
-        )
+        self.smart_bus.set("liquidity_thesis", thesis, module="LiquidityHeatmapLayer", thesis="LiquidityHeatmapLayer analysis thesis")
 
+    # ── Circuit breaker & error flow ───────────────────────────────────
     def _check_neural_circuit_breaker(self) -> bool:
-        """Check neural circuit breaker state"""
-        
-        if self.neural_circuit_breaker['state'] == 'OPEN':
-            if time.time() - self.neural_circuit_breaker['last_failure'] > 120:  # 2 minutes recovery
-                self.neural_circuit_breaker['state'] = 'HALF_OPEN'
+        if self.neural_circuit_breaker["state"] == "OPEN":
+            if time.time() - self.neural_circuit_breaker["last_failure"] > 120:
+                self.neural_circuit_breaker["state"] = "HALF_OPEN"
                 return True
             return False
-        
         return True
-    
+
     def _record_liquidity_success(self, processing_time: float):
-        """Record successful liquidity operation"""
-        
-        if self.neural_circuit_breaker['state'] == 'HALF_OPEN':
-            self.neural_circuit_breaker['state'] = 'CLOSED'
-            self.neural_circuit_breaker['failures'] = 0
-        
-        # Update health metrics
-        self.liquidity_health['model_health_score'] = min(100.0, self.liquidity_health['model_health_score'] + 1)
-        self.liquidity_health['last_update'] = time.time()
-        
-        # Performance tracking
-        self.performance_tracker.record_metric(
-            'LiquidityHeatmapLayer',
-            'liquidity_analysis',
-            processing_time * 1000,
-            True
-        )
-    
+        if self.neural_circuit_breaker["state"] == "HALF_OPEN":
+            self.neural_circuit_breaker["state"] = "CLOSED"
+            self.neural_circuit_breaker["failures"] = 0
+        self.liquidity_health["model_health_score"] = min(100.0, self.liquidity_health["model_health_score"] + 1)
+        self.liquidity_health["last_update"] = time.time()
+        self.performance_tracker.record_metric("LiquidityHeatmapLayer", "liquidity_analysis", processing_time * 1000, True)
+
     async def _handle_liquidity_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
-        """Handle liquidity processing errors"""
-        
         processing_time = time.time() - start_time
-        
-        # Record failure
         self._record_liquidity_failure(error)
-        
-        # Error analysis
         error_context = self.error_pinpointer.analyze_error(error, "LiquidityHeatmapLayer")
-        
         self.logger.error(
-            format_operator_message(
-                "💧[CRASH]", "LIQUIDITY_ANALYSIS_ERROR",
-                details=str(error),
-                context="liquidity_processing"
-            )
+            format_operator_message("💧[CRASH]", "LIQUIDITY_ANALYSIS_ERROR", details=str(error), context="liquidity_processing")
         )
-        
-        # Generate fallback response
         return self._create_liquidity_fallback_response(f"Liquidity analysis failed: {str(error)}")
-    
+
     def _record_liquidity_failure(self, error: Exception):
-        """Record liquidity failure for circuit breaker"""
-        
-        self.neural_circuit_breaker['failures'] += 1
-        self.neural_circuit_breaker['last_failure'] = time.time()
-        
-        if self.neural_circuit_breaker['failures'] >= self.neural_circuit_breaker['threshold']:
-            self.neural_circuit_breaker['state'] = 'OPEN'
-            
+        self.neural_circuit_breaker["failures"] += 1
+        self.neural_circuit_breaker["last_failure"] = time.time()
+        if self.neural_circuit_breaker["failures"] >= self.neural_circuit_breaker["threshold"]:
+            self.neural_circuit_breaker["state"] = "OPEN"
             self.logger.error(
                 format_operator_message(
-                    "💧[ALERT]", "LIQUIDITY_CIRCUIT_BREAKER_OPEN",
+                    "💧[ALERT]",
+                    "LIQUIDITY_CIRCUIT_BREAKER_OPEN",
                     details=f"Too many liquidity failures ({self.neural_circuit_breaker['failures']})",
-                    context="liquidity_circuit_breaker"
+                    context="liquidity_circuit_breaker",
                 )
             )
-        
-        # Update health metrics
-        self.liquidity_health['model_health_score'] = max(0.0, self.liquidity_health['model_health_score'] - 10)
-    
+        self.liquidity_health["model_health_score"] = max(0.0, self.liquidity_health["model_health_score"] - 10)
+
     def _create_liquidity_fallback_response(self, reason: str) -> Dict[str, Any]:
-        """Create fallback response for liquidity failures"""
-        
+        """Create fallback response (keeps exposes aligned with provides)."""
         return {
-            'success': False,
-            'reason': reason,
-            'liquidity_score': self.current_liquidity_score,
-            'market_depth': {'status': 'fallback', 'current_depth': self.current_depth},
-            'spread_analysis': {'status': 'fallback', 'current_spread': self.current_spread},
-            'predictions': {'status': 'unavailable'},
-            'thesis': f"Liquidity analysis unavailable: {reason}. Using last known values.",
-            'processing_time_ms': 0.0
+            "success": False,
+            "reason": reason,
+            "liquidity_score": float(self.current_liquidity_score),
+            "market_depth": {"current_depth": float(self.current_depth), "analysis": {"status": "fallback"}, "condition": "unknown"},
+            "spread_analysis": {"current_spread": float(self.current_spread), "analysis": {"status": "fallback"}, "condition": "unknown"},
+            "liquidity_prediction": {"predictions": {}, "confidence": 0.0, "horizon_steps": self._cfg.prediction_horizon, "status": "unavailable"},
+            "thesis": f"Liquidity analysis unavailable: {reason}. Using last known values.",
+            "processing_time_ms": 0.0,
         }
-    
+
+    # ── Monitoring ─────────────────────────────────────────────────────
     async def _liquidity_monitoring_loop(self):
-        """Background liquidity monitoring"""
-        
         while True:
             try:
-                await asyncio.sleep(30)  # Check every 30 seconds
-                
-                # Update health metrics
+                await asyncio.sleep(30)
                 self._update_liquidity_health()
-                
-                # Check for anomalies
                 self._check_liquidity_anomalies()
-                
             except Exception as e:
                 self.logger.error(f"Liquidity monitoring error: {e}")
-    
+
     def _update_liquidity_health(self):
-        """Update liquidity health metrics"""
-        
-        # Data quality assessment
-        data_freshness = time.time() - self.liquidity_health['last_update']
-        if data_freshness < 60:  # Fresh data
-            self.liquidity_health['data_quality_score'] = min(100.0, self.liquidity_health['data_quality_score'] + 1)
-        elif data_freshness > 300:  # Stale data
-            self.liquidity_health['data_quality_score'] = max(0.0, self.liquidity_health['data_quality_score'] - 2)
-        
-        # Model health based on circuit breaker state
-        if self.neural_circuit_breaker['state'] == 'CLOSED':
-            self.liquidity_health['model_health_score'] = min(100.0, self.liquidity_health['model_health_score'] + 0.5)
-        elif self.neural_circuit_breaker['state'] == 'OPEN':
-            self.liquidity_health['model_health_score'] = max(0.0, self.liquidity_health['model_health_score'] - 5)
-    
+        data_freshness = time.time() - self.liquidity_health["last_update"]
+        if data_freshness < 60:
+            self.liquidity_health["data_quality_score"] = min(100.0, self.liquidity_health["data_quality_score"] + 1)
+        elif data_freshness > 300:
+            self.liquidity_health["data_quality_score"] = max(0.0, self.liquidity_health["data_quality_score"] - 2)
+
+        if self.neural_circuit_breaker["state"] == "CLOSED":
+            self.liquidity_health["model_health_score"] = min(100.0, self.liquidity_health["model_health_score"] + 0.5)
+        elif self.neural_circuit_breaker["state"] == "OPEN":
+            self.liquidity_health["model_health_score"] = max(0.0, self.liquidity_health["model_health_score"] - 5)
+
     def _check_liquidity_anomalies(self):
-        """Check for liquidity anomalies"""
-        
-        anomalies = []
-        
-        # Check for extreme spread conditions
-        if self.current_spread > 0.01:  # Very wide spread
+        anomalies: List[str] = []
+        if self.current_spread > 0.01:
             anomalies.append("Extremely wide spread detected")
-        
-        # Check for very low depth
         if self.current_depth < 1000:
             anomalies.append("Very low market depth")
-        
-        # Check for circuit breaker
-        if self.neural_circuit_breaker['state'] == 'OPEN':
+        if self.neural_circuit_breaker["state"] == "OPEN":
             anomalies.append("Neural circuit breaker is open")
-        
-        # Log anomalies
         if anomalies:
             self.logger.warning(
-                format_operator_message(
-                    "💧[WARN]", "LIQUIDITY_ANOMALIES",
-                    details=f"{len(anomalies)} anomalies detected",
-                    context="liquidity_monitoring"
-                )
+                format_operator_message("💧[WARN]", "LIQUIDITY_ANOMALIES", details=f"{len(anomalies)} anomalies detected", context="liquidity_monitoring")
             )
-    
+
+    # ── State I/O ──────────────────────────────────────────────────────
     def get_state(self) -> Dict[str, Any]:
-        """Get complete module state"""
-        
-        base_state = super().get_state()
-        
-        liquidity_state = {
-            'config': {
-                'lstm_units': self.config.lstm_units,
-                'sequence_length': self.config.sequence_length,
-                'device': str(self.device)
+        base = super().get_state()
+        liq = {
+            "config": {"lstm_units": self._cfg.lstm_units, "sequence_length": self._cfg.sequence_length, "device": str(self.device)},
+            "liquidity_data": {
+                "current_liquidity_score": self.current_liquidity_score,
+                "current_spread": self.current_spread,
+                "current_depth": self.current_depth,
+                "sequence_data": [list(np.array(seq, dtype=float)) for seq in self.sequence_data],
+                "price_history": list(map(float, self.price_history)),
+                "spread_history": list(map(float, self.spread_history)),
+                "depth_history": list(map(float, self.depth_history)),
             },
-            'liquidity_data': {
-                'current_liquidity_score': self.current_liquidity_score,
-                'current_spread': self.current_spread,
-                'current_depth': self.current_depth,
-                'sequence_data': [list(seq) for seq in self.sequence_data],
-                'price_history': list(self.price_history),
-                'spread_history': list(self.spread_history),
-                'depth_history': list(self.depth_history)
-            },
-            'statistics': self.liquidity_stats,
-            'health_metrics': self.liquidity_health,
-            'circuit_breaker': self.neural_circuit_breaker
+            "statistics": self.liquidity_stats,
+            "health_metrics": self.liquidity_health,
+            "circuit_breaker": self.neural_circuit_breaker,
         }
-        
-        return {**base_state, **liquidity_state}
-    
+        return {**base, **liq}
+
     def set_state(self, state: Dict[str, Any]):
-        """Restore module state"""
-        
         super().set_state(state)
-        
-        # Restore liquidity data
-        if 'liquidity_data' in state:
-            data = state['liquidity_data']
-            self.current_liquidity_score = data.get('current_liquidity_score', 0.5)
-            self.current_spread = data.get('current_spread', 0.0)
-            self.current_depth = data.get('current_depth', 0.0)
-            
-            # Restore deques
-            if 'sequence_data' in data:
-                self.sequence_data = deque(
-                    [np.array(seq) for seq in data['sequence_data']], 
-                    maxlen=self.config.sequence_length
-                )
-            
-            if 'price_history' in data:
-                self.price_history = deque(data['price_history'], maxlen=500)
-            
-            if 'spread_history' in data:
-                self.spread_history = deque(data['spread_history'], maxlen=200)
-            
-            if 'depth_history' in data:
-                self.depth_history = deque(data['depth_history'], maxlen=200)
-        
-        # Restore statistics and health
-        if 'statistics' in state:
-            self.liquidity_stats.update(state['statistics'])
-        
-        if 'health_metrics' in state:
-            self.liquidity_health.update(state['health_metrics'])
-        
-        if 'circuit_breaker' in state:
-            self.neural_circuit_breaker.update(state['circuit_breaker'])
-    
+        if "liquidity_data" in state:
+            data = state["liquidity_data"]
+            self.current_liquidity_score = float(data.get("current_liquidity_score", 0.5))
+            self.current_spread = float(data.get("current_spread", 0.0))
+            self.current_depth = float(data.get("current_depth", 0.0))
+            if "sequence_data" in data:
+                self.sequence_data = deque([np.array(seq, dtype=np.float32) for seq in data["sequence_data"]], maxlen=self._cfg.sequence_length)
+            if "price_history" in data:
+                self.price_history = deque([float(x) for x in data["price_history"]], maxlen=500)
+            if "spread_history" in data:
+                self.spread_history = deque([float(x) for x in data["spread_history"]], maxlen=200)
+            if "depth_history" in data:
+                self.depth_history = deque([float(x) for x in data["depth_history"]], maxlen=200)
+
+        if "statistics" in state:
+            self.liquidity_stats.update(state["statistics"])
+        if "health_metrics" in state:
+            self.liquidity_health.update(state["health_metrics"])
+        if "circuit_breaker" in state:
+            self.neural_circuit_breaker.update(state["circuit_breaker"])
+
+    def _start_monitoring(self) -> None:
+        """Start the background monitoring loop (idempotent, safe if no event loop yet)."""
+        # If a task exists and is still running, do nothing
+        existing_task = getattr(self, "_monitor_task", None)
+        if isinstance(existing_task, asyncio.Task) and not existing_task.done():
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop (e.g., constructed in sync context); we’ll try again later
+            self._monitor_task = None
+            self.logger.debug("No running asyncio loop; deferring liquidity monitoring start.")
+            return
+
+        # (Re)start the monitoring task
+        self._monitor_task = loop.create_task(self._liquidity_monitoring_loop())
+
+
+    # ── Health & Reports ───────────────────────────────────────────────
     def get_health_status(self) -> Dict[str, Any]:
-        """Get comprehensive liquidity health status"""
-        
         return {
-            'model_health_score': self.liquidity_health['model_health_score'],
-            'data_quality_score': self.liquidity_health['data_quality_score'],
-            'neural_circuit_breaker_state': self.neural_circuit_breaker['state'],
-            'liquidity_statistics': self.liquidity_stats,
-            'current_liquidity_score': self.current_liquidity_score,
-            'device': str(self.device),
-            'sequence_data_length': len(self.sequence_data)
+            "model_health_score": self.liquidity_health["model_health_score"],
+            "data_quality_score": self.liquidity_health["data_quality_score"],
+            "neural_circuit_breaker_state": self.neural_circuit_breaker["state"],
+            "liquidity_statistics": self.liquidity_stats,
+            "current_liquidity_score": self.current_liquidity_score,
+            "device": str(self.device),
+            "sequence_data_length": len(self.sequence_data),
         }
-    
+
     def get_liquidity_performance_report(self) -> str:
-        """Get comprehensive liquidity performance report"""
-        
         try:
             return self.english_explainer.explain_performance(
                 module_name="LiquidityHeatmapLayer",
                 metrics={
-                    'neural_forward_passes': self.liquidity_stats['neural_forward_passes'],
-                    'prediction_accuracy': self.liquidity_stats['avg_prediction_accuracy'],
-                    'model_health_score': self.liquidity_health['model_health_score'],
-                    'data_quality_score': self.liquidity_health['data_quality_score'],
-                    'current_liquidity_score': self.current_liquidity_score,
-                    'circuit_breaker_state': self.neural_circuit_breaker['state']
-                }
+                    "neural_forward_passes": self.liquidity_stats["neural_forward_passes"],
+                    "prediction_accuracy": self.liquidity_stats["avg_prediction_accuracy"],
+                    "model_health_score": self.liquidity_health["model_health_score"],
+                    "data_quality_score": self.liquidity_health["data_quality_score"],
+                    "current_liquidity_score": self.current_liquidity_score,
+                    "circuit_breaker_state": self.neural_circuit_breaker["state"],
+                },
             )
         except Exception as e:
             return f"Liquidity performance report generation failed: {str(e)}"
-    
+
+    # ── Actions & Confidence ───────────────────────────────────────────
     async def propose_action(self, **inputs) -> Dict[str, Any]:
-        """Propose liquidity-based action recommendations"""
+        """Propose liquidity-based action recommendations."""
         try:
-            # Get current liquidity analysis
-            liquidity_score = self.current_liquidity_score
-            prediction_accuracy = self.liquidity_stats['avg_prediction_accuracy']
-            
-            # Determine action based on liquidity conditions
-            if liquidity_score > self.config.high_liquidity_threshold:
+            liquidity_score = float(self.current_liquidity_score)
+            prediction_accuracy = float(self.liquidity_stats["avg_prediction_accuracy"])  # 0..1
+
+            if liquidity_score > self._cfg.high_liquidity_threshold:
                 if prediction_accuracy > 0.8:
-                    action = 'aggressive_trade'
-                    rationale = 'High liquidity with strong prediction accuracy - favorable for aggressive trading'
+                    action, rationale, risk = "aggressive_trade", "High liquidity with strong prediction accuracy - favorable for aggressive trading", "low"
                 else:
-                    action = 'moderate_trade'
-                    rationale = 'High liquidity but lower prediction accuracy - proceed with moderate trading'
-                risk_level = 'low'
-                
-            elif liquidity_score < self.config.low_liquidity_threshold:
-                action = 'reduce_size'
-                rationale = 'Low liquidity detected - reduce position sizes to minimize market impact'
-                risk_level = 'high'
-                
-            else:  # Medium liquidity
+                    action, rationale, risk = "moderate_trade", "High liquidity but lower prediction accuracy - proceed with moderate trading", "low"
+            elif liquidity_score < self._cfg.low_liquidity_threshold:
+                action, rationale, risk = "reduce_size", "Low liquidity detected - reduce position sizes to minimize market impact", "high"
+            else:
                 if prediction_accuracy > 0.7:
-                    action = 'normal_trade'
-                    rationale = 'Medium liquidity with good prediction accuracy - normal trading conditions'
+                    action, rationale, risk = "normal_trade", "Medium liquidity with good prediction accuracy - normal trading conditions", "medium"
                 else:
-                    action = 'cautious_trade'
-                    rationale = 'Medium liquidity with lower prediction accuracy - trade cautiously'
-                risk_level = 'medium'
-            
-            # Calculate liquidity confidence
-            liquidity_confidence = min(1.0, (liquidity_score + prediction_accuracy) / 2.0)
-            
+                    action, rationale, risk = "cautious_trade", "Medium liquidity with lower prediction accuracy - trade cautiously", "medium"
+
+            liquidity_confidence = float(np.clip((liquidity_score + prediction_accuracy) / 2.0, 0.0, 1.0))
             return {
-                'action': action,
-                'liquidity_confidence': liquidity_confidence,
-                'rationale': rationale,
-                'risk_level': risk_level,
-                'current_liquidity_score': liquidity_score,
-                'prediction_accuracy': prediction_accuracy,
-                'neural_health': self.liquidity_health['model_health_score']
+                "action": action,
+                "liquidity_confidence": liquidity_confidence,
+                "rationale": rationale,
+                "risk_level": risk,
+                "current_liquidity_score": liquidity_score,
+                "prediction_accuracy": prediction_accuracy,
+                "neural_health": float(self.liquidity_health["model_health_score"]),
             }
-            
         except Exception as e:
             self.logger.error(f"Error in propose_action: {e}")
-            return {
-                'action': 'hold',
-                'liquidity_confidence': 0.5,
-                'rationale': f'Error in liquidity analysis: {str(e)}',
-                'risk_level': 'medium'
-            }
-    
+            return {"action": "hold", "liquidity_confidence": 0.5, "rationale": f"Error in liquidity analysis: {str(e)}", "risk_level": "medium"}
+
     async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
-        """Calculate confidence in the proposed action"""
+        """Calculate confidence in the proposed action."""
         try:
-            # Core confidence factors
-            liquidity_score = self.current_liquidity_score
-            prediction_accuracy = self.liquidity_stats['avg_prediction_accuracy']
-            model_health = self.liquidity_health['model_health_score']
-            data_quality = self.liquidity_health['data_quality_score']
-            
-            # Neural network confidence
-            neural_confidence = 1.0 if self.neural_circuit_breaker['state'] == 'CLOSED' else 0.3
-            
-            # Data freshness (how recent is our liquidity data)
-            last_pred_time = getattr(self, 'last_prediction_time', None)
+            liquidity_score = float(self.current_liquidity_score)
+            prediction_accuracy = float(self.liquidity_stats["avg_prediction_accuracy"])  # 0..1
+            model_health = float(self.liquidity_health["model_health_score"]) / 100.0
+            data_quality = float(self.liquidity_health["data_quality_score"]) / 100.0
+            neural_confidence = 1.0 if self.neural_circuit_breaker["state"] == "CLOSED" else (0.5 if self.neural_circuit_breaker["state"] == "HALF_OPEN" else 0.3)
+
+            last_pred_time = getattr(self, "last_prediction_time", None)
             if last_pred_time:
-                time_since_prediction = time.time() - last_pred_time
-                freshness = max(0.0, 1.0 - time_since_prediction / 300.0)  # 5 minute decay
+                freshness = max(0.0, 1.0 - (time.time() - last_pred_time) / 300.0)  # 5-min decay
             else:
                 freshness = 0.5
-            
-            # Combine confidence factors
+
+            # Weighted blend (all in 0..1)
             confidence = (
-                liquidity_score * 0.3 +           # Current liquidity conditions
-                prediction_accuracy * 0.25 +      # Model prediction accuracy
-                model_health * 0.2 +              # Neural network health
-                data_quality * 0.15 +             # Input data quality
-                neural_confidence * 0.05 +        # Circuit breaker state
-                freshness * 0.05                  # Data freshness
+                liquidity_score * 0.30
+                + prediction_accuracy * 0.25
+                + model_health * 0.20
+                + data_quality * 0.15
+                + neural_confidence * 0.05
+                + freshness * 0.05
             )
-            
+
             # Action-specific adjustments
-            action_type = action.get('action', 'hold')
-            if action_type == 'aggressive_trade' and liquidity_score < 0.8:
-                confidence *= 0.7  # Less confident in aggressive trades without high liquidity
-            elif action_type == 'reduce_size' and liquidity_score < 0.3:
-                confidence *= 1.2  # More confident in size reduction during low liquidity
-            elif action_type == 'hold' and prediction_accuracy < 0.5:
-                confidence *= 1.1  # More confident in holding when predictions are uncertain
-            
-            return float(max(0.0, min(1.0, confidence)))
-            
+            a = action.get("action", "hold")
+            if a == "aggressive_trade" and liquidity_score < 0.8:
+                confidence *= 0.7
+            elif a == "reduce_size" and liquidity_score < 0.3:
+                confidence *= 1.2
+            elif a == "hold" and prediction_accuracy < 0.5:
+                confidence *= 1.1
+
+            return float(np.clip(confidence, 0.0, 1.0))
         except Exception as e:
             self.logger.error(f"Error calculating confidence: {e}")
             return 0.5

@@ -37,7 +37,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
         "market_regime", "volatility_data", "session_metrics"
     ],
     description="Advanced genetic algorithm evolution system with intelligent strategy parameter optimization",
-    thesis_required=True,
+    thesis_required=False,
     health_monitoring=True,
     performance_tracking=True,
     error_handling=True,

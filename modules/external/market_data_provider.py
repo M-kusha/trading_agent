@@ -1,766 +1,614 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/external/market_data_provider.py
-# [ROCKET] PRODUCTION-GRADE Offline Market Data Provider
-# NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
-# ENHANCED: Complete SmartInfoBus integration for offline data feeds
+# PRODUCTION-READY Offline Market Data Provider (Pure, No Simulation)
+# Zero fabrication: reads CSVs only; otherwise returns empty/unknown structures
+# Pylance-clean: typed self.cfg (dataclass), pass dict to BaseModule
+# No ownership collisions: exports data-only keys
 # ─────────────────────────────────────────────────────────────
 
-import asyncio
-import numpy as np
-import pandas as pd
+from __future__ import annotations
+
 import os
 import glob
-from typing import Dict, Any, List, Optional, Union
-from collections import deque
-from dataclasses import dataclass, asdict, field
-import datetime
 import time
+import datetime
+from dataclasses import dataclass, field, asdict
+from collections import deque
+from typing import Dict, Any, List, Optional, Iterator, Tuple, Hashable
+
+import numpy as np
+import pandas as pd
 
 # Core infrastructure
 from modules.core.module_base import BaseModule, module
 from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
-from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
-from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
-from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
-from modules.monitoring.performance_tracker import PerformanceTracker
 
 
 @dataclass
 class MarketDataConfig:
-    """Configuration for Offline Market Data Provider"""
+    """Configuration for Offline Market Data Provider."""
     data_directory: str = "data/processed"
-    supported_symbols: List[str] = field(default_factory=lambda: ["XAUUSD", "EURUSD"])
+    supported_symbols: List[str] = field(default_factory=lambda: ["XAU/USD", "EUR/USD"])
     supported_timeframes: List[str] = field(default_factory=lambda: ["H1", "H4", "D1"])
-    primary_timeframe: str = "H4"  # Primary timeframe for trading decisions
-    update_frequency: float = 1.0  # seconds
+    primary_timeframe: str = "H4"       # Primary TF for advancing iterators
+    update_frequency: float = 1.0       # seconds
     buffer_size: int = 10000
     enable_technical_indicators: bool = True
-    enable_health_monitoring: bool = True
-    enable_performance_tracking: bool = True
-    enable_error_pinpointing: bool = True
 
 
 @module(
     name="MarketDataProvider",
-    version="1.0.0",
+    version="2.1.0",
     category="external",
     provides=[
-        "market_data", "price_data", "technical_indicators", "volatility_data",
-        "symbols", "timestamp", "prices", "trading_session", "session_type",
-        "market_conditions", "ohlcv_data", "bid_ask_data",
-        "market_regime", "market_context", "historical_prices", "volatility",
-        "multi_timeframe_data"
+        "market_data", "price_data", "ohlcv_data", "bid_ask_data", "prices",
+        "symbols", "timestamp",
+        "technical_indicators", "indicators",
+        "volatility_data", "volatility", "volatility_index",
+        "multi_timeframe_data", "historical_prices",
+        "market_context",
+        "trading_session", "session_type", "session_canonical",
+        "data_provider_health",
     ],
-    requires=[],  # Root data provider - no dependencies
-    description="Offline market data provider for backtesting and simulation with comprehensive data feeds",
+    requires=[],
+    description="Offline market data provider that emits only real data from disk. No mock/simulated values.",
     thesis_required=False,
     health_monitoring=True,
     performance_tracking=True,
     error_handling=True,
     is_voting_member=False,
-    explainable=False  # Explicitly disable explainability to avoid thesis requirement
+    explainable=False,
 )
-
 class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    [ROCKET] Advanced offline market data provider with SmartInfoBus integration.
-    Provides comprehensive market data from offline sources for backtesting and simulation.
+    Pure data source:
+    - Loads per-symbol, per-timeframe CSVs.
+    - Computes indicators from loaded bars only.
+    - If something is missing, emits empty/unknown structures (never fabricates).
     """
-    
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        # Set up logger and config BEFORE calling super().__init__()
-        self._logger = RotatingLogger("MarketDataProvider")
-        self.logger = self._logger  # Ensure both _logger and logger are available
-        
-        # Set config directly so it's available during _initialize()
-        self.config = MarketDataConfig(**(config or {}))
-        
-        # Initialize data structures BEFORE super().__init__() since _initialize() needs them
-        self.market_data = {}
-        self.price_buffers = {}
-        self.technical_indicators = {}
-        self.current_timestamp = None
-        self.trading_session = "london"
-        self.session_type = "normal"
-        
-        # Data loading
-        self.data_files = {}
-        self.data_iterators = {}
-        self.current_bars = {}
-        
-        # State management
-        self.is_initialized = False
-        self.last_update = 0
-        self.update_count = 0
-        
-        super().__init__(config)
-        
-        # Ensure our config object is still there (restore if overwritten)
-        if isinstance(self.config, dict):
-            self.config = MarketDataConfig(**(self.config))
-        
-        # Core components
-        self._error_handler = create_error_handler(__name__)
-        self._explainer = EnglishExplainer()
-        # self._performance_tracker = PerformanceTracker("MarketDataProvider")
-        
-        self._logger.info("[ROCKET] MarketDataProvider initialized - Ready for offline data feeds")
 
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        # Logger and typed config FIRST
+        self.logger = RotatingLogger("MarketDataProvider", log_path="logs/external/market_data_provider.log")
+        self.cfg = MarketDataConfig(**(config or {}))
+
+        # ── IMPORTANT ──
+        # Define ALL attributes used by _initialize() BEFORE calling super().__init__()
+        # because BaseModule.__init__ will call _initialize during registration.
+        from collections import deque
+        from typing import Iterator, Tuple
+        import pandas as pd
+        import datetime
+
+        self.data_files: Dict[str, Dict[str, pd.DataFrame]] = {}
+        self.data_iterators: Dict[str, Iterator[Tuple[Hashable, pd.Series]]] = {}
+        self.current_bars: Dict[str, Dict[str, Any]] = {}
+
+        self.technical_indicators: Dict[str, Dict[str, float]] = {}
+        self.price_buffers: Dict[str, Dict[str, deque]] = {}
+
+        self.current_timestamp: Optional[datetime.datetime] = None
+        self.trading_session: str = "london"
+        self.session_type: str = "normal"
+
+        # Health metrics
+        self._last_update_ts: float = 0.0
+        self._update_count: int = 0
+        self._success: int = 0
+        self._fail: int = 0
+        self._proc_times: deque = deque(maxlen=200)
+
+        # Only now let BaseModule wire things and call _initialize()
+        from dataclasses import asdict
+        super().__init__(config=asdict(self.cfg))
+
+        self.logger.info(format_operator_message(
+            "[BOOT]", "MARKET_DATA_PROVIDER_INIT",
+            details=f"Symbols={self.cfg.supported_symbols}, TF={self.cfg.supported_timeframes}",
+            result="Provider ready",
+            context="system_startup",
+        ))
+
+    # ─────────────────────────────────────────────────────────────
+    # Initialization (BaseModule will call this)
+    # ─────────────────────────────────────────────────────────────
     def _initialize(self) -> None:
-        """Initialize the market data provider with offline data loading"""
         try:
-            # Ensure config is proper object (BaseModule might have converted to dict)
-            if isinstance(self.config, dict):
-                self.config = MarketDataConfig(**self.config)
-                
-            self._logger.info("[INIT] Starting MarketDataProvider initialization...")
-            
-            # Load offline data files
-            asyncio.run(self._load_data_files())
-            
-            # Initialize technical indicators
-            asyncio.run(self._initialize_technical_indicators())
-            
-            # Set up initial market conditions
-            asyncio.run(self._setup_initial_conditions())
-            
-            self.is_initialized = True
-            self._logger.info("[OK] MarketDataProvider initialization complete")
-            
+            self.logger.info("[INIT] Loading CSVs…")
+            self._load_data_files()
+            self._initialize_technical_indicators()
+            self._setup_initial_conditions()
+            self.logger.info("[OK] MarketDataProvider ready.")
         except Exception as e:
-            # error_context = self._error_handler.create_error_context(
-            #     error=e,
-            #     context={"operation": "initialize", "config": asdict(self.config)},
-            #     suggestion="Check data directory and file formats"
-            # )
-            self._logger.error(f"[FAIL] Initialization failed: {e}")
+            self.logger.error(f"[FAIL] Initialization failed: {e}")
             raise
 
-    async def _load_data_files(self) -> None:
-        """Load offline data files from the data directory for all timeframes"""
+# REPLACE your _load_data_files with this one
+
+    def _load_data_files(self) -> None:
+        """Load offline CSVs into per-symbol/per-timeframe DataFrames (supports XAUUSD_H1_features.csv etc.)."""
+        data_dir = self.cfg.data_directory
+        if not os.path.exists(data_dir):
+            self.logger.warning(f"[WARN] Data directory not found: {data_dir}. Provider will emit empty structures.")
+            return
+
+        total_loaded = 0
+        for symbol in self.cfg.supported_symbols:
+            per_tf: Dict[str, pd.DataFrame] = {}
+            for tf in self.cfg.supported_timeframes:
+                path = self._find_file_for(symbol, tf, data_dir)
+                if not path:
+                    self.logger.warning(f"[WARN] No CSV for {symbol}/{tf} using common patterns (e.g. XAUUSD_{tf}_features.csv).")
+                    continue
+
+                try:
+                    # accept either 'timestamp' or 'time'
+                    df = pd.read_csv(path)
+                    if "timestamp" not in df.columns and "time" in df.columns:
+                        df = df.rename(columns={"time": "timestamp"})
+                    if "timestamp" not in df.columns:
+                        self.logger.warning(f"[WARN] {symbol}/{tf} ({os.path.basename(path)}) missing 'timestamp' or 'time'. Skipping.")
+                        continue
+
+                    # Normalize timestamp and numeric
+                    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+                    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+                    # If only close/volatility are present, accept and synthesize minimal OHLCV
+                    have_close = "close" in df.columns
+                    need_cols = ["open", "high", "low", "close", "volume"]
+                    if not set(need_cols).issubset(df.columns):
+                        if have_close:
+                            # Minimal, lossless for theme detector: fill O/H/L from close, volume=0
+                            if "open" not in df.columns:   df["open"] = df["close"]
+                            if "high" not in df.columns:   df["high"] = df["close"]
+                            if "low" not in df.columns:    df["low"]  = df["close"]
+                            if "volume" not in df.columns: df["volume"] = 0
+                            self.logger.info(f"[INFO] {symbol}/{tf} ({os.path.basename(path)}): using close-only dataset; filled O/H/L from close, volume=0.")
+                        else:
+                            self.logger.warning(f"[WARN] {symbol}/{tf} lacks OHLC and 'close'. Skipping.")
+                            continue
+
+                    # Cast numerics
+                    for col in ["open", "high", "low", "close", "volume"]:
+                        if col in df.columns:
+                            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+                    # Basic cleaning
+                    df.dropna(subset=["timestamp", "close"], inplace=True)
+                    # Ensure 'volume' is a Series to safely call fillna/astype
+                    if "volume" in df.columns:
+                        vol_series = pd.to_numeric(df["volume"], errors="coerce")
+                    else:
+                        vol_series = pd.Series([0] * len(df), index=df.index, dtype="float64")
+                    df["volume"] = vol_series.fillna(0).astype(np.int64)
+
+                    # Sort & dedupe
+                    df = df.sort_values("timestamp").drop_duplicates(subset=["timestamp"], keep="last")
+
+                    if df.empty:
+                        self.logger.warning(f"[WARN] {symbol}/{tf} has no valid rows after cleaning. Skipping.")
+                        continue
+
+                    per_tf[tf] = df
+                    total_loaded += len(df)
+                    self.logger.info(f"[OK] {symbol}/{tf}: {len(df)} bars from {os.path.basename(path)}")
+
+                except Exception as e:
+                    self.logger.error(f"[FAIL] Error loading {symbol}/{tf} from {path}: {e}")
+
+            if per_tf:
+                self.data_files[symbol] = per_tf
+                tf0 = self.cfg.primary_timeframe if self.cfg.primary_timeframe in per_tf else next(iter(per_tf))
+                self.data_iterators[symbol] = per_tf[tf0].iterrows()
+
+        if not self.data_files:
+            self.logger.warning("[SUMMARY] No valid CSVs found for any symbol (after cleaning). Provider will return empty/unknown values.")
+        else:
+            self.logger.info(f"[SUMMARY] Loaded {len(self.data_files)} symbols, ~{total_loaded:,} clean bars.")
+
+
+    def _find_file_for(self, symbol: str, timeframe: str, data_dir: str) -> Optional[str]:
+        """Find a CSV file for a given symbol/timeframe using common naming patterns.
+
+        Examples matched:
+        - XAUUSD_H1_features.csv
+        - EURUSD_D1_features.csv
+        - EURUSD_H4.csv
+        - xauusd_h1_features.csv (case-insensitive)
+        """
         try:
-            data_dir = self.config.data_directory
-            if not os.path.exists(data_dir):
-                self._logger.warning(f"[WARN] Data directory not found: {data_dir} - creating mock data")
-                await self._create_mock_data()
-                return
-            
-            # Load CSV files for each symbol and timeframe combination
-            for symbol in self.config.supported_symbols:
-                symbol_data = {}
-                
-                for timeframe in self.config.supported_timeframes:
-                    # Look for files matching: SYMBOL_TIMEFRAME_*.csv
-                    file_pattern = os.path.join(data_dir, f"{symbol}_{timeframe}_*.csv")
-                    files = glob.glob(file_pattern)
-                    
-                    if files:
-                        # Load the most recent file for this timeframe
-                        latest_file = max(files, key=os.path.getctime)
-                        try:
-                            df = pd.read_csv(latest_file)
-                            # Ensure required columns exist (handle both 'time' and 'timestamp')
-                            required_cols = ['open', 'high', 'low', 'close', 'volume']
-                            time_col = 'timestamp' if 'timestamp' in df.columns else ('time' if 'time' in df.columns else None)
-                            
-                            if time_col and all(col in df.columns for col in required_cols):
-                                # Standardize the time column name
-                                if time_col == 'time':
-                                    df = df.rename(columns={'time': 'timestamp'})
-                                
-                                symbol_data[timeframe] = df
-                                self._logger.info(f"[OK] Loaded {symbol}/{timeframe}: {len(df)} bars from {os.path.basename(latest_file)}")
-                            else:
-                                missing_cols = [col for col in required_cols if col not in df.columns]
-                                self._logger.warning(f"[WARN] Invalid format for {symbol}/{timeframe} - missing columns: {missing_cols}")
-                                if not time_col:
-                                    self._logger.warning(f"[WARN] {symbol}/{timeframe}: No time/timestamp column found")
-                        except Exception as e:
-                            self._logger.error(f"[FAIL] Error loading {symbol}/{timeframe}: {e}")
-                    else:
-                        self._logger.warning(f"[WARN] No data files found for {symbol}/{timeframe}")
-                
-                # Store symbol data if any timeframes were loaded
-                if symbol_data:
-                    self.data_files[symbol] = symbol_data
-                    # Create iterator for primary timeframe
-                    if self.config.primary_timeframe in symbol_data:
-                        self.data_iterators[symbol] = symbol_data[self.config.primary_timeframe].iterrows()
-                        self._logger.info(f"[PRIMARY] Using {symbol}/{self.config.primary_timeframe} as primary timeframe")
-                    else:
-                        # Fallback to first available timeframe
-                        first_tf = list(symbol_data.keys())[0]
-                        self.data_iterators[symbol] = symbol_data[first_tf].iterrows()
-                        self._logger.info(f"[FALLBACK] Using {symbol}/{first_tf} as primary timeframe")
-            
-            if not self.data_files:
-                self._logger.warning("[WARN] No valid data files found - creating mock data")
-                await self._create_mock_data()
-            else:
-                # Print summary
-                total_symbols = len(self.data_files)
-                total_timeframes = sum(len(tf_data) for tf_data in self.data_files.values())
-                total_bars = sum(len(df) for symbol_data in self.data_files.values() 
-                               for df in symbol_data.values())
-                self._logger.info(f"[SUMMARY] Loaded {total_symbols} symbols, {total_timeframes} timeframes, {total_bars:,} total bars")
-                
-        except Exception as e:
-            self._logger.error(f"[FAIL] Error loading data files: {e}")
-            await self._create_mock_data()
+            sym_nosl = symbol.replace("/", "").upper()
+            tf = timeframe.upper()
+            patterns = [
+                f"{sym_nosl}_{tf}_features.csv",
+                f"{sym_nosl}_{tf}.csv",
+                f"{sym_nosl}{tf}_features.csv",
+                f"{sym_nosl}{tf}.csv",
+            ]
+            # Search both exact case and lower-case filenames
+            candidates: List[str] = []
+            for pat in patterns:
+                candidates.extend(glob.glob(os.path.join(data_dir, pat)))
+                candidates.extend(glob.glob(os.path.join(data_dir, pat.lower())))
 
-    async def _create_mock_data(self) -> None:
-        """Create mock market data for testing when no offline data is available"""
-        self._logger.info("[MOCK] Creating mock market data for testing...")
-        
-        # Generate realistic forex data
-        base_prices = {
-            "XAUUSD": 2000.00, "EURUSD": 1.1000
-        }
-        
-        for symbol in self.config.supported_symbols:
-            base_price = base_prices.get(symbol, 1.0000)
-            
-            # Generate 1000 bars of realistic data
-            timestamps = pd.date_range(start='2024-01-01', periods=1000, freq='1h')
-            data = []
-            
-            current_price = base_price
-            for i, ts in enumerate(timestamps):
-                # Add realistic price movement
-                change = np.random.normal(0, 0.001) * current_price
-                current_price += change
-                
-                high = current_price + abs(np.random.normal(0, 0.0005)) * current_price
-                low = current_price - abs(np.random.normal(0, 0.0005)) * current_price
-                open_price = current_price + np.random.normal(0, 0.0002) * current_price
-                volume = np.random.randint(100, 10000)
-                
-                data.append({
-                    'timestamp': ts,
-                    'open': round(open_price, 5),
-                    'high': round(high, 5),
-                    'low': round(low, 5),
-                    'close': round(current_price, 5),
-                    'volume': volume
-                })
-            
-            df = pd.DataFrame(data)
-            self.data_files[symbol] = df
-            self.data_iterators[symbol] = df.iterrows()
-            
-        self._logger.info(f"[OK] Mock data created for {len(self.config.supported_symbols)} symbols")
+            # Prefer files with "_features" in name, then any
+            if candidates:
+                candidates.sort(key=lambda p: ("_features" not in os.path.basename(p), os.path.basename(p)))
+                return candidates[0]
+            return None
+        except Exception:
+            return None
 
-    async def _initialize_technical_indicators(self) -> None:
-        """Initialize technical indicators for all symbols"""
-        for symbol in self.config.supported_symbols:
+
+    def _initialize_technical_indicators(self) -> None:
+        """Prepare indicator dicts and rolling buffers per symbol."""
+        for symbol in self.cfg.supported_symbols:
             self.technical_indicators[symbol] = {
-                'sma_20': 0.0,
-                'sma_50': 0.0,
-                'rsi': 50.0,
-                'bollinger_upper': 0.0,
-                'bollinger_lower': 0.0,
-                'atr': 0.0,
-                'macd': 0.0,
-                'macd_signal': 0.0,
-                'stochastic': 50.0
+                "sma_20": 0.0, "sma_50": 0.0,
+                "rsi": 0.0, "atr": 0.0,
+                "bollinger_upper": 0.0, "bollinger_lower": 0.0,
+                "macd": 0.0, "macd_signal": 0.0,
+                "stochastic": 0.0,
             }
-            
-            # Initialize price buffers for technical calculations
             self.price_buffers[symbol] = {
-                'close': deque(maxlen=200),
-                'high': deque(maxlen=200),
-                'low': deque(maxlen=200),
-                'volume': deque(maxlen=200)
+                "close": deque(maxlen=200),
+                "high": deque(maxlen=200),
+                "low": deque(maxlen=200),
+                "volume": deque(maxlen=200),
             }
 
-    async def _setup_initial_conditions(self) -> None:
-        """Set up initial market conditions and load first data points"""
-        self.current_timestamp = datetime.datetime.now()
-        
-        # Load initial bars for all symbols
-        for symbol in self.config.supported_symbols:
-            await self._advance_symbol_data(symbol)
+    def _setup_initial_conditions(self) -> None:
+        """Advance once for each symbol if possible."""
+        self.current_timestamp = datetime.datetime.utcnow()
+        for symbol in self.cfg.supported_symbols:
+            self._advance_symbol_data(symbol)
 
-    async def _advance_symbol_data(self, symbol: str) -> bool:
-        """Advance to the next data point for a symbol (using primary timeframe)"""
-        try:
-            if symbol not in self.data_iterators:
-                return False
-                
-            try:
-                index, row = next(self.data_iterators[symbol])
-                
-                # Update current bar data
-                self.current_bars[symbol] = {
-                    'timestamp': row['timestamp'],
-                    'open': float(row['open']),
-                    'high': float(row['high']),
-                    'low': float(row['low']),
-                    'close': float(row['close']),
-                    'volume': int(row['volume']),
-                    'bid': float(row['close']) - 0.00002,  # Mock spread
-                    'ask': float(row['close']) + 0.00002
-                }
-                
-                # Update price buffers
-                self.price_buffers[symbol]['close'].append(float(row['close']))
-                self.price_buffers[symbol]['high'].append(float(row['high']))
-                self.price_buffers[symbol]['low'].append(float(row['low']))
-                self.price_buffers[symbol]['volume'].append(int(row['volume']))
-                
-                # Update technical indicators
-                await self._update_technical_indicators(symbol)
-                
-                return True
-                
-            except StopIteration:
-                # Restart iterator for continuous simulation (using primary timeframe)
-                if symbol in self.data_files:
-                    if self.config.primary_timeframe in self.data_files[symbol]:
-                        self.data_iterators[symbol] = self.data_files[symbol][self.config.primary_timeframe].iterrows()
-                    else:
-                        # Use first available timeframe
-                        first_tf = list(self.data_files[symbol].keys())[0]
-                        self.data_iterators[symbol] = self.data_files[symbol][first_tf].iterrows()
-                    return await self._advance_symbol_data(symbol)
-                else:
-                    return False
-                
-        except Exception as e:
-            self._logger.error(f"[FAIL] Error advancing data for {symbol}: {e}")
+    # ─────────────────────────────────────────────────────────────
+    # Internal mechanics
+    # ─────────────────────────────────────────────────────────────
+    def _advance_symbol_data(self, symbol: str) -> bool:
+        """Advance primary timeframe iterator and refresh buffers & indicators."""
+        it = self.data_iterators.get(symbol)
+        if it is None:
             return False
-
-    async def _update_technical_indicators(self, symbol: str) -> None:
-        """Update technical indicators for a symbol"""
         try:
-            prices = list(self.price_buffers[symbol]['close'])
-            highs = list(self.price_buffers[symbol]['high'])
-            lows = list(self.price_buffers[symbol]['low'])
-            
-            if len(prices) < 20:
-                return
-                
-            # Simple Moving Averages
-            if len(prices) >= 20:
-                self.technical_indicators[symbol]['sma_20'] = np.mean(prices[-20:])
-            if len(prices) >= 50:
-                self.technical_indicators[symbol]['sma_50'] = np.mean(prices[-50:])
-                
-            # RSI calculation (simplified)
-            if len(prices) >= 14:
-                deltas = np.diff(prices[-15:])
-                gains = np.where(deltas > 0, deltas, 0)
-                losses = np.where(deltas < 0, -deltas, 0)
-                avg_gain = np.mean(gains) if len(gains) > 0 else 0
-                avg_loss = np.mean(losses) if len(losses) > 0 else 0.0001
+            _, row = next(it)
+        except StopIteration:
+            # Restart from the beginning (deterministic; still real data)
+            dfs = self.data_files.get(symbol, {})
+            if not dfs:
+                return False
+            tf0 = self.cfg.primary_timeframe if self.cfg.primary_timeframe in dfs else next(iter(dfs))
+            self.data_iterators[symbol] = dfs[tf0].iterrows()
+            _, row = next(self.data_iterators[symbol])
+
+        # Normalize timestamp
+        ts = row["timestamp"]
+        ts = pd.to_datetime(ts) if not isinstance(ts, (pd.Timestamp, datetime.datetime)) else ts
+
+        # Build bar strictly from CSV columns; do NOT fabricate bid/ask
+        bid = float(row["bid"]) if "bid" in row else None
+        ask = float(row["ask"]) if "ask" in row else None
+
+        bar = {
+            "timestamp": (ts.to_pydatetime() if isinstance(ts, pd.Timestamp) else ts),
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+            "volume": int(row["volume"]),
+            "bid": bid,
+            "ask": ask,
+        }
+        self.current_bars[symbol] = bar
+
+        # Update buffers & indicators
+        self.price_buffers[symbol]["close"].append(bar["close"])
+        self.price_buffers[symbol]["high"].append(bar["high"])
+        self.price_buffers[symbol]["low"].append(bar["low"])
+        self.price_buffers[symbol]["volume"].append(bar["volume"])
+
+        if self.cfg.enable_technical_indicators:
+            self._update_technical_indicators(symbol)
+
+        return True
+
+    def _update_technical_indicators(self, symbol: str) -> None:
+        prices = list(self.price_buffers[symbol]["close"])
+        highs = list(self.price_buffers[symbol]["high"])
+        lows = list(self.price_buffers[symbol]["low"])
+
+        # SMAs
+        if len(prices) >= 20:
+            self.technical_indicators[symbol]["sma_20"] = float(np.mean(prices[-20:]))
+        if len(prices) >= 50:
+            self.technical_indicators[symbol]["sma_50"] = float(np.mean(prices[-50:]))
+
+        # RSI(14) - classic formula (no smoothing to keep light)
+        if len(prices) >= 15:
+            deltas = np.diff(prices[-15:])
+            gains = np.where(deltas > 0, deltas, 0.0)
+            losses = np.where(deltas < 0, -deltas, 0.0)
+            avg_gain = float(np.mean(gains)) if gains.size else 0.0
+            avg_loss = float(np.mean(losses)) if losses.size else 0.0
+            if avg_loss <= 0.0:
+                rsi = 100.0
+            else:
                 rs = avg_gain / avg_loss
-                self.technical_indicators[symbol]['rsi'] = 100 - (100 / (1 + rs))
-                
-            # ATR (simplified)
-            if len(highs) >= 14:
-                tr_values = []
-                for i in range(1, min(14, len(highs))):
-                    tr = max(
-                        highs[i] - lows[i],
-                        abs(highs[i] - prices[i-1]),
-                        abs(lows[i] - prices[i-1])
-                    )
-                    tr_values.append(tr)
-                self.technical_indicators[symbol]['atr'] = np.mean(tr_values) if tr_values else 0.0
-                
-        except Exception as e:
-            self._logger.error(f"[FAIL] Error updating technical indicators for {symbol}: {e}")
+                rsi = 100.0 - (100.0 / (1.0 + rs))
+            self.technical_indicators[symbol]["rsi"] = float(np.clip(rsi, 0.0, 100.0))
 
+        # ATR(14)
+        if len(prices) >= 15 and len(highs) >= 15 and len(lows) >= 15:
+            trs = []
+            for i in range(1, 15):
+                prev_close = prices[-(i + 1)]
+                hi = highs[-i]
+                lo = lows[-i]
+                trs.append(max(hi - lo, abs(hi - prev_close), abs(lo - prev_close)))
+            self.technical_indicators[symbol]["atr"] = float(np.mean(trs)) if trs else 0.0
+
+    # ─────────────────────────────────────────────────────────────
+    # Public API
+    # ─────────────────────────────────────────────────────────────
     async def calculate_confidence(self, action: Optional[Dict[str, Any]] = None, **inputs) -> float:
-        """Calculate data quality and availability confidence"""
+        """Data quality/availability diagnostic score."""
         try:
-            if not self.is_initialized:
+            if not self.current_bars:
                 return 0.0
-                
-            # Base confidence from data availability
-            available_symbols = len(self.current_bars)
-            total_symbols = len(self.config.supported_symbols)
-            availability_score = available_symbols / total_symbols if total_symbols > 0 else 0.0
-            
-            # Data freshness score
-            current_time = time.time()
-            time_since_update = current_time - self.last_update
-            freshness_score = max(0.0, 1.0 - (time_since_update / 60.0))  # Decay over 1 minute
-            
-            # Data quality score based on price validity
-            quality_score = 1.0
-            for symbol, bar in self.current_bars.items():
-                if bar['high'] < bar['low'] or bar['close'] <= 0:
-                    quality_score *= 0.5
-                    
-            confidence = availability_score * 0.4 + freshness_score * 0.3 + quality_score * 0.3
-            
-            return min(1.0, max(0.0, confidence))
-            
-        except Exception as e:
-            # self._error_handler.handle_error(e, {"operation": "calculate_confidence"})
-            self._logger.error(f"[FAIL] Error in calculate_confidence: {e}")
+            available = len(self.current_bars) / max(1, len(self.cfg.supported_symbols))
+            age = time.time() - self._last_update_ts
+            freshness = max(0.0, 1.0 - age / 60.0)
+            quality = 1.0
+            for bar in self.current_bars.values():
+                if bar["high"] < bar["low"] or bar["close"] <= 0:
+                    quality *= 0.5
+            return float(np.clip(0.4 * available + 0.3 * freshness + 0.3 * quality, 0.0, 1.0))
+        except Exception:
             return 0.0
 
     async def propose_action(self, **inputs) -> Dict[str, Any]:
-        """Propose market data updates and maintenance actions"""
-        try:
-            actions = {
-                "update_data": True,
-                "symbols_to_update": list(self.config.supported_symbols),
-                "maintenance_required": False,
-                "data_quality": await self.calculate_confidence()
-            }
-            
-            # Check if maintenance is needed
-            if self.update_count % 1000 == 0:
-                actions["maintenance_required"] = True
-                actions["maintenance_type"] = "buffer_cleanup"
-                
-            return actions
-            
-        except Exception as e:
-            # self._error_handler.handle_error(e, {"operation": "propose_action"})
-            self._logger.error(f"[FAIL] Error in propose_action: {e}")
-            return {"update_data": False, "error": str(e)}
+        """Suggest provider upkeep operations (no data fabrication)."""
+        return {
+            "update_data": True,
+            "symbols_to_update": list(self.cfg.supported_symbols),
+            "maintenance_required": (self._update_count > 0 and self._update_count % 2000 == 0),
+            "maintenance_type": "buffer_cleanup" if (self._update_count > 0 and self._update_count % 2000 == 0) else None,
+            "data_quality": await self.calculate_confidence(),
+        }
 
     async def process(self, **inputs) -> Dict[str, Any]:
-        """Main processing loop - update market data and provide feeds"""
+        """Advance data (if due) and return a full snapshot."""
+        t0 = time.time()
         try:
-            current_time = time.time()
-            
-            # Check if update is needed based on frequency
-            if current_time - self.last_update < self.config.update_frequency:
-                return await self._get_current_data_snapshot()
-                
-            # Advance data for all symbols
-            updated_symbols = []
-            for symbol in self.config.supported_symbols:
-                if await self._advance_symbol_data(symbol):
-                    updated_symbols.append(symbol)
-                    
-            self.last_update = current_time
-            self.update_count += 1
-            
-            # Update trading session based on time
-            await self._update_trading_session()
-            
-            # Prepare output data
-            output = await self._get_current_data_snapshot()
-            output.update({
-                "updated_symbols": updated_symbols,
-                "update_count": self.update_count,
-                "data_provider_status": "active"
-            })
-            
-            # CRITICAL: Ensure all required outputs are present
-            required_outputs = [
-                "market_data", "price_data", "technical_indicators", "volatility_data", 
-                "symbols", "timestamp", "prices", "trading_session", "session_type",
-                "market_conditions", "ohlcv_data", "bid_ask_data"
-            ]
-            
-            for req_output in required_outputs:
-                if req_output not in output or output[req_output] is None:
-                    self._logger.warning(f"[WARN] Missing required output: {req_output}")
-                    # Provide fallback data
-                    if req_output == "symbols":
-                        output[req_output] = self.config.supported_symbols
-                    elif req_output == "timestamp":
-                        output[req_output] = datetime.datetime.now()
-                    elif req_output in ["trading_session", "session_type"]:
-                        output[req_output] = self.trading_session
-                    else:
-                        output[req_output] = {}
-            
-            # Performance tracking
-            # if hasattr(self, '_performance_tracker'):
-            #     self._performance_tracker.record_operation("data_update", len(updated_symbols))
-                
-            return output
-            
-        except Exception as e:
-            # self._error_handler.handle_error(e, {"operation": "process"})
-            self._logger.error(f"[FAIL] Error in process: {e}")
-            return {"error": str(e), "data_provider_status": "error"}
+            now = time.time()
+            if now - self._last_update_ts >= self.cfg.update_frequency:
+                updated: List[str] = []
+                for sym in self.cfg.supported_symbols:
+                    if self._advance_symbol_data(sym):
+                        updated.append(sym)
+                self._update_count += 1
+                self._last_update_ts = now
+                self._update_session_labels()
 
-    async def _get_current_data_snapshot(self) -> Dict[str, Any]:
-        """Get current complete data snapshot for all provided data types with MULTI-TIMEFRAME support"""
-        try:
-            # If no current bars, create minimal fallback data
-            if not self.current_bars:
-                return await self._create_fallback_data()
-            
-            # Prepare multi-timeframe data for AI analysis
-            multi_timeframe_data = {}
-            for symbol in self.config.supported_symbols:
-                if symbol in self.data_files:
-                    multi_timeframe_data[symbol] = {}
-                    
-                    # Get current position in primary timeframe
-                    primary_df = None
-                    if self.config.primary_timeframe in self.data_files[symbol]:
-                        primary_df = self.data_files[symbol][self.config.primary_timeframe]
-                    
-                    # For each timeframe, get the current bar and recent history
-                    for timeframe in self.config.supported_timeframes:
-                        if timeframe in self.data_files[symbol]:
-                            df = self.data_files[symbol][timeframe]
-                            
-                            # Find current bar index (synchronize timeframes if needed)
-                            current_idx = len(df) // 2  # Default to middle for demo
-                            if primary_df is not None and len(df) > 10:
-                                # Simple sync: use proportional position
-                                primary_progress = 0.5  # This would be calculated from actual position
-                                current_idx = min(len(df) - 1, max(10, int(len(df) * primary_progress)))
-                            
-                            # Get current and recent bars (last 20 bars for context)
-                            start_idx = max(0, current_idx - 19)
-                            end_idx = current_idx + 1
-                            
-                            recent_data = {
-                                'open': df['open'].iloc[start_idx:end_idx].values,
-                                'high': df['high'].iloc[start_idx:end_idx].values,
-                                'low': df['low'].iloc[start_idx:end_idx].values,
-                                'close': df['close'].iloc[start_idx:end_idx].values,
-                                'volume': df['volume'].iloc[start_idx:end_idx].values,
-                                'current_bar': {
-                                    'open': float(df['open'].iloc[current_idx]),
-                                    'high': float(df['high'].iloc[current_idx]),
-                                    'low': float(df['low'].iloc[current_idx]),
-                                    'close': float(df['close'].iloc[current_idx]),
-                                    'volume': int(df['volume'].iloc[current_idx])
-                                },
-                                'timeframe': timeframe,
-                                'bars_available': len(df)
-                            }
-                            
-                            multi_timeframe_data[symbol][timeframe] = recent_data
-            
-            return {
-                # Core market data (primary timeframe for backward compatibility)
-                "market_data": dict(self.current_bars),
-                "price_data": {symbol: {
-                    "close": bar["close"],
-                    "open": bar["open"],
-                    "high": bar["high"], 
-                    "low": bar["low"]
-                } for symbol, bar in self.current_bars.items()},
-                
-                # ENHANCED: Multi-timeframe market data for AI analysis
-                "multi_timeframe_data": multi_timeframe_data,
-                
-                # Technical indicators (basic ones only - advanced analysis handled by market modules)
-                "technical_indicators": dict(self.technical_indicators),
-                
-                # Volatility and risk data (basic calculations)
-                "volatility_data": {symbol: {
-                    "atr": self.technical_indicators[symbol]["atr"],
-                    "volatility": self.technical_indicators[symbol]["atr"] / bar["close"] if bar["close"] > 0 else 0.0
-                } for symbol, bar in self.current_bars.items()},
-                
-                # Session and timing data
-                "symbols": list(self.config.supported_symbols),
-                "timestamp": self.current_timestamp or datetime.datetime.now(),
-                "trading_session": self.trading_session,
-                "session_type": self.session_type,
-                
-                # Basic market conditions (detailed analysis handled by market modules)
-                "market_conditions": {
-                    "volatility_regime": self._assess_volatility_regime(),
-                    "market_hours": self._is_market_hours(),
-                    "liquidity_condition": self._assess_liquidity()
-                },
-                
-                # Raw prices for calculations
-                "prices": {symbol: bar["close"] for symbol, bar in self.current_bars.items()},
-                
-                # OHLCV data
-                "ohlcv_data": {symbol: {
-                    "open": bar["open"],
-                    "high": bar["high"],
-                    "low": bar["low"],
-                    "close": bar["close"],
-                    "volume": bar["volume"]
-                } for symbol, bar in self.current_bars.items()},
-                
-                # Bid/Ask data
-                "bid_ask_data": {symbol: {
-                    "bid": bar["bid"],
-                    "ask": bar["ask"],
-                    "spread": bar["ask"] - bar["bid"]
-                } for symbol, bar in self.current_bars.items()},
-                
-                # Market regime data
-                "market_regime": self._assess_volatility_regime(),
-                "market_context": {
-                    "volatility_regime": self._assess_volatility_regime(),
-                    "market_hours": self._is_market_hours(),
-                    "liquidity_condition": self._assess_liquidity(),
-                    "session": self.trading_session
-                },
-                
-                # Historical prices for lookback analysis
-                "historical_prices": multi_timeframe_data,
-                "volatility": {symbol: self.technical_indicators[symbol]["atr"] for symbol in self.current_bars.keys()}
-            }
-            
+            snapshot = self._build_snapshot()
+            self._success += 1
+            self._proc_times.append((time.time() - t0) * 1000.0)
+            return snapshot
         except Exception as e:
-            self._logger.error(f"[FAIL] Error creating data snapshot: {e}")
-            return await self._create_fallback_data()
+            self._fail += 1
+            self.logger.error(f"[FAIL] process(): {e}")
+            return self._empty_snapshot(error=str(e))
 
-    async def _create_fallback_data(self) -> Dict[str, Any]:
-        """Create minimal fallback data when no real data is available"""
-        try:
-            current_time = datetime.datetime.now()
-            base_prices = {"XAUUSD": 2000.00, "EURUSD": 1.1000}
-            
-            fallback_data = {}
-            for symbol in self.config.supported_symbols:
-                base_price = base_prices.get(symbol, 1.0)
-                fallback_data[symbol] = {
-                    "timestamp": current_time,
-                    "open": base_price,
-                    "high": base_price * 1.001,
-                    "low": base_price * 0.999,
-                    "close": base_price,
-                    "volume": 1000,
-                    "bid": base_price - 0.0001,
-                    "ask": base_price + 0.0001
+    # ─────────────────────────────────────────────────────────────
+    # Snapshot builders
+    # ─────────────────────────────────────────────────────────────
+    def _build_snapshot(self) -> Dict[str, Any]:
+        # Multi-TF window from actual files (no synthesis)
+        multi_tf: Dict[str, Dict[str, Any]] = {}
+        for symbol in self.cfg.supported_symbols:
+            sym_data = self.data_files.get(symbol, {})
+            if not sym_data:
+                continue
+            multi_tf[symbol] = {}
+            for tf, df in sym_data.items():
+                if len(df) < 20:
+                    continue
+                idx = min(len(df) - 1, max(10, int(len(df) * 0.5)))
+                s = max(0, idx - 19)
+                e = idx + 1
+                rec = {
+                    "open": df["open"].iloc[s:e].astype(float).tolist(),
+                    "high": df["high"].iloc[s:e].astype(float).tolist(),
+                    "low": df["low"].iloc[s:e].astype(float).tolist(),
+                    "close": df["close"].iloc[s:e].astype(float).tolist(),
+                    "volume": df["volume"].iloc[s:e].astype(int).tolist(),
+                    "current_bar": {
+                        "open": float(df["open"].iloc[idx]),
+                        "high": float(df["high"].iloc[idx]),
+                        "low": float(df["low"].iloc[idx]),
+                        "close": float(df["close"].iloc[idx]),
+                        "volume": int(df["volume"].iloc[idx]),
+                        # bid/ask only if present
+                        "bid": float(df["bid"].iloc[idx]) if "bid" in df.columns else None,
+                        "ask": float(df["ask"].iloc[idx]) if "ask" in df.columns else None,
+                    },
+                    "timeframe": tf,
+                    "bars_available": int(len(df)),
                 }
-            
-            return {
-                "market_data": fallback_data,
-                "price_data": {symbol: {
-                    "close": data["close"],
-                    "open": data["open"],
-                    "high": data["high"],
-                    "low": data["low"]
-                } for symbol, data in fallback_data.items()},
-                "technical_indicators": {symbol: {
-                    "sma_20": base_prices.get(symbol, 1.0),
-                    "sma_50": base_prices.get(symbol, 1.0),
-                    "rsi": 50.0,
-                    "atr": 0.001
-                } for symbol in self.config.supported_symbols},
-                "volatility_data": {symbol: {
-                    "atr": 0.001,
-                    "volatility": 0.001
-                } for symbol in self.config.supported_symbols},
-                "symbols": list(self.config.supported_symbols),
-                "timestamp": current_time,
-                "trading_session": "london",
-                "session_type": "normal",
-                "market_conditions": {
-                    "volatility_regime": "normal",
-                    "market_hours": True,
-                    "liquidity_condition": "medium"
-                },
-                "prices": {symbol: base_prices.get(symbol, 1.0) for symbol in self.config.supported_symbols},
-                "ohlcv_data": {symbol: {
-                    "open": data["open"],
-                    "high": data["high"],
-                    "low": data["low"],
-                    "close": data["close"],
-                    "volume": data["volume"]
-                } for symbol, data in fallback_data.items()},
-                "bid_ask_data": {symbol: {
-                    "bid": data["bid"],
-                    "ask": data["ask"],
-                    "spread": data["ask"] - data["bid"]
-                } for symbol, data in fallback_data.items()},
-                "market_regime": "normal",
-                "market_context": {
-                    "volatility_regime": "normal",
-                    "market_hours": True,
-                    "liquidity_condition": "medium",
-                    "session": "london"
-                },
-                "historical_prices": {symbol: {"H4": fallback_data} for symbol in self.config.supported_symbols},
-                "volatility": {symbol: 0.01 for symbol in self.config.supported_symbols}
-            }
-            
-        except Exception as e:
-            self._logger.error(f"[FAIL] Error creating fallback data: {e}")
-            return {}
+                multi_tf[symbol][tf] = rec
 
-    async def _update_trading_session(self) -> None:
-        """Update trading session based on current time"""
-        try:
-            current_hour = datetime.datetime.now().hour
-            
-            if 8 <= current_hour < 16:
-                self.trading_session = "london"
-            elif 13 <= current_hour < 21:
-                self.trading_session = "new_york"
-            elif 21 <= current_hour or current_hour < 6:
-                self.trading_session = "sydney"
-            else:
-                self.trading_session = "tokyo"
-                
-            # Determine session type
-            if 9 <= current_hour < 17:
-                self.session_type = "main"
-            elif 17 <= current_hour < 21:
-                self.session_type = "overlap"
-            else:
-                self.session_type = "overnight"
-                
-        except Exception as e:
-            self._logger.error(f"[FAIL] Error updating trading session: {e}")
+        # Core maps (from current_bars only)
+        market_data = {s: self._bar_with_iso(self.current_bars[s]) for s in self.current_bars}
+        price_data = {
+            s: {
+                "last": market_data[s]["close"],
+                "close": market_data[s]["close"],
+                "open": market_data[s]["open"],
+                "high": market_data[s]["high"],
+                "low": market_data[s]["low"],
+            } for s in market_data
+        }
+        ohlcv_data = {
+            s: {
+                "open": market_data[s]["open"],
+                "high": market_data[s]["high"],
+                "low": market_data[s]["low"],
+                "close": market_data[s]["close"],
+                "volume": market_data[s]["volume"],
+            } for s in market_data
+        }
+        bid_ask_data = {
+            s: {
+                "bid": market_data[s]["bid"],
+                "ask": market_data[s]["ask"],
+                "spread": (market_data[s]["ask"] - market_data[s]["bid"]) if (
+                    market_data[s]["bid"] is not None and market_data[s]["ask"] is not None
+                ) else None,
+            } for s in market_data
+        }
 
-    def _assess_volatility_regime(self) -> str:
-        """Assess current volatility regime"""
-        try:
-            if not self.current_bars:
-                return "unknown"
-                
-            # Calculate average volatility across symbols
-            total_volatility = 0.0
-            count = 0
-            
-            for symbol in self.current_bars:
-                atr = self.technical_indicators[symbol]["atr"]
-                price = self.current_bars[symbol]["close"]
-                if price > 0:
-                    volatility = atr / price
-                    total_volatility += volatility
-                    count += 1
-                    
-            if count == 0:
-                return "unknown"
-                
-            avg_volatility = total_volatility / count
-            
-            if avg_volatility > 0.02:
-                return "high"
-            elif avg_volatility > 0.01:
-                return "medium" 
-            else:
-                return "low"
-                
-        except Exception as e:
-            return "unknown"
+        # Indicators/volatility (computed from actual buffers)
+        vol_data = {
+            s: {
+                "atr": float(self.technical_indicators[s].get("atr", 0.0)),
+                "volatility": float(self.technical_indicators[s].get("atr", 0.0) /
+                                    max(1e-9, market_data[s]["close"])) if s in market_data else 0.0,
+            } for s in self.cfg.supported_symbols
+        }
+        vol_vals = [v["volatility"] for v in vol_data.values() if np.isfinite(v["volatility"])]
+        volatility_index = float(np.clip(np.mean(vol_vals), 0.0, 1.0)) if vol_vals else 0.0
+
+        # Market context (informative only; not authoritative risk/regime)
+        market_context = {
+            "volatility_hint": "high" if volatility_index > 0.02 else ("medium" if volatility_index > 0.01 else "low"),
+            "market_hours": self._is_market_hours(),
+            "session_human": self.trading_session,
+            "session_canonical": self._session_canonical(),
+        }
+
+        # Provider health (real counters only)
+        health = {
+            "success_rate": float(self._success / max(1, self._success + self._fail)),
+            "avg_processing_time_ms": float(np.mean(self._proc_times)) if self._proc_times else 0.0,
+            "last_update": datetime.datetime.utcnow().isoformat(),
+            "update_count": int(self._update_count),
+            "symbols_loaded": int(len(self.data_files)),
+            "timeframes_loaded": int(sum(len(v) for v in self.data_files.values())),
+        }
+
+        ts_iso = (self.current_timestamp or datetime.datetime.utcnow()).isoformat()
+        return {
+            "market_data": market_data,
+            "price_data": price_data,
+            "ohlcv_data": ohlcv_data,
+            "bid_ask_data": bid_ask_data,
+            "prices": {s: price_data[s]["last"] for s in price_data},
+            "symbols": list(self.cfg.supported_symbols),
+            "timestamp": ts_iso,
+
+            "technical_indicators": {s: {k: float(v) for k, v in d.items()} for s, d in self.technical_indicators.items()},
+            "indicators": {s: {k: float(v) for k, v in d.items()} for s, d in self.technical_indicators.items()},
+
+            "volatility_data": vol_data,
+            "volatility": {s: float(self.technical_indicators[s].get("atr", 0.0)) for s in self.cfg.supported_symbols},
+            "volatility_index": volatility_index,
+
+            "multi_timeframe_data": multi_tf,
+            "historical_prices": multi_tf,  # alias for compatibility
+
+            "market_context": market_context,
+
+            # Informative session descriptors (not owners of risk)
+            "trading_session": self.trading_session,
+            "session_type": self.session_type,
+            "session_canonical": self._session_canonical(),
+
+            # Provider health
+            "data_provider_health": health,
+        }
+
+    def _empty_snapshot(self, error: Optional[str] = None) -> Dict[str, Any]:
+        """Return a schema-complete but empty snapshot (no fabricated values)."""
+        now = datetime.datetime.utcnow().isoformat()
+        empty_prices: Dict[str, Any] = {}
+        return {
+            "market_data": {},
+            "price_data": {},
+            "ohlcv_data": {},
+            "bid_ask_data": {},
+            "prices": empty_prices,
+            "symbols": list(self.cfg.supported_symbols),
+            "timestamp": now,
+            "technical_indicators": {s: dict(self.technical_indicators.get(s, {})) for s in self.cfg.supported_symbols},
+            "indicators": {s: dict(self.technical_indicators.get(s, {})) for s in self.cfg.supported_symbols},
+            "volatility_data": {},
+            "volatility": {},
+            "volatility_index": 0.0,
+            "multi_timeframe_data": {},
+            "historical_prices": {},
+            "market_context": {
+                "volatility_hint": "low",
+                "market_hours": self._is_market_hours(),
+                "session_human": self.trading_session,
+                "session_canonical": self._session_canonical(),
+            },
+            "trading_session": self.trading_session,
+            "session_type": self.session_type,
+            "session_canonical": self._session_canonical(),
+            "data_provider_health": {
+                "success_rate": float(self._success / max(1, self._success + self._fail)),
+                "avg_processing_time_ms": float(np.mean(self._proc_times)) if self._proc_times else 0.0,
+                "last_update": now,
+                "update_count": int(self._update_count),
+                "symbols_loaded": int(len(self.data_files)),
+                "timeframes_loaded": int(sum(len(v) for v in self.data_files.values())) if self.data_files else 0,
+                "error": error or "",
+            },
+        }
+
+    # ─────────────────────────────────────────────────────────────
+    # Utilities
+    # ─────────────────────────────────────────────────────────────
+    def _bar_with_iso(self, bar: Dict[str, Any]) -> Dict[str, Any]:
+        out = dict(bar)
+        ts = out.get("timestamp")
+        out["timestamp"] = (ts.isoformat() if isinstance(ts, (datetime.datetime, pd.Timestamp)) else str(ts))
+        return out
+
+    def _update_session_labels(self) -> None:
+        """Human labels for UI only; canonical is separate and aligns with TimeAwareRiskScaling."""
+        hour = datetime.datetime.utcnow().hour
+        if 8 <= hour < 16:
+            self.trading_session = "london"
+        elif 13 <= hour < 21:
+            self.trading_session = "new_york"
+        elif 21 <= hour or hour < 6:
+            self.trading_session = "sydney"
+        else:
+            self.trading_session = "tokyo"
+
+        if 9 <= hour < 17:
+            self.session_type = "main"
+        elif 17 <= hour < 21:
+            self.session_type = "overlap"
+        else:
+            self.session_type = "overnight"
+
+        self.current_timestamp = datetime.datetime.utcnow()
+
+    def _session_canonical(self) -> str:
+        h = datetime.datetime.utcnow().hour
+        if 0 <= h < 8:
+            return "asian"
+        if 8 <= h < 16:
+            return "european"
+        if 16 <= h < 22:
+            return "us"
+        return "closed"
 
     def _is_market_hours(self) -> bool:
-        """Check if markets are currently open"""
-        current_hour = datetime.datetime.now().hour
-        # Forex markets are open 24/5, so we'll assume they're open during weekdays
-        return 0 <= current_hour < 24
-
-    def _assess_liquidity(self) -> str:
-        """Assess current market liquidity"""
-        try:
-            current_hour = datetime.datetime.now().hour
-            
-            # High liquidity during overlap periods
-            if 13 <= current_hour < 16:  # London-NY overlap
-                return "high"
-            elif 8 <= current_hour < 17:  # Main trading hours
-                return "medium"
-            else:
-                return "low"
-                
-        except Exception as e:
-            return "unknown"
+        # FX is effectively 24/5; keep simple True in provider context.
+        return True

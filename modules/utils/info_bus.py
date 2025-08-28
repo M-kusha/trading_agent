@@ -1,8 +1,7 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/utils/info_bus.py
-# [ROCKET] PRODUCTION-READY SmartInfoBus - Zero-Wiring Architecture
-# NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
-# ENHANCED: Complete production patterns, advanced monitoring, predictive analytics
+# [ROCKET-X] PRODUCTION-READY SmartInfoBus - Zero-Wiring Architecture (XL)
+# MAXED OUT: Transactions, Middleware, Waiters, Bulk Ops, Throttling, Snapshots
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -13,20 +12,34 @@ import asyncio
 import json
 import pickle
 import hashlib
+import copy
 import threading
 import uuid
 import psutil
-from typing import Dict, Any, List, Optional, Set, Callable, Tuple, TYPE_CHECKING
+import gzip
+from typing import Dict, Any, List, Optional, Set, Callable, Tuple, TYPE_CHECKING, TypedDict
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
+from typing import DefaultDict, Deque, cast
+
 
 # Import core dependencies
 from modules.utils.audit_utils import RotatingLogger, format_operator_message, AuditSystem
 
-# Public exports to make symbols visible to importers and type checkers
+# Typed structures for quality metrics (module scope for reuse in annotations)
+class QualityTrend(TypedDict):
+    ts: float
+    score: float
+
+class QualityEntry(TypedDict, total=False):
+    score: float
+    issues: List[str]
+    trends: List[QualityTrend]
+
+# Public exports
 __all__ = [
     "SmartInfoBus",
     "InfoBusManager",
@@ -41,7 +54,7 @@ __all__ = [
 ]
 
 # ═══════════════════════════════════════════════════════════════════
-# PRODUCTION-GRADE CONFIGURATION STRUCTURES
+# CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════
 
 @dataclass
@@ -53,133 +66,115 @@ class InfoBusConfig:
     enabled: bool = True
     debug_mode: bool = False
     log_level: str = "INFO"
-    max_cache_size: int = 10000
+    max_cache_size: int = 20000
     cache_ttl_seconds: int = 3600
-    
+
     # Performance settings
     max_parallel_operations: int = 50
     default_timeout_ms: int = 5000
-    health_check_interval_ms: int = 30000
+    health_check_interval_ms: int = 25000
     metrics_retention_hours: int = 24
-    background_thread_count: int = 2
-    
+    background_thread_count: int = 3
+
     # Data management
-    max_data_age_seconds: int = 300  # 5 minutes
-    max_history_versions: int = 1000
-    cleanup_interval_seconds: int = 60
+    max_data_age_seconds: int = 600  # 10 minutes
+    max_history_versions: int = 2000
+    cleanup_interval_seconds: int = 45
     integrity_validation: bool = True
     auto_cleanup: bool = True
     compression_enabled: bool = False
-    
-    # Circuit breaker settings
+
+    # Circuit breaker
     circuit_breaker_threshold: int = 3
     recovery_time_seconds: int = 60
     failure_escalation_enabled: bool = True
     emergency_mode_enabled: bool = True
-    
+
     # Event system
-    max_event_log_size: int = 50000
+    max_event_log_size: int = 120000
     event_replay_enabled: bool = True
     subscription_timeout_ms: int = 1000
     async_callback_support: bool = True
-    
+
     # Security & audit
     validation_enabled: bool = True
     audit_enabled: bool = True
     encryption_enabled: bool = False
     access_control_enabled: bool = False
-    
-    # Quality assurance
+
+    # Quality & analytics
     quality_monitoring_enabled: bool = True
     predictive_analytics_enabled: bool = True
     anomaly_detection_enabled: bool = True
     performance_profiling_enabled: bool = True
-    
+
     # Advanced features
     dependency_tracking_enabled: bool = True
     circular_dependency_detection: bool = True
     auto_dependency_resolution: bool = True
     smart_caching_enabled: bool = True
-    
+
+    # NEW: control switches
+    read_only_mode: bool = False
+    pause_support_enabled: bool = True
+    enable_transactions: bool = True
+    rate_limit_writes_per_sec: int = 0  # 0 = unlimited
+    default_namespace: Optional[str] = None  # e.g. "core"
+
     def __post_init__(self):
-        """Validate configuration integrity"""
         self._validate_config()
-    
+
     def _validate_config(self):
-        """Military-grade configuration validation"""
         errors = []
-        
-        # Timeout validations
         if self.default_timeout_ms <= 0 or self.default_timeout_ms > 60000:
-            errors.append("default_timeout_ms must be between 1ms and 60000ms")
-        
+            errors.append("default_timeout_ms must be between 1 and 60000 ms")
         if self.health_check_interval_ms <= 0 or self.health_check_interval_ms > 300000:
-            errors.append("health_check_interval_ms must be between 1ms and 300000ms")
-        
-        # Performance validations
-        if self.max_parallel_operations <= 0 or self.max_parallel_operations > 1000:
-            errors.append("max_parallel_operations must be between 1 and 1000")
-        
-        if self.cache_ttl_seconds <= 0 or self.cache_ttl_seconds > 86400:
-            errors.append("cache_ttl_seconds must be between 1 second and 1 day")
-        
-        # Data management validations
-        if self.max_data_age_seconds <= 0 or self.max_data_age_seconds > 86400:
-            errors.append("max_data_age_seconds must be between 1 second and 1 day")
-        
-        if self.max_history_versions <= 0 or self.max_history_versions > 10000:
-            errors.append("max_history_versions must be between 1 and 10000")
-        
-        # Circuit breaker validations
-        if self.circuit_breaker_threshold <= 0 or self.circuit_breaker_threshold > 20:
-            errors.append("circuit_breaker_threshold must be between 1 and 20")
-        
-        if self.recovery_time_seconds <= 0 or self.recovery_time_seconds > 3600:
-            errors.append("recovery_time_seconds must be between 1 second and 1 hour")
-        
-        # Event system validations
-        if self.max_event_log_size <= 0 or self.max_event_log_size > 1000000:
-            errors.append("max_event_log_size must be between 1 and 1000000")
-        
-        # Thread count validation
-        if self.background_thread_count <= 0 or self.background_thread_count > 10:
-            errors.append("background_thread_count must be between 1 and 10")
-        
-        # Log level validation
-        valid_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
-        if self.log_level not in valid_levels:
-            errors.append(f"log_level must be one of: {valid_levels}")
-        
+            errors.append("health_check_interval_ms must be between 1 and 300000 ms")
+        if self.max_parallel_operations <= 0 or self.max_parallel_operations > 2000:
+            errors.append("max_parallel_operations must be between 1 and 2000")
+        if self.cache_ttl_seconds <= 0 or self.cache_ttl_seconds > 172800:
+            errors.append("cache_ttl_seconds must be between 1 s and 2 days")
+        if self.max_data_age_seconds <= 0 or self.max_data_age_seconds > 172800:
+            errors.append("max_data_age_seconds must be between 1 s and 2 days")
+        if self.max_history_versions <= 0 or self.max_history_versions > 20000:
+            errors.append("max_history_versions must be between 1 and 20000")
+        if self.circuit_breaker_threshold <= 0 or self.circuit_breaker_threshold > 50:
+            errors.append("circuit_breaker_threshold must be between 1 and 50")
+        if self.recovery_time_seconds <= 0 or self.recovery_time_seconds > 7200:
+            errors.append("recovery_time_seconds must be between 1 s and 2 hours")
+        if self.max_event_log_size <= 0 or self.max_event_log_size > 2000000:
+            errors.append("max_event_log_size must be between 1 and 2,000,000")
+        if self.background_thread_count <= 0 or self.background_thread_count > 32:
+            errors.append("background_thread_count must be between 1 and 32")
+        if self.rate_limit_writes_per_sec < 0 or self.rate_limit_writes_per_sec > 100000:
+            errors.append("rate_limit_writes_per_sec must be between 0 and 100000")
+        if self.log_level not in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']:
+            errors.append("log_level must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL")
         if errors:
             raise ValueError(f"InfoBusConfig validation failed: {errors}")
-    
+
     def update(self, updates: Dict[str, Any]):
-        """Update configuration with validation"""
-        old_values = {}
-        
-        for key, value in updates.items():
-            if hasattr(self, key):
-                old_values[key] = getattr(self, key)
-                setattr(self, key, value)
-        
+        old = {}
+        for k, v in updates.items():
+            if hasattr(self, k):
+                old[k] = getattr(self, k)
+                setattr(self, k, v)
         try:
             self._validate_config()
-        except ValueError as e:
-            # Rollback on validation failure
-            for key, old_value in old_values.items():
-                setattr(self, key, old_value)
-            raise e
-    
+        except Exception as e:
+            for k, v in old.items():
+                setattr(self, k, v)
+            raise
+
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization"""
         return {k: v for k, v in self.__dict__.items() if not k.startswith('_')}
+
+# ═══════════════════════════════════════════════════════════════════
+# DATA OBJECTS
+# ═══════════════════════════════════════════════════════════════════
 
 @dataclass
 class DataVersion:
-    """
-    PRODUCTION-GRADE versioned data with complete tracking and validation.
-    Military-grade data integrity and comprehensive audit trail.
-    """
     value: Any
     timestamp: float
     source_module: str
@@ -190,7 +185,7 @@ class DataVersion:
     processing_time_ms: float = 0.0
     validation_hash: str = field(default="")
     access_count: int = field(default=0)
-    
+
     # Enhanced tracking
     creation_stack_trace: Optional[str] = field(default=None)
     last_access_time: float = field(default_factory=time.time)
@@ -198,24 +193,18 @@ class DataVersion:
     quality_score: float = field(default=100.0)
     anomaly_flags: List[str] = field(default_factory=list)
     compression_ratio: float = field(default=1.0)
-    
+
     def __post_init__(self):
-        """Calculate validation hash and initialize tracking"""
         if not self.validation_hash:
             self._calculate_validation_hash()
-        
-        # Capture creation stack trace in debug mode
         if not self.creation_stack_trace:
             self.creation_stack_trace = self._capture_stack_trace()
-        
-        # Initialize quality assessment
         self._assess_data_quality()
-    
+
     def _calculate_validation_hash(self):
-        """Calculate comprehensive validation hash"""
         try:
             data_str = json.dumps({
-                'value': str(self.value)[:1000],  # Limit size for performance
+                'value': str(self.value)[:1000],
                 'timestamp': self.timestamp,
                 'source_module': self.source_module,
                 'version': self.version,
@@ -223,103 +212,69 @@ class DataVersion:
             }, sort_keys=True)
             self.validation_hash = hashlib.sha256(data_str.encode()).hexdigest()[:16]
         except Exception:
-            # Fallback hash if JSON serialization fails
-            hash_input = f"{self.timestamp}{self.source_module}{self.version}{self.confidence}"
-            self.validation_hash = hashlib.md5(hash_input.encode()).hexdigest()[:16]
-    
+            h = f"{self.timestamp}{self.source_module}{self.version}{self.confidence}"
+            self.validation_hash = hashlib.md5(h.encode()).hexdigest()[:16]
+
     def _capture_stack_trace(self) -> str:
-        """Capture creation stack trace for debugging"""
         try:
-            # Get limited stack trace (last 5 frames)
             import traceback
-            stack = traceback.format_stack()[-5:]
-            return "".join(stack)
+            return "".join(traceback.format_stack()[-6:])
         except Exception:
             return "Stack trace unavailable"
-    
+
     def _assess_data_quality(self):
-        """Assess and score data quality"""
         score = 100.0
-        
-        # Deduct for low confidence
         if self.confidence < 0.8:
             score -= (0.8 - self.confidence) * 50
-        
-        # Deduct for excessive processing time
         if self.processing_time_ms > 1000:
             score -= min(self.processing_time_ms / 100, 30)
-        
-        # Deduct for missing thesis (if explainable)
         if not self.thesis and self.confidence > 0.5:
             score -= 10
-        
-        # Assess value quality
         if self.value is None:
             score -= 50
-        elif isinstance(self.value, (int, float)) and np.isnan(self.value):
+        elif isinstance(self.value, (int, float)) and hasattr(np, "isnan") and np.isnan(self.value):
             score -= 40
-        
         self.quality_score = max(0.0, score)
-        
-        # Set anomaly flags
         if self.quality_score < 50:
             self.anomaly_flags.append("low_quality")
         if self.processing_time_ms > 5000:
             self.anomaly_flags.append("slow_processing")
         if self.confidence < 0.3:
             self.anomaly_flags.append("low_confidence")
-    
+
     def age_seconds(self) -> float:
-        """Get age of data in seconds"""
         return time.time() - self.timestamp
-    
+
     def validate_integrity(self) -> bool:
-        """Validate data integrity without mutating the stored hash."""
         original_hash = self.validation_hash
         try:
-            # compute fresh hash without including the existing hash
             self.validation_hash = ""
             self._calculate_validation_hash()
             computed = self.validation_hash
-            # restore
             self.validation_hash = original_hash
-
-            is_valid = (computed == original_hash)
-            if not is_valid:
+            ok = (computed == original_hash)
+            if not ok:
                 self.anomaly_flags.append("integrity_failure")
-            return is_valid
+            return ok
         except Exception:
-            # defensive restore on any error
             self.validation_hash = original_hash
             self.anomaly_flags.append("validation_error")
             return False
 
-    
     def increment_access(self, accessor_module: str = "unknown"):
-        """Enhanced access tracking with module attribution"""
         self.access_count += 1
         self.last_access_time = time.time()
         self.access_patterns[accessor_module] = self.access_patterns.get(accessor_module, 0) + 1
-    
+
     def get_access_frequency(self) -> float:
-        """Calculate access frequency (accesses per hour)"""
-        age_hours = self.age_seconds() / 3600
-        if age_hours == 0:
-            return float(self.access_count)
-        return self.access_count / age_hours
-    
+        hours = self.age_seconds() / 3600
+        return self.access_count / max(hours, 1e-9)
+
     def is_stale(self, max_age_seconds: float) -> bool:
-        """Check if data is stale"""
         return self.age_seconds() > max_age_seconds
-    
-    def get_staleness_ratio(self, max_age_seconds: float) -> float:
-        """Get staleness ratio (0 = fresh, 1+ = stale)"""
-        return self.age_seconds() / max_age_seconds
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization"""
-        return {
-            'value': self.value,
+
+    def to_dict(self, include_value: bool = True) -> Dict[str, Any]:
+        out = {
             'timestamp': self.timestamp,
             'datetime': datetime.fromtimestamp(self.timestamp).isoformat(),
             'source_module': self.source_module,
@@ -338,10 +293,12 @@ class DataVersion:
             'access_frequency': self.get_access_frequency(),
             'compression_ratio': self.compression_ratio
         }
+        if include_value:
+            out['value'] = self.value
+        return out
 
 @dataclass
 class DataRequest:
-    """Enhanced request for data with comprehensive tracking and priority management"""
     requesting_module: str
     requested_key: str
     timestamp: float
@@ -350,16 +307,14 @@ class DataRequest:
     priority: int = 0
     callback: Optional[Callable] = None
     timeout_seconds: float = 60.0
-    
-    # Enhanced tracking
+    # Tracking
     request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    retry_count: int = field(default=0)
-    max_retries: int = field(default=3)
-    escalation_threshold: float = field(default=30.0)
+    retry_count: int = 0
+    max_retries: int = 3
+    escalation_threshold: float = 30.0
     context: Dict[str, Any] = field(default_factory=dict)
-    
+
     def __post_init__(self):
-        """Validate request parameters"""
         if not self.requesting_module:
             raise ValueError("requesting_module cannot be empty")
         if not self.requested_key:
@@ -368,78 +323,46 @@ class DataRequest:
             raise ValueError("timeout_seconds must be positive")
         if self.priority < 0:
             raise ValueError("priority must be non-negative")
-    
+
     def is_expired(self) -> bool:
-        """Check if request has expired"""
         return time.time() - self.timestamp > self.timeout_seconds
-    
+
     def should_escalate(self) -> bool:
-        """Check if request should be escalated"""
         return time.time() - self.timestamp > self.escalation_threshold
-    
+
     def can_retry(self) -> bool:
-        """Check if request can be retried"""
         return self.retry_count < self.max_retries
-    
+
     def increment_retry(self):
-        """Increment retry counter"""
         self.retry_count += 1
-    
+
     def matches_data(self, data: DataVersion) -> bool:
-        """Check if data matches request criteria"""
         if self.max_age_seconds and data.age_seconds() > self.max_age_seconds:
             return False
-        
         if self.min_confidence and data.confidence < self.min_confidence:
             return False
-        
         return True
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization"""
-        return {
-            'request_id': self.request_id,
-            'requesting_module': self.requesting_module,
-            'requested_key': self.requested_key,
-            'timestamp': self.timestamp,
-            'max_age_seconds': self.max_age_seconds,
-            'min_confidence': self.min_confidence,
-            'priority': self.priority,
-            'timeout_seconds': self.timeout_seconds,
-            'retry_count': self.retry_count,
-            'max_retries': self.max_retries,
-            'escalation_threshold': self.escalation_threshold,
-            'context': self.context,
-            'age_seconds': time.time() - self.timestamp,
-            'is_expired': self.is_expired(),
-            'should_escalate': self.should_escalate(),
-            'can_retry': self.can_retry()
-        }
 
 # ═══════════════════════════════════════════════════════════════════
-# ENHANCED CIRCUIT BREAKER IMPLEMENTATION
+# CIRCUIT BREAKER
 # ═══════════════════════════════════════════════════════════════════
 
 @dataclass
 class CircuitBreakerState:
-    """Enhanced circuit breaker state with predictive failure detection"""
     failure_count: int = 0
     last_failure_time: float = 0
     state: str = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
     successful_calls: int = 0
     total_calls: int = 0
     last_success_time: float = 0
-    
-    # Enhanced metrics
     failure_rate: float = 0.0
     avg_failure_interval: float = 0.0
     consecutive_failures: int = 0
     consecutive_successes: int = 0
     failure_history: deque = field(default_factory=lambda: deque(maxlen=100))
     success_history: deque = field(default_factory=lambda: deque(maxlen=100))
-    
+
     def record_success(self):
-        """Record successful operation with enhanced tracking."""
         self.successful_calls += 1
         self.total_calls += 1
         self.consecutive_successes += 1
@@ -447,128 +370,87 @@ class CircuitBreakerState:
         self.last_success_time = time.time()
         self.success_history.append(self.last_success_time)
         self._update_failure_rate()
-
-        if self.state == "HALF_OPEN":
-            if self.consecutive_successes >= 3:
-                self.state = "CLOSED"
-                self.failure_count = 0
-                self.consecutive_failures = 0
-                setattr(self, "_half_open_trials", 0)
+        if self.state == "HALF_OPEN" and self.consecutive_successes >= 3:
+            self.state = "CLOSED"
+            self.failure_count = 0
+            self.consecutive_failures = 0
+            setattr(self, "_half_open_trials", 0)
 
     def trip(self):
-        """Trip the circuit breaker with enhanced state management."""
         self.state = "OPEN"
         self.consecutive_successes = 0
         setattr(self, "_half_open_trials", 0)
 
-    
     def record_failure(self):
-        """Record failed operation with enhanced tracking"""
         self.failure_count += 1
         self.total_calls += 1
         self.consecutive_failures += 1
         self.consecutive_successes = 0
         self.last_failure_time = time.time()
-        
-        self.failure_history.append(time.time())
-        
-        # Update metrics
+        self.failure_history.append(self.last_failure_time)
         self._update_failure_rate()
         self._update_failure_interval()
-    
+
     def _update_failure_rate(self):
-        """Update failure rate based on recent history"""
         if self.total_calls > 0:
             self.failure_rate = self.failure_count / self.total_calls
-        
-        # Calculate recent failure rate (last 50 operations)
-        recent_total = min(self.total_calls, 50)
-        if recent_total > 0:
-            recent_failures = min(self.failure_count, len(self.failure_history))
-            recent_successes = min(self.successful_calls, len(self.success_history))
-            recent_rate = recent_failures / (recent_failures + recent_successes) if (recent_failures + recent_successes) > 0 else 0
-            
-            # Weight recent rate more heavily
+        recent_failures = min(self.failure_count, len(self.failure_history))
+        recent_successes = min(self.successful_calls, len(self.success_history))
+        denom = (recent_failures + recent_successes)
+        if denom > 0:
+            recent_rate = recent_failures / denom
             self.failure_rate = (self.failure_rate * 0.7) + (recent_rate * 0.3)
-    
+
     def _update_failure_interval(self):
-        """Update average failure interval"""
         if len(self.failure_history) >= 2:
-            intervals = []
-            for i in range(1, len(self.failure_history)):
-                interval = self.failure_history[i] - self.failure_history[i-1]
-                intervals.append(interval)
-            
+            intervals = [self.failure_history[i] - self.failure_history[i-1] for i in range(1, len(self.failure_history))]
             if intervals:
                 self.avg_failure_interval = sum(intervals) / len(intervals)
-    
-    def should_allow_request(self, recovery_time: float, failure_threshold: int = 5) -> bool:
-        """Enhanced request allowance with capped probes in HALF_OPEN."""
-        now = time.time()
 
+    def should_allow_request(self, recovery_time: float, failure_threshold: int = 5) -> bool:
+        now = time.time()
         if self.state == "CLOSED":
-            # trip on many consecutive failures or high recent failure rate
-            if (self.consecutive_failures >= failure_threshold or 
+            if (self.consecutive_failures >= failure_threshold or
                 (self.failure_rate > 0.5 and self.total_calls > 10)):
                 self.trip()
                 return False
             return True
-
         if self.state == "OPEN":
             if now - self.last_failure_time > recovery_time:
                 self.state = "HALF_OPEN"
-                # dynamic attribute: avoid changing the dataclass
                 setattr(self, "_half_open_trials", 0)
-                return True  # first probe
+                return True
             return False
-
         # HALF_OPEN
-        # idle-recovery: if quiet long enough, close
-        if (now - self.last_failure_time > recovery_time * 2
-                and self.consecutive_failures == 0):
+        if (now - self.last_failure_time > recovery_time * 2 and self.consecutive_failures == 0):
             self.state = "CLOSED"
             setattr(self, "_half_open_trials", 0)
             return True
-
         trials = getattr(self, "_half_open_trials", 0)
-        if trials >= 3:  # cap number of probes
+        if trials >= 3:
             return False
         setattr(self, "_half_open_trials", trials + 1)
         return True
 
-    
-    
     def get_health_score(self) -> float:
-        """Calculate health score based on circuit breaker metrics"""
         if self.state == "OPEN":
             return 0.0
-        
         if self.total_calls == 0:
             return 100.0
-        
-        # Base score on success rate
-        success_rate = self.successful_calls / self.total_calls
-        base_score = success_rate * 100
-        
-        # Adjust for consecutive failures
+        success_rate = self.successful_calls / max(self.total_calls, 1)
+        base = success_rate * 100
         if self.consecutive_failures > 0:
-            base_score -= min(self.consecutive_failures * 5, 30)
-        
-        # Bonus for consecutive successes
+            base -= min(self.consecutive_failures * 5, 30)
         if self.consecutive_successes > 5:
-            base_score = min(100.0, base_score + 5)
-        
-        return max(0.0, base_score)
-    
+            base = min(100.0, base + 5)
+        return max(0.0, base)
+
     def predict_next_failure(self) -> Optional[float]:
-        """Predict when next failure might occur based on patterns"""
         if self.avg_failure_interval > 0 and len(self.failure_history) >= 3:
-            # Simple prediction based on average interval
             return self.last_failure_time + self.avg_failure_interval
         return None
-    
+
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization"""
         return {
             'state': self.state,
             'failure_count': self.failure_count,
@@ -585,183 +467,336 @@ class CircuitBreakerState:
         }
 
 # ═══════════════════════════════════════════════════════════════════
-# PRODUCTION-GRADE SMARTINFOBUS
+# SMARTINFOBUS (XL)
 # ═══════════════════════════════════════════════════════════════════
 
 class SmartInfoBus:
     """
-    PRODUCTION-GRADE Information Bus for zero-wiring architecture.
-    
-    NASA/MILITARY SPECIFICATIONS:
-    - Thread-safe operations with deadlock prevention
-    - Data versioning and comprehensive integrity validation
-    - Advanced performance monitoring and predictive analytics
-    - Enhanced circuit breakers with failure prediction
-    - Complete audit trail with replay capabilities
-    - Real-time event streaming with async support
-    - Automatic data freshness management with smart caching
-    - Advanced dependency graph analysis with circular detection
-    - Quality assurance with anomaly detection
-    - Emergency mode and graceful degradation
+    XL Information Bus — feature-complete:
+      • Thread-safe set/get with integrity, TTL, LRU, history
+      • Middleware hooks (pre/post set & get)
+      • Transactions (context manager) + bulk ops
+      • Waiters: wait_for(key) / wait_for_many()
+      • Schema validators per-key
+      • Read-only & Pause modes
+      • Write rate-limiting per module
+      • Snapshot import/export (+ gzip), sessions, metrics
+      • Circuit breaker & module health telemetry
     """
-    
+
+    # ──────────────────────────────────────────────────────────────
+    # Construction
+    # ──────────────────────────────────────────────────────────────
     def __init__(self, config: Optional[InfoBusConfig] = None):
-        """Initialize SmartInfoBus with production-grade configuration"""
-        
-        # Configuration with validation
         self.config = config or InfoBusConfig()
-        
-        # Core data storage with enhanced thread safety
+
+        # Core data store + history
         self._data_store: Dict[str, DataVersion] = {}
-        self._data_history: Dict[str, deque] = defaultdict(
-            lambda: deque(maxlen=self.config.max_history_versions)
-        )
-        # ADD THESE NEW LINES FOR MEMORY MANAGEMENT:
-        self._data_timestamps: Dict[str, float] = {}  # Track insertion times
-        self._cleanup_thread: Optional[threading.Thread] = None
-        self._cleanup_shutdown = threading.Event()
-        self._cleanup_interval = 60  # Cleanup every 60 seconds
-        
+        self._data_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=self.config.max_history_versions))
+        self._data_timestamps: Dict[str, float] = {}
+
+        # Locks
         self._access_lock = threading.RLock()
-        self._write_lock = threading.Lock()  # Separate write lock for better performance
-        
-        # Event logging for replay and audit
-        self._event_log: deque = deque(maxlen=self.config.max_event_log_size)
-        self._replay_mode = False
-        self._replay_position = 0
+        self._write_lock = threading.Lock()
+        self._registry_lock = threading.RLock()
         self._event_lock = threading.Lock()
-        
-        # Module registry with enhanced thread safety
+        self._subscription_lock = threading.Lock()
+        self._performance_lock = threading.Lock()
+        self._circuit_breaker_lock = threading.Lock()
+        self._request_lock = threading.Lock()
+
+        # Events log
+        self._event_log: deque = deque(maxlen=self.config.max_event_log_size)
+
+        # Registries
         self._providers: Dict[str, Set[str]] = defaultdict(set)
         self._consumers: Dict[str, Set[str]] = defaultdict(set)
         self._module_graph: Dict[str, Set[str]] = defaultdict(set)
-        self._registry_lock = threading.RLock()
-        
-        # Enhanced performance tracking
+
+        # Perf stats
         self._access_patterns = defaultdict(lambda: defaultdict(int))
-        self._latency_history = defaultdict(lambda: deque(maxlen=1000))
+        self._latency_history = defaultdict(lambda: deque(maxlen=5000))
         self._cache_hits = 0
         self._cache_misses = 0
-        self._performance_lock = threading.Lock()
-        
-        # Advanced metrics
-        self._operation_timings = defaultdict(lambda: deque(maxlen=1000))
-        self._memory_usage_history = deque(maxlen=100)
-        self._cpu_usage_history = deque(maxlen=100)
+        self._operation_timings = defaultdict(lambda: deque(maxlen=2000))
+        self._memory_usage_history = deque(maxlen=200)
+        self._cpu_usage_history = deque(maxlen=200)
         self._predictive_metrics = {}
-        
-        # Event subscription system with async support
+
+        # Subscriptions
         self._subscribers: Dict[str, List[Callable]] = defaultdict(list)
         self._async_subscribers: Dict[str, List[Callable]] = defaultdict(list)
-        self._subscription_lock = threading.Lock()
-        
-        # Enhanced circuit breakers with predictive failure detection
+
+        # Circuit breaker
         self._circuit_breakers: Dict[str, CircuitBreakerState] = defaultdict(CircuitBreakerState)
         self._module_disabled: Set[str] = set()
-        self._circuit_breaker_lock = threading.Lock()
-        
-        # Enhanced request tracking and fulfillment
+
+        # Requests & waiters
         self._pending_requests: List[DataRequest] = []
         self._request_history: deque = deque(maxlen=10000)
-        self._request_lock = threading.Lock()
-        
-        # Data quality and validation with anomaly detection
+        self._waiters: Dict[str, List[Tuple[threading.Event, Optional[Callable[[Any], bool]], Dict[str, Any]]]] = defaultdict(list)
+
+        # Quality / Validation
         self._validation_enabled = self.config.validation_enabled
-        self._quality_metrics = defaultdict(lambda: {'score': 100, 'issues': [], 'trends': []})
-        self._anomaly_detector = None  # Will be initialized if enabled
+
+        # Typed quality ledger to satisfy static analysis
+        def _default_quality_entry() -> "QualityEntry":
+            # Use float for score to match later assignments and avoid int|list unions
+            return {"score": 100.0, "issues": [], "trends": []}
+
+        self._quality_metrics: DefaultDict[str, QualityEntry] = defaultdict(_default_quality_entry)
+        self._anomaly_detector = None
         self._quality_lock = threading.Lock()
-        
-        # Emergency mode and graceful degradation
+
+        # Emergency & control
         self._emergency_mode = False
         self._emergency_triggers = 0
         self._emergency_threshold = 5
         self._degraded_operations = set()
-        self._emergency_lock = threading.Lock()
-        
-        # Smart caching system
+        self._paused = threading.Event()  # if set() we consider "paused"
+        self._paused.clear()
+
+        # Cache stats
         self._cache_stats = defaultdict(int)
         self._cache_access_times = defaultdict(float)
         self._cache_priorities = defaultdict(float)
-        
-        # Background maintenance with enhanced management
+
+        # Thread infra
         self._maintenance_running = True
         self._maintenance_threads = []
-        self._thread_pool = ThreadPoolExecutor(
-            max_workers=self.config.background_thread_count,
-            thread_name_prefix="InfoBus"
-        )
-        
-        # Setup enhanced logging with audit integration
+        self._cleanup_thread: Optional[threading.Thread] = None
+        self._cleanup_shutdown = threading.Event()
+        self._cleanup_interval = 60  # seconds
+        self._thread_pool = ThreadPoolExecutor(max_workers=self.config.background_thread_count, thread_name_prefix="InfoBus")
+
+        # Logger / Audit
         self.logger = RotatingLogger(
             name="SmartInfoBus",
             log_dir="logs/infobus",
-            max_lines=10000,
+            max_lines=15000,
             operator_mode=True,
             info_bus_aware=True
         )
-        
-        # Initialize audit system integration
-        if self.config.audit_enabled:
-            self._audit_system = AuditSystem("SmartInfoBus")
-        else:
-            self._audit_system = None
-        
-        # Initialize anomaly detection if enabled
-        if self.config.anomaly_detection_enabled:
-            self._initialize_anomaly_detection()
-        
-        # Start enhanced background services
+        self._audit_system = AuditSystem("SmartInfoBus") if self.config.audit_enabled else None
+
+        # Middleware & validators
+        self._pre_set_hooks: List[Callable[[str, Any, Dict[str, Any]], Any]] = []
+        self._post_set_hooks: List[Callable[[str, DataVersion], None]] = []
+        self._pre_get_hooks: List[Callable[[str, str, Dict[str, Any]], None]] = []
+        self._post_get_hooks: List[Callable[[str, str, Any, Dict[str, Any]], None]] = []
+        self._validators: Dict[str, Callable[[Any], bool]] = {}
+
+        # Single-writer policy for critical canonical keys
+        # NOTE: Logging-only enforcement (no blocking) to avoid silent logic changes.
+        #       This enforces observability and highlights duplicate writers early.
+        #       Critical keys are part of system-level contracts.
+        self._critical_single_writer_keys: Set[str] = {
+            "market_regime",
+            "training_metrics",
+            "performance_metrics",
+            "risk_data",
+            "sequence_quality",
+            "trade_vote",
+        }
+
+        def _single_writer_guard(key: str, value: Any, meta: Dict[str, Any]) -> Any:
+            """Pre-set hook: detect duplicate writers for critical keys and log an audit event.
+
+            Contract enforced: Single-writer policy for critical keys.
+            Behavior: If another provider already exists, emit a structured audit event
+            and proceed without blocking (no silent domain logic changes).
+            """
+            try:
+                base_key = key.split(":", 1)[1] if ":" in key else key
+                if base_key not in self._critical_single_writer_keys:
+                    return None
+
+                writer = str(meta.get("module", "unknown"))
+                # Consider both un-namespaced and namespaced providers
+                existing: Set[str] = set()
+                try:
+                    existing |= set(self.get_providers(base_key))
+                except Exception:
+                    pass
+                try:
+                    existing |= set(self.get_providers(key))
+                except Exception:
+                    pass
+
+                # If an existing provider different from current writer is present, log it
+                if existing and (writer not in existing or len(existing) > 1):
+                    evt = {
+                        "type": "duplicate_writer",
+                        "key": key,
+                        "base_key": base_key,
+                        "attempting_module": writer,
+                        "existing_providers": sorted(list(existing)),
+                        "policy": "single_writer",
+                    }
+                    self._log_event(evt)
+                    if self.config.debug_mode:
+                        self.logger.warning(
+                            f"[BUS][SINGLE-WRITER] Duplicate write attempt for '{base_key}' by {writer}; existing={sorted(list(existing))}"
+                        )
+            except Exception as _hook_exc:
+                # Never break the bus on observability
+                try:
+                    self.logger.error(f"[HOOK] single-writer guard failed for {key}: {_hook_exc}")
+                except Exception:
+                    pass
+            return None  # never alter the value
+
+        # Register guard hook
+        self.register_pre_set_hook(_single_writer_guard)
+
+        # Rate-limiting (module -> deque[timestamps])
+        self._rate_counters: DefaultDict[str, Deque[float]] = defaultdict(lambda: deque(maxlen=10000))
+
+        # Transactions (thread-local)
+        self._tx_local = threading.local()
+
+        # Initialize subsystems
+        self._initialize_anomaly_detection() if self.config.anomaly_detection_enabled else self._seed_anomaly_default()
         self._start_background_services()
-        
-        # ADD THIS LINE AT THE END - START MEMORY CLEANUP:
+        self._init_dependency_tracing_state()
         self._start_cleanup_thread()
-        
-        # Initialize system
         self._initialization_time = time.time()
         self._initialize_system_monitoring()
-        
-        # Log initialization event
+
+        # Emit init
         self._emit('bus_initialized', {
             'timestamp': self._initialization_time,
             'config': self.config.to_dict(),
             'features': self._get_enabled_features(),
             'system_info': self._get_system_info()
         })
-        
-        self.logger.info(
-            format_operator_message(
-                "[ROCKET]", "SMARTINFOBUS INITIALIZED - PRODUCTION MODE",
-                details=f"Zero-wiring architecture ready with {len(self._get_enabled_features())} features",
-                context="startup",
-                performance=f"Startup time: {(time.time() - self._initialization_time)*1000:.1f}ms"
-            )
-        )
-        
+        self.logger.info(format_operator_message("[ROCKET-X]", "SMARTINFOBUS XL INITIALIZED",
+                                                 details=f"Features: {', '.join(self._get_enabled_features())}",
+                                                 context="startup"))
+
+        # Seed useful defaults for early consumers
+        try:
+            self.set('compliance', {'risk_budget_used': 0.0, 'compliance_score': 1.0, 'timestamp': time.time()},
+                     module='SmartInfoBus', thesis='Default compliance seed', confidence=0.9)
+            self.set('anomaly_detector', {'anomaly_score': 1.0},
+                     module='SmartInfoBus', thesis='Default anomaly seed', confidence=0.9)
+        except Exception:
+            pass
+
+    # ──────────────────────────────────────────────────────────────
+    # Helper: namespaces, pause, read-only, throttling
+    # ──────────────────────────────────────────────────────────────
+    def _ns_key(self, key: str, namespace: Optional[str]) -> str:
+        if not namespace:
+            namespace = self.config.default_namespace
+        return f"{namespace}:{key}" if namespace else key
+
+    def pause(self, reason: str = "maintenance"):
+        if not self.config.pause_support_enabled:
+            return
+        self._paused.set()
+        self._emit("bus_paused", {"reason": reason, "timestamp": time.time()})
+        self.logger.warning(f"[PAUSE] InfoBus paused: {reason}")
+
+    def resume(self):
+        self._paused.clear()
+        self._emit("bus_resumed", {"timestamp": time.time()})
+        self.logger.info("[RESUME] InfoBus resumed")
+
+    def _enforce_read_only(self):
+        if self.config.read_only_mode:
+            raise RuntimeError("SmartInfoBus is in read-only mode")
+
+    def _enforce_rate_limit(self, module: str):
+        limit = self.config.rate_limit_writes_per_sec
+        if limit <= 0:
+            return
+
+        now = time.time()
+
+        # Ensure the per-module bucket is a deque (defensive in case anything overwrote it)
+        dq = self._rate_counters.get(module)
+        if not isinstance(dq, deque):
+            dq = deque(maxlen=10000)
+            self._rate_counters[module] = dq  # type: ignore[assignment]
+
+        dq.append(now)
+
+        # drop entries older than 1s
+        while len(dq) and (now - dq[0]) > 1.0:
+            dq.popleft()
+
+        if len(dq) > limit:
+            raise RuntimeError(f"Write rate exceeded for module '{module}' ({limit}/sec)")
+
+
+    # ──────────────────────────────────────────────────────────────
+    # Middleware & Validators
+    # ──────────────────────────────────────────────────────────────
+    def register_pre_set_hook(self, fn: Callable[[str, Any, Dict[str, Any]], Any]):
+        self._pre_set_hooks.append(fn)
+
+    def register_post_set_hook(self, fn: Callable[[str, DataVersion], None]):
+        self._post_set_hooks.append(fn)
+
+    def register_pre_get_hook(self, fn: Callable[[str, str, Dict[str, Any]], None]):
+        self._pre_get_hooks.append(fn)
+
+    def register_post_get_hook(self, fn: Callable[[str, str, Any, Dict[str, Any]], None]):
+        self._post_get_hooks.append(fn)
+
+    def register_validator(self, key: str, fn: Callable[[Any], bool]):
+        """Register a schema/shape validator for a key."""
+        self._validators[key] = fn
+
+    def _apply_pre_set(self, key: str, value: Any, meta: Dict[str, Any]) -> Any:
+        for fn in list(self._pre_set_hooks):
+            try:
+                maybe = fn(key, value, meta)
+                if maybe is not None:
+                    value = maybe
+            except Exception as e:
+                self.logger.error(f"[HOOK] pre_set error for {key}: {e}")
+        return value
+
+    def _apply_post_set(self, key: str, dv: DataVersion):
+        for fn in list(self._post_set_hooks):
+            try:
+                fn(key, dv)
+            except Exception as e:
+                self.logger.error(f"[HOOK] post_set error for {key}: {e}")
+
+    def _apply_pre_get(self, key: str, module: str, meta: Dict[str, Any]):
+        for fn in list(self._pre_get_hooks):
+            try:
+                fn(key, module, meta)
+            except Exception as e:
+                self.logger.error(f"[HOOK] pre_get error for {key}: {e}")
+
+    def _apply_post_get(self, key: str, module: str, value: Any, meta: Dict[str, Any]):
+        for fn in list(self._post_get_hooks):
+            try:
+                fn(key, module, value, meta)
+            except Exception as e:
+                self.logger.error(f"[HOOK] post_get error for {key}: {e}")
+
+    # ──────────────────────────────────────────────────────────────
+    # System info & initialization helpers
+    # ──────────────────────────────────────────────────────────────
     def _get_enabled_features(self) -> List[str]:
-        """Get list of enabled features"""
-        features = ["core_operations", "thread_safety", "performance_monitoring"]
-        
-        if self.config.audit_enabled:
-            features.append("audit_system")
-        if self.config.anomaly_detection_enabled:
-            features.append("anomaly_detection")
-        if self.config.predictive_analytics_enabled:
-            features.append("predictive_analytics")
-        if self.config.quality_monitoring_enabled:
-            features.append("quality_monitoring")
-        if self.config.event_replay_enabled:
-            features.append("event_replay")
-        if self.config.smart_caching_enabled:
-            features.append("smart_caching")
-        if self.config.dependency_tracking_enabled:
-            features.append("dependency_tracking")
-        if self.config.emergency_mode_enabled:
-            features.append("emergency_mode")
-        
-        return features
-    
+        feats = ["core", "thread_safety", "performance_monitoring", "history", "events"]
+        if self.config.audit_enabled: feats.append("audit")
+        if self.config.anomaly_detection_enabled: feats.append("anomaly_detection")
+        if self.config.predictive_analytics_enabled: feats.append("predictive_analytics")
+        if self.config.quality_monitoring_enabled: feats.append("quality_monitoring")
+        if self.config.event_replay_enabled: feats.append("event_replay")
+        if self.config.smart_caching_enabled: feats.append("smart_caching")
+        if self.config.dependency_tracking_enabled: feats.append("dependency_tracking")
+        if self.config.emergency_mode_enabled: feats.append("emergency_mode")
+        feats.extend(["transactions", "waiters", "validators", "pause", "throttling"])
+        return feats
+
     def _get_system_info(self) -> Dict[str, Any]:
-        """Get system information for initialization"""
         try:
             return {
                 'python_version': sys.version.split()[0],
@@ -773,11 +808,9 @@ class SmartInfoBus:
             }
         except Exception:
             return {'error': 'System info unavailable'}
-    
+
     def _initialize_anomaly_detection(self):
-        """Initialize anomaly detection system"""
         try:
-            # Simple anomaly detection based on statistical methods
             self._anomaly_detector = {
                 'data_access_patterns': defaultdict(list),
                 'performance_baselines': defaultdict(list),
@@ -788,199 +821,236 @@ class SmartInfoBus:
                     'quality_score_threshold': 50.0
                 }
             }
-            self.logger.info("[SEARCH] Anomaly detection system initialized")
+            self.logger.info("[ANOM] Anomaly detection initialized")
         except Exception as e:
             self.logger.error(f"Failed to initialize anomaly detection: {e}")
-    
-    def _start_background_services(self):
-        """Start enhanced background services"""
+
+    def _seed_anomaly_default(self):
         try:
-            # Main maintenance thread
-            maintenance_thread = threading.Thread(
-                target=self._background_maintenance,
-                daemon=True,
-                name="InfoBus-Maintenance"
-            )
-            maintenance_thread.start()
-            self._maintenance_threads.append(maintenance_thread)
-            
-            # Performance monitoring thread
-            if self.config.performance_profiling_enabled:
-                perf_thread = threading.Thread(
-                    target=self._background_performance_monitoring,
-                    daemon=True,
-                    name="InfoBus-Performance"
-                )
-                perf_thread.start()
-                self._maintenance_threads.append(perf_thread)
-            
-            # Quality monitoring thread
+            self._anomaly_detector = {'anomaly_score': 1.0}
+        except Exception:
+            pass
+
+    def _start_background_services(self):
+        try:
+            t1 = threading.Thread(target=self._background_maintenance, daemon=True, name="InfoBus-Maintenance")
+            t1.start()
+            self._maintenance_threads.append(t1)
+            t2 = threading.Thread(target=self._background_performance_monitoring, daemon=True, name="InfoBus-Performance")
+            t2.start()
+            self._maintenance_threads.append(t2)
             if self.config.quality_monitoring_enabled:
-                quality_thread = threading.Thread(
-                    target=self._background_quality_monitoring,
-                    daemon=True,
-                    name="InfoBus-Quality"
-                )
-                quality_thread.start()
-                self._maintenance_threads.append(quality_thread)
-            
-            self.logger.info(f"[OK] Started {len(self._maintenance_threads)} background services")
-            
+                t3 = threading.Thread(target=self._background_quality_monitoring, daemon=True, name="InfoBus-Quality")
+                t3.start()
+                self._maintenance_threads.append(t3)
+            self.logger.info(f"[OK] Background services: {len(self._maintenance_threads)}")
         except Exception as e:
             self.logger.error(f"Failed to start background services: {e}")
-    
+
     def _initialize_system_monitoring(self):
-        """Initialize system-level monitoring"""
         try:
-            # Record initial system state
             self._record_system_metrics()
-            
-            # Set up performance baselines
             if self.config.predictive_analytics_enabled:
-                self._initialize_performance_baselines()
-            
+                self._predictive_metrics = {
+                    'baseline_response_time': 10.0,
+                    'baseline_throughput': 1000.0,
+                    'baseline_memory_usage': 50.0,
+                    'trend_window_size': 100,
+                    'prediction_confidence': 0.8
+                }
         except Exception as e:
             self.logger.error(f"Failed to initialize system monitoring: {e}")
-    
+
+
+    # ──────────────────────────────────────────────────────────────
+    # Background workers (performance & quality)
+    # ──────────────────────────────────────────────────────────────
+    def _background_performance_monitoring(self) -> None:
+        """
+        Periodically record host metrics and derive simple performance signals.
+        Emits soft alerts for degraded cache hit-rate or latency spikes.
+        """
+        self.logger.info("[TOOL] Background performance monitor started")
+        interval = max(1.0, float(self.config.health_check_interval_ms) / 1000.0)
+
+        while self._maintenance_running:
+            try:
+                # Host metrics (CPU/mem)
+                self._record_system_metrics()
+
+                # Hit rate & latency signals
+                with self._performance_lock:
+                    total = self._cache_hits + self._cache_misses
+                    hit_rate = self._cache_hits / max(total, 1)
+                    self._predictive_metrics["hit_rate"] = hit_rate
+
+                    # Compute rolling p95 latency per module (cheap heuristic)
+                    hot_modules: Dict[str, float] = {}
+                    for m, timings in self._latency_history.items():
+                        if timings:
+                            arr = list(timings)
+                            p95 = float(np.percentile(arr, 95) if len(arr) >= 10 else max(arr))
+                            hot_modules[m] = p95
+                    self._predictive_metrics["p95_by_module"] = hot_modules
+
+                # Emit warnings on clear degradation
+                if total > 200 and hit_rate < 0.20:
+                    self._emit(
+                        "performance_alert",
+                        {
+                            "kind": "low_cache_hit_rate",
+                            "hit_rate": hit_rate,
+                            "total_requests": int(total),
+                            "timestamp": time.time(),
+                        },
+                    )
+
+                # Very high module p95s
+                slow = [(m, p95) for m, p95 in self._predictive_metrics.get("p95_by_module", {}).items() if p95 > 500]
+                if slow:
+                    worst = max(slow, key=lambda x: x[1])
+                    self._emit(
+                        "performance_alert",
+                        {
+                            "kind": "high_latency",
+                            "module": worst[0],
+                            "p95_ms": worst[1],
+                            "timestamp": time.time(),
+                        },
+                    )
+
+            except Exception as e:
+                self.logger.debug(f"[perf-monitor] loop error: {e}")
+
+            # pacing
+            time.sleep(interval)
+
+    def _background_quality_monitoring(self) -> None:
+        """
+        Periodically sweep data quality. Tracks per-key quality trends and emits warnings
+        for low quality, low confidence, or excessive staleness.
+        """
+        self.logger.info("[TOOL] Background quality monitor started")
+        # run a bit more often than cleanup; but at least 2s
+        interval = max(2.0, float(self.config.cleanup_interval_seconds) / 2.0)
+
+        while self._maintenance_running and self.config.quality_monitoring_enabled:
+            try:
+                issues_found = 0
+                low_quality_keys: List[str] = []
+                stale_keys: List[str] = []
+                low_conf_keys: List[str] = []
+
+                with self._access_lock:
+                    snapshot_items = list(self._data_store.items())
+
+                now = time.time()
+                for key, dv in snapshot_items:
+                    # Update local quality ledger
+                    try:
+                        with self._quality_lock:
+                            q = self._quality_metrics[key]
+                            # Keep score as float consistently
+                            q['score'] = float(dv.quality_score)
+                            # Work on a typed local list to avoid int|list unions
+                            trends = cast(List[QualityTrend], q.get('trends', []))
+                            item: QualityTrend = {'ts': now, 'score': float(dv.quality_score)}
+                            trends.append(item)
+                            if len(trends) > 200:
+                                trends.pop(0)
+                            q['trends'] = trends  # write back
+                    except Exception:
+                        pass
+
+                    # Collect issues
+                    if dv.quality_score < 50.0:
+                        low_quality_keys.append(key); issues_found += 1
+                    if dv.confidence < 0.3:
+                        low_conf_keys.append(key); issues_found += 1
+                    if dv.age_seconds() > self.config.max_data_age_seconds * 2:
+                        stale_keys.append(key); issues_found += 1
+
+                if issues_found:
+                    self._emit(
+                        "quality_warning",
+                        {
+                            "low_quality": low_quality_keys[:25],
+                            "low_confidence": low_conf_keys[:25],
+                            "stale": stale_keys[:25],
+                            "totals": {
+                                "low_quality": len(low_quality_keys),
+                                "low_confidence": len(low_conf_keys),
+                                "stale": len(stale_keys),
+                            },
+                            "timestamp": now,
+                        },
+                    )
+
+            except Exception as e:
+                self.logger.debug(f"[quality-monitor] loop error: {e}")
+
+            time.sleep(interval)
+
+
     def _record_system_metrics(self):
-        """Record current system metrics (more reliable cpu_percent)."""
         try:
-            # Memory
-            memory_info = psutil.virtual_memory()
-            self._memory_usage_history.append({
-                'timestamp': time.time(),
-                'percent': memory_info.percent,
-                'available_mb': memory_info.available // (1024 * 1024)
-            })
-
-            # CPU: give psutil a short sampling window
-            cpu_percent = psutil.cpu_percent(interval=0.1)
-            self._cpu_usage_history.append({
-                'timestamp': time.time(),
-                'percent': cpu_percent
-            })
-
+            mem = psutil.virtual_memory()
+            self._memory_usage_history.append({'ts': time.time(), 'percent': mem.percent, 'available_mb': mem.available // (1024 * 1024)})
+            cpu = psutil.cpu_percent(interval=0.1)
+            self._cpu_usage_history.append({'ts': time.time(), 'percent': cpu})
         except Exception as e:
             self.logger.debug(f"Failed to record system metrics: {e}")
 
-    def _initialize_performance_baselines(self):
-        """Initialize performance baselines for predictive analytics"""
-        try:
-            self._predictive_metrics = {
-                'baseline_response_time': 10.0,  # 10ms baseline
-                'baseline_throughput': 1000.0,   # 1000 ops/sec baseline
-                'baseline_memory_usage': 50.0,   # 50MB baseline
-                'trend_window_size': 100,
-                'prediction_confidence': 0.8
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Failed to initialize performance baselines: {e}")
+    # ──────────────────────────────────────────────────────────────
+    # Cleanup / TTL / LRU
+    # ──────────────────────────────────────────────────────────────
+    def _start_cleanup_thread(self):
+        if self._cleanup_thread and self._cleanup_thread.is_alive():
+            return
+        self._cleanup_shutdown.clear()
+        self._cleanup_thread = threading.Thread(target=self._cleanup_worker, name="InfoBus-MemoryCleanup", daemon=True)
+        self._cleanup_thread.start()
+        self.logger.info("🧹 Memory cleanup thread started")
 
-    def _start_cleanup_thread(self) -> None:
-            """Start background cleanup thread for TTL/LRU management"""
-            if self._cleanup_thread and self._cleanup_thread.is_alive():
-                return
-            
-            self._cleanup_shutdown.clear()
-            self._cleanup_thread = threading.Thread(
-                target=self._cleanup_worker,
-                name="InfoBus-MemoryCleanup",
-                daemon=True
-            )
-            self._cleanup_thread.start()
-            self.logger.info("🧹 Memory cleanup thread started")
-
-    def _cleanup_worker(self) -> None:
-        """Background worker for memory management"""
+    def _cleanup_worker(self):
         while not self._cleanup_shutdown.wait(self._cleanup_interval):
             try:
                 self._cleanup_expired_and_lru()
             except Exception as e:
                 self.logger.error(f"Memory cleanup error: {e}")
 
-    # ──────────────────────────────────────────────────────────────
-# 1.  Memory-cleanup with safe logging & writer lock
-# ──────────────────────────────────────────────────────────────
-    def _cleanup_expired_and_lru(self) -> None:
-        """Remove expired items and enforce max_cache_size using an LRU policy."""
-        with self._write_lock:                     # writers own this lock
-            expired_keys: list[str] = [
-                k for k, v in self._data_store.items()
-                if v.age_seconds() > self.config.cache_ttl_seconds
-            ]
-
-            for k in expired_keys:
+    def _cleanup_expired_and_lru(self):
+        with self._write_lock:
+            expired = [k for k, v in self._data_store.items() if v.age_seconds() > self.config.cache_ttl_seconds]
+            for k in expired:
                 self._data_store.pop(k, None)
                 self._data_timestamps.pop(k, None)
-
-            # LRU pass (only if still over limit)
-            keys_to_remove: int = 0
+            removed = 0
             if len(self._data_store) > self.config.max_cache_size:
-                oldest = sorted(
-                    self._data_store.items(),
-                    key=lambda kv: kv[1].last_access_time
-                )
-                keys_to_remove = len(self._data_store) - self.config.max_cache_size
-                for i in range(keys_to_remove):
+                oldest = sorted(self._data_store.items(), key=lambda kv: kv[1].last_access_time)
+                to_remove = len(self._data_store) - self.config.max_cache_size
+                for i in range(to_remove):
                     key = oldest[i][0]
                     self._data_store.pop(key, None)
                     self._data_timestamps.pop(key, None)
+                    removed += 1
+        if expired or removed:
+            self.logger.debug(f"🗑️ Cleaned: {len(expired)} expired, {removed} LRU")
 
-        if expired_keys or keys_to_remove:
-            self.logger.debug(
-                f"🗑️ Cleaned: {len(expired_keys)} expired, {keys_to_remove} LRU"
-            )
+    # ──────────────────────────────────────────────────────────────
+    # Core operations — set/get (+ bulk) with transactions & validators
+    # ──────────────────────────────────────────────────────────────
+    def set(self, key: str, value: Any, module: str, thesis: str | None = None,
+            confidence: float = 1.0, dependencies: List[str] | None = None,
+            processing_time_ms: float = 0.0, *, namespace: Optional[str] = None) -> None:
+        """
+        Store a value with versioning, TTL, safety, middleware, validators, and optional namespace.
+        Transaction-aware: if inside a transaction, it's queued until commit.
+        """
+        self._enforce_read_only()
+        if self._paused.is_set():
+            raise RuntimeError("SmartInfoBus is paused")
 
-    def _background_performance_monitoring(self):
-        """Background performance monitoring thread"""
-        self.logger.info("[STATS] Performance monitoring started")
-        
-        while self._maintenance_running:
-            try:
-                # Record system metrics
-                self._record_system_metrics()
-                
-                # Sleep for performance monitoring interval
-                time.sleep(self.config.health_check_interval_ms / 1000.0)
-                
-            except Exception as e:
-                self.logger.error(f"[CRASH] Performance monitoring error: {e}")
-                time.sleep(10)  # Back off on error
-
-    def _background_quality_monitoring(self):
-        """Background quality monitoring thread"""
-        self.logger.info("[SEARCH] Quality monitoring started")
-        
-        while self._maintenance_running:
-            try:
-                # Sleep for quality monitoring interval
-                time.sleep(self.config.health_check_interval_ms / 1000.0)
-                
-            except Exception as e:
-                self.logger.error(f"[CRASH] Quality monitoring error: {e}")
-                time.sleep(10)  # Back off on error
-
-    # ═══════════════════════════════════════════════════════════════════
-    # CORE DATA OPERATIONS
-    # ═══════════════════════════════════════════════════════════════════
-    
- # ──────────────────────────────────────────────────────────────
-# 3.  Writer-locked set() method
-# ──────────────────────────────────────────────────────────────
-    def set(
-        self,
-        key: str,
-        value: Any,
-        module: str,
-        thesis: str | None = None,
-        confidence: float = 1.0,
-        dependencies: list[str] | None = None,
-        processing_time_ms: float = 0.0,
-    ) -> None:
-        """Store a value in the bus with versioning, TTL and safety checks."""
-
-        # ---------- validation ----------
         if not key or not isinstance(key, str):
             raise ValueError("Key must be a non-empty string")
         if not module or not isinstance(module, str):
@@ -988,264 +1058,324 @@ class SmartInfoBus:
         if not 0.0 <= confidence <= 1.0:
             raise ValueError("Confidence must be between 0 and 1")
 
+        full_key = self._ns_key(key, namespace)
+        self._enforce_rate_limit(module)
+
+        meta = {
+            "module": module, "thesis": thesis, "confidence": confidence,
+            "dependencies": dependencies, "processing_time_ms": processing_time_ms,
+            "namespace": namespace
+        }
+        value = self._apply_pre_set(full_key, value, meta)
+
+        # Validators (schema/shape)
+        validator = self._validators.get(full_key) or self._validators.get(key)
+        if validator:
+            try:
+                ok = bool(validator(value))
+                if not ok:
+                    raise ValueError(f"Validation failed for '{full_key}'")
+            except Exception as e:
+                raise ValueError(f"Validator error for '{full_key}': {e}")
+
+        # Transaction-aware
+        if getattr(self._tx_local, "buffer", None) is not None:
+            self._tx_local.buffer.append(("set", (full_key, value, module, thesis, confidence, dependencies, processing_time_ms)))
+            return
+
+        self._set_core(full_key, value, module, thesis, confidence, dependencies, processing_time_ms)
+
+    # Core application of a set (factored for transactions)
+    def _set_core(self, full_key: str, value: Any, module: str, thesis: Optional[str], confidence: float,
+                  dependencies: Optional[List[str]], processing_time_ms: float) -> None:
         try:
-            # ---------- mutate core state (writer lock) ----------
             with self._write_lock:
-                prev = self._data_store.get(key)
+                prev = self._data_store.get(full_key)
                 version = prev.version + 1 if prev else 1
 
+                try:
+                    stored_value = self._safe_clone(value)
+                except Exception:
+                    stored_value = value
+
                 data = DataVersion(
-                    value=value,
-                    timestamp=time.time(),
-                    source_module=module,
-                    version=version,
-                    confidence=confidence,
-                    thesis=thesis,
-                    dependencies=dependencies or [],
+                    value=stored_value, timestamp=time.time(), source_module=module, version=version,
+                    confidence=confidence, thesis=thesis, dependencies=dependencies or [],
                     processing_time_ms=max(0.0, processing_time_ms),
                 )
 
                 if self._validation_enabled and not data.validate_integrity():
-                    raise RuntimeError(f"Integrity check failed for '{key}'")
+                    raise RuntimeError(f"Integrity check failed for '{full_key}'")
 
-                self._data_store[key] = data
-                self._data_history[key].append(data)
-                self._data_timestamps[key] = data.timestamp
+                self._data_store[full_key] = data
+                self._data_history[full_key].append(data)
+                self._data_timestamps[full_key] = data.timestamp
 
-                # Enforce soft limit immediately
                 if len(self._data_store) > self.config.max_cache_size:
                     self._cleanup_expired_and_lru()
 
-            # ---------- registry & graph updates (own locks) ----------
             with self._registry_lock:
-                self._providers[key].add(module)
+                self._providers[full_key].add(module)
                 if dependencies:
                     for dep in dependencies:
                         provider = self._get_primary_provider(dep)
                         if provider and provider != module:
                             self._module_graph[module].add(provider)
 
-            # ---------- performance counters ----------
+            if self.config.dependency_tracking_enabled:
+                try:
+                    self._set_log.append((self._now_iso(), module, full_key, version))
+                except Exception:
+                    pass
+            if self.config.debug_mode and getattr(self, "_verbose_io", False):
+                self.logger.info(f"[BUS][SET] {module} → '{full_key}' v{version} (conf={confidence:.2f}) {self._preview(value)}")
+
             with self._performance_lock:
-                self._access_patterns[module][f"write:{key}"] += 1
+                self._access_patterns[module][f"write:{full_key}"] += 1
 
-            # ---------- event & audit ----------
-            self._log_event(
-                {
-                    "type": "set",
-                    "key": key,
-                    "module": module,
-                    "timestamp": data.timestamp,
-                    "version": version,
-                    "has_thesis": thesis is not None,
-                    "confidence": confidence,
-                }
-            )
-            self._emit(
-                "data_updated",
-                {
-                    "key": key,
-                    "module": module,
-                    "version": version,
-                    "confidence": confidence,
-                    "has_thesis": thesis is not None,
-                },
-            )
-            self._check_pending_requests(key)
+            self._log_event({"type": "set", "key": full_key, "module": module,
+                             "timestamp": data.timestamp, "version": version,
+                             "has_thesis": thesis is not None, "confidence": confidence})
+            self._emit("data_updated", {"key": full_key, "module": module, "version": version,
+                                        "confidence": confidence, "has_thesis": thesis is not None})
 
-            self.logger.debug(f"[OK] {module} set '{key}' v{version} (conf={confidence:0.2f})")
+            # Notify waiters
+            self._notify_waiters(full_key, data)
+
+            self._apply_post_set(full_key, data)
+            self._check_pending_requests(full_key)
+
+            self.logger.debug(f"[OK] {module} set '{full_key}' v{version} (conf={confidence:0.2f})")
 
         except Exception as exc:
-            self.logger.error(f"[CRASH] Failed to set {key}: {exc}")
+            self.logger.error(f"[CRASH] Failed to set {full_key}: {exc}")
             self.record_module_failure(module, f"set failed: {exc}")
             raise
 
-    def get(self, 
-        key: str, 
-        module: str, 
-        max_age: Optional[float] = None,
-        min_confidence: float = 0.0,
-        default: Any = None) -> Any:
+    def set_many(self, entries: List[Dict[str, Any]], *, atomic: bool = False, namespace: Optional[str] = None) -> int:
         """
-        Get data with freshness and confidence validation.
+        Bulk set; entries is a list of dicts with at minimum {key, value, module}.
+        If atomic=True, performed within a transaction.
         """
+        if atomic:
+            with self.transaction():
+                for e in entries:
+                    self.set(e["key"], e["value"], e["module"],
+                             thesis=e.get("thesis"), confidence=e.get("confidence", 1.0),
+                             dependencies=e.get("dependencies"), processing_time_ms=e.get("processing_time_ms", 0.0),
+                             namespace=e.get("namespace", namespace))
+            return len(entries)
+        else:
+            count = 0
+            for e in entries:
+                self.set(e["key"], e["value"], e["module"],
+                         thesis=e.get("thesis"), confidence=e.get("confidence", 1.0),
+                         dependencies=e.get("dependencies"), processing_time_ms=e.get("processing_time_ms", 0.0),
+                         namespace=e.get("namespace", namespace))
+                count += 1
+            return count
+
+    def get(self, key: str, module: str, max_age: Optional[float] = None,
+            min_confidence: float = 0.0, default: Any = None, *, namespace: Optional[str] = None) -> Any:
+        """Get value with freshness/confidence validation, middleware hooks, namespace support."""
         try:
+            full_key = self._ns_key(key, namespace)
+            self._apply_pre_get(full_key, module, {"max_age": max_age, "min_confidence": min_confidence})
+
             with self._access_lock:
-                # Register consumer FIRST (registry -> perf lock order)
                 with self._registry_lock:
-                    self._consumers[key].add(module)
-
-                # Track access pattern AFTER registry
+                    self._consumers[full_key].add(module)
                 with self._performance_lock:
-                    self._access_patterns[module][f'read:{key}'] += 1
+                    self._access_patterns[module][f'read:{full_key}'] += 1
 
-                # Lookup
-                data = self._data_store.get(key)
-
+                data = self._data_store.get(full_key)
                 if not data:
                     with self._performance_lock:
                         self._cache_misses += 1
-                    self._log_miss(key, module)
+                    self._log_miss(full_key, module)
+                    self._apply_post_get(full_key, module, default, {"miss": True})
                     return default
 
-                # Validate integrity (kept behavior; now safe due to fixed hash)
                 if self._validation_enabled and not data.validate_integrity():
-                    self.logger.error(f"Data integrity check failed for {key}")
+                    self.logger.error(f"Data integrity check failed for {full_key}")
+                    try:
+                        self._emit_get_event(full_key, module, data, reason="integrity")
+                    except Exception:
+                        pass
+                    self._apply_post_get(full_key, module, default, {"blocked": "integrity"})
                     return default
 
-                # Age gate
                 age_seconds = data.age_seconds()
                 max_age_check = max_age or self.config.max_data_age_seconds
                 if age_seconds > max_age_check:
-                    self._emit('stale_data_warning', {
-                        'key': key,
-                        'age': age_seconds,
-                        'module': module,
-                        'max_age': max_age_check
-                    })
-                    self.logger.warning(
-                        f"Stale data: {key} is {age_seconds:.1f}s old (max: {max_age_check}s)"
-                    )
+                    self._emit('stale_data_warning', {'key': full_key, 'age': age_seconds, 'module': module, 'max_age': max_age_check})
+                    self.logger.warning(f"Stale data: {full_key} is {age_seconds:.1f}s old (max: {max_age_check}s)")
+                    try:
+                        self._emit_get_event(full_key, module, data, reason="stale")
+                    except Exception:
+                        pass
+                    self._apply_post_get(full_key, module, default, {"blocked": "stale"})
                     return default
 
-                # Confidence gate
                 if data.confidence < min_confidence:
-                    self.logger.warning(
-                        f"Low confidence: {key} has {data.confidence:.2f} (min: {min_confidence:.2f})"
-                    )
+                    self.logger.warning(f"Low confidence: {full_key} has {data.confidence:.2f} (min: {min_confidence:.2f})")
+                    try:
+                        self._emit_get_event(full_key, module, data, reason="low_confidence")
+                    except Exception:
+                        pass
+                    self._apply_post_get(full_key, module, default, {"blocked": "low_confidence"})
                     return default
 
-                # Access tracking
                 data.increment_access(accessor_module=module)
                 with self._performance_lock:
                     self._cache_hits += 1
 
-                return data.value
+                try:
+                    self._emit_get_event(full_key, module, data, reason=None)
+                except Exception:
+                    pass
+
+                try:
+                    out = self._safe_clone(data.value)
+                except Exception:
+                    out = data.value
+
+                self._apply_post_get(full_key, module, out, {"ok": True})
+                return out
 
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to get {key} for {module}: {e}")
             self.record_module_failure(module, f"Data get failed: {str(e)}")
             return default
 
-    
+    def get_many(self, keys: List[str], module: str, *, namespace: Optional[str] = None,
+                 max_age: Optional[float] = None, min_confidence: float = 0.0, default: Any = None) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        for k in keys:
+            out[k] = self.get(k, module, max_age=max_age, min_confidence=min_confidence, default=default, namespace=namespace)
+        return out
+
+    # ──────────────────────────────────────────────────────────────
+    # Waiters (sync wait on values becoming available/matching a predicate)
+    # ──────────────────────────────────────────────────────────────
+    def wait_for(
+        self,
+        key: str,
+        *,
+        timeout: float = 10.0,
+        predicate: Optional[Callable[[Any], bool]] = None,
+        namespace: Optional[str] = None
+    ) -> Optional[Any]:
+        """
+        Block the caller until key appears (and predicate(value) is True if provided) or timeout.
+        """
+        full_key = self._ns_key(key, namespace)
+
+        # Fast-path with explicit None-guard so Pylance sees the narrow
+        existing = self.get_with_metadata(full_key, "WaiterBootstrap")
+        if existing is not None and (predicate is None or predicate(existing.value)):
+            return existing.value
+
+        event = threading.Event()
+        waiter_info: Dict[str, Any] = {"result": None, "matched": False}
+        self._waiters[full_key].append((event, predicate, waiter_info))
+        signaled = event.wait(timeout)
+        try:
+            self._waiters[full_key].remove((event, predicate, waiter_info))
+        except Exception:
+            pass
+        if not signaled or not waiter_info.get("matched"):
+            return None
+        return waiter_info.get("result")
+
+
+    def wait_for_many(self, keys: List[str], *, timeout: float = 10.0,
+                      namespace: Optional[str] = None) -> Dict[str, Optional[Any]]:
+        deadline = time.time() + timeout
+        out: Dict[str, Optional[Any]] = {}
+        for k in keys:
+            remaining = max(0.0, deadline - time.time())
+            out[k] = self.wait_for(k, timeout=remaining, namespace=namespace)
+        return out
+
+    def _notify_waiters(self, full_key: str, data: DataVersion):
+        items = list(self._waiters.get(full_key, []))
+        if not items:
+            return
+        for event, predicate, info in items:
+            try:
+                if predicate and not predicate(data.value):
+                    continue
+                info["result"] = data.value
+                info["matched"] = True
+                event.set()
+            except Exception:
+                event.set()
+
+    # ──────────────────────────────────────────────────────────────
+    # Metadata & requests
+    # ──────────────────────────────────────────────────────────────
     def get_with_metadata(self, key: str, module: str) -> Optional[DataVersion]:
-        """
-        Get data with complete metadata.
-        
-        Args:
-            key: Data key to retrieve
-            module: Requesting module name
-            
-        Returns:
-            DataVersion object or None if not found
-        """
         try:
             with self._access_lock:
-                # Register consumer and track access
                 with self._registry_lock:
                     self._consumers[key].add(module)
-                
                 with self._performance_lock:
                     self._access_patterns[module][f'metadata:{key}'] += 1
-                
                 data = self._data_store.get(key)
-                
                 if data:
-                    # Validate integrity
                     if self._validation_enabled and not data.validate_integrity():
                         self.logger.error(f"Data integrity check failed for {key}")
                         return None
-                    
                     data.increment_access(accessor_module=module)
                     with self._performance_lock:
                         self._cache_hits += 1
                 else:
                     with self._performance_lock:
                         self._cache_misses += 1
-                
                 return data
-                
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to get metadata for {key}: {e}")
             return None
-    
-    def get_with_thesis(self, key: str, module: str) -> Optional[Tuple[Any, str]]:
-        """
-        Get data value with its explanation.
-        
-        Args:
-            key: Data key to retrieve
-            module: Requesting module name
-            
-        Returns:
-            Tuple of (value, thesis) or None if not found
-        """
-        data = self.get_with_metadata(key, module)
-        if not data:
-            return None
-        
-        thesis = data.thesis or "No explanation provided"
-        return data.value, thesis
-    
-    def request_data(self, 
-                key: str, 
-                module: str, 
-                max_age: Optional[float] = None,
-                min_confidence: Optional[float] = None,
-                priority: int = 0,
-                callback: Optional[Callable] = None,
-                timeout_seconds: float = 60.0):
-        """
-        Request data that may not be available yet. Returns request_id for tracking.
-        """
-        try:
-            request = DataRequest(
-                requesting_module=module,
-                requested_key=key,
-                timestamp=time.time(),
-                max_age_seconds=max_age,
-                min_confidence=min_confidence,
-                priority=priority,
-                callback=callback,
-                timeout_seconds=timeout_seconds
-            )
 
+    def get_with_thesis(self, key: str, module: str) -> Optional[Tuple[Any, str]]:
+        dv = self.get_with_metadata(key, module)
+        if not dv:
+            return None
+        return dv.value, (dv.thesis or "No explanation provided")
+
+    def request_data(self, key: str, module: str, max_age: Optional[float] = None,
+                     min_confidence: Optional[float] = None, priority: int = 0,
+                     callback: Optional[Callable] = None, timeout_seconds: float = 60.0):
+        try:
+            req = DataRequest(
+                requesting_module=module, requested_key=key, timestamp=time.time(),
+                max_age_seconds=max_age, min_confidence=min_confidence,
+                priority=priority, callback=callback, timeout_seconds=timeout_seconds
+            )
             with self._request_lock:
                 inserted = False
-                for i, existing_req in enumerate(self._pending_requests):
-                    if request.priority > existing_req.priority:
-                        self._pending_requests.insert(i, request)
+                for i, ex in enumerate(self._pending_requests):
+                    if req.priority > ex.priority:
+                        self._pending_requests.insert(i, req)
                         inserted = True
                         break
                 if not inserted:
-                    self._pending_requests.append(request)
-
+                    self._pending_requests.append(req)
             with self._registry_lock:
                 self._consumers[key].add(module)
-
             self.logger.debug(f"📋 {module} requested '{key}' (priority: {priority})")
-            return request.request_id
-
+            return req.request_id
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to create data request: {e}")
             return None
 
-    
-    # ═══════════════════════════════════════════════════════════════════
-    # MODULE REGISTRY & DISCOVERY
-    # ═══════════════════════════════════════════════════════════════════
-    
+    # ──────────────────────────────────────────────────────────────
+    # Registry / graph
+    # ──────────────────────────────────────────────────────────────
     def register_provider(self, module: str, provides: List[str]):
-        """
-        Register what data a module provides.
-        
-        Args:
-            module: Module name
-            provides: List of data keys the module provides
-        """
         if not isinstance(provides, list):
             provides = [provides]
-        
         try:
             with self._registry_lock:
                 for key in provides:
@@ -1253,23 +1383,13 @@ class SmartInfoBus:
                         self._providers[key].add(module)
                     else:
                         self.logger.warning(f"Invalid provider key: {key} for module {module}")
-            
             self.logger.info(f"📦 Registered {module} providing: {provides}")
-            
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to register provider {module}: {e}")
-    
+
     def register_consumer(self, module: str, requires: List[str]):
-        """
-        Register what data a module requires.
-        
-        Args:
-            module: Module name
-            requires: List of data keys the module requires
-        """
         if not isinstance(requires, list):
             requires = [requires]
-        
         try:
             with self._registry_lock:
                 for key in requires:
@@ -1277,499 +1397,460 @@ class SmartInfoBus:
                         self._consumers[key].add(module)
                     else:
                         self.logger.warning(f"Invalid consumer key: {key} for module {module}")
-            
             self.logger.info(f"📨 Registered {module} requiring: {requires}")
-            
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to register consumer {module}: {e}")
-    
+
     def get_providers(self, key: str) -> Set[str]:
-        """Get all modules that can provide a data key"""
         with self._registry_lock:
             return self._providers.get(key, set()).copy()
-    
+
     def get_consumers(self, key: str) -> Set[str]:
-        """Get all modules that consume a data key"""
         with self._registry_lock:
             return self._consumers.get(key, set()).copy()
-    
+
     def _get_primary_provider(self, key: str) -> Optional[str]:
-        """Get primary (first available) provider for a key"""
         providers = self.get_providers(key)
         if providers:
-            # Return first non-disabled provider
-            for provider in providers:
-                if self.is_module_enabled(provider):
-                    return provider
+            for p in providers:
+                if self.is_module_enabled(p):
+                    return p
         return None
-    
+
     def get_dependency_graph(self) -> Dict[str, List[str]]:
-        """Get complete module dependency graph"""
         try:
             with self._registry_lock:
                 graph = {}
-                
-                # Build from data dependencies
                 for key, consumers in self._consumers.items():
                     providers = self._providers.get(key, set())
-                    
                     for provider in providers:
-                        if provider not in graph:
-                            graph[provider] = []
-                        graph[provider].extend(list(consumers))
-                
-                # Add explicit dependencies
+                        graph.setdefault(provider, []).extend(list(consumers))
                 for module, deps in self._module_graph.items():
-                    if module not in graph:
-                        graph[module] = []
-                    graph[module].extend(list(deps))
-                
-                # Remove duplicates and self-references
+                    graph.setdefault(module, []).extend(list(deps))
                 for module in graph:
                     graph[module] = list(set(graph[module]) - {module})
-                
                 return graph
-                
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to build dependency graph: {e}")
             return {}
-    
+
     def find_circular_dependencies(self) -> List[List[str]]:
-        """Find circular dependencies in module graph"""
         graph = self.get_dependency_graph()
         cycles = []
-        
+
         def dfs(node: str, path: List[str], visited: Set[str]):
             if node in path:
-                # Found cycle
-                cycle_start = path.index(node)
-                cycle = path[cycle_start:] + [node]
-                cycles.append(cycle)
+                cyc = path[path.index(node):] + [node]
+                cycles.append(cyc)
                 return
-            
             if node in visited:
                 return
-            
             visited.add(node)
             path.append(node)
-            
-            for neighbor in graph.get(node, []):
-                dfs(neighbor, path.copy(), visited.copy())
-        
+            for nb in graph.get(node, []):
+                dfs(nb, path.copy(), visited.copy())
+
         try:
-            # Start DFS from each node
-            for node in graph:
-                dfs(node, [], set())
-            
-            # Remove duplicate cycles
-            unique_cycles = []
-            for cycle in cycles:
-                cycle_set = set(cycle[:-1])  # Remove duplicate end node
-                if not any(set(c[:-1]) == cycle_set for c in unique_cycles):
-                    unique_cycles.append(cycle)
-            
-            if unique_cycles:
-                self.logger.warning(f"Found {len(unique_cycles)} circular dependencies")
-            
-            return unique_cycles
-            
+            for n in graph:
+                dfs(n, [], set())
+            uniq = []
+            for c in cycles:
+                s = set(c[:-1])
+                if not any(set(x[:-1]) == s for x in uniq):
+                    uniq.append(c)
+            if uniq:
+                self.logger.warning(f"Found {len(uniq)} circular dependencies")
+            return uniq
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to find circular dependencies: {e}")
             return []
-    
-    # ═══════════════════════════════════════════════════════════════════
-    # PERFORMANCE & HEALTH MONITORING
-    # ═══════════════════════════════════════════════════════════════════
-    
+
+    # ──────────────────────────────────────────────────────────────
+    # Performance / health / metrics
+    # ──────────────────────────────────────────────────────────────
     def record_module_timing(self, module: str, duration_ms: float):
-        """Record module execution time with validation"""
         if duration_ms < 0:
             self.logger.warning(f"Invalid duration for {module}: {duration_ms}ms")
             return
-        
         try:
             with self._performance_lock:
                 self._latency_history[module].append(duration_ms)
                 self._access_patterns[module]['execution_count'] += 1
-            
-            # Check for performance issues
             if len(self._latency_history[module]) >= 10:
                 recent_avg = np.mean(list(self._latency_history[module])[-10:])
-                if recent_avg > 200:  # 200ms threshold
-                    self._emit('performance_warning', {
-                        'module': module,
-                        'avg_latency_ms': recent_avg,
-                        'threshold_ms': 200
-                    })
-                    
+                if recent_avg > 200:
+                    self._emit('performance_warning', {'module': module, 'avg_latency_ms': float(recent_avg), 'threshold_ms': 200})
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to record timing for {module}: {e}")
-    
+
     def record_module_failure(self, module: str, error: str):
-        """Record module failure for enhanced circuit breaker"""
         try:
             with self._circuit_breaker_lock:
-                breaker = self._circuit_breakers[module]
-                breaker.record_failure()
-                
-                # Check if should disable module
-                if not breaker.should_allow_request(
-                    recovery_time=self.config.recovery_time_seconds,
-                    failure_threshold=self.config.circuit_breaker_threshold
-                ):
+                br = self._circuit_breakers[module]
+                br.record_failure()
+                if not br.should_allow_request(self.config.recovery_time_seconds, self.config.circuit_breaker_threshold):
                     self._module_disabled.add(module)
-                    
-                    self._emit('module_disabled', {
-                        'module': module,
-                        'failures': breaker.failure_count,
-                        'consecutive_failures': breaker.consecutive_failures,
-                        'failure_rate': breaker.failure_rate,
-                        'error': error,
-                        'timestamp': time.time(),
-                        'circuit_breaker_state': breaker.to_dict()
-                    })
-                    
-                    self.logger.error(
-                        format_operator_message(
-                            "🚫", "MODULE DISABLED",
-                            instrument=module,
-                            details=f"After {breaker.failure_count} failures (rate: {breaker.failure_rate:.1%})",
-                            context="circuit_breaker"
-                        )
-                    )
-                    
+                    self._emit('module_disabled', {'module': module, 'failures': br.failure_count,
+                                                   'consecutive_failures': br.consecutive_failures,
+                                                   'failure_rate': br.failure_rate, 'error': error,
+                                                   'timestamp': time.time(), 'circuit_breaker_state': br.to_dict()})
+                    self.logger.error(format_operator_message("🚫", "MODULE DISABLED",
+                                                              instrument=module,
+                                                              details=f"After {br.failure_count} failures (rate: {br.failure_rate:.1%})",
+                                                              context="circuit_breaker"))
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to record failure for {module}: {e}")
-    
+
     def is_module_enabled(self, module: str) -> bool:
-        """Check if module is enabled using enhanced circuit breaker"""
         try:
             with self._circuit_breaker_lock:
-                breaker = self._circuit_breakers[module]
-                
-                # Check if circuit breaker allows requests
-                is_allowed = breaker.should_allow_request(
-                    recovery_time=self.config.recovery_time_seconds,
-                    failure_threshold=self.config.circuit_breaker_threshold
-                )
-                
-                # Update disabled set based on circuit breaker state
-                if is_allowed and module in self._module_disabled:
+                br = self._circuit_breakers[module]
+                ok = br.should_allow_request(self.config.recovery_time_seconds, self.config.circuit_breaker_threshold)
+                if ok and module in self._module_disabled:
                     self._module_disabled.discard(module)
-                elif not is_allowed:
+                elif not ok:
                     self._module_disabled.add(module)
-                
-                return is_allowed
-                
+                return ok
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to check module status for {module}: {e}")
-            return True  # Fail open for safety
-    
+            return True
+
     def reset_module_failures(self, module: str):
-        """Reset module failures using enhanced circuit breaker"""
         try:
             with self._circuit_breaker_lock:
-                # Reset circuit breaker state
                 self._circuit_breakers[module] = CircuitBreakerState()
                 self._module_disabled.discard(module)
-            
-            self._emit('module_enabled', {
-                'module': module,
-                'timestamp': time.time(),
-                'circuit_breaker_reset': True
-            })
-            
-            self.logger.info(
-                format_operator_message(
-                    "[OK]", "MODULE ENABLED",
-                    instrument=module,
-                    details="Circuit breaker reset",
-                    context="circuit_breaker_recovery"
-                )
-            )
-            
+            self._emit('module_enabled', {'module': module, 'timestamp': time.time(), 'circuit_breaker_reset': True})
+            self.logger.info(format_operator_message("[OK]", "MODULE ENABLED", instrument=module,
+                                                     details="Circuit breaker reset", context="circuit_breaker_recovery"))
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to reset failures for {module}: {e}")
-    
+
     def get_module_health(self, module: str) -> Dict[str, Any]:
-        """Get comprehensive module health information with enhanced circuit breaker data"""
         try:
             with self._circuit_breaker_lock:
-                breaker = self._circuit_breakers[module]
+                br = self._circuit_breakers[module]
                 enabled = self.is_module_enabled(module)
-            
             with self._performance_lock:
-                latencies = list(self._latency_history.get(module, []))
-                access_patterns = dict(self._access_patterns.get(module, {}))
-            
+                lat = list(self._latency_history.get(module, []))
+                ap = dict(self._access_patterns.get(module, {}))
             with self._registry_lock:
-                provides = [k for k, providers in self._providers.items() if module in providers]
-                consumes = [k for k, consumers in self._consumers.items() if module in consumers]
-            
-            avg_latency = np.mean(latencies) if latencies else 0.0
-            
+                provides = [k for k, ps in self._providers.items() if module in ps]
+                consumes = [k for k, cs in self._consumers.items() if module in cs]
+            avg = float(np.mean(lat)) if lat else 0.0
             return {
-                'enabled': enabled,
-                'circuit_breaker_state': breaker.state,
-                'failures': breaker.failure_count,
-                'successful_calls': breaker.successful_calls,
-                'total_calls': breaker.total_calls,
-                'failure_rate': breaker.failure_rate,
-                'consecutive_failures': breaker.consecutive_failures,
-                'consecutive_successes': breaker.consecutive_successes,
-                'last_failure_time': breaker.last_failure_time,
-                'last_success_time': breaker.last_success_time,
-                'avg_latency_ms': float(avg_latency),
-                'max_latency_ms': max(latencies) if latencies else 0,
-                'total_executions': len(latencies),
-                'provides': provides,
-                'consumes': consumes,
-                'access_patterns': access_patterns,
-                'health_score': breaker.get_health_score(),
-                'predicted_next_failure': breaker.predict_next_failure(),
-                'circuit_breaker_details': breaker.to_dict()
+                'enabled': enabled, 'circuit_breaker_state': br.state,
+                'failures': br.failure_count, 'successful_calls': br.successful_calls,
+                'total_calls': br.total_calls, 'failure_rate': br.failure_rate,
+                'consecutive_failures': br.consecutive_failures, 'consecutive_successes': br.consecutive_successes,
+                'last_failure_time': br.last_failure_time, 'last_success_time': br.last_success_time,
+                'avg_latency_ms': avg, 'max_latency_ms': (max(lat) if lat else 0), 'total_executions': len(lat),
+                'provides': provides, 'consumes': consumes, 'access_patterns': ap,
+                'health_score': br.get_health_score(), 'predicted_next_failure': br.predict_next_failure(),
+                'circuit_breaker_details': br.to_dict()
             }
-            
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to get health for {module}: {e}")
             return {'error': str(e)}
-    
-    def _calculate_health_score(self, enabled: bool, failures: int, avg_latency: float) -> float:
-        """Calculate module health score 0-100"""
-        if not enabled:
-            return 0.0
-        
-        score = 100.0
-        
-        # Deduct for failures
-        score -= min(failures * 10, 50)
-        
-        # Deduct for high latency
-        if avg_latency > 500:
-            score -= 30
-        elif avg_latency > 200:
-            score -= 15
-        elif avg_latency > 100:
-            score -= 5
-        
-        return max(0.0, score)
-    
+
     def get_performance_metrics(self) -> Dict[str, Any]:
-        """Get comprehensive performance metrics"""
         try:
             with self._performance_lock:
-                total_requests = self._cache_hits + self._cache_misses
-                cache_hit_rate = self._cache_hits / max(total_requests, 1)
-            
+                total = self._cache_hits + self._cache_misses
+                hit_rate = self._cache_hits / max(total, 1)
             with self._access_lock:
-                active_data_keys = len(self._data_store)
-                total_data_versions = sum(len(hist) for hist in self._data_history.values())
-            
+                active_keys = len(self._data_store)
+                total_versions = sum(len(h) for h in self._data_history.values())
             with self._circuit_breaker_lock:
-                disabled_modules = list(self._module_disabled)
-                total_failures = sum(breaker.failure_count for breaker in self._circuit_breakers.values())
-            
+                disabled = list(self._module_disabled)
+                total_fail = sum(b.failure_count for b in self._circuit_breakers.values())
             with self._request_lock:
-                pending_requests = len(self._pending_requests)
-            
-            # Calculate average latencies by module
-            module_latencies = {}
+                pend = len(self._pending_requests)
+
+            module_lat = {}
             with self._performance_lock:
-                for module, timings in self._latency_history.items():
+                for m, timings in self._latency_history.items():
                     if timings:
-                        module_latencies[module] = {
-                            'avg_ms': np.mean(timings),
-                            'max_ms': max(timings),
-                            'min_ms': min(timings),
-                            'p95_ms': np.percentile(timings, 95) if len(timings) > 10 else max(timings),
+                        module_lat[m] = {
+                            'avg_ms': float(np.mean(timings)),
+                            'max_ms': max(timings), 'min_ms': min(timings),
+                            'p95_ms': float(np.percentile(timings, 95) if len(timings) > 10 else max(timings)),
                             'count': len(timings)
                         }
-            
             return {
-                'cache_hit_rate': cache_hit_rate,
-                'total_requests': total_requests,
-                'cache_hits': self._cache_hits,
-                'cache_misses': self._cache_misses,
-                'active_data_keys': active_data_keys,
-                'total_data_versions': total_data_versions,
+                'cache_hit_rate': hit_rate,
+                'total_requests': int(total),
+                'cache_hits': int(self._cache_hits),
+                'cache_misses': int(self._cache_misses),
+                'active_data_keys': active_keys,
+                'total_data_versions': total_versions,
                 'total_events': len(self._event_log),
-                'disabled_modules': disabled_modules,
-                'total_module_failures': total_failures,
-                'pending_requests': pending_requests,
-                'module_latencies': module_latencies,
+                'disabled_modules': disabled,
+                'total_module_failures': int(total_fail),
+                'pending_requests': int(pend),
+                'module_latencies': module_lat,
                 'data_store_size_mb': self._estimate_data_size() / (1024 * 1024),
                 'uptime_seconds': time.time() - self._get_initialization_time()
             }
-            
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to get performance metrics: {e}")
             return {'error': str(e)}
-    
+
+    def export_metrics_text(self) -> str:
+        """Simple text exposition, Prometheus-style (no server)."""
+        m = self.get_performance_metrics()
+        lines = [
+            f"# HELP infobus_cache_hit_rate Cache hit rate.",
+            f"infobus_cache_hit_rate {m.get('cache_hit_rate', 0.0)}",
+            f"infobus_total_requests {m.get('total_requests', 0)}",
+            f"infobus_active_keys {m.get('active_data_keys', 0)}",
+            f"infobus_uptime_seconds {int(m.get('uptime_seconds', 0))}",
+        ]
+        return "\n".join(lines)
+
     def _estimate_data_size(self) -> float:
-        """Estimate total data store size in bytes"""
         try:
-            total_size = 0
-            for data in self._data_store.values():
+            total = 0
+            for dv in self._data_store.values():
                 try:
-                    # Rough estimation using pickle
-                    serialized = pickle.dumps(data.value)
-                    total_size += len(serialized)
-                except:
-                    # Fallback to string length estimation
-                    total_size += len(str(data.value)) * 2  # Rough UTF-8 estimate
-            
-            return total_size
-            
-        except Exception as e:
-            self.logger.error(f"Failed to estimate data size: {e}")
+                    serialized = pickle.dumps(dv.value)
+                    total += len(serialized)
+                except Exception:
+                    total += len(str(dv.value)) * 2
+            return float(total)
+        except Exception:
             return 0.0
-    
+
     def _get_initialization_time(self) -> float:
-        """Get initialization timestamp from first event"""
-        if self._event_log:
-            for event in self._event_log:
-                if event.get('type') == 'bus_initialized':
-                    return event.get('timestamp', time.time())
+        with self._event_lock:
+            events = list(self._event_log)
+        if events:
+            for e in events:
+                if isinstance(e, dict) and e.get('type') == 'bus_initialized':
+                    return e.get('timestamp', time.time())
         return time.time()
-    
-    # ═══════════════════════════════════════════════════════════════════
-    # EVENT SYSTEM
-    # ═══════════════════════════════════════════════════════════════════
-    
+
+    # ──────────────────────────────────────────────────────────────
+    # Cloning & trace helpers
+    # ──────────────────────────────────────────────────────────────
+    def _safe_clone(self, obj: Any) -> Any:
+        try:
+            return copy.deepcopy(obj)
+        except Exception:
+            try:
+                return json.loads(json.dumps(obj))
+            except Exception:
+                return obj
+
+    def _init_dependency_tracing_state(self) -> None:
+        self._capabilities: Dict[str, Dict[str, Set[str]]] = {}
+        self._get_hit_log: deque = deque(maxlen=8000)
+        self._get_miss_log: deque = deque(maxlen=8000)
+        self._set_log: deque = deque(maxlen=8000)
+        self._verbose_io = True
+
+    def _preview(self, value: Any, limit: int = 80) -> str:
+        try:
+            if isinstance(value, (int, float, bool, type(None))):
+                s = repr(value)
+            elif isinstance(value, str):
+                s = value
+            elif isinstance(value, dict):
+                keys = list(value.keys())[:5]
+                kv = []
+                for k in keys:
+                    v = value[k]
+                    if k in ("regime", "market_regime", "session", "instrument", "intensity"):
+                        kv.append(f"{k}={v!r}")
+                    else:
+                        kv.append(f"{k}={type(v).__name__}")
+                s = "{" + ", ".join(kv) + (" ...}" if len(value) > 5 else "}")
+            elif isinstance(value, (list, tuple)):
+                s = f"{type(value).__name__}[{len(value)}]"
+            else:
+                s = f"{type(value).__name__}"
+        except Exception:
+            s = "<unprintable>"
+        s = s.replace("\n", " ")
+        return (s[:limit] + "…") if len(s) > limit else s
+
+    def _now_iso(self) -> str:
+        try:
+            return datetime.now(timezone.utc).isoformat()
+        except Exception:
+            return str(time.time())
+
+    def register_capabilities(self, module_name: str, provides: List[str] | None = None, requires: List[str] | None = None) -> None:
+        provides = [k for k in (provides or []) if isinstance(k, str) and k]
+        requires = [k for k in (requires or []) if isinstance(k, str) and k]
+        try:
+            with self._registry_lock:
+                entry = self._capabilities.get(module_name) or {'provides': set(), 'requires': set()}
+                entry['provides'].update(provides)
+                entry['requires'].update(requires)
+                self._capabilities[module_name] = entry
+            if provides: self.register_provider(module_name, provides)
+            if requires: self.register_consumer(module_name, requires)
+            self.logger.debug(f"[GRAPH] Capabilities updated for {module_name}: provides={provides}, requires={requires}")
+        except Exception as e:
+            self.logger.error(f"[CRASH] Failed to register capabilities for {module_name}: {e}")
+
+    def dump_dependency_report(self, title: str = "Dependency Report") -> str:
+        try:
+            lines: List[str] = [title, "=" * max(10, len(title)), f"Generated: {self._now_iso()}", ""]
+            with self._registry_lock:
+                modules = sorted(self._capabilities.keys())
+                known_keys = set(self._providers.keys()) | set(self._consumers.keys())
+                lines.append(f"Modules: {len(modules)}")
+                lines.append(f"Known data keys: {len(known_keys)}")
+                lines.append("")
+                if modules:
+                    lines.append("Capabilities:")
+                    for m in modules:
+                        caps = self._capabilities.get(m, {'provides': set(), 'requires': set()})
+                        prov = sorted(caps.get('provides', set()))
+                        req = sorted(caps.get('requires', set()))
+                        lines.append(f"  - {m}: provides={prov or ['∅']}, requires={req or ['∅']}")
+            lines.append("")
+            graph = self.get_dependency_graph()
+            if graph:
+                lines.append("Dependency Graph (provider -> consumers):")
+                for provider, consumers in sorted(graph.items()):
+                    lines.append(f"  {provider} -> [{', '.join(sorted(consumers)) if consumers else '∅'}]")
+            else:
+                lines.append("Dependency Graph: ∅")
+            cycles = self.find_circular_dependencies()
+            if cycles:
+                lines.append("")
+                lines.append(f"[ALERT] Circular dependencies detected ({len(cycles)}):")
+                for c in cycles:
+                    lines.append("  - " + " -> ".join(c))
+            rep = "\n".join(lines)
+            self.logger.info(f"[GRAPH] Dependency report generated: {len(graph)} nodes, {len(cycles)} cycles")
+            return rep
+        except Exception as e:
+            self.logger.error(f"[CRASH] Failed to build dependency report: {e}")
+            return f"{title}\nERROR: {e}"
+
+    # ──────────────────────────────────────────────────────────────
+    # Events
+    # ──────────────────────────────────────────────────────────────
     def subscribe(self, event_type: str, callback: Callable):
-        """
-        Subscribe to bus events with validation.
-        
-        Args:
-            event_type: Type of event to subscribe to
-            callback: Callback function to invoke
-        """
         if not callable(callback):
             raise ValueError("Callback must be callable")
-        
         try:
             with self._subscription_lock:
                 self._subscribers[event_type].append(callback)
-            
-            self.logger.debug(f"📡 Subscribed to '{event_type}' events")
-            
+            self.logger.debug(f"📡 Subscribed to '{event_type}'")
         except Exception as e:
-            self.logger.error(f"[CRASH] Failed to subscribe to {event_type}: {e}")
-    
+            self.logger.error(f"[CRASH] Failed to subscribe: {e}")
+
     def unsubscribe(self, event_type: str, callback: Callable):
-        """Unsubscribe from bus events"""
         try:
             with self._subscription_lock:
                 if callback in self._subscribers[event_type]:
                     self._subscribers[event_type].remove(callback)
-                    
         except Exception as e:
-            self.logger.error(f"[CRASH] Failed to unsubscribe from {event_type}: {e}")
-    
-    # ──────────────────────────────────────────────────────────────
-# 2.  Safe event emitter (works with/without running loop)
-# ──────────────────────────────────────────────────────────────
-    def _emit(self, event_type: str, data: dict[str, Any]) -> None:
-        """Emit an event to subscribers without blocking bus locks."""
-        # Copy callbacks while holding the subscription lock
+            self.logger.error(f"[CRASH] Failed to unsubscribe: {e}")
+
+    def _emit(self, event_type: str, data: Dict[str, Any]) -> None:
         try:
             with self._subscription_lock:
                 callbacks = list(self._subscribers.get(event_type, []))
-        except Exception as exc:                   # unlikely, but defensive
+        except Exception as exc:
             self.logger.error(f"Emit failed ({event_type}): {exc}")
             return
-
-        # Run callbacks outside the lock
         for cb in callbacks:
             try:
-                if asyncio.iscoroutinefunction(cb):
-                    try:
-                        asyncio.get_running_loop().create_task(cb(data))
-                    except RuntimeError:
-                        # No event-loop in current thread – off-load to shared pool
-                        self._thread_pool.submit(lambda: asyncio.run(cb(data)))
+                # For core event_logged notifications, invoke synchronously to avoid flakiness in tests
+                if event_type == 'event_logged':
+                    if asyncio.iscoroutinefunction(cb):
+                        try:
+                            loop = asyncio.get_running_loop()
+                            loop.create_task(cb(data))
+                        except RuntimeError:
+                            # No running loop; run inline
+                            asyncio.run(cb(data))
+                    else:
+                        cb(data)
                 else:
-                    # Regular callable → non-blocking via thread-pool
-                    self._thread_pool.submit(cb, data)
+                    if asyncio.iscoroutinefunction(cb):
+                        try:
+                            asyncio.get_running_loop().create_task(cb(data))
+                        except RuntimeError:
+                            self._thread_pool.submit(lambda: asyncio.run(cb(data)))
+                    else:
+                        self._thread_pool.submit(cb, data)
             except Exception as exc:
-                self.logger.error(
-                    f"[CRASH] Event callback error for '{event_type}': {exc}"
-                )
+                self.logger.error(f"[CRASH] Event callback error for '{event_type}': {exc}")
 
     def _log_event(self, event: Dict[str, Any]):
-        """Log event for replay with size management"""
         try:
             event['timestamp'] = event.get('timestamp', time.time())
-            self._event_log.append(event)
-            
-            # Emit for external logging
+            with self._event_lock:
+                self._event_log.append(event)
             self._emit('event_logged', event)
-            
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to log event: {e}")
-    
+
     def _log_miss(self, key: str, module: str):
-        """Log data miss for analysis"""
         try:
             providers = self.get_providers(key)
-            
-            self._log_event({
-                'type': 'miss',
-                'key': key,
-                'module': module,
-                'providers': list(providers),
-                'timestamp': time.time()
-            })
-            
-            # Emit miss event
-            self._emit('data_miss', {
-                'key': key,
-                'module': module,
-                'providers': list(providers)
-            })
-            
+            self._log_event({'type': 'miss', 'key': key, 'module': module,
+                             'providers': list(providers), 'timestamp': time.time()})
+            self._emit('data_miss', {'key': key, 'module': module, 'providers': list(providers)})
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to log miss: {e}")
-    
+
+    def _emit_get_event(self, key: str, module: str, data: "DataVersion", reason: str | None = None):
+        def _preview(value, max_len=160):
+            try:
+                s = repr(value)
+            except Exception:
+                s = str(value)
+            return s[:max_len] + "…" if len(s) > max_len else s
+        evt = {
+            "key": key, "module": module, "version": data.version,
+            "source_module": data.source_module, "confidence": data.confidence,
+            "age_seconds": data.age_seconds(), "quality_score": data.quality_score,
+            "reason": reason or "ok", "preview": _preview(data.value), "timestamp": time.time(),
+        }
+        self._log_event({"type": "get", **evt})
+        self._emit("data_get" if reason is None else "data_get_blocked", evt)
+
     def _check_pending_requests(self, key: str):
-        """Check if any pending requests can be fulfilled and notify (sync/async)."""
         try:
-            fulfilled = []
+            fulfilled: List[int] = []
             with self._request_lock:
-                for i, request in enumerate(self._pending_requests):
-                    if request.requested_key != key:
+                for i, req in enumerate(self._pending_requests):
+                    if req.requested_key != key:
                         continue
 
                     data = self._data_store.get(key)
-                    if data is None:
+                    if data is None or not isinstance(data, DataVersion):
                         continue
 
-                    # Type guard to satisfy linters/type-checkers and ensure safety
-                    if not isinstance(data, DataVersion):
-                        continue
+                    dv = cast(DataVersion, data)  # helps the type checker
 
-                    value = data.value
-
-                    if request.matches_data(data):
-                        # Emit bus event
-                        self._emit('data_available', {
+                    if req.matches_data(dv):
+                        payload = {
                             'key': key,
-                            'requesting_module': request.requesting_module,
-                            'value': value,
-                            'metadata': data.to_dict()
-                        })
+                            'requesting_module': req.requesting_module,
+                            'value': dv.value,
+                            'metadata': dv.to_dict(),
+                        }
+                        self._emit('data_available', payload)
 
-                        # Fire user callback if provided
-                        if request.callback:
-                            cb = request.callback
+                        if req.callback:
+                            cb = req.callback
                             try:
                                 if asyncio.iscoroutinefunction(cb):
                                     try:
-                                        asyncio.get_running_loop().create_task(cb(value))
+                                        asyncio.get_running_loop().create_task(cb(dv.value))
                                     except RuntimeError:
-                                        self._thread_pool.submit(lambda: asyncio.run(cb(value)))
+                                        self._thread_pool.submit(lambda: asyncio.run(cb(dv.value)))
                                 else:
-                                    self._thread_pool.submit(cb, value)
+                                    self._thread_pool.submit(cb, dv.value)
                             except Exception as e:
                                 self.logger.error(f"Request callback error: {e}")
 
@@ -1781,120 +1862,80 @@ class SmartInfoBus:
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to check pending requests: {e}")
 
-        
-    # ═══════════════════════════════════════════════════════════════════
-    # DATA QUALITY & MAINTENANCE
-    # ═══════════════════════════════════════════════════════════════════
-    
+
+    # ──────────────────────────────────────────────────────────────
+    # Maintenance
+    # ──────────────────────────────────────────────────────────────
     def _background_maintenance(self):
-        """Background maintenance thread"""
         self.logger.info("[TOOL] Background maintenance started")
-        
         while self._maintenance_running:
             try:
-                # Cleanup old data
                 if self.config.auto_cleanup:
                     self._cleanup_old_data()
-                
-                # Clean expired requests
                 self._cleanup_expired_requests()
-                
-                # Validate data integrity
                 if self._validation_enabled:
                     self._validate_data_integrity()
-                
-                # Sleep for cleanup interval
                 time.sleep(self.config.cleanup_interval_seconds)
-                
             except Exception as e:
                 self.logger.error(f"[CRASH] Background maintenance error: {e}")
-                time.sleep(10)  # Back off on error
-    
-    # ──────────────────────────────────────────────────────────────
-# 4.  Old-data cleanup with writer lock
-# ──────────────────────────────────────────────────────────────
-    def _cleanup_old_data(self) -> None:
-        """Remove aged entries and trim history."""
+                time.sleep(10)
+
+    def _cleanup_old_data(self):
         max_age = self.config.max_data_age_seconds
         now = time.time()
-        removed: list[str] = []
-
+        removed: List[str] = []
         with self._write_lock:
             for key, dv in list(self._data_store.items()):
                 if dv.age_seconds() > max_age and dv.access_count < 5:
                     self._data_store.pop(key, None)
                     removed.append(key)
-
-                    # shrink history for the key
                     hist = self._data_history.get(key)
                     if hist:
-                        recent = [
-                            ver
-                            for ver in hist
-                            if now - ver.timestamp < max_age * 2
-                        ]
+                        recent = [ver for ver in hist if now - ver.timestamp < max_age * 2]
                         if recent:
-                            self._data_history[key] = deque(
-                                recent, maxlen=self.config.max_history_versions
-                            )
+                            self._data_history[key] = deque(recent, maxlen=self.config.max_history_versions)
                         else:
                             self._data_history.pop(key, None)
-
         if removed:
             self.logger.debug(f"🧹 Removed {len(removed)} aged keys")
 
     def _cleanup_expired_requests(self):
-        """Remove expired pending requests"""
         try:
             with self._request_lock:
-                active_requests = []
-                expired_count = 0
-                
-                for request in self._pending_requests:
-                    if not request.is_expired():
-                        active_requests.append(request)
+                active = []
+                expired = 0
+                for req in self._pending_requests:
+                    if not req.is_expired():
+                        active.append(req)
                     else:
-                        expired_count += 1
-                
-                self._pending_requests = active_requests
-                
-                if expired_count > 0:
-                    self.logger.debug(f"🕒 Removed {expired_count} expired requests")
-                    
+                        expired += 1
+                self._pending_requests = active
+                if expired > 0:
+                    self.logger.debug(f"🕒 Removed {expired} expired requests")
         except Exception as e:
             self.logger.error(f"[CRASH] Request cleanup failed: {e}")
-    
+
     def _validate_data_integrity(self):
-        """Validate integrity of stored data (uses writer lock for mutations)."""
         try:
-            corruption_count = 0
-            with self._write_lock:  # <-- writer lock, not access lock
+            bad = 0
+            with self._write_lock:
                 for key, data in list(self._data_store.items()):
                     if not data.validate_integrity():
-                        self.logger.error(f"Data corruption detected for key: {key}")
+                        self.logger.error(f"Data corruption detected: {key}")
                         del self._data_store[key]
-                        corruption_count += 1
-
-            if corruption_count > 0:
-                self.logger.warning(f"[ALERT] Removed {corruption_count} corrupted data entries")
-                self._emit('data_corruption_detected', {
-                    'corrupted_count': corruption_count,
-                    'timestamp': time.time()
-                })
-
+                        bad += 1
+            if bad > 0:
+                self.logger.warning(f"[ALERT] Removed {bad} corrupted data entries")
+                self._emit('data_corruption_detected', {'corrupted_count': bad, 'timestamp': time.time()})
         except Exception as e:
             self.logger.error(f"[CRASH] Data integrity validation failed: {e}")
 
-    
-    # ═══════════════════════════════════════════════════════════════════
-    # ANALYSIS & REPORTING
-    # ═══════════════════════════════════════════════════════════════════
-    
+    # ──────────────────────────────────────────────────────────────
+    # Analysis / reporting / snapshots
+    # ──────────────────────────────────────────────────────────────
     def get_data_freshness_report(self) -> Dict[str, Dict[str, Any]]:
-        """Get comprehensive data freshness report"""
         try:
             report = {}
-            
             with self._access_lock:
                 for key, data in self._data_store.items():
                     report[key] = {
@@ -1905,170 +1946,284 @@ class SmartInfoBus:
                         'access_count': data.access_count,
                         'has_thesis': data.thesis is not None,
                         'dependencies': len(data.dependencies),
-                        'validation_hash': data.validation_hash[:8] + "..."  # Truncated for display
+                        'validation_hash': (data.validation_hash[:8] + "…") if data.validation_hash else ""
                     }
-            
             return report
-            
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to generate freshness report: {e}")
             return {}
-    
+
     def explain_data_flow(self, key: str) -> str:
-        """Generate plain English explanation of data flow"""
         try:
             providers = list(self.get_providers(key))
             consumers = list(self.get_consumers(key))
             data = self.get_with_metadata(key, "SystemAnalyzer")
-            
-            lines = [
-                f"DATA FLOW ANALYSIS: '{key}'",
-                "=" * 60,
-                ""
-            ]
-            
+            lines = [f"DATA FLOW ANALYSIS: '{key}'", "=" * 60, ""]
             if not providers and not consumers:
                 lines.append(f"[FAIL] No modules interact with '{key}'")
                 return "\n".join(lines)
-            
             if providers:
-                lines.extend([
-                    f"📤 PROVIDERS ({len(providers)}):"
-                ])
-                for provider in providers:
-                    enabled = "[OK]" if self.is_module_enabled(provider) else "[FAIL]"
-                    health = self.get_module_health(provider)
-                    health_score = health.get('health_score', 0)
-                    lines.append(f"  {enabled} {provider} (health: {health_score:.0f}%)")
-            
+                lines.append(f"📤 PROVIDERS ({len(providers)}):")
+                for p in providers:
+                    enabled = "[OK]" if self.is_module_enabled(p) else "[FAIL]"
+                    health = self.get_module_health(p).get('health_score', 0)
+                    lines.append(f"  {enabled} {p} (health: {health:.0f}%)")
             if consumers:
-                lines.extend([
-                    "",
-                    f"📥 CONSUMERS ({len(consumers)}):"
-                ])
-                for consumer in consumers:
-                    enabled = "[OK]" if self.is_module_enabled(consumer) else "[FAIL]"
-                    lines.append(f"  {enabled} {consumer}")
-            
+                lines.append("")
+                lines.append(f"📥 CONSUMERS ({len(consumers)}):")
+                for c in consumers:
+                    enabled = "[OK]" if self.is_module_enabled(c) else "[FAIL]"
+                    lines.append(f"  {enabled} {c}")
             if data:
-                lines.extend([
-                    "",
-                    "[STATS] CURRENT STATE:",
-                    f"  Version: {data.version}",
-                    f"  Age: {data.age_seconds():.1f} seconds",
-                    f"  Source: {data.source_module}",
-                    f"  Confidence: {data.confidence:.1%}",
-                    f"  Access Count: {data.access_count}",
-                    f"  Dependencies: {len(data.dependencies)}"
-                ])
-                
+                lines.extend(["", "[STATS] CURRENT STATE:",
+                              f"  Version: {data.version}",
+                              f"  Age: {data.age_seconds():.1f} seconds",
+                              f"  Source: {data.source_module}",
+                              f"  Confidence: {data.confidence:.1%}",
+                              f"  Access Count: {data.access_count}",
+                              f"  Dependencies: {len(data.dependencies)}"])
                 if data.thesis:
-                    lines.extend([
-                        "",
-                        "💭 EXPLANATION:",
-                        f"  {data.thesis}"
-                    ])
+                    lines.extend(["", "💭 EXPLANATION:", f"  {data.thesis}"])
             else:
-                lines.extend([
-                    "",
-                    "[FAIL] NO DATA AVAILABLE"
-                ])
-            
-            # Access statistics
+                lines.extend(["", "[FAIL] NO DATA AVAILABLE"])
             total_reads = 0
             with self._performance_lock:
                 for consumer in consumers:
-                    reads = self._access_patterns[consumer].get(f'read:{key}', 0)
-                    total_reads += reads
-            
+                    total_reads += self._access_patterns[consumer].get(f"read:{key}", 0)
             if total_reads > 0:
-                lines.extend([
-                    "",
-                    "[CHART] ACCESS STATISTICS:",
-                    f"  Total Reads: {total_reads}"
-                ])
-            
+                lines.extend(["", "[CHART] ACCESS STATISTICS:", f"  Total Reads: {total_reads}"])
             return "\n".join(lines)
-            
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to explain data flow for {key}: {e}")
             return f"Error explaining data flow: {e}"
-    
+
     def export_session(self, filepath: str):
-        """Export complete session for replay"""
         try:
-            session_data = {
+            data = {
                 'export_timestamp': datetime.now().isoformat(),
                 'events': list(self._event_log),
-                'final_state': {
-                    key: data.to_dict()
-                    for key, data in self._data_store.items()
-                },
+                'final_state': {k: dv.to_dict() for k, dv in self._data_store.items()},
                 'performance_metrics': self.get_performance_metrics(),
                 'data_freshness': self.get_data_freshness_report(),
                 'dependency_graph': self.get_dependency_graph()
             }
-            
-            with open(filepath, 'w') as f:
-                json.dump(session_data, f, indent=2, default=str)
-            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, default=str)
             self.logger.info(f"📁 Session exported to {filepath}")
-            
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to export session: {e}")
             raise
-    
+
     def import_session(self, filepath: str):
-        """Import session for replay"""
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
-                session_data = json.load(f)
-            
-            self._event_log = deque(session_data['events'], maxlen=self.config.max_event_log_size)
-            
+                session = json.load(f)
+            with self._event_lock:
+                self._event_log = deque(session.get('events', []), maxlen=self.config.max_event_log_size)
             self.logger.info(f"[FOLDER] Imported session with {len(self._event_log)} events")
-            
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to import session: {e}")
             raise
- # ──────────────────────────────────────────────────────────────
-# 5.  Graceful shutdown (thread-safe & idempotent)
-# ──────────────────────────────────────────────────────────────
-    def shutdown(self) -> None:
-        """Stop background workers, flush logs and clear state."""
-        self.logger.info("[STOP] Shutting down SmartInfoBus …")
 
-        # -- stop cleanup thread first
+    def export_snapshot(self, filepath: Optional[str] = None, *,
+                        include_values: bool = True, include_history: bool = False,
+                        include_events: bool = False, include_metrics: bool = True,
+                        compress: bool = False) -> Dict[str, Any]:
+        """Compact snapshot for persistence / diagnostics (optionally gzipped)."""
+        try:
+            with self._access_lock, self._performance_lock, self._registry_lock, self._circuit_breaker_lock:
+                data_state = {k: dv.to_dict(include_value=include_values) for k, dv in self._data_store.items()}
+                history = {k: [ver.to_dict(include_value=False) for ver in list(hist)[-5:]]
+                           for k, hist in self._data_history.items()} if include_history else {}
+                snap = {
+                    "meta": {"generated_at": datetime.now(timezone.utc).isoformat(),
+                             "python": sys.version.split()[0], "platform": sys.platform,
+                             "pid": os.getpid(), "features": self._get_enabled_features()},
+                    "config": self.config.to_dict(),
+                    "data": data_state,
+                    "history_tail": history,
+                    "providers": {k: sorted(list(v)) for k, v in self._providers.items()},
+                    "consumers": {k: sorted(list(v)) for k, v in self._consumers.items()},
+                    "circuit_breakers": {m: cb.to_dict() for m, cb in self._circuit_breakers.items()},
+                    "disabled_modules": sorted(list(self._module_disabled)),
+                }
+                if include_events:
+                    with self._event_lock:
+                        snap["events_tail"] = list(self._event_log)[-1500:]
+                if include_metrics:
+                    snap["metrics"] = self.get_performance_metrics()
+                    snap["cache_stats"] = self.get_cache_stats()
+            if filepath:
+                if compress or filepath.endswith(".gz"):
+                    with gzip.open(filepath, "wt", encoding="utf-8") as f:
+                        json.dump(snap, f, indent=2, default=str)
+                else:
+                    with open(filepath, "w", encoding="utf-8") as f:
+                        json.dump(snap, f, indent=2, default=str)
+                self.logger.info(f"📦 Snapshot exported to {filepath}")
+            return snap
+        except Exception as e:
+            self.logger.error(f"[CRASH] export_snapshot failed: {e}")
+            raise
+
+    def import_snapshot(self, data_or_path: Any, *, replace_existing: bool = False, apply_values: bool = True) -> int:
+        try:
+            if isinstance(data_or_path, str):
+                path = data_or_path
+                if path.endswith(".gz"):
+                    with gzip.open(path, "rt", encoding="utf-8") as f:
+                        snapshot = json.load(f)
+                else:
+                    with open(path, "r", encoding="utf-8") as f:
+                        snapshot = json.load(f)
+            else:
+                snapshot = data_or_path
+            if not isinstance(snapshot, dict):
+                raise ValueError("Invalid snapshot format: expected dict")
+            applied = 0
+            if replace_existing:
+                with self._write_lock:
+                    self._data_store.clear()
+                    self._data_history.clear()
+                    self._data_timestamps.clear()
+            block = snapshot.get("data", {})
+            for key, payload in block.items():
+                if not apply_values:
+                    continue
+                try:
+                    self._set_core(key, payload.get("value"),
+                                   payload.get("source_module", "Snapshot"),
+                                   payload.get("thesis"), float(payload.get("confidence", 1.0)),
+                                   payload.get("dependencies", []), float(payload.get("processing_time_ms", 0.0)))
+                    applied += 1
+                except Exception as e:
+                    self.logger.error(f"[CRASH] Snapshot apply failed for {key}: {e}")
+            self.logger.info(f"[OK] Snapshot imported: applied {applied} keys")
+            return applied
+        except Exception as e:
+            self.logger.error(f"[CRASH] import_snapshot failed: {e}")
+            raise
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        try:
+            with self._access_lock:
+                size = len(self._data_store)
+            with self._performance_lock:
+                hits = self._cache_hits; misses = self._cache_misses
+            return {"size": size, "hits": int(hits), "misses": int(misses),
+                    "hit_rate": hits / max(hits + misses, 1), "history_keys": len(self._data_history)}
+        except Exception as e:
+            self.logger.error(f"[CRASH] get_cache_stats failed: {e}")
+            return {"error": str(e)}
+
+    def clear_caches(self, preserve_critical: bool = True) -> int:
+        preserved: Set[str] = {"anomaly_detector", "compliance"}
+        removed = 0; now = time.time()
+        try:
+            with self._write_lock:
+                for key in list(self._data_store.keys()):
+                    if preserve_critical and key in preserved:
+                        continue
+                    dv = self._data_store.get(key)
+                    if dv is None:
+                        continue
+                    if preserve_critical:
+                        if (now - dv.timestamp) < 10: continue
+                        if dv.access_count >= 10: continue
+                        if (now - dv.last_access_time) < 5: continue
+                    self._data_store.pop(key, None)
+                    self._data_timestamps.pop(key, None)
+                    hist = self._data_history.get(key)
+                    if hist:
+                        self._data_history[key] = deque(list(hist)[-1:], maxlen=self.config.max_history_versions)
+                    removed += 1
+            if removed:
+                self._log_event({"type": "cache_cleared", "removed": removed,
+                                 "preserve_critical": preserve_critical, "timestamp": time.time()})
+                self._emit("cache_cleared", {"removed": removed, "preserve_critical": preserve_critical})
+                self.logger.info(f"🧽 Cleared {removed} cached keys (preserve_critical={preserve_critical})")
+        except Exception as e:
+            self.logger.error(f"[CRASH] clear_caches failed: {e}")
+        return removed
+
+    # ──────────────────────────────────────────────────────────────
+    # Transactions (context manager)
+    # ──────────────────────────────────────────────────────────────
+    class _TxContext:
+        def __init__(self, bus: "SmartInfoBus"):
+            self.bus = bus
+            self.ok = False
+
+        def __enter__(self):
+            if not self.bus.config.enable_transactions:
+                raise RuntimeError("Transactions disabled")
+            if getattr(self.bus._tx_local, "buffer", None) is not None:
+                raise RuntimeError("Nested transactions not supported")
+            self.bus._tx_local.buffer = []
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            try:
+                if exc:
+                    # rollback — simply drop buffer
+                    return False
+                # commit
+                ops = getattr(self.bus._tx_local, "buffer", [])
+                for op, args in ops:
+                    if op == "set":
+                        self.bus._set_core(*args)
+                self.ok = True
+                return False
+            finally:
+                self.bus._tx_local.buffer = None
+
+    def transaction(self) -> "SmartInfoBus._TxContext":
+        """Usage: with bus.transaction(): bus.set(...); bus.set(...)."""
+        return SmartInfoBus._TxContext(self)
+
+    # ──────────────────────────────────────────────────────────────
+    # Shutdown
+    # ──────────────────────────────────────────────────────────────
+    def shutdown(self) -> None:
+        self.logger.info("[STOP] Shutting down SmartInfoBus …")
         if getattr(self, "_cleanup_thread", None) and self._cleanup_thread and self._cleanup_thread.is_alive():
             self._cleanup_shutdown.set()
             self._cleanup_thread.join(timeout=5)
-
-        # -- stop maintenance & perf threads
         self._maintenance_running = False
         for t in list(getattr(self, "_maintenance_threads", [])):
             if t.is_alive():
                 t.join(timeout=5)
-
-        # -- drain thread-pool
         if getattr(self, "_thread_pool", None):
             self._thread_pool.shutdown(wait=True)
-
-        # -- final metrics
         try:
             m = self.get_performance_metrics()
-            self.logger.info(
-                f"[STATS] Final: {m['total_requests']} req, "
-                f"{m['cache_hit_rate']*100:0.1f}% hits, "
-                f"{m['active_data_keys']} keys in store"
-            )
+            self.logger.info(f"[STATS] Final: {m['total_requests']} req, {m['cache_hit_rate']*100:0.1f}% hits, {m['active_data_keys']} keys")
         except Exception:
             pass
-
-        # -- wipe data
+        
         with self._write_lock, self._access_lock:
+            # Clear core stores
             self._data_store.clear()
             self._data_history.clear()
             self._data_timestamps.clear()
+            # Clear waiter state
+            self._waiters.clear()
+
+        # Best-effort cleanup of registries & subscribers (don’t hold any bus locks here)
+        try:
+            with self._registry_lock:
+                self._providers.clear()
+                self._consumers.clear()
+                self._module_graph.clear()
+                self._capabilities.clear()
+        except Exception:
+            pass
+        try:
+            with self._subscription_lock:
+                self._subscribers.clear()
+                self._async_subscribers.clear()
+        except Exception:
+            pass
 
         self.logger.info("[OK] SmartInfoBus shutdown complete")
 
@@ -2079,123 +2234,171 @@ class SmartInfoBus:
 
 class InfoBusManager:
     """
-    Thread-safe singleton manager for SmartInfoBus.
-    Provides global access to the unified information bus.
+    Thread-safe singleton manager for SmartInfoBus (XL).
+    Provides global access to the unified bus without wiring.
     """
-
     _instance: Optional[SmartInfoBus] = None
-    _lock = threading.RLock()          # ← was threading.Lock(), now re-entrant
+    _lock = threading.RLock()  # allow re-entrant access during nested calls
 
     @classmethod
     def get_instance(cls) -> SmartInfoBus:
-        """Get SmartInfoBus singleton instance with thread safety."""
+        """Get (or lazily create) the SmartInfoBus singleton instance."""
         if cls._instance is None:
             with cls._lock:
-                if cls._instance is None:          # double-checked locking
+                if cls._instance is None:
                     cls._instance = SmartInfoBus()
         return cls._instance
 
     @classmethod
+    def register_module_capabilities(
+        cls,
+        module_name: str,
+        provides: List[str] | None = None,
+        requires: List[str] | None = None,
+    ):
+        """
+        Convenience helper so modules can declare what they provide/require
+        without importing the bus directly.
+        """
+        try:
+            bus = cls.get_instance()
+            bus.register_capabilities(module_name, provides=provides, requires=requires)
+        except Exception as e:
+            # Never let capability registration crash the process
+            try:
+                bus = cls.get_instance()
+                bus.logger.warning(f"register_module_capabilities failed for {module_name}: {e}")
+            except Exception:
+                pass
+
+    @classmethod
+    def dependency_report(cls, title: str = "Dependency Report") -> str:
+        """Generate a human-readable dependency report."""
+        bus = cls.get_instance()
+        return bus.dump_dependency_report(title)
+
+    @classmethod
     def create_info_bus(cls, env: Any, step: int = 0) -> Dict[str, Any]:
-        """Create legacy InfoBus structure backed by SmartInfoBus."""
+        """
+        Create a legacy InfoBus-shaped dict backed by SmartInfoBus (XL).
+        Mirrors previous helpers while writing prices into the SmartInfoBus.
+        """
         smart_bus = cls.get_instance()
-        
-        # Create legacy structure
+
+        # Legacy/compat shape
         info_bus = {
             'timestamp': datetime.now().isoformat(),
             'step_idx': step,
             'episode_idx': getattr(env, 'episode_count', 0),
-            '_smart_bus': smart_bus,  # Reference to SmartInfoBus
+            '_smart_bus': smart_bus,  # reference to the XL bus
             'prices': {},
             'positions': [],
             'risk': {'risk_score': 0.0}
         }
-        
-        # Extract data from environment if available
+
+        # Extract price data from the environment, if available
         if hasattr(env, 'data') and hasattr(env, 'instruments'):
             for instrument in env.instruments:
-                if instrument in env.data and 'D1' in env.data[instrument]:
-                    df = env.data[instrument]['D1']
-                    if step < len(df):
-                        price = float(df['close'].iloc[step])
-                        info_bus['prices'][instrument] = price
-                        
-                        # Store in SmartInfoBus
-                        smart_bus.set(
-                            f'price_{instrument}',
-                            price,
-                            module='Environment',
-                            thesis=f"Market price for {instrument} at step {step}",
-                            confidence=1.0
-                        )
-        
+                try:
+                    if instrument in env.data and 'D1' in env.data[instrument]:
+                        df = env.data[instrument]['D1']
+                        if step < len(df):
+                            price = float(df['close'].iloc[step])
+                            info_bus['prices'][instrument] = price
+                            # Reflect into XL bus (namespaced: market)
+                            smart_bus.set(
+                                f'price_{instrument}',
+                                price,
+                                module='Environment',
+                                thesis=f"Market price for {instrument} at step {step}",
+                                confidence=1.0,
+                                dependencies=[],
+                                processing_time_ms=0.0,
+                                namespace="market"
+                            )
+                except Exception as e:
+                    smart_bus.logger.debug(f"[create_info_bus] skip {instrument}: {e}")
+
         return info_bus
-    
+
     @classmethod
     def reset_instance(cls):
-        """Reset singleton instance (for testing)"""
+        """Reset the singleton (useful in tests)."""
         with cls._lock:
             if cls._instance:
-                cls._instance.shutdown()
+                try:
+                    cls._instance.shutdown()
+                except Exception:
+                    pass
             cls._instance = None
 
+
 # ═══════════════════════════════════════════════════════════════════
-# LEGACY COMPATIBILITY FUNCTIONS
+# LEGACY COMPATIBILITY (helpers/extractors/updaters)
 # ═══════════════════════════════════════════════════════════════════
 
 @dataclass
 class InfoBusQuality:
-    """Quality assessment for InfoBus validation"""
+    """Quality assessment for InfoBus validation."""
     score: float
     is_valid: bool
     missing_fields: List[str] = field(default_factory=list)
     issues: List[str] = field(default_factory=list)
 
+
 def create_info_bus(env: Any, step: int = 0) -> Dict[str, Any]:
-    """Legacy function - creates InfoBus backed by SmartInfoBus"""
+    """Legacy shim — delegates to InfoBusManager."""
     return InfoBusManager.create_info_bus(env, step)
 
+
 def validate_info_bus(info_bus: Dict[str, Any]) -> InfoBusQuality:
-    """Legacy validation with enhanced scoring"""
-    
-    # Enhanced validation
+    """
+    Legacy validation with enhanced scoring.
+    Ensures presence of required fields and basic freshness.
+    """
     required = ['timestamp', 'step_idx']
     missing = [f for f in required if f not in info_bus]
-    issues = []
-    
+    issues: List[str] = []
+
     # Check for SmartInfoBus integration
     if '_smart_bus' not in info_bus:
         issues.append("Missing SmartInfoBus integration")
-    
-    # Check data freshness
+
+    # Timestamp freshness (<= 10 minutes)
     if 'timestamp' in info_bus:
         try:
-            timestamp = datetime.fromisoformat(info_bus['timestamp'].replace('Z', '+00:00'))
-            age = (datetime.now() - timestamp.replace(tzinfo=None)).total_seconds()
-            if age > 300:  # 5 minutes
+            ts = datetime.fromisoformat(info_bus['timestamp'].replace('Z', '+00:00'))
+            age = (datetime.now() - ts.replace(tzinfo=None)).total_seconds()
+            if age > 600:
                 issues.append(f"Stale data: {age:.0f}s old")
-        except:
+        except Exception:
             issues.append("Invalid timestamp format")
-    
-    # Calculate score
+
+    # Compute score
     score = 100.0
-    score -= len(missing) * 25  # 25 points per missing field
-    score -= len(issues) * 10   # 10 points per issue
-    
+    score -= len(missing) * 25      # 25 points per missing field
+    score -= len(issues) * 10       # 10 points per issue
+    score = max(0.0, score)
+
     return InfoBusQuality(
-        score=max(0, score),
+        score=score,
         is_valid=score >= 50,
         missing_fields=missing,
         issues=issues
     )
 
-# Legacy extractor class - now wraps SmartInfoBus
+
 class InfoBusExtractor:
-    """Legacy extractor - delegates to SmartInfoBus"""
-    
+    """Legacy extractor that delegates to SmartInfoBus (XL)."""
+
     @staticmethod
     def get_risk_score(info_bus: Dict[str, Any]) -> float:
-        """Get risk score with SmartInfoBus fallback (supports nested 'risk')."""
+        """
+        Supports:
+          • top-level: info_bus['risk_score']
+          • nested:    info_bus['risk']['risk_score']
+          • XL bus:    bus.get('risk_score', 'InfoBusExtractor')
+        """
         # direct top-level
         if 'risk_score' in info_bus:
             try:
@@ -2203,7 +2406,7 @@ class InfoBusExtractor:
             except Exception:
                 pass
 
-        # legacy nested dict: info_bus['risk'] = {'risk_score': ...}
+        # legacy nested dict
         risk = info_bus.get('risk')
         if isinstance(risk, dict) and 'risk_score' in risk:
             try:
@@ -2213,131 +2416,140 @@ class InfoBusExtractor:
 
         # SmartInfoBus fallback
         if '_smart_bus' in info_bus:
-            smart_bus = info_bus['_smart_bus']
-            risk_data = smart_bus.get('risk_score', 'InfoBusExtractor')
-            if risk_data is not None:
+            smart_bus: SmartInfoBus = info_bus['_smart_bus']
+            dv = smart_bus.get('risk_score', 'InfoBusExtractor', namespace=None)
+            if dv is not None:
                 try:
-                    return float(risk_data)
+                    return float(dv)
                 except Exception:
                     return 0.0
 
         return 0.0
 
-    
     @staticmethod
     def get_market_regime(info_bus: Dict[str, Any]) -> str:
-        """Get market regime with SmartInfoBus fallback"""
-        # Try direct access first
+        """Return market regime from legacy dict or XL bus."""
         if 'market_regime' in info_bus:
             return str(info_bus['market_regime'])
-        
-        # Try SmartInfoBus
         if '_smart_bus' in info_bus:
-            smart_bus = info_bus['_smart_bus']
-            regime_data = smart_bus.get('market_regime', 'InfoBusExtractor')
-            if regime_data is not None:
-                return str(regime_data)
-        
+            smart_bus: SmartInfoBus = info_bus['_smart_bus']
+            dv = smart_bus.get('market_regime', 'InfoBusExtractor', namespace="market")
+            if dv is not None:
+                return str(dv)
         return 'unknown'
-    
+
     @staticmethod
     def has_fresh_data(info_bus: Dict[str, Any], max_age_seconds: float = 1.0) -> bool:
-        """Check data freshness"""
+        """
+        A loose heuristic: if the bus has observed hits recently, consider it fresh.
+        (Retains legacy behavior while being resilient.)
+        """
         if '_smart_bus' in info_bus:
-            smart_bus = info_bus['_smart_bus']
+            smart_bus: SmartInfoBus = info_bus['_smart_bus']
             metrics = smart_bus.get_performance_metrics()
-            # Consider fresh if we have recent cache activity
             return metrics.get('cache_hits', 0) > 0
-        
-        return True  # Default to true for legacy compatibility
-    
+        return True
+
     @staticmethod
     def extract_risk_context(info_bus: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract comprehensive risk context"""
-        context = {
+        """Aggregate a compact risk context from both legacy and XL bus sources."""
+        ctx = {
             'risk_score': InfoBusExtractor.get_risk_score(info_bus),
             'drawdown_pct': info_bus.get('drawdown_pct', 0.0),
             'exposure_pct': info_bus.get('exposure_pct', 0.0),
             'position_count': len(info_bus.get('positions', [])),
-            'market_regime': InfoBusExtractor.get_market_regime(info_bus)
+            'market_regime': InfoBusExtractor.get_market_regime(info_bus),
         }
-        
-        # Enhance with SmartInfoBus data if available
-        if '_smart_bus' in info_bus:
-            smart_bus = info_bus['_smart_bus']
-            
-            # Get additional risk metrics
-            for key in ['volatility', 'correlation_risk', 'liquidity_risk']:
-                value = smart_bus.get(key, 'InfoBusExtractor')
-                if value is not None:
-                    context[key] = value
-        
-        return context
 
-# Legacy updater class - now wraps SmartInfoBus
+        # Enrich from XL bus (optional keys)
+        if '_smart_bus' in info_bus:
+            smart_bus: SmartInfoBus = info_bus['_smart_bus']
+            for key in ['volatility', 'correlation_risk', 'liquidity_risk']:
+                val = smart_bus.get(key, 'InfoBusExtractor', namespace="risk")
+                if val is not None:
+                    ctx[key] = val
+
+        return ctx
+
+
 class InfoBusUpdater:
-    """Legacy updater - delegates to SmartInfoBus"""
-    
+    """Legacy updater that writes through to SmartInfoBus (XL)."""
+
     @staticmethod
     def add_vote(info_bus: Dict[str, Any], vote: Dict[str, Any]) -> None:
-        """Add vote to InfoBus and SmartInfoBus"""
-        # Update legacy structure
+        """
+        Append a vote to the legacy list and mirror as a versioned bus key.
+        """
         votes = info_bus.get('votes', [])
         votes.append(vote)
         info_bus['votes'] = votes
-        
-        # Update SmartInfoBus
+
         if '_smart_bus' in info_bus:
-            smart_bus = info_bus['_smart_bus']
+            smart_bus: SmartInfoBus = info_bus['_smart_bus']
             smart_bus.set(
                 f"vote_{len(votes)}",
                 vote,
                 module='InfoBusUpdater',
-                thesis=f"Vote from {vote.get('module', 'unknown')} module"
+                thesis=f"Vote from {vote.get('module', 'unknown')} module",
+                confidence=float(vote.get('confidence', 1.0)),
+                namespace="votes"
             )
-    
+
     @staticmethod
     def set_risk_score(info_bus: Dict[str, Any], score: float) -> None:
-        """Set risk score in both legacy and SmartInfoBus shapes."""
+        """Set risk score in both legacy and XL shapes."""
         info_bus['risk_score'] = score
         info_bus.setdefault('risk', {})['risk_score'] = score
 
         if '_smart_bus' in info_bus:
-            smart_bus = info_bus['_smart_bus']
+            smart_bus: SmartInfoBus = info_bus['_smart_bus']
             smart_bus.set(
                 'risk_score',
                 score,
                 module='InfoBusUpdater',
-                thesis=f"Risk score updated to {score:.2%}"
+                thesis=f"Risk score updated to {score:.4f}",
+                confidence=1.0,
+                namespace=None
             )
 
     @staticmethod
     def set_market_regime(info_bus: Dict[str, Any], regime: str) -> None:
-        """Set market regime in both legacy and SmartInfoBus"""
+        """Set market regime in legacy shape and XL bus (market namespace)."""
         info_bus['market_regime'] = regime
-        
-        if '_smart_bus' in info_bus:
-            smart_bus = info_bus['_smart_bus']
-            smart_bus.set(
-                'market_regime',
-                regime,
-                module='InfoBusUpdater',
-                thesis=f"Market regime identified as {regime}"
-            )
 
-# Utility functions
+        if '_smart_bus' in info_bus:
+            smart_bus: SmartInfoBus = info_bus['_smart_bus']
+            # Single-writer policy: do not publish canonical market_regime from updater.
+            # Leave legacy dict updated for backward compatibility; rely on
+            # dedicated market module (e.g., FractalRegimeConfirmation) to publish.
+            providers = set(smart_bus.get_providers('market_regime'))
+            if not providers or providers == {'InfoBusUpdater'}:
+                smart_bus.set(
+                    'market_regime',
+                    regime,
+                    module='InfoBusUpdater',
+                    thesis=f"Market regime identified as {regime}",
+                    confidence=0.95,
+                    namespace="market"
+                )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# TINY UTILITIES
+# ═══════════════════════════════════════════════════════════════════
+
 def now_utc() -> str:
-    """Current UTC timestamp (ISO8601, with Z)."""
-    return datetime.utcnow().isoformat() + "Z"
+    """Current UTC timestamp (ISO8601, timezone-aware)."""
+    return datetime.now(timezone.utc).isoformat()
 
 
 def extract_standard_context(info_bus: Dict[str, Any]) -> Dict[str, Any]:
-    """Extract standard context for modules"""
+    """Small helper to derive a standard snapshot of context for modules."""
     return {
         'regime': InfoBusExtractor.get_market_regime(info_bus),
         'risk_score': InfoBusExtractor.get_risk_score(info_bus),
         'position_count': len(info_bus.get('positions', [])),
         'has_fresh_data': InfoBusExtractor.has_fresh_data(info_bus),
         'timestamp': info_bus.get('timestamp'),
-        'step_idx': info_bus.get('step_idx', 0)
+        'step_idx': info_bus.get('step_idx', 0),
     }

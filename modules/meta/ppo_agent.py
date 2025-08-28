@@ -122,9 +122,10 @@ class EnhancedPPONetwork(nn.Module):
     category="meta",
     provides=[
         "policy_actions", "agent_performance", "training_metrics", "policy_gradients",
-        "actions", "observations", "rewards", "training_signals", "training_data"
+        "actions", "training_data", "observations", "rewards", "training_signals"
     ],
-    requires=["observations", "rewards", "market_data", "training_signals"],
+    # Avoid self-dependency: PPOAgent publishes observations/rewards/training_signals, it shouldn't require them
+    requires=["market_data"],
     description="Advanced PPO agent with SmartInfoBus integration for autonomous trading",
     thesis_required=True,
     health_monitoring=True,
@@ -295,6 +296,11 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
         self.best_performance = -np.inf
         self.performance_plateau_counter = 0
         
+        # Recent IO snapshots for bus publications
+        self._last_obs_vec = None
+        self._last_action_std = None
+        self._recent_rewards = deque(maxlen=100)
+
         # Neural performance metrics
         self._neural_performance = {
             'forward_passes': 0,
@@ -401,10 +407,99 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             
             # Generate thesis
             thesis = await self._generate_ppo_thesis(ppo_data, result)
+            # Always include thesis to satisfy explainability contract
+            result['_thesis'] = thesis
             
             # Update SmartInfoBus
             await self._update_ppo_smart_bus(result, thesis)
             
+            # Ensure required outputs are always present in the returned dict
+            # 1) policy_actions
+            if 'policy_actions' not in result:
+                act_size = int(getattr(self.config, 'act_size', 2) or 2)
+                action_vec = result.get('action') or (
+                    self.last_action.tolist() if hasattr(self, 'last_action') and hasattr(self.last_action, 'tolist') else [0.0] * act_size
+                )
+                result['policy_actions'] = {
+                    'action': action_vec,
+                    'log_prob': result.get('log_prob', 0.0),
+                    'value_estimate': result.get('value_estimate', 0.0),
+                    'action_std': result.get('action_std', self._last_action_std or [1.0] * act_size),
+                    'exploration_level': self.action_statistics.get('exploration_level', 0.5)
+                }
+            # 2) agent_performance
+            agent_metrics = result.get('agent_metrics', {})
+            if 'agent_performance' not in result:
+                result['agent_performance'] = {
+                    'performance_score': agent_metrics.get('performance_score', 0.0),
+                    'average_reward': agent_metrics.get('average_reward', self.training_stats.get('avg_episode_reward', 0.0)),
+                    'episodes_completed': agent_metrics.get('episodes_completed', self.training_stats.get('episodes_completed', 0)),
+                    'training_updates': agent_metrics.get('training_updates', self.training_stats.get('total_updates', 0)),
+                    'learning_rate': agent_metrics.get('learning_rate', self.training_stats.get('learning_rate', self.config.learning_rate))
+                }
+            # 3) training_metrics
+            if 'training_metrics' not in result:
+                result['training_metrics'] = {
+                    'policy_loss': self.training_stats.get('policy_loss_trend', 0.0),
+                    'value_loss': self.training_stats.get('value_loss_trend', 0.0),
+                    'entropy': self.training_stats.get('entropy_trend', 0.0),
+                    'gradient_norm': self.training_stats.get('gradient_norm', 0.0),
+                    'explained_variance': self.training_stats.get('explained_variance', 0.0),
+                    'total_updates': self.training_stats.get('total_updates', 0)
+                }
+            # 4) policy_gradients
+            if 'policy_gradients' not in result:
+                try:
+                    network_params = sum(p.numel() for p in self.network.parameters())
+                except Exception:
+                    network_params = 0
+                result['policy_gradients'] = {
+                    'gradient_norm': self.training_stats.get('gradient_norm', 0.0),
+                    'learning_rate': self.training_stats.get('learning_rate', self.config.learning_rate),
+                    'network_parameters': network_params,
+                    'forward_passes': self._neural_performance.get('forward_passes', 0),
+                    'backward_passes': self._neural_performance.get('backward_passes', 0)
+                }
+            # 5) actions (simple vector)
+            if 'actions' not in result:
+                act_size = int(getattr(self.config, 'act_size', 2) or 2)
+                result['actions'] = result.get('action') or (
+                    self.last_action.tolist() if hasattr(self, 'last_action') and hasattr(self.last_action, 'tolist') else [0.0] * act_size
+                )
+            # 6) training_data
+            if 'training_data' not in result:
+                try:
+                    buffer_sizes = {k: (len(v) if hasattr(v, '__len__') else 0) for k, v in self.buffer.items()}
+                except Exception:
+                    buffer_sizes = {}
+                result['training_data'] = {
+                    'buffer_sizes': buffer_sizes,
+                    'total_updates': self.training_stats.get('total_updates', 0)
+                }
+            # 7) observations
+            if 'observations' not in result:
+                obs_size = int(getattr(self.config, 'obs_size', 10) or 10)
+                obs_vec = None
+                try:
+                    if isinstance(self._last_obs_vec, np.ndarray):
+                        obs_vec = self._last_obs_vec.astype(float).tolist()
+                    elif isinstance(self._last_obs_vec, list):
+                        obs_vec = self._last_obs_vec
+                except Exception:
+                    obs_vec = None
+                result['observations'] = obs_vec or [0.0] * obs_size
+            # 8) rewards
+            if 'rewards' not in result:
+                result['rewards'] = list(self._recent_rewards)[-10:] if len(self._recent_rewards) > 0 else []
+            # 9) training_signals
+            if 'training_signals' not in result:
+                result['training_signals'] = {
+                    'gradient_norm': self.training_stats.get('gradient_norm', 0.0),
+                    'explained_variance': self.training_stats.get('explained_variance', 0.0),
+                    'policy_loss': self.training_stats.get('policy_loss_trend', 0.0),
+                    'value_loss': self.training_stats.get('value_loss_trend', 0.0)
+                }
+
             # Record success
             processing_time = (time.time() - start_time) * 1000
             self._record_success(processing_time)
@@ -417,17 +512,30 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
     async def _extract_ppo_data(self, **inputs) -> Optional[Dict[str, Any]]:
         """Extract PPO data from SmartInfoBus"""
         try:
-            # Get observations
-            observations = self.smart_bus.get('observations', 'PPOAgent')
-            
-            # Get rewards
-            rewards = self.smart_bus.get('rewards', 'PPOAgent')
-            
-            # Get market data
+            # Avoid self-dependency: don't fetch our own outputs from the bus
+            # Observations snapshot (from last forward pass if available)
+            observations = None
+            try:
+                if isinstance(self._last_obs_vec, np.ndarray):
+                    observations = self._last_obs_vec.astype(float).tolist()
+                elif isinstance(self._last_obs_vec, list):
+                    observations = self._last_obs_vec
+            except Exception:
+                observations = None
+
+            # Recent rewards snapshot from internal deque
+            rewards = list(self._recent_rewards)[-10:] if len(self._recent_rewards) > 0 else []
+
+            # Market data can legitimately come from the bus
             market_data = self.smart_bus.get('market_data', 'PPOAgent') or {}
-            
-            # Get training signals
-            training_signals = self.smart_bus.get('training_signals', 'PPOAgent') or {}
+
+            # Training signals derived from current training stats (avoid bus get)
+            training_signals = {
+                'gradient_norm': self.training_stats.get('gradient_norm', 0.0),
+                'explained_variance': self.training_stats.get('explained_variance', 0.0),
+                'policy_loss': self.training_stats.get('policy_loss_trend', 0.0),
+                'value_loss': self.training_stats.get('value_loss_trend', 0.0)
+            }
             
             # Get direct inputs
             observation = inputs.get('observation')
@@ -464,6 +572,11 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                 
                 # Create action distribution
                 action_std = torch.exp(action_log_std)
+                # snapshot for bus compatibility
+                try:
+                    self._last_action_std = action_std.squeeze().cpu().numpy().tolist()
+                except Exception:
+                    self._last_action_std = None
                 dist = torch.distributions.Normal(action_mean, action_std)
                 
                 # Sample action
@@ -478,6 +591,11 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             # Update action tracking
             self.last_action = action_np
             self.action_history.append(action_np.copy())
+            # Keep a snapshot for publishing on the bus
+            try:
+                self._last_obs_vec = obs_vec.copy()
+            except Exception:
+                self._last_obs_vec = None
             self._update_action_statistics()
             
             # Update neural performance
@@ -510,6 +628,11 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                             self.buffer['actions'].append(experience[key])
                         elif key == 'reward':
                             self.buffer['rewards'].append(experience[key])
+                            # track recent rewards for bus compatibility
+                            try:
+                                self._recent_rewards.append(float(experience[key]))
+                            except Exception:
+                                pass
                         elif key == 'log_prob':
                             self.buffer['log_probs'].append(experience[key])
                         elif key == 'value':
@@ -782,7 +905,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                     'action': result.get('action', [0, 0]),
                     'log_prob': result.get('log_prob', 0.0),
                     'value_estimate': result.get('value_estimate', 0.0),
-                    'action_std': result.get('action_std', [1.0, 1.0]),
+                    'action_std': result.get('action_std', self._last_action_std or [1.0] * int(self.config.act_size)),
                     'exploration_level': self.action_statistics['exploration_level']
                 }
                 
@@ -792,6 +915,17 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                     module='PPOAgent',
                     thesis=thesis
                 )
+
+                # Back-compat simple actions vector
+                try:
+                    self.smart_bus.set(
+                        'actions',
+                        result.get('action', [0.0] * int(self.config.act_size)),
+                        module='PPOAgent',
+                        thesis='Raw PPO action vector for compatibility'
+                    )
+                except Exception:
+                    pass
             
             # Agent performance
             agent_metrics = result.get('agent_metrics', {})
@@ -843,6 +977,60 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                 module='PPOAgent',
                 thesis="Policy gradient information and neural network performance"
             )
+
+            # Publish observations (last snapshot) if available for consumers
+            if isinstance(self._last_obs_vec, np.ndarray):
+                try:
+                    self.smart_bus.set(
+                        'observations',
+                        self._last_obs_vec.astype(float).tolist(),
+                        module='PPOAgent',
+                        thesis='Latest observation vector snapshot'
+                    )
+                except Exception:
+                    pass
+
+            # Publish recent rewards snapshot for consumers
+            if len(self._recent_rewards) > 0:
+                try:
+                    self.smart_bus.set(
+                        'rewards',
+                        list(self._recent_rewards)[-10:],
+                        module='PPOAgent',
+                        thesis='Recent rewards window for compatibility'
+                    )
+                except Exception:
+                    pass
+
+            # Publish training signals/data compatibility payloads
+            compat_training_signals = {
+                'gradient_norm': self.training_stats['gradient_norm'],
+                'explained_variance': self.training_stats['explained_variance'],
+                'policy_loss': self.training_stats['policy_loss_trend'],
+                'value_loss': self.training_stats['value_loss_trend']
+            }
+            try:
+                self.smart_bus.set(
+                    'training_signals',
+                    compat_training_signals,
+                    module='PPOAgent',
+                    thesis='Training signals for downstream consumers'
+                )
+            except Exception:
+                pass
+
+            try:
+                self.smart_bus.set(
+                    'training_data',
+                    {
+                        'buffer_sizes': {k: len(v) if hasattr(v, '__len__') else 0 for k, v in self.buffer.items()},
+                        'total_updates': self.training_stats['total_updates']
+                    },
+                    module='PPOAgent',
+                    thesis='PPO buffer snapshot and update counters'
+                )
+            except Exception:
+                pass
             
         except Exception as e:
             self.logger.error(f"Failed to update SmartInfoBus: {e}")
@@ -850,12 +1038,69 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
     async def _handle_no_data_fallback(self) -> Dict[str, Any]:
         """Handle case when no PPO data is available"""
         self.logger.warning("No PPO data available - returning current state")
-        
+        # Build a thesis explaining the fallback
+        thesis = (
+            f"PPO Agent: no input data, returning last known state and defaults"
+        )
+        act_size = int(getattr(self.config, 'act_size', 2) or 2)
+        obs_size = int(getattr(self.config, 'obs_size', 10) or 10)
+        last_action = (
+            self.last_action.tolist() if hasattr(self, 'last_action') and hasattr(self.last_action, 'tolist') else [0.0] * act_size
+        )
+        observations = None
+        try:
+            if isinstance(self._last_obs_vec, np.ndarray):
+                observations = self._last_obs_vec.astype(float).tolist()
+            elif isinstance(self._last_obs_vec, list):
+                observations = self._last_obs_vec
+        except Exception:
+            observations = None
         return {
-            'episodes_completed': self.training_stats['episodes_completed'],
-            'training_updates': self.training_stats['total_updates'],
-            'average_reward': self.training_stats['avg_episode_reward'],
-            'exploration_level': self.action_statistics['exploration_level'],
+            # Required outputs
+            'policy_actions': {
+                'action': last_action,
+                'log_prob': 0.0,
+                'value_estimate': 0.0,
+                'action_std': self._last_action_std or [1.0] * act_size,
+                'exploration_level': self.action_statistics.get('exploration_level', 0.5)
+            },
+            'agent_performance': {
+                'performance_score': 0.0,
+                'average_reward': self.training_stats.get('avg_episode_reward', 0.0),
+                'episodes_completed': self.training_stats.get('episodes_completed', 0),
+                'training_updates': self.training_stats.get('total_updates', 0),
+                'learning_rate': self.training_stats.get('learning_rate', self.config.learning_rate)
+            },
+            'training_metrics': {
+                'policy_loss': self.training_stats.get('policy_loss_trend', 0.0),
+                'value_loss': self.training_stats.get('value_loss_trend', 0.0),
+                'entropy': self.training_stats.get('entropy_trend', 0.0),
+                'gradient_norm': self.training_stats.get('gradient_norm', 0.0),
+                'explained_variance': self.training_stats.get('explained_variance', 0.0),
+                'total_updates': self.training_stats.get('total_updates', 0)
+            },
+            'policy_gradients': {
+                'gradient_norm': self.training_stats.get('gradient_norm', 0.0),
+                'learning_rate': self.training_stats.get('learning_rate', self.config.learning_rate),
+                'network_parameters': 0,
+                'forward_passes': self._neural_performance.get('forward_passes', 0),
+                'backward_passes': self._neural_performance.get('backward_passes', 0)
+            },
+            'actions': last_action,
+            'training_data': {
+                'buffer_sizes': {k: (len(v) if hasattr(v, '__len__') else 0) for k, v in self.buffer.items()},
+                'total_updates': self.training_stats.get('total_updates', 0)
+            },
+            'observations': observations or [0.0] * obs_size,
+            'rewards': list(self._recent_rewards)[-10:] if len(self._recent_rewards) > 0 else [],
+            'training_signals': {
+                'gradient_norm': self.training_stats.get('gradient_norm', 0.0),
+                'explained_variance': self.training_stats.get('explained_variance', 0.0),
+                'policy_loss': self.training_stats.get('policy_loss_trend', 0.0),
+                'value_loss': self.training_stats.get('value_loss_trend', 0.0)
+            },
+            # Helpful extras
+            '_thesis': thesis,
             'fallback_reason': 'no_ppo_data'
         }
 
@@ -893,10 +1138,72 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
 
     def _create_fallback_response(self, reason: str) -> Dict[str, Any]:
         """Create fallback response for error cases"""
+        act_size = int(getattr(self.config, 'act_size', 2) or 2)
+        obs_size = int(getattr(self.config, 'obs_size', 10) or 10)
+        last_action = (
+            self.last_action.tolist() if hasattr(self, 'last_action') and hasattr(self.last_action, 'tolist') else [0.0] * act_size
+        )
+        thesis = self.english_explainer.explain_error(
+            "PPOAgent", f"Fallback due to {reason}", "PPO processing"
+        )
+        observations = None
+        try:
+            if isinstance(self._last_obs_vec, np.ndarray):
+                observations = self._last_obs_vec.astype(float).tolist()
+            elif isinstance(self._last_obs_vec, list):
+                observations = self._last_obs_vec
+        except Exception:
+            observations = None
+        try:
+            network_params = sum(p.numel() for p in self.network.parameters())
+        except Exception:
+            network_params = 0
         return {
-            'episodes_completed': self.training_stats['episodes_completed'],
-            'training_updates': self.training_stats['total_updates'],
-            'average_reward': self.training_stats['avg_episode_reward'],
+            # Required outputs
+            'policy_actions': {
+                'action': last_action,
+                'log_prob': 0.0,
+                'value_estimate': 0.0,
+                'action_std': self._last_action_std or [1.0] * act_size,
+                'exploration_level': self.action_statistics.get('exploration_level', 0.5)
+            },
+            'agent_performance': {
+                'performance_score': 0.0,
+                'average_reward': self.training_stats.get('avg_episode_reward', 0.0),
+                'episodes_completed': self.training_stats.get('episodes_completed', 0),
+                'training_updates': self.training_stats.get('total_updates', 0),
+                'learning_rate': self.training_stats.get('learning_rate', self.config.learning_rate)
+            },
+            'training_metrics': {
+                'policy_loss': self.training_stats.get('policy_loss_trend', 0.0),
+                'value_loss': self.training_stats.get('value_loss_trend', 0.0),
+                'entropy': self.training_stats.get('entropy_trend', 0.0),
+                'gradient_norm': self.training_stats.get('gradient_norm', 0.0),
+                'explained_variance': self.training_stats.get('explained_variance', 0.0),
+                'total_updates': self.training_stats.get('total_updates', 0)
+            },
+            'policy_gradients': {
+                'gradient_norm': self.training_stats.get('gradient_norm', 0.0),
+                'learning_rate': self.training_stats.get('learning_rate', self.config.learning_rate),
+                'network_parameters': network_params,
+                'forward_passes': self._neural_performance.get('forward_passes', 0),
+                'backward_passes': self._neural_performance.get('backward_passes', 0)
+            },
+            'actions': last_action,
+            'training_data': {
+                'buffer_sizes': {k: (len(v) if hasattr(v, '__len__') else 0) for k, v in self.buffer.items()},
+                'total_updates': self.training_stats.get('total_updates', 0)
+            },
+            'observations': observations or [0.0] * obs_size,
+            'rewards': list(self._recent_rewards)[-10:] if len(self._recent_rewards) > 0 else [],
+            'training_signals': {
+                'gradient_norm': self.training_stats.get('gradient_norm', 0.0),
+                'explained_variance': self.training_stats.get('explained_variance', 0.0),
+                'policy_loss': self.training_stats.get('policy_loss_trend', 0.0),
+                'value_loss': self.training_stats.get('value_loss_trend', 0.0)
+            },
+            # Helpful extras
+            '_thesis': thesis,
             'circuit_breaker_state': self.circuit_breaker['state'],
             'fallback_reason': reason
         }
@@ -1029,6 +1336,11 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                 action = result['action']
                 self._last_log_prob = result['log_prob']
                 self._last_value = result['value_estimate']
+                # store last obs snapshot compat
+                try:
+                    self._last_obs_vec = obs_np.reshape(-1).astype(np.float32)
+                except Exception:
+                    pass
                 return torch.tensor(action, dtype=torch.float32)
             else:
                 return torch.zeros(self.config.act_size, dtype=torch.float32)
