@@ -1,12 +1,13 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/features/advanced_feature_engine.py
 # Advanced Feature Engine (Contract-Clean, Single-Writer)
+# Contract alignment: provides/requires per contracts.py (AdvancedFeatureEngine). :contentReference[oaicite:0]{index=0}
 # ─────────────────────────────────────────────────────────────
 
 import time
 import asyncio
 import numpy as np
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Union, Tuple
 from collections import deque
 from dataclasses import dataclass, asdict
 
@@ -18,6 +19,7 @@ from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
+from modules.contracts import module_args
 
 
 # ─────────────────────────────────────────────────────────────
@@ -42,32 +44,22 @@ class FeatureEngineConfig:
 # ─────────────────────────────────────────────────────────────
 # Contract declaration
 # ─────────────────────────────────────────────────────────────
-@module(
-    name="AdvancedFeatureEngine",
-    version="3.1.1",
-    category="features",
-    provides=[
-        "advanced_features",     # structured dict (vector + meta)
-        "features",              # alias (back-compat) pointing to advanced_features
-        "feature_analysis",      # explainer + stats
-        "feature_thesis"         # human-readable thesis
-    ],
-    requires=["price_data"],     # hard require; we still fall back via Bus gracefully
+@module(**module_args(
+    "AdvancedFeatureEngine",
     description="Deterministic multi-window feature extraction with circuit breaker, monitoring, and explainability.",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    is_voting_member=False,
     hot_reload=True,
-    timeout_ms=120
-)
+    timeout_ms=120,
+))
 class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    - Provides: advanced_features, features, feature_analysis, feature_thesis
-    - Requires: price_data (dict: symbol -> {close: float})
+    - Provides (per registry): advanced_features, features, feature_analysis, feature_thesis,
+      feature_engine_capabilities, feature_health, feature_error, market_features, price_features,
+      advanced_features_H1, advanced_features_H4, advanced_features_D1
+    - Requires (per registry): price_data (preferred), historical_prices, ohlcv_data, market_data,
+      multi_timeframe_data (soft-checked and used if present)
     - Fallbacks via Bus: historical_prices -> ohlcv_data -> market_data
-    - Fleet-wide health is NOT published here (aggregator owns that).
+    - Fleet-wide health aggregator still elsewhere; this module publishes its own compact health. :contentReference[oaicite:1]{index=1}
     """
 
     # ─────────────────────────────────────────────────────────
@@ -135,6 +127,9 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         self._initialize_feature_state()
         self._start_monitoring()
 
+        # Multi-timeframe presence flag (for aliasing outputs like *_H1/H4/D1)
+        self._mtf_present: bool = False
+
         # Log
         self.logger.info(
             format_operator_message(
@@ -189,15 +184,27 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
 
         # Circuit breaker
         if not self._check_circuit_breaker():
-            return self._create_fallback_response("Circuit breaker open")
+            base_adv = self._build_adv_from_payload({
+                "raw_features": self._get_fallback_features(),
+                "quality_score": 0.0,
+                "extraction_time_ms": 0.0,
+                "buffer_size": len(self.price_buffer),
+                "feature_count": 0,
+            })
+            tf_outputs = self._compute_timeframe_outputs(base_adv)
+            return self._create_fallback_response_with_tf("Circuit breaker open", tf_outputs=tf_outputs)
 
         try:
             market_data = await self._extract_market_data(**inputs)
             features_payload = await self._process_features_with_monitoring(market_data)
             thesis = await self._generate_feature_thesis(features_payload, market_data)
 
+            # Prepare alias/base payload for TF mirrors
+            base_adv = self._build_adv_from_payload(features_payload)
+            tf_outputs = self._compute_timeframe_outputs(base_adv)
+
             # Publish only declared keys (single-writer discipline)
-            self._update_bus(features_payload, thesis)
+            self._update_bus(features_payload, thesis, tf_outputs)
 
             self._record_success(time.time() - start)
 
@@ -217,10 +224,20 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                     "success": True,
                     "processing_time_ms": (time.time() - start) * 1000.0,
                 },
+                timeframe_outputs=tf_outputs
             )
 
         except Exception as e:
-            return await self._handle_processing_error(e, start)
+            # Error path: return robust fallback (do not publish to bus)
+            base_adv = self._build_adv_from_payload({
+                "raw_features": self._get_fallback_features(),
+                "quality_score": 0.0,
+                "extraction_time_ms": (time.time() - start) * 1000.0,
+                "buffer_size": len(self.price_buffer),
+                "feature_count": int(self.out_dim),
+            })
+            tf_outputs = self._compute_timeframe_outputs(base_adv)
+            return await self._handle_processing_error(e, start, tf_outputs=tf_outputs)
 
     # ─────────────────────────────────────────────────────────
     # Inputs
@@ -231,6 +248,13 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         with resilient fallbacks through the Bus. Produces a flat list of prices.
         """
         market_data = {"prices": []}
+
+        # Presence check for multi_timeframe_data (contract requires this key to exist upstream)
+        try:
+            mtd = self.smart_bus.get("multi_timeframe_data", self.__class__.__name__)
+            self._mtf_present = isinstance(mtd, dict) and bool(mtd)
+        except Exception:
+            self._mtf_present = False
 
         # 1) Hard require: price_data from inputs
         pd_map = inputs.get("price_data")
@@ -489,17 +513,18 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
     # ─────────────────────────────────────────────────────────
     # Bus I/O (declared keys only)
     # ─────────────────────────────────────────────────────────
-    def _update_bus(self, features: Dict[str, Any], thesis: str):
+    def _update_bus(self, features: Dict[str, Any], thesis: str, timeframe_outputs: Dict[str, Dict[str, Any]]):
         # advanced_features
+        adv_payload = {
+            "raw_features": features["raw_features"].tolist() if isinstance(features["raw_features"], np.ndarray)
+                             else list(features["raw_features"]),
+            "quality_score": float(features["quality_score"]),
+            "extraction_time_ms": float(features["extraction_time_ms"]),
+            "timestamp": time.time()
+        }
         self.smart_bus.set(
             "advanced_features",
-            {
-                "raw_features": features["raw_features"].tolist() if isinstance(features["raw_features"], np.ndarray)
-                                 else list(features["raw_features"]),
-                "quality_score": float(features["quality_score"]),
-                "extraction_time_ms": float(features["extraction_time_ms"]),
-                "timestamp": time.time()
-            },
+            adv_payload,
             module="AdvancedFeatureEngine",
             thesis=thesis
         )
@@ -508,8 +533,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         self.smart_bus.set(
             "features",
             {
-                "raw_features": features["raw_features"].tolist() if isinstance(features["raw_features"], np.ndarray)
-                                 else list(features["raw_features"]),
+                "raw_features": adv_payload["raw_features"],
                 "quality_score": float(features["quality_score"])
             },
             module="AdvancedFeatureEngine",
@@ -539,6 +563,62 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             module="AdvancedFeatureEngine",
             thesis="Feature engine thesis"
         )
+
+        # --- Additional provides required by contract (publish conservative payloads) ---
+        # feature_engine_capabilities
+        self.smart_bus.set(
+            "feature_engine_capabilities",
+            {
+                "window_sizes": list(self.window_sizes),
+                "out_dim": int(self.out_dim),
+                "max_buffer_size": int(self.max_buffer_size),
+                "supports_explainability": bool(self.english_explainer is not None),
+                "supports_error_pinpointing": bool(self.error_pinpointer is not None),
+                "supports_performance_tracking": bool(self.performance_tracker is not None),
+            },
+            module="AdvancedFeatureEngine",
+            thesis="Capabilities snapshot"
+        )
+
+        # feature_health
+        self.smart_bus.set(
+            "feature_health",
+            {
+                "health_score": float(self.health_metrics.get("health_score", 0.0)),
+                "performance_trend": self.health_metrics.get("performance_trend", "unknown"),
+                "statistics": dict(self.feature_stats),
+            },
+            module="AdvancedFeatureEngine",
+            thesis="Feature engine health"
+        )
+
+        # feature_error (None on success)
+        self.smart_bus.set(
+            "feature_error",
+            None,
+            module="AdvancedFeatureEngine",
+            thesis="No errors"
+        )
+
+        # market_features / price_features (minimal, conservative snapshot)
+        self.smart_bus.set(
+            "market_features",
+            {},
+            module="AdvancedFeatureEngine",
+            thesis="Conservative placeholder; downstream may enrich"
+        )
+        self.smart_bus.set(
+            "price_features",
+            {},
+            module="AdvancedFeatureEngine",
+            thesis="Conservative placeholder; downstream may enrich"
+        )
+
+        # timeframe outputs (true per-TF if available, otherwise safe alias)
+        for tf in ("H1", "H4", "D1"):
+            key = f"advanced_features_{tf}"
+            payload = timeframe_outputs.get(tf, {**adv_payload, "timeframe": tf, "alias_of": "advanced_features"})
+            self.smart_bus.set(key, payload, module="AdvancedFeatureEngine", thesis=f"Advanced features ({tf})")
 
     # ─────────────────────────────────────────────────────────
     # Stats / monitoring / errors
@@ -578,7 +658,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 True
             )
 
-    async def _handle_processing_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
+    async def _handle_processing_error(self, error: Exception, start_time: float, *, tf_outputs: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
         elapsed = time.time() - start_time
         self._record_failure(error)
         if self.error_pinpointer:
@@ -623,6 +703,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 "error": str(error),
                 "processing_time_ms": elapsed * 1000.0,
             },
+            timeframe_outputs=tf_outputs or {}
         )
 
     def _record_failure(self, error: Exception):
@@ -647,7 +728,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             return self.feature_buffer[-1]["features"]
         return np.zeros(self.out_dim, dtype=np.float32)
 
-    def _create_fallback_response(self, reason: str) -> Dict[str, Any]:
+    def _create_fallback_response_with_tf(self, reason: str, *, tf_outputs: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
         return self._format_declared_outputs(
             features_payload={
                 "raw_features": self._get_fallback_features(),
@@ -668,6 +749,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 },
             },
             extra={"success": False, "reason": reason, "processing_time_ms": 0.0},
+            timeframe_outputs=tf_outputs or {}
         )
 
     # ─────────────────────────────────────────────────────────
@@ -854,6 +936,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         thesis: Optional[str] = None,
         analysis: Optional[Dict[str, Any]] = None,
         extra: Optional[Dict[str, Any]] = None,
+        timeframe_outputs: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
 
@@ -897,13 +980,58 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             except Exception:
                 pass
 
+        # Contract: feature_engine_capabilities (static/dynamic capabilities)
+        out["feature_engine_capabilities"] = {
+            "window_sizes": list(self.window_sizes),
+            "out_dim": int(self.out_dim),
+            "max_buffer_size": int(self.max_buffer_size),
+            "supports_explainability": bool(self.english_explainer is not None),
+            "supports_error_pinpointing": bool(self.error_pinpointer is not None),
+            "supports_performance_tracking": bool(self.performance_tracker is not None),
+        }
+
+        # Contract: feature_health (compact snapshot)
+        try:
+            out["feature_health"] = {
+                "health_score": float(self.health_metrics.get("health_score", 0.0)),
+                "performance_trend": self.health_metrics.get("performance_trend", "unknown"),
+                "statistics": dict(self.feature_stats),
+            }
+        except Exception:
+            out["feature_health"] = {"health_score": 0.0, "performance_trend": "unknown", "statistics": {}}
+
+        # Contract: feature_error (None on success, string when error path sets it via extra)
+        try:
+            out["feature_error"] = (extra or {}).get("error")
+        except Exception:
+            out["feature_error"] = None
+
+        # Contract: market_features / price_features — conservative placeholders or aliases
+        # Keep shapes minimal to avoid fabricating signals; downstream can enrich as needed.
+        out.setdefault("market_features", {})
+        out.setdefault("price_features", {})
+
         # Contract sanity: keep your declared provides intact
-        for key in ("advanced_features", "features", "feature_analysis", "feature_thesis"):
+        for key in ("advanced_features", "features", "feature_analysis", "feature_thesis", "feature_engine_capabilities"):
             if key not in out:
                 raise ValueError(f"Critical output '{key}' missing in AdvancedFeatureEngine")
 
-        return out
+        # Timeframe mirrors (true per-TF if provided, else alias mirror)
+        tf_map = timeframe_outputs or {}
+        for tf in ("H1", "H4", "D1"):
+            alias = tf_map.get(tf)
+            if not isinstance(alias, dict):
+                alias = {
+                    "raw_features": list(adv["raw_features"]),
+                    "quality_score": float(adv["quality_score"]),
+                    "extraction_time_ms": float(adv["extraction_time_ms"]),
+                    "buffer_size": int(adv["buffer_size"]),
+                    "feature_count": int(adv["feature_count"]),
+                    "timeframe": tf, "alias_of": "advanced_features"
+                }
+            out[f"advanced_features_{tf}"] = alias
 
+        return out
 
     # ─────────────────────────────────────────────────────────
     # Background tasks
@@ -960,3 +1088,105 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                     )
             except Exception as e:
                 self.logger.error(f"Performance monitoring error: {e}")
+
+    # ─────────────────────────────────────────────────────────
+    # Internal helpers (timeframe extraction & packaging)
+    # ─────────────────────────────────────────────────────────
+    def _build_adv_from_payload(self, fp: Dict[str, Any]) -> Dict[str, Any]:
+        rf = fp.get("raw_features")
+        if isinstance(rf, np.ndarray):
+            rf_safe = rf.tolist()
+        elif isinstance(rf, list):
+            rf_safe = rf
+        else:
+            rf_safe = []
+        return {
+            "raw_features": rf_safe,
+            "quality_score": float(fp.get("quality_score", 0.0)),
+            "extraction_time_ms": float(fp.get("extraction_time_ms", 0.0)),
+            "buffer_size": int(fp.get("buffer_size", 0)),
+            "feature_count": int(fp.get("feature_count", len(rf_safe))),
+        }
+
+    def _compute_timeframe_outputs(self, base_adv: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        """
+        Attempt to compute true per-TF advanced features from multi_timeframe_data.
+        If not available, provide robust aliases.
+        """
+        outputs: Dict[str, Dict[str, Any]] = {}
+        if not self._mtf_present:
+            for tf in ("H1", "H4", "D1"):
+                outputs[tf] = {**base_adv, "timeframe": tf, "alias_of": "advanced_features", "mtf_available": False}
+            return outputs
+
+        mtd = None
+        try:
+            mtd = self.smart_bus.get("multi_timeframe_data", self.__class__.__name__)
+        except Exception:
+            mtd = None
+
+        for tf in ("H1", "H4", "D1"):
+            prices = self._collect_mtf_prices(mtd, tf)
+            if prices:
+                t0 = time.time()
+                feats = self._extract_comprehensive_features(prices)
+                q = self._calculate_feature_quality(feats)
+                dur_ms = (time.time() - t0) * 1000.0
+                outputs[tf] = {
+                    "raw_features": feats.tolist(),
+                    "quality_score": float(q),
+                    "extraction_time_ms": float(dur_ms),
+                    "buffer_size": int(len(self.price_buffer)),
+                    "feature_count": int(feats.size),
+                    "timeframe": tf
+                }
+            else:
+                outputs[tf] = {**base_adv, "timeframe": tf, "alias_of": "advanced_features", "mtf_available": True}
+
+        return outputs
+
+    def _collect_mtf_prices(self, mtd: Any, tf: str) -> List[float]:
+        """
+        Heuristic extractor for closes from multi_timeframe_data.
+        Expected tolerant shapes:
+          - {symbol: {TF: {'close': [...]} } }
+          - {TF: {'close': [...]} }
+          - {symbol: {TF: [{'close': x}, ...] } }
+          - {TF: [ {'close': x}, ... ] }
+          - {symbol: {TF: np.ndarray/ list } }
+        """
+        prices: List[float] = []
+        if not isinstance(mtd, dict):
+            return prices
+
+        def _extend_from_payload(payload: Any):
+            nonlocal prices
+            if isinstance(payload, dict):
+                if isinstance(payload.get("close"), (list, np.ndarray)):
+                    prices.extend(np.asarray(payload["close"], dtype=float).flatten().tolist())
+                elif isinstance(payload.get("current_bar", {}).get("close"), (int, float)):
+                    prices.append(float(payload["current_bar"]["close"]))
+                elif "bars" in payload and isinstance(payload["bars"], (list, np.ndarray)):
+                    for bar in payload["bars"]:
+                        if isinstance(bar, dict) and isinstance(bar.get("close"), (int, float)):
+                            prices.append(float(bar["close"]))
+            elif isinstance(payload, (list, np.ndarray)):
+                # Maybe it's a list of closes or list of bar dicts
+                if len(payload) > 0 and isinstance(payload[0], dict):
+                    for bar in payload:
+                        if isinstance(bar, dict) and isinstance(bar.get("close"), (int, float)):
+                            prices.append(float(bar["close"]))
+                else:
+                    prices.extend(np.asarray(payload, dtype=float).flatten().tolist())
+
+        # Shape 1: direct TF at top-level
+        if tf in mtd:
+            _extend_from_payload(mtd.get(tf))
+
+        # Shape 2: symbols at top-level
+        for _sym, per_sym in mtd.items():
+            if isinstance(per_sym, dict) and tf in per_sym:
+                _extend_from_payload(per_sym.get(tf))
+
+        # Validate
+        return self._validate_prices(prices)

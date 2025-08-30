@@ -3,6 +3,7 @@
 # Enhanced Opponent Simulator with Modern Architecture
 # ─────────────────────────────────────────────────────────────
 
+from modules.contracts import module_args
 import numpy as np
 import datetime
 import time
@@ -20,28 +21,13 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-@module(
-    name="OpponentSimulator",
-    version="3.0.0",
-    category="simulation",
-    provides=[
-        "market_perturbations", "simulation_effects", "opponent_analysis", "market_noise",
-        "adversarial_scenarios", "simulation_statistics", "perturbation_history"
-    ],
-    requires=[
-        "market_data", "prices", "historical_prices", "positions", "market_context",
-        "volatility", "regime_data", "session_data"
-    ],
+@module(**module_args(
+    "OpponentSimulator",
     description="Intelligent market opponent behavior simulation with context-aware perturbations",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    timeout_ms=150,
-    priority=5,
-    explainable=True,
-    hot_reload=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class OpponentSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     Modern opponent simulator with comprehensive SmartInfoBus integration.

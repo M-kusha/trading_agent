@@ -4,6 +4,7 @@
 # ENHANCED: Central coordinator using SmartInfoBus architecture
 # ─────────────────────────────────────────────────────────────
 
+from modules.contracts import module_args
 import numpy as np
 import datetime
 from typing import Dict, Any, List, Optional
@@ -14,18 +15,13 @@ from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
 from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import format_operator_message
 
-
-@module(
-    provides=['audit_status', 'audit_report', 'audit_metrics'],
-    requires=['trading_signal', 'market_data', 'trades'],
-    category='auditing',
-    is_voting_member=False,
+@module(**module_args(
+    "AuditingCoordinator",
+    description="Central coordinator for managing audit operations.",
+    error_handling=True,
     hot_reload=True,
-    explainable=True,
-    timeout_ms=150,
-    priority=3,
-    version="2.0.0"
-)
+    timeout_ms=120,
+))
 class AuditingCoordinator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     [TARGET] PRODUCTION-GRADE Auditing Coordinator

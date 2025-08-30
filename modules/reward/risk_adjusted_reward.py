@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 import threading
+from modules.contracts import module_args
 import numpy as np
 import datetime
 from typing import Dict, Any, List, Optional, Tuple
@@ -84,18 +85,13 @@ class RewardConfig:
     adaptive_learning_rate: float = 0.01
 
 
-@module(
-    name="RiskAdjustedReward",
-    version="4.1.0",
-    category="reward",
-    provides=["shaped_reward", "reward_components", "reward_analytics", "reward_performance"],
-    requires=["trade_data", "risk_metrics", "market_context", "performance_data"],
-    description="Advanced risk-adjusted reward system with SmartInfoBus integration and comprehensive analytics",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
+@module(**module_args(
+    "RiskAdjustedReward",
+    description="Deterministic multi-window feature extraction with circuit breaker, monitoring, and explainability.",
     error_handling=True,
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
     Bus-first risk-adjusted reward module:

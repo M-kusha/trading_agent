@@ -7,6 +7,7 @@
 import asyncio
 import time
 import threading
+from modules.contracts import module_args
 import numpy as np
 import datetime
 from typing import Dict, Any, List, Optional, Tuple, Union
@@ -59,22 +60,15 @@ class PortfolioRiskConfig:
     risk_sensitivity: float = 1.0
 
 
-@module(
-    name="PortfolioRiskSystem",
-    version="4.0.0",
-    category="risk",
-    provides=[
-        "portfolio_risk", "risk_metrics", "position_limits", "risk_analytics",
-        "risk_data", "risk_signals", "risk_score", "trade_data", "trading_data"
-    ],
-    requires=["market_data"],  # Avoid circular deps
+
+
+@module(**module_args(
+    "PortfolioRiskSystem",
     description="Advanced portfolio risk management with comprehensive VaR analysis and dynamic position limits",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    is_voting_member=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     [ROCKET] Advanced portfolio risk system with SmartInfoBus integration.

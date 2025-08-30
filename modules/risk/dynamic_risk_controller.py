@@ -7,6 +7,7 @@
 import asyncio
 import time
 import threading
+from modules.contracts import module_args
 import numpy as np
 import datetime
 from typing import Dict, Any, List, Optional, Union
@@ -71,20 +72,14 @@ class DynamicRiskConfig:
     adaptive_learning_rate: float = 0.02
     risk_adaptation_speed: float = 1.0
 
-
-@module(
-    name="DynamicRiskController",
-    version="4.0.0",
-    category="risk",
-    provides=["risk_scaling", "risk_factors", "risk_analytics", "risk_alerts"],
-    requires=["risk_data", "performance_data", "market_data", "position_data"],
+@module(**module_args(
+    "DynamicRiskController",
     description="Advanced dynamic risk scaling with intelligent adaptation and comprehensive market analysis",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    is_voting_member=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
+
 class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     [ROCKET] Advanced dynamic risk controller with SmartInfoBus integration.
@@ -110,6 +105,19 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
         self.action_dim = int(action_dim)
         self.adaptive_scaling = adaptive_scaling
         self.regime_aware = regime_aware
+
+        # IMPORTANT: BaseModule.__init__ will call our _initialize early.
+        # Define essential attributes used by _initialize BEFORE calling super().__init__.
+        # This prevents AttributeError during the early init callback.
+        try:
+            self.current_mode = RiskControlMode.INITIALIZATION
+            self.current_risk_scale = float(self._cfg.base_risk_scale)
+            self._risk_quality = 0.5
+            # Provide a SmartInfoBus reference for early _initialize bus writes
+            self.smart_bus = InfoBusManager.get_instance()
+        except Exception:
+            # Best-effort defaults; _initialize is guarded with try/except
+            pass
 
         # Preserve our typed config before BaseModule init
         original_cfg = self._cfg

@@ -3,6 +3,7 @@
 # Enhanced Shadow Simulator with Modern Architecture
 # ─────────────────────────────────────────────────────────────
 
+from modules.contracts import module_args
 import numpy as np
 import datetime
 import time
@@ -20,28 +21,13 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-@module(
-    name="ShadowSimulator",
-    version="3.0.0",
-    category="simulation",
-    provides=[
-        "shadow_predictions", "scenario_analysis", "strategy_simulations", "forward_projections",
-        "simulation_confidence", "scenario_recommendations", "simulation_statistics"
-    ],
-    requires=[
-        "market_data", "prices", "positions", "recent_trades", "pending_orders", "committee_votes",
-        "market_context", "risk_metrics", "trading_performance"
-    ],
+@module(**module_args(
+    "ShadowSimulator",
     description="Intelligent forward-looking trade simulation with context-aware strategy variations",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    timeout_ms=200,
-    priority=4,
-    explainable=True,
-    hot_reload=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     Modern shadow simulator with comprehensive SmartInfoBus integration.

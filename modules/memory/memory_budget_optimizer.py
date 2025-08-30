@@ -7,6 +7,7 @@
 import asyncio
 import time
 import threading
+from modules.contracts import module_args
 import numpy as np
 from typing import Dict, Any, List, Optional, ClassVar, cast
 from collections import deque, defaultdict
@@ -43,19 +44,13 @@ class MemoryBudgetConfig:
     utilization_target: float = 0.8
 
 
-@module(
-    name="MemoryBudgetOptimizer",
-    version="3.0.1",  # bump
-    category="memory",
-    provides=["memory_allocation", "budget_optimization", "memory_efficiency", "allocation_strategy"],
-    requires=["memory_usage"],  # trades/mistakes/playbook_entries become soft/optional reads
-    description="Advanced memory budget optimization with dynamic allocation strategies",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
-    error_handling=True
-)
-
+@module(**module_args(
+    "MemoryBudgetOptimizer",
+    description="Deterministic multi-window feature extraction with circuit breaker, monitoring, and explainability.",
+    error_handling=True,
+    hot_reload=True,
+    timeout_ms=120,
+))
 class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
     Advanced memory budget optimizer with SmartInfoBus integration.
@@ -66,34 +61,86 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
     _logger_lock: ClassVar[threading.Lock] = threading.Lock()
     _monitoring_active_global: ClassVar[bool] = False
 
-    def __init__(self, 
+    def __init__(self,
                  config: Optional[MemoryBudgetConfig] = None,
                  genome: Optional[Dict[str, Any]] = None,
                  **kwargs):
-        
-        # Store config first before calling super().__init__()
+        # Store config first and expose unified reference for BaseModule/_initialize
         self.memory_budget_config = config or MemoryBudgetConfig()
+        # Mirror dataclass as dict for BaseModule compatibility
+        self.config = dict(self.memory_budget_config.__dict__)  # type: ignore[assignment]
+
+        # EARLY INITIALIZATION: fields referenced by _initialize()
+        # - Smart bus
+        self.smart_bus = InfoBusManager.get_instance()
+        # - Minimal logger (will be replaced with shared logger in _initialize_advanced_systems)
+        try:
+            self.logger = RotatingLogger(
+                name="MemoryBudgetOptimizer",
+                log_path="logs/memory/memory_budget.log",
+                max_lines=3000,
+                operator_mode=True,
+                plain_english=True
+            )
+        except Exception:
+            # Fallback minimal stub to avoid attribute errors
+            class _Stub:
+                def info(self, *a, **k): pass
+                def warning(self, *a, **k): pass
+                def error(self, *a, **k): pass
+            self.logger = _Stub()
+
+        # - Minimal genome used by _initialize() for initial_allocation
+        if genome:
+            self.genome = {
+                "max_trades": int(genome.get("max_trades", self.memory_budget_config.max_trades)),
+                "max_mistakes": int(genome.get("max_mistakes", self.memory_budget_config.max_mistakes)),
+                "max_plays": int(genome.get("max_plays", self.memory_budget_config.max_plays)),
+                "min_size": int(genome.get("min_size", self.memory_budget_config.min_size)),
+                "optimization_interval": int(genome.get("optimization_interval", self.memory_budget_config.optimization_interval)),
+                "rebalance_sensitivity": float(genome.get("rebalance_sensitivity", self.memory_budget_config.rebalance_sensitivity)),
+                "efficiency_weight": float(genome.get("efficiency_weight", self.memory_budget_config.efficiency_weight)),
+                "recency_weight": float(genome.get("recency_weight", self.memory_budget_config.recency_weight))
+            }
+        else:
+            self.genome = {
+                "max_trades": self.memory_budget_config.max_trades,
+                "max_mistakes": self.memory_budget_config.max_mistakes,
+                "max_plays": self.memory_budget_config.max_plays,
+                "min_size": self.memory_budget_config.min_size,
+                "optimization_interval": self.memory_budget_config.optimization_interval,
+                "rebalance_sensitivity": self.memory_budget_config.rebalance_sensitivity,
+                "efficiency_weight": self.memory_budget_config.efficiency_weight,
+                "recency_weight": self.memory_budget_config.recency_weight
+            }
+
+        # Predefine warn/rate-limit & data presence gates for type-checkers and early safety
+        self._has_seen_data = False
+        self._no_data_notice_emitted = False
+        self._util_state = {"trades": "unknown", "mistakes": "unknown", "plays": "unknown"}
+        self._last_warn = defaultdict(lambda: 0.0)
+        self._warn_min_interval = float(getattr(self.memory_budget_config, 'warn_min_interval_sec', 180))
+        self._warn_on_state_change_only = bool(getattr(self.memory_budget_config, 'warn_on_state_change_only', True))
+
+        # Initialize BaseModule (may call self._initialize()) now that critical attrs exist
         super().__init__()
-        
-        # Ensure our config is preserved after BaseModule initialization
-        self.config = self.memory_budget_config
-        
+
         # Initialize advanced systems
         self._initialize_advanced_systems()
-        
-        # Initialize genome parameters
+
+        # Initialize genome parameters (recompute with full systems ready)
         self._initialize_genome_parameters(genome)
-        
+
         # Initialize memory budget state
         self._initialize_memory_state()
-        
+
         # Start monitoring after all initialization is complete
         self._start_monitoring()
-        
+
         self.logger.info(
             format_operator_message(
                 "🧠", "MEMORY_BUDGET_OPTIMIZER_INITIALIZED",
-                details=f"Max trades: {self.config.max_trades}, Max mistakes: {self.config.max_mistakes}",
+                details=f"Max trades: {self.memory_budget_config.max_trades}, Max mistakes: {self.memory_budget_config.max_mistakes}",
                 result="Memory allocation optimization ready",
                 context="memory_management"
             )
@@ -130,7 +177,7 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
             'failures': 0,
             'last_failure': 0,
             'state': 'CLOSED',
-            'threshold': self.config.circuit_breaker_threshold
+            'threshold': self.memory_budget_config.circuit_breaker_threshold
         }
 
         # Health monitoring
@@ -142,25 +189,25 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
         """Initialize genome-based parameters"""
         if genome:
             self.genome = {
-                "max_trades": int(genome.get("max_trades", self.config.max_trades)),
-                "max_mistakes": int(genome.get("max_mistakes", self.config.max_mistakes)),
-                "max_plays": int(genome.get("max_plays", self.config.max_plays)),
-                "min_size": int(genome.get("min_size", self.config.min_size)),
-                "optimization_interval": int(genome.get("optimization_interval", self.config.optimization_interval)),
-                "rebalance_sensitivity": float(genome.get("rebalance_sensitivity", self.config.rebalance_sensitivity)),
-                "efficiency_weight": float(genome.get("efficiency_weight", self.config.efficiency_weight)),
-                "recency_weight": float(genome.get("recency_weight", self.config.recency_weight))
+                "max_trades": int(genome.get("max_trades", self.memory_budget_config.max_trades)),
+                "max_mistakes": int(genome.get("max_mistakes", self.memory_budget_config.max_mistakes)),
+                "max_plays": int(genome.get("max_plays", self.memory_budget_config.max_plays)),
+                "min_size": int(genome.get("min_size", self.memory_budget_config.min_size)),
+                "optimization_interval": int(genome.get("optimization_interval", self.memory_budget_config.optimization_interval)),
+                "rebalance_sensitivity": float(genome.get("rebalance_sensitivity", self.memory_budget_config.rebalance_sensitivity)),
+                "efficiency_weight": float(genome.get("efficiency_weight", self.memory_budget_config.efficiency_weight)),
+                "recency_weight": float(genome.get("recency_weight", self.memory_budget_config.recency_weight))
             }
         else:
             self.genome = {
-                "max_trades": self.config.max_trades,
-                "max_mistakes": self.config.max_mistakes,
-                "max_plays": self.config.max_plays,
-                "min_size": self.config.min_size,
-                "optimization_interval": self.config.optimization_interval,
-                "rebalance_sensitivity": self.config.rebalance_sensitivity,
-                "efficiency_weight": self.config.efficiency_weight,
-                "recency_weight": self.config.recency_weight
+                "max_trades": self.memory_budget_config.max_trades,
+                "max_mistakes": self.memory_budget_config.max_mistakes,
+                "max_plays": self.memory_budget_config.max_plays,
+                "min_size": self.memory_budget_config.min_size,
+                "optimization_interval": self.memory_budget_config.optimization_interval,
+                "rebalance_sensitivity": self.memory_budget_config.rebalance_sensitivity,
+                "efficiency_weight": self.memory_budget_config.efficiency_weight,
+                "recency_weight": self.memory_budget_config.recency_weight
             }
 
     def _initialize_memory_state(self):
@@ -188,17 +235,10 @@ class MemoryBudgetOptimizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRi
         self._adaptive_thresholds = {
             'min_efficiency': 0.01,
             'rebalance_threshold': 0.1,
-            'utilization_target': self.config.utilization_target,
+            'utilization_target': self.memory_budget_config.utilization_target,
             'performance_window': 20
         }
-
-        # NEW: warn/rate-limit & data presence gates
-        self._has_seen_data = False
-        self._no_data_notice_emitted = False
-        self._util_state = {"trades": "unknown", "mistakes": "unknown", "plays": "unknown"}
-        self._last_warn = defaultdict(lambda: 0.0)
-        self._warn_min_interval = getattr(self.config, 'warn_min_interval_sec', 180)      # seconds
-        self._warn_on_state_change_only = getattr(self.config, 'warn_on_state_change_only', True)
+        
 
 
     def _start_monitoring(self):

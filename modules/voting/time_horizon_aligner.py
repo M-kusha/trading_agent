@@ -5,6 +5,7 @@ Advanced time-based weight scaling for voting committees with market adaptation
 
 import asyncio
 import time
+from modules.contracts import module_args
 import numpy as np
 import datetime
 from typing import Dict, Any, List, Optional, Tuple
@@ -23,29 +24,13 @@ from modules.monitoring.health_monitor import HealthMonitor
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-@module(
-    name="TimeHorizonAligner",
-    version="3.1.0",
-    category="voting",
-    provides=[
-        "aligned_weights", "horizon_distances", "horizon_multipliers", "regime_adjustments",
-        "session_patterns", "alignment_quality", "performance_metrics", "adaptation_status",
-        "horizon_alignment"
-    ],
-    requires=[
-        "market_regime", "session_type", "volatility_data", "market_context"
-        # optional: voting_weights, time_of_day, performance_feedback, member_confidences, recent_trades, expert_performance
-    ],
+@module(**module_args(
+    "TimeHorizonAligner",
     description="Advanced time-based weight scaling for voting committees with market adaptation",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    timeout_ms=80,
-    priority=4,
-    explainable=True,
-    hot_reload=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     🕐 PRODUCTION-GRADE Time Horizon Aligner v3.1

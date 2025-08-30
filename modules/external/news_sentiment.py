@@ -8,6 +8,7 @@ import asyncio
 import os
 import time
 import threading
+from modules.contracts import module_args
 import requests
 import numpy as np
 from typing import Dict, Any, List, Optional
@@ -39,18 +40,13 @@ class SentimentConfig:
     min_confidence: float = 0.3
 
 
-@module(
-    name="NewsSentimentModule", 
-    version="3.0.0",
-    category="external",
-    provides=["news_sentiment", "sentiment_confidence", "news_summary", "sentiment_trend"],
-    requires=["market_data", "symbols", "trading_session"],
+@module(**module_args(
+    "NewsSentimentModule",
     description="Advanced news sentiment analysis with API integration and SmartInfoBus support",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
-    error_handling=True
-)
+    error_handling=True,
+    hot_reload=True,
+    timeout_ms=120,
+))
 class NewsSentimentModule(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
     Production-ready news sentiment module with SmartInfoBus integration.

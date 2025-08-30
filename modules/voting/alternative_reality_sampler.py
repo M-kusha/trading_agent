@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Deque, Callable, ContextManager, cast
 from collections import deque
 
+from modules.contracts import module_args
 import numpy as np
 
 from modules.core.module_base import BaseModule, module
@@ -53,40 +54,13 @@ class SamplerConfig:
 # ─────────────────────────────────────────────────────────────
 # Module
 # ─────────────────────────────────────────────────────────────
-@module(
-    name="AlternativeRealitySampler",
-    version="3.1.0",
-    category="voting",
-    provides=[
-        "alternative_samples",
-        "sampling_uncertainty",
-        "diversity_score",
-        "sampling_stats",
-        "effective_samples",
-        "confidence_bounds",
-        "sampling_recommendations",
-        # diagnostics namespace keys are intentionally not listed to avoid contract noise
-    ],
-    requires=[
-        "votes",
-        "voting_summary",
-        "strategy_arbiter_weights",
-        "market_context",
-        "volatility_data",
-        "consensus_direction",
-        "agreement_score",
-        "market_regime",
-    ],
+@module(**module_args(
+    "AlternativeRealitySampler",
     description="Alternative voting outcome sampling for robustness & uncertainty quantification",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    timeout_ms=80,
-    priority=4,
-    explainable=True,
     hot_reload=True,
-)
+    timeout_ms=120,
+))
 class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     PRODUCTION v3.1: hardened, deterministic sampling with auxiliary diagnostics publishing.

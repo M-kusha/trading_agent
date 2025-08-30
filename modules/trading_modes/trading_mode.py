@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from modules.contracts import module_args
 import numpy as np
 import datetime
 from dataclasses import dataclass, asdict, field
@@ -43,7 +44,7 @@ class TradingModeManagerConfig:
     regime_awareness: bool = True
     session_awareness: bool = True
     volatility_scaling: bool = True
-    debug: bool = False
+    debug: bool = True
     # circuit breaker
     breaker_error_window: int = 10
     breaker_open_threshold: int = 5
@@ -53,28 +54,13 @@ class TradingModeManagerConfig:
     health_key: str = "trading_mode_manager_health"
 
 
-@module(
-    name="TradingModeManager",
-    version="3.1.0",
-    category="trading_modes",
-    provides=[
-        "trading_mode", "mode_config", "mode_stats", "mode_effectiveness", "decision_factors",
-        "mode_thresholds", "market_context", "mode_recommendations"
-    ],
-    requires=[
-        "recent_trades", "risk_metrics", "votes", "positions", "market_context", "session_metrics",
-        "strategy_performance", "trading_performance", "market_regime"
-    ],
+@module(**module_args(
+    "TradingModeManager",
     description="Intelligent trading mode switching based on comprehensive market analysis and performance tracking",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    timeout_ms=100,
-    priority=8,
-    explainable=True,
-    hot_reload=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     ⚙️ PRODUCTION-GRADE Trading Mode Manager v3.1

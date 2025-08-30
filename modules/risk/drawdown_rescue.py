@@ -6,6 +6,7 @@ Intelligent drawdown monitoring and rescue mechanisms
 
 from __future__ import annotations
 
+from modules.contracts import module_args
 import numpy as np
 import datetime
 import time
@@ -69,18 +70,15 @@ class DrawdownRescueConfig:
 # ─────────────────────────────────────────────────────────────
 # Module
 # ─────────────────────────────────────────────────────────────
-@module(
-    name="DrawdownRescue",
-    version="4.0.0",
-    category="risk",
-    provides=["drawdown_risk", "rescue_status", "risk_adjustment"],
-    requires=["balance", "equity", "positions", "market_context"],
+@module(**module_args(
+    "DrawdownRescue",
     description="Enhanced drawdown monitoring with intelligent rescue mechanisms and risk adjustment",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
+
+
 class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, SmartInfoBusTradingMixin):
     """
     Contract guarantees:

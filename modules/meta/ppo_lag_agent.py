@@ -7,6 +7,7 @@
 import asyncio
 import time
 import threading
+from modules.contracts import module_args
 import numpy as np
 import torch
 import torch.nn as nn
@@ -203,18 +204,13 @@ class PPOLagConfig:
     target_kl: float = 0.01
 
 
-@module(
-    name="PPOLagAgent",
-    version="3.0.0",
-    category="meta",
-    provides=["agent_status", "ppo_lag_training_metrics", "position_metrics", "market_adaptation"],
-    requires=["trades", "actions", "market_data", "training_signals"],
+@module(**module_args(
+    "PPOLagAgent",
     description="Advanced PPO-Lag agent with market adaptation and SmartInfoBus integration",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
-    error_handling=True
-)
+    error_handling=True,
+    hot_reload=True,
+    timeout_ms=120,
+))
 class PPOLagAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
     Advanced PPO-Lag agent with SmartInfoBus integration.

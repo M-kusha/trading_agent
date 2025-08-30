@@ -8,12 +8,14 @@
 from __future__ import annotations
 
 import time
+from modules.contracts import module_args
 import numpy as np
 from collections import deque
 from typing import Dict, Any, Optional, Tuple, List, Union
 import datetime
 from dataclasses import dataclass
 import threading
+import math
 
 # Core SmartInfoBus Infrastructure
 from modules.core.module_base import BaseModule, module
@@ -51,40 +53,13 @@ class RegimeMatrixConfig:
 # MODULE
 # ═══════════════════════════════════════════════════════════════════
 
-@module(
-    name="RegimePerformanceMatrix",
-    version="3.1.0",
-    category="market",
-    provides=[
-        "regime_accuracy",
-        "regime_prediction",
-        "market_state",
-        "performance_metrics",
-        "stress_test_results",
-        "backtesting_data",
-        "recent_trades",
-        "trading_signals",
-        "regime_analysis",
-        "regime_data",
-        "regime_matrix_analysis",
-        "regime_matrix_health",
-        "regime_matrix_status",
-        "regime_performance",
-    ],
-    requires=[
-        "market_regime",
-        "market_data",
-        "liquidity_score",
-        "recent_trades",
-        "volatility_data",
-        "pnl_data",
-    ],
+@module(**module_args(
+    "RegimePerformanceMatrix",
     description="Advanced regime performance tracking with stress testing and prediction accuracy",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     Production-grade regime performance matrix with advanced analytics.
@@ -114,7 +89,7 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         self._initialize_advanced_systems()
 
         # Parent (expects dict config; keep lints happy)
-        super().__init__(config=base_config)
+        super().__init__(config=base_config, **kwargs)
 
         # Local state
         self._initialize_matrix_state()
@@ -240,6 +215,17 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             thesis="Regime performance matrix initialization status for system awareness",
         )
 
+    # ── NUMERIC SAFETY ─────────────────────────────────────────────
+
+    @staticmethod
+    def _is_num(x: Any) -> bool:
+        return isinstance(x, (int, float, np.floating)) and not (isinstance(x, float) and (math.isnan(x) or math.isinf(x)))
+
+    @staticmethod
+    def _safe_mean(seq: Union[List[Any], deque], default: float = 0.0) -> float:
+        nums = [float(v) for v in seq if isinstance(v, (int, float, np.floating))]
+        return float(np.mean(nums)) if nums else float(default)
+
     # ── OUTPUT CONTRACT ────────────────────────────────────────────
 
     def _format_declared_outputs(
@@ -259,7 +245,7 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             matrix_list = (np.array(matrix_raw, dtype=np.float32).reshape(n, n)).tolist()
 
             overall_accuracy = float(matrix_result.get("overall_accuracy", 0.5))
-            regime_accuracy = float(matrix_result.get("regime_accuracy", 0.5))
+            regime_accuracy_val = float(matrix_result.get("regime_accuracy", 0.5))
             avg_performance = float(matrix_result.get("avg_performance", 0.0))
             current_volatility = float(matrix_result.get("current_volatility", getattr(self, "last_volatility", 0.01)))
             volatility_trend = str(matrix_result.get("volatility_trend", "stable"))
@@ -267,6 +253,15 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             processing_success = bool(matrix_result.get("processing_success", False))
 
             stress_results = dict(getattr(self, "_stress_test_results", {}) or {})
+
+            # Detailed accuracy (for consumers that want structure)
+            by_regime = {str(i): float(self._regime_accuracy_scores[i]) for i in range(n)}
+            regime_accuracy_details = {
+                "value": overall_accuracy,            # canonical overall
+                "by_regime": by_regime,               # per-regime breakdown
+                "current_regime_accuracy": regime_accuracy_val,
+                "last_update": datetime.datetime.now().isoformat(),
+            }
 
             # Provided keys construction
             regime_prediction = {
@@ -281,24 +276,24 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             }
             performance_metrics = {
                 "overall_accuracy": overall_accuracy,
-                "regime_accuracy": regime_accuracy,
+                "regime_accuracy": regime_accuracy_val,
                 "avg_performance": avg_performance,
                 "processing_success": processing_success,
             }
             backtesting_data = {
                 "window": int(len(self._performance_history)),
-                "volatility_history": list(self.vol_history)[-50:],
+                "volatility_history": [float(v) for v in list(self.vol_history)[-50:] if self._is_num(v)],
                 "timestamp": datetime.datetime.now().isoformat(),
             }
 
             recent_trades: List[Dict[str, Any]] = []
             if performance_data and "recent_trades" in performance_data:
-                recent_trades = list(performance_data["recent_trades"])
+                recent_trades = [t for t in performance_data["recent_trades"] if isinstance(t, dict)]
             else:
                 try:
                     bus_trades = self.smart_bus.get("recent_trades", "RegimePerformanceMatrix")
                     if isinstance(bus_trades, list):
-                        recent_trades = bus_trades
+                        recent_trades = [t for t in bus_trades if isinstance(t, dict)]
                 except Exception:
                     recent_trades = []
 
@@ -320,7 +315,8 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                     "avg_performance": avg_performance,
                 },
                 # declared provides
-                "regime_accuracy": overall_accuracy,
+                "regime_accuracy": overall_accuracy,   # float (safe for averaging)
+                "regime_accuracy_details": regime_accuracy_details,  # structured for consumers
                 "regime_prediction": regime_prediction,
                 "stress_test_results": stress_results,
                 "market_regime": current_regime,  # convenience for downstreams
@@ -356,7 +352,13 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                     "predicted_regime": int(getattr(self, "_predicted_regime", 0)),
                     "avg_performance": 0.0,
                 },
-                "regime_accuracy": 0.5,
+                "regime_accuracy": 0.5,  # keep numeric
+                "regime_accuracy_details": {
+                    "value": 0.5,
+                    "by_regime": {str(i): 0.5 for i in range(n)},
+                    "current_regime_accuracy": 0.5,
+                    "last_update": now,
+                },
                 "regime_prediction": {
                     "predicted": int(getattr(self, "_predicted_regime", 0)),
                     "actual": int(getattr(self, "_current_regime", 0)),
@@ -405,10 +407,12 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             matrix_result = await self._process_regime_matrix(performance_data)
             thesis = await self._generate_matrix_thesis(performance_data, matrix_result)
 
-            await self._update_matrix_smart_bus(matrix_result, thesis)
-
+            # Record timing BEFORE publishing to bus so downstream metrics reflect the real cycle time
             processing_time = (time.time() - start_time) * 1000.0
             self._record_success(processing_time)
+
+            # Publish to bus with precise timing for performance tracker
+            await self._update_matrix_smart_bus(matrix_result, thesis, processing_time_ms=processing_time)
 
             return self._format_declared_outputs(matrix_result, thesis=thesis, performance_data=performance_data)
 
@@ -422,30 +426,40 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         # Predicted regime (accept both str & int inputs)
         market_regime_val = self.smart_bus.get("market_regime", "RegimePerformanceMatrix")
         if isinstance(market_regime_val, str):
-            mapping = {"trending": 0, "volatile": 1, "ranging": 2}
+            mapping = {"trending": 0, "ranging": 1, "volatile": 2}
             predicted_regime = int(mapping.get(market_regime_val.lower(), 0))
         else:
-            predicted_regime = int(market_regime_val) if market_regime_val is not None else 0
+            try:
+                predicted_regime = int(market_regime_val) if market_regime_val is not None else 0
+            except Exception:
+                predicted_regime = 0
 
         # Volatility
         volatility_data = self.smart_bus.get("volatility_data", "RegimePerformanceMatrix")
-        if isinstance(volatility_data, (int, float)):
+        if isinstance(volatility_data, (int, float, np.floating)):
             volatility = float(volatility_data)
         else:
             volatility = await self._calculate_volatility_fallback()
 
         # PnL or recent trades
         pnl_raw = self.smart_bus.get("pnl_data", "RegimePerformanceMatrix")
-        if isinstance(pnl_raw, (int, float)):
+        if isinstance(pnl_raw, (int, float, np.floating)):
             pnl = float(pnl_raw)
         else:
             recent_trades = self.smart_bus.get("recent_trades", "RegimePerformanceMatrix")
             if isinstance(recent_trades, list):
-                pnl = float(sum(float(t.get("pnl", 0.0)) for t in recent_trades if isinstance(t, dict)))
+                pnl_vals = []
+                for t in recent_trades:
+                    if isinstance(t, dict):
+                        v = t.get("pnl", 0.0)
+                        if isinstance(v, (int, float, np.floating)):
+                            pnl_vals.append(float(v))
+                pnl = float(sum(pnl_vals)) if pnl_vals else 0.0
             else:
                 pnl = 0.0
 
-        liquidity_score = float(self.smart_bus.get("liquidity_score", "RegimePerformanceMatrix") or 1.0)
+        liquidity_score_raw = self.smart_bus.get("liquidity_score", "RegimePerformanceMatrix")
+        liquidity_score = float(liquidity_score_raw) if isinstance(liquidity_score_raw, (int, float, np.floating)) else 1.0
 
         return {
             "predicted_regime": predicted_regime,
@@ -464,21 +478,14 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
 
         # 1) Snapshot shape: {SYM: {open,high,low,close,volume,...}}
         def _from_snapshot(md: Dict[str, Any]) -> Optional[float]:
-            for code in self.regime_config.instruments:
-                sym = code.replace("/", "").upper()
-                # allow both "XAUUSD" and "XAU/USD" styles
-                for k in (sym, code, code.replace("/", "")):
-                    if k in md and isinstance(md[k], dict):
-                        bar = md[k]
-                        if "close" in bar and isinstance(bar["close"], (int, float)):
-                            # No series: can't do returns; skip
-                            continue
+            # Without a series of closes, we cannot compute returns-based volatility.
+            # This function remains for completeness and future extension.
             return None  # snapshot alone insufficient for vol calc
 
         # 2) Multi-timeframe shape: {SYM: {TF: {close:[...] ...}}}
         def _from_multi(md: Dict[str, Any]) -> Optional[float]:
             for code in self.regime_config.instruments:
-                inst = md.get(code) or md.get(code.replace("/", "")) or md.get(code.upper())
+                inst = md.get(code) or md.get(code.replace("/", "")) or md.get(code.upper()) or md.get(code.replace("/", "").upper())
                 if not isinstance(inst, dict):
                     continue
                 # prefer H1/H4/D1
@@ -487,7 +494,8 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                     if isinstance(tf_data, dict) and "close" in tf_data:
                         closes = np.asarray(tf_data["close"], dtype=np.float64)
                         if closes.size > 10:
-                            rets = np.diff(closes) / np.where(closes[:-1] == 0, 1.0, closes[:-1])
+                            denom = np.where(closes[:-1] == 0, 1.0, closes[:-1])
+                            rets = np.diff(closes) / denom
                             if rets.size > 1:
                                 vol = float(np.std(rets[-min(20, rets.size):]))
                                 if np.isfinite(vol) and vol > 0:
@@ -517,18 +525,19 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         # Determine true regime from volatility
         true_regime = self._determine_true_regime(volatility)
 
-        # Update histories
+        # Update histories (only numbers!)
         self._predicted_regime_history.append(predicted_regime)
         self._true_regime_history.append(true_regime)
-        self.vol_history.append(volatility)
-        self._performance_history.append(pnl)
+        self.vol_history.append(float(volatility))
+        self._performance_history.append(float(pnl))
         self._regime_history.append(true_regime)
 
         # Exponential decay update of performance matrix
         i, j = predicted_regime, true_regime
         i = int(np.clip(i, 0, self.matrix.shape[0] - 1))
         j = int(np.clip(j, 0, self.matrix.shape[1] - 1))
-        self.matrix[i, j] = self.matrix[i, j] * float(self.regime_config.decay_factor) + pnl * (1.0 - float(self.regime_config.decay_factor))
+        decay = float(self.regime_config.decay_factor)
+        self.matrix[i, j] = self.matrix[i, j] * decay + float(pnl) * (1.0 - decay)
 
         # Transition handling
         if true_regime != self._current_regime:
@@ -545,7 +554,7 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         # Metrics
         overall_accuracy = self._calculate_overall_accuracy()
         regime_accuracy = self._calculate_regime_accuracy(true_regime)
-        avg_performance = float(np.mean(self._performance_history)) if self._performance_history else 0.0
+        avg_performance = self._safe_mean(self._performance_history, default=0.0)
         volatility_trend = self._calculate_volatility_trend()
 
         return {
@@ -574,7 +583,7 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         """Update volatility regime thresholds from history."""
         if len(self.vol_history) < 50:
             return
-        vols = np.array(self.vol_history, dtype=np.float32)
+        vols = np.array([float(v) for v in self.vol_history], dtype=np.float32)
         # Percentiles (robust-ish)
         self.volatility_regimes[0] = float(np.percentile(vols, 33))
         self.volatility_regimes[1] = float(np.percentile(vols, 66))
@@ -587,9 +596,11 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             self._regime_transitions[key] = {"count": 0, "avg_pnl": 0.0, "avg_volatility": 0.0}
 
         trans = self._regime_transitions[key]
-        trans["count"] = int(trans["count"]) + 1
-        trans["avg_pnl"] = float((trans["avg_pnl"] * (trans["count"] - 1) + pnl) / trans["count"])
-        trans["avg_volatility"] = float((trans["avg_volatility"] * (trans["count"] - 1) + volatility) / trans["count"])
+        new_count = int(trans.get("count", 0)) + 1
+        # Running averages
+        trans["avg_pnl"] = float((trans.get("avg_pnl", 0.0) * (new_count - 1) + float(pnl)) / new_count)
+        trans["avg_volatility"] = float((trans.get("avg_volatility", 0.0) * (new_count - 1) + float(volatility)) / new_count)
+        trans["count"] = new_count
 
         self.logger.info(
             format_operator_message(
@@ -608,9 +619,10 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         if ch is None:
             ch = {"avg_volatility": 0.0, "avg_pnl": 0.0, "count": 0, "accuracy": 0.5, "stability_score": 0.5}
             self._regime_characteristics[regime] = ch
-        ch["count"] = int(ch["count"]) + 1
-        ch["avg_volatility"] = float((ch["avg_volatility"] * (ch["count"] - 1) + volatility) / ch["count"])
-        ch["avg_pnl"] = float((ch["avg_pnl"] * (ch["count"] - 1) + pnl) / ch["count"])
+        cnt = int(ch.get("count", 0)) + 1
+        ch["count"] = cnt
+        ch["avg_volatility"] = float((ch.get("avg_volatility", 0.0) * (cnt - 1) + float(volatility)) / cnt)
+        ch["avg_pnl"] = float((ch.get("avg_pnl", 0.0) * (cnt - 1) + float(pnl)) / cnt)
         # Track PnL
         self._regime_pnl_tracking[regime].append(float(pnl))
 
@@ -638,7 +650,7 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         """Simple volatility trend over recent observations (robust)."""
         if len(self.vol_history) < 10:
             return "stable"
-        y = np.asarray(list(self.vol_history)[-10:], dtype=np.float64)
+        y = np.asarray([float(v) for v in list(self.vol_history)[-10:]], dtype=np.float64)
         x = np.arange(y.size, dtype=np.float64)
         try:
             # Guard against singular matrix with degenerate data
@@ -720,7 +732,13 @@ REGIME PERFORMANCE MATRIX ANALYSIS
 
         return thesis
 
-    async def _update_matrix_smart_bus(self, matrix_result: Dict[str, Any], thesis: str) -> None:
+    async def _update_matrix_smart_bus(
+        self,
+        matrix_result: Dict[str, Any],
+        thesis: str,
+        *,
+        processing_time_ms: Optional[float] = None
+    ) -> None:
         """Update SmartInfoBus with matrix results (scoped to this module)."""
         # Main performance data
         self.smart_bus.set(
@@ -735,6 +753,7 @@ REGIME PERFORMANCE MATRIX ANALYSIS
             thesis=f"Regime performance matrix with {matrix_result['overall_accuracy']:.1%} accuracy",
         )
 
+        # Bus keeps float for backward-compat consumers
         self.smart_bus.set(
             "regime_accuracy",
             matrix_result["overall_accuracy"],
@@ -803,7 +822,7 @@ REGIME PERFORMANCE MATRIX ANALYSIS
             "backtesting_data",
             {
                 "window": len(self._performance_history),
-                "volatility_history": list(self.vol_history)[-50:],
+                "volatility_history": [float(v) for v in list(self.vol_history)[-50:] if self._is_num(v)],
                 "timestamp": datetime.datetime.now().isoformat(),
             },
             module="RegimePerformanceMatrix",
@@ -811,6 +830,10 @@ REGIME PERFORMANCE MATRIX ANALYSIS
         )
 
         recent_trades = self.smart_bus.get("recent_trades", "RegimePerformanceMatrix") or []
+        if isinstance(recent_trades, list):
+            recent_trades = [t for t in recent_trades if isinstance(t, dict)]
+        else:
+            recent_trades = []
         self.smart_bus.set("recent_trades", recent_trades, module="RegimePerformanceMatrix", thesis="Recent trades passthrough for regime consumers")
 
         signal = "hold"
@@ -834,10 +857,12 @@ REGIME PERFORMANCE MATRIX ANALYSIS
             thesis="Most recent regime stress test results",
         )
 
+        # Record a precise performance metric for this cycle
+        metric_ms = float(processing_time_ms if processing_time_ms is not None else (self.processing_times[-1] if self.processing_times else 0.0))
         self.performance_tracker.record_metric(
             "RegimePerformanceMatrix",
             "matrix_processing",
-            self.processing_times[-1] if self.processing_times else 0.0,
+            metric_ms,
             matrix_result["processing_success"],
         )
 
@@ -846,7 +871,8 @@ REGIME PERFORMANCE MATRIX ANALYSIS
     async def _handle_no_data_fallback(self) -> Dict[str, Any]:
         """Handle case when no performance data is available (contract-safe)."""
         self.logger.warning("No performance data available - using fallback regime matrix")
-
+        now = datetime.datetime.now().isoformat()
+        n = int(self.regime_config.n_regimes)
         matrix_result = {
             "current_regime": int(getattr(self, "_current_regime", 0)),
             "predicted_regime": int(getattr(self, "_predicted_regime", 0)),
@@ -861,7 +887,15 @@ REGIME PERFORMANCE MATRIX ANALYSIS
             "fallback_reason": "No performance data available",
         }
         thesis = "Fallback: No performance data; using safe defaults for regime matrix."
-        return self._format_declared_outputs(matrix_result, thesis=thesis)
+        out = self._format_declared_outputs(matrix_result, thesis=thesis)
+        # ensure details exist too
+        out["regime_accuracy_details"] = {
+            "value": out.get("regime_accuracy", 0.5),
+            "by_regime": {str(i): 0.5 for i in range(n)},
+            "current_regime_accuracy": 0.5,
+            "last_update": now,
+        }
+        return out
 
     async def _handle_matrix_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
         """Handle matrix processing errors (contract-safe)."""
@@ -909,7 +943,7 @@ REGIME PERFORMANCE MATRIX ANALYSIS
         """Update health metrics to SmartInfoBus."""
         total = self.success_count + self.failure_count
         success_rate = float(self.success_count / max(total, 1))
-        avg_ms = float(np.mean(self.processing_times)) if self.processing_times else 0.0
+        avg_ms = self._safe_mean(self.processing_times, default=0.0)
         overall_accuracy = float(self._calculate_overall_accuracy())
 
         self.smart_bus.set(
@@ -989,7 +1023,7 @@ REGIME PERFORMANCE MATRIX ANALYSIS
             "module_name": "RegimePerformanceMatrix",
             "status": "healthy" if (self.success_count / max(total, 1)) > 0.8 else "degraded",
             "success_rate": float(self.success_count / max(total, 1)),
-            "avg_processing_time": float(np.mean(self.processing_times)) if self.processing_times else 0.0,
+            "avg_processing_time": self._safe_mean(self.processing_times, default=0.0),
             "circuit_breaker_failures": int(self.circuit_breaker_failures),
             "overall_accuracy": overall_accuracy,
             "current_regime": int(self._current_regime),
@@ -1057,7 +1091,7 @@ REGIME PERFORMANCE MATRIX ANALYSIS
             data_quality = float(min(1.0, len(self.vol_history) / float(self.regime_config.vol_history_size)))
 
             if len(self._performance_history) > 10:
-                perf_std = float(np.std(list(self._performance_history)))
+                perf_std = float(np.std([float(v) for v in list(self._performance_history)]))
                 perf_consistency = float(max(0.0, 1.0 - perf_std / 100.0))
             else:
                 perf_consistency = 0.5

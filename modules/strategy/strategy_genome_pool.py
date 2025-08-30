@@ -6,6 +6,7 @@ Advanced genetic algorithm evolution system with intelligent strategy parameter 
 import asyncio
 import time
 import hashlib
+from modules.contracts import module_args
 import numpy as np
 import datetime
 import random
@@ -24,28 +25,13 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-@module(
-    name="StrategyGenomePool",
-    version="3.0.0",
-    category="strategy",
-    provides=[
-        "genome_weights", "genome_analysis", "genome_recommendations",
-        "evolution_analytics", "best_genome", "population_metrics"
-    ],
-    requires=[
-        "market_data", "recent_trades", "trading_performance", "risk_data",
-        "market_regime", "volatility_data", "session_metrics"
-    ],
+@module(**module_args(
+    "StrategyGenomePool",
     description="Advanced genetic algorithm evolution system with intelligent strategy parameter optimization",
-    thesis_required=False,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    timeout_ms=200,
-    priority=7,
-    explainable=True,
-    hot_reload=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     🧬 PRODUCTION-GRADE Strategy Genome Pool v3.0

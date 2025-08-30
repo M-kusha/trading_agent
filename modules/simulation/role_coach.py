@@ -3,6 +3,7 @@
 # Enhanced Role Coach with Modern Architecture
 # ─────────────────────────────────────────────────────────────
 
+from modules.contracts import module_args
 import numpy as np
 import datetime
 import time
@@ -20,28 +21,13 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-@module(
-    name="RoleCoach",
-    version="3.0.0",
-    category="simulation",
-    provides=[
-        "coaching_penalties", "discipline_assessment", "trade_limits", "coaching_recommendations",
-        "compliance_tracking", "performance_scoring", "coaching_statistics"
-    ],
-    requires=[
-        "recent_trades", "pending_orders", "positions", "risk_metrics", "trading_performance",
-        "market_context", "regime_data", "session_data"
-    ],
+@module(**module_args(
+    "RoleCoach",
     description="Intelligent trade discipline coaching with context-aware penalties and performance tracking",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    timeout_ms=100,
-    priority=6,
-    explainable=True,
-    hot_reload=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     Modern role coach with comprehensive SmartInfoBus integration.

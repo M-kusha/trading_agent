@@ -18,6 +18,7 @@ from dataclasses import dataclass, asdict, field
 from typing import Dict, Any, List, Optional, Union, Tuple, Iterable
 from collections import deque, defaultdict
 
+from modules.contracts import module_args
 import numpy as np
 
 from modules.core.module_base import BaseModule, module
@@ -70,18 +71,13 @@ class ActiveTradeMonitorConfig:
 # Module
 # ─────────────────────────────────────────────────────────────
 
-@module(
-    name="ActiveTradeMonitor",
-    version="3.1.0",
-    category="risk",
-    provides=["position_duration_risk", "duration_alerts", "position_tracking"],
-    requires=["positions", "market_context"],
-    description="Enhanced position duration monitoring with intelligent risk assessment",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
-    error_handling=True
-)
+@module(**module_args(
+    "ActiveTradeMonitor",
+    description="Enhanced active trade monitor with intelligent risk assessment",
+    error_handling=True,
+    hot_reload=True,
+    timeout_ms=120,
+))
 class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
     Enhanced Active Trade Monitor with SmartInfoBus Integration

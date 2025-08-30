@@ -10,6 +10,7 @@ from collections import deque
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, Tuple, Optional, List
 
+from modules.contracts import module_args
 import numpy as np
 import pandas as pd
 import pywt
@@ -48,29 +49,13 @@ class FractalConfig:
 # ─────────────────────────────────────────────────────────────
 # Module declaration
 # ─────────────────────────────────────────────────────────────
-@module(
-    name="FractalRegimeConfirmation",
-    version="3.1.0",
-    category="market",
-    provides=[
-        "market_regime",
-        "regime_strength",
-        "trend_direction",
-        "fractal_metrics",
-        "regime_data",
-        "symbols",
-        "timestamps",
-    ],
-    requires=["prices", "step_idx", "volatility_level"],
+@module(**module_args(
+    "FractalRegimeConfirmation",
     description="Fractal analysis (Hurst / Variance Ratio / Wavelet Energy) with hysteresis and stability control.",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    is_voting_member=False,
     hot_reload=True,
-    timeout_ms=180,
-)
+    timeout_ms=120,
+))
 class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVotingMixin):
     """
     Clean producer of regime-related keys with single-writer discipline.
@@ -198,6 +183,7 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             regime=self.label,
             strength=self.regime_strength,
             trend=self._trend_direction,
+            fractal_metrics={},  # declared; empty at init
             thesis="Initial regime metadata published.",
         )
 
@@ -233,9 +219,13 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         out["regime_strength"] = float(np.clip(strength if strength is not None else self.regime_strength, 0.0, 1.0))
         out["trend_direction"] = float(np.clip(trend_direction if trend_direction is not None else self._trend_direction, -1.0, 1.0))
 
-        # metrics dict
+        # metrics dict (type-check first, then finiteness)
         fm = fractal_metrics if isinstance(fractal_metrics, dict) else {}
-        out["fractal_metrics"] = {k: float(v) for k, v in fm.items() if np.isfinite(v).item() if isinstance(v, (int, float, np.floating))}
+        out["fractal_metrics"] = {
+            k: float(v)
+            for k, v in fm.items()
+            if isinstance(v, (int, float, np.floating)) and np.isfinite(v)
+        }
 
         # regime_data normalization
         _RID = {"noise": 0, "range": 1, "trend": 2, "trending": 2, "volatile": 3}
@@ -254,7 +244,7 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         out["symbols"] = list(symbols) if isinstance(symbols, list) else list(getattr(self, "_last_symbols", []))
         out["timestamps"] = list(timestamps) if isinstance(timestamps, list) else list(getattr(self, "_last_timestamps", []))
 
-        # thesis
+        # thesis (explainable contract)
         safe_thesis = thesis or self._generate_thesis(out["market_regime"], out["regime_strength"])
         out["_thesis"] = safe_thesis
         out["thesis"] = safe_thesis  # convenience
@@ -266,7 +256,7 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             except Exception:
                 pass
 
-        # fail-fast
+        # fail-fast for declared essentials
         for k in ("market_regime", "regime_strength", "trend_direction"):
             if k not in out or out[k] is None:
                 raise ValueError(f"Critical output '{k}' missing in FractalRegimeConfirmation")
@@ -317,7 +307,10 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
 
             # publish declared keys ONLY
             thesis = self._generate_thesis(regime, strength)
-            self._publish_bus(regime=regime, strength=strength, trend=self._trend_direction, thesis=thesis)
+            latest_metrics = {}
+            if len(self._fractal_metrics_history) > 0:
+                latest_metrics = dict(self._fractal_metrics_history[-1].get("metrics", {}))
+            self._publish_bus(regime=regime, strength=strength, trend=self._trend_direction, fractal_metrics=latest_metrics, thesis=thesis)
 
             # perf + cb bookkeeping
             elapsed_ms = (time.time() - t0) * 1000.0
@@ -376,7 +369,7 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
     # ─────────────────────────────────────────────────────────
     # InfoBus publishing (declared keys only)
     # ─────────────────────────────────────────────────────────
-    def _publish_bus(self, *, regime: str, strength: float, trend: float, thesis: str) -> None:
+    def _publish_bus(self, *, regime: str, strength: float, trend: float, fractal_metrics: Dict[str, float], thesis: str) -> None:
         try:
             # market_regime
             self.smart_bus.set(
@@ -399,6 +392,18 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
                 module="FractalRegimeConfirmation",
                 thesis="Trend direction updated.",
             )
+            # fractal_metrics (declared)
+            clean_metrics = {
+                k: float(v)
+                for k, v in (fractal_metrics or {}).items()
+                if isinstance(v, (int, float, np.floating)) and np.isfinite(v)
+            }
+            self.smart_bus.set(
+                "fractal_metrics",
+                clean_metrics,
+                module="FractalRegimeConfirmation",
+                thesis="Latest fractal metrics snapshot.",
+            )
             # regime_data
             _RID = {"noise": 0, "range": 1, "trend": 2, "trending": 2, "volatile": 3}
             self.smart_bus.set(
@@ -413,19 +418,14 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
                 module="FractalRegimeConfirmation",
                 thesis=thesis,
             )
-            # optional helpers
-            self.smart_bus.set(
-                "symbols",
-                list(self._last_symbols),
-                module="FractalRegimeConfirmation",
-                thesis="Symbols used by fractal analysis",
-            )
+            # timestamps (declared)
             self.smart_bus.set(
                 "timestamps",
                 list(self._last_timestamps),
                 module="FractalRegimeConfirmation",
                 thesis="Timestamps window",
             )
+            # IMPORTANT: Do NOT write 'symbols' here (not declared) to maintain single-writer discipline.
         except Exception as e:
             self.logger.error(f"Failed to update SmartInfoBus: {e}")
 
@@ -877,7 +877,7 @@ class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             self.fractal_circuit_breaker["state"] = "OPEN"
 
         try:
-            ctx = self.error_pinpointer.analyze_error(error, "FractalRegimeConfirmation")
+            _ = self.error_pinpointer.analyze_error(error, "FractalRegimeConfirmation")
             explanation = self.english_explainer.explain_error("FractalRegimeConfirmation", str(error), "fractal analysis")
             self.logger.error(f"Fractal analysis error: {error} | {explanation}")
         except Exception:

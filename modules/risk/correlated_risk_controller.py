@@ -6,6 +6,7 @@ Monitors correlation risk between positions and instruments
 
 from __future__ import annotations
 
+from modules.contracts import module_args
 import numpy as np
 import datetime
 import time
@@ -52,18 +53,15 @@ class CorrelatedRiskConfig:
 # ─────────────────────────────────────────────────────────────
 # Module
 # ─────────────────────────────────────────────────────────────
-@module(
-    name="CorrelatedRiskController",
-    version="4.0.0",
-    category="risk",
-    provides=["correlation_risk", "diversification_score", "correlation_clusters"],
-    requires=["positions", "prices", "market_context"],
+
+@module(**module_args(
+    "CorrelatedRiskController",
     description="Enhanced correlation risk monitoring with intelligent clustering and diversification analysis",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
+
 class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
     Contract guarantees:

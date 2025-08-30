@@ -7,6 +7,7 @@
 import asyncio
 import time
 import threading
+from modules.contracts import module_args
 import numpy as np
 from typing import Dict, Any, List, Optional, Tuple
 from collections import deque, defaultdict
@@ -48,18 +49,13 @@ class CompressorConfig:
     pattern_confidence_threshold: float = 0.6
 
 
-@module(
-    name="MemoryCompressor",
-    version="3.0.0",
-    category="memory",
-    provides=["intuition_vector", "compressed_patterns", "memory_compression", "feature_importance"],
-    requires=["trades", "features", "market_context", "episode_data"],
-    description="Advanced memory compression with PCA and pattern analysis for trading intuition",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
-    error_handling=True
-)
+@module(**module_args(
+    "MemoryCompressor",
+    description="Deterministic multi-window feature extraction with circuit breaker, monitoring, and explainability.",
+    error_handling=True,
+    hot_reload=True,
+    timeout_ms=120,
+))
 class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
     Advanced memory compressor with SmartInfoBus integration.
@@ -71,12 +67,28 @@ class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
                  genome: Optional[Dict[str, Any]] = None,
                  **kwargs):
         
-        # Store config first before calling super().__init__()
+        # Store config and set early essentials BEFORE BaseModule init (which calls _initialize)
         self.compressor_config = config or CompressorConfig()
+    # Keep BaseModule.config as a Dict; we'll use self.compressor_config for typed access
+
+        # Early objects used by _initialize
+        self.smart_bus = InfoBusManager.get_instance()
+        self.logger = RotatingLogger(
+            name="MemoryCompressor", 
+            log_path="logs/memory/memory_compression.log", 
+            max_lines=3000, 
+            operator_mode=True,
+            plain_english=True
+        )
+        # Minimal state required by _initialize
+        try:
+            n_comp = int(getattr(self.compressor_config, "n_components", 8))
+        except Exception:
+            n_comp = 8
+        self.intuition_vector = np.zeros(n_comp, np.float32)
+
+        # Now call BaseModule (may invoke self._initialize safely)
         super().__init__()
-        
-        # Ensure our config is preserved after BaseModule initialization
-        self.config = self.compressor_config
         
         # Initialize advanced systems
         self._initialize_advanced_systems()
@@ -93,7 +105,7 @@ class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         self.logger.info(
             format_operator_message(
                 "🗜️", "MEMORY_COMPRESSOR_INITIALIZED",
-                details=f"Components: {self.config.n_components}, Interval: {self.config.compress_interval}",
+                details=f"Components: {self.compressor_config.n_components}, Interval: {self.compressor_config.compress_interval}",
                 result="Memory compression system ready",
                 context="memory_compression"
             )
@@ -120,7 +132,7 @@ class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
             'failures': 0,
             'last_failure': 0,
             'state': 'CLOSED',
-            'threshold': self.config.circuit_breaker_threshold
+            'threshold': self.compressor_config.circuit_breaker_threshold
         }
         
         # Health monitoring
@@ -131,25 +143,25 @@ class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         """Initialize genome-based parameters"""
         if genome:
             self.genome = {
-                "compress_interval": int(genome.get("compress_interval", self.config.compress_interval)),
-                "n_components": int(genome.get("n_components", self.config.n_components)),
-                "profit_threshold": float(genome.get("profit_threshold", self.config.profit_threshold)),
-                "max_memory_size": int(genome.get("max_memory_size", self.config.max_memory_size)),
-                "compression_ratio": float(genome.get("compression_ratio", self.config.compression_ratio)),
-                "learning_rate": float(genome.get("learning_rate", self.config.learning_rate)),
-                "profit_weight": float(genome.get("profit_weight", self.config.profit_weight)),
-                "loss_avoidance_weight": float(genome.get("loss_avoidance_weight", self.config.loss_avoidance_weight))
+                "compress_interval": int(genome.get("compress_interval", self.compressor_config.compress_interval)),
+                "n_components": int(genome.get("n_components", self.compressor_config.n_components)),
+                "profit_threshold": float(genome.get("profit_threshold", self.compressor_config.profit_threshold)),
+                "max_memory_size": int(genome.get("max_memory_size", self.compressor_config.max_memory_size)),
+                "compression_ratio": float(genome.get("compression_ratio", self.compressor_config.compression_ratio)),
+                "learning_rate": float(genome.get("learning_rate", self.compressor_config.learning_rate)),
+                "profit_weight": float(genome.get("profit_weight", self.compressor_config.profit_weight)),
+                "loss_avoidance_weight": float(genome.get("loss_avoidance_weight", self.compressor_config.loss_avoidance_weight))
             }
         else:
             self.genome = {
-                "compress_interval": self.config.compress_interval,
-                "n_components": self.config.n_components,
-                "profit_threshold": self.config.profit_threshold,
-                "max_memory_size": self.config.max_memory_size,
-                "compression_ratio": self.config.compression_ratio,
-                "learning_rate": self.config.learning_rate,
-                "profit_weight": self.config.profit_weight,
-                "loss_avoidance_weight": self.config.loss_avoidance_weight
+                "compress_interval": self.compressor_config.compress_interval,
+                "n_components": self.compressor_config.n_components,
+                "profit_threshold": self.compressor_config.profit_threshold,
+                "max_memory_size": self.compressor_config.max_memory_size,
+                "compression_ratio": self.compressor_config.compression_ratio,
+                "learning_rate": self.compressor_config.learning_rate,
+                "profit_weight": self.compressor_config.profit_weight,
+                "loss_avoidance_weight": self.compressor_config.loss_avoidance_weight
             }
 
     def _initialize_compression_state(self):
@@ -213,7 +225,9 @@ class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
             # Set initial compression status in SmartInfoBus
             initial_status = {
                 "compression_count": 0,
-                "intuition_vector": self.intuition_vector.tolist(),
+                "intuition_vector": (
+                    getattr(self, "intuition_vector", np.zeros(getattr(self.config, "n_components", 8), np.float32)).tolist()
+                ),
                 "memory_size": {"profit": 0, "loss": 0},
                 "compression_efficiency": 0.0
             }
@@ -707,7 +721,7 @@ class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
             # Compression efficiency
             if self._compression_quality_scores:
                 avg_quality = np.mean(list(self._compression_quality_scores)[-5:])
-                thesis_parts.append(f"Compression quality: {avg_quality:.1%} (target: {self.config.min_compression_quality:.1%}+)")
+                thesis_parts.append(f"Compression quality: {avg_quality:.1%} (target: {self.compressor_config.min_compression_quality:.1%}+)")
             
             # Learning assessment
             profit_ratio = profit_memories / max(total_memories, 1)
@@ -909,7 +923,7 @@ class MemoryCompressor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
             # Check compression quality
             if self._compression_quality_scores:
                 avg_quality = np.mean(list(self._compression_quality_scores)[-5:])
-                if avg_quality < self.config.min_compression_quality:
+                if avg_quality < self.compressor_config.min_compression_quality:
                     self._health_status = 'warning'
                 else:
                     self._health_status = 'healthy'

@@ -7,6 +7,7 @@
 import asyncio
 import time
 import threading
+from modules.contracts import module_args
 import numpy as np
 from typing import Dict, Any, List, Optional, Tuple
 from collections import deque, defaultdict
@@ -47,24 +48,13 @@ class MistakeConfig:
     min_samples_for_clustering: int = 10
 
 
-@module(
-    name="MistakeMemory",
-    version="3.0.2",  # bump to reflect interface addition
-    category="memory",
-    provides=[
-        "mistake_memory",        # summary for consumers expecting a single key
-        "mistake_avoidance",
-        "danger_zones",
-        "pattern_recognition",
-        "loss_prevention"
-    ],
-    requires=["trades", "features", "market_context"],  # removed 'risk_data' (now optional)
-    description="Advanced mistake memory with clustering for loss avoidance and pattern recognition",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
-    error_handling=True
-)
+@module(**module_args(
+    "MistakeMemory",
+    description="Deterministic multi-window feature extraction with circuit breaker, monitoring, and explainability.",
+    error_handling=True,
+    hot_reload=True,
+    timeout_ms=120,
+))
 
 class MistakeMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """

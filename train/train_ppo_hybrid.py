@@ -457,6 +457,17 @@ def main():
     print(f"Initial Balance: ${config.initial_balance:,.0f}")
     print(f"Data Source: {args.data_source}")
 
+    bus = InfoBusManager.get_instance()
+    print("[BUS] instance:", bus)  # prints the object
+    print("[BUS] keys:", sorted(getattr(bus, "_data_store", {}).keys()))  # what’s on the bus
+
+    # (optional) peek a few common values
+    for k in ("market_overview", "market_thesis", "time_risk_health", "regime_matrix_health"):
+        try:
+            print(f"[BUS] {k} =", bus.get(k, module="TrainingScript"))
+        except Exception as e:
+            print(f"[BUS] {k} <error: {e}>")
+
     try:
         train_modern_ppo(config, data_source=args.data_source, pretrained_model_path=pretrained_path)
         print("TRAINING COMPLETED SUCCESSFULLY!")

@@ -5,6 +5,7 @@ Advanced clustering system for trading pattern recognition and strategy optimiza
 
 import asyncio
 import time
+from modules.contracts import module_args
 import numpy as np
 import datetime
 import random
@@ -70,28 +71,13 @@ except ImportError:
     PlaybookMemory = Any
 
 
-@module(
-    name="PlaybookClusterer",
-    version="3.0.0",
-    category="strategy",
-    provides=[
-        "cluster_weights", "cluster_analysis", "clustering_health", "cluster_recommendations",
-        "cluster_effectiveness", "pattern_analysis", "clustering_thesis"
-    ],
-    requires=[
-        "playbook_memory", "recent_trades", "market_data", "trading_performance", 
-        "market_regime", "session_metrics"
-    ],
+@module(**module_args(
+    "PlaybookClusterer",
     description="Advanced playbook clustering with intelligent pattern recognition and strategy optimization",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    timeout_ms=200,
-    priority=7,
-    explainable=True,
-    hot_reload=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     🧠 PRODUCTION-GRADE Playbook Clusterer v3.0

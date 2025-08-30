@@ -7,6 +7,7 @@
 import asyncio
 import time
 import threading
+from modules.contracts import module_args
 import numpy as np
 import datetime
 from typing import Dict, Any, List, Optional, Tuple, Union
@@ -55,21 +56,16 @@ class ExecutionQualityConfig:
     # Adaptation parameters
     adaptive_learning_rate: float = 0.02
     quality_sensitivity: float = 1.0
-
-
-@module(
-    name="ExecutionQualityMonitor",
-    version="4.0.1",
-    category="risk",
-    provides=["execution_quality", "execution_analytics", "quality_metrics", "execution_alerts"],
-    requires=["execution_data", "trade_data", "order_data", "market_data"],
+    
+@module(**module_args(
+    "ExecutionQualityMonitor",
     description="Advanced execution quality monitoring with intelligent context-aware analysis and training mode",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    is_voting_member=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
+
+
 class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     [ROCKET] Advanced execution quality monitor with SmartInfoBus integration.
@@ -97,11 +93,28 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
 
         self.training_mode = training_mode
 
-        # Initialize BaseModule (it expects self.config to be a dict)
-        super().__init__()
-
-        # Mirror dataclass to dict for BaseModule / ecosystem compatibility
+        # EARLY INITIALIZATION: Define attributes used by BaseModule._initialize
+        # so that early _initialize() calls won't crash with AttributeError
+        # - Smart bus & logger (used inside _initialize)
+        self.smart_bus = InfoBusManager.get_instance()
+        self.logger = RotatingLogger(
+            name="ExecutionQualityMonitor",
+            log_path="logs/risk/execution_quality_monitor.log",
+            max_lines=5000,
+            operator_mode=True,
+            plain_english=True
+        )
+        # - Minimal state referenced by _initialize
+        self.current_mode = ExecutionMode.TRAINING if self.training_mode else ExecutionMode.NORMAL
+        self.mode_start_time = datetime.datetime.now()
+        self.quality_score = 1.0
+        self.execution_count = 0
+        self.degraded_executions = 0
+        # - Config dict for BaseModule compatibility
         self.config = dict(self._cfg.__dict__)  # type: ignore[assignment]
+
+        # Initialize BaseModule (this may invoke self._initialize early)
+        super().__init__()
 
         # Initialize advanced systems & state
         self._initialize_advanced_systems()

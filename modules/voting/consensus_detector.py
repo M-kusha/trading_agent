@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import time
 import math
+from modules.contracts import module_args
 import numpy as np
 import datetime as dt
 from typing import Dict, Any, List, Optional, Tuple, Deque
@@ -26,43 +27,13 @@ from modules.monitoring.health_monitor import HealthMonitor
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-@module(
-    name="ConsensusDetector",
-    version="3.1.0",
-    category="voting",
-    provides=[
-        "consensus_score",
-        "consensus_quality",
-        "consensus_components",
-        "directional_consensus",
-        "magnitude_consensus",
-        "confidence_consensus",
-        "member_contributions",
-        "consensus_trends",
-        "quality_metrics",
-        "consensus_recommendations",
-    ],
-    requires=[
-        "votes",
-        "raw_proposals",
-        "member_confidences",
-        "voting_summary",
-        "alpha_weights",
-        "blended_action",
-        "market_context",
-        "agreement_score",
-        # IMPORTANT: do NOT require "consensus_direction" to avoid circular deps.
-    ],
-    description="Production-grade consensus analysis and agreement measurement for voting committees",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
+@module(**module_args(
+    "ConsensusDetector",
+    description="Production-grade consensus analysis and agreement measurement for voting committees.",
     error_handling=True,
-    timeout_ms=90,
-    priority=3,
-    explainable=True,
     hot_reload=True,
-)
+    timeout_ms=120,
+))
 class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     🤝 PRODUCTION-GRADE Consensus Detector v3.1

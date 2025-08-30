@@ -5,6 +5,7 @@ Advanced intelligent explanation system for trading decisions and system state w
 
 import asyncio
 import time
+from modules.contracts import module_args
 import numpy as np
 import datetime
 from typing import Dict, Any, List, Optional, Tuple
@@ -22,28 +23,13 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-@module(
-    name="ExplanationGenerator",
-    version="3.0.0",
-    category="utils",
-    provides=[
-        "trading_explanations", "system_explanations", "performance_insights",
-        "contextual_narratives", "operator_updates", "decision_rationales"
-    ],
-    requires=[
-    "recent_trades", "positions", "risk_data", "system_alerts",
-    "market_context", "session_metrics"
-    ],
+@module(**module_args(
+    "ExplanationGenerator",
     description="Advanced intelligent explanation system for trading decisions and system state with contextual adaptation",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    timeout_ms=100,
-    priority=9,
-    explainable=True,
-    hot_reload=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     🎤 PRODUCTION-GRADE Explanation Generator v3.0

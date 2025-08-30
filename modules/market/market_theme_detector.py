@@ -3,22 +3,25 @@
 # [ROCKET] PRODUCTION-READY Market Theme Detection with Advanced ML
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # ENHANCED: Complete SmartInfoBus integration, neural analysis, thesis generation
+# Contract-safe: always returns `_thesis`, `theme_detector_status`, `theme_detector_health`
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
 
 import asyncio
 import time
+import datetime
+from dataclasses import dataclass, field
+from typing import Any, List, Dict, Tuple, Optional, Union
+from collections import deque
+import threading
+
+from modules.contracts import module_args
 import numpy as np
 import pandas as pd  # kept for future feature enrichments / compatibility
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import MiniBatchKMeans
-from collections import deque
-from typing import Any, List, Dict, Tuple, Optional, Union
 import pywt
-import datetime
-from dataclasses import dataclass, field
-import threading
 
 # Core SmartInfoBus Infrastructure
 from modules.core.module_base import BaseModule, module
@@ -68,35 +71,13 @@ class ThemeDetectorConfig:
 # MODULE
 # ═══════════════════════════════════════════════════════════════════
 
-@module(
+@module(**module_args(
     name="MarketThemeDetector",
-    version="3.1.0",
-    category="market",
-    provides=[
-        "market_theme",
-        "theme_strength",
-        "theme_confidence",
-        "theme_transition",
-        "theme_analysis",
-        "theme_detection",
-        "theme_detector_status",
-        "theme_detector_health",
-        "theme_model_quality",
-    ],
-    requires=[
-        "market_data",
-        "price_data",
-        "technical_indicators",
-        "historical_prices",
-        "multi_timeframe_data",
-        "macro_data",
-    ],
     description="Advanced market theme detection with ML clustering and regime-aware features",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class MarketThemeDetector(
     BaseModule,
     SmartInfoBusTradingMixin,
@@ -105,7 +86,7 @@ class MarketThemeDetector(
 ):
     """
     Production-grade market theme detector with advanced ML clustering and robust SmartInfoBus IO.
-    Keeps contract compatibility and avoids namespace collisions with other market modules.
+    Contract-clean returns; preserves useful logic; avoids namespace collisions with other market modules.
     """
 
     # ── LIFECYCLE ──────────────────────────────────────────────────
@@ -262,6 +243,27 @@ class MarketThemeDetector(
             thesis="Theme detector initialization status for system awareness",
         )
 
+    # ── HELPERS: CONTRACT SNAPSHOTS ────────────────────────────────
+
+    def _build_status_snapshot(self, res: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        return {
+            "initialized": True,
+            "themes_available": int(self.theme_config.n_themes),
+            "instruments": list(self.theme_config.instruments),
+            "clustering_ready": self._is_model_ready(),
+            "current_theme": int((res or {}).get("market_theme", self._current_theme)),
+        }
+
+    def _build_health_snapshot(self) -> Dict[str, Any]:
+        total = self.success_count + self.failure_count
+        return {
+            "success_rate": float(self.success_count / max(total, 1)),
+            "avg_processing_time_ms": float(np.mean(self.processing_times)) if self.processing_times else 0.0,
+            "ml_circuit_breaker_state": self.ml_circuit_breaker["state"],
+            "clustering_quality": float(self._clustering_quality),
+            "last_update": datetime.datetime.utcnow().isoformat(),
+        }
+
     # ── HELPERS: CONVENIENCE SNAPSHOTS ──────────────────────────────
 
     def _derive_market_data_snapshot(self, mkt: Dict[str, Any]) -> Dict[str, Any]:
@@ -334,25 +336,18 @@ class MarketThemeDetector(
                 theme_result = await self._process_theme_detection(market_data)
                 safe_market_data = market_data
 
+            # Ensure required compact blob exists
+            if "theme_detection" not in theme_result:
+                theme_result["theme_detection"] = {
+                    "theme": theme_result.get("market_theme", self._current_theme),
+                    "strength": theme_result.get("theme_strength", 0.0),
+                    "confidence": theme_result.get("theme_confidence", 0.0),
+                    "stability": theme_result.get("theme_stability", 0.0),
+                    "transition_probability": theme_result.get("transition_probability", 0.0),
+                    "timestamp": datetime.datetime.now().isoformat(),
+                }
+
             thesis = await self._generate_theme_thesis(safe_market_data, theme_result)
-
-            # Ensure required keys (provides)
-            if "theme_transition" not in theme_result:
-                theme_result["theme_transition"] = theme_result.get("transition_probability", 0.0)
-
-            # Compact detection blob → matches 'provides' ("theme_detection")
-            theme_result["theme_detection"] = {
-                "theme": theme_result.get("market_theme", self._current_theme),
-                "strength": theme_result.get("theme_strength", 0.0),
-                "confidence": theme_result.get("theme_confidence", 0.0),
-                "stability": theme_result.get("theme_stability", 0.0),
-                "transition_probability": theme_result.get("transition_probability", 0.0),
-                "timestamp": datetime.datetime.now().isoformat(),
-            }
-
-            # thesis_required=True
-            theme_result["_thesis"] = thesis
-            theme_result["thesis"] = thesis
 
             # Populate convenience outputs (do NOT collide with other modules)
             derived_market_snapshot = self._derive_market_data_snapshot(safe_market_data)
@@ -364,29 +359,25 @@ class MarketThemeDetector(
                 self._last_features.tolist() if isinstance(self._last_features, np.ndarray) else []
             )
 
-            # Analysis blob (rich – safe for dashboards)
-            theme_result["theme_analysis"] = {
-                "theme_vector": self._theme_vec.tolist(),
-                "recent_transitions": int(len([x for x in self._theme_history][-20:])),  # last window
-                "last_update": datetime.datetime.now().isoformat(),
-                "ml_quality": float(self._clustering_quality),
-                "data_quality": float(self._successful_data_extractions / max(self._data_access_attempts, 1)),
-            }
-
             proc_ms = (time.time() - t0) * 1000.0
             self._record_success(proc_ms)
 
-            await self._update_theme_smart_bus(theme_result, thesis)
-            return theme_result
+            # Status/health snapshots for both BUS & RETURN (contract requires in return)
+            status = self._build_status_snapshot(theme_result)
+            health = self._build_health_snapshot()
+
+            await self._update_theme_smart_bus(theme_result, thesis, status=status, health=health)
+
+            # Return payload (contract-safe)
+            out = dict(theme_result)
+            out["_thesis"] = thesis
+            out["thesis"] = thesis
+            out["theme_detector_status"] = status
+            out["theme_detector_health"] = health
+            return out
 
         except Exception as e:
-            fallback = await self._handle_theme_error(e, t0)
-            # Ensure extra keys exist (even if empty) so downstreams never break
-            fallback.setdefault("market_data", {})
-            fallback.setdefault("price_data", {})
-            fallback.setdefault("technical_indicators", {})
-            fallback.setdefault("market_features", [])
-            return fallback
+            return await self._handle_theme_error(e, t0)
 
     # ── DATA EXTRACTION ─────────────────────────────────────────────
 
@@ -827,7 +818,14 @@ class MarketThemeDetector(
 
         return "\n".join(lines)
 
-    async def _update_theme_smart_bus(self, theme_result: Dict[str, Any], thesis: str) -> None:
+    async def _update_theme_smart_bus(
+        self,
+        theme_result: Dict[str, Any],
+        thesis: str,
+        *,
+        status: Optional[Dict[str, Any]] = None,
+        health: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Publish only THIS module's keys; avoid collisions with regime/liquidity modules."""
         self.smart_bus.set(
             "market_theme",
@@ -871,6 +869,22 @@ class MarketThemeDetector(
             },
             module="MarketThemeDetector",
             thesis="Theme analysis snapshot",
+        )
+
+        # Also publish status/health snapshots (keep BUS in sync with return payload)
+        status = status or self._build_status_snapshot(theme_result)
+        health = health or self._build_health_snapshot()
+        self.smart_bus.set(
+            "theme_detector_status",
+            status,
+            module="MarketThemeDetector",
+            thesis="Theme detector status",
+        )
+        self.smart_bus.set(
+            "theme_detector_health",
+            health,
+            module="MarketThemeDetector",
+            thesis="Theme detector health snapshot",
         )
 
         # Performance metric
@@ -964,15 +978,20 @@ class MarketThemeDetector(
             f"• Transition Probability: {fb.get('transition_probability', 0.0):.1%}\n"
             f"• Processing time (ms): {proc_ms:.1f}"
         )
-        fb.setdefault("_thesis", thesis)
-        fb.setdefault("thesis", thesis)
-        fb.setdefault("theme_transition", fb.get("transition_probability", 0.0))
+
+        # Ensure contract-required keys even on error
+        status = self._build_status_snapshot(fb)
+        health = self._build_health_snapshot()
+        fb["_thesis"] = thesis
+        fb["thesis"] = thesis
+        fb["theme_detector_status"] = status
+        fb["theme_detector_health"] = health
         return fb
 
     def _handle_ml_failure(self, error: Exception) -> None:
         self.ml_circuit_breaker["failures"] += 1
         self.ml_circuit_breaker["last_failure"] = time.time()
-        if self.ml_circuit_breaker["failures"] >= int(self.ml_circuit_breaker["threshold"]):
+        if self.ml_circuit_breaker["failures"] >= int(self.theme_config.circuit_breaker_threshold):
             self.ml_circuit_breaker["state"] = "OPEN"
             self.logger.error("[ALERT] ML circuit breaker OPEN - too many failures")
         self.logger.error(f"ML training failed: {error}")
@@ -1073,10 +1092,10 @@ class MarketThemeDetector(
     async def propose_action(self, **inputs) -> Dict[str, Any]:
         """
         Propose theme-based action recommendations (kept orthogonal to other modules):
-        0 Risk-Off Defensive      -> defensive / reduce
-        1 Growth Momentum         -> long bias
-        2 Volatility Spike        -> defensive controls
-        3 Range-Bound Consolidation -> mean reversion
+        0 Risk-Off Defensive         -> defensive / reduce
+        1 Growth Momentum            -> long bias
+        2 Volatility Spike           -> defensive controls
+        3 Range-Bound Consolidation  -> mean reversion
         """
         try:
             theme_id = int(getattr(self, "_current_theme", 0))

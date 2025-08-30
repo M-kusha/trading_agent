@@ -10,6 +10,7 @@ import asyncio
 import time
 import threading
 import math
+from modules.contracts import module_args
 import numpy as np
 from typing import Dict, Any, List, Optional, Tuple, Deque, DefaultDict, Callable, cast
 from collections import deque, defaultdict
@@ -62,18 +63,13 @@ class ReplayConfig:
 # MODULE
 # ═══════════════════════════════════════════════════════════════════
 
-@module(
-    name="HistoricalReplayAnalyzer",
-    version="3.1.0",
-    category="memory",
-    provides=["replay_sequences", "pattern_analysis", "sequence_quality", "learning_progress"],
-    requires=["trades", "actions", "market_data", "episode_data"],
-    description="Advanced historical sequence analysis with pattern recognition and replay optimization",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
-    error_handling=True
-)
+@module(**module_args(
+    "HistoricalReplayAnalyzer",
+    description="Deterministic multi-window feature extraction with circuit breaker, monitoring, and explainability.",
+    error_handling=True,
+    hot_reload=True,
+    timeout_ms=120,
+))
 class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
     Advanced historical replay analyzer with SmartInfoBus integration.
@@ -85,15 +81,32 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
     # ──────────────────────────────────────────────────────────────
     def __init__(
         self,
-        config: Optional[ReplayConfig] = None,
+        config: Optional[Dict[str, Any] | ReplayConfig] = None,
         genome: Optional[Dict[str, Any]] = None,
         **kwargs: Any
     ):
-        # config first
-        self.replay_config: ReplayConfig = config or ReplayConfig()
-        super().__init__()  # BaseModule init
-        # keep a unified `config` reference for compatibility
-        self.config: ReplayConfig = self.replay_config
+        # Normalize config to dataclass and also provide dict to BaseModule
+        if isinstance(config, dict):
+            filtered = {k: config[k] for k in ReplayConfig.__dataclass_fields__ if k in config}
+            self._cfg: ReplayConfig = ReplayConfig(**filtered)
+        elif isinstance(config, ReplayConfig) or config is None:
+            self._cfg = config or ReplayConfig()
+        else:
+            self._cfg = ReplayConfig()
+
+        # EARLY INITIALIZATION: objects referenced by BaseModule._initialize
+        self.smart_bus: SmartInfoBus = InfoBusManager.get_instance()
+        self.logger = RotatingLogger(
+            name="HistoricalReplayAnalyzer",
+            log_path="logs/memory/replay_analysis.log",
+            max_lines=3000,
+            operator_mode=True,
+            plain_english=True,
+        )
+
+        # Now initialize BaseModule (may call self._initialize). Pass dict config.
+        from dataclasses import asdict
+        super().__init__(config=asdict(self._cfg), **kwargs)
 
         # systems
         self._initialize_advanced_systems()
@@ -107,11 +120,24 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
             format_operator_message(
                 "🎭",
                 "HISTORICAL_REPLAY_ANALYZER_INITIALIZED",
-                details=f"Sequence length: {self.config.sequence_len}, Profit threshold: {self.config.profit_threshold}",
+                details=f"Sequence length: {self._cfg.sequence_len}, Profit threshold: {self._cfg.profit_threshold}",
                 result="Historical pattern analysis ready",
                 context="memory_analysis",
             )
         )
+
+    # Small helper to support both dict and dataclass configs for namespace
+    def _get_namespace(self) -> Optional[str]:
+        try:
+            # Prefer typed config; stay defensive if external code replaced it with dict
+            if hasattr(self, "_cfg") and getattr(self._cfg, "namespace", None) is not None:
+                return self._cfg.namespace
+            cfg = getattr(self, "config", None)
+            if isinstance(cfg, dict):
+                return cfg.get("namespace")
+            return getattr(cfg, "namespace", None)
+        except Exception:
+            return None
 
     # ──────────────────────────────────────────────────────────────
     # Systems
@@ -137,7 +163,7 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
             "failures": 0,
             "last_failure": 0.0,
             "state": "CLOSED",
-            "threshold": self.config.circuit_breaker_threshold,
+            "threshold": int(getattr(self._cfg, "circuit_breaker_threshold", 3)),
         }
 
         # health state
@@ -204,8 +230,8 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
             self.smart_bus.register_validator("sequence_quality", validate_sequence_quality)
             self.smart_bus.register_validator("learning_progress", validate_learning_progress)
 
-            if self.config.namespace:
-                ns = self.config.namespace
+            ns = self._get_namespace()
+            if ns:
                 self.smart_bus.register_validator(f"{ns}:replay_sequences", validate_replay_sequences)
                 self.smart_bus.register_validator(f"{ns}:pattern_analysis", validate_pattern_analysis)
                 self.smart_bus.register_validator(f"{ns}:sequence_quality", validate_sequence_quality)
@@ -233,26 +259,26 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
         """Initialize genome-based parameters"""
         if genome:
             self.genome: Dict[str, Any] = {
-                "interval": int(genome.get("interval", self.config.interval)),
-                "bonus": float(genome.get("bonus", self.config.bonus)),
-                "sequence_len": int(genome.get("sequence_len", self.config.sequence_len)),
-                "profit_threshold": float(genome.get("profit_threshold", self.config.profit_threshold)),
-                "pattern_sensitivity": float(genome.get("pattern_sensitivity", self.config.pattern_sensitivity)),
-                "replay_decay": float(genome.get("replay_decay", self.config.replay_decay)),
+                "interval": int(genome.get("interval", self._cfg.interval)),
+                "bonus": float(genome.get("bonus", self._cfg.bonus)),
+                "sequence_len": int(genome.get("sequence_len", self._cfg.sequence_len)),
+                "profit_threshold": float(genome.get("profit_threshold", self._cfg.profit_threshold)),
+                "pattern_sensitivity": float(genome.get("pattern_sensitivity", self._cfg.pattern_sensitivity)),
+                "replay_decay": float(genome.get("replay_decay", self._cfg.replay_decay)),
             }
         else:
             self.genome = {
-                "interval": self.config.interval,
-                "bonus": self.config.bonus,
-                "sequence_len": self.config.sequence_len,
-                "profit_threshold": self.config.profit_threshold,
-                "pattern_sensitivity": self.config.pattern_sensitivity,
-                "replay_decay": self.config.replay_decay,
+                "interval": self._cfg.interval,
+                "bonus": self._cfg.bonus,
+                "sequence_len": self._cfg.sequence_len,
+                "profit_threshold": self._cfg.profit_threshold,
+                "pattern_sensitivity": self._cfg.pattern_sensitivity,
+                "replay_decay": self._cfg.replay_decay,
             }
 
     def _initialize_replay_state(self) -> None:
         """Initialize replay analysis state"""
-        ns_max = self.config.lookback_episodes
+        ns_max = int(getattr(self._cfg, "lookback_episodes", 50))
 
         # Core replay data
         self.episode_buffer: Deque[Dict[str, Any]] = deque(maxlen=ns_max)
@@ -275,7 +301,7 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
         self._adaptive_thresholds: Dict[str, Any] = {
             "min_profit": self.genome["profit_threshold"],
             "min_sequence_len": 3,
-            "pattern_confidence": self.config.pattern_confidence_threshold,
+            "pattern_confidence": float(getattr(self._cfg, "pattern_confidence_threshold", 0.7)),
         }
 
         # Performance analytics
@@ -318,7 +344,7 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
                 initial_status,
                 module="HistoricalReplayAnalyzer",
                 thesis="Initial historical replay analysis status",
-                namespace=self.config.namespace,
+                namespace=self._get_namespace(),
             )
         except Exception as e:
             self.logger.error(f"Initialization failed: {e}")
@@ -416,7 +442,7 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
     async def _extract_sequence_data(self, **inputs: Any) -> Optional[Dict[str, Any]]:
         """Extract sequence data from SmartInfoBus"""
         try:
-            ns = self.config.namespace
+            ns = self._get_namespace()
             trades = self.smart_bus.get("trades", "HistoricalReplayAnalyzer", default=[], namespace=ns) or []
             actions = self.smart_bus.get("actions", "HistoricalReplayAnalyzer", default=[], namespace=ns) or []
             market_data = self.smart_bus.get("market_data", "HistoricalReplayAnalyzer", default={}, namespace=ns) or {}
@@ -578,9 +604,9 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
             self.profitable_sequences.append(entry)
 
             # Top-K pruning
-            if len(self.profitable_sequences) > int(self.config.max_sequences):
+            if len(self.profitable_sequences) > int(self._cfg.max_sequences):
                 self.profitable_sequences.sort(key=lambda x: float(x.get("pnl", 0.0)), reverse=True)
-                self.profitable_sequences = self.profitable_sequences[: int(self.config.max_sequences)]
+                self.profitable_sequences = self.profitable_sequences[: int(self._cfg.max_sequences)]
 
             if pnl > self.best_sequence_pnl:
                 self.best_sequence_pnl = pnl
@@ -753,7 +779,7 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
 
             if self._sequence_quality_scores:
                 avg_q = float(np.mean(list(self._sequence_quality_scores)[-20:]))
-                thesis_parts.append(f"Recent sequence quality: {avg_q:.2f} (target ≥ {self.config.min_sequence_quality})")
+                thesis_parts.append(f"Recent sequence quality: {avg_q:.2f} (target ≥ {self._cfg.min_sequence_quality})")
 
             if len(self.profitable_sequences) > 5:
                 recent = float(np.mean([float(s.get("pnl", 0.0)) for s in self.profitable_sequences[-5:]]))
@@ -766,7 +792,7 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
     async def _update_replay_smart_bus(self, replay_result: Dict[str, Any], thesis: str) -> None:
         """Update SmartInfoBus with replay analysis results"""
         try:
-            ns = self.config.namespace
+            ns = self._get_namespace()
 
             # Replay sequences
             replay_data = {
@@ -999,7 +1025,7 @@ class HistoricalReplayAnalyzer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
             # average sequence quality vs threshold
             if self._sequence_quality_scores:
                 avg_quality = float(np.mean(list(self._sequence_quality_scores)[-10:]))
-                if avg_quality < float(self.config.min_sequence_quality):
+                if avg_quality < float(self._cfg.min_sequence_quality):
                     self._health_status = "warning"
 
             self._last_health_check = time.time()

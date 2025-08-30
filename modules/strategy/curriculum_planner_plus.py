@@ -5,6 +5,7 @@ Advanced adaptive learning curriculum system for trading strategy optimization w
 
 import asyncio
 import time
+from modules.contracts import module_args
 import numpy as np
 import datetime
 from typing import Dict, Any, List, Optional, Tuple
@@ -22,28 +23,13 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-@module(
-    name="CurriculumPlannerPlus",
-    version="3.0.0",
-    category="strategy",
-    provides=[
-        "curriculum_stage", "learning_constraints", "competency_scores",
-        "learning_recommendations", "stage_progression", "mastery_assessment"
-    ],
-    requires=[
-        "performance_data", "episode_summary", "risk_metrics", "trading_session",
-        "market_conditions", "recent_trades"
-    ],
+@module(**module_args(
+    "CurriculumPlannerPlus",
     description="Advanced adaptive learning curriculum system for trading strategy optimization with intelligent progression management",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    timeout_ms=200,
-    priority=6,
-    explainable=True,
-    hot_reload=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     📚 PRODUCTION-GRADE Curriculum Planner v3.0

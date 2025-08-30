@@ -6,6 +6,7 @@
 
 import asyncio
 import time
+from modules.contracts import module_args
 import numpy as np
 import datetime
 import math
@@ -671,38 +672,13 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
 # ENHANCED THEME EXPERT
 # ═══════════════════════════════════════════════════════════════════
 
-@module(
-    name="EnhancedThemeExpert",
-    version="4.1.0",
-    category="voting",
-    provides=[
-        "theme_voting_proposal",
-        "theme_confidence",
-        "theme_analysis",
-        "voting_summary",
-        "strategy_arbiter_weights",
-        "consensus_direction",
-        "agreement_score",
-        "raw_proposals",
-        "member_confidences",
-    ],
-    requires=[
-        "market_data",
-        "theme_detection",
-        "market_regime",
-        "risk_data",
-    ],
+@module(**module_args(
+    "EnhancedThemeExpert",
     description="Enhanced theme-based trading expert with modern InfoBus integration",
-    is_voting_member=True,
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    timeout_ms=100,
-    priority=8,
-    explainable=True,
-    hot_reload=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class EnhancedThemeExpert(EnhancedVotingExpertBase):
     """
     🎭 PRODUCTION-GRADE Enhanced Theme Expert v4.1
@@ -938,23 +914,13 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
 # ENHANCED SEASONALITY RISK EXPERT
 # ═══════════════════════════════════════════════════════════════════
 
-@module(
-    name="EnhancedSeasonalityRiskExpert",
-    version="4.1.0",
-    category="voting",
-    provides=["seasonality_voting_proposal", "seasonality_confidence", "seasonality_analysis"],
-    requires=["market_data", "risk_data", "session_type"],
+@module(**module_args(
+    "EnhancedSeasonalityRiskExpert",
     description="Enhanced seasonality-based risk expert with modern InfoBus integration",
-    is_voting_member=True,
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    timeout_ms=80,
-    priority=6,
-    explainable=True,
-    hot_reload=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
     """
     🕐 PRODUCTION-GRADE Enhanced Seasonality Risk Expert v4.1
@@ -1186,28 +1152,13 @@ def create_enhanced_voting_experts(config: Dict[str, Any]) -> List[EnhancedVotin
 # ENHANCED VOTING COMMITTEE COORDINATOR
 # ═══════════════════════════════════════════════════════════════════
 
-@module(
-    name="EnhancedVotingCommitteeCoordinator",
-    version="4.1.0",
-    category="voting",
-    provides=[
-        "committee_decision", "voting_consensus", "committee_confidence",
-        "voting_summary", "strategy_arbiter_weights", "consensus_direction",
-        "agreement_score", "raw_proposals", "member_confidences", "votes",
-        "member_proposals", "voting_weights", "time_of_day", "performance_feedback",
-        "horizon_alignment", "trade_vote"
-    ],
-    requires=["expert_votes", "market_context", "system_health"],
+@module(**module_args(
+    "EnhancedVotingCommitteeCoordinator",
     description="Enhanced voting committee coordinator with modern InfoBus integration",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    timeout_ms=150,
-    priority=10,
-    explainable=True,
-    hot_reload=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, SmartInfoBusStateMixin):
     """
     🗳️ PRODUCTION-GRADE Enhanced Voting Committee Coordinator v4.1

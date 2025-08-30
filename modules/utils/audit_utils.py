@@ -155,7 +155,7 @@ class AuditEvent:
 class AuditConfiguration:
     """Audit logger configuration."""
     enabled: bool = True
-    log_level: str = "INFO"
+    log_level: str = "Debug"
     max_file_size_mb: int = 100
     max_files: int = 10
     rotation_interval_hours: int = 24

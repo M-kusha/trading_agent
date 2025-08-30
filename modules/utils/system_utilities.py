@@ -43,8 +43,8 @@ class SystemUtilitiesConfig:
     """
     # Core settings
     enabled: bool = True
-    debug_mode: bool = False
-    log_level: str = "INFO"
+    debug_mode: bool = True
+    log_level: str = "DEBUG"
     max_cache_size: int = 10000
     cache_ttl_seconds: int = 3600
     

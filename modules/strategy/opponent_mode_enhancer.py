@@ -5,6 +5,7 @@ Advanced market mode detection and adaptation system with intelligent strategy w
 
 import asyncio
 import time
+from modules.contracts import module_args
 import numpy as np
 import datetime
 from typing import Dict, Any, List, Optional, Tuple
@@ -22,28 +23,13 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-@module(
-    name="OpponentModeEnhancer",
-    version="3.0.0",
-    category="strategy",
-    provides=[
-        "mode_weights", "mode_analysis", "mode_recommendations",
-        "market_mode_detection", "strategy_adaptation", "mode_performance"
-    ],
-    requires=[
-        "market_data", "recent_trades", "technical_indicators", "volatility_data",
-        "price_data", "market_regime", "trading_performance"
-    ],
+@module(**module_args(
+    "OpponentModeEnhancer",
     description="Advanced market mode detection and adaptation system with intelligent strategy weighting",
-    thesis_required=False,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    timeout_ms=150,
-    priority=6,
-    explainable=True,
-    hot_reload=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class OpponentModeEnhancer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     [TARGET] PRODUCTION-GRADE Opponent Mode Enhancer v3.0

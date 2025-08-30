@@ -5,6 +5,7 @@ Advanced psychological bias detection and correction system with real-time tradi
 
 import asyncio
 import time
+from modules.contracts import module_args
 import numpy as np
 import datetime
 from typing import Dict, Any, List, Optional, Tuple
@@ -22,28 +23,13 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-@module(
-    name="BiasAuditor",
-    version="3.0.0",
-    category="strategy",
-    provides=[
-        "bias_analysis", "bias_corrections", "bias_adjustments",
-        "bias_report", "bias_recommendations", "psychological_state"
-    ],
-    requires=[
-        "recent_trades", "current_pnl", "positions", "risk_data",
-        "session_context", "market_regime"
-    ],
+@module(**module_args(
+    "BiasAuditor",
     description="Advanced psychological bias detection and correction system with real-time trading behavior analysis",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    timeout_ms=150,
-    priority=7,
-    explainable=True,
-    hot_reload=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     🧠 PRODUCTION-GRADE Bias Auditor v3.0

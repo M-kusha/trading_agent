@@ -6,6 +6,7 @@ Comprehensive trade validation and regulatory compliance monitoring
 
 from __future__ import annotations
 
+from modules.contracts import module_args
 import numpy as np
 import datetime
 import time
@@ -57,18 +58,13 @@ class ComplianceConfig:
 # ─────────────────────────────────────────────────────────────
 # Module
 # ─────────────────────────────────────────────────────────────
-@module(
-    name="ComplianceModule",
-    version="4.0.0",
-    category="risk",
-    provides=["compliance_status", "validation_results", "risk_limits"],
-    requires=["positions", "pending_orders", "market_context"],
-    description="Enhanced compliance validation with intelligent risk assessment and regulatory monitoring",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
+@module(**module_args(
+    "ComplianceModule",
+    description="Deterministic multi-window feature extraction with circuit breaker, monitoring, and explainability.",
     error_handling=True,
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class ComplianceModule(
     BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, SmartInfoBusTradingMixin
 ):
@@ -84,7 +80,6 @@ class ComplianceModule(
     DEFAULT_ALLOWED_INSTRUMENTS = {
         "EUR/USD",
         "XAU/USD",
-
     }
 
     # ── init & systems ───────────────────────────────────────
@@ -329,6 +324,11 @@ class ComplianceModule(
             pending_orders = self.smart_bus.get("pending_orders", "ComplianceModule") or []
             balance = self.smart_bus.get("balance", "ComplianceModule") or 10000.0
 
+            # Harden types to match contract expectations
+            market_context, positions, pending_orders, balance = self._coerce_bus_inputs(
+                market_context, positions, pending_orders, balance
+            )
+
             # Update daily tracking
             self._update_daily_tracking()
 
@@ -390,6 +390,12 @@ class ComplianceModule(
     def _write_bus_from_payload(self, payload: Dict[str, Any], thesis: str) -> None:
         try:
             # Write ONLY provides keys
+            self.smart_bus.set(
+                "compliance",
+                payload["compliance"],
+                module="ComplianceModule",
+                thesis="Compliance summary update",
+            )
             self.smart_bus.set(
                 "compliance_status",
                 payload["compliance_status"],
@@ -462,6 +468,14 @@ class ComplianceModule(
             "timestamp": datetime.datetime.now().isoformat(),
         }
 
+        # top violations (type → count) for compact `compliance` summary
+        vio_counts: Dict[str, int] = {}
+        for v in validation_results.get("violations", []):
+            t = str(v.get("type", "unknown"))
+            vio_counts[t] = vio_counts.get(t, 0) + 1
+        top_vios = sorted(vio_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        top_vios_payload = [{"type": k, "count": int(v)} for k, v in top_vios]
+
         # Validation results (provides)
         vr_payload = {
             "approved_orders": list(validation_results.get("approved", []))[:200],
@@ -478,7 +492,29 @@ class ComplianceModule(
             "risk_budget_usage": float(self.risk_budget_usage),
         }
 
+        # Compliance (provides) — compact summary used by downstream risk modules
+        comp_status = "ok"
+        if self.circuit_breaker["state"] == "OPEN":
+            comp_status = "open_circuit"
+        elif self._health_status != "healthy" or float(risk_assessment.get("violation_rate", 0.0)) > 0.25:
+            comp_status = "warning"
+
+        compliance_payload = {
+            "status": comp_status,
+            "score": float(risk_assessment.get("compliance_score", self.compliance_score)),
+            "risk_budget_usage": float(risk_assessment.get("risk_budget_usage", self.risk_budget_usage)),
+            "violation_rate": float(risk_assessment.get("violation_rate", 0.0)),
+            "top_violations": top_vios_payload,
+            "limits": {
+                "max_leverage": float(rl_payload["max_leverage"]),
+                "max_total_risk": float(rl_payload["max_total_risk"]),
+                "max_position_risk": float(rl_payload["max_position_risk"]),
+            },
+            "ts": datetime.datetime.now().isoformat(),
+        }
+
         return {
+            "compliance": compliance_payload,
             "compliance_status": status_payload,
             "validation_results": vr_payload,
             "risk_limits": rl_payload,
@@ -660,7 +696,7 @@ class ComplianceModule(
             violations: List[Dict[str, Any]] = []
             od = {
                 "instrument": order.get("instrument", order.get("symbol", "UNKNOWN")),
-                "size": abs(float(order.get("size", order.get("volume", 0.0)))),
+                "size": abs(float(order.get("size", order.get("volume", 0.0)))) if order.get("size", order.get("volume", None)) is not None else 0.0,
                 "side": order.get("side", "BUY" if float(order.get("size", 0.0)) > 0 else "SELL"),
                 "price": float(order.get("price", order.get("current_price", 1.0))),
             }
@@ -1171,10 +1207,28 @@ class ComplianceModule(
 
     # ── fallbacks & errors (contract-safe) ───────────────────
     def _fallback_payload(self, thesis: str) -> Dict[str, Any]:
+        # Build a minimal but contract-complete snapshot
+        compliance_score = float(self.compliance_score)
+        risk_budget_usage = float(self.risk_budget_usage)
+        status = "open_circuit" if self.circuit_breaker["state"] == "OPEN" else "warning" if self._health_status != "healthy" else "ok"
+
         return {
+            "compliance": {
+                "status": status,
+                "score": compliance_score,
+                "risk_budget_usage": risk_budget_usage,
+                "violation_rate": 0.0,
+                "top_violations": [],
+                "limits": {
+                    "max_leverage": float(self.max_leverage),
+                    "max_total_risk": float(self.max_total_risk),
+                    "max_position_risk": float(self.max_position_risk),
+                },
+                "ts": datetime.datetime.now().isoformat(),
+            },
             "compliance_status": {
-                "compliance_score": float(self.compliance_score),
-                "risk_budget_usage": float(self.risk_budget_usage),
+                "compliance_score": compliance_score,
+                "risk_budget_usage": risk_budget_usage,
                 "validation_results": {"total_orders": 0, "processing_time_ms": 0.0, "violations": []},
                 "risk_assessment": {
                     "total_positions": 0,
@@ -1364,3 +1418,21 @@ class ComplianceModule(
         elif score > 1.0:
             score = 1.0
         return score
+
+    # ── input hardening ──────────────────────────────────────
+    def _coerce_bus_inputs(
+        self,
+        market_context: Any,
+        positions: Any,
+        pending_orders: Any,
+        balance: Any,
+    ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]], float]:
+        """Coerce bus inputs to safe types per contract."""
+        mc = market_context if isinstance(market_context, dict) else {}
+        pos = positions if isinstance(positions, list) else []
+        po = pending_orders if isinstance(pending_orders, list) else []
+        try:
+            bal = float(balance)
+        except Exception:
+            bal = 10000.0
+        return mc, pos, po, bal

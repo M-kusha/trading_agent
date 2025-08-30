@@ -5,6 +5,7 @@ Advanced thesis development and evolution system with intelligent learning and a
 
 import asyncio
 import time
+from modules.contracts import module_args
 import numpy as np
 import datetime
 import random
@@ -23,29 +24,13 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-@module(
-    name="ThesisEvolutionEngine",
-    version="3.0.0",
-    category="strategy",
-    provides=[
-        "active_theses", "thesis_performance", "evolution_analytics", "thesis_recommendations",
-        "best_thesis", "thesis_diversity", "evolution_history", "market_adaptation"
-    ],
-    requires=[
-        "market_data", "recent_trades", "trading_performance", "market_regime", "volatility_data",
-        "session_metrics", "strategy_performance", "risk_metrics"
-    ],
+@module(**module_args(
+    "ThesisEvolutionEngine",
     description="Advanced thesis development and evolution system with intelligent learning and adaptation",
-    thesis_required=False,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    is_voting_member=True,
-    timeout_ms=200,
-    priority=5,
-    explainable=True,
-    hot_reload=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     🧬 PRODUCTION-GRADE Thesis Evolution Engine v3.0

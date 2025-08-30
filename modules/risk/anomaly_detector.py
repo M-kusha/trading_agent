@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import time
 import threading
+from modules.contracts import module_args
 import numpy as np
 import datetime
 from typing import Dict, Any, List, Optional, Tuple, Union
@@ -96,19 +97,13 @@ class AnomalyDetectorConfig:
 # ─────────────────────────────────────────────────────────────
 # Module
 # ─────────────────────────────────────────────────────────────
-@module(
-    name="EnhancedAnomalyDetector",
-    version="4.1.0",
-    category="risk",
-    provides=["anomaly_detection", "anomaly_score", "anomaly_alerts", "detection_analytics"],
-    requires=["risk_data", "market_data", "trading_data", "performance_data"],
-    description="Advanced anomaly detection with intelligent adaptation and comprehensive market analysis",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
+@module(**module_args(
+    "EnhancedAnomalyDetector",
+    description="Deterministic multi-window feature extraction with circuit breaker, monitoring, and explainability.",
     error_handling=True,
-    is_voting_member=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     Contract guarantees:
@@ -137,6 +132,15 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
 
         # Initialize low-level systems before BaseModule may call _initialize()
         self._initialize_advanced_systems()
+
+        # Define attributes consumed by _initialize before BaseModule runs it
+        # Mode and timers
+        self.current_mode = AnomalyDetectionMode.INITIALIZATION
+        self.mode_start_time = datetime.datetime.now()
+        # Basic metrics used in status
+        self.anomaly_score = 0.0
+        self.detection_confidence = 0.5
+        self.step_count = 0
 
         super().__init__()  # may call _initialize()
 

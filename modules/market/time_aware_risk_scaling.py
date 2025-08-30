@@ -3,22 +3,28 @@
 # [ROCKET] PRODUCTION-READY Time-Aware Risk Scaling with Advanced Analytics
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # ENHANCED: SmartInfoBus integration, session analysis, thesis generation
+# Contract-safe: always returns _thesis, time_risk_status, time_risk_health, time_risk_analysis
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
 
 import time
-import numpy as np
-import pandas as pd
+import datetime
+import threading
+from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple, List, Union
 from collections import deque
-import datetime
-from dataclasses import dataclass
-import threading
 
-# Core SmartInfoBus Infrastructure
+import numpy as np
+import pandas as pd
+
+from modules.contracts import module_args
 from modules.core.module_base import BaseModule, module
-from modules.core.mixins import SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin
+from modules.core.mixins import (
+    SmartInfoBusRiskMixin,
+    SmartInfoBusTradingMixin,
+    SmartInfoBusStateMixin,
+)
 from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
 from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
@@ -63,31 +69,13 @@ class TimeAwareRiskConfig:
 # MODULE
 # ═══════════════════════════════════════════════════════════════════
 
-@module(
-    name="TimeAwareRiskScaling",
-    version="3.1.0",
-    category="risk",
-    provides=[
-        "risk_scaling_factor",
-        "session_risk",
-        "volatility_adjustment",
-        "market_conditions",
-        "time_risk_analysis",
-        "time_risk_status",
-        "time_risk_health",
-    ],
-    requires=[
-        "timestamp",
-        "market_data",
-        "risk_data",
-        "volatility_data",
-    ],
+@module(**module_args(
+    "TimeAwareRiskScaling",
     description="Advanced time-aware risk scaling with session analysis and volatility modeling",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class TimeAwareRiskScaling(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     Production-grade time-aware risk scaling with advanced session analytics.
@@ -188,7 +176,7 @@ class TimeAwareRiskScaling(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradin
 
             # Required status block (declared provide: time_risk_status)
             status_payload = {
-                "status": "ok",
+                "status": "ok" if risk_result.get("processing_success", False) else "degraded",
                 "current_session": session,
                 "hour": hour,
                 "scaling_factor": scaling_factor,
@@ -248,7 +236,6 @@ class TimeAwareRiskScaling(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradin
         except Exception as e:
             # Absolute fallback to prevent orchestrator failure
             now_hour = int(datetime.datetime.now().hour)
-            # Fallback health/status
             fb_health = {
                 "success_rate": float(self.success_count / max(int(self.success_count + self.failure_count), 1)),
                 "avg_processing_time_ms": float(np.mean(self.processing_times)) if self.processing_times else 0.0,

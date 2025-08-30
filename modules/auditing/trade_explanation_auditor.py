@@ -3,6 +3,7 @@
 # ENHANCED: Trade auditor using SmartInfoBus architecture
 # ─────────────────────────────────────────────────────────────
 
+from modules.contracts import module_args
 import numpy as np
 import datetime
 from typing import Dict, Any, List, Optional
@@ -14,7 +15,13 @@ from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusRiskMixin
 from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import format_operator_message
 
-
+@module(**module_args(
+    "TradeExplanationAuditor",
+    description="Advanced trade auditing for trading strategies.",
+    error_handling=True,
+    hot_reload=True,
+    timeout_ms=120,
+))
 @module(
     provides=['trade_explanations', 'audit_alerts', 'explanation_metrics'],
     requires=['trading_signal', 'market_data', 'trades'],

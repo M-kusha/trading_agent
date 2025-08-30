@@ -171,6 +171,7 @@ class ModuleConfig:
         # Discovery: modernized modules
         self.module_paths = kwargs.get('module_paths', [
             'modules/auditing',
+            'modules/core',
             'modules/external',
             'modules/features',
             'modules/market',
@@ -2006,4 +2007,3 @@ class ModuleOrchestrator:
                     pass
             # do not overwrite _registered_classes and do not instantiate
             return
-

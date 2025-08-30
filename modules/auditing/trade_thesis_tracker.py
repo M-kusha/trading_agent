@@ -4,6 +4,7 @@
 # ENHANCED: Thesis tracker using SmartInfoBus architecture
 # ─────────────────────────────────────────────────────────────
 
+from modules.contracts import module_args
 import numpy as np
 import datetime
 from collections import defaultdict, deque
@@ -16,17 +17,13 @@ from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import format_operator_message
 
 
-@module(
-    provides=['thesis_analysis', 'thesis_performance', 'thesis_alerts'],
-    requires=['trading_signal', 'market_data', 'trades'],
-    category='auditing',
-    is_voting_member=False,
+@module(**module_args(
+    "TradeThesisTracker",
+    description="Advanced thesis tracking for trading strategies.",
+    error_handling=True,
     hot_reload=True,
-    explainable=True,
-    timeout_ms=100,
-    priority=3,
-    version="2.0.0"
-)
+    timeout_ms=120,
+))
 class TradeThesisTracker(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     🧠 PRODUCTION-GRADE Trade Thesis Tracker

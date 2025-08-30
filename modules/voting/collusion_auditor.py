@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import time
 import math
+from modules.contracts import module_args
 import numpy as np
 import datetime as dt
 from typing import Dict, Any, List, Optional, Tuple, Set, Deque
@@ -26,43 +27,13 @@ from modules.monitoring.health_monitor import HealthMonitor
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-@module(
-    name="CollusionAuditor",
-    version="3.1.0",
-    category="voting",
-    provides=[
-        "collusion_score",
-        "suspicious_pairs",
-        "member_independence_scores",
-        "collusion_alerts",
-        "behavioral_profiles",
-        "coordination_events",
-        "detection_statistics",
-        "audit_recommendations",
-    ],
-    requires=[
-        "votes",
-        "voting_summary",
-        "strategy_arbiter_weights",
-        "raw_proposals",
-        "member_confidences",
-        "consensus_direction",
-        "agreement_score",
-        "market_context",
-        "recent_trades",
-        "market_regime",
-        "volatility_data",
-    ],
+@module(**module_args(
+    "CollusionAuditor",
     description="Advanced collusion detection and anti-manipulation safeguards for voting committees",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    timeout_ms=100,
-    priority=2,
-    explainable=True,
     hot_reload=True,
-)
+    timeout_ms=120,
+))
 class CollusionAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     🕵️ PRODUCTION-GRADE Collusion Auditor v3.1

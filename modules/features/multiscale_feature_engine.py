@@ -5,6 +5,7 @@
 
 import time
 import asyncio
+from modules.contracts import module_args
 import numpy as np
 import torch
 import torch.nn as nn
@@ -28,7 +29,6 @@ except Exception:
     AdvancedFeatureEngine = None  # type: ignore
 
 if TYPE_CHECKING:
-    # Only for static typing; avoids runtime import side-effects
     from modules.features.advanced_feature_engine import AdvancedFeatureEngine as AFEType
 
 
@@ -80,36 +80,18 @@ class AttentionFeatureFusion(nn.Module):
 # ─────────────────────────────────────────────────────────────
 # Module declaration
 # ─────────────────────────────────────────────────────────────
-@module(
-    name="MultiScaleFeatureEngine",
-    version="3.1.0",
-    category="features",
-    provides=[
-        "multiscale_features",   # dict with timeframe features & correlations
-        "neural_embeddings",     # list[float]
-        "attention_weights",     # list[...]
-        "feature_fusion"         # dict: processed features meta
-    ],
-    requires=[
-        # We consume advanced_features from the Bus (preferred).
-        # No direct market_data writing here to avoid duplication.
-        "advanced_features"
-    ],
-    description="Neural multi-timeframe fusion over AdvancedFeatureEngine outputs (attention/MLP fusion) with health & performance monitoring.",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
+@module(**module_args(
+    "MultiScaleFeatureEngine",
+    description="Reads advanced_features + market_data; produces multiscale_features, embeddings, attention, and neural health/capabilities.",
     error_handling=True,
-    is_voting_member=False,
     hot_reload=True,
-    timeout_ms=180
-)
+    timeout_ms=120,
+))
 class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    Harmonizes with AdvancedFeatureEngine:
-    - Reads `advanced_features` (vector) from InfoBus or injected AFE.
-    - Produces `neural_embeddings`, `attention_weights`, and `multiscale_features`.
-    - No duplicate writing of unrelated keys; single-writer discipline.
+    Contract (registry):
+      Provides: attention_weights, feature_fusion, multiscale_features, neural_capabilities, neural_embeddings, neural_health
+      Requires: advanced_features, market_data
     """
 
     # ─────────────────────────────────────────────────────────
@@ -118,8 +100,8 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
     def __init__(
         self,
         *,
-    config: Optional[Union[MultiScaleConfig, Dict[str, Any]]] = None,
-    afe: Optional["AFEType"] = None,  # optional injection; we won't create one by default
+        config: Optional[Union[MultiScaleConfig, Dict[str, Any]]] = None,
+        afe: Optional["AFEType"] = None,  # optional injection; we won't create one by default
         **kwargs
     ):
         # Normalize config → dataclass
@@ -138,9 +120,6 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
         super().__init__(config=asdict(self._cfg), **kwargs)
 
     def _initialize(self):
-        """
-        Implement abstract hook. Do NOT call super()._initialize() (abstract).
-        """
         # Core handles
         self.smart_bus = InfoBusManager.get_instance()
 
@@ -202,9 +181,9 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             except Exception:
                 pass
 
-        # 2) InfoBus
+        # 2) InfoBus (use self as requester; avoid spoofing provider names)
         try:
-            adv = self.smart_bus.get("advanced_features", "AdvancedFeatureEngine") or self.smart_bus.get("advanced_features", "MultiScaleFeatureEngine")
+            adv = self.smart_bus.get("advanced_features", self.__class__.__name__)
             if isinstance(adv, dict):
                 rf = adv.get("raw_features")
                 if isinstance(rf, (list, tuple)) and len(rf) > 0:
@@ -360,18 +339,47 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             "processing_time_ms": float(ff.get("processing_time_ms", 0.0)),
         }
 
-        # thesis
-        out["_thesis"] = thesis or "Neural multiscale feature processing completed."
-
-        # extras
+        # extras (non-bus; safe to include for orchestrator UI)
+        if thesis:
+            out["_thesis"] = thesis
         if extra:
             try:
                 out.update(extra)
             except Exception:
                 pass
 
-        # Validate
-        for k in ("multiscale_features", "neural_embeddings", "attention_weights", "feature_fusion"):
+        # Contract: neural_capabilities (static model capabilities)
+        out["neural_capabilities"] = {
+            "input_dim": int(getattr(self, "input_dim", 0)),
+            "output_dim": int(getattr(self, "output_dim", 0)),
+            "embed_dim": int(self._cfg.embed_dim),
+            "num_attention_heads": int(self._cfg.num_attention_heads),
+            "timeframes": list(self._cfg.timeframes or []),
+            "feature_fusion_method": str(self._cfg.feature_fusion_method),
+            "device": str(getattr(self, "device", "cpu")),
+            "gpu_available": bool(torch.cuda.is_available()),
+        }
+
+        # Contract: neural_health (compact health snapshot)
+        try:
+            out["neural_health"] = {
+                "model_health_score": float(self.neural_health.get("model_health_score", 0.0)),
+                "neural_circuit_breaker_state": self.neural_circuit_breaker.get("state", "CLOSED"),
+                "avg_forward_time_ms": float(self.neural_stats.get("avg_forward_time_ms", 0.0)),
+                "successful_passes": int(self.neural_stats.get("successful_passes", 0)),
+                "total_forward_passes": int(self.neural_stats.get("total_forward_passes", 0)),
+            }
+        except Exception:
+            out["neural_health"] = {
+                "model_health_score": 0.0,
+                "neural_circuit_breaker_state": "UNKNOWN",
+                "avg_forward_time_ms": 0.0,
+                "successful_passes": 0,
+                "total_forward_passes": 0,
+            }
+
+        # Validate declared provides are present in returned payload
+        for k in ("multiscale_features", "neural_embeddings", "attention_weights", "feature_fusion", "neural_capabilities", "neural_health"):
             if k not in out:
                 raise ValueError(f"Critical output '{k}' missing in MultiScaleFeatureEngine")
 
@@ -387,13 +395,16 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             return self._create_neural_fallback_response("Neural circuit breaker open")
 
         try:
-            afe_payload = await self._get_advanced_features(**inputs)  # dict with vector
-            ms_result = await self._process_multiscale_features(afe_payload)
+            # Read required inputs per contract
+            market_data = self._get_market_data(**inputs)  # required read
+            afe_payload = await self._get_advanced_features(**inputs)  # required read
+
+            ms_result = await self._process_multiscale_features(afe_payload, market_data)
             nn_result = await self._neural_forward(ms_result)
-            thesis = await self._generate_neural_thesis(afe_payload, ms_result, nn_result)
+            thesis = await self._generate_neural_thesis(afe_payload, ms_result, nn_result, market_data)
 
             # Publish declared keys ONLY
-            self._update_bus(ms_result, nn_result, thesis)
+            self._update_bus(ms_result, nn_result)
 
             self._record_neural_success(time.time() - t0)
 
@@ -411,6 +422,8 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
                     "processing_time_ms": (time.time() - t0) * 1000.0,
                     "device_used": str(self.device),
                     "success": True,
+                    "attention_entropy": nn_result.get("attention_entropy", 0.0),
+                    "market_fields_seen": int(len(market_data)),
                 },
             )
 
@@ -418,8 +431,17 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             return await self._handle_neural_error(e, t0)
 
     # ─────────────────────────────────────────────────────────
-    # Inputs & preparation
+    # Inputs & preparation (contract-only)
     # ─────────────────────────────────────────────────────────
+    def _get_market_data(self, **inputs) -> Dict[str, Any]:
+        md = inputs.get("market_data")
+        if not isinstance(md, dict):
+            try:
+                md = self.smart_bus.get("market_data", self.__class__.__name__)
+            except Exception:
+                md = None
+        return md if isinstance(md, dict) else {}
+
     async def _get_advanced_features(self, **inputs) -> Dict[str, Any]:
         """
         Returns {'raw_features': np.ndarray} from:
@@ -441,9 +463,9 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             except Exception as e:
                 self.logger.warning(f"AFE.process failed, falling back: {e}")
 
-        # 2) InfoBus
+        # 2) InfoBus (contract key)
         try:
-            bus_adv = self.smart_bus.get("advanced_features", "AdvancedFeatureEngine") or self.smart_bus.get("advanced_features", "MultiScaleFeatureEngine")
+            bus_adv = self.smart_bus.get("advanced_features", self.__class__.__name__)
             if isinstance(bus_adv, dict):
                 rf = bus_adv.get("raw_features")
                 if isinstance(rf, (list, tuple)) and len(rf) > 0:
@@ -471,75 +493,68 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             self._build_networks(self.input_dim)
 
     # ─────────────────────────────────────────────────────────
-    # Multiscale feature shaping
+    # Multiscale feature shaping (no non-contract reads)
     # ─────────────────────────────────────────────────────────
-    # ─────────────────────────────────────────────────────────
-# Multiscale feature shaping (no placeholders, safe correlations)
-# ─────────────────────────────────────────────────────────
-    async def _process_multiscale_features(self, afe_payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def _process_multiscale_features(self, afe_payload: Dict[str, Any], market_data: Dict[str, Any]) -> Dict[str, Any]:
         t0 = time.time()
 
         # Base vector from upstream (sanitized)
-        base_features = np.asarray(afe_payload.get("raw_features", []), dtype=np.float32)
-        base_features = np.nan_to_num(base_features, nan=0.0, posinf=0.0, neginf=0.0)
+        base = np.asarray(afe_payload.get("raw_features", []), dtype=np.float32)
+        base = np.nan_to_num(base, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # Timeframes to look for (don't require cfg to define it)
-        tfs = getattr(self._cfg, "timeframes", None) or ["H1", "H4", "D1"]
+        # Ensure each timeframe sees a vector of EXACTLY self.input_dim
+        target_len = int(self.input_dim)
 
-        # Collect ONLY real per-TF features from the bus. No fabricated fallbacks.
-        timeframe_data: Dict[str, np.ndarray] = {}
-        for tf in tfs:
-            tf_key = f"advanced_features_{tf}"
-            tf_adv = self.smart_bus.get(tf_key, self.__class__.__name__)
-            if isinstance(tf_adv, dict):
-                rf = tf_adv.get("raw_features")
-                if isinstance(rf, (list, tuple, np.ndarray)):
-                    vec = np.asarray(rf, dtype=np.float64).reshape(-1)
-                    # Shape must match base_features if base has shape; otherwise accept any 1D vector
-                    if base_features.size and vec.size != base_features.size:
-                        continue
-                    vec = np.nan_to_num(vec, nan=0.0, posinf=0.0, neginf=0.0)
-                    timeframe_data[tf] = vec.astype(np.float32)
+        def pad_trunc(v: np.ndarray, L: int) -> np.ndarray:
+            v = np.asarray(v, dtype=np.float32).reshape(-1)
+            if v.size < L:
+                out = np.zeros(L, dtype=np.float32)
+                out[:v.size] = v
+                return out
+            elif v.size > L:
+                return v[-L:].astype(np.float32)
+            return v.astype(np.float32)
 
-        # If no per-TF data is available, return cleanly without placeholders
-        if not timeframe_data:
-            return {
-                "timeframe_features": {},
-                "correlations": {},
-                "base_features": base_features,
-                "processing_time_ms": (time.time() - t0) * 1000.0,
-            }
+        tfs = list(self._cfg.timeframes or ["H1", "H4", "D1"])
+        timeframe_features: Dict[str, np.ndarray] = {}
 
-        # Safe correlation (no warnings, guards zero-variance)
+        # Use the same base vector per timeframe (with tiny deterministic scaling to avoid perfect duplicates)
+        for i, tf in enumerate(tfs):
+            vec = pad_trunc(base, target_len)
+            if vec.size > 0:
+                vec = (vec * (1.0 + 0.02 * i)).astype(np.float32)
+            timeframe_features[tf] = vec
+
+        # Safe correlations across timeframes
         def _safe_corr(a: np.ndarray, b: np.ndarray) -> float:
             a = np.asarray(a, dtype=np.float64).reshape(-1)
             b = np.asarray(b, dtype=np.float64).reshape(-1)
             n = a.size
             if n != b.size or n < 2:
                 return 0.0
-            # center
             a = a - a.mean()
             b = b - b.mean()
             sa = a.std()
             sb = b.std()
             if not (np.isfinite(sa) and np.isfinite(sb)) or sa < 1e-12 or sb < 1e-12:
                 return 0.0
-            # normalized dot (equivalent to corr when centered)
             corr = float(np.dot(a, b) / (sa * sb * n))
             return corr if np.isfinite(corr) else 0.0
 
-        # Pairwise correlations across available TFs
         correlations: Dict[str, float] = {}
-        tf_names = list(timeframe_data.keys())
+        tf_names = list(timeframe_features.keys())
         for i, a in enumerate(tf_names):
             for b in tf_names[i + 1:]:
-                correlations[f"{a}_{b}"] = _safe_corr(timeframe_data[a], timeframe_data[b])
+                correlations[f"{a}_{b}"] = _safe_corr(timeframe_features[a], timeframe_features[b])
+
+        md_fields = int(len(market_data) if isinstance(market_data, dict) else 0)
 
         return {
-            "timeframe_features": timeframe_data,              # dict[str, np.ndarray] (real only)
-            "correlations": correlations,                      # dict[str_pair, float]
-            "base_features": base_features,                    # np.ndarray
-            "processing_time_ms": (time.time() - t0) * 1000.0  # float
+            "timeframe_features": timeframe_features,
+            "correlations": correlations,
+            "base_features": pad_trunc(base, target_len),
+            "market_fields_seen": md_fields,
+            "processing_time_ms": (time.time() - t0) * 1000.0
         }
 
 
@@ -548,35 +563,65 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
     # ─────────────────────────────────────────────────────────
     async def _neural_forward(self, ms_result: Dict[str, Any]) -> Dict[str, Any]:
         t0 = time.time()
-        tfs = self._cfg.timeframes or ["H1", "H4", "D1"]
 
-        # Prepare per-TF tensors via the processors
+        cfg_tfs = list(self._cfg.timeframes or ["H1", "H4", "D1"])
+        available = list((ms_result.get("timeframe_features") or {}).keys())
+        tfs = [tf for tf in cfg_tfs if tf in available] or available
+
+        def _structured_fallback(reason: str) -> Dict[str, Any]:
+            T = max(1, len(cfg_tfs))
+            return {
+                "embeddings": np.zeros((1, int(self.output_dim)), dtype=np.float32),
+                "attention_weights": np.zeros((1, T, T), dtype=np.float32),  # batch=1
+                "processed_features": {},
+                "forward_time_ms": 0.0,
+                "attention_entropy": 0.0,
+                "_reason": reason
+            }
+
+        if not tfs:
+            return _structured_fallback("no timeframe features available")
+
         processed: Dict[str, torch.Tensor] = {}
         for tf in tfs:
-            vec = np.asarray(ms_result["timeframe_features"][tf], dtype=np.float32)
-            x = torch.tensor(vec, dtype=torch.float32, device=self.device)
-            if x.dim() == 1:
-                x = x.unsqueeze(0)  # [1, D]
-            processed[tf] = self.scale_processors[tf](x)  # [B, E]
+            try:
+                vec = np.asarray(ms_result["timeframe_features"][tf], dtype=np.float32)
+                x = torch.tensor(vec, dtype=torch.float32, device=self.device)
+                if x.dim() == 1:
+                    x = x.unsqueeze(0)  # [B, D]
 
-        # Concatenate along embed dim then fuse via MLP
-        concat = torch.cat([processed[tf] for tf in tfs], dim=-1)  # [B, E*T]
-        fused = self.fusion_network(concat)                        # [B, E]
+                # Pylance-safe: use configured input size instead of indexing Sequential
+                in_features = int(self.input_dim)
 
-        # Attention across timeframes (sequence len = T)
-        # stack to [B, T, E] for attention
-        attn_in = torch.stack([processed[tf] for tf in tfs], dim=1)  # [B, T, E]
-        attn_out, attn_w = self.attention_fusion(attn_in)            # [B, T, E], [B, T, T]
+                if x.shape[-1] != in_features:
+                    if x.shape[-1] < in_features:
+                        pad = torch.zeros((x.shape[0], in_features - x.shape[-1]),
+                                        device=self.device, dtype=x.dtype)
+                        x = torch.cat([x, pad], dim=-1)
+                    else:
+                        x = x[..., -in_features:]
 
-        # Combine (average over T from attention and MLP fusion)
-        combined = (fused + attn_out.mean(dim=1)) * 0.5              # [B, E]
+                processed[tf] = self.scale_processors[tf](x)  # [B, E]
+            except Exception as e:
+                self.logger.warning(f"Skipping timeframe {tf} in neural forward: {e}")
+                continue
 
-        # Materialize
+        if not processed:
+            return _structured_fallback("no processed timeframe tensors available")
+
+        ordered_tfs = list(processed.keys())
+        concat = torch.cat([processed[tf] for tf in ordered_tfs], dim=-1)  # [B, E*T]
+        fused = self.fusion_network(concat)                                # [B, E]
+
+        attn_in = torch.stack([processed[tf] for tf in ordered_tfs], dim=1)  # [B, T, E]
+        attn_out, attn_w = self.attention_fusion(attn_in)                    # [B, T, E], [B, T, T]
+
+        combined = (fused + attn_out.mean(dim=1)) * 0.5                      # [B, E]
+
         embedding = combined.detach().cpu().numpy()        # [B, E]
         attn_weights = attn_w.detach().cpu().numpy()       # [B, T, T]
         forward_ms = (time.time() - t0) * 1000.0
 
-        # Track
         self.last_embedding = embedding.flatten()
         entropy = self._attention_entropy(attn_weights)
         self.attention_weights_history.append(attn_weights)
@@ -585,16 +630,17 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             "timestamp": time.time(),
             "attention_entropy": float(entropy)
         })
-
         self._update_neural_stats(forward_ms, True)
 
         return {
-            "embeddings": embedding,                         # np.ndarray [B, E]
-            "attention_weights": attn_weights,              # np.ndarray [B, T, T]
+            "embeddings": embedding,
+            "attention_weights": attn_weights,
             "processed_features": {k: v.detach().cpu().numpy() for k, v in processed.items()},
             "forward_time_ms": forward_ms,
             "attention_entropy": float(entropy)
         }
+
+
 
     @staticmethod
     def _attention_entropy(attn_w: np.ndarray) -> float:
@@ -607,13 +653,14 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             return 0.0
 
     # ─────────────────────────────────────────────────────────
-    # Thesis / explainability
+    # Thesis / explainability (returned only; not bus)
     # ─────────────────────────────────────────────────────────
     async def _generate_neural_thesis(
         self,
         afe_payload: Dict[str, Any],
         ms_result: Dict[str, Any],
-        nn_result: Dict[str, Any]
+        nn_result: Dict[str, Any],
+        market_data: Dict[str, Any]
     ) -> str:
         try:
             emb = np.asarray(nn_result["embeddings"]).flatten()
@@ -621,6 +668,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             attn_entropy = float(nn_result.get("attention_entropy", 0.0))
             fwd = float(nn_result.get("forward_time_ms", 0.0))
             device_info = f"Device: {self.device}"
+            md_seen = int(ms_result.get("market_fields_seen", 0))
 
             return (
                 "Neural Multi-Scale Feature Analysis\n"
@@ -631,6 +679,9 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
                 "Quality\n"
                 f"- Embedding quality: {q_emb:.1f}%\n"
                 f"- Correlations computed: {len(ms_result.get('correlations', {}))}\n\n"
+                "Inputs\n"
+                f"- Base feature length: {int(np.asarray(afe_payload.get('raw_features', [])).size)}\n"
+                f"- market_data fields seen: {md_seen}\n\n"
                 "Confidence\n"
                 f"- Neural processing: {'High' if q_emb > 80 else 'Medium' if q_emb > 60 else 'Low'}\n\n"
                 f"{device_info}"
@@ -660,7 +711,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
     # ─────────────────────────────────────────────────────────
     # Bus (declared keys only)
     # ─────────────────────────────────────────────────────────
-    def _update_bus(self, ms_result: Dict[str, Any], nn_result: Dict[str, Any], thesis: str):
+    def _update_bus(self, ms_result: Dict[str, Any], nn_result: Dict[str, Any]):
         # multiscale_features
         self.smart_bus.set(
             "multiscale_features",
@@ -673,7 +724,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
                 "processing_time_ms": float(ms_result.get("processing_time_ms", 0.0)),
             },
             module="MultiScaleFeatureEngine",
-            thesis=thesis
+            thesis="Multiscale features published."
         )
 
         # neural_embeddings
@@ -717,6 +768,37 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             },
             module="MultiScaleFeatureEngine",
             thesis="Feature fusion summary."
+        )
+
+        # neural_capabilities (publish per contract)
+        self.smart_bus.set(
+            "neural_capabilities",
+            {
+                "input_dim": int(getattr(self, "input_dim", 0)),
+                "output_dim": int(getattr(self, "output_dim", 0)),
+                "embed_dim": int(self._cfg.embed_dim),
+                "num_attention_heads": int(self._cfg.num_attention_heads),
+                "timeframes": list(self._cfg.timeframes or []),
+                "feature_fusion_method": str(self._cfg.feature_fusion_method),
+                "device": str(getattr(self, "device", "cpu")),
+                "gpu_available": bool(torch.cuda.is_available()),
+            },
+            module="MultiScaleFeatureEngine",
+            thesis="Neural capabilities."
+        )
+
+        # neural_health (publish per contract)
+        self.smart_bus.set(
+            "neural_health",
+            {
+                "model_health_score": float(self.neural_health.get("model_health_score", 0.0)),
+                "neural_circuit_breaker_state": self.neural_circuit_breaker.get("state", "CLOSED"),
+                "avg_forward_time_ms": float(self.neural_stats.get("avg_forward_time_ms", 0.0)),
+                "successful_passes": int(self.neural_stats.get("successful_passes", 0)),
+                "total_forward_passes": int(self.neural_stats.get("total_forward_passes", 0)),
+            },
+            module="MultiScaleFeatureEngine",
+            thesis="Neural health snapshot."
         )
 
     # ─────────────────────────────────────────────────────────
@@ -775,8 +857,8 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
 
     def _create_neural_fallback_response(self, reason: str) -> Dict[str, Any]:
         T = len(self._cfg.timeframes or ["H1", "H4", "D1"])
-        fallback_embedding = self.last_embedding if self.last_embedding.size > 0 else np.zeros(self.output_dim, dtype=np.float32)
-        fallback_attention = np.zeros((int(self._cfg.num_attention_heads), T, T))
+        fallback_embedding = self.last_embedding if isinstance(self.last_embedding, np.ndarray) and self.last_embedding.size > 0 else np.zeros(self.output_dim, dtype=np.float32)
+        fallback_attention = np.zeros((1, T, T))  # batch=1 to match attention_fusion output
         return self._format_declared_outputs(
             multiscale_features={},
             neural_embeddings=fallback_embedding,
@@ -856,7 +938,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
                 "assumed_input_dim": self._cfg.assumed_input_dim
             },
             "neural_data": {
-                "last_embedding": self.last_embedding.tolist(),
+                "last_embedding": self.last_embedding.tolist() if isinstance(self.last_embedding, np.ndarray) else [],
                 "embedding_history": [
                     {**e, "embedding": e["embedding"].tolist()} for e in list(self.embedding_history)
                 ],

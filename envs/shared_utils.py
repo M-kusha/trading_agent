@@ -548,7 +548,7 @@ def optimize_environment_performance(config: Dict[str, Any]) -> Dict[str, Any]:
     optimized = dict(config)  # shallow copy
 
     # Reduce logging overhead in production
-    if not optimized.get('debug', False):
+    if not optimized.get('debug', True):
         optimized['log_rotation_lines'] = min(int(optimized.get('log_rotation_lines', 2000) or 2000), 1000)
         optimized['info_bus_audit_level'] = optimized.get('info_bus_audit_level', 'WARNING')
 

@@ -3,6 +3,7 @@
 # Enhanced Trade Map Visualizer with Modern Architecture
 # ─────────────────────────────────────────────────────────────
 
+from modules.contracts import module_args
 import numpy as np
 import datetime
 import time
@@ -19,28 +20,13 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-@module(
-    name="TradeMapVisualizer",
-    version="3.0.0",
-    category="visualization",
-    provides=[
-        "trade_charts", "performance_charts", "dashboard_charts", "chart_statistics",
-        "visualization_reports", "chart_cache", "chart_history"
-    ],
-    requires=[
-        "market_data", "recent_trades", "trading_performance", "positions",
-        "risk_metrics", "consensus_data", "module_performance"
-    ],
-    description="Advanced trade visualization and chart generation system",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
+@module(**module_args(
+    "TradeMapVisualizer",
+    description="Modern trade map visualizer with comprehensive SmartInfoBus integration.",
     error_handling=True,
-    timeout_ms=150,
-    priority=6,
-    explainable=True,
-    hot_reload=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class TradeMapVisualizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     Modern trade map visualizer with comprehensive SmartInfoBus integration.
@@ -50,7 +36,7 @@ class TradeMapVisualizer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
     def __init__(
         self,
-        debug: bool = False,
+        debug: bool = True,
         marker_size: int = 60,
         style: str = "seaborn",
         save_path: Optional[str] = None,

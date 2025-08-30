@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from modules.contracts import module_args
 import numpy as np
 import datetime as dt
 from typing import Any, Dict, List, Optional, Tuple
@@ -26,45 +27,13 @@ from modules.monitoring.performance_tracker import PerformanceTracker
 from utils.get_dir import _BASE_GATE, _smart_gate
 
 
-@module(
-    name="StrategyArbiter",
-    version="3.1.0",
-    category="voting",
-    provides=[
-        "blended_action",
-        "alpha_weights",
-        "member_weights",
-        "gate_decision",
-        "voting_quality",
-        "member_performance",
-        "decision_statistics",
-        "proposal_analysis",
-        "arbiter_recommendations",
-        "instrument_signals",
-    ],
-    requires=[
-        "market_context",
-        "recent_trades",
-        "current_positions",
-        "member_proposals",
-        "member_confidences",
-        "consensus_score",
-        "collusion_score",
-        "horizon_alignment",
-        "volatility_data",
-        "market_regime",
-        "instruments",  # optional but helpful for downstream wiring
-    ],
+@module(**module_args(
+    "StrategyArbiter",
     description="Advanced multi-expert coordination and sophisticated voting mechanisms",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    timeout_ms=120,
-    priority=1,
-    explainable=True,
     hot_reload=True,
-)
+    timeout_ms=120,
+))
 class StrategyArbiter(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     🏛️ PRODUCTION-GRADE Strategy Arbiter v3.1

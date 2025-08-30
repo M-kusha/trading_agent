@@ -5,6 +5,7 @@ Advanced strategy analysis system with intelligent pattern recognition and adapt
 
 import asyncio
 import time
+from modules.contracts import module_args
 import numpy as np
 import datetime
 from typing import Dict, Any, List, Optional, Tuple
@@ -22,29 +23,13 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-@module(
-    name="StrategyIntrospector",
-    version="3.0.0",
-    category="strategy",
-    provides=[
-        "strategy_analysis", "performance_insights", "adaptation_recommendations",
-        "strategy_profiles", "introspection_metrics", "behavior_patterns",
-        "trading_performance", "strategy_performance", "strategy_weights", "module_data"
-    ],
-    requires=[
-        "recent_trades", "module_data", "risk_data", "market_regime",
-        "volatility_data", "trading_performance", "strategy_weights"
-    ],
+@module(**module_args(
+    "StrategyIntrospector",
     description="Advanced strategy analysis system with intelligent pattern recognition and adaptation insights",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    timeout_ms=180,
-    priority=5,
-    explainable=True,
-    hot_reload=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     [SEARCH] PRODUCTION-GRADE Strategy Introspector v3.0

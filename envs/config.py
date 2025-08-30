@@ -57,7 +57,7 @@ class TradingConfig:
 
     # InfoBus Configuration
     info_bus_enabled: bool = True
-    info_bus_audit_level: str = "INFO"  # DEBUG, INFO, WARNING, ERROR
+    info_bus_audit_level: str = "DEBUG"  # DEBUG, INFO, WARNING, ERROR
     info_bus_validation: bool = True
     # Initialization behavior
     info_bus_init_timeout: float = 2.0
@@ -165,7 +165,7 @@ class TradingConfig:
     # Enhanced Directory Structure with Rotation
     # ===================================================================
     log_dir: str = "logs"
-    log_level: str = "INFO"
+    log_level: str = "Debug"
     log_rotation_lines: int = 2000  # Mandatory 2000-line rotation
     checkpoint_dir: str = "checkpoints"
     model_dir: str = "models"
@@ -475,7 +475,8 @@ class ConfigPresets:
 
             # Balanced InfoBus monitoring
             info_bus_enabled=True,
-            info_bus_audit_level="INFO",
+            info_bus_audit_level="DEBUG",
+            
             info_bus_validation=True,
 
             # Standard monitoring

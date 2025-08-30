@@ -1,6 +1,7 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/external/market_data_provider.py
 # PRODUCTION-READY Offline Market Data Provider (Pure, No Simulation)
+# Contract-clean: provides ONLY keys declared in contracts.py
 # Zero fabrication: reads CSVs only; otherwise returns empty/unknown structures
 # Pylance-clean: typed self.cfg (dataclass), pass dict to BaseModule
 # No ownership collisions: exports data-only keys
@@ -16,6 +17,7 @@ from dataclasses import dataclass, field, asdict
 from collections import deque
 from typing import Dict, Any, List, Optional, Iterator, Tuple, Hashable
 
+from modules.contracts import module_args
 import numpy as np
 import pandas as pd
 
@@ -37,35 +39,27 @@ class MarketDataConfig:
     enable_technical_indicators: bool = True
 
 
-@module(
-    name="MarketDataProvider",
-    version="2.1.0",
-    category="external",
-    provides=[
-        "market_data", "price_data", "ohlcv_data", "bid_ask_data", "prices",
-        "symbols", "timestamp",
-        "technical_indicators", "indicators",
-        "volatility_data", "volatility", "volatility_index",
-        "multi_timeframe_data", "historical_prices",
-        "market_context",
-        "trading_session", "session_type", "session_canonical",
-        "data_provider_health",
-    ],
-    requires=[],
+@module(**module_args(
+    "MarketDataProvider",
     description="Offline market data provider that emits only real data from disk. No mock/simulated values.",
-    thesis_required=False,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    is_voting_member=False,
-    explainable=False,
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     Pure data source:
     - Loads per-symbol, per-timeframe CSVs.
     - Computes indicators from loaded bars only.
     - If something is missing, emits empty/unknown structures (never fabricates).
+
+    Contract outputs (from contracts.py):
+      alerts, bid_ask_data, economic_calendar, environment, environment_config,
+      historical_prices, indicators, input1, input2, learning_context, learning_status,
+      macro_data, market_conditions, market_context, market_data, market_liquidity,
+      multi_timeframe_data, ohlcv_data, portfolio_metrics, price_data, prices,
+      session_type, step_data, step_idx, strategy_status, symbols,
+      technical_indicators, timestamp, trading_session, volatility, volatility_data, volatility_level
     """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
@@ -73,14 +67,7 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         self.logger = RotatingLogger("MarketDataProvider", log_path="logs/external/market_data_provider.log")
         self.cfg = MarketDataConfig(**(config or {}))
 
-        # ── IMPORTANT ──
         # Define ALL attributes used by _initialize() BEFORE calling super().__init__()
-        # because BaseModule.__init__ will call _initialize during registration.
-        from collections import deque
-        from typing import Iterator, Tuple
-        import pandas as pd
-        import datetime
-
         self.data_files: Dict[str, Dict[str, pd.DataFrame]] = {}
         self.data_iterators: Dict[str, Iterator[Tuple[Hashable, pd.Series]]] = {}
         self.current_bars: Dict[str, Dict[str, Any]] = {}
@@ -100,7 +87,6 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         self._proc_times: deque = deque(maxlen=200)
 
         # Only now let BaseModule wire things and call _initialize()
-        from dataclasses import asdict
         super().__init__(config=asdict(self.cfg))
 
         self.logger.info(format_operator_message(
@@ -124,8 +110,9 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             self.logger.error(f"[FAIL] Initialization failed: {e}")
             raise
 
-# REPLACE your _load_data_files with this one
-
+    # ─────────────────────────────────────────────────────────────
+    # Data loading
+    # ─────────────────────────────────────────────────────────────
     def _load_data_files(self) -> None:
         """Load offline CSVs into per-symbol/per-timeframe DataFrames (supports XAUUSD_H1_features.csv etc.)."""
         data_dir = self.cfg.data_directory
@@ -143,8 +130,8 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     continue
 
                 try:
-                    # accept either 'timestamp' or 'time'
                     df = pd.read_csv(path)
+                    # accept either 'timestamp' or 'time'
                     if "timestamp" not in df.columns and "time" in df.columns:
                         df = df.rename(columns={"time": "timestamp"})
                     if "timestamp" not in df.columns:
@@ -155,12 +142,11 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
                     df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
-                    # If only close/volatility are present, accept and synthesize minimal OHLCV
+                    # If only close/volatility are present, accept and synthesize minimal OHLCV (from close only)
                     have_close = "close" in df.columns
                     need_cols = ["open", "high", "low", "close", "volume"]
                     if not set(need_cols).issubset(df.columns):
                         if have_close:
-                            # Minimal, lossless for theme detector: fill O/H/L from close, volume=0
                             if "open" not in df.columns:   df["open"] = df["close"]
                             if "high" not in df.columns:   df["high"] = df["close"]
                             if "low" not in df.columns:    df["low"]  = df["close"]
@@ -177,7 +163,6 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
                     # Basic cleaning
                     df.dropna(subset=["timestamp", "close"], inplace=True)
-                    # Ensure 'volume' is a Series to safely call fillna/astype
                     if "volume" in df.columns:
                         vol_series = pd.to_numeric(df["volume"], errors="coerce")
                     else:
@@ -208,16 +193,8 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         else:
             self.logger.info(f"[SUMMARY] Loaded {len(self.data_files)} symbols, ~{total_loaded:,} clean bars.")
 
-
     def _find_file_for(self, symbol: str, timeframe: str, data_dir: str) -> Optional[str]:
-        """Find a CSV file for a given symbol/timeframe using common naming patterns.
-
-        Examples matched:
-        - XAUUSD_H1_features.csv
-        - EURUSD_D1_features.csv
-        - EURUSD_H4.csv
-        - xauusd_h1_features.csv (case-insensitive)
-        """
+        """Find a CSV file for a given symbol/timeframe using common naming patterns."""
         try:
             sym_nosl = symbol.replace("/", "").upper()
             tf = timeframe.upper()
@@ -227,20 +204,18 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 f"{sym_nosl}{tf}_features.csv",
                 f"{sym_nosl}{tf}.csv",
             ]
-            # Search both exact case and lower-case filenames
             candidates: List[str] = []
             for pat in patterns:
                 candidates.extend(glob.glob(os.path.join(data_dir, pat)))
                 candidates.extend(glob.glob(os.path.join(data_dir, pat.lower())))
 
-            # Prefer files with "_features" in name, then any
             if candidates:
+                # Prefer files with "_features" in name, then any
                 candidates.sort(key=lambda p: ("_features" not in os.path.basename(p), os.path.basename(p)))
                 return candidates[0]
             return None
         except Exception:
             return None
-
 
     def _initialize_technical_indicators(self) -> None:
         """Prepare indicator dicts and rolling buffers per symbol."""
@@ -354,7 +329,7 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
     # Public API
     # ─────────────────────────────────────────────────────────────
     async def calculate_confidence(self, action: Optional[Dict[str, Any]] = None, **inputs) -> float:
-        """Data quality/availability diagnostic score."""
+        """Data quality/availability diagnostic score (internal, not provided on bus)."""
         try:
             if not self.current_bars:
                 return 0.0
@@ -380,15 +355,13 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         }
 
     async def process(self, **inputs) -> Dict[str, Any]:
-        """Advance data (if due) and return a full snapshot."""
+        """Advance data (if due) and return a full snapshot adhering strictly to the contract."""
         t0 = time.time()
         try:
             now = time.time()
             if now - self._last_update_ts >= self.cfg.update_frequency:
-                updated: List[str] = []
                 for sym in self.cfg.supported_symbols:
-                    if self._advance_symbol_data(sym):
-                        updated.append(sym)
+                    self._advance_symbol_data(sym)
                 self._update_count += 1
                 self._last_update_ts = now
                 self._update_session_labels()
@@ -403,7 +376,7 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             return self._empty_snapshot(error=str(e))
 
     # ─────────────────────────────────────────────────────────────
-    # Snapshot builders
+    # Snapshot builders (Contract-clean)
     # ─────────────────────────────────────────────────────────────
     def _build_snapshot(self) -> Dict[str, Any]:
         # Multi-TF window from actual files (no synthesis)
@@ -478,96 +451,100 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                                     max(1e-9, market_data[s]["close"])) if s in market_data else 0.0,
             } for s in self.cfg.supported_symbols
         }
-        vol_vals = [v["volatility"] for v in vol_data.values() if np.isfinite(v["volatility"])]
-        volatility_index = float(np.clip(np.mean(vol_vals), 0.0, 1.0)) if vol_vals else 0.0
+        # Normalize volatility to a coarse level for UI/consumers
+        vol_level = "high" if any(v.get("volatility", 0.0) > 0.02 for v in vol_data.values()) else \
+                    ("medium" if any(v.get("volatility", 0.0) > 0.01 for v in vol_data.values()) else "low")
 
-        # Market context (informative only; not authoritative risk/regime)
+        # Informative session/market context (allowed top-level key)
         market_context = {
-            "volatility_hint": "high" if volatility_index > 0.02 else ("medium" if volatility_index > 0.01 else "low"),
+            "volatility_hint": vol_level,
             "market_hours": self._is_market_hours(),
             "session_human": self.trading_session,
-            "session_canonical": self._session_canonical(),
-        }
-
-        # Provider health (real counters only)
-        health = {
-            "success_rate": float(self._success / max(1, self._success + self._fail)),
-            "avg_processing_time_ms": float(np.mean(self._proc_times)) if self._proc_times else 0.0,
-            "last_update": datetime.datetime.utcnow().isoformat(),
-            "update_count": int(self._update_count),
-            "symbols_loaded": int(len(self.data_files)),
-            "timeframes_loaded": int(sum(len(v) for v in self.data_files.values())),
         }
 
         ts_iso = (self.current_timestamp or datetime.datetime.utcnow()).isoformat()
-        return {
-            "market_data": market_data,
-            "price_data": price_data,
-            "ohlcv_data": ohlcv_data,
+
+        # Build contract-clean snapshot (ONLY keys declared in the contract)
+        snapshot: Dict[str, Any] = {
+            # Required contract outputs
+            "alerts": [],
             "bid_ask_data": bid_ask_data,
-            "prices": {s: price_data[s]["last"] for s in price_data},
-            "symbols": list(self.cfg.supported_symbols),
-            "timestamp": ts_iso,
-
-            "technical_indicators": {s: {k: float(v) for k, v in d.items()} for s, d in self.technical_indicators.items()},
+            "economic_calendar": [],
+            "environment": {},
+            "environment_config": {},
+            "historical_prices": multi_tf,         # alias for compatibility
             "indicators": {s: {k: float(v) for k, v in d.items()} for s, d in self.technical_indicators.items()},
-
-            "volatility_data": vol_data,
-            "volatility": {s: float(self.technical_indicators[s].get("atr", 0.0)) for s in self.cfg.supported_symbols},
-            "volatility_index": volatility_index,
-
-            "multi_timeframe_data": multi_tf,
-            "historical_prices": multi_tf,  # alias for compatibility
-
+            "input1": {},
+            "input2": {},
+            "learning_context": {},
+            "learning_status": {},
+            "macro_data": {},
+            "market_conditions": {},
             "market_context": market_context,
-
-            # Informative session descriptors (not owners of risk)
-            "trading_session": self.trading_session,
+            "market_data": market_data,
+            "market_liquidity": {},
+            "multi_timeframe_data": multi_tf,
+            "ohlcv_data": ohlcv_data,
+            "portfolio_metrics": {},
+            "price_data": price_data,
+            "prices": {s: price_data[s]["last"] for s in price_data},
             "session_type": self.session_type,
-            "session_canonical": self._session_canonical(),
-
-            # Provider health
-            "data_provider_health": health,
+            "step_data": {},
+            "step_idx": int(self._update_count),
+            "strategy_status": {},
+            "symbols": list(self.cfg.supported_symbols),
+            "technical_indicators": {s: {k: float(v) for k, v in d.items()} for s, d in self.technical_indicators.items()},
+            "timestamp": ts_iso,
+            "trading_session": self.trading_session,
+            "volatility": {s: float(self.technical_indicators[s].get("atr", 0.0)) for s in self.cfg.supported_symbols},
+            "volatility_data": vol_data,
+            "volatility_level": vol_level,
         }
+        return snapshot
 
     def _empty_snapshot(self, error: Optional[str] = None) -> Dict[str, Any]:
         """Return a schema-complete but empty snapshot (no fabricated values)."""
         now = datetime.datetime.utcnow().isoformat()
         empty_prices: Dict[str, Any] = {}
-        return {
-            "market_data": {},
-            "price_data": {},
-            "ohlcv_data": {},
+        snapshot: Dict[str, Any] = {
+            "alerts": [],
             "bid_ask_data": {},
-            "prices": empty_prices,
-            "symbols": list(self.cfg.supported_symbols),
-            "timestamp": now,
-            "technical_indicators": {s: dict(self.technical_indicators.get(s, {})) for s in self.cfg.supported_symbols},
-            "indicators": {s: dict(self.technical_indicators.get(s, {})) for s in self.cfg.supported_symbols},
-            "volatility_data": {},
-            "volatility": {},
-            "volatility_index": 0.0,
-            "multi_timeframe_data": {},
+            "economic_calendar": [],
+            "environment": {},
+            "environment_config": {},
             "historical_prices": {},
+            "indicators": {s: dict(self.technical_indicators.get(s, {})) for s in self.cfg.supported_symbols},
+            "input1": {},
+            "input2": {},
+            "learning_context": {},
+            "learning_status": {},
+            "macro_data": {},
+            "market_conditions": {},
             "market_context": {
                 "volatility_hint": "low",
                 "market_hours": self._is_market_hours(),
                 "session_human": self.trading_session,
-                "session_canonical": self._session_canonical(),
             },
-            "trading_session": self.trading_session,
+            "market_data": {},
+            "market_liquidity": {},
+            "multi_timeframe_data": {},
+            "ohlcv_data": {},
+            "portfolio_metrics": {},
+            "price_data": {},
+            "prices": empty_prices,
             "session_type": self.session_type,
-            "session_canonical": self._session_canonical(),
-            "data_provider_health": {
-                "success_rate": float(self._success / max(1, self._success + self._fail)),
-                "avg_processing_time_ms": float(np.mean(self._proc_times)) if self._proc_times else 0.0,
-                "last_update": now,
-                "update_count": int(self._update_count),
-                "symbols_loaded": int(len(self.data_files)),
-                "timeframes_loaded": int(sum(len(v) for v in self.data_files.values())) if self.data_files else 0,
-                "error": error or "",
-            },
+            "step_data": {},
+            "step_idx": int(self._update_count),
+            "strategy_status": {},
+            "symbols": list(self.cfg.supported_symbols),
+            "technical_indicators": {s: dict(self.technical_indicators.get(s, {})) for s in self.cfg.supported_symbols},
+            "timestamp": now,
+            "trading_session": self.trading_session,
+            "volatility": {},
+            "volatility_data": {},
+            "volatility_level": "low",
         }
+        return snapshot
 
     # ─────────────────────────────────────────────────────────────
     # Utilities

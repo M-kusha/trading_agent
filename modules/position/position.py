@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Awaitable, Dict, List, Optional, Tuple, TypeVar, Union, cast
 
+from modules.contracts import module_args
 import numpy as np
 
 # Optional live-broker connector
@@ -39,7 +40,6 @@ from modules.utils.audit_utils import RotatingLogger, format_operator_message, A
 
 # Module-level shared logger to avoid class-decorator type inference issues
 _PM_SHARED_LOGGER: Optional[RotatingLogger] = None
-
 
 
 # ─────────────────────────────────────────────────────────
@@ -106,51 +106,13 @@ class PositionDecisionResult:
     context: SignalContext
 
 
-@module(
-    name="PositionManager",
-    version="3.2.0",
-    category="position",
-    provides=[
-        "balance",
-        "current_pnl",
-        "current_positions",
-        "equity",
-        "execution_data",
-        "order_data",
-        "portfolio_state",
-        "position_health",
-        "recent_trades",
-        "trades",
-    ],
-    requires=[
-        "market_data",
-        "market_context",
-        "market_conditions",
-        "market_regime",
-        "price_data",
-        "prices",
-        "indicators",
-        "technical_indicators",
-        "volatility_data",
-        "instrument_signals",
-        "portfolio_metrics",
-        "market_state",
-        "environment_config",
-        "risk_score",
-        "time_risk_analysis",
-        "correlation_matrix",
-        "liquidity_capabilities",
-        "liquidity_score",
-        "market_liquidity",
-    ],
+@module(**module_args(
+    "PositionManager",
     description="Advanced position management with dynamic risk scaling and portfolio optimization",
-    thesis_required=True,
-    explainable=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    is_voting_member=True,
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class PositionManager(
     BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin
 ):
@@ -218,7 +180,6 @@ class PositionManager(
         )
         self._flush_logs()  # <-- add this
 
-
     def _flush_logs(self) -> None:
         """Safely flush shared logger buffers to disk (no-throw)."""
         try:
@@ -283,46 +244,45 @@ class PositionManager(
         )
 
     def _initialize_advanced_systems(self) -> None:
-            """Initialize advanced systems for position management"""
-            self.smart_bus = InfoBusManager.get_instance()
+        """Initialize advanced systems for position management"""
+        self.smart_bus = InfoBusManager.get_instance()
 
-            # ONE shared logger across instances → one header per process, single file, immediate writes
-            global _PM_SHARED_LOGGER
-            if _PM_SHARED_LOGGER is None:
-                cfg = AuditConfiguration(
-                    log_level="DEBUG",          # use "DEBUG" while tuning if you want more chatter
-                    async_logging=False,       # <- key: write immediately, no background buffer
-                    flush_interval_seconds=1,
-                    buffer_size=200,
-                    info_bus_integration=True,
-                    publish_to_bus=True,
-                )
-                _PM_SHARED_LOGGER = RotatingLogger(
-                    name="PositionManager",
-                    log_path="logs/position/position.log",   # <- single target file for everything
-                    max_lines=1_000_000,                     # ignored for direct path rotation, but harmless
-                    operator_mode=True,
-                    plain_english=True,                      # gives you the "[LOG] ..." style prefix
-                    info_bus_aware=True,
-                    config=cfg,
-                )
+        # ONE shared logger across instances → one header per process, single file, immediate writes
+        global _PM_SHARED_LOGGER
+        if _PM_SHARED_LOGGER is None:
+            cfg = AuditConfiguration(
+                log_level="DEBUG",          # use "DEBUG" while tuning if you want more chatter
+                async_logging=False,       # <- key: write immediately, no background buffer
+                flush_interval_seconds=1,
+                buffer_size=200,
+                info_bus_integration=True,
+                publish_to_bus=True,
+            )
+            _PM_SHARED_LOGGER = RotatingLogger(
+                name="PositionManager",
+                log_path="logs/position/position.log",   # <- single target file for everything
+                max_lines=1_000_000,                     # ignored for direct path rotation, but harmless
+                operator_mode=True,
+                plain_english=True,                      # gives you the "[LOG] ..." style prefix
+                info_bus_aware=True,
+                config=cfg,
+            )
 
-            self.logger = _PM_SHARED_LOGGER
+        self.logger = _PM_SHARED_LOGGER
 
-            self.error_pinpointer = ErrorPinpointer()
-            self.error_handler = create_error_handler("PositionManager", self.error_pinpointer)
-            self.english_explainer = EnglishExplainer()
-            self.system_utilities = SystemUtilities()
-            self.performance_tracker = PerformanceTracker()
+        self.error_pinpointer = ErrorPinpointer()
+        self.error_handler = create_error_handler("PositionManager", self.error_pinpointer)
+        self.english_explainer = EnglishExplainer()
+        self.system_utilities = SystemUtilities()
+        self.performance_tracker = PerformanceTracker()
 
-            # Circuit breaker for position operations
-            self.circuit_breaker = {
-                "failures": 0,
-                "last_failure": 0,
-                "state": "CLOSED",
-                "threshold": self.C.position_circuit_breaker_threshold,
-            }
-
+        # Circuit breaker for position operations
+        self.circuit_breaker = {
+            "failures": 0,
+            "last_failure": 0,
+            "state": "CLOSED",
+            "threshold": self.C.position_circuit_breaker_threshold,
+        }
 
     def _start_monitoring(self) -> None:
         """Start background monitoring for position management (idempotent)."""
@@ -529,7 +489,7 @@ class PositionManager(
     # Main processing entry
     # ─────────────────────────────────────────────────────────
     async def process(self, **inputs: Any) -> Dict[str, Any]:
-        """Main processing method - update bus + provide feeds for consumers."""
+        """Main processing method — must output all contract 'provides' keys and a thesis."""
         start_time = time.time()
         try:
             # 1) Build market snapshot from inputs first, then overlay bus snapshot via deep merge
@@ -564,8 +524,7 @@ class PositionManager(
                         "decision_quality": self._decision_quality_score,
                     },
                     "position_health": pos_health,
-                    "risk_metrics": {},
-                    "position_analysis": {"note": fb["thesis"]},
+                    "position_analysis": {"note": fb["thesis"], "thesis": fb["thesis"]},
                     "positions": copy.deepcopy(self.open_positions),
                     "pending_orders": [],
                     "position_data": {},
@@ -577,7 +536,8 @@ class PositionManager(
                     "current_positions": copy.deepcopy(self.open_positions),
                     "execution_data": {},
                     "order_data": {},
-                    "_thesis": fb["thesis"],
+                    "_thesis": fb["thesis"],           # ← required by module system
+                    "thesis": fb["thesis"],            # ← optional (kept for UIs)
                     "processing_time_ms": 0.0,
                 }
 
@@ -608,9 +568,9 @@ class PositionManager(
                 balance=balance,
                 equity=equity,
                 current_pnl=current_pnl,
-                trades=[],  # plug real trades when available
-                execution_data={},  # attach per-step exec diagnostics if you have them
-                order_data={},  # attach any orders placed/cancelled this step
+                trades=[],
+                execution_data={},
+                order_data={},
             )
 
             # 7) Contract output
@@ -644,12 +604,12 @@ class PositionManager(
                     "decision_quality": float(self._decision_quality_score),
                 },
                 "position_health": pos_health,
-                "risk_metrics": aggregated_risks,
                 "position_analysis": {
                     "instruments": list(self.instruments),
                     "decisions_count": len(decisions),
                     "exposure_ratio": float(self._total_exposure_ratio),
                     "risk_management_score": float(self._risk_management_score),
+                    "thesis": thesis,
                 },
                 "positions": copy.deepcopy(self.open_positions),
                 "pending_orders": [],
@@ -662,8 +622,10 @@ class PositionManager(
                 "current_positions": copy.deepcopy(self.open_positions),
                 "execution_data": {},
                 "order_data": {},
-                "_thesis": thesis,
+                "_thesis": thesis,                    # ← required by module system
+                "thesis": thesis,                     # ← optional (kept for UIs)
                 "processing_time_ms": processing_time,
+                "risk_metrics": aggregated_risks,     # optional diagnostics
             }
 
         except Exception as e:  # noqa: BLE001
@@ -693,8 +655,7 @@ class PositionManager(
                     "decision_quality": self._decision_quality_score,
                 },
                 "position_health": pos_health,
-                "risk_metrics": {},
-                "position_analysis": {"note": fb["thesis"]},
+                "position_analysis": {"note": fb["thesis"], "thesis": fb["thesis"]},
                 "positions": copy.deepcopy(self.open_positions),
                 "pending_orders": [],
                 "position_data": {},
@@ -706,7 +667,8 @@ class PositionManager(
                 "current_positions": copy.deepcopy(self.open_positions),
                 "execution_data": {},
                 "order_data": {},
-                "_thesis": fb["thesis"],
+                "_thesis": fb["thesis"],              # ← required by module system
+                "thesis": fb["thesis"],               # ← optional (kept for UIs)
                 "processing_time_ms": 0.0,
             }
 
@@ -1052,15 +1014,13 @@ class PositionManager(
     async def _generate_position_thesis(
         self, market_data: Dict[str, Any], decisions: Dict[str, PositionDecisionResult]
     ) -> str:
-        """Generate comprehensive thesis for position decisions"""
-        return f"""Position Management Analysis:
-
-Portfolio Health: {self._portfolio_health_score:.2f}
-Total Exposure: {self._total_exposure_ratio:.1%}
-Active Decisions: {len(decisions)}
-Risk Management: {self._risk_management_score:.2f}
-
-Key factors considered: market regime, risk score, portfolio balance, and signal quality."""
+        """Generate concise thesis for operator UIs."""
+        return (
+            f"PortfolioHealth={self._portfolio_health_score:.2f} | "
+            f"Exposure={self._total_exposure_ratio:.1%} | "
+            f"Decisions={len(decisions)} | "
+            f"RiskMgmt={self._risk_management_score:.2f}"
+        )
 
     def _create_fallback_response(self, reason: str) -> Dict[str, Any]:
         """Create fallback response for error conditions"""
@@ -1241,8 +1201,8 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
 
         # Health components
         dd_health = max(0.0, 1.0 - drawdown * 2.0)
-        exposure_health = max(0.0, 1.0 - exposure_ratio / self.C.max_instrument_concentration)
-        streak_health = max(0.1, 1.0 - self.consecutive_losses / self.C.max_consecutive_losses)
+        exposure_health = max(0.0, 1.0 - exposure_ratio / max(self.C.max_instrument_concentration, 1e-9))
+        streak_health = max(0.1, 1.0 - self.consecutive_losses / max(self.C.max_consecutive_losses, 1))
 
         # Canonical risk first
         risk_level = 0.0
@@ -1550,8 +1510,8 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
     def _calculate_portfolio_health_score(self, context: SignalContext) -> float:
         """Calculate overall portfolio health score"""
         drawdown_component = max(0.0, 1.0 - context.drawdown * 3.0)
-        exposure_component = max(0.0, 1.0 - context.current_exposure / self.C.max_instrument_concentration)
-        streak_component = max(0.1, 1.0 - self.consecutive_losses / self.C.max_consecutive_losses)
+        exposure_component = max(0.0, 1.0 - context.current_exposure / max(self.C.max_instrument_concentration, 1e-9))
+        streak_component = max(0.1, 1.0 - self.consecutive_losses / max(self.C.max_consecutive_losses, 1))
         liquidity_component = context.liquidity_score
 
         return (drawdown_component + exposure_component + streak_component + liquidity_component) / 4.0
@@ -1598,7 +1558,8 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
         risk_factors["drawdown"] = min(context.drawdown * 2.0, 0.8)
 
         # Concentration risk
-        risk_factors["concentration"] = min(context.current_exposure / self.C.max_instrument_concentration, 0.9)
+        denom = max(self.C.max_instrument_concentration, 1e-9)
+        risk_factors["concentration"] = min(context.current_exposure / denom, 0.9)
 
         # Liquidity risk
         risk_factors["liquidity"] = max(0.0, 1.0 - context.liquidity_score)
@@ -2532,7 +2493,6 @@ Key factors considered: market regime, risk score, portfolio balance, and signal
                     )
                 )
                 self._flush_logs()  # write proposals immediately
-
 
                 signals.extend([float(intensity_val), float(duration)])
 

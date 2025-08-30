@@ -3,6 +3,7 @@
 # Enhanced Visualization Interface with Modern Architecture
 # ─────────────────────────────────────────────────────────────
 
+from modules.contracts import module_args
 import numpy as np
 import datetime
 import time
@@ -20,28 +21,13 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-@module(
-    name="VisualizationInterface",
-    version="3.0.0",
-    category="visualization",
-    provides=[
-        "visualization_data", "performance_metrics", "dashboard_data", "alert_timeline",
-        "analytics_reports", "streaming_data", "system_status"
-    ],
-    requires=[
-        "market_data", "recent_trades", "positions", "risk_metrics", "consensus_data",
-        "module_performance", "system_alerts", "trading_performance"
-    ],
-    description="Central data aggregator for visualization and dashboard systems",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
+@module(**module_args(
+    "VisualizationInterface",
+    description="Modern visualization interface with comprehensive SmartInfoBus integration.",
     error_handling=True,
-    timeout_ms=100,
-    priority=7,
-    explainable=True,
-    hot_reload=True
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     Modern visualization interface with comprehensive SmartInfoBus integration.

@@ -11,6 +11,7 @@ import contextlib
 import threading
 import warnings
 import copy
+from modules.contracts import module_args
 import numpy as np
 import torch
 import torch.nn as nn
@@ -120,19 +121,13 @@ class WorldModelConfig:
         merged = {**defaults, **(d or {})}
         return WorldModelConfig(**merged)
 
-
-@module(
-    name="EnhancedWorldModel",
-    version="4.1.0",  # bump
-    category="models",
-    provides=["market_predictions", "scenario_generation", "world_model_analytics", "prediction_confidence"],
-    requires=["market_data"],  # keep minimal; everything else is soft/optional
-    description="Advanced world model for market simulation with intelligent adaptation and comprehensive analytics",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
-    error_handling=True
-)
+@module(**module_args(
+    "EnhancedWorldModel",
+    description="Deterministic multi-window feature extraction with circuit breaker, monitoring, and explainability.",
+    error_handling=True,
+    hot_reload=True,
+    timeout_ms=120,
+))
 class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin, nn.Module):
     """
     [ROCKET] Advanced world model for market simulation with SmartInfoBus integration.

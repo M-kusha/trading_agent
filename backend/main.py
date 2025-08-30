@@ -47,6 +47,73 @@ logging.basicConfig(
 )
 logger = logging.getLogger("TradingDashboard")
 
+
+def _bootstrap_debug_logging() -> None:
+    """Force DEBUG verbosity globally and for SmartInfoBus (safe, non-fatal)."""
+    try:
+        # Root + common libraries
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.DEBUG)
+        for h in root_logger.handlers:
+            try:
+                h.setLevel(logging.DEBUG)
+            except Exception:
+                pass
+
+        # Our app logger
+        logger.setLevel(logging.DEBUG)
+
+        # Uvicorn loggers if present
+        for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+            try:
+                _l = logging.getLogger(name)
+                _l.setLevel(logging.DEBUG)
+            except Exception:
+                pass
+
+        # SmartInfoBus singleton (if already importable/initialized)
+        try:
+            from modules.utils.info_bus import InfoBusManager  # type: ignore
+            bus = InfoBusManager.get_instance()
+            # Update config and internal logger
+            try:
+                bus.config.update({"debug_mode": True, "log_level": "DEBUG"})
+            except Exception:
+                pass
+            try:
+                # Be explicit about I/O verbosity
+                setattr(bus, "_verbose_io", True)
+            except Exception:
+                pass
+            try:
+                # Elevate RotatingLogger to DEBUG
+                if hasattr(bus, "logger") and hasattr(bus.logger, "set_level"):
+                    bus.logger.set_level("DEBUG")
+            except Exception:
+                pass
+        except Exception:
+            # Defer silently if not available
+            pass
+
+        # Elevate audit/logging subsystem if available
+        try:
+            from modules.utils.audit_utils import get_audit_system  # type: ignore
+            audit = get_audit_system()
+            if hasattr(audit, "audit_logger") and hasattr(audit.audit_logger, "set_level"):
+                audit.audit_logger.set_level("DEBUG")
+            if hasattr(audit, "operator_logger") and hasattr(audit.operator_logger, "set_level"):
+                audit.operator_logger.set_level("DEBUG")
+        except Exception:
+            pass
+
+        logger.debug("[BOOT] Debug logging bootstrap applied (global + SmartInfoBus)")
+    except Exception:
+        # Never fail startup on logging tweaks
+        try:
+            logger.warning("[BOOT] Failed to apply debug bootstrap; continuing with defaults")
+        except Exception:
+            pass
+
 # Initialize FastAPI
 app = FastAPI(
     title="AI Trading Dashboard API",
@@ -1272,6 +1339,9 @@ async def startup_event():
     for dir_path in directories:
         Path(dir_path).mkdir(parents=True, exist_ok=True)
     
+    # Force DEBUG-level verbosity for better diagnostics
+    _bootstrap_debug_logging()
+
     # Start training metrics WebSocket server
     asyncio.create_task(training_metrics_server.start())
     
@@ -2073,7 +2143,7 @@ if __name__ == "__main__":
         "main:app",
         host="0.0.0.0",
         port=8080,
-        reload=True,
-        log_level="info",
+    reload=True,
+    log_level="debug",
         access_log=True
     )

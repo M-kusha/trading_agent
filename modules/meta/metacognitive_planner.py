@@ -7,6 +7,7 @@
 import asyncio
 import time
 import threading
+from modules.contracts import module_args
 import numpy as np
 from typing import Dict, Any, List, Optional, Tuple
 from collections import deque, defaultdict
@@ -54,19 +55,13 @@ class PlanningConfig:
     risk_budget: float = 0.10
 
 
-@module(
-    name="MetaCognitivePlanner",
-    version="3.0.1",
-    category="meta",
-    provides=["planning_status", "strategic_insights", "tactical_recommendations", "adaptation_metrics"],
-    # Keep hard requires minimal to avoid mismatches; the rest are soft reads with fallbacks.
-    requires=["market_data"],
+@module(**module_args(
+    "MetaCognitivePlanner",
     description="Advanced metacognitive planner with strategic planning and market adaptation",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
-    error_handling=True
-)
+    error_handling=True,
+    hot_reload=True,
+    timeout_ms=120,
+))
 
 class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """

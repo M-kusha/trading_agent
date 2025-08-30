@@ -17,6 +17,7 @@ from datetime import datetime
 from enum import Enum
 
 from modules.core.module_base import BaseModule, module
+from modules.contracts import module_args
 from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin
 from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
 from modules.utils.info_bus import InfoBusManager
@@ -156,19 +157,12 @@ class AgentPerformanceTracker:
 
 
 @module(
-    name="MetaRLController",
-    version="3.0.0",
-    category="meta",
-    provides=[
-        "controller_status", "agents_performance", "controller_training_overview", "automation_status",
-        "trading_signals", "trading_signal", "meta_signals", "agent_decisions"
-    ],
-    requires=["market_data"],
-    description="Advanced meta RL controller with intelligent automation and agent management",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
-    error_handling=True
+    **module_args(
+        "MetaRLController",
+        description="Advanced meta RL controller with intelligent automation and agent management",
+        error_handling=True,
+        hot_reload=True
+    )
 )
 class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
@@ -183,8 +177,9 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         
         # Store config first (preservation pattern)
         self.controller_config = config or ControllerConfig()
-        self.config = self.controller_config  # Set config early for init methods
-        
+        # Keep BaseModule.config as a dict for typing compatibility
+        self.config = dict(self.controller_config.__dict__)  # Set config early for init methods
+
         # Initialize advanced systems before super().__init__()
         self._initialize_advanced_systems()
         
@@ -199,13 +194,13 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         
         super().__init__()
         
-        # Restore our config after BaseModule initialization (prevents dict conversion)
-        self.config = self.controller_config
+        # Restore config dict after BaseModule initialization
+        self.config = dict(self.controller_config.__dict__)
         
         self.logger.info(
             format_operator_message(
                 "[TARGET]", "META_RL_CONTROLLER_INITIALIZED",
-                details=f"Obs size: {self.config.obs_size}, Method: {self.config.method}",
+                details=f"Obs size: {self.controller_config.obs_size}, Method: {self.controller_config.method}",
                 result="Meta RL automation ready",
                 context="meta_rl_control"
             )
@@ -232,7 +227,7 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
             'failures': 0,
             'last_failure': 0,
             'state': 'CLOSED',
-            'threshold': self.config.circuit_breaker_threshold
+            'threshold': self.controller_config.circuit_breaker_threshold
         }
         
         # Health monitoring
@@ -243,21 +238,21 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         """Initialize genome-based parameters"""
         if genome:
             self.genome = {
-                "obs_size": int(genome.get("obs_size", self.config.obs_size)),
-                "act_size": int(genome.get("act_size", self.config.act_size)),
-                "method": str(genome.get("method", self.config.method)),
-                "profit_target": float(genome.get("profit_target", self.config.profit_target)),
-                "training_episodes": int(genome.get("training_episodes", self.config.training_episodes)),
-                "validation_episodes": int(genome.get("validation_episodes", self.config.validation_episodes))
+                "obs_size": int(genome.get("obs_size", self.controller_config.obs_size)),
+                "act_size": int(genome.get("act_size", self.controller_config.act_size)),
+                "method": str(genome.get("method", self.controller_config.method)),
+                "profit_target": float(genome.get("profit_target", self.controller_config.profit_target)),
+                "training_episodes": int(genome.get("training_episodes", self.controller_config.training_episodes)),
+                "validation_episodes": int(genome.get("validation_episodes", self.controller_config.validation_episodes))
             }
         else:
             self.genome = {
-                "obs_size": self.config.obs_size,
-                "act_size": self.config.act_size,
-                "method": self.config.method,
-                "profit_target": self.config.profit_target,
-                "training_episodes": self.config.training_episodes,
-                "validation_episodes": self.config.validation_episodes
+                "obs_size": self.controller_config.obs_size,
+                "act_size": self.controller_config.act_size,
+                "method": self.controller_config.method,
+                "profit_target": self.controller_config.profit_target,
+                "training_episodes": self.controller_config.training_episodes,
+                "validation_episodes": self.controller_config.validation_episodes
             }
 
     def _initialize_controller_state(self):
@@ -516,15 +511,19 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         except Exception:
             confidence_val = 0.5
 
+        # Keep ONLY declared top-level keys; tuck extra details into meta_signals
+        meta_signals: Dict[str, Any] = {}
+        if performance_result:
+            meta_signals["internal_performance"] = performance_result
+
         results: Dict[str, Any] = {
-            **performance_result,
             "controller_status": controller_status,
             "agents_performance": agents_performance,                     # ✅ renamed summary
             "controller_training_overview": controller_training_overview, # ✅ renamed summary
             "automation_status": automation_status,
             "trading_signals": [],
             "trading_signal": {"action": "hold", "confidence": confidence_val},
-            "meta_signals": {},
+            "meta_signals": meta_signals,
             "agent_decisions": [],
             "_thesis": thesis,
         }
@@ -645,7 +644,7 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
             
             # Check for convergence
             agent_metrics = self.performance_tracker_agent.agent_metrics[self.active_agent_name]
-            if agent_metrics['convergence_score'] > self.config.min_convergence_threshold:
+            if agent_metrics['convergence_score'] > self.controller_config.min_convergence_threshold:
                 self.training_convergence_count += 1
             else:
                 self.training_convergence_count = max(0, self.training_convergence_count - 1)
@@ -913,34 +912,31 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
     def _evaluate_training_transition(self, controller_data: Dict[str, Any], duration: float) -> Optional[Dict[str, Any]]:
         """Evaluate transition from training mode"""
         # Emergency conditions
-        if (self.consecutive_poor_episodes > 50 or duration > 3600):  # 1 hour timeout
+        if self.consecutive_poor_episodes > 50 or duration > 3600:  # 1 hour timeout
             return {
                 'target_mode': ControllerMode.EMERGENCY_STOP,
                 'reason': f'Training failure: poor_episodes={self.consecutive_poor_episodes}',
                 'priority': 'critical'
             }
-        
+
         # Success conditions
-        if (self.current_episode >= self.config.min_training_episodes and
-            self.training_convergence_count >= 5):
-            
+        if self.current_episode >= self.controller_config.min_training_episodes and self.training_convergence_count >= 5:
             agent_metrics = self.performance_tracker_agent.agent_metrics[self.active_agent_name]
-            if agent_metrics['convergence_score'] > self.config.min_convergence_threshold:
+            if agent_metrics['convergence_score'] > self.controller_config.min_convergence_threshold:
                 return {
                     'target_mode': ControllerMode.VALIDATION,
                     'reason': f'Training converged: episodes={self.current_episode}',
                     'priority': 'normal'
                 }
-        
+
         # Optimization trigger
-        if (self.current_episode > 0 and 
-            self.current_episode % self.config.optimization_interval == 0):
+        if self.current_episode > 0 and self.current_episode % self.controller_config.optimization_interval == 0:
             return {
                 'target_mode': ControllerMode.OPTIMIZATION,
                 'reason': f'Optimization interval reached: {self.current_episode} episodes',
                 'priority': 'low'
             }
-        
+
         return None
 
     def _evaluate_validation_transition(self, controller_data: Dict[str, Any], duration: float) -> Optional[Dict[str, Any]]:
@@ -960,7 +956,7 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
                 r['performance'].get('win_rate', 0.5) for r in recent_results
             ])
             
-            if avg_performance >= self.config.validation_success_rate:
+            if avg_performance >= self.controller_config.validation_success_rate:
                 return {
                     'target_mode': ControllerMode.LIVE_TRADING,
                     'reason': f'Validation successful: avg_performance={avg_performance:.3f}',
@@ -978,21 +974,21 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
     def _evaluate_live_trading_transition(self, controller_data: Dict[str, Any], duration: float) -> Optional[Dict[str, Any]]:
         """Evaluate transition from live trading mode"""
         # Emergency stop conditions
-        if self.live_session_pnl <= self.config.emergency_stop_loss:
+        if self.live_session_pnl <= self.controller_config.emergency_stop_loss:
             return {
                 'target_mode': ControllerMode.EMERGENCY_STOP,
                 'reason': f'Emergency loss threshold: €{self.live_session_pnl:.2f}',
                 'priority': 'critical'
             }
-        
+
         # Retraining conditions
-        if self.live_session_pnl <= self.config.retraining_trigger_loss:
+        if self.live_session_pnl <= self.controller_config.retraining_trigger_loss:
             return {
                 'target_mode': ControllerMode.RETRAINING,
                 'reason': f'Retraining loss threshold: €{self.live_session_pnl:.2f}',
                 'priority': 'high'
             }
-        
+
         # Success conditions
         if self.live_session_pnl >= self.genome["profit_target"]:
             return {
@@ -1000,7 +996,7 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
                 'reason': f'Profit target achieved: €{self.live_session_pnl:.2f}',
                 'priority': 'normal'
             }
-        
+
         # Daily session management
         if duration > 28800:  # 8 hours
             return {
@@ -1008,21 +1004,19 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
                 'reason': 'Daily session complete',
                 'priority': 'normal'
             }
-        
+
         return None
 
     def _evaluate_retraining_transition(self, controller_data: Dict[str, Any], duration: float) -> Optional[Dict[str, Any]]:
         """Evaluate transition from retraining mode"""
         # Similar to training but faster
-        if (self.current_episode >= self.config.min_training_episodes // 2 and
-            self.training_convergence_count >= 3):
-            
+        if self.current_episode >= self.controller_config.min_training_episodes // 2 and self.training_convergence_count >= 3:
             return {
                 'target_mode': ControllerMode.VALIDATION,
                 'reason': f'Retraining complete: episodes={self.current_episode}',
                 'priority': 'normal'
             }
-        
+
         # Timeout protection
         if duration > 1800:  # 30 minutes
             return {
@@ -1030,7 +1024,7 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
                 'reason': 'Retraining timeout',
                 'priority': 'critical'
             }
-        
+
         return None
 
     def _evaluate_optimization_transition(self, controller_data: Dict[str, Any], duration: float) -> Optional[Dict[str, Any]]:
@@ -1320,7 +1314,7 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
             return f"Controller thesis generation failed: {str(e)} - Meta RL control continuing"
 
     async def _update_controller_smart_bus(self, controller_result: Dict[str, Any], thesis: str):
-        """Update SmartInfoBus with controller results (summary keys only, no collisions)."""
+        """Update SmartInfoBus with controller results (ensure all declared provides are written)."""
         try:
             # Controller status (unchanged)
             controller_status = {
@@ -1360,6 +1354,21 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
             }
             self.smart_bus.set('automation_status', automation_status, module='MetaRLController',
                             thesis="Automation status and decision tracking")
+
+            # Also publish remaining declared provides consistently
+            trading_signals = controller_result.get('trading_signals', [])
+            trading_signal = controller_result.get('trading_signal', {"action": "hold", "confidence": 0.5})
+            meta_signals = controller_result.get('meta_signals', {})
+            agent_decisions = controller_result.get('agent_decisions', [])
+
+            self.smart_bus.set('trading_signals', trading_signals, module='MetaRLController',
+                               thesis="Controller aggregate trading signals")
+            self.smart_bus.set('trading_signal', trading_signal, module='MetaRLController',
+                               thesis="Controller primary trading signal")
+            self.smart_bus.set('meta_signals', meta_signals, module='MetaRLController',
+                               thesis="Controller meta signals and internal performance")
+            self.smart_bus.set('agent_decisions', agent_decisions, module='MetaRLController',
+                               thesis="Controller agent-level decisions")
 
         except Exception as e:
             self.logger.error(f"Failed to update SmartInfoBus: {e}")
@@ -1410,8 +1419,8 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         }
         return {
             'controller_status': controller_status,
-            'agent_performance': {'performance_summary': {}, 'best_agent': self.active_agent_name, 'agent_comparison': {}},
-            'training_metrics': {'training_history': [], 'validation_results': [], 'convergence_count': 0, 'poor_episodes': 0},
+            'agents_performance': {'performance_summary': {}, 'best_agent': self.active_agent_name, 'agent_comparison': {}},
+            'controller_training_overview': {'training_history': [], 'validation_results': [], 'convergence_count': 0, 'poor_episodes': 0},
             'automation_status': {'automation_metrics': getattr(self, 'automation_metrics', {}).copy() if hasattr(self, 'automation_metrics') else {}, 'mode_transitions': [], 'decision_history': []},
             'trading_signals': [],
             'trading_signal': {'action': 'hold', 'confidence': 0.5},
@@ -1467,8 +1476,8 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
         }
         return {
             'controller_status': controller_status,
-            'agent_performance': {'performance_summary': {}, 'best_agent': getattr(self, 'active_agent_name', 'unknown'), 'agent_comparison': {}},
-            'training_metrics': {'training_history': [], 'validation_results': [], 'convergence_count': 0, 'poor_episodes': 0},
+            'agents_performance': {'performance_summary': {}, 'best_agent': getattr(self, 'active_agent_name', 'unknown'), 'agent_comparison': {}},
+            'controller_training_overview': {'training_history': [], 'validation_results': [], 'convergence_count': 0, 'poor_episodes': 0},
             'automation_status': {'automation_metrics': getattr(self, 'automation_metrics', {}).copy() if hasattr(self, 'automation_metrics') else {}, 'mode_transitions': [], 'decision_history': []},
             'trading_signals': [],
             'trading_signal': {'action': 'hold', 'confidence': 0.0},
@@ -1487,7 +1496,7 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
                 
             # Check performance metrics
             if self.current_mode == ControllerMode.LIVE_TRADING:
-                if self.live_session_pnl < self.config.retraining_trigger_loss:
+                if self.live_session_pnl < self.controller_config.retraining_trigger_loss:
                     self._health_status = 'warning'
                 elif self.live_session_pnl > 0:
                     self._health_status = 'healthy'
@@ -1578,7 +1587,7 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
     def get_state(self) -> Dict[str, Any]:
         """Get module state for persistence"""
         return {
-            'config': self.config.__dict__,
+            'config': dict(self.controller_config.__dict__),
             'genome': self.genome.copy(),
             'current_mode': self.current_mode.value,
             'mode_start_time': self.mode_start_time.isoformat(),

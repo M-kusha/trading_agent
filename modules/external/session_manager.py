@@ -3,7 +3,7 @@
 # PRODUCTION-READY Session Manager (Pure, No Simulation)
 # Tracks session timing & system health without fabricating metrics
 # Pylance-clean: typed self.cfg (dataclass), pass dict to BaseModule
-# Provides only session/health context (no duplication with risk/data modules)
+# Provides only contract-listed keys (no extras)
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from dataclasses import dataclass, asdict
 from typing import Dict, Any, Optional, Deque
 from collections import deque
 
+from modules.contracts import module_args
 import numpy as np
 
 from modules.core.module_base import BaseModule, module
@@ -31,37 +32,20 @@ class SessionConfig:
     enable_error_pinpointing: bool = True
 
 
-@module(
-    name="SessionManager",
-    version="2.0.0",
-    category="external",
-    provides=[
-        "session_metrics",
-        "session_context",
-        "system_performance",
-        "system_health",
-        "system_alerts",
-        "trading_session",
-        "session_type",
-        "session_canonical",
-        "time_of_day",
-    ],
-    requires=[],               # root provider; does not depend on others
+@module(**module_args(
+    "SessionManager",
     description="Session timing and health context (no fabricated metrics, no duplication with risk/data modules).",
-    thesis_required=False,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-    is_voting_member=False,
-    explainable=False,
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     Responsibilities:
       - Track session lifecycle (start, duration).
-      - Expose human & canonical session labels aligned with TimeAwareRiskScaling.
-      - Maintain minimal health/performance counters (real counts only).
+      - Expose compact session/health/performance context.
       - Never generates synthetic PnL, votes, or risk/theme data.
+      - Strict contract discipline: only provides contract-listed top-level keys.
     """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
@@ -83,13 +67,12 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
         self.system_alerts = []  # list of {"level","message","timestamp"}
         self._last_health_check: float = time.time()
 
-        # Labels
+        # Labels (used inside session_context only)
         self.trading_session: str = "london"
         self.session_type: str = "normal"
 
     # BaseModule hook
     def _initialize(self) -> None:
-        # Nothing heavy: no fabricated metrics
         self._update_session_labels()
         self.logger.info("[OK] SessionManager initialized.")
 
@@ -97,7 +80,7 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
     # Utilities
     # ─────────────────────────────────────────────────────────────
     def _update_session_labels(self) -> None:
-        """Human session labels (UI only); canonical label is derived separately."""
+        """Human session labels (for nested session_context only)."""
         hour = datetime.datetime.utcnow().hour
         if 8 <= hour < 16:
             self.trading_session = "london"
@@ -130,7 +113,7 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
     # ─────────────────────────────────────────────────────────────
     async def calculate_confidence(self, action: Optional[Dict[str, Any]] = None, **inputs) -> float:
         """
-        Confidence here reflects recency of health checks and availability of basic counters.
+        Confidence reflects recency of health checks and availability of basic counters.
         No fabricated signals are used.
         """
         now = time.time()
@@ -148,7 +131,15 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
         }
 
     async def process(self, **inputs) -> Dict[str, Any]:
-        """Update session timestamps/labels and return a compact snapshot."""
+        """
+        Update session timestamps/labels and return a compact snapshot.
+
+        CONTRACT-ALIGNED TOP-LEVEL OUTPUTS ONLY:
+          consensus_data, emergency_mode, episode_data, episode_summary, expert_votes,
+          market_open, memory_usage, mistakes, module_performance, performance_data,
+          playbook_entries, playbook_memory, pnl_data, session_context, session_metrics,
+          system_alerts, system_health, system_performance, trading_result
+        """
         t0 = time.time()
         try:
             # Update labels/time
@@ -156,8 +147,9 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
             now = time.time()
             self._last_health_check = now
 
-            # Build outputs
+            # Core sections (real counters & timestamps only)
             duration = now - self.session_start_ts
+
             session_metrics = {
                 "session_id": self.session_id,
                 "duration": float(duration),
@@ -178,20 +170,35 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                 "alerts": list(self.system_alerts[-25:]),
             }
 
-            snapshot = {
-                "session_metrics": session_metrics,
-                "session_context": {
-                    "session_canonical": self._session_canonical(),
-                    "trading_session": self.trading_session,
-                    "session_type": self.session_type,
-                },
-                "system_performance": system_performance,
-                "system_health": system_health,
-                "system_alerts": list(self.system_alerts[-25:]),
+            # Nested session_context is permitted by contract
+            session_context = {
+                "session_canonical": self._session_canonical(),
                 "trading_session": self.trading_session,
                 "session_type": self.session_type,
-                "session_canonical": self._session_canonical(),
-                "time_of_day": datetime.datetime.utcnow().strftime("%H:%M:%S"),
+            }
+
+            # Build strictly contract-listed top-level keys
+            snapshot: Dict[str, Any] = {
+                "consensus_data": {},
+                "emergency_mode": False,
+                "episode_data": {},
+                "episode_summary": {},
+                "expert_votes": [],
+                "market_open": True,  # FX 24/5 neutral default (not a signal)
+                "memory_usage": {},
+                "mistakes": [],
+                "module_performance": {},
+                "performance_data": {},
+                "playbook_entries": [],
+                "playbook_memory": {},
+                "pnl_data": {},
+                "session_context": session_context,
+                "session_metrics": session_metrics,
+                "system_alerts": list(self.system_alerts[-25:]),
+                "system_health": system_health,
+                "system_performance": system_performance,
+                # added per contract (Environment reads this key)
+                "trading_result": {},
             }
 
             # Bookkeeping (real)
@@ -207,12 +214,36 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                 "message": f"process() exception: {str(e)[:200]}",
                 "timestamp": time.time(),
             })
+            # Still return contract-complete structure
             return {
+                "consensus_data": {},
+                "emergency_mode": False,
+                "episode_data": {},
+                "episode_summary": {},
+                "expert_votes": [],
+                "market_open": True,
+                "memory_usage": {},
+                "mistakes": [],
+                "module_performance": {},
+                "performance_data": {},
+                "playbook_entries": [],
+                "playbook_memory": {},
+                "pnl_data": {},
+                "session_context": {
+                    "session_canonical": self._session_canonical(),
+                    "trading_session": self.trading_session,
+                    "session_type": self.session_type,
+                },
                 "session_metrics": {
                     "session_id": self.session_id,
                     "duration": float(time.time() - self.session_start_ts),
                     "status": "error",
                     "start_time": datetime.datetime.utcfromtimestamp(self.session_start_ts).isoformat(),
+                },
+                "system_alerts": list(self.system_alerts[-25:]),
+                "system_health": {
+                    "status": "degraded",
+                    "alerts": list(self.system_alerts[-25:]),
                 },
                 "system_performance": {
                     "success_count": int(self._success),
@@ -221,13 +252,5 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                     "avg_processing_time_ms": float(np.mean(self._proc_times)) if self._proc_times else 0.0,
                     "last_check": datetime.datetime.utcnow().isoformat(),
                 },
-                "system_health": {
-                    "status": "degraded",
-                    "alerts": list(self.system_alerts[-25:]),
-                },
-                "system_alerts": list(self.system_alerts[-25:]),
-                "trading_session": self.trading_session,
-                "session_type": self.session_type,
-                "session_canonical": self._session_canonical(),
-                "time_of_day": datetime.datetime.utcnow().strftime("%H:%M:%S"),
+                "trading_result": {},
             }

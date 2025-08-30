@@ -7,6 +7,7 @@
 
 import time
 import asyncio
+from modules.contracts import module_args
 import numpy as np
 import torch
 import torch.nn as nn
@@ -73,31 +74,13 @@ class LiquidityLSTM(nn.Module):
         return output
 
 
-@module(
-    name="LiquidityHeatmapLayer",
-    version="3.0.2",
-    category="market",
-    provides=[
-        "liquidity_score",
-        "market_depth",
-        "spread_analysis",
-        "liquidity_prediction",
-        "trading_sessions",
-        "session_data",
-        "liquidity_thesis",
-        "liquidity_capabilities",
-    ],
-    requires=[
-        "bid_ask_data",
-        "price_data",
-        "prices",
-    ],
+@module(**module_args(
+    "LiquidityHeatmapLayer",
     description="Advanced liquidity heatmap analysis with neural network predictions",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
     error_handling=True,
-)
+    hot_reload=True,
+    timeout_ms=120,
+))
 class LiquidityHeatmapLayer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     PRODUCTION-GRADE Liquidity Heatmap Analysis with Neural Networks
@@ -113,6 +96,7 @@ class LiquidityHeatmapLayer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         liquidity_prediction: Optional[Dict[str, Any]] = None,
         trading_sessions: Optional[Dict[str, Any]] = None,
         session_data: Optional[Dict[str, Any]] = None,
+        liquidity_capabilities: Optional[Dict[str, Any]] = None,  # <- ensure contract key is ALWAYS present
         thesis: Optional[str] = None,
         extra: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
@@ -153,11 +137,23 @@ class LiquidityHeatmapLayer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         out["trading_sessions"] = trading_sessions if isinstance(trading_sessions, dict) else {"active": "unknown"}
         out["session_data"] = session_data if isinstance(session_data, dict) else {"active_session": "unknown"}
 
+        # capabilities (contract-provided key)
+        if isinstance(liquidity_capabilities, dict):
+            out["liquidity_capabilities"] = liquidity_capabilities
+        else:
+            out["liquidity_capabilities"] = {
+                "prediction_horizon": getattr(self._cfg, "prediction_horizon", 5),
+                "sequence_length": getattr(self._cfg, "sequence_length", 20),
+                "device": str(getattr(self, "device", "cpu")),
+                "depth_levels": getattr(self._cfg, "depth_levels", 10),
+                "neural_model": "LSTM_with_attention",
+            }
+
         # thesis + extras
         out["thesis"] = thesis or "Liquidity analysis completed."
-        out["_thesis"] = out["thesis"]
-        # explicit provide for orchestrator contract matching
-        out["liquidity_thesis"] = out["thesis"]
+        out["_thesis"] = out["thesis"]   # explainable requirement
+        out["liquidity_thesis"] = out["thesis"]  # explicit provide for orchestrator
+
         if isinstance(extra, dict):
             try:
                 out.update(extra)
@@ -165,7 +161,7 @@ class LiquidityHeatmapLayer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 pass
 
         # fail-fast on essentials we promise
-        for key in ("liquidity_score", "market_depth", "spread_analysis", "liquidity_prediction", "trading_sessions", "session_data"):
+        for key in ("liquidity_score", "market_depth", "spread_analysis", "liquidity_prediction", "trading_sessions", "session_data", "liquidity_capabilities"):
             if key not in out:
                 raise ValueError(f"Critical output '{key}' missing in LiquidityHeatmapLayer")
         return out
@@ -404,21 +400,14 @@ class LiquidityHeatmapLayer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 session_data=session_meta,
                 thesis=thesis,
                 extra={"success": True, "processing_time_ms": (time.time() - t0) * 1000.0},
-            )
-            # include capabilities declared provide explicitly in returns
-            try:
-                caps = self.smart_bus.get("liquidity_capabilities", "LiquidityHeatmapLayer")
-            except Exception:
-                caps = None
-            if not isinstance(caps, dict):
-                caps = {
+                liquidity_capabilities=self.smart_bus.get("liquidity_capabilities", "LiquidityHeatmapLayer") or {
                     "prediction_horizon": self._cfg.prediction_horizon,
                     "sequence_length": self._cfg.sequence_length,
                     "device": str(self.device),
                     "depth_levels": self._cfg.depth_levels,
                     "neural_model": "LSTM_with_attention",
-                }
-            outputs["liquidity_capabilities"] = caps
+                },
+            )
             return outputs
 
         except Exception as e:
@@ -433,6 +422,13 @@ class LiquidityHeatmapLayer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 session_data=session_meta,
                 thesis=fail.get("thesis", f"Liquidity analysis error: {e}"),
                 extra={"success": False, "processing_time_ms": (time.time() - t0) * 1000.0, "reason": fail.get("reason")},
+                liquidity_capabilities=self.smart_bus.get("liquidity_capabilities", "LiquidityHeatmapLayer") or {
+                    "prediction_horizon": self._cfg.prediction_horizon,
+                    "sequence_length": self._cfg.sequence_length,
+                    "device": str(self.device),
+                    "depth_levels": self._cfg.depth_levels,
+                    "neural_model": "LSTM_with_attention",
+                },
             )
 
     # ── Data extraction ────────────────────────────────────────────────
@@ -443,6 +439,7 @@ class LiquidityHeatmapLayer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         def _canon(sym: str) -> str:
             return sym.replace("/", "").upper().strip()
 
+        # Required keys per contract: prices, price_data, bid_ask_data :contentReference[oaicite:1]{index=1}
         bus_prices = self.smart_bus.get("prices", "LiquidityHeatmapLayer") or {}
         bus_price_data = self.smart_bus.get("price_data", "LiquidityHeatmapLayer") or {}
         bus_bid_ask = self.smart_bus.get("bid_ask_data", "LiquidityHeatmapLayer") or {}
@@ -805,7 +802,7 @@ Trading Implications:
     async def _handle_liquidity_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
         processing_time = time.time() - start_time
         self._record_liquidity_failure(error)
-        error_context = self.error_pinpointer.analyze_error(error, "LiquidityHeatmapLayer")
+        _ = self.error_pinpointer.analyze_error(error, "LiquidityHeatmapLayer")
         self.logger.error(
             format_operator_message("💧[CRASH]", "LIQUIDITY_ANALYSIS_ERROR", details=str(error), context="liquidity_processing")
         )
@@ -934,7 +931,6 @@ Trading Implications:
 
         # (Re)start the monitoring task
         self._monitor_task = loop.create_task(self._liquidity_monitoring_loop())
-
 
     # ── Health & Reports ───────────────────────────────────────────────
     def get_health_status(self) -> Dict[str, Any]:

@@ -7,6 +7,7 @@
 import asyncio
 import time
 import threading
+from modules.contracts import module_args
 import numpy as np
 from typing import Dict, Any, List, Optional, Tuple
 from collections import deque, defaultdict
@@ -49,18 +50,13 @@ class PlaybookConfig:
     quality_prune_threshold: float = 0.3
 
 
-@module(
-    name="PlaybookMemory",
-    version="3.0.1",  # bump
-    category="memory",
-    provides=["playbook_recall", "pattern_memory", "playbook_quality", "memory_analytics"],  # changed here
-    requires=["trades", "actions", "market_data", "prices"],
-    description="Advanced playbook memory with context-aware pattern recognition and SmartInfoBus integration",
-    thesis_required=True,
-    health_monitoring=True,
-    performance_tracking=True,
-    error_handling=True
-)
+@module(**module_args(
+    "PlaybookMemory",
+    description="Deterministic multi-window feature extraction with circuit breaker, monitoring, and explainability.",
+    error_handling=True,
+    hot_reload=True,
+    timeout_ms=120,
+))
 
 class PlaybookMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
