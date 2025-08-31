@@ -64,7 +64,7 @@ class PlaybookConfig:
         description="Context-aware pattern memory with SmartInfoBus integration, monitoring, and explainability.",
         error_handling=True,
         hot_reload=True,
-        timeout_ms=120,
+        timeout_ms=3000,
     )
 )
 class PlaybookMemory(

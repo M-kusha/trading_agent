@@ -30,7 +30,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
     description="Advanced genetic algorithm evolution system with intelligent strategy parameter optimization",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """

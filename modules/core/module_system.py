@@ -1052,6 +1052,7 @@ class ModuleOrchestrator:
                     self.logger.info(f"Reset circuit breaker for {module_name}")
 
     # ───── Safe single-module execution ─────
+# ───── Safe single-module execution ─────
     async def _execute_module_safe(
         self,
         module: BaseModule,
@@ -1068,21 +1069,33 @@ class ModuleOrchestrator:
             return {'error': 'Circuit breaker open', '_circuit_breaker': True}
 
         start_t = time.perf_counter()
-        try:
-            # Validate + run
+        per_mod_timeout = max(0.1, metadata.timeout_ms / 1000.0)
+
+        async def _run_entire_module() -> Dict[str, Any] | None:
+            # 1) Input validation (support sync/async; run sync in thread to avoid event-loop blocking)
             if hasattr(module, "validate_inputs"):
-                module.validate_inputs(inputs)
+                try:
+                    if inspect.iscoroutinefunction(module.validate_inputs):
+                        await module.validate_inputs(inputs)  # type: ignore
+                    else:
+                        loop = asyncio.get_running_loop()
+                        await loop.run_in_executor(None, module.validate_inputs, inputs)  # type: ignore
+                except Exception as e:
+                    # Let normal error path handle it
+                    raise
 
-            result = await asyncio.wait_for(
-                module.process(**inputs),
-                timeout=metadata.timeout_ms / 1000.0
-            )
+            # 2) Process (as-is)
+            result = await module.process(**inputs)
 
-            # Validate outputs
+            # 3) Output validation (same treatment as inputs)
             if isinstance(result, dict) and hasattr(module, "validate_outputs"):
-                module.validate_outputs(result)
+                if inspect.iscoroutinefunction(module.validate_outputs):
+                    await module.validate_outputs(result)  # type: ignore
+                else:
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(None, module.validate_outputs, result)  # type: ignore
 
-            # Publish declared outputs
+            # 4) Publish declared outputs to bus
             if isinstance(result, dict):
                 for key in metadata.provides:
                     if key in result:
@@ -1094,16 +1107,12 @@ class ModuleOrchestrator:
                             confidence=result.get("_confidence", 0.8),
                         )
 
-            # Optional hooks: confidence + voting
+            # 5) Optional hooks: confidence + voting (kept inside the timeout)
             bm = BaseModule
-
             if module.__class__.calculate_confidence is not bm.calculate_confidence:
                 try:
-                    conf_res = module.calculate_confidence(result, **inputs)
-                    if asyncio.iscoroutine(conf_res):
-                        conf = await conf_res  # type: ignore
-                    else:
-                        conf = conf_res
+                    conf_res = module.calculate_confidence(result, **inputs)  # type: ignore
+                    conf = await conf_res if asyncio.iscoroutine(conf_res) else conf_res
                     if conf is not None and isinstance(result, dict):
                         result["_confidence"] = float(conf)
                 except Exception as e:
@@ -1112,7 +1121,7 @@ class ModuleOrchestrator:
             if module.__class__.propose_action is not bm.propose_action:
                 try:
                     voting_context = {"bus": self.smart_bus, **inputs, **(result or {})}
-                    ballot_res = module.propose_action(**voting_context)
+                    ballot_res = module.propose_action(**voting_context)  # type: ignore
                     ballot = await ballot_res if asyncio.iscoroutine(ballot_res) else ballot_res
                     if ballot:
                         self.smart_bus.set(
@@ -1125,7 +1134,12 @@ class ModuleOrchestrator:
                 except Exception as e:
                     self.logger.warning(f"{module_name}: voting error – {e}")
 
-            # Success
+            return result  # type: ignore
+
+        try:
+            # Hard deadline for EVERYTHING (validation, process, publishing, hooks)
+            result = await asyncio.wait_for(_run_entire_module(), timeout=per_mod_timeout)
+
             dur_ms = (time.perf_counter() - start_t) * 1000.0
             module.record_execution(dur_ms, True)
             cb.record_success()
@@ -1134,7 +1148,7 @@ class ModuleOrchestrator:
 
         except asyncio.TimeoutError:
             dur_ms = float(metadata.timeout_ms)
-            msg = f"Timeout after {dur_ms:.0f} ms"
+            msg = f"Timeout after {dur_ms:.0f} ms (entire module)"
             self._handle_module_failure(module, module_name, cb, dur_ms, msg, execution_id, "TIME")
             raise TimeoutError(msg)
 
@@ -1142,6 +1156,7 @@ class ModuleOrchestrator:
             dur_ms = (time.perf_counter() - start_t) * 1000.0
             self._handle_module_failure(module, module_name, cb, dur_ms, str(e), execution_id, "CRASH")
             raise
+
 
     async def _execute_emergency_mode(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
         self.logger.warning("[ALERT] Executing in EMERGENCY MODE - critical modules only")
@@ -1401,42 +1416,153 @@ class ModuleOrchestrator:
         except Exception as e:
             self.logger.error(f"Failed to register {name}: {e}")
 
-    # ───── Planning ─────
+    def _stages_respect_dependencies(self, stages: List[List[str]]) -> bool:
+        """
+        Verify that every dependency edge (dep -> consumer) is respected:
+        each consumer must appear strictly after all of its deps.
+        """
+        # module -> earliest stage index
+        pos: Dict[str, int] = {}
+        for i, stage in enumerate(stages):
+            for m in stage:
+                if m in pos:
+                    # module appears twice → invalid plan
+                    return False
+                pos[m] = i
+
+        # every module known to the orchestrator must appear once
+        if set(pos.keys()) != set(self.modules.keys()):
+            return False
+
+        for consumer, deps in self.module_dependencies.items():
+            ci = pos.get(consumer, None)
+            if ci is None:
+                return False
+            for dep in deps:
+                di = pos.get(dep, None)
+                if di is None:
+                    return False
+                if ci <= di:
+                    # consumer scheduled at/before provider → violates edge
+                    return False
+        return True
+
+
+    def _normalize_and_validate_manual_stages(self, manual: List[List[str]]) -> Optional[List[List[str]]]:
+        """
+        Accept a user/system-provided parallel_stages config if it:
+        - lists each module exactly once
+        - contains no unknown module names
+        - respects dependency edges
+        Otherwise return None (caller should ignore manual stages).
+        """
+        if not manual:
+            return None
+
+        # Flatten and sanity check membership
+        listed = [m for stage in manual for m in stage]
+        unknown = [m for m in listed if m not in self.modules]
+        if unknown:
+            self.logger.warning(f"Manual stages contain unknown modules: {unknown}")
+            return None
+
+        missing = [m for m in self.modules.keys() if m not in listed]
+        if missing:
+            self.logger.warning(f"Manual stages are missing modules: {missing}")
+            return None
+
+        # Validate edge ordering
+        if not self._stages_respect_dependencies(manual):
+            self.logger.warning("Manual stages violate dependency ordering; ignoring manual plan")
+            return None
+
+        return manual
+
+               # ───── Planning ─────
     def build_execution_plan(self):
         try:
+            # Build dependency graph from scratch
             self.module_dependencies = defaultdict(set)
             self.reverse_dependencies = defaultdict(set)
 
             for name, metadata in self.metadata.items():
                 self._build_module_dependencies(name, metadata)
 
+            # Handle cycles conservatively
             self.circular_dependencies = self._find_circular_dependencies_efficient()
             if self.circular_dependencies:
                 self.logger.warning(f"Found circular dependencies: {self.circular_dependencies}")
                 self._break_circular_dependencies()
 
+            # Base plan from strict topological ordering
             self.execution_order = self._topological_sort()
-            self.execution_stages = self._build_parallel_stages()
+            base_stages = self._build_parallel_stages()
 
-            if hasattr(self, 'dependency_visualizer'):
-                optimized = self.dependency_visualizer.optimize_execution_stages()
-                if optimized:
-                    self.execution_stages = optimized
+            # Prefer a valid manual plan if provided in config (via ConfigurationManager)
+            manual = getattr(self, "execution_stages_config", None)
+            chosen_stages: Optional[List[List[str]]] = None
+            if isinstance(manual, list) and manual and isinstance(manual[0], list):
+                normalized = self._normalize_and_validate_manual_stages(manual)
+                if normalized:
+                    chosen_stages = normalized
+                else:
+                    self.logger.warning("Ignoring manual parallel_stages due to validation failure")
 
+            # If no valid manual stages, start from base stages
+            if chosen_stages is None:
+                chosen_stages = base_stages
+
+                # Let the optimizer suggest improvements, but only if it preserves edges
+                if hasattr(self, 'dependency_visualizer') and self.dependency_visualizer:
+                    try:
+                        optimized = self.dependency_visualizer.optimize_execution_stages()
+                        if optimized and self._stages_respect_dependencies(optimized):
+                            chosen_stages = optimized
+                        elif optimized:
+                            self.logger.warning("Optimizer produced invalid stage ordering; keeping base plan")
+                    except Exception as e:
+                        self.logger.warning(f"Optimizer error; keeping base plan: {e}")
+
+            self.execution_stages = chosen_stages
             self._log_execution_plan()
 
         except Exception as e:
             self.logger.error(f"Failed to build execution plan: {e}")
             raise
 
+
     def _build_module_dependencies(self, module_name: str, metadata: ModuleMetadata):
-        self.module_dependencies[module_name].clear()
+        """
+        Build dependency edges using BOTH:
+        A) providers registered on the SmartInfoBus, and
+        B) static metadata cross-check (provides ∩ requires).
+        This makes planning robust to timing (bus-map not yet populated)
+        and ensures edges exist before we call any optimizer.
+        """
+        deps: Set[str] = set()
+
+        # A) Bus-declared providers (best effort)
         for required_key in metadata.requires:
             providers = self.smart_bus.get_providers(required_key)
             for provider in providers:
                 if provider != module_name and provider in self.modules:
-                    self.module_dependencies[module_name].add(provider)
-                    self.reverse_dependencies[provider].add(module_name)
+                    deps.add(provider)
+
+        # B) Metadata cross-check (provides ∩ requires)
+        req_keys = set(metadata.requires)
+        if req_keys:
+            for provider_name, provider_meta in self.metadata.items():
+                if provider_name == module_name or provider_name not in self.modules:
+                    continue
+                if req_keys.intersection(set(provider_meta.provides)):
+                    deps.add(provider_name)
+
+        # Commit edges
+        self.module_dependencies[module_name].clear()
+        self.module_dependencies[module_name].update(deps)
+        for p in deps:
+            self.reverse_dependencies[p].add(module_name)
+
 
     def _find_circular_dependencies_efficient(self) -> List[List[str]]:
         idx_ctr = [0]

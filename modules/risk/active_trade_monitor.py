@@ -76,7 +76,7 @@ class ActiveTradeMonitorConfig:
     description="Enhanced active trade monitor with intelligent risk assessment",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """

@@ -12,7 +12,7 @@ import numpy as np
 import datetime
 from typing import Dict, Any, List, Optional, Union
 from collections import deque, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 from modules.core.module_base import BaseModule, module
@@ -72,18 +72,21 @@ class DynamicRiskConfig:
     adaptive_learning_rate: float = 0.02
     risk_adaptation_speed: float = 1.0
 
+
 @module(**module_args(
     "DynamicRiskController",
-    description="Advanced dynamic risk scaling with intelligent adaptation and comprehensive market analysis",
+    description="Advanced dynamic risk scaling with intelligent adaptation and comprehensive market analysis (voting member)",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
+    # --- Voting additions ---
+    is_voting_member=True,
 ))
-
 class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     [ROCKET] Advanced dynamic risk controller with SmartInfoBus integration.
     Provides intelligent risk scaling based on comprehensive market analysis.
+    Also participates in ensemble voting by emitting a risk-posture proposal + confidence each cycle.
     """
 
     def __init__(
@@ -510,6 +513,10 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                     thesis = "Circuit breaker OPEN - conservative risk posture maintained."
                     fallback = await self._handle_no_data_fallback()
                     fallback["_thesis"] = thesis
+                    # --- Voting additions (fallback voting) ---
+                    vote_payload = await self.vote()
+                    fallback["DynamicRiskController_voting_proposal"] = vote_payload
+                    fallback["DynamicRiskController_confidence"] = float(vote_payload.get("confidence", 0.0))
                     await self._update_risk_smart_bus(fallback, thesis)
                     return fallback
                 else:
@@ -520,7 +527,13 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
             # Extract risk data from SmartInfoBus
             risk_data = await self._extract_risk_data(**inputs)
             if not risk_data:
-                return await self._handle_no_data_fallback()
+                fallback = await self._handle_no_data_fallback()
+                # --- Voting additions (no-data voting) ---
+                vote_payload = await self.vote()
+                fallback["DynamicRiskController_voting_proposal"] = vote_payload
+                fallback["DynamicRiskController_confidence"] = float(vote_payload.get("confidence", 0.0))
+                await self._update_risk_smart_bus(fallback, fallback.get("_thesis", "No data fallback"))
+                return fallback
 
             # Update market context
             context_result = await self._update_market_context_async(risk_data)
@@ -614,6 +627,11 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                     "_thesis": thesis,
                 }
             )
+
+            # --- Voting additions: build + attach proposal & confidence ---
+            vote_payload = await self.vote(risk_scale=self.current_risk_scale)
+            result["DynamicRiskController_voting_proposal"] = vote_payload
+            result["DynamicRiskController_confidence"] = float(vote_payload.get("confidence", 0.0))
 
             # Update SmartInfoBus
             await self._update_risk_smart_bus(result, thesis)
@@ -1475,7 +1493,8 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                 thesis_parts.append(f"Active factors: {', '.join(active_factors[:3])}")
 
             # Market context
-            thesis_parts.append(f"Market: {self.market_regime.upper()} regime, {self.volatility_regime.upper()} volatility")
+            vol_text = self.volatility_regime.upper() if hasattr(self.volatility_regime, "upper") else str(self.volatility_regime).upper()
+            thesis_parts.append(f"Market: {self.market_regime.upper()} regime, {vol_text} volatility")
 
             # Performance metrics
             if result.get("significant_change", False):
@@ -1569,7 +1588,26 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                 ),
             }
 
-            self.smart_bus.set("risk_alerts", alerts_data, module="DynamicRiskController", thesis="Risk control alerts and emergency status tracking")
+            self.smart_bus.set(
+                "risk_alerts",
+                alerts_data,
+                module="DynamicRiskController",
+                thesis="Risk control alerts and emergency status tracking",
+            )
+
+            # Voting proposal (optional bus write for coordinators)
+            if "DynamicRiskController_voting_proposal" in result:
+                self.smart_bus.set(
+                    "voting_member_proposal",
+                    {
+                        "member": "DynamicRiskController",
+                        "proposal": result["DynamicRiskController_voting_proposal"],
+                        "confidence": float(result.get("DynamicRiskController_confidence", 0.0)),
+                        "timestamp": datetime.datetime.now().isoformat(),
+                    },
+                    module="DynamicRiskController",
+                    thesis="DynamicRiskController voting proposal",
+                )
 
         except Exception as e:
             self.logger.error(f"Failed to update SmartInfoBus: {e}")
@@ -1793,6 +1831,111 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
     def _record_failure(self, error: Exception):
         """Record processing failure"""
         self.performance_tracker.record_metric("DynamicRiskController", "risk_scaling", 0, False)
+
+    # ================== VOTING INTERFACE ==================
+
+    async def vote(self, risk_scale: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Build a voting proposal for the committee.
+        Outputs a compact payload with desired risk posture and confidence.
+
+        Proposal schema (example):
+        {
+            "member": "DynamicRiskController",
+            "type": "risk_posture",
+            "posture": "reduce" | "increase" | "maintain" | "halt",
+            "target_scale": 0.42,
+            "bounds": [0.10, 0.80],
+            "rationale": "...",
+            "confidence": 0.78,
+            "context": {...},
+            "timestamp": 1700000000.0
+        }
+        """
+        try:
+            now = time.time()
+            current_scale = float(self.current_risk_scale if risk_scale is None else risk_scale)
+
+            # Determine posture
+            if self.circuit_breaker["state"] == "OPEN" or self.current_mode == RiskControlMode.EMERGENCY:
+                posture = "halt"
+                target_scale = max(self._cfg.min_risk_scale, min(current_scale, 0.2))
+                rationale = "Circuit breaker/emergency posture."
+            else:
+                # Use factors + mode to choose posture
+                if self.current_mode in (RiskControlMode.AGGRESSIVE_REDUCTION, RiskControlMode.PROTECTIVE):
+                    posture = "reduce"
+                    target_scale = max(self._cfg.min_risk_scale, min(current_scale, 0.6))
+                    rationale = "Protective posture due to risk factors."
+                elif self.current_mode == RiskControlMode.RECOVERY:
+                    posture = "increase" if current_scale < 0.9 else "maintain"
+                    target_scale = min(self._cfg.max_risk_scale, max(current_scale, 0.9))
+                    rationale = "Recovery mode with improving conditions."
+                else:
+                    # NORMAL/CALIBRATION
+                    # If several factors < 0.8, lean 'reduce'; if healthy, 'maintain'
+                    weak_factors = sum(1 for v in self.risk_factors.values() if v < 0.8)
+                    if weak_factors >= 3 or self.external_risk_scale < 0.9:
+                        posture = "reduce"
+                        target_scale = max(self._cfg.min_risk_scale, min(current_scale, 0.8))
+                        rationale = "Multiple weak risk factors."
+                    else:
+                        posture = "maintain"
+                        target_scale = float(current_scale)
+                        rationale = "Risk factors broadly acceptable."
+
+            # Compute confidence using internal method
+            proposed_action = {
+                "action_type": "risk_posture",
+                "posture": posture,
+                "target_scale": target_scale,
+                "mode": self.current_mode.value,
+                "risk_quality": self._risk_quality,
+                "circuit_breaker": self.circuit_breaker["state"],
+            }
+            confidence = await self.calculate_confidence(proposed_action)
+
+            # Slightly down-weight confidence if target implies large jump
+            jump = abs(target_scale - current_scale)
+            if jump > 0.25:
+                confidence *= 0.9
+
+            # Bound confidence
+            confidence = float(max(0.0, min(1.0, confidence)))
+
+            payload = {
+                "member": "DynamicRiskController",
+                "type": "risk_posture",
+                "posture": posture,
+                "target_scale": float(np.clip(target_scale, self._cfg.min_risk_scale, self._cfg.max_risk_scale)),
+                "bounds": [float(self._cfg.min_risk_scale), float(self._cfg.max_risk_scale)],
+                "rationale": rationale,
+                "confidence": confidence,
+                "context": {
+                    "mode": self.current_mode.value,
+                    "market_regime": self.market_regime,
+                    "volatility_regime": self.volatility_regime,
+                    "risk_quality": float(self._risk_quality),
+                    "external_risk_scale": float(self.external_risk_scale),
+                    "weak_factors": sum(1 for v in self.risk_factors.values() if v < 0.8),
+                },
+                "timestamp": now,
+            }
+            return payload
+
+        except Exception as e:
+            self.logger.warning(f"Vote generation failed: {e}")
+            return {
+                "member": "DynamicRiskController",
+                "type": "risk_posture",
+                "posture": "maintain",
+                "target_scale": float(self.current_risk_scale),
+                "bounds": [float(self._cfg.min_risk_scale), float(self._cfg.max_risk_scale)],
+                "rationale": f"fallback: {e}",
+                "confidence": 0.5,
+                "context": {},
+                "timestamp": time.time(),
+            }
 
     # ================== PUBLIC INTERFACE METHODS ==================
 

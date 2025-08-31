@@ -244,37 +244,7 @@ modules:
     category: external
     file_path: modules\external\market_data_provider.py
     module_path: modules.external.market_data_provider
-    provides:
-      - market_data
-      - volatility_data
-      - instruments
-      - universe
-      - watched_instruments
-      - market_regime
-      - session_data
-      - correlation_matrix
-      - market_liquidity
-      - macro_data
-      - volatility_level
-      - market_open
-      - market_conditions
-      - time_risk_analysis
+    provides: []
     requires: []
-  BootstrapProvider:
-    category: core
-    file_path: modules\core\bootstrap_provider.py
-    module_path: modules.core.bootstrap_provider
-    provides:
-      - instruments
-      - universe
-      - watched_instruments
-      - volatility_data
-      - market_regime
-      - session_data
-      - environment_observation_size
-      - environment_observation
-      - memory_usage
-      - step_idx
-      - macro_data
-    requires: []
-version: 1.0.0
+  
+

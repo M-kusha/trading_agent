@@ -71,7 +71,7 @@ class MistakeConfig:
         description="Mistake/Pattern memory with clustering, circuit breaker, monitoring, and explainability.",
         error_handling=True,
         hot_reload=True,
-        timeout_ms=120,
+        timeout_ms=3000,
     )
 )
 class MistakeMemory(

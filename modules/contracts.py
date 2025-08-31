@@ -100,35 +100,37 @@ CONTRACTS: Dict[str, ModuleContract] = {
     'DynamicRiskController': ModuleContract(
         name='DynamicRiskController',
         file='risk/dynamic_risk_controller.py',
-        provides=['risk_alerts', 'risk_analytics', 'risk_factors', 'risk_scaling'],
+        provides=['risk_alerts', 'risk_analytics', 'risk_factors', 'risk_scaling',
+                  'DynamicRiskController_voting_proposal', 'DynamicRiskController_confidence'],
         requires=['anomaly_detection', 'compliance', 'execution_quality', 'market_context', 'market_data', 'market_regime', 'performance_data', 'portfolio_risk', 'position_data', 'risk_data'],
         meta={'is_voting_member': 'True', 'thesis_required': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'risk', 'version': '4.0.0'}
     ),
     'EnhancedAnomalyDetector': ModuleContract(
         name='EnhancedAnomalyDetector',
         file='risk/anomaly_detector.py',
-        provides=['anomaly_alerts', 'anomaly_detection', 'anomaly_score', 'detection_analytics'],
+        provides=['anomaly_alerts', 'anomaly_detection', 'anomaly_score', 'detection_analytics',
+                  'EnhancedAnomalyDetector_voting_proposal', 'EnhancedAnomalyDetector_confidence'],
         requires=['market_context', 'market_data', 'performance_data', 'risk_data', 'trading_data'],
         meta={'is_voting_member': 'True', 'thesis_required': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'risk', 'version': '4.0.0'}
     ),
     'EnhancedSeasonalityRiskExpert': ModuleContract(
         name='EnhancedSeasonalityRiskExpert',
         file='voting/voting_wrappers.py',
-    provides=['committee_confidence', 'committee_decision', 'expert_performance', 'seasonality_analysis', 'seasonality_confidence', 'seasonality_voting_proposal', 'EnhancedSeasonalityRiskExpert_confidence', 'EnhancedSeasonalityRiskExpert_voting_proposal'],
+        provides=['committee_confidence', 'committee_decision', 'expert_performance', 'seasonality_analysis', 'seasonality_confidence', 'seasonality_voting_proposal', 'EnhancedSeasonalityRiskExpert_confidence', 'EnhancedSeasonalityRiskExpert_voting_proposal'],
         requires=['emergency_mode', 'market_data', 'market_open', 'market_regime', 'portfolio_state', 'recent_trades', 'risk_data', 'risk_score', 'session_type', 'system_health', 'theme_detection', 'volatility_data'],
-        meta={'is_voting_member': 'True', 'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'voting', 'version': '4.0.0'}
+        meta={'is_voting_member': 'False', 'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'voting', 'version': '4.0.0'}
     ),
     'EnhancedThemeExpert': ModuleContract(
         name='EnhancedThemeExpert',
         file='voting/voting_wrappers.py',
-    provides=['agreement_score', 'consensus_direction', 'member_confidences', 'raw_proposals', 'strategy_arbiter_weights', 'theme_analysis', 'theme_confidence', 'theme_voting_proposal', 'EnhancedThemeExpert_confidence', 'EnhancedThemeExpert_voting_proposal'],
+        provides=['agreement_score', 'consensus_direction', 'member_confidences', 'raw_proposals', 'strategy_arbiter_weights', 'theme_analysis', 'theme_confidence', 'theme_voting_proposal', 'EnhancedThemeExpert_confidence', 'EnhancedThemeExpert_voting_proposal'],
         requires=['emergency_mode', 'expert_performance', 'market_data', 'market_open', 'market_regime', 'portfolio_state', 'recent_trades', 'risk_data', 'risk_score', 'session_type', 'system_health', 'theme_detection', 'volatility_data'],
         meta={'is_voting_member': 'True', 'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'voting', 'version': '4.0.0'}
     ),
     'EnhancedVotingCommitteeCoordinator': ModuleContract(
         name='EnhancedVotingCommitteeCoordinator',
         file='voting/voting_wrappers.py',
-    provides=['horizon_alignment', 'member_proposals', 'performance_feedback', 'time_of_day', 'votes', 'committee_votes', 'voting_summary', 'voting_weights', 'trade_vote'],
+        provides=['horizon_alignment', 'member_proposals', 'performance_feedback', 'time_of_day', 'votes', 'committee_votes', 'voting_summary', 'voting_weights', 'trade_vote'],
         requires=['emergency_mode', 'expert_performance', 'expert_votes', 'market_context', 'market_open', 'market_regime', 'portfolio_state', 'recent_trades', 'risk_data', 'risk_score', 'session_type', 'system_health', 'theme_detection', 'volatility_data', 'voting_consensus'],
         meta={'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'voting', 'version': '4.0.0'}
     ),
@@ -142,7 +144,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
     'ExecutionQualityMonitor': ModuleContract(
         name='ExecutionQualityMonitor',
         file='voting/execution_quality_monitor.py',
-        provides=['execution_alerts', 'execution_analytics', 'execution_quality'],
+        provides=['execution_alerts', 'execution_analytics', 'execution_quality',
+                  'ExecutionQualityMonitor_voting_proposal', 'ExecutionQualityMonitor_confidence'],
         requires=['execution_data', 'market_context', 'market_data', 'order_data', 'trade_data'],
         meta={'is_voting_member': 'True', 'thesis_required': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'risk', 'version': '4.0.0'}
     ),
@@ -156,7 +159,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
             # to satisfy TrainingScript reads
             'market_overview'
         ],
-    requires=['bias_analysis', 'learning_status', 'market_context', 'module_data', 'module_insights', 'performance_data', 'positions', 'recent_trades', 'risk_data', 'session_metrics', 'strategy_status', 'system_alerts'],
+        requires=['bias_analysis', 'learning_status', 'market_context', 'module_data', 'module_insights', 'performance_data', 'positions', 'recent_trades', 'risk_data', 'session_metrics', 'strategy_status', 'system_alerts'],
         meta={'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'utils', 'version': '3.0.0'}
     ),
     'FractalRegimeConfirmation': ModuleContract(
@@ -219,7 +222,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
     'MetaAgent': ModuleContract(
         name='MetaAgent',
         file='meta/meta_agent.py',
-        provides=['automation_decisions', 'automation_metrics', 'meta_performance', 'system_mode'],
+        provides=['automation_decisions', 'automation_metrics', 'meta_performance', 'system_mode',
+                  'MetaAgent_voting_proposal', 'MetaAgent_confidence'],
         requires=['market_conditions', 'risk_signals', 'system_performance', 'time_risk_analysis', 'training_metrics'],
         meta={'is_voting_member': 'True', 'thesis_required': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'meta', 'version': '3.0.0'}
     ),
@@ -283,172 +287,173 @@ CONTRACTS: Dict[str, ModuleContract] = {
     'PlaybookClusterer': ModuleContract(
         name='PlaybookClusterer',
         file='strategy/playbook_clusterer.py',
-    provides=['cluster_analysis', 'cluster_effectiveness', 'cluster_recommendations', 'cluster_weights', 'clustering_health', 'clustering_thesis', 'playbook_clusterer_initialization'],
-    requires=['market_context', 'market_data', 'market_regime', 'playbook_memory', 'recent_trades', 'session_metrics', 'trading_performance', 'volatility_data'],
+        provides=['cluster_analysis', 'cluster_effectiveness', 'cluster_recommendations', 'cluster_weights', 'clustering_health', 'clustering_thesis', 'playbook_clusterer_initialization'],
+        requires=['market_context', 'market_data', 'market_regime', 'playbook_memory', 'recent_trades', 'session_metrics', 'trading_performance', 'volatility_data'],
         meta={'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'strategy', 'version': '3.0.0'}
     ),
     'PlaybookMemory': ModuleContract(
         name='PlaybookMemory',
         file='memory/playbook_memory.py',
-    provides=['memory_analytics', 'pattern_memory', 'playbook_quality', 'playbook_recall'],
-    requires=['actions', 'market_data', 'prices', 'trades'],
+        provides=['memory_analytics', 'pattern_memory', 'playbook_quality', 'playbook_recall'],
+        requires=['actions', 'market_data', 'prices', 'trades'],
         meta={'thesis_required': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'memory', 'version': '3.0.1'}
     ),
     'PortfolioRiskSystem': ModuleContract(
         name='PortfolioRiskSystem',
         file='risk/portofilio_risk_system.py',
-    provides=['portfolio_risk', 'portfolio_risk_proposal', 'position_limits', 'risk_data', 'risk_metrics', 'risk_score', 'risk_signals', 'trade_data', 'trading_data'],
-    requires=['market_context', 'market_data', 'position_data'],
+        provides=['portfolio_risk', 'portfolio_risk_proposal', 'position_limits', 'risk_data', 'risk_metrics', 'risk_score', 'risk_signals', 'trade_data', 'trading_data',
+                  'PortfolioRiskSystem_voting_proposal', 'PortfolioRiskSystem_confidence'],
+        requires=['market_context', 'market_data', 'position_data'],
         meta={'is_voting_member': 'True', 'thesis_required': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'risk', 'version': '4.0.0'}
     ),
     'PositionManager': ModuleContract(
         name='PositionManager',
         file='position/position.py',
-    provides=['balance', 'current_pnl', 'current_positions', 'equity', 'execution_data', 'order_data', 'pending_orders', 'portfolio_state', 'position_analysis', 'position_data', 'position_decisions', 'position_health', 'positions', 'recent_trades', 'trades'],
-    requires=['environment_config', 'indicators', 'liquidity_capabilities', 'liquidity_score', 'market_conditions', 'market_context', 'market_data', 'market_liquidity', 'market_regime', 'market_state', 'portfolio_metrics', 'price_data', 'prices', 'technical_indicators', 'time_risk_analysis', 'volatility_data'],
-        meta={'is_voting_member': 'True', 'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'position', 'version': '3.1.0'}
+        provides=['balance', 'current_pnl', 'current_positions', 'equity', 'execution_data', 'order_data', 'pending_orders', 'portfolio_state', 'position_analysis', 'position_data', 'position_decisions', 'position_health', 'positions', 'recent_trades', 'trades'],
+        requires=['environment_config', 'indicators', 'liquidity_capabilities', 'liquidity_score', 'market_conditions', 'market_context', 'market_data', 'market_liquidity', 'market_regime', 'market_state', 'portfolio_metrics', 'price_data', 'prices', 'technical_indicators', 'time_risk_analysis', 'volatility_data'],
+        meta={'is_voting_member': 'False', 'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'position', 'version': '3.1.0'}
     ),
     'PPOAgent': ModuleContract(
         name='PPOAgent',
         file='meta/ppo_agent.py',
-    provides=['actions', 'agent_performance', 'observations', 'policy_actions', 'policy_gradients', 'rewards', 'training_data', 'training_metrics', 'training_signals'],
-    requires=['market_data'],
+        provides=['actions', 'agent_performance', 'observations', 'policy_actions', 'policy_gradients', 'rewards', 'training_data', 'training_metrics', 'training_signals',
+                  'PPOAgent_voting_proposal', 'PPOAgent_confidence'],
+        requires=['market_data'],
         meta={'is_voting_member': 'True', 'thesis_required': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'meta', 'version': '3.0.0'}
     ),
     'PPOLagAgent': ModuleContract(
         name='PPOLagAgent',
         file='meta/ppo_lag_agent.py',
-    provides=['agent_status', 'market_adaptation', 'position_metrics', 'ppo_lag_training_metrics'],
-    requires=['actions', 'market_data', 'trades', 'training_signals'],
+        provides=['agent_status', 'market_adaptation', 'position_metrics', 'ppo_lag_training_metrics'],
+        requires=['actions', 'market_data', 'trades', 'training_signals'],
         meta={'thesis_required': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'meta', 'version': '3.0.0'}
     ),
     'RegimePerformanceMatrix': ModuleContract(
         name='RegimePerformanceMatrix',
         file='market/regime_performance_matrix.py',
-    provides=['backtesting_data', 'market_state', 'performance_metrics', 'regime_accuracy', 'regime_analysis', 'regime_matrix_analysis', 'regime_matrix_health', 'regime_matrix_status', 'regime_performance', 'regime_prediction', 'stress_test_results'],
-    requires=['liquidity_score', 'market_data', 'market_regime', 'pnl_data', 'volatility_data'],
+        provides=['backtesting_data', 'market_state', 'performance_metrics', 'regime_accuracy', 'regime_analysis', 'regime_matrix_analysis', 'regime_matrix_health', 'regime_matrix_status', 'regime_performance', 'regime_prediction', 'stress_test_results'],
+        requires=['liquidity_score', 'market_data', 'market_regime', 'pnl_data', 'volatility_data'],
         meta={'thesis_required': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'market', 'version': '3.0.0'}
     ),
     'RiskAdjustedReward': ModuleContract(
         name='RiskAdjustedReward',
         file='reward/risk_adjusted_reward.py',
-    provides=['reward_analytics', 'reward_components', 'reward_performance', 'shaped_reward'],
-    requires=['environment_config', 'market_context', 'mistake_memory', 'performance_data', 'risk_metrics', 'trade_data'],
+        provides=['reward_analytics', 'reward_components', 'reward_performance', 'shaped_reward'],
+        requires=['environment_config', 'market_context', 'mistake_memory', 'performance_data', 'risk_metrics', 'trade_data'],
         meta={'thesis_required': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'reward', 'version': '4.0.0'}
     ),
     'RoleCoach': ModuleContract(
         name='RoleCoach',
         file='simulation/role_coach.py',
-    provides=['coaching_penalties', 'coaching_recommendations', 'coaching_results', 'coaching_statistics', 'compliance_tracking', 'discipline_assessment', 'discipline_penalty', 'performance_scoring', 'trade_limits'],
-    requires=['market_context', 'pending_orders', 'positions', 'recent_trades', 'regime_data', 'risk_metrics', 'session_data', 'trading_performance'],
+        provides=['coaching_penalties', 'coaching_recommendations', 'coaching_results', 'coaching_statistics', 'compliance_tracking', 'discipline_assessment', 'discipline_penalty', 'performance_scoring', 'trade_limits'],
+        requires=['market_context', 'pending_orders', 'positions', 'recent_trades', 'regime_data', 'risk_metrics', 'session_data', 'trading_performance'],
         meta={'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'simulation', 'version': '3.0.0'}
     ),
     'SessionManager': ModuleContract(
         name='SessionManager',
         file='external/session_manager.py',
-    provides=[
+        provides=[
             'consensus_data', 'emergency_mode', 'episode_data', 'episode_summary', 'expert_votes',
             'market_open', 'memory_usage', 'mistakes', 'module_performance', 'performance_data',
             'playbook_entries', 'playbook_memory', 'pnl_data', 'session_context', 'session_metrics',
             'system_alerts', 'system_health', 'system_performance',
             # to satisfy Environment read
             'trading_result'
-    ],
-    requires=[],
+        ],
+        requires=[],
         meta={'is_voting_member': 'False', 'thesis_required': 'False', 'explainable': 'False', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'external', 'version': '1.0.0'}
     ),
     'ShadowSimulator': ModuleContract(
         name='ShadowSimulator',
         file='simulation/shadow_simulator.py',
-    provides=['forward_projections', 'scenario_analysis', 'scenario_recommendations', 'shadow_predictions', 'shadow_simulation', 'simulation_confidence', 'simulation_predictions', 'strategy_simulations'],
-    requires=['votes', 'environment', 'market_context', 'market_data', 'pending_orders', 'positions', 'prices', 'recent_trades', 'risk_metrics', 'trading_performance'],
+        provides=['forward_projections', 'scenario_analysis', 'scenario_recommendations', 'shadow_predictions', 'shadow_simulation', 'simulation_confidence', 'simulation_predictions', 'strategy_simulations'],
+        requires=['votes', 'environment', 'market_context', 'market_data', 'pending_orders', 'positions', 'prices', 'recent_trades', 'risk_metrics', 'trading_performance'],
         meta={'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'simulation', 'version': '3.0.0'}
     ),
     'StrategyArbiter': ModuleContract(
         name='StrategyArbiter',
         file='voting/strategy_arbiter.py',
-    provides=['alpha_weights', 'arbiter_recommendations', 'decision_statistics', 'gate_decision', 'instrument_signals', 'instruments', 'member_performance', 'member_weights', 'proposal_analysis', 'strategy_arbiter_initialization', 'strategy_weights', 'voting_quality'],
-    requires=['collusion_score', 'consensus_score', 'current_positions', 'horizon_alignment', 'market_context', 'market_regime', 'member_confidences', 'member_proposals', 'recent_trades', 'session_data', 'volatility_data'],
+        provides=['alpha_weights', 'arbiter_recommendations', 'decision_statistics', 'gate_decision', 'instrument_signals', 'instruments', 'member_performance', 'member_weights', 'proposal_analysis', 'strategy_arbiter_initialization', 'strategy_weights', 'voting_quality'],
+        requires=['collusion_score', 'consensus_score', 'current_positions', 'horizon_alignment', 'market_context', 'market_regime', 'member_confidences', 'member_proposals', 'recent_trades', 'session_data', 'volatility_data'],
         meta={'category': 'voting', 'version': '3.0.0'}
     ),
     'StrategyGenomePool': ModuleContract(
         name='StrategyGenomePool',
         file='strategy/strategy_genome_pool.py',
-    provides=['best_genome', 'evolution_analytics', 'genome_analysis', 'genome_recommendations', 'genome_weights', 'population_metrics', 'strategy_genome_pool_initialization'],
-    requires=['market_context', 'market_data', 'market_regime', 'recent_trades', 'risk_data', 'session_metrics', 'trading_performance', 'volatility_data'],
+        provides=['best_genome', 'evolution_analytics', 'genome_analysis', 'genome_recommendations', 'genome_weights', 'population_metrics', 'strategy_genome_pool_initialization'],
+        requires=['market_context', 'market_data', 'market_regime', 'recent_trades', 'risk_data', 'session_metrics', 'trading_performance', 'volatility_data'],
         meta={'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'strategy', 'version': '3.0.0'}
     ),
     'StrategyIntrospector': ModuleContract(
         name='StrategyIntrospector',
         file='strategy/strategy_introspector.py',
-    provides=['adaptation_recommendations', 'behavior_patterns', 'introspection_metrics', 'module_data', 'strategy_analysis', 'strategy_introspector_initialization', 'strategy_performance', 'strategy_profiles', 'trading_performance'],
-    requires=['market_context', 'market_regime', 'member_performance', 'recent_trades', 'risk_data', 'strategy_weights', 'volatility_data'],
+        provides=['adaptation_recommendations', 'behavior_patterns', 'introspection_metrics', 'module_data', 'strategy_analysis', 'strategy_introspector_initialization', 'strategy_performance', 'strategy_profiles', 'trading_performance'],
+        requires=['market_context', 'market_regime', 'member_performance', 'recent_trades', 'risk_data', 'strategy_weights', 'volatility_data'],
         meta={'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'strategy', 'version': '3.0.0'}
     ),
     'ThesisEvolutionEngine': ModuleContract(
         name='ThesisEvolutionEngine',
         file='strategy/thesis_evolution_engine.py',
-    provides=[
+        provides=[
             'active_theses', 'best_thesis', 'evolution_history',
             'thesis_diversity', 'thesis_evolution_initialization', 'thesis_performance', 'thesis_recommendations',
             # to satisfy TrainingScript read
             'market_thesis'
-    ],
-    requires=['economic_calendar', 'market_context', 'market_data', 'market_regime', 'recent_trades', 'risk_metrics', 'session_metrics', 'strategy_performance', 'trading_performance', 'volatility_data'],
-        meta={'is_voting_member': 'True', 'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'strategy', 'version': '3.0.0'}
+        ],
+        requires=['economic_calendar', 'market_context', 'market_data', 'market_regime', 'recent_trades', 'risk_metrics', 'session_metrics', 'strategy_performance', 'trading_performance', 'volatility_data'],
+        meta={'is_voting_member': 'False', 'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'strategy', 'version': '3.0.0'}
     ),
     'TimeAwareRiskScaling': ModuleContract(
         name='TimeAwareRiskScaling',
         file='market/time_aware_risk_scaling.py',
-    provides=['risk_scaling_factor', 'session_risk', 'time_risk_health', 'time_risk_status', 'time_risk_analysis', 'volatility_adjustment'],
-    requires=['market_data', 'timestamp', 'volatility_data'],
+        provides=['risk_scaling_factor', 'session_risk', 'time_risk_health', 'time_risk_status', 'time_risk_analysis', 'volatility_adjustment'],
+        requires=['market_data', 'timestamp', 'volatility_data'],
         meta={'thesis_required': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'risk', 'version': '3.0.0'}
     ),
     'TimeHorizonAligner': ModuleContract(
         name='TimeHorizonAligner',
         file='voting/time_horizon_aligner.py',
-    provides=['adaptation_status', 'aligned_weights', 'alignment_quality', 'horizon_distances', 'horizon_multipliers', 'regime_adjustments', 'session_patterns', 'time_horizon_aligner_initialization'],
-    requires=['expert_performance', 'market_context', 'market_regime', 'member_confidences', 'performance_feedback', 'recent_trades', 'session_type', 'time_of_day', 'volatility_data', 'voting_weights'],
+        provides=['adaptation_status', 'aligned_weights', 'alignment_quality', 'horizon_distances', 'horizon_multipliers', 'regime_adjustments', 'session_patterns', 'time_horizon_aligner_initialization'],
+        requires=['expert_performance', 'market_context', 'market_regime', 'member_confidences', 'performance_feedback', 'recent_trades', 'session_type', 'time_of_day', 'volatility_data', 'voting_weights'],
         meta={'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'voting', 'version': '3.0.0'}
     ),
     'TradeExplanationAuditor': ModuleContract(
         name='TradeExplanationAuditor',
         file='auditing/trade_explanation_auditor.py',
-    provides=['audit_alerts', 'explanation_metrics', 'trade_explanations'],
-    requires=['market_data', 'trades', 'trading_signal'],
+        provides=['audit_alerts', 'explanation_metrics', 'trade_explanations'],
+        requires=['market_data', 'trades', 'trading_signal'],
         meta={'is_voting_member': 'False', 'explainable': 'True', 'category': 'auditing', 'version': '2.0.0'}
     ),
     'TradeMapVisualizer': ModuleContract(
         name='TradeMapVisualizer',
         file='visualization/trade_map_visualizer.py',
-    provides=['chart_cache', 'chart_history', 'chart_statistics', 'dashboard_charts', 'performance_charts', 'trade_charts', 'visualization_reports'],
-    requires=['consensus_data', 'market_data', 'module_performance', 'positions', 'recent_trades', 'risk_metrics', 'trading_performance'],
+        provides=['chart_cache', 'chart_history', 'chart_statistics', 'dashboard_charts', 'performance_charts', 'trade_charts', 'visualization_reports'],
+        requires=['consensus_data', 'market_data', 'module_performance', 'positions', 'recent_trades', 'risk_metrics', 'trading_performance'],
         meta={'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'visualization', 'version': '3.0.0'}
     ),
     'TradeThesisTracker': ModuleContract(
         name='TradeThesisTracker',
         file='auditing/trade_thesis_tracker.py',
-    provides=['thesis_alerts', 'thesis_analysis'],
-    requires=['market_data', 'trades', 'trading_signal'],
+        provides=['thesis_alerts', 'thesis_analysis'],
+        requires=['market_data', 'trades', 'trading_signal'],
         meta={'is_voting_member': 'False', 'explainable': 'True', 'category': 'auditing', 'version': '2.0.0'}
     ),
     'TradingModeManager': ModuleContract(
         name='TradingModeManager',
         file='trading_modes/trading_mode.py',
-    provides=['decision_factors', 'mode_config', 'mode_effectiveness', 'mode_stats', 'mode_thresholds', 'trading_mode', 'trading_mode_manager_initialization'],
-    requires=['economic_calendar', 'market_context', 'market_regime', 'positions', 'recent_trades', 'risk_metrics', 'session_metrics', 'strategy_performance', 'trading_performance', 'volatility_data', 'votes'],
+        provides=['decision_factors', 'mode_config', 'mode_effectiveness', 'mode_stats', 'mode_thresholds', 'trading_mode', 'trading_mode_manager_initialization'],
+        requires=['economic_calendar', 'market_context', 'market_regime', 'positions', 'recent_trades', 'risk_metrics', 'session_metrics', 'strategy_performance', 'trading_performance', 'volatility_data', 'votes'],
         meta={'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'trading_modes', 'version': '3.0.0'}
     ),
     'VisualizationInterface': ModuleContract(
         name='VisualizationInterface',
         file='visualization/visualization_interface.py',
-    provides=['alert_timeline', 'analytics_reports', 'dashboard_data', 'streaming_data', 'system_status', 'visualization_data'],
-    requires=['alerts', 'consensus_data', 'market_data', 'module_performance', 'positions', 'recent_trades', 'risk_metrics', 'step_data', 'system_alerts', 'trading_performance'],
+        provides=['alert_timeline', 'analytics_reports', 'dashboard_data', 'streaming_data', 'system_status', 'visualization_data'],
+        requires=['alerts', 'consensus_data', 'market_data', 'module_performance', 'positions', 'recent_trades', 'risk_metrics', 'step_data', 'system_alerts', 'trading_performance'],
         meta={'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'visualization', 'version': '3.0.0'}
     ),
 }
 
-    
 
 def contract_params(name: str) -> Dict[str, Any]:
     mc = CONTRACTS.get(name)

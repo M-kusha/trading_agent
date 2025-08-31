@@ -85,7 +85,7 @@ class AttentionFeatureFusion(nn.Module):
     description="Reads advanced_features + market_data; produces multiscale_features, embeddings, attention, and neural health/capabilities.",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """

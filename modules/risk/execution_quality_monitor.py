@@ -33,6 +33,14 @@ class ExecutionMode(Enum):
     CRITICAL = "critical"
     EMERGENCY = "emergency"
 
+class ExecutionVote(Enum):
+    """Standardized vote for routing / risk governor"""
+    PROCEED = "proceed"    # healthy, green light
+    CAUTION = "caution"    # proceed with reduced size / safeguards
+    HALT    = "halt"       # pause / block new risk
+    ABSTAIN = "abstain"    # not enough data / don't influence
+
+
 
 @dataclass
 class ExecutionQualityConfig:
@@ -62,11 +70,11 @@ class ExecutionQualityConfig:
     description="Advanced execution quality monitoring with intelligent context-aware analysis and training mode",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 
 
-class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
+class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, SmartInfoBusTradingMixin):
     """
     [ROCKET] Advanced execution quality monitor with SmartInfoBus integration.
     Monitors execution metrics including slippage, latency, fill rates, and spreads
@@ -110,6 +118,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         self.quality_score = 1.0
         self.execution_count = 0
         self.degraded_executions = 0
+        self._last_vote = None  # Keep track of last vote for bus publishing
         # - Config dict for BaseModule compatibility
         self.config = dict(self._cfg.__dict__)  # type: ignore[assignment]
 
@@ -287,15 +296,23 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
     # ─────────────────────────────────────────────────────────────
 
     async def process(self, **inputs) -> Dict[str, Any]:
-        """Process execution quality assessment with enhanced analytics"""
+        """Process execution quality assessment with enhanced analytics + voter output."""
         start_time = time.time()
 
         try:
             # Extract execution data from SmartInfoBus
             execution_data = await self._extract_execution_data(**inputs)
-
             if not execution_data:
-                return await self._handle_no_data_fallback()
+                # Even if we fallback, provide a vote (likely ABSTAIN) from current state
+                vote_payload = await self.cast_vote(**inputs)
+                fallback = await self._handle_no_data_fallback()
+                fallback["execution_quality_vote"] = vote_payload
+                # ADD REQUIRED KEYS TO RETURN PAYLOAD
+                fallback["ExecutionQualityMonitor_voting_proposal"] = vote_payload
+                fallback["ExecutionQualityMonitor_confidence"] = vote_payload.get('confidence', 0.5)
+                # Publish to bus
+                self._write_bus_from_payload(fallback, fallback["_thesis"])
+                return fallback
 
             # Update market context
             context_result = await self._update_market_context_async(execution_data)
@@ -319,6 +336,10 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
 
             # Update operational mode
             mode_result = await self._update_operational_mode()
+
+            # --- NEW: cast a vote based on current quality state
+            vote_payload = await self.cast_vote(**inputs)
+            # ---
 
             # Combine results
             result = {
@@ -376,9 +397,6 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 'current_issues': {k: len(v) for k, v in self.issues.items() if v}
             }
 
-            # Update SmartInfoBus
-            await self._update_execution_smart_bus(result, thesis)
-
             # Record success
             processing_time = (time.time() - start_time) * 1000
             self._record_success(processing_time)
@@ -389,14 +407,83 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 'execution_analytics': analytics_data,
                 'quality_metrics': metrics_data,
                 'execution_alerts': alerts_data,
+                'execution_quality_vote': vote_payload,   # <-- NEW: return the vote
+                # ADD REQUIRED KEYS TO RETURN PAYLOAD
+                'ExecutionQualityMonitor_voting_proposal': vote_payload,
+                'ExecutionQualityMonitor_confidence': vote_payload.get('confidence', 0.5),
                 '_thesis': thesis,
                 'success': True
             })
 
+            # Update SmartInfoBus (includes vote)
+            self._write_bus_from_payload(result, thesis)
+
             return result
 
         except Exception as e:
-            return await self._handle_execution_error(e, start_time)
+            # On error, still try to provide a vote from current state (likely caution/halt)
+            try:
+                vote_payload = await self.cast_vote(**inputs)
+                error_payload = await self._handle_execution_error(e, start_time)
+                error_payload["execution_quality_vote"] = vote_payload
+                # ADD REQUIRED KEYS TO RETURN PAYLOAD
+                error_payload["ExecutionQualityMonitor_voting_proposal"] = vote_payload
+                error_payload["ExecutionQualityMonitor_confidence"] = vote_payload.get('confidence', 0.5)
+                self._write_bus_from_payload(error_payload, error_payload.get("_thesis", "Execution monitor error"))
+                return error_payload
+            except Exception:
+                # If vote casting itself fails, fall back to original error handling with fallback keys
+                error_payload = await self._handle_execution_error(e, start_time)
+                fallback_vote = {
+                    "module": "ExecutionQualityMonitor",
+                    "topic": "execution_quality",
+                    "vote": "halt",
+                    "confidence": 0.1,
+                    "sizing_multiplier": 0.0,
+                    "reasoning": "Error state - halting.",
+                    "metrics": {},
+                    "timestamp": datetime.datetime.now().isoformat()
+                }
+                error_payload["ExecutionQualityMonitor_voting_proposal"] = fallback_vote
+                error_payload["ExecutionQualityMonitor_confidence"] = 0.1
+                return error_payload
+
+    # ── SmartInfoBus I/O (single-writer) ─────────────────────
+    def _write_bus_from_payload(self, payload: Dict[str, Any], thesis: str) -> None:
+        try:
+            # Write standard provides keys
+            self.smart_bus.set('execution_quality', payload['execution_quality'],
+                            module='ExecutionQualityMonitor', thesis=thesis)
+            self.smart_bus.set('execution_analytics', payload['execution_analytics'],
+                            module='ExecutionQualityMonitor', thesis="Execution analytics update")
+            self.smart_bus.set('quality_metrics', payload['quality_metrics'],
+                            module='ExecutionQualityMonitor', thesis="Quality metrics update")
+            self.smart_bus.set('execution_alerts', payload['execution_alerts'],
+                            module='ExecutionQualityMonitor', thesis="Execution alerts update")
+
+            # NEW: publish standardized vote - ALWAYS publish even if None/empty
+            vote = payload.get('execution_quality_vote') or getattr(self, '_last_vote', None)
+            if not vote:
+                # Fallback vote if none exists
+                vote = {
+                    "module": "ExecutionQualityMonitor",
+                    "topic": "execution_quality",
+                    "vote": "abstain",
+                    "confidence": 0.5,
+                    "sizing_multiplier": 0.75,
+                    "reasoning": "No vote generated; abstaining.",
+                    "metrics": {},
+                    "timestamp": datetime.datetime.now().isoformat()
+                }
+            
+            self.smart_bus.set('ExecutionQualityMonitor_voting_proposal', vote,
+                            module='ExecutionQualityMonitor', thesis="Execution quality voting proposal")
+            self.smart_bus.set('ExecutionQualityMonitor_confidence', vote.get('confidence', 0.5),
+                            module='ExecutionQualityMonitor', thesis="Execution quality vote confidence")
+
+        except Exception as e:
+            err = self.error_pinpointer.analyze_error(e, "bus_write")
+            self.logger.error(f"SmartInfoBus update failed: {err}")
 
     # ─────────────────────────────────────────────────────────────
     # DATA EXTRACTION & CONVERSION
@@ -1355,6 +1442,100 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         except Exception as e:
             self.logger.warning(f"Mode update failed: {e}")
             return {'mode_updated': False, 'error': str(e)}
+        
+
+    def get_voter_capabilities(self) -> Dict[str, Any]:
+        """Describe this voter's topic and schema (for coordinators/aggregators)."""
+        return {
+            "module": "ExecutionQualityMonitor",
+            "topic": "execution_quality",
+            "votes": [v.value for v in ExecutionVote],
+            "schema": {
+                "vote": "proceed|caution|halt|abstain",
+                "confidence": "0..1",
+                "sizing_multiplier": "suggested 0..1 for position sizing",
+                "reasoning": "short human-readable rationale",
+                "metrics": {
+                    "quality_score": "0..1",
+                    "avg_slippage": "float",
+                    "avg_latency": "ms",
+                    "avg_fill_rate": "0..1",
+                    "mode": "training|calibration|normal|degraded|critical|emergency",
+                    "alerts": "int"
+                }
+            }
+        }
+
+    async def cast_vote(self, **inputs) -> Dict[str, Any]:
+        """
+        Turn current execution-quality state into a standardized vote.
+        Uses in-memory state only (does not read self-provided bus keys).
+        """
+        # Not enough data yet -> abstain
+        if self.execution_count == 0 and not (self.slippage_history or self.latency_history or self.fill_history):
+            vote_payload = {
+                "module": "ExecutionQualityMonitor",
+                "topic": "execution_quality",
+                "vote": ExecutionVote.ABSTAIN.value,
+                "confidence": 0.25,
+                "sizing_multiplier": 0.75,
+                "reasoning": "No execution data yet; abstaining.",
+                "metrics": {
+                    "quality_score": float(self.quality_score),
+                    "avg_slippage": float(self.comprehensive_metrics.get("avg_slippage", 0.0)),
+                    "avg_latency": float(self.comprehensive_metrics.get("avg_latency", 0.0)),
+                    "avg_fill_rate": float(self.comprehensive_metrics.get("avg_fill_rate", 1.0)),
+                    "mode": self.current_mode.value,
+                    "alerts": len(self.quality_alerts),
+                },
+                "timestamp": datetime.datetime.now().isoformat(),
+            }
+            self._last_vote = vote_payload
+            return vote_payload
+
+        qs = float(self.quality_score)
+        mode = self.current_mode
+
+        # Map quality/mode -> vote & suggested sizing
+        if mode in (ExecutionMode.EMERGENCY, ExecutionMode.CRITICAL) or qs < 0.30:
+            vote = ExecutionVote.HALT
+            sizing = 0.0
+            reasoning = f"Critical execution quality ({qs:.2f}) or {mode.value} mode."
+        elif mode == ExecutionMode.DEGRADED or qs < self._cfg.degradation_threshold:
+            vote = ExecutionVote.CAUTION
+            sizing = 0.50
+            reasoning = f"Degraded execution quality ({qs:.2f}); reduce risk."
+        elif mode in (ExecutionMode.TRAINING, ExecutionMode.CALIBRATION):
+            vote = ExecutionVote.PROCEED
+            sizing = 0.75
+            reasoning = f"{mode.value.title()} mode with quality {qs:.2f}; proceed conservatively."
+        else:
+            vote = ExecutionVote.PROCEED
+            sizing = 1.0
+            reasoning = f"Healthy execution quality ({qs:.2f}); proceed."
+
+        confidence = await self.calculate_confidence({}, **inputs)
+
+        vote_payload = {
+            "module": "ExecutionQualityMonitor",
+            "topic": "execution_quality",
+            "vote": vote.value,
+            "confidence": float(confidence),
+            "sizing_multiplier": float(sizing),
+            "reasoning": reasoning,
+            "metrics": {
+                "quality_score": qs,
+                "avg_slippage": float(self.comprehensive_metrics.get("avg_slippage", 0.0)),
+                "avg_latency": float(self.comprehensive_metrics.get("avg_latency", 0.0)),
+                "avg_fill_rate": float(self.comprehensive_metrics.get("avg_fill_rate", 1.0)),
+                "mode": mode.value,
+                "alerts": len(self.quality_alerts),
+            },
+            "timestamp": datetime.datetime.now().isoformat(),
+        }
+        self._last_vote = vote_payload
+        return vote_payload
+
 
     async def _generate_execution_thesis(self, execution_data: Dict[str, Any],
                                          result: Dict[str, Any]) -> str:
@@ -1400,85 +1581,6 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
 
         except Exception as e:
             return f"Execution thesis generation failed: {str(e)} - Core execution monitoring functional"
-
-    async def _update_execution_smart_bus(self, result: Dict[str, Any], thesis: str):
-        """Update SmartInfoBus with execution results"""
-        try:
-            # Execution quality
-            execution_quality_data = {
-                'current_mode': self.current_mode.value,
-                'quality_score': self.quality_score,
-                'training_mode': self.training_mode,
-                'execution_count': self.execution_count,
-                'degraded_executions': self.degraded_executions,
-                'timestamp': datetime.datetime.now().isoformat()
-            }
-
-            self.smart_bus.set(
-                'execution_quality',
-                execution_quality_data,
-                module='ExecutionQualityMonitor',
-                thesis=thesis
-            )
-
-            # Execution analytics
-            analytics_data = {
-                'comprehensive_metrics': self.comprehensive_metrics.copy(),
-                'issues': {k: len(v) for k, v in self.issues.items() if v},
-                'quality_alerts': len(self.quality_alerts),
-                'escalation_count': self.escalation_count,
-                'regime_performance': {
-                    regime: {
-                        'quality_scores': len(data['quality_scores']),
-                        'avg_quality': float(np.mean(data['quality_scores'][-10:])) if data['quality_scores'] else 0.0
-                    }
-                    for regime, data in self.regime_performance.items()
-                }
-            }
-
-            self.smart_bus.set(
-                'execution_analytics',
-                analytics_data,
-                module='ExecutionQualityMonitor',
-                thesis="Comprehensive execution quality analytics and performance tracking"
-            )
-
-            # Quality metrics
-            metrics_data = {
-                'quality_score': self.quality_score,
-                'avg_slippage': self.comprehensive_metrics["avg_slippage"],
-                'avg_latency': self.comprehensive_metrics["avg_latency"],
-                'avg_fill_rate': self.comprehensive_metrics["avg_fill_rate"],
-                'avg_spread': self.comprehensive_metrics["avg_spread"],
-                'success_rate': self.comprehensive_metrics["success_rate"],
-                'degradation_rate': self.comprehensive_metrics["degradation_rate"]
-            }
-
-            self.smart_bus.set(
-                'quality_metrics',
-                metrics_data,
-                module='ExecutionQualityMonitor',
-                thesis="Real-time execution quality metrics and performance indicators"
-            )
-
-            # Execution alerts
-            alerts_data = {
-                'quality_alerts': len(self.quality_alerts),
-                'escalation_count': self.escalation_count,
-                'critical_issues': sum(1 for issues in self.issues.values() for _ in issues),
-                'last_escalation': self.last_escalation.isoformat() if self.last_escalation else None,
-                'current_issues': {k: len(v) for k, v in self.issues.items() if v}
-            }
-
-            self.smart_bus.set(
-                'execution_alerts',
-                alerts_data,
-                module='ExecutionQualityMonitor',
-                thesis="Execution quality alerts and escalation tracking"
-            )
-
-        except Exception as e:
-            self.logger.error(f"Failed to update SmartInfoBus: {e}")
 
     # ─────────────────────────────────────────────────────────────
     # FALLBACKS & ERRORS
@@ -2050,83 +2152,3 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             if hasattr(self, 'logger'):
                 self.logger.warning(f"Confidence calculation failed: {e}")
             return 0.4  # Conservative default
-
-    async def propose_action(self, **inputs) -> Dict[str, Any]:
-        """Propose execution quality action for trading system optimization"""
-        try:
-            # Analyze current execution quality
-            overall_quality = float(self.quality_score)
-            current_mode = self.current_mode
-            alert_count = len(self.quality_alerts)
-
-            # Get specific quality metrics from comprehensive_metrics
-            sl_limit = max(self._cfg.slip_limit, 1e-6)
-            lat_limit = max(float(self._cfg.latency_limit), 1.0)
-
-            slippage_quality = 1.0 - min(1.0, float(self.comprehensive_metrics.get('avg_slippage', 0.0)) / sl_limit)
-            latency_quality = 1.0 - min(1.0, float(self.comprehensive_metrics.get('avg_latency', 0.0)) / lat_limit)
-            fill_rate_quality = float(self.comprehensive_metrics.get('avg_fill_rate', 1.0))
-
-            # Determine action based on execution quality
-            if overall_quality < 0.3 or current_mode in [ExecutionMode.CRITICAL, ExecutionMode.EMERGENCY]:
-                action_type = 'emergency_mode'
-                signal_strength = 0.95
-                reasoning = f"Critical execution quality ({overall_quality:.3f}) or emergency mode"
-            elif overall_quality < 0.5 or current_mode == ExecutionMode.DEGRADED:
-                action_type = 'reduce_execution_risk'
-                signal_strength = 0.8
-                reasoning = f"Poor execution quality ({overall_quality:.3f}) requires risk reduction"
-            elif slippage_quality < 0.4:
-                action_type = 'optimize_slippage'
-                signal_strength = 0.7
-                reasoning = f"High slippage detected (quality: {slippage_quality:.3f})"
-            elif latency_quality < 0.4:
-                action_type = 'optimize_latency'
-                signal_strength = 0.6
-                reasoning = f"High latency detected (quality: {latency_quality:.3f})"
-            elif fill_rate_quality < 0.6:
-                action_type = 'improve_fills'
-                signal_strength = 0.5
-                reasoning = f"Poor fill rates (quality: {fill_rate_quality:.3f})"
-            elif alert_count > 3:
-                action_type = 'review_alerts'
-                signal_strength = 0.4
-                reasoning = f"Multiple quality alerts ({alert_count}) require attention"
-            elif overall_quality > 0.8:
-                action_type = 'maintain_quality'
-                signal_strength = 0.3
-                reasoning = f"Excellent execution quality ({overall_quality:.3f})"
-            else:
-                action_type = 'monitor'
-                signal_strength = 0.4
-                reasoning = f"Normal execution quality ({overall_quality:.3f})"
-
-            return {
-                'action': action_type,
-                'signal_strength': signal_strength,
-                'reasoning': reasoning,
-                'execution_metrics': {
-                    'overall_quality': overall_quality,
-                    'slippage_quality': slippage_quality,
-                    'latency_quality': latency_quality,
-                    'fill_rate_quality': fill_rate_quality,
-                    'current_mode': current_mode.value,
-                    'alert_count': alert_count
-                },
-                'system_status': {
-                    'health_status': self._health_status,
-                    'training_mode': self.training_mode,
-                    'circuit_breaker_state': self.circuit_breaker.get('state', 'UNKNOWN')
-                },
-                'confidence': await self.calculate_confidence({}, **inputs)
-            }
-
-        except Exception as e:
-            if hasattr(self, 'logger'):
-                self.logger.error(f"Action proposal failed: {e}")
-            return {
-                'action': 'abstain',
-                'signal_strength': 0.0,
-                'reasoning': f'Execution quality error: {str(e)}',
-                'confidence': 0.1
-            }

@@ -20,7 +20,7 @@ from modules.utils.audit_utils import format_operator_message
     description="Advanced trade auditing for trading strategies.",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 @module(
     provides=['trade_explanations', 'audit_alerts', 'explanation_metrics'],

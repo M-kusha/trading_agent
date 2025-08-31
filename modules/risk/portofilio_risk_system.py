@@ -65,7 +65,9 @@ class PortfolioRiskConfig:
     description="Advanced portfolio risk management with comprehensive VaR analysis and dynamic position limits",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
+    # --- Voting additions ---
+    is_voting_member=True,
 ))
 class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
@@ -373,8 +375,14 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
 
             if not portfolio_data:
                 payload = await self._handle_no_data_fallback()
+                # --- Voting additions (fallback voting) ---
+                vote_payload = await self.vote()
+                payload["PortfolioRiskSystem_voting_proposal"] = vote_payload
+                payload["PortfolioRiskSystem_confidence"] = float(vote_payload.get("confidence", 0.0))
                 # Ensure success flag even in fallback (no error)
                 payload["success"] = True
+                # Optional: write coordinator payload
+                await self._write_voting_to_bus(vote_payload)
                 return payload
 
             # Update market context
@@ -488,6 +496,13 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 }
             provides_payload["portfolio_risk_proposal"] = proposal
 
+            # --- Voting additions: build + attach proposal & confidence ---
+            vote_payload = await self.vote()
+            provides_payload["PortfolioRiskSystem_voting_proposal"] = vote_payload
+            provides_payload["PortfolioRiskSystem_confidence"] = float(vote_payload.get("confidence", 0.0))
+            # Optional: coordinator bus write (separate from our contract-provides keys)
+            await self._write_voting_to_bus(vote_payload)
+
             # Update SmartInfoBus (writes only provides)
             await self._update_portfolio_smart_bus(provides_payload, thesis)
 
@@ -501,6 +516,14 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
 
         except Exception as e:
             error_payload = await self._handle_portfolio_error(e, start_time)
+            # --- Voting additions (error voting) ---
+            try:
+                vote_payload = await self.vote()
+                error_payload["PortfolioRiskSystem_voting_proposal"] = vote_payload
+                error_payload["PortfolioRiskSystem_confidence"] = float(vote_payload.get("confidence", 0.0))
+                await self._write_voting_to_bus(vote_payload)
+            except Exception:
+                pass
             error_payload["success"] = False
             return error_payload
 
@@ -1203,6 +1226,23 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         except Exception as e:
             self.logger.error(f"Failed to update SmartInfoBus: {e}")
 
+    # --- Voting helper: optional coordinator bus write (kept separate from provides) ---
+    async def _write_voting_to_bus(self, vote_payload: Dict[str, Any]) -> None:
+        try:
+            self.smart_bus.set(
+                "voting_member_proposal",
+                {
+                    "member": "PortfolioRiskSystem",
+                    "proposal": vote_payload,
+                    "confidence": float(vote_payload.get("confidence", 0.0)),
+                    "timestamp": datetime.datetime.now().isoformat(),
+                },
+                module="PortfolioRiskSystem",
+                thesis="PortfolioRiskSystem voting proposal",
+            )
+        except Exception as e:
+            self.logger.warning(f"Voting bus write failed: {e}")
+
     async def _handle_no_data_fallback(self) -> Dict[str, Any]:
         """Handle case when no portfolio data is available (contract-safe)"""
         self.logger.warning("No portfolio data available - using fallback mode")
@@ -1735,6 +1775,19 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             if self.risk_adjustment < 1.0:
                 total_confidence *= self.risk_adjustment
 
+            # Down-weight if bootstrap (less information)
+            if self.bootstrap_mode:
+                total_confidence *= 0.9
+
+            # Down-weight if proposed jump is large
+            try:
+                target_adj = float(action.get("target_risk_adjustment", self.risk_adjustment))
+                jump = abs(target_adj - self.risk_adjustment)
+                if jump > 0.25:
+                    total_confidence *= 0.9
+            except Exception:
+                pass
+
             return max(0.0, min(1.0, float(total_confidence)))
 
         except Exception as e:
@@ -1839,3 +1892,115 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         except Exception as e:
             self.logger.error(f"Risk status retrieval failed: {e}")
             return {}
+
+    # ================== VOTING INTERFACE ==================
+
+    async def vote(self) -> Dict[str, Any]:
+        """
+        Build a voting proposal for the committee.
+        Outputs a compact payload with desired portfolio risk posture and confidence.
+
+        Schema:
+        {
+            "member": "PortfolioRiskSystem",
+            "type": "risk_posture",
+            "posture": "reduce" | "increase" | "maintain" | "halt",
+            "target_risk_adjustment": 0.92,
+            "target_position_limit": 0.18,
+            "bounds": {
+                "risk_adjustment": [min_adj, max_adj],
+                "position_limit": [min_limit, max_limit]
+            },
+            "rationale": "...",
+            "confidence": 0.78,
+            "context": {...},
+            "timestamp": 1700000000.0
+        }
+        """
+        try:
+            now = time.time()
+            cur_adj = float(self.risk_adjustment)
+            base_limit = float(self._cfg.max_position_pct)
+
+            # Decide posture
+            if self.circuit_breaker["state"] == "OPEN" or self.current_mode == RiskMode.EMERGENCY:
+                posture = "halt"
+                target_adj = max(self.min_risk_adjustment, min(cur_adj, 0.6))
+                rationale = "Circuit breaker/emergency posture."
+            else:
+                if self.current_mode in (RiskMode.CRITICAL,):
+                    posture = "reduce"
+                    target_adj = max(self.min_risk_adjustment, min(cur_adj, 0.75))
+                    rationale = "Critical conditions (VaR/violations) — reduce risk."
+                elif self.current_mode == RiskMode.ELEVATED or self.current_var > 0.03 or self.max_correlation > 0.8:
+                    posture = "reduce"
+                    target_adj = max(self.min_risk_adjustment, min(cur_adj, 0.85))
+                    rationale = "Elevated risk—VaR/correlation above thresholds."
+                elif self.current_mode == RiskMode.BOOTSTRAP:
+                    posture = "maintain"
+                    target_adj = cur_adj
+                    rationale = "Bootstrap phase — maintain until more data."
+                else:
+                    # NORMAL
+                    if self.current_var < 0.02 and self.max_correlation < 0.6 and self.daily_risk_used < self._cfg.risk_budget_daily * 0.6:
+                        posture = "increase"
+                        target_adj = min(self.max_risk_adjustment, max(cur_adj, 1.1))
+                        rationale = "Favorable conditions — increase cautiously."
+                    else:
+                        posture = "maintain"
+                        target_adj = cur_adj
+                        rationale = "Risk acceptable — maintain posture."
+
+            # Map target adjustment to a suggested position limit
+            suggested_limit = float(np.clip(base_limit * target_adj, self._cfg.min_position_pct, self._cfg.max_position_pct))
+
+            # Confidence
+            conf_input = {
+                "action_type": "risk_posture",
+                "posture": posture,
+                "target_risk_adjustment": target_adj,
+                "mode": self.current_mode.value,
+            }
+            confidence = await self.calculate_confidence(conf_input)
+
+            payload = {
+                "member": "PortfolioRiskSystem",
+                "type": "risk_posture",
+                "posture": posture,
+                "target_risk_adjustment": float(target_adj),
+                "target_position_limit": float(suggested_limit),
+                "bounds": {
+                    "risk_adjustment": [float(self.min_risk_adjustment), float(self.max_risk_adjustment)],
+                    "position_limit": [float(self._cfg.min_position_pct), float(self._cfg.max_position_pct)],
+                },
+                "rationale": rationale,
+                "confidence": float(confidence),
+                "context": {
+                    "mode": self.current_mode.value,
+                    "var_95": float(self.current_var),
+                    "max_correlation": float(self.max_correlation),
+                    "risk_budget_used": float(self.daily_risk_used),
+                    "market_regime": self.market_regime,
+                    "volatility_regime": self.volatility_regime,
+                },
+                "timestamp": now,
+            }
+            return payload
+
+        except Exception as e:
+            self.logger.warning(f"Vote generation failed: {e}")
+            return {
+                "member": "PortfolioRiskSystem",
+                "type": "risk_posture",
+                "posture": "maintain",
+                "target_risk_adjustment": float(self.risk_adjustment),
+                "target_position_limit": float(self._cfg.max_position_pct),
+                "bounds": {
+                    "risk_adjustment": [float(self.min_risk_adjustment), float(self.max_risk_adjustment)],
+                    "position_limit": [float(self._cfg.min_position_pct), float(self._cfg.max_position_pct)],
+                },
+                "rationale": f"fallback: {e}",
+                "confidence": 0.5,
+                "context": {},
+                "timestamp": time.time(),
+            }

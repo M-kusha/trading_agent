@@ -74,7 +74,7 @@ class TimeAwareRiskConfig:
     description="Advanced time-aware risk scaling with session analysis and volatility modeling",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class TimeAwareRiskScaling(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """

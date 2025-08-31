@@ -54,7 +54,7 @@ class FractalConfig:
     description="Fractal analysis (Hurst / Variance Ratio / Wavelet Energy) with hysteresis and stability control.",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class FractalRegimeConfirmation(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVotingMixin):
     """

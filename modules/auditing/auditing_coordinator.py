@@ -20,7 +20,7 @@ from modules.utils.audit_utils import format_operator_message
     description="Central coordinator for managing audit operations.",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class AuditingCoordinator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """

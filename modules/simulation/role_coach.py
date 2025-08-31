@@ -26,7 +26,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
     description="Intelligent trade discipline coaching with context-aware penalties and performance tracking",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """

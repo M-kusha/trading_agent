@@ -76,7 +76,7 @@ except ImportError:
     description="Advanced playbook clustering with intelligent pattern recognition and strategy optimization",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """

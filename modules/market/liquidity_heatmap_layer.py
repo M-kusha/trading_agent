@@ -79,7 +79,7 @@ class LiquidityLSTM(nn.Module):
     description="Advanced liquidity heatmap analysis with neural network predictions",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class LiquidityHeatmapLayer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """

@@ -45,7 +45,7 @@ class SentimentConfig:
     description="Advanced news sentiment analysis with API integration and SmartInfoBus support",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class NewsSentimentModule(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """

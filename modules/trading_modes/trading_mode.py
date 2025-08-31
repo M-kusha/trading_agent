@@ -59,7 +59,7 @@ class TradingModeManagerConfig:
     description="Intelligent trading mode switching based on comprehensive market analysis and performance tracking",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """

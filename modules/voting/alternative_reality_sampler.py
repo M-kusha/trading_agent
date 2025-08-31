@@ -59,7 +59,7 @@ class SamplerConfig:
     description="Alternative voting outcome sampling for robustness & uncertainty quantification",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """

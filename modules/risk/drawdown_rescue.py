@@ -75,7 +75,7 @@ class DrawdownRescueConfig:
     description="Enhanced drawdown monitoring with intelligent rescue mechanisms and risk adjustment",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 
 

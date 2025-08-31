@@ -26,7 +26,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
     description="Modern visualization interface with comprehensive SmartInfoBus integration.",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
@@ -407,19 +407,84 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
         data = {}
         
         try:
-            # Financial data
+            # Financial data (robust fallbacks across publishers)
             risk_data = self.smart_bus.get('risk_metrics', 'VisualizationInterface') or {}
-            data['balance'] = float(risk_data.get('balance', risk_data.get('equity', 10000)))
-            data['equity'] = float(risk_data.get('equity', data['balance']))
-            data['drawdown'] = float(risk_data.get('current_drawdown', 0))
-            data['max_drawdown'] = float(risk_data.get('max_drawdown', 0))
+            portfolio_metrics = self.smart_bus.get('portfolio_metrics', 'VisualizationInterface') or {}
+            market_state = self.smart_bus.get('market_state', 'VisualizationInterface') or {}
+            # Top-level fallbacks written by PositionManager
+            top_balance = self.smart_bus.get('balance', 'VisualizationInterface')
+            top_equity = self.smart_bus.get('equity', 'VisualizationInterface')
+
+            # Balance/equity
+            balance_val = (
+                risk_data.get('balance')
+                if isinstance(risk_data.get('balance'), (int, float)) else None
+            )
+            if balance_val is None:
+                balance_val = (
+                    portfolio_metrics.get('balance')
+                    if isinstance(portfolio_metrics.get('balance'), (int, float)) else None
+                )
+            if balance_val is None and isinstance(top_balance, (int, float)):
+                balance_val = top_balance
+            if balance_val is None:
+                balance_val = 10000.0
+
+            equity_val = (
+                risk_data.get('equity')
+                if isinstance(risk_data.get('equity'), (int, float)) else None
+            )
+            if equity_val is None and isinstance(top_equity, (int, float)):
+                equity_val = top_equity
+            if equity_val is None:
+                equity_val = balance_val
+
+            data['balance'] = float(balance_val)
+            data['equity'] = float(equity_val)
+
+            # Drawdown
+            dd = None
+            if isinstance(risk_data.get('current_drawdown'), (int, float)):
+                dd = risk_data.get('current_drawdown')
+            elif isinstance(portfolio_metrics.get('drawdown'), (int, float)):
+                dd = portfolio_metrics.get('drawdown')
+            elif isinstance(market_state.get('current_drawdown'), (int, float)):
+                dd = market_state.get('current_drawdown')
+            data['drawdown'] = float(dd if dd is not None else 0.0)
+
+            # Max drawdown (best-effort)
+            mdd = risk_data.get('max_drawdown')
+            if not isinstance(mdd, (int, float)):
+                mdd = portfolio_metrics.get('max_drawdown')
+            data['max_drawdown'] = float(mdd if isinstance(mdd, (int, float)) else 0.0)
             
             # Trading activity
-            positions = self.smart_bus.get('positions', 'VisualizationInterface') or []
+            positions = self.smart_bus.get('positions', 'VisualizationInterface')
+            if not positions:
+                positions = self.smart_bus.get('current_positions', 'VisualizationInterface') or []
+            if not isinstance(positions, list):
+                # Some publishers use a dict keyed by instrument
+                if isinstance(positions, dict):
+                    positions = list(positions.values())
+                else:
+                    positions = []
             data['position_count'] = len(positions)
             data['active_trades'] = positions
             
-            recent_trades = self.smart_bus.get('recent_trades', 'VisualizationInterface') or []
+            # Recent/completed trades
+            recent_trades = self.smart_bus.get('recent_trades', 'VisualizationInterface')
+            if not recent_trades:
+                trades_all = self.smart_bus.get('trades', 'VisualizationInterface') or []
+                if isinstance(trades_all, list):
+                    recent_trades = trades_all[-20:]
+            # Some modules nest under trade_data
+            if not recent_trades:
+                trade_data = self.smart_bus.get('trade_data', 'VisualizationInterface') or {}
+                if isinstance(trade_data, dict):
+                    recent_trades = trade_data.get('recent_trades', [])
+
+            if not isinstance(recent_trades, list):
+                recent_trades = []
             data['completed_trades'] = recent_trades
             data['trade_count'] = len(recent_trades)
             
@@ -437,9 +502,12 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
                 else:
                     data['sharpe_ratio'] = 0.0
             else:
+                # Fall back to current unrealized PnL if available
+                cur_pnl = self.smart_bus.get('current_pnl', 'VisualizationInterface')
+                cur_pnl = float(cur_pnl) if isinstance(cur_pnl, (int, float)) else 0.0
                 data['win_rate'] = 0.0
-                data['pnl_total'] = 0.0
-                data['pnl_today'] = 0.0
+                data['pnl_total'] = cur_pnl
+                data['pnl_today'] = cur_pnl
                 data['sharpe_ratio'] = 0.0
             
             # System state
@@ -447,12 +515,25 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
             data['consensus'] = float(consensus_data.get('score', 0.5))
             
             # Risk metrics
-            data['risk_score'] = float(risk_data.get('risk_score', 0.0))
+            risk_score = risk_data.get('risk_score')
+            if not isinstance(risk_score, (int, float)):
+                tra = self.smart_bus.get('time_risk_analysis', 'VisualizationInterface') or {}
+                if isinstance(tra.get('risk_level'), (int, float)):
+                    risk_score = tra.get('risk_level')
+                elif isinstance(tra.get('risk_score'), (int, float)):
+                    risk_score = tra.get('risk_score')
+                else:
+                    rs = self.smart_bus.get('risk_score', 'VisualizationInterface')
+                    risk_score = rs if isinstance(rs, (int, float)) else 0.0
+            try:
+                data['risk_score'] = float(risk_score if isinstance(risk_score, (int, float)) else 0.0)
+            except Exception:
+                data['risk_score'] = 0.0
             
             # Calculate exposure
             total_exposure = sum(abs(pos.get('size', 0)) for pos in positions)
             data['total_exposure'] = total_exposure
-            data['leverage'] = total_exposure / max(data['balance'], 1000)
+            data['leverage'] = float(total_exposure) / max(float(data['balance']), 1.0)
             
             # Module performance
             module_data = self.smart_bus.get('module_performance', 'VisualizationInterface') or {}
@@ -461,12 +542,42 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
             # System status
             data['system_status'] = 'active'
             
-            # Market context
+            # Market context (harmonize across publishers)
             market_data = self.smart_bus.get('market_data', 'VisualizationInterface') or {}
-            data['regime'] = market_data.get('regime', 'unknown')
-            data['session'] = market_data.get('session', 'unknown')
-            data['volatility_level'] = market_data.get('volatility_level', 'medium')
-            data['market_open'] = market_data.get('market_open', True)
+            market_context = self.smart_bus.get('market_context', 'VisualizationInterface') or {}
+            market_conditions = self.smart_bus.get('market_conditions', 'VisualizationInterface') or {}
+
+            regime = market_data.get('regime')
+            if not regime:
+                regime = self.smart_bus.get('market_regime', 'VisualizationInterface')
+            if not regime:
+                regime = market_conditions.get('volatility_regime')
+            data['regime'] = regime if isinstance(regime, str) else 'unknown'
+
+            session = market_data.get('session')
+            if not session:
+                session = self.smart_bus.get('trading_session', 'VisualizationInterface')
+            if not session:
+                session = self.smart_bus.get('session_type', 'VisualizationInterface')
+            if not session:
+                session = market_context.get('session') or market_context.get('session_human')
+            if not session:
+                session = market_conditions.get('session')
+            data['session'] = session if isinstance(session, str) else 'unknown'
+
+            vol_level = market_data.get('volatility_level')
+            if not vol_level:
+                vol_level = self.smart_bus.get('volatility_level', 'VisualizationInterface')
+            if not vol_level:
+                vol_level = market_context.get('volatility_hint')
+            data['volatility_level'] = vol_level if isinstance(vol_level, str) else 'medium'
+
+            market_open = market_data.get('market_open')
+            if market_open is None:
+                market_open = self.smart_bus.get('market_open', 'VisualizationInterface')
+            if market_open is None and isinstance(data['session'], str):
+                market_open = data['session'].lower() != 'closed'
+            data['market_open'] = bool(market_open) if isinstance(market_open, (bool, int)) else True
             
         except Exception as e:
             self.logger.warning(f"Trading data extraction failed: {e}")

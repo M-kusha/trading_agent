@@ -44,7 +44,7 @@ class MarketDataConfig:
     description="Offline market data provider that emits only real data from disk. No mock/simulated values.",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """

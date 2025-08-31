@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/voting/enhanced_voting_wrappers.py
-# 🚀 Enhanced Voting Wrappers with SmartInfoBus Integration v4.1
+# 🚀 Enhanced Voting Wrappers with SmartInfoBus Integration v4.1 (hardened)
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
 # ─────────────────────────────────────────────────────────────
 
@@ -37,7 +37,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
 
 class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVotingMixin, SmartInfoBusStateMixin):
     """
-    🚀 PRODUCTION-GRADE Enhanced Voting Expert Base v4.1
+    🚀 PRODUCTION-GRADE Enhanced Voting Expert Base v4.1 (hardened)
     """
 
     def _initialize(self):
@@ -514,13 +514,43 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
             return f"Thesis generation failed: {error_context}"
 
     async def _update_smartinfobus_comprehensive(self, results: Dict[str, Any], thesis: str):
-        """Update SmartInfoBus with comprehensive results"""
+        """Update SmartInfoBus with comprehensive results (and optional normalized feed publish)."""
         try:
             name = self.__class__.__name__
-            self.smart_bus.set(f'{name}_voting_proposal', results['voting_proposal'], module=name, thesis=thesis, confidence=results['confidence'])
-            self.smart_bus.set(f'{name}_confidence', results['confidence'], module=name, thesis=f"{name} confidence: {results['confidence']:.1%}")
+            proposal = results['voting_proposal']
+            confidence = float(results['confidence'])
+
+            # Existing per-expert publications
+            self.smart_bus.set(f'{name}_voting_proposal', proposal, module=name, thesis=thesis, confidence=confidence)
+            self.smart_bus.set(f'{name}_confidence', confidence, module=name, thesis=f"{name} confidence: {confidence:.1%}")
             self.smart_bus.set(f'{name}_market_context', results['market_context'], module=name, thesis=f"Market context awareness for {name}")
             self.smart_bus.set(f'{name}_analytics', results['expert_analytics'], module=name, thesis=f"Performance analytics for {name}")
+
+            # Optional: publish into normalized expert_votes feed (feed-first coordination)
+            if bool(self.config.get('publish_to_expert_votes_feed', True)):
+                try:
+                    feed_key = self.config.get('expert_votes_bus_key', 'expert_votes')
+                    entry = {
+                        'expert': name,
+                        'vote': dict(proposal),
+                        'confidence': confidence,
+                        'timestamp': datetime.datetime.now().isoformat()
+                    }
+                    buf = self.smart_bus.get(feed_key, name) or []
+                    if not isinstance(buf, list):
+                        buf = []
+                    # de-duplicate same expert (keep most recent)
+                    buf = [e for e in buf if e.get('expert') != name]
+                    buf.append(entry)
+
+                    # ring buffer cap
+                    cap = int(self.config.get('max_expert_votes_buffer', 200))
+                    if len(buf) > cap:
+                        buf = buf[-cap:]
+
+                    self.smart_bus.set(feed_key, buf, module=name, thesis=f"{name} published normalized vote entry")
+                except Exception as e:
+                    self.logger.warning(f"Soft-fail publishing to expert_votes feed: {e}")
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
             self.logger.error(f"SmartInfoBus update failed: {error_context}")
@@ -677,7 +707,7 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
     description="Enhanced theme-based trading expert with modern InfoBus integration",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class EnhancedThemeExpert(EnhancedVotingExpertBase):
     """
@@ -939,7 +969,7 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
     description="Enhanced seasonality-based risk expert with modern InfoBus integration",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
     """
@@ -1225,7 +1255,7 @@ def create_enhanced_voting_experts(config: Dict[str, Any]) -> List[EnhancedVotin
 
 
 # ═══════════════════════════════════════════════════════════════════
-# ENHANCED VOTING COMMITTEE COORDINATOR
+# ENHANCED VOTING COMMITTEE COORDINATOR (HARDENED)
 # ═══════════════════════════════════════════════════════════════════
 
 @module(**module_args(
@@ -1233,11 +1263,11 @@ def create_enhanced_voting_experts(config: Dict[str, Any]) -> List[EnhancedVotin
     description="Enhanced voting committee coordinator with modern InfoBus integration",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, SmartInfoBusStateMixin):
     """
-    🗳️ PRODUCTION-GRADE Enhanced Voting Committee Coordinator v4.1
+        🗳️ PRODUCTION-GRADE Enhanced Voting Committee Coordinator v4.1 (hardened)
     """
 
     def _initialize(self):
@@ -1250,6 +1280,16 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
         self.minimum_voters = int(self.config.get('minimum_voters', 2))
         self.performance_weighting = bool(self.config.get('performance_weighting', True))
         self.emergency_override = bool(self.config.get('emergency_override', True))
+
+        # Ingestion & discovery knobs (hardened)
+        self.expert_votes_bus_key = str(self.config.get('expert_votes_bus_key', 'expert_votes'))
+        self.discovery_mode = str(self.config.get('discovery_mode', 'feed_then_registry'))  # feed_only | registry_only | feed_then_registry
+        self.voter_flag_name = str(self.config.get('voter_flag_name', 'is_voting_member'))
+        self.voters_from_config = list(self.config.get('voters', []))  # optional static list of module names
+        self.ingest_minimum = int(self.config.get('ingest_minimum', self.minimum_voters))
+        self.ignore_actions = set(self.config.get('ignore_actions', ['abstain', None]))
+        self.enable_fallback_discovery = bool(self.config.get('enable_fallback_discovery', True))
+        self.max_votes_per_tick = int(self.config.get('max_votes_per_tick', 128))
 
         # Committee state
         self.active_experts: List[str] = []
@@ -1307,6 +1347,36 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
             )
         except Exception:
             pass
+
+    # ---------------- HARDENED HELPERS ----------------
+
+    def _normalize_vote_entry(self, raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Coerce a raw vote into a canonical structure or return None if invalid."""
+        try:
+            if not isinstance(raw, dict):
+                return None
+            expert = str(raw.get('expert') or raw.get('name') or 'unknown').strip()
+            if not expert:
+                return None
+            vote = raw.get('vote') or raw.get('proposal') or {}
+            if not isinstance(vote, dict):
+                vote = {}
+            action = vote.get('action', 'abstain')
+            confidence = float(raw.get('confidence', 0.0) or 0.0)
+            ts = raw.get('timestamp') or datetime.datetime.now().isoformat()
+            norm = {
+                'expert': expert,
+                'vote': dict(vote),
+                'confidence': max(0.0, min(1.0, confidence)),
+                'timestamp': ts
+            }
+            return norm
+        except Exception:
+            return None
+
+
+
+    # ---------------- MAIN PROCESSING ----------------
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process committee voting with enhanced coordination (contract-compliant)."""
@@ -1438,66 +1508,224 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
             }
             return fail
 
-    async def _collect_expert_votes(self) -> List[Dict[str, Any]]:
-        """Collect votes from all active voting experts"""
-        try:
-            expert_votes: List[Dict[str, Any]] = []
-            voting_experts = [
-                'EnhancedThemeExpert',
-                'EnhancedSeasonalityRiskExpert',
+    # ---------- helpers (add inside EnhancedVotingCommitteeCoordinator) ----------
+    def _to_bool(self, v: Any, default: bool = False) -> bool:
+        if isinstance(v, bool):
+            return v
+        if v is None:
+            return default
+        s = str(v).strip().lower()
+        return s in ("true", "1", "yes", "y", "on")
+
+    def _voter_key_pairs(self, name: str) -> List[Tuple[str, str]]:
+        """
+        Return (proposal_key, confidence_key) pairs to try for a given voter.
+        First pair is canonical <Name>_voting_proposal / <Name>_confidence.
+        Some voters also publish alt keys (Theme/Seasonality wrappers).
+        """
+        pairs: List[Tuple[str, str]] = [(f"{name}_voting_proposal", f"{name}_confidence")]
+        if name == "EnhancedThemeExpert":
+            pairs += [
+                ("EnhancedThemeExpert_voting_proposal", "EnhancedThemeExpert_confidence"),
+                ("theme_voting_proposal", "theme_confidence"),
             ]
-            for expert_name in voting_experts:
+        if name == "EnhancedSeasonalityRiskExpert":
+            pairs += [
+                ("EnhancedSeasonalityRiskExpert_voting_proposal", "EnhancedSeasonalityRiskExpert_confidence"),
+                ("seasonality_voting_proposal", "seasonality_confidence"),
+            ]
+        return pairs
+
+    # ---------- patched discovery ----------
+    def _discover_voters(self) -> List[str]:
+        """
+        Discover voter module names in prioritized order:
+        1) config list (self.voters_from_config)
+        2) CONTRACTS where meta[is_voting_member] == True (robust string/bool)
+        3) (optional) minimal fallback if still empty
+        """
+        discovered: List[str] = []
+
+        # 1) include any explicit config voters first (preserve order)
+        for n in self.voters_from_config:
+            if isinstance(n, str) and n and n not in discovered:
+                discovered.append(n)
+
+        # 2) registry voters with is_voting_member == True
+        try:
+            from modules.contracts import CONTRACTS  # type: ignore
+            for name, mc in CONTRACTS.items():
                 try:
-                    vote_data = self.smart_bus.get(f'{expert_name}_voting_proposal', self.__class__.__name__)
-                    confidence = self.smart_bus.get(f'{expert_name}_confidence', self.__class__.__name__)
-                    if vote_data is not None and confidence is not None:
-                        expert_votes.append({
-                            'expert': expert_name,
-                            'vote': dict(vote_data),
-                            'confidence': float(confidence),
-                            'timestamp': datetime.datetime.now().isoformat()
-                        })
+                    meta = getattr(mc, "meta", {}) or {}
+                    if self._to_bool(meta.get(self.voter_flag_name, False), False):
+                        if name not in discovered:
+                            discovered.append(name)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # 3) last-resort safety (avoid empty set)
+        if not discovered:
+            for fallback in ["EnhancedThemeExpert", "EnhancedSeasonalityRiskExpert"]:
+                if fallback not in discovered:
+                    discovered.append(fallback)
+
+        # de-dup while preserving order
+        seen = set()
+        out: List[str] = []
+        for n in discovered:
+            if n not in seen:
+                out.append(n)
+                seen.add(n)
+
+        self.logger.info(format_operator_message(
+            icon="🧭",
+            message="Voter discovery",
+            voters=",".join(out),
+            count=len(out),
+            mode=self.discovery_mode
+        ))
+        return out
+
+    # ---------- patched vote collection ----------
+    async def _collect_expert_votes(self) -> List[Dict[str, Any]]:
+        """Collect votes from active voters only, with feed-first ingestion and clean fallback."""
+        try:
+            voters = self._discover_voters()
+            voters_set = set(voters)
+
+            expert_votes: List[Dict[str, Any]] = []
+
+            # --- 1) FEED-FIRST: normalized 'expert_votes' list, filtered to voters only
+            if self.discovery_mode in ("feed_only", "feed_then_registry"):
+                try:
+                    feed = self.smart_bus.get(self.expert_votes_bus_key, self.__class__.__name__) or []
+                    if isinstance(feed, list):
+                        for raw in feed[-self.max_votes_per_tick:]:
+                            norm = self._normalize_vote_entry(raw)
+                            if norm and norm.get("expert") in voters_set:
+                                expert_votes.append(norm)
                 except Exception as e:
-                    self.logger.warning(f"Failed to collect vote from {expert_name}: {e}")
+                    self.logger.warning(f"Failed to read {self.expert_votes_bus_key}: {e}")
+
+            # de-dup by expert (keep latest)
+            by_expert: Dict[str, Dict[str, Any]] = {}
+            for v in expert_votes:
+                by_expert[v["expert"]] = v
+            expert_votes = list(by_expert.values())
+
+            # --- 2) FALLBACK: pull per-voter bus keys ONLY for discovered voters
+            need_more = (
+                len(expert_votes) < max(self.ingest_minimum, 1)
+                and self.enable_fallback_discovery
+                and self.discovery_mode in ("registry_only", "feed_then_registry")
+            )
+            if need_more:
+                for name in voters:
+                    if name in by_expert:
+                        continue
+                    try:
+                        # try canonical + alt key pairs; only query confidence if proposal exists
+                        for prop_key, conf_key in self._voter_key_pairs(name):
+                            proposal = self.smart_bus.get(prop_key, self.__class__.__name__, default=None)
+                            if proposal is None:
+                                continue  # avoid an extra MISS on confidence
+                            confidence = self.smart_bus.get(conf_key, self.__class__.__name__, default=None)
+                            if confidence is None:
+                                continue
+                            raw = {
+                                "expert": name,
+                                "vote": dict(proposal) if isinstance(proposal, dict) else {},
+                                "confidence": float(confidence),
+                                "timestamp": datetime.datetime.now().isoformat(),
+                            }
+                            norm = self._normalize_vote_entry(raw)
+                            if norm:
+                                by_expert[name] = norm
+                            break  # stop after first successful pair
+                    except Exception as e:
+                        self.logger.warning(f"Failed to collect vote from {name}: {e}")
+
+                expert_votes = list(by_expert.values())
+
+            # --- 3) If any non-abstain present, drop abstains (keeps committee decisive)
+            if any((v.get("vote", {}).get("action") not in self.ignore_actions) for v in expert_votes):
+                expert_votes = [v for v in expert_votes if v.get("vote", {}).get("action") not in self.ignore_actions]
+
+            # --- 4) cap
+            if len(expert_votes) > self.max_votes_per_tick:
+                expert_votes = expert_votes[-self.max_votes_per_tick:]
 
             self.logger.info(format_operator_message(
                 icon="📊",
                 message="Expert votes collected",
                 vote_count=len(expert_votes),
-                experts=len(voting_experts)
+                voters=len(voters),
+                mode=self.discovery_mode,
+                feed_key=self.expert_votes_bus_key
             ))
             return expert_votes
+
         except Exception as e:
             self.logger.error(f"Vote collection failed: {e}")
             return []
 
+
     async def _calculate_expert_weights(self, expert_votes: List[Dict[str, Any]]) -> Dict[str, float]:
-        """Calculate dynamic expert weights based on performance and confidence"""
+        """Calculate dynamic expert weights; uses bus-level expert_performance where available."""
         try:
             weights: Dict[str, float] = {}
             if not expert_votes:
                 return weights
 
+            # try bus-level performance (authoritative), else fall back to local analytics map
+            bus_perf = {}
+            try:
+                bus_perf = self.smart_bus.get('expert_performance', self.__class__.__name__) or {}
+                if not isinstance(bus_perf, dict):
+                    bus_perf = {}
+            except Exception:
+                pass
+
+            # If we have BOTH ignored actions and non-ignored ones, drop the ignored ones.
+            actions = [v.get('vote', {}).get('action') for v in expert_votes]
+            if any(a not in self.ignore_actions for a in actions):
+                expert_votes = [v for v in expert_votes if v.get('vote', {}).get('action') not in self.ignore_actions]
+
+            # build weights
+            total = 0.0
             for v in expert_votes:
                 name = v['expert']
                 conf = float(v.get('confidence', 0.0))
                 base = max(0.0, conf)
 
                 if self.performance_weighting:
-                    perf = float(self.committee_analytics['expert_performance'].get(name, 0.5))
-                    base *= (0.5 + perf)  # 0.5..1.5x
+                    # prefer bus-tracked performance; fallback to committee-local analytics
+                    perf = bus_perf.get(name, None)
+                    if perf is None:
+                        perf = float(self.committee_analytics['expert_performance'].get(name, 0.5))
+                    else:
+                        try:
+                            perf = float(perf)
+                        except Exception:
+                            perf = 0.5
+                    base *= (0.5 + max(0.0, min(1.0, perf)))  # 0.5..1.5x
 
                 regime = self.smart_bus.get('market_regime', self.__class__.__name__) or 'unknown'
                 base *= self._get_expert_regime_adjustment(name, regime)
 
-                weights[name] = max(0.0, min(2.0, base))
+                # floor to avoid zeroing an active voter; cap to 2.0 pre-normalization
+                w = max(1e-6, min(2.0, base))
+                weights[name] = w
+                total += w
 
-            total = sum(weights.values())
-            if total <= 0:
-                # fallback equal weights
+            if total <= 0.0:
+                # equal weights
                 n = len(expert_votes)
                 return {v['expert']: 1.0 / n for v in expert_votes}
 
+            # normalize
             for k in list(weights.keys()):
                 weights[k] = weights[k] / total
             return weights
@@ -1516,7 +1744,7 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
 
     async def _determine_committee_decision(self, expert_votes: List[Dict[str, Any]],
                                             expert_weights: Dict[str, float]) -> Dict[str, Any]:
-        """Determine final committee decision using weighted voting"""
+        """Determine final committee decision using weighted voting with abstain-aware logic."""
         try:
             if not expert_votes:
                 return {'action': 'abstain', 'reason': 'no_expert_votes'}
@@ -1533,8 +1761,17 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
             if not weighted_actions or total_weight <= 0.0:
                 return {'action': 'abstain', 'reason': 'no_valid_actions'}
 
-            best_action, best_weight = max(weighted_actions.items(), key=lambda x: x[1])
-            consensus_strength = best_weight / total_weight if total_weight > 0 else 0.0
+            # if there are non-abstain votes, ignore abstain in the max
+            has_non_abstain = any(a not in self.ignore_actions for a in weighted_actions.keys())
+            if has_non_abstain:
+                filtered = {a: w for a, w in weighted_actions.items() if a not in self.ignore_actions}
+                best_action, best_weight = max(filtered.items(), key=lambda x: x[1])
+                denom = sum(filtered.values()) or total_weight
+                consensus_strength = best_weight / denom if denom > 0 else 0.0
+            else:
+                best_action, best_weight = max(weighted_actions.items(), key=lambda x: x[1])
+                consensus_strength = best_weight / total_weight if total_weight > 0 else 0.0
+
             return {
                 'action': best_action,
                 'consensus_strength': consensus_strength,
@@ -1659,7 +1896,7 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
             self.smart_bus.set('committee_decision', results['committee_decision'], module=self.__class__.__name__, thesis=thesis, confidence=results['committee_confidence'])
             self.smart_bus.set('voting_consensus', results['voting_consensus'], module=self.__class__.__name__, thesis=f"Voting consensus: {results['voting_consensus'].get('consensus_strength', 0):.1%} agreement")
             self.smart_bus.set('committee_confidence', results['committee_confidence'], module=self.__class__.__name__, thesis=f"Committee confidence: {results['committee_confidence']:.1%}")
-            # Publish committee_votes for simulation modules expecting a simplified list
+            # Publish committee_votes (simplified list)
             try:
                 simplified_votes = [
                     {
@@ -1671,6 +1908,8 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                     for v in results.get('expert_votes', [])
                 ]
                 self.smart_bus.set('committee_votes', simplified_votes, module=self.__class__.__name__, thesis='Per-expert committee votes snapshot')
+                # Optional mirror to flat 'votes' for legacy consumers
+                self.smart_bus.set('votes', simplified_votes, module=self.__class__.__name__, thesis='Legacy flat votes mirror')
             except Exception as e:
                 self.logger.warning(f"Committee votes publish soft-fail: {e}")
 

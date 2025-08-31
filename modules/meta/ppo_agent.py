@@ -120,15 +120,18 @@ class EnhancedPPONetwork(nn.Module):
 
 @module(**module_args(
     "PPOAgent",
-    description="Advanced PPO agent with SmartInfoBus integration for autonomous trading",
+    description="Advanced PPO agent with SmartInfoBus integration for autonomous trading (now a voting member)",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
+    # --- Voting additions ---
+    is_voting_member=True,  # explicit (also true in registry)
 ))
 class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
     Advanced PPO agent with SmartInfoBus integration.
     Provides robust policy optimization with comprehensive monitoring and automation.
+    Also acts as a voting member by emitting a normalized proposal + confidence each cycle.
     """
 
     # typed members for Pylance
@@ -420,18 +423,30 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             # Always include thesis to satisfy explainability contract
             result['_thesis'] = thesis
 
-            # Update SmartInfoBus
+            # --- Voting additions: build + attach proposal & confidence ---
+            # Prefer the just-selected action; otherwise use last_action/fallback
+            action_vec = result.get('action', None)
+            vote_payload = await self.vote(
+                observation=ppo_data.get('observation'),
+                action_vec=action_vec,
+                market_data=ppo_data.get('market_data'),
+                thesis=thesis
+            )
+            result['PPOAgent_voting_proposal'] = vote_payload
+            result['PPOAgent_confidence'] = float(vote_payload.get('confidence', 0.0))
+
+            # Update SmartInfoBus (now also publishes voting keys)
             await self._update_ppo_smart_bus(result, thesis)
 
             # Ensure required outputs are always present in the returned dict
             # 1) policy_actions
             if 'policy_actions' not in result:
                 act_size = int(getattr(self._cfg, 'act_size', 2) or 2)
-                action_vec = result.get('action') or (
+                action_vec_out = result.get('action') or (
                     self.last_action.tolist() if hasattr(self, 'last_action') and hasattr(self.last_action, 'tolist') else [0.0] * act_size
                 )
                 result['policy_actions'] = {
-                    'action': action_vec,
+                    'action': action_vec_out,
                     'log_prob': result.get('log_prob', 0.0),
                     'value_estimate': result.get('value_estimate', 0.0),
                     'action_std': result.get('action_std', self._last_action_std or [1.0] * act_size),
@@ -1044,6 +1059,28 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             except Exception:
                 pass
 
+            # --- Voting additions: publish namespaced proposal + confidence ---
+            if 'PPOAgent_voting_proposal' in result:
+                try:
+                    self.smart_bus.set(
+                        'PPOAgent_voting_proposal',
+                        result['PPOAgent_voting_proposal'],
+                        module='PPOAgent',
+                        thesis='PPOAgent voting payload (direction/magnitude/confidence)'
+                    )
+                except Exception:
+                    pass
+            if 'PPOAgent_confidence' in result:
+                try:
+                    self.smart_bus.set(
+                        'PPOAgent_confidence',
+                        float(result['PPOAgent_confidence']),
+                        module='PPOAgent',
+                        thesis='PPOAgent voting confidence'
+                    )
+                except Exception:
+                    pass
+
         except Exception as e:
             self.logger.error(f"Failed to update SmartInfoBus: {e}")
 
@@ -1055,7 +1092,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
         act_size = int(getattr(self._cfg, 'act_size', 2) or 2)
         obs_size = int(getattr(self._cfg, 'obs_size', 10) or 10)
         last_action = (
-            self.last_action.tolist() if hasattr(self, 'last_action') and hasattr(self.last_action, 'tolist') else [0.0] * act_size
+            self.last_action.tolist() if hasattr(self, 'last_action') and hasattr(self, 'last_action') and hasattr(self.last_action, 'tolist') else [0.0] * act_size
         )
         observations = None
         try:
@@ -1065,6 +1102,16 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                 observations = self._last_obs_vec
         except Exception:
             observations = None
+
+        # --- Voting additions (fallback) ---
+        fallback_vote = {
+            'member': 'PPOAgent',
+            'proposal': {'direction': 'flat', 'magnitude': 0.0, 'horizon': 'intraday'},
+            'confidence': 0.2,
+            'rationale': thesis,
+            'timestamp': datetime.now().isoformat()
+        }
+
         return {
             # Required outputs
             'policy_actions': {
@@ -1109,6 +1156,9 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                 'policy_loss': self.training_stats.get('policy_loss_trend', 0.0),
                 'value_loss': self.training_stats.get('value_loss_trend', 0.0)
             },
+            # Voting fallbacks
+            'PPOAgent_voting_proposal': fallback_vote,
+            'PPOAgent_confidence': 0.2,
             # Helpful extras
             '_thesis': thesis,
             'fallback_reason': 'no_ppo_data'
@@ -1168,6 +1218,17 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             network_params = sum(p.numel() for p in self.network.parameters())
         except Exception:
             network_params = 0
+
+        # --- Voting additions (error fallback) ---
+        vote_payload = {
+            'member': 'PPOAgent',
+            'proposal': {'direction': 'flat', 'magnitude': 0.0, 'horizon': 'intraday'},
+            'confidence': 0.1,
+            'rationale': thesis,
+            'timestamp': datetime.now().isoformat(),
+            'meta': {'circuit_breaker': self.circuit_breaker['state']}
+        }
+
         return {
             # Required outputs
             'policy_actions': {
@@ -1212,6 +1273,9 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                 'policy_loss': self.training_stats.get('policy_loss_trend', 0.0),
                 'value_loss': self.training_stats.get('value_loss_trend', 0.0)
             },
+            # Voting
+            'PPOAgent_voting_proposal': vote_payload,
+            'PPOAgent_confidence': 0.1,
             # Helpful extras
             '_thesis': thesis,
             'circuit_breaker_state': self.circuit_breaker['state'],
@@ -1437,6 +1501,103 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
         exploration_confidence = 1.0 - self.action_statistics['exploration_level']
 
         return float((performance_confidence + exploration_confidence) / 2.0)
+
+    # --- Voting additions: core voting interface ---------------------------------
+    async def vote(self, observation: Any = None, action_vec: Optional[Union[List[float], np.ndarray]] = None,
+                   thesis: Optional[str] = None, **inputs) -> Dict[str, Any]:
+        """
+        Produce a normalized voting payload from the latest action or a fresh proposal:
+          - direction: 'long'|'short'|'flat'
+          - magnitude: 0..1 (size/strength)
+          - confidence: 0..1
+        """
+        try:
+            # 1) Get an action vector to base the vote on
+            if action_vec is None:
+                # Try to generate via policy mean (deterministic) for stability
+                obs_vec = self._normalize_observation(observation)
+                with torch.no_grad():
+                    action_mean, _, _ = self.network(torch.from_numpy(obs_vec).to(self.device).unsqueeze(0))
+                    action_vec = action_mean.squeeze(0).cpu().numpy()
+            else:
+                action_vec = np.array(action_vec, dtype=np.float32)
+
+            # 2) Normalize to direction/magnitude (ensure ndarray for type safety)
+            action_arr = action_vec if isinstance(action_vec, np.ndarray) else np.asarray(action_vec, dtype=np.float32)
+            direction, magnitude, raw_score = self._normalize_signal(action_arr)
+
+            # 3) Confidence
+            conf_inputs = {'action': {'action': action_arr.tolist()}}
+            base_conf = await self.calculate_confidence(**conf_inputs)
+            # Penalize if circuit breaker is open or health is weak
+            if self.circuit_breaker['state'] == 'OPEN':
+                base_conf = float(max(0.05, base_conf * 0.5))
+            if self._health_status != 'healthy':
+                base_conf = float(max(0.1, base_conf * 0.7))
+
+            payload = {
+                'member': 'PPOAgent',
+                'proposal': {
+                    'direction': direction,         # 'long' | 'short' | 'flat'
+                    'magnitude': float(magnitude),  # 0..1
+                    'horizon': 'intraday',
+                    # optional: attach vector if downstream wants to reconstruct
+                    'raw_score': float(raw_score),
+                },
+                'confidence': float(np.clip(base_conf, 0.0, 1.0)),
+                'rationale': thesis or "PPO policy-derived signal",
+                'timestamp': datetime.now().isoformat(),
+                'meta': {
+                    'avg_reward': self.training_stats.get('avg_episode_reward', 0.0),
+                    'explained_variance': self.training_stats.get('explained_variance', 0.0),
+                    'exploration_level': self.action_statistics.get('exploration_level', 0.5),
+                    'health': self._health_status,
+                    'circuit_breaker': self.circuit_breaker['state']
+                }
+            }
+            return payload
+
+        except Exception as e:
+            self.logger.error(f"PPO vote() failed: {e}")
+            return {
+                'member': 'PPOAgent',
+                'proposal': {'direction': 'flat', 'magnitude': 0.0, 'horizon': 'intraday'},
+                'confidence': 0.1,
+                'rationale': f'Vote fallback due to error: {e}',
+                'timestamp': datetime.now().isoformat()
+            }
+
+    def _normalize_signal(self, action_vec: Optional[Union[List[float], np.ndarray]]) -> Tuple[str, float, float]:
+        """
+        Map a continuous action vector to (direction, magnitude, raw_score).
+        Heuristic:
+          - raw_score = mean(action_vec)
+          - direction = sign(raw_score) with deadband
+          - magnitude = clipped L2 norm scaled by vector length
+        """
+        if action_vec is None or len(action_vec) == 0:
+            return 'flat', 0.0, 0.0
+
+        action_vec = np.array(action_vec, dtype=np.float32).reshape(-1)
+        raw_score = float(np.mean(action_vec))
+
+        deadband = 0.02  # small neutrality band
+        if raw_score > deadband:
+            direction = 'long'
+        elif raw_score < -deadband:
+            direction = 'short'
+        else:
+            direction = 'flat'
+
+        # magnitude from norm, scaled to ~0..1
+        norm = float(np.linalg.norm(action_vec))
+        scale = max(1.0, np.sqrt(len(action_vec))) * 2.0
+        magnitude = float(np.clip(norm / scale, 0.0, 1.0))
+        if direction == 'flat':
+            magnitude = 0.0
+
+        return direction, magnitude, raw_score
+    # ------------------------------------------------------------------------------
 
     async def propose_action(self, **inputs) -> Dict[str, Any]:
         """Propose PPO-based action"""

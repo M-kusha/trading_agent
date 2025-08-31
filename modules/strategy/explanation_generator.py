@@ -28,7 +28,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
     description="Advanced intelligent explanation system for trading decisions and system state with contextual adaptation",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """

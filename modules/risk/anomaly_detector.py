@@ -52,6 +52,14 @@ class AnomalySeverity(Enum):
     CRITICAL = "critical"
     EMERGENCY = "emergency"
 
+class AnomalyVote(Enum):
+    """Standardized anomaly/risk vote for coordinators/routers."""
+    PROCEED = "proceed"    # normal – green light
+    CAUTION = "caution"    # elevated risk – reduce size / add safeguards
+    HALT    = "halt"       # high/critical risk – pause/halt new risk
+    ABSTAIN = "abstain"    # insufficient signal – do not influence
+
+
 
 # ─────────────────────────────────────────────────────────────
 # Typed config (lint-safe) + namespaced health keys
@@ -102,7 +110,7 @@ class AnomalyDetectorConfig:
     description="Deterministic multi-window feature extraction with circuit breaker, monitoring, and explainability.",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
@@ -151,6 +159,8 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         self.anomaly_score = 0.0
         self.detection_confidence = 0.5
         self.step_count = 0
+        self._last_vote = None  # keep most recent vote for bus publishing
+
 
         super().__init__()  # may call _initialize()
 
@@ -356,7 +366,13 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         start_time = time.time()
         try:
             if not self.enabled:
+                # Disabled fallback + vote
                 payload = await self._handle_disabled_fallback()
+                vote = await self.cast_vote(**inputs)
+                payload["anomaly_risk_vote"] = vote
+                # Ensure required provides in return payload
+                payload['EnhancedAnomalyDetector_voting_proposal'] = vote
+                payload['EnhancedAnomalyDetector_confidence'] = vote.get('confidence', 0.5)
                 self._write_bus_from_payload(payload, payload["_thesis"])
                 return payload
 
@@ -364,6 +380,10 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             if self.circuit_breaker['state'] == 'OPEN':
                 thesis = "Circuit breaker OPEN; safe fallback payload emitted."
                 payload = self._fallback_payload(thesis=thesis)
+                vote = await self.cast_vote(**inputs)
+                payload["anomaly_risk_vote"] = vote
+                payload['EnhancedAnomalyDetector_voting_proposal'] = vote
+                payload['EnhancedAnomalyDetector_confidence'] = vote.get('confidence', 0.5)
                 self._write_bus_from_payload(payload, thesis)
                 return payload
 
@@ -373,29 +393,37 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             detection_data = await self._extract_detection_data(**inputs)
             if not detection_data:
                 payload = await self._handle_no_data_fallback()
+                vote = await self.cast_vote(**inputs)
+                payload["anomaly_risk_vote"] = vote
+                payload['EnhancedAnomalyDetector_voting_proposal'] = vote
+                payload['EnhancedAnomalyDetector_confidence'] = vote.get('confidence', 0.5)
                 self._write_bus_from_payload(payload, payload["_thesis"])
                 return payload
 
-            # Context, detection, patterns, adaptation, scoring, training, emergency, mode
-            context_result = await self._update_market_context_async(detection_data)
+            # Full pipeline
+            context_result   = await self._update_market_context_async(detection_data)
             detection_result = await self._detect_anomalies_comprehensive_async(detection_data)
-            pattern_result = await self._analyze_patterns_async(detection_data)
+            pattern_result   = await self._analyze_patterns_async(detection_data)
             adaptation_result = await self._adapt_thresholds_async(detection_data) if self._cfg.adaptive_thresholds else {}
-            scoring_result = await self._calculate_comprehensive_score_async(detection_data)
-            training_result = await self._update_training_progress_async(detection_data)
+            scoring_result   = await self._calculate_comprehensive_score_async(detection_data)
+            training_result  = await self._update_training_progress_async(detection_data)
             emergency_result = await self._handle_emergency_situations_async(detection_data)
-            mode_result = await self._update_operational_mode_async(detection_data)
+            mode_result      = await self._update_operational_mode_async(detection_data)
 
             _ = {**context_result, **detection_result, **pattern_result,
-                 **adaptation_result, **scoring_result, **training_result,
-                 **emergency_result, **mode_result}
+                **adaptation_result, **scoring_result, **training_result,
+                **emergency_result, **mode_result}
 
             thesis = await self._generate_detection_thesis(detection_data, _)
 
-            # Format payload (strict)
+            # Format payload (strict) + vote
             payload = self._format_provides_output(thesis=thesis)
+            vote = await self.cast_vote(**inputs)
+            payload["anomaly_risk_vote"] = vote
+            payload['EnhancedAnomalyDetector_voting_proposal'] = vote
+            payload['EnhancedAnomalyDetector_confidence'] = vote.get('confidence', 0.5)
 
-            # Publish to SmartInfoBus (single-writer for provides)
+            # Publish to SmartInfoBus
             self._write_bus_from_payload(payload, thesis)
 
             # Success metrics
@@ -408,22 +436,63 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             processing_time_ms = (time.time() - start_time) * 1000.0
             payload = await self._handle_detection_error(e, start_time)
             try:
+                vote = await self.cast_vote(**inputs)
+                payload["anomaly_risk_vote"] = vote
+                payload['EnhancedAnomalyDetector_voting_proposal'] = vote
+                payload['EnhancedAnomalyDetector_confidence'] = vote.get('confidence', 0.5)
+            except Exception:
+                # Attach a minimal abstain vote to satisfy provides
+                fallback_vote = {
+                    "module": "EnhancedAnomalyDetector",
+                    "topic": "anomaly_risk",
+                    "vote": "abstain",
+                    "confidence": 0.5,
+                    "sizing_multiplier": 0.75,
+                    "reasoning": "Vote generation failed in error path; abstaining.",
+                    "metrics": {},
+                    "timestamp": datetime.datetime.now().isoformat()
+                }
+                payload['EnhancedAnomalyDetector_voting_proposal'] = fallback_vote
+                payload['EnhancedAnomalyDetector_confidence'] = 0.5
+            try:
                 self._write_bus_from_payload(payload, payload.get("_thesis", "Anomaly detector error"))
             except Exception:
                 pass
             return payload
 
+
     # ── SmartInfoBus I/O (single-writer) ─────────────────────
     def _write_bus_from_payload(self, payload: Dict[str, Any], thesis: str) -> None:
         try:
             self.smart_bus.set('anomaly_detection', payload['anomaly_detection'],
-                               module='EnhancedAnomalyDetector', thesis=thesis)
+                            module='EnhancedAnomalyDetector', thesis=thesis)
             self.smart_bus.set('anomaly_score', payload['anomaly_score'],
-                               module='EnhancedAnomalyDetector', thesis="Anomaly score update")
+                            module='EnhancedAnomalyDetector', thesis="Anomaly score update")
             self.smart_bus.set('anomaly_alerts', payload['anomaly_alerts'],
-                               module='EnhancedAnomalyDetector', thesis="Anomaly alerts update")
+                            module='EnhancedAnomalyDetector', thesis="Anomaly alerts update")
             self.smart_bus.set('detection_analytics', payload['detection_analytics'],
-                               module='EnhancedAnomalyDetector', thesis="Detection analytics update")
+                            module='EnhancedAnomalyDetector', thesis="Detection analytics update")
+
+            # NEW: publish standardized vote - ALWAYS publish even if None/empty
+            vote = payload.get('anomaly_risk_vote') or getattr(self, '_last_vote', None)
+            if not vote:
+                # Fallback vote if none exists
+                vote = {
+                    "module": "EnhancedAnomalyDetector",
+                    "topic": "anomaly_risk", 
+                    "vote": "abstain",
+                    "confidence": 0.5,
+                    "sizing_multiplier": 0.75,
+                    "reasoning": "No vote generated; abstaining.",
+                    "metrics": {},
+                    "timestamp": datetime.datetime.now().isoformat()
+                }
+            
+            self.smart_bus.set('EnhancedAnomalyDetector_voting_proposal', vote,
+                            module='EnhancedAnomalyDetector', thesis="Anomaly risk voting proposal")
+            self.smart_bus.set('EnhancedAnomalyDetector_confidence', vote.get('confidence', 0.5),
+                            module='EnhancedAnomalyDetector', thesis="Anomaly risk vote confidence")
+
         except Exception as e:
             err = self.error_pinpointer.analyze_error(e, "bus_write")
             self.logger.error(f"SmartInfoBus update failed: {err}")
@@ -1608,42 +1677,102 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         )
 
     # ── public interface (kept stable) ───────────────────────
-    async def propose_action(self, **inputs) -> Dict[str, Any]:
-        """Conservative risk action based on current anomalies/score."""
-        try:
-            _ = await self.process(**inputs) if inputs else None
-        except Exception:
-            pass
-
-        action: Dict[str, Any] = {
-            "type": "risk_guard",
-            "mode": self.current_mode.value,
-            "reduce_exposure": False,
-            "halt_trading": False,
-            "notes": "",
-            "timestamp": datetime.datetime.now().isoformat()
+    def get_voter_capabilities(self) -> Dict[str, Any]:
+        """Describe this voter's topic and schema to any aggregator/router."""
+        return {
+            "module": "EnhancedAnomalyDetector",
+            "topic": "anomaly_risk",
+            "votes": [v.value for v in AnomalyVote],
+            "schema": {
+                "vote": "proceed|caution|halt|abstain",
+                "confidence": "0..1",
+                "sizing_multiplier": "suggested 0..1 for position sizing",
+                "reasoning": "short rationale",
+                "metrics": {
+                    "anomaly_score": "0..1",
+                    "detection_confidence": "0..1",
+                    "mode": "initialization|training|calibration|active|enhanced|emergency|maintenance",
+                    "critical_anomalies": "int",
+                    "circuit_breaker": "CLOSED|OPEN"
+                }
+            }
         }
 
-        if self.current_mode == AnomalyDetectionMode.EMERGENCY:
-            action.update({
-                "halt_trading": True,
-                "reduce_exposure": True,
-                "notes": "Emergency mode active: halting trading and reducing exposure."
-            })
-        elif self.anomaly_score >= self._cfg.critical_threshold:
-            action.update({
-                "reduce_exposure": True,
-                "notes": "High anomaly score: reducing exposure."
-            })
-        elif any(a.get("severity") == AnomalySeverity.CRITICAL.value for L in self.anomalies.values() for a in L):
-            action.update({
-                "reduce_exposure": True,
-                "notes": "Critical anomalies present: reducing exposure."
-            })
-        else:
-            action["notes"] = "Normal/managed state."
+    async def cast_vote(self, **inputs) -> Dict[str, Any]:
+        """
+        Convert current anomaly state into a standardized vote.
+        Uses only in-memory state; safe to call in fallbacks.
+        """
+        mode = self.current_mode
+        score = float(self.anomaly_score)
+        crit_thresh = float(self._cfg.critical_threshold)
+        warn_thresh = float(self._cfg.warning_threshold)
+        breaker_open = (self.circuit_breaker.get('state') == 'OPEN')
+        critical_count = int(sum(
+            1 for L in self.anomalies.values() for a in L
+            if a.get("severity") == AnomalySeverity.CRITICAL.value
+        ))
 
-        return action
+        # Decide vote + suggested sizing
+        if not self.enabled:
+            vote = AnomalyVote.ABSTAIN
+            sizing = 0.75
+            reason = "Detector disabled; abstaining."
+            halt_flag = False
+            reduce_flag = False
+        elif breaker_open or mode == AnomalyDetectionMode.EMERGENCY or score >= crit_thresh or critical_count >= 1:
+            vote = AnomalyVote.HALT
+            sizing = 0.0
+            reason = f"High/critical risk (score={score:.2f}, mode={mode.value}, crit={critical_count})."
+            halt_flag = True
+            reduce_flag = True
+        elif mode in (AnomalyDetectionMode.CALIBRATION, AnomalyDetectionMode.ENHANCED) or score >= warn_thresh:
+            vote = AnomalyVote.CAUTION
+            sizing = 0.50
+            reason = f"Elevated risk (score={score:.2f}, mode={mode.value})."
+            halt_flag = False
+            reduce_flag = True
+        elif mode in (AnomalyDetectionMode.INITIALIZATION, AnomalyDetectionMode.TRAINING):
+            vote = AnomalyVote.PROCEED
+            sizing = 0.75
+            reason = f"{mode.value.title()} mode; proceed conservatively (score={score:.2f})."
+            halt_flag = False
+            reduce_flag = False
+        else:
+            vote = AnomalyVote.PROCEED
+            sizing = 1.0
+            reason = f"Healthy state (score={score:.2f})."
+            halt_flag = False
+            reduce_flag = False
+
+        # Reuse the module's confidence logic
+        try:
+            conf = await self.calculate_confidence(
+                {"halt_trading": halt_flag, "reduce_exposure": reduce_flag},
+                **inputs
+            )
+        except Exception:
+            conf = float(self.detection_confidence)
+
+        payload = {
+            "module": "EnhancedAnomalyDetector",
+            "topic": "anomaly_risk",
+            "vote": vote.value,
+            "confidence": float(conf),
+            "sizing_multiplier": float(sizing),
+            "reasoning": reason,
+            "metrics": {
+                "anomaly_score": score,
+                "detection_confidence": float(self.detection_confidence),
+                "mode": mode.value,
+                "critical_anomalies": critical_count,
+                "circuit_breaker": self.circuit_breaker.get('state', 'UNKNOWN')
+            },
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+        self._last_vote = payload
+        return payload
+
 
     async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
         try:

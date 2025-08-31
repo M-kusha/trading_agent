@@ -225,7 +225,7 @@ class PPOLagConfig:
     description="Advanced PPO-Lag agent with market adaptation and SmartInfoBus integration",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class PPOLagAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """

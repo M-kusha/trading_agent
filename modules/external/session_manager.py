@@ -37,7 +37,7 @@ class SessionConfig:
     description="Session timing and health context (no fabricated metrics, no duplication with risk/data modules).",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """

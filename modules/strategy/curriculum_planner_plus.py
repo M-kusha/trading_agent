@@ -28,7 +28,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
     description="Advanced adaptive learning curriculum system for trading strategy optimization with intelligent progression management",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """

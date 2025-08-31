@@ -29,7 +29,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
     description="Advanced thesis development and evolution system with intelligent learning and adaptation",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """

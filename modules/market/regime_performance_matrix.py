@@ -58,7 +58,7 @@ class RegimeMatrixConfig:
     description="Advanced regime performance tracking with stress testing and prediction accuracy",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """

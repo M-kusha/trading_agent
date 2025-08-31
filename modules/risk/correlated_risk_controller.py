@@ -59,7 +59,7 @@ class CorrelatedRiskConfig:
     description="Enhanced correlation risk monitoring with intelligent clustering and diversification analysis",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """

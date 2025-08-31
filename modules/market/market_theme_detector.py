@@ -76,7 +76,7 @@ class ThemeDetectorConfig:
     description="Advanced market theme detection with ML clustering and regime-aware features",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class MarketThemeDetector(
     BaseModule,

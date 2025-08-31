@@ -13,7 +13,7 @@ import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Awaitable, Dict, List, Optional, Tuple, TypeVar, Union, cast
+from typing import Any, Awaitable, Dict, List, Optional, Tuple, TypeVar, Union, cast, Deque
 
 from modules.contracts import module_args
 import numpy as np
@@ -111,7 +111,7 @@ class PositionDecisionResult:
     description="Advanced position management with dynamic risk scaling and portfolio optimization",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class PositionManager(
     BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin
@@ -125,6 +125,12 @@ class PositionManager(
     english_explainer: Any
     system_utilities: Any
     smart_bus: Any
+    # Sim execution attributes for analyzer
+    simulate_execution: bool
+    _sim_balance: float
+    _sim_ticket_counter: int
+    _trade_ledger: List[Dict[str, Any]]
+    _recent_trades: Deque[Dict[str, Any]]
 
     # ─────────────────────────────────────────────────────────
     # Lifecycle / initialization
@@ -156,6 +162,13 @@ class PositionManager(
         # NEW: toggle for legacy bus key probing (off by default to avoid BUS MISS spam)
         self.enable_legacy_bus_signal_probe: bool = bool(
             self.config.get("enable_legacy_bus_signal_probe", False)
+        )
+
+        # NEW: toggle to control whether PM should read instrument intensities from SmartInfoBus
+        # When False (default), PM derives intensity locally from inputs/indicators only.
+        # Set to True to re-enable consuming bus 'instrument_signals' and legacy fallbacks.
+        self.use_bus_instrument_signals: bool = bool(
+            self.config.get("use_bus_instrument_signals", False)
         )
 
         self._initialize_advanced_systems()
@@ -209,6 +222,11 @@ class PositionManager(
         self.default_max_pct = self.C.max_position_pct
         self.enable_legacy_bus_signal_probe = bool(
             self.config.get("enable_legacy_bus_signal_probe", False)
+        )
+
+        # Respect runtime-configurable behavior for reading bus intensities
+        self.use_bus_instrument_signals = bool(
+            self.config.get("use_bus_instrument_signals", False)
         )
 
         instruments = kwargs.get("instruments", None)
@@ -358,7 +376,15 @@ class PositionManager(
         # Live trading state
         self._forced_action = None
         self._forced_conf = None
-        self._last_sync_time: Optional[datetime.datetime] = None
+        self._last_sync_time = None
+
+        # Simulation execution state (for backtests/training when no broker)
+        # Enabled via config key 'simulate_execution' (default True when not in live mode)
+        self.simulate_execution = bool(self.config.get("simulate_execution", True))
+        self._sim_balance = float(getattr(self.C, "initial_balance", 10000.0))
+        self._sim_ticket_counter = 1_000_000
+        self._trade_ledger = []
+        self._recent_trades = deque(maxlen=200)
 
     def _initialize_position_tracking(self) -> None:
         """Initialize position-specific tracking"""
@@ -544,36 +570,57 @@ class PositionManager(
             # 2) Decisions (decorator may return coroutine → normalize)
             decisions = await _maybe_await(self.process_market_signals(market_data))
 
-            # 3) Publish to SmartInfoBus
+            # 3) Apply simulated execution (optional, before publishing so positions reflect fills)
+            sim_exec = self._apply_simulated_execution(decisions, market_data)
+
+            # 4) Publish to SmartInfoBus (decisions + current_positions)
             await self._update_smartbus_with_decisions(decisions)
 
-            # 4) Thesis
+            # 5) Thesis
             thesis = await self._generate_position_thesis(market_data, decisions)
 
-            # 5) Risk roll-up and balances
+            # 6) Risk roll-up and balances
             aggregated_risks: Dict[str, float] = {}
             for inst, dr in decisions.items():
                 for k, v in (dr.risk_factors or {}).items():
                     aggregated_risks[k] = max(aggregated_risks.get(k, 0.0), float(v))
 
-            balance = float(self.C.initial_balance)
-            bus_port = self.smart_bus.get("portfolio_metrics", "PositionManager")
-            if isinstance(bus_port, dict):
-                balance = float(bus_port.get("balance", balance))
-            current_pnl = 0.0
-            equity = balance + current_pnl
+            # Use simulated accounting if available; otherwise fall back to bus/initials
+            if sim_exec:
+                try:
+                    balance = float(sim_exec.get("balance", self._sim_balance))
+                except Exception:
+                    balance = float(self._sim_balance)
+                try:
+                    equity = float(sim_exec.get("equity", balance))
+                except Exception:
+                    equity = float(balance)
+                try:
+                    current_pnl = float(sim_exec.get("current_pnl", 0.0))
+                except Exception:
+                    current_pnl = 0.0
+                step_trades_val = sim_exec.get("trades", []) or []
+                step_trades: List[Dict[str, Any]] = step_trades_val if isinstance(step_trades_val, list) else []
+            else:
+                balance = float(self.C.initial_balance)
+                bus_port = self.smart_bus.get("portfolio_metrics", "PositionManager")
+                if isinstance(bus_port, dict):
+                    balance = float(bus_port.get("balance", balance))
+                current_pnl = 0.0
+                equity = balance + current_pnl
+                step_trades = []
 
-            # 6) Publish required feeds so downstream consumers have providers
+            # 7) Publish required feeds so downstream consumers have providers
             self._publish_bus_feeds(
                 balance=balance,
                 equity=equity,
                 current_pnl=current_pnl,
-                trades=[],
+                trades=step_trades,
                 execution_data={},
                 order_data={},
             )
 
-            # 7) Contract output
+            # 8) Contract output
             position_decisions = {
                 inst: {
                     "decision": dr.decision.value,
@@ -614,8 +661,8 @@ class PositionManager(
                 "positions": copy.deepcopy(self.open_positions),
                 "pending_orders": [],
                 "position_data": copy.deepcopy(self.open_positions),
-                "trades": [],
-                "recent_trades": [],
+                "trades": step_trades,
+                "recent_trades": step_trades[-20:],
                 "current_pnl": float(current_pnl),
                 "balance": float(balance),
                 "equity": float(equity),
@@ -815,8 +862,10 @@ class PositionManager(
         regime = market_context.get('volatility_regime', market_conditions.get('volatility_regime'))
         session = market_context.get('session')
 
-        # Voting/arbiter outputs
-        bus_signals = self.smart_bus.get('instrument_signals', 'PositionManager') or {}
+        # Voting/arbiter outputs (gated): optionally consume bus-provided intensities
+        bus_signals = {}
+        if self.use_bus_instrument_signals:
+            bus_signals = self.smart_bus.get('instrument_signals', 'PositionManager') or {}
 
         def variants(inst: str) -> List[str]:
             core = inst.replace("/", "").replace("_", "")
@@ -868,19 +917,24 @@ class PositionManager(
                 if isinstance(vol_val, (int, float)):
                     inst_dict["volatility"] = float(vol_val)
 
-            # INTENSITY — bus first
-            sig = pick(bus_signals, inst)
-            if isinstance(sig, dict):
-                iv = sig.get("intensity")
-                if isinstance(iv, (int, float)):
-                    inst_dict["intensity"] = float(np.clip(iv, -1.0, 1.0))
+            # INTENSITY — optionally from bus first
+            if self.use_bus_instrument_signals:
+                sig = pick(bus_signals, inst)
+                if isinstance(sig, dict):
+                    iv = sig.get("intensity")
+                    if isinstance(iv, (int, float)):
+                        inst_dict["intensity"] = float(np.clip(iv, -1.0, 1.0))
+                        inst_dict["intensity_source"] = "bus"
+                elif isinstance(sig, (int, float)):
+                    inst_dict["intensity"] = float(np.clip(sig, -1.0, 1.0))
                     inst_dict["intensity_source"] = "bus"
-            elif isinstance(sig, (int, float)):
-                inst_dict["intensity"] = float(np.clip(sig, -1.0, 1.0))
-                inst_dict["intensity_source"] = "bus"
 
             # LEGACY PROBE (optional) — single canonical key only
-            if "intensity" not in inst_dict and self.enable_legacy_bus_signal_probe:
+            if (
+                self.use_bus_instrument_signals
+                and "intensity" not in inst_dict
+                and self.enable_legacy_bus_signal_probe
+            ):
                 legacy_key = f"signal_{inst.replace('/', '').upper()}"
                 entry = self.smart_bus.get(legacy_key, "PositionManager")
                 if isinstance(entry, dict):
@@ -890,7 +944,7 @@ class PositionManager(
                         inst_dict["intensity_source"] = "bus_legacy"
 
             # FALLBACK: use our own published position_decision_{instrument}
-            if "intensity" not in inst_dict:
+            if self.use_bus_instrument_signals and "intensity" not in inst_dict:
                 pd_node = self.smart_bus.get(f"position_decision_{inst}", "PositionManager")
                 if isinstance(pd_node, dict):
                     iv = pd_node.get("intensity")
@@ -1786,6 +1840,195 @@ class PositionManager(
         # Decay position confidence over time
         for inst in list(self.position_confidence.keys()):
             self.position_confidence[inst] *= self.C.confidence_decay
+
+    # ─────────────────────────────────────────────────────────
+    # Simulated execution helpers
+    # ─────────────────────────────────────────────────────────
+    def _get_current_price(self, instrument: str, fallback: Optional[float] = None) -> Optional[float]:
+        """Best-effort current price for an instrument from SmartBus/prices maps."""
+        sym_variants = [instrument, instrument.replace('/', ''), instrument.replace('/', '_'), instrument.upper(), instrument.lower()]
+        # Try price_data first
+        pd = self.smart_bus.get('price_data', 'PositionManager') or {}
+        if isinstance(pd, dict):
+            for k in sym_variants:
+                node = pd.get(k)
+                if isinstance(node, dict):
+                    for key in ('last', 'close', 'price', 'bid', 'ask'):
+                        v = node.get(key)
+                        if isinstance(v, (int, float)):
+                            return float(v)
+        # Try simple prices
+        sp = self.smart_bus.get('prices', 'PositionManager') or {}
+        if isinstance(sp, dict):
+            for k in sym_variants:
+                v = sp.get(k)
+                if isinstance(v, (int, float)):
+                    return float(v)
+                if isinstance(v, dict):
+                    for key in ('last', 'close', 'price', 'bid', 'ask'):
+                        vv = v.get(key)
+                        if isinstance(vv, (int, float)):
+                            return float(vv)
+        return fallback
+
+    def _apply_simulated_execution(self, decisions: Dict[str, PositionDecisionResult], market_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Apply a minimal immediate-fill simulated execution. Returns accounting snapshot if applied."""
+        try:
+            if not self.simulate_execution or (self.env and getattr(self.env, 'live_mode', False)):
+                return None
+
+            step_trades: List[Dict[str, Any]] = []
+
+            # Iterate decisions and open/scale/close accordingly
+            for inst, dr in decisions.items():
+                # Determine a price
+                inst_map = market_data.get(inst, {}) or {}
+                price = inst_map.get('current_price')
+                if not isinstance(price, (int, float)):
+                    price = self._get_current_price(inst)
+                if not isinstance(price, (int, float)):
+                    # Skip if no price
+                    continue
+
+                decision = dr.decision
+                size_eur = float(dr.size)
+                if decision in (PositionDecision.OPEN_LONG, PositionDecision.OPEN_SHORT):
+                    if size_eur <= 0:
+                        continue
+                    if inst in self.open_positions:
+                        # Already open; treat as scale if same side else close+open
+                        cur_side = self.open_positions[inst].get('side', 0)
+                        new_side = 1 if decision == PositionDecision.OPEN_LONG else -1
+                        if cur_side == new_side:
+                            decision = PositionDecision.SCALE_UP
+                        else:
+                            # Close existing then open new
+                            self._close_position_sim(inst, price, reason='reverse')
+                            step_trades.append(self._recent_trades[-1]) if self._recent_trades else None
+                    if decision in (PositionDecision.OPEN_LONG, PositionDecision.OPEN_SHORT):
+                        lots = max(size_eur / max(price, 1e-6) / 100000.0, 0.0)
+                        self._open_position_sim(inst, price, 1 if decision == PositionDecision.OPEN_LONG else -1, lots)
+                elif decision == PositionDecision.SCALE_UP:
+                    if inst in self.open_positions and size_eur > 0:
+                        lots = max(size_eur / max(price, 1e-6) / 100000.0, 0.0)
+                        self._scale_position_sim(inst, price, lots)
+                elif decision in (PositionDecision.CLOSE, PositionDecision.EMERGENCY_CLOSE, PositionDecision.SCALE_DOWN):
+                    if inst in self.open_positions:
+                        # For SCALE_DOWN, reduce half; treat as partial close
+                        if decision == PositionDecision.SCALE_DOWN:
+                            self._partial_close_position_sim(inst, price, portion=0.5)
+                        else:
+                            self._close_position_sim(inst, price, reason=decision.value)
+                        if self._recent_trades:
+                            step_trades.append(self._recent_trades[-1])
+
+            # Compute unrealized PnL and equity
+            unreal = 0.0
+            for inst, pos in self.open_positions.items():
+                price = self._get_current_price(inst, pos.get('price_open'))
+                if not isinstance(price, (int, float)):
+                    continue
+                points = (price - pos.get('price_open', price)) * pos.get('side', 0)
+                unreal += points * 100000.0 * float(pos.get('lots', 0.0))
+
+            equity = self._sim_balance + unreal
+            current_pnl = unreal
+
+            return {
+                'balance': float(self._sim_balance),
+                'equity': float(equity),
+                'current_pnl': float(current_pnl),
+                'trades': list(step_trades),
+            }
+        except Exception:
+            return None
+
+    # Simulated execution primitives
+    def _open_position_sim(self, inst: str, price: float, side: int, lots: float) -> None:
+        lots = float(max(lots, 0.0))
+        if lots <= 0:
+            return
+        self._sim_ticket_counter += 1
+        eur_exposure = lots * float(price) * 100000.0
+        self.open_positions[inst] = {
+            'ticket': self._sim_ticket_counter,
+            'side': int(np.sign(side) or 1),
+            'lots': lots,
+            'price_open': float(price),
+            'size': float(abs(eur_exposure)),  # EUR exposure for visualization/exposure
+            'peak_profit': 0.0,
+        }
+        self.logger.info(format_operator_message('[GREEN]', 'OPEN_SIM', instrument=inst, side=('LONG' if side>0 else 'SHORT'), lots=f"{lots:.2f}", price=f"{price:.5f}"))
+
+    def _scale_position_sim(self, inst: str, price: float, add_lots: float) -> None:
+        if inst not in self.open_positions or add_lots <= 0:
+            return
+        pos = self.open_positions[inst]
+        # VWAP update for price_open
+        total_lots = float(pos.get('lots', 0.0)) + float(add_lots)
+        if total_lots <= 0:
+            return
+        vwap = (pos.get('price_open', price) * float(pos.get('lots', 0.0)) + price * float(add_lots)) / total_lots
+        pos['lots'] = total_lots
+        pos['price_open'] = float(vwap)
+        pos['size'] = float(abs(total_lots * price * 100000.0))
+        self.logger.info(
+            format_operator_message(
+                '[GREEN]', 'SCALE_SIM', instrument=inst,
+                add_lots=f"{add_lots:.2f}", new_lots=f"{total_lots:.2f}", vwap=f"{vwap:.5f}"
+            )
+        )
+
+    def _partial_close_position_sim(self, inst: str, price: float, portion: float = 0.5) -> None:
+        if inst not in self.open_positions:
+            return
+        pos = self.open_positions[inst]
+        close_lots = float(pos.get('lots', 0.0)) * float(np.clip(portion, 0.0, 1.0))
+        if close_lots <= 0:
+            return
+        remaining_lots = float(pos.get('lots', 0.0)) - close_lots
+        pnl = (price - pos.get('price_open', price)) * pos.get('side', 0) * 100000.0 * close_lots
+        self._sim_balance += float(pnl)
+        trade = {
+            'instrument': inst,
+            'side': 'SELL' if pos.get('side', 0) > 0 else 'BUY',
+            'lots': close_lots,
+            'price_open': float(pos.get('price_open', price)),
+            'price_close': float(price),
+            'pnl': float(pnl),
+            'timestamp': datetime.datetime.now().isoformat(),
+            'ticket': pos.get('ticket'),
+            'type': 'partial_close',
+        }
+        self._trade_ledger.append(trade)
+        self._recent_trades.append(trade)
+        if remaining_lots <= 0:
+            self.open_positions.pop(inst, None)
+        else:
+            pos['lots'] = remaining_lots
+            pos['size'] = float(abs(remaining_lots * price * 100000.0))
+        self.logger.info(format_operator_message('[RED]', 'PARTIAL_CLOSE_SIM', instrument=inst, lots=f"{close_lots:.2f}", price=f"{price:.5f}", pnl=f"{pnl:+.2f}", remain=f"{remaining_lots:.2f}"))
+
+    def _close_position_sim(self, inst: str, price: float, reason: str = 'close') -> None:
+        if inst not in self.open_positions:
+            return
+        pos = self.open_positions.pop(inst)
+        pnl = (price - pos.get('price_open', price)) * pos.get('side', 0) * 100000.0 * float(pos.get('lots', 0.0))
+        self._sim_balance += float(pnl)
+        trade = {
+            'instrument': inst,
+            'side': 'SELL' if pos.get('side', 0) > 0 else 'BUY',
+            'lots': float(pos.get('lots', 0.0)),
+            'price_open': float(pos.get('price_open', price)),
+            'price_close': float(price),
+            'pnl': float(pnl),
+            'timestamp': datetime.datetime.now().isoformat(),
+            'ticket': pos.get('ticket'),
+            'type': reason,
+        }
+        self._trade_ledger.append(trade)
+        self._recent_trades.append(trade)
+        self.logger.info(format_operator_message('[RED]', 'CLOSE_SIM', instrument=inst, reason=reason, price=f"{price:.5f}", pnl=f"{pnl:+.2f}"))
 
     def _update_position_health(self) -> None:
         """Update position health metrics (canonical-aware)."""

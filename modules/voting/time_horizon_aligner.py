@@ -29,7 +29,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
     description="Advanced time-based weight scaling for voting committees with market adaptation",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """

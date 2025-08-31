@@ -35,7 +35,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
     description="Intelligent forward-looking trade simulation with context-aware strategy variations",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """

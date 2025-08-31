@@ -60,7 +60,7 @@ class PlanningConfig:
     description="Advanced metacognitive planner with strategic planning and market adaptation",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000, 
 ))
 
 class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):

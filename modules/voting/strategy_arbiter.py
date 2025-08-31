@@ -32,7 +32,7 @@ from utils.get_dir import _BASE_GATE, _smart_gate
     description="Advanced multi-expert coordination and sophisticated voting mechanisms",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class StrategyArbiter(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """

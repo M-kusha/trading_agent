@@ -22,7 +22,7 @@ from modules.utils.audit_utils import format_operator_message
     description="Advanced thesis tracking for trading strategies.",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class TradeThesisTracker(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """

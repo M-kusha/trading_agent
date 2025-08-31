@@ -26,6 +26,11 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
+# ── Voting bus keys (used by EnhancedVotingCommitteeCoordinator) ───────────────
+META_VOTE_KEY = "MetaAgent_voting_proposal"
+META_CONF_KEY = "MetaAgent_confidence"
+
+
 class MetaMode(Enum):
     """Meta agent operational modes"""
     INITIALIZATION = "initialization"
@@ -70,7 +75,7 @@ class MetaAgentConfig:
     description="Advanced meta agent for autonomous trading system automation and lifecycle management",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
@@ -106,6 +111,32 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
 
         # Runtime/meta state
         self._initialize_meta_state()
+
+        # >>> seed initial committee vote **after** meta state exists
+        try:
+            initial_proposal = {
+                "module": "MetaAgent",
+                "topic": "automation_control",
+                "vote": "abstain",
+                "confidence": float(self.system_confidence),
+                "sizing_multiplier": 0.0,
+                "reasoning": "Initialization phase",
+                "metrics": {
+                    "system_confidence": float(self.system_confidence),
+                    "automation_score": float(self.automation_score),
+                    "mode": self.current_mode.value,
+                    "drawdown_pct": float(self.drawdown_pct),
+                    "daily_pnl": float(self.daily_pnl),
+                },
+                "ts": datetime.datetime.now().isoformat(),
+            }
+            self._publish_vote(initial_proposal, float(self.system_confidence), thesis="Initial meta agent vote")
+        except Exception as e:
+            try:
+                self.logger.warning(f"Initial vote publish skipped: {e}")
+            except Exception:
+                pass
+        # <<< seed initial vote
 
         # Start monitoring after initialization
         self._start_monitoring()
@@ -310,6 +341,9 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
                 module="MetaAgent",
                 thesis="Initial meta agent automation status",
             )
+
+            # NOTE: do NOT publish votes here; meta state may not be ready yet.
+
         except Exception as e:
             self.logger.error(f"Initialization failed: {e}")
 
@@ -332,12 +366,9 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
                 self.smart_bus = InfoBusManager.get_instance()
             if not hasattr(self, "logger"):
                 class _Dummy:
-                    def info(self, *a, **k):
-                        pass
-                    def warning(self, *a, **k):
-                        pass
-                    def error(self, *a, **k):
-                        pass
+                    def info(self, *a, **k): pass
+                    def warning(self, *a, **k): pass
+                    def error(self, *a, **k): pass
                 self.logger = _Dummy()
 
         # Minimal state referenced by _initialize
@@ -360,6 +391,24 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
             # Extract meta data
             meta_data = await self._extract_meta_data(**inputs)
             if not meta_data:
+                # still publish a vote so the coordinator never stalls
+                abstain_proposal = {
+                    "module": "MetaAgent",
+                    "topic": "automation_control",
+                    "vote": "abstain",
+                    "confidence": float(self.system_confidence),
+                    "sizing_multiplier": 0.0,
+                    "reasoning": "No meta data",
+                    "metrics": {
+                        "system_confidence": float(self.system_confidence),
+                        "automation_score": float(self.automation_score),
+                        "mode": self.current_mode.value,
+                        "drawdown_pct": float(self.drawdown_pct) if hasattr(self, "drawdown_pct") else 0.0,
+                        "daily_pnl": float(self.daily_pnl) if hasattr(self, "daily_pnl") else 0.0,
+                    },
+                    "ts": datetime.datetime.now().isoformat(),
+                }
+                self._publish_vote(abstain_proposal, float(self.system_confidence), thesis="Abstain due to no meta data")
                 return await self._handle_no_data_fallback()
 
             # Update system performance
@@ -419,7 +468,11 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
                 "training_episodes": self.training_episodes,
             }
 
-            # Update SmartInfoBus
+            # Publish committee vote for this cycle
+            proposal, conf = self._build_voting_proposal()
+            self._publish_vote(proposal, conf, thesis=thesis)
+
+            # Update SmartInfoBus (module-specific dashboards)
             await self._update_meta_smart_bus(result, thesis)
 
             # Record success
@@ -433,6 +486,10 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
                     "system_mode": mode_data,
                     "automation_metrics": metrics_data,
                     "meta_performance": performance_data,
+                    # Contract: expose flat voting keys in return payload
+                    "MetaAgent_voting_proposal": proposal,
+                    "MetaAgent_confidence": float(conf),
+                    "voting": {"proposal": proposal, "confidence": conf},
                     "_thesis": thesis,
                     "success": True,
                 }
@@ -442,6 +499,133 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
         except Exception as e:
             return await self._handle_meta_error(e, start_time)
 
+    # ── VOTER API (committee integration) ──────────────────────────────────────
+    def get_voter_capabilities(self) -> Dict[str, Any]:
+        """Describe this voter's topic and schema to any coordinator."""
+        return {
+            "module": "MetaAgent",
+            "topic": "automation_control",
+            "votes": ["proceed", "caution", "halt", "abstain"],
+            "schema": {
+                "vote": "proceed|caution|halt|abstain",
+                "confidence": "0..1",
+                "sizing_multiplier": "0..1 (suggested aggressiveness)",
+                "reasoning": "short rationale",
+                "metrics": {
+                    "system_confidence": "0..1",
+                    "automation_score": "0..1",
+                    "mode": "operational mode string",
+                    "drawdown_pct": "float %",
+                    "daily_pnl": "float currency",
+                },
+                "ts": "ISO-8601",
+            },
+        }
+
+    def _build_voting_proposal(self) -> Tuple[Dict[str, Any], float]:
+        """
+        Build a voting proposal from current meta state.
+        - Mapping:
+          EMERGENCY_STOP -> 'halt'
+          LIVE_TRADING with healthy metrics -> 'proceed'
+          Other modes or degraded metrics -> 'caution'
+        """
+        mode = self.current_mode
+        cb_state = str(self.circuit_breaker.get("state", "CLOSED"))
+        risk_elevated = (self.drawdown_pct > 15.0) or (cb_state != "CLOSED")
+
+        # Base confidence primarily from system_confidence, tempered by decision quality
+        conf = float(np.clip(0.6 * self.system_confidence + 0.4 * self.automation_score, 0.0, 1.0))
+
+        # Vote selection
+        if mode == MetaMode.EMERGENCY_STOP:
+            vote = "halt"
+        elif mode == MetaMode.LIVE_TRADING:
+            if (self.system_confidence >= max(0.6, self.C.confidence_threshold)) and (self.drawdown_pct <= 10.0) and (cb_state == "CLOSED"):
+                vote = "proceed"
+            else:
+                vote = "caution"
+        else:
+            vote = "caution"  # default outside LIVE_TRADING
+
+        if risk_elevated and vote == "proceed":
+            vote = "caution"  # downgrade if circuit breaker or drawdown elevated
+
+        if self.system_confidence < 0.12:
+            vote = "halt"
+
+        # Suggested sizing (soft guidance)
+        sizing = float(np.clip(self.system_confidence * (1.0 - min(self.drawdown_pct, 40.0) / 50.0), 0.0, 1.0))
+        if vote == "halt":
+            sizing = 0.0
+        elif vote == "caution":
+            sizing = float(min(sizing, 0.5))
+
+        proposal = {
+            "module": "MetaAgent",
+            "topic": "automation_control",
+            "vote": vote,
+            "confidence": conf,
+            "sizing_multiplier": sizing,
+            "reasoning": (
+                "Emergency stop" if vote == "halt"
+                else "Live healthy conditions" if vote == "proceed"
+                else "Non-live or degraded metrics"
+            ),
+            "metrics": {
+                "system_confidence": float(self.system_confidence),
+                "automation_score": float(self.automation_score),
+                "mode": mode.value,
+                "drawdown_pct": float(self.drawdown_pct),
+                "daily_pnl": float(self.daily_pnl),
+            },
+            "ts": datetime.datetime.now().isoformat(),
+        }
+        return proposal, conf
+
+    def _publish_vote(self, proposal: Dict[str, Any], confidence: float, thesis: str = "") -> None:
+        """Write proposal and confidence to SmartInfoBus with the coordinator's keys."""
+        try:
+            # Ensure plain-python types
+            proposal_safe = {
+                "module": "MetaAgent",
+                "topic": str(proposal.get("topic", "automation_control")),
+                "vote": str(proposal.get("vote", "abstain")),
+                "confidence": float(proposal.get("confidence", confidence)),
+                "sizing_multiplier": float(proposal.get("sizing_multiplier", 0.0)),
+                "reasoning": str(proposal.get("reasoning", "")),
+                "metrics": {
+                    "system_confidence": float(proposal.get("metrics", {}).get("system_confidence", self.system_confidence)),
+                    "automation_score": float(proposal.get("metrics", {}).get("automation_score", self.automation_score)),
+                    "mode": str(proposal.get("metrics", {}).get("mode", self.current_mode.value)),
+                    "drawdown_pct": float(proposal.get("metrics", {}).get("drawdown_pct", self.drawdown_pct if hasattr(self, "drawdown_pct") else 0.0)),
+                    "daily_pnl": float(proposal.get("metrics", {}).get("daily_pnl", self.daily_pnl if hasattr(self, "daily_pnl") else 0.0)),
+                },
+                "ts": str(proposal.get("ts", datetime.datetime.now().isoformat())),
+            }
+
+            self.smart_bus.set(META_VOTE_KEY, proposal_safe, module="MetaAgent", thesis=thesis or "MetaAgent vote")
+            self.smart_bus.set(META_CONF_KEY, float(confidence), module="MetaAgent", thesis="MetaAgent confidence")
+
+            # Operator-facing log
+            self.logger.info(
+                format_operator_message(
+                    "[VOTE]",
+                    "META_AGENT_BALLOT",
+                    vote=proposal_safe["vote"],
+                    confidence=f"{float(confidence):.2f}",
+                    sizing=f"{proposal_safe['sizing_multiplier']:.2f}",
+                    mode=proposal_safe["metrics"]["mode"],
+                    drawdown=f"{proposal_safe['metrics']['drawdown_pct']:.2f}%",
+                    cb_state=str(self.circuit_breaker.get("state", "CLOSED")),
+                )
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to publish MetaAgent vote: {e}")
+
+    # ─────────────────────────────────────────────────────────
+    # Data extraction & updates
+    # ─────────────────────────────────────────────────────────
     async def _extract_meta_data(self, **inputs) -> Optional[Dict[str, Any]]:
         """Extract meta data from SmartInfoBus with robust fallbacks."""
         try:
@@ -518,7 +702,6 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
         except Exception as e:
             self.logger.error(f"Performance update failed: {e}")
             return {"performance_updated": False, "error": str(e)}
-
 
     def _update_pnl_metrics(self, pnl: float):
         """Update PnL-based metrics"""
@@ -623,7 +806,9 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
         except Exception as e:
             self.logger.error(f"Confidence update failed: {e}")
 
-
+    # ─────────────────────────────────────────────────────────
+    # Decision making
+    # ─────────────────────────────────────────────────────────
     async def _evaluate_automation_decision(self, meta_data: Dict[str, Any]) -> Dict[str, Any]:
         """Evaluate if automation decision is needed"""
         try:
@@ -1103,11 +1288,51 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
         except Exception as e:
             self.logger.error(f"Failed to update SmartInfoBus: {e}")
 
+    # ─────────────────────────────────────────────────────────
+    # Fallbacks & errors
+    # ─────────────────────────────────────────────────────────
     async def _handle_no_data_fallback(self) -> Dict[str, Any]:
         """Handle case when no meta data is available"""
         self.logger.warning("No meta data available - maintaining current mode")
 
         thesis = "No meta data available - maintaining current mode"
+        # Try to include the latest vote published to the SmartInfoBus for contract compliance
+        try:
+            current_vote = self.smart_bus.get(META_VOTE_KEY, "MetaAgent") or {
+                "module": "MetaAgent",
+                "topic": "automation_control",
+                "vote": "abstain",
+                "confidence": float(self.system_confidence),
+                "sizing_multiplier": 0.0,
+                "reasoning": "No meta data",
+                "metrics": {
+                    "system_confidence": float(self.system_confidence),
+                    "automation_score": float(self.automation_score),
+                    "mode": self.current_mode.value,
+                    "drawdown_pct": float(self.drawdown_pct),
+                    "daily_pnl": float(self.daily_pnl),
+                },
+                "ts": datetime.datetime.now().isoformat(),
+            }
+            current_conf = float(self.smart_bus.get(META_CONF_KEY, "MetaAgent") or current_vote.get("confidence", 0.0))
+        except Exception:
+            current_vote = {
+                "module": "MetaAgent",
+                "topic": "automation_control",
+                "vote": "abstain",
+                "confidence": float(self.system_confidence),
+                "sizing_multiplier": 0.0,
+                "reasoning": "No meta data",
+                "metrics": {
+                    "system_confidence": float(self.system_confidence),
+                    "automation_score": float(self.automation_score),
+                    "mode": self.current_mode.value,
+                    "drawdown_pct": float(self.drawdown_pct),
+                    "daily_pnl": float(self.daily_pnl),
+                },
+                "ts": datetime.datetime.now().isoformat(),
+            }
+            current_conf = float(current_vote.get("confidence", 0.0))
         return {
             "automation_decisions": {
                 "current_mode": self.current_mode.value,
@@ -1138,6 +1363,9 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
                 "system_confidence": self.system_confidence,
                 "training_episodes": self.training_episodes,
             },
+            # Contract: expose flat voting keys in return payload
+            "MetaAgent_voting_proposal": current_vote,
+            "MetaAgent_confidence": float(current_conf),
             "_thesis": thesis,
             "success": True,
             "fallback_reason": "no_meta_data",
@@ -1180,6 +1408,43 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
     def _create_fallback_response(self, reason: str) -> Dict[str, Any]:
         """Create fallback response for error cases"""
         thesis = f"Meta agent error fallback: {reason}"
+        # Try to include the latest vote/confidence to keep provides contract consistent
+        try:
+            current_vote = self.smart_bus.get(META_VOTE_KEY, "MetaAgent") or {
+                "module": "MetaAgent",
+                "topic": "automation_control",
+                "vote": "halt",
+                "confidence": float(self.system_confidence),
+                "sizing_multiplier": 0.0,
+                "reasoning": "Error fallback",
+                "metrics": {
+                    "system_confidence": float(self.system_confidence),
+                    "automation_score": float(self.automation_score),
+                    "mode": self.current_mode.value,
+                    "drawdown_pct": float(self.drawdown_pct),
+                    "daily_pnl": float(self.daily_pnl),
+                },
+                "ts": datetime.datetime.now().isoformat(),
+            }
+            current_conf = float(self.smart_bus.get(META_CONF_KEY, "MetaAgent") or current_vote.get("confidence", 0.0))
+        except Exception:
+            current_vote = {
+                "module": "MetaAgent",
+                "topic": "automation_control",
+                "vote": "halt",
+                "confidence": float(self.system_confidence),
+                "sizing_multiplier": 0.0,
+                "reasoning": "Error fallback",
+                "metrics": {
+                    "system_confidence": float(self.system_confidence),
+                    "automation_score": float(self.automation_score),
+                    "mode": self.current_mode.value,
+                    "drawdown_pct": float(self.drawdown_pct),
+                    "daily_pnl": float(self.daily_pnl),
+                },
+                "ts": datetime.datetime.now().isoformat(),
+            }
+            current_conf = float(current_vote.get("confidence", 0.0))
         return {
             "automation_decisions": {
                 "current_mode": self.current_mode.value,
@@ -1210,12 +1475,18 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
                 "system_confidence": self.system_confidence,
                 "training_episodes": self.training_episodes,
             },
+            # Contract: expose flat voting keys in return payload
+            "MetaAgent_voting_proposal": current_vote,
+            "MetaAgent_confidence": float(current_conf),
             "_thesis": thesis,
             "success": False,
             "circuit_breaker_state": self.circuit_breaker["state"],
             "fallback_reason": reason,
         }
 
+    # ─────────────────────────────────────────────────────────
+    # Monitoring & metrics
+    # ─────────────────────────────────────────────────────────
     def _update_meta_health(self):
         """Update meta agent health metrics"""
         try:
