@@ -715,6 +715,23 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
             theme_momentum=self.theme_momentum
         ))
 
+        # Publish baseline provides to SmartInfoBus to prevent early BUS MISS
+        try:
+            name = self.__class__.__name__
+            baseline_proposal = {
+                'action': 'neutral',
+                'signal_strength': 0.0,
+                'position_size': 0.0,
+                'duration': 'short',
+                'theme_type': 'unknown'
+            }
+            self.smart_bus.set(f'{name}_voting_proposal', baseline_proposal, module=name, thesis='Baseline theme voting proposal')
+            self.smart_bus.set(f'{name}_confidence', 0.1, module=name, thesis=f"{name} baseline confidence: 10%")
+            self.smart_bus.set(f'{name}_market_context', self.market_context, module=name, thesis=f"Baseline market context for {name}")
+            self.smart_bus.set(f'{name}_analytics', self.expert_analytics, module=name, thesis=f"Baseline performance analytics for {name}")
+        except Exception:
+            pass
+
     async def process(self, **inputs) -> Dict[str, Any]:
         """
         Contract-compliant process for EnhancedThemeExpert.
@@ -769,6 +786,9 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
                 'agreement_score': 1.0,
                 'raw_proposals': raw_proposals,
                 'member_confidences': member_confidences,
+                # dynamic expert-scoped keys used by the committee
+                f'{expert_name}_voting_proposal': proposal,
+                f'{expert_name}_confidence': confidence,
                 '_thesis': thesis,
             }
             self.performance_tracker.record_metric(self.__class__.__name__, 'process', (time.time() - start) * 1000, True)
@@ -950,10 +970,28 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
             seasonality_sensitivity=self.seasonality_sensitivity
         ))
 
+        # Publish baseline provides to SmartInfoBus to prevent early BUS MISS
+        try:
+            name = self.__class__.__name__
+            baseline_proposal = {
+                'action': 'abstain',
+                'signal_strength': 0.0,
+                'position_size': 0.0,
+                'duration': 'short',
+                'seasonality_type': 'unknown'
+            }
+            self.smart_bus.set(f'{name}_voting_proposal', baseline_proposal, module=name, thesis='Baseline seasonality voting proposal')
+            self.smart_bus.set(f'{name}_confidence', 0.1, module=name, thesis=f"{name} baseline confidence: 10%")
+            self.smart_bus.set(f'{name}_market_context', self.market_context, module=name, thesis=f"Baseline market context for {name}")
+            self.smart_bus.set(f'{name}_analytics', self.expert_analytics, module=name, thesis=f"Baseline performance analytics for {name}")
+        except Exception:
+            pass
+
     async def process(self, **inputs) -> Dict[str, Any]:
         """
-        Contract-compliant process for EnhancedSeasonalityRiskExpert.
-        Produces: seasonality_voting_proposal, seasonality_confidence, seasonality_analysis, _thesis.
+    Contract-compliant process for EnhancedSeasonalityRiskExpert.
+    Produces: seasonality_voting_proposal, seasonality_confidence, seasonality_analysis,
+          committee_decision, committee_confidence, expert_performance, _thesis.
         """
         start = time.time()
         try:
@@ -976,10 +1014,29 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
                 'session_adjustment': proposal.get('session_adjustment', {}),
             }
 
+            # Build committee-like projection for contract compliance (not bus-published to avoid collisions)
+            committee_decision = {
+                'decision_type': 'expert_projection',
+                'action': proposal.get('action', 'abstain'),
+                'reason': 'seasonality_expert_projection',
+                'source': self.__class__.__name__,
+                'timestamp': datetime.datetime.now().isoformat()
+            }
+            committee_confidence = float(confidence)
+
+            # Local expert performance index (0..1) combining success_rate and avg_confidence
+            expert_performance = {self.__class__.__name__: self._get_local_expert_performance_index()}
+
+            name = self.__class__.__name__
             out = {
                 'seasonality_voting_proposal': proposal,
                 'seasonality_confidence': confidence,
+                f'{name}_voting_proposal': proposal,
+                f'{name}_confidence': confidence,
                 'seasonality_analysis': seasonality_analysis,
+                'committee_decision': committee_decision,
+                'committee_confidence': committee_confidence,
+                'expert_performance': expert_performance,
                 '_thesis': thesis,
             }
             self.performance_tracker.record_metric(self.__class__.__name__, 'process', (time.time() - start) * 1000, True)
@@ -987,10 +1044,16 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
 
         except Exception as e:
             self.logger.error(f"[FAIL] Seasonality process error: {e}")
+            name = self.__class__.__name__
             return {
                 'seasonality_voting_proposal': {'action': 'abstain', 'reason': f'error:{str(e)}'},
                 'seasonality_confidence': 0.1,
+                f'{name}_voting_proposal': {'action': 'abstain', 'reason': f'error:{str(e)}'},
+                f'{name}_confidence': 0.1,
                 'seasonality_analysis': {'status': 'error', 'error': str(e)},
+                'committee_decision': {'action': 'abstain', 'decision_type': 'error', 'reason': str(e), 'source': self.__class__.__name__},
+                'committee_confidence': 0.1,
+                'expert_performance': {self.__class__.__name__: 0.3},
                 '_thesis': f"Seasonality expert failed: {str(e)}",
             }
 
@@ -1117,6 +1180,19 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
         except Exception as e:
             self.logger.warning(f"Seasonality signal recording failed: {e}")
 
+    def _get_local_expert_performance_index(self) -> float:
+        """Compute a bounded performance index from expert analytics (0..1)."""
+        try:
+            total = int(self.expert_analytics.get('total_actions', 0))
+            success = int(self.expert_analytics.get('successful_actions', 0))
+            success_rate = success / max(1, total)
+            avg_conf = float(self.expert_analytics.get('avg_confidence', 0.5))
+            # Weighted blend; decay slight to avoid overconfidence
+            idx = 0.55 * success_rate + 0.45 * avg_conf
+            return max(0.0, min(1.0, float(idx)))
+        except Exception:
+            return 0.5
+
 
 # ═══════════════════════════════════════════════════════════════════
 # FACTORY FUNCTION FOR CREATING ALL ENHANCED EXPERTS
@@ -1216,6 +1292,19 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                 module=self.__class__.__name__,
                 thesis='Initialized empty expert performance map'
             )
+            # Baseline committee votes collections
+            self.smart_bus.set(
+                'committee_votes',
+                [],
+                module=self.__class__.__name__,
+                thesis='Baseline committee votes initialized'
+            )
+            self.smart_bus.set(
+                'votes',
+                [],
+                module=self.__class__.__name__,
+                thesis='Baseline raw votes initialized'
+            )
         except Exception:
             pass
 
@@ -1299,6 +1388,14 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                 'raw_proposals': raw_proposals,
                 'member_confidences': member_confidences,
                 'votes': votes,
+                'committee_votes': [
+                    {
+                        'action': v.get('vote', {}).get('action', 'abstain'),
+                        'confidence': float(v.get('confidence', 0.0)),
+                        'expert': v.get('expert', 'unknown'),
+                        'timestamp': v.get('timestamp')
+                    } for v in expert_votes
+                ],
                 'member_proposals': member_proposals,
                 'voting_weights': voting_weights,
                 'time_of_day': time_of_day,
@@ -1562,6 +1659,20 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
             self.smart_bus.set('committee_decision', results['committee_decision'], module=self.__class__.__name__, thesis=thesis, confidence=results['committee_confidence'])
             self.smart_bus.set('voting_consensus', results['voting_consensus'], module=self.__class__.__name__, thesis=f"Voting consensus: {results['voting_consensus'].get('consensus_strength', 0):.1%} agreement")
             self.smart_bus.set('committee_confidence', results['committee_confidence'], module=self.__class__.__name__, thesis=f"Committee confidence: {results['committee_confidence']:.1%}")
+            # Publish committee_votes for simulation modules expecting a simplified list
+            try:
+                simplified_votes = [
+                    {
+                        'action': v.get('vote', {}).get('action', 'abstain'),
+                        'confidence': float(v.get('confidence', 0.0)),
+                        'expert': v.get('expert', 'unknown'),
+                        'timestamp': v.get('timestamp')
+                    }
+                    for v in results.get('expert_votes', [])
+                ]
+                self.smart_bus.set('committee_votes', simplified_votes, module=self.__class__.__name__, thesis='Per-expert committee votes snapshot')
+            except Exception as e:
+                self.logger.warning(f"Committee votes publish soft-fail: {e}")
 
             # Canonical trade_vote publication (single-writer policy is audited by bus pre-hook)
             try:

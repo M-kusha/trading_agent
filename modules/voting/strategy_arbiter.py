@@ -236,19 +236,21 @@ Strategy Arbiter v3.1 Initialization:
 - Gate criteria weights={self.gate_intelligence['criteria_weights']}, Adaptive={self.gate_intelligence['adaptive_threshold']}
 - Learning: baseline_beta={self._baseline_beta:.3f}, adapt_rate={self.adapt_rate:.4f}
 """
+        # keep a local copy so validate_outputs can include it in process() results
+        self._init_payload = {
+            "status": "initialized",
+            "thesis": thesis,
+            "timestamp": dt.datetime.now().isoformat(),
+            "configuration": {
+                "members": len(self.members),
+                "action_dim": self.action_dim,
+                "intelligence_parameters": self.decision_intelligence,
+                "gate_parameters": self.gate_intelligence,
+            },
+        }
         self.smart_bus.set(
             "strategy_arbiter_initialization",
-            {
-                "status": "initialized",
-                "thesis": thesis,
-                "timestamp": dt.datetime.now().isoformat(),
-                "configuration": {
-                    "members": len(self.members),
-                    "action_dim": self.action_dim,
-                    "intelligence_parameters": self.decision_intelligence,
-                    "gate_parameters": self.gate_intelligence,
-                },
-            },
+            dict(self._init_payload),
             module="StrategyArbiter",
             thesis=thesis,
         )
@@ -291,10 +293,39 @@ Strategy Arbiter v3.1 Initialization:
                 thesis = await self._generate_comprehensive_arbitration_thesis(performance_analysis, recommendations)
 
                 # 4) Compose & publish
+                # Build required outputs for contract validation
+                init_payload = getattr(self, "_init_payload", None)
+                if not init_payload:
+                    try:
+                        init_payload = self.smart_bus.get("strategy_arbiter_initialization", "StrategyArbiter") or {}
+                    except Exception:
+                        init_payload = {}
+
+                # strategy_weights payload: map names -> weights
+                try:
+                    member_names: List[str] = []
+                    for i, m in enumerate(self.members):
+                        nm = None
+                        try:
+                            nm = getattr(m, "name", None) or getattr(m, "module_name", None)
+                        except Exception:
+                            nm = None
+                        member_names.append(nm if isinstance(nm, str) and nm else f"member_{i}")
+                    weights_list = self.weights.tolist()
+                    strategy_weights = {
+                        "by_member": {member_names[i]: float(weights_list[i]) for i in range(min(len(member_names), len(weights_list)))},
+                        "members": member_names,
+                        "weights": weights_list,
+                        "timestamp": dt.datetime.utcnow().isoformat(),
+                    }
+                except Exception:
+                    strategy_weights = {"by_member": {}, "members": [], "weights": [], "timestamp": dt.datetime.utcnow().isoformat()}
+
                 results: Dict[str, Any] = {
                     "blended_action": blended_proposal.tolist(),
                     "alpha_weights": self.last_alpha.tolist() if self.last_alpha is not None else [],
                     "member_weights": self.weights.tolist(),
+                    "strategy_weights": strategy_weights,
                     "gate_decision": self._get_recent_gate_decision(),
                     "voting_quality": dict(self.voting_quality),
                     "member_performance": self._get_member_performance_summary(),
@@ -303,7 +334,9 @@ Strategy Arbiter v3.1 Initialization:
                     "arbiter_recommendations": list(recommendations),
                     "health_metrics": self._get_health_metrics(),
                     "instrument_signals": signals,
-                    "_thesis": thesis,
+                        "instruments": list(getattr(self, "instruments", [])),
+                        "_thesis": thesis,
+                    "strategy_arbiter_initialization": init_payload,
                 }
                 await self._update_smartinfobus_comprehensive(results, thesis)
 
@@ -1481,6 +1514,7 @@ Strategy Arbiter v3.1 Initialization:
             "arbiter_recommendations": ["Investigate strategy arbiter errors"],
             "health_metrics": {"status": "error", "error_context": str(ctx)},
             "instrument_signals": {},
+            "instruments": list(getattr(self, "instruments", [])),
             "_thesis": f"StrategyArbiter error: {ctx}",
         }
 
@@ -1512,6 +1546,7 @@ Strategy Arbiter v3.1 Initialization:
             "arbiter_recommendations": ["Restart strategy arbiter system"],
             "health_metrics": {"status": "disabled", "reason": "circuit_breaker_triggered"},
             "instrument_signals": {},
+            "instruments": list(getattr(self, "instruments", [])),
             "_thesis": "StrategyArbiter disabled due to circuit breaker",
         }
 

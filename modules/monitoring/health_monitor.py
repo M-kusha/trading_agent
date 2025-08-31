@@ -1,7 +1,7 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/monitoring/health_monitor.py
 # [ROCKET] Production-Grade Health Monitor for SmartInfoBus
-# v2.4 — config-driven thresholds, contract-aware scoring, bus-safe publishing
+# v2.6 — type-hinted net I/O, no direct attr access, robust math
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import traceback
 import hashlib
 import tempfile
 import shutil
-from typing import Dict, List, Any, Optional, Callable, Set, Union, Tuple, Deque
+from typing import Dict, List, Any, Optional, Callable, Set, Tuple, Deque, Iterable, cast, Protocol
 from collections import deque, defaultdict
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, asdict
@@ -35,14 +35,14 @@ try:
     PSUTIL_AVAILABLE = True
 except Exception:
     PSUTIL_AVAILABLE = False
-    psutil = None  # type: ignore
+    psutil = None  # type: ignore[assignment]
 
 try:
     import numpy as np
     NUMPY_AVAILABLE = True
 except Exception:
     NUMPY_AVAILABLE = False
-    np = None  # type: ignore
+    np = None  # type: ignore[assignment]
 
 # Contract registry (optional, contract-first weighting)
 try:
@@ -107,8 +107,39 @@ class HealthReport:
 
 
 # ─────────────────────────────────────────────────────────────
-# Utilities: counters, breaker, rate limiter
+# Utilities: math safety, counters, breaker, rate limiter
 # ─────────────────────────────────────────────────────────────
+
+def _to_float(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+def _safe_mean(values: Iterable[Any]) -> float:
+    total = 0.0
+    n = 0
+    for v in values:
+        try:
+            total += float(v)
+            n += 1
+        except Exception:
+            continue
+    return total / n if n else 0.0
+
+def _safe_percentile(sorted_values: List[float], pct: float) -> float:
+    """pct in [0, 100]; expects pre-sorted list."""
+    if not sorted_values:
+        return 0.0
+    pct = max(0.0, min(100.0, pct))
+    if NUMPY_AVAILABLE and isinstance(np, object):  # type: ignore[truthy-function]
+        try:
+            return float(np.percentile(sorted_values, pct))  # type: ignore
+        except Exception:
+            pass
+    idx = int(round((pct / 100.0) * (len(sorted_values) - 1)))
+    idx = max(0, min(len(sorted_values) - 1, idx))
+    return sorted_values[idx]
 
 class ThreadSafeCounter:
     def __init__(self, initial: int = 0):
@@ -128,8 +159,8 @@ class ThreadSafeCounter:
 
 class CircuitBreaker:
     def __init__(self, failure_threshold: int = 3, timeout: float = 60.0):
-        self.failure_threshold = failure_threshold
-        self.timeout = timeout
+        self.failure_threshold = int(failure_threshold)
+        self.timeout = float(timeout)
         self.failure_count = 0
         self.last_failure_time: Optional[float] = None
         self.state = "closed"  # closed, open, half-open
@@ -147,7 +178,7 @@ class CircuitBreaker:
     def is_open(self) -> bool:
         with self._lock:
             if self.state == "open":
-                if self.last_failure_time and (time.time() - self.last_failure_time > self.timeout):
+                if self.last_failure_time is not None and (time.time() - self.last_failure_time > self.timeout):
                     self.state = "half-open"
                     return False
                 return True
@@ -161,8 +192,8 @@ class CircuitBreaker:
 
 class RateLimiter:
     def __init__(self, max_calls: int = 10, window_seconds: float = 1.0):
-        self.max_calls = max_calls
-        self.window_seconds = window_seconds
+        self.max_calls = int(max_calls)
+        self.window_seconds = float(window_seconds)
         self.calls: Deque[float] = deque()
         self._lock = threading.Lock()
     def allow(self) -> bool:
@@ -190,6 +221,15 @@ def validate_input(func: Callable) -> Callable:
 
 
 # ─────────────────────────────────────────────────────────────
+# Net I/O typing helper for Pylance
+# ─────────────────────────────────────────────────────────────
+
+class _NetCounters(Protocol):
+    bytes_sent: int
+    bytes_recv: int
+
+
+# ─────────────────────────────────────────────────────────────
 # Health Monitor
 # ─────────────────────────────────────────────────────────────
 
@@ -212,14 +252,14 @@ class HealthMonitor:
     CACHE_TTL = 5.0
 
     # Defaults (overridden by config)
-    _DEFAULTS = {
+    _DEFAULTS: Dict[str, Any] = {
         'thresholds': {
-            'cpu_percent': {'warning': 70, 'critical': 90},
-            'memory_percent': {'warning': 75, 'critical': 90},
-            'disk_percent': {'warning': 80, 'critical': 95},
+            'cpu_percent': {'warning': 70.0, 'critical': 90.0},
+            'memory_percent': {'warning': 75.0, 'critical': 90.0},
+            'disk_percent': {'warning': 80.0, 'critical': 95.0},
             'error_rate': {'warning': 0.05, 'critical': 0.10},
-            'latency_ms': {'warning': 150, 'critical': 300},
-            'queue_size': {'warning': 1000, 'critical': 5000}
+            'latency_ms': {'warning': 150.0, 'critical': 300.0},
+            'queue_size': {'warning': 1000.0, 'critical': 5000.0}
         },
         'bus_namespace': 'health',
         'publish_interval_s': 15,
@@ -289,12 +329,12 @@ class HealthMonitor:
         self._last_check_duration = 0.0
 
         self._circuit_breakers: Dict[str, CircuitBreaker] = defaultdict(
-            lambda: CircuitBreaker(failure_threshold=3, timeout=60)
+            lambda: CircuitBreaker(failure_threshold=3, timeout=60.0)
         )
-        self._rate_limiter = RateLimiter(max_calls=2, window_seconds=1)
+        self._rate_limiter = RateLimiter(max_calls=2, window_seconds=1.0)
 
         # Meta-monitoring
-        self._meta_metrics = {
+        self._meta_metrics: Dict[str, Deque[float]] = {
             'monitor_cpu_usage': deque(maxlen=100),
             'monitor_memory_usage': deque(maxlen=100),
             'check_durations': deque(maxlen=100)
@@ -345,17 +385,17 @@ class HealthMonitor:
     # Config
     # ─────────────────────────────────────────────────────────
     def _load_runtime_config(self, overrides: Dict[str, Any]) -> Dict[str, Any]:
-        cfg = dict(self._DEFAULTS)
+        cfg: Dict[str, Any] = dict(self._DEFAULTS)
         if ConfigurationManager is not None:
             try:
                 cm = ConfigurationManager.get_instance()
                 # Prefer a dedicated monitoring section if available
-                mon = {}
+                mon: Dict[str, Any] = {}
                 if hasattr(cm, "get_monitoring_config"):
                     mon = cm.get_monitoring_config() or {}
                 else:
                     syscfg = cm.get_system_config() or {}
-                    mon = syscfg.get('monitoring', {})
+                    mon = cast(Dict[str, Any], syscfg.get('monitoring', {}))
                 # overlay shallow keys
                 for k in ('thresholds', 'bus_namespace', 'publish_interval_s', 'alert_cooldown_s'):
                     if k in mon:
@@ -377,7 +417,7 @@ class HealthMonitor:
             def _on_cfg_change(name: str, old: Dict[str, Any], new: Dict[str, Any]):
                 try:
                     # rebuild thresholds from new config
-                    mon = {}
+                    mon: Dict[str, Any] = {}
                     if hasattr(cm, "get_monitoring_config"):
                         mon = cm.get_monitoring_config() or {}
                     else:
@@ -492,7 +532,7 @@ class HealthMonitor:
         if self._initialized:
             return
         # psutil process and prime CPU meter for non-blocking snapshots
-        if PSUTIL_AVAILABLE:
+        if PSUTIL_AVAILABLE and psutil is not None:
             try:
                 self._process = psutil.Process()  # type: ignore
                 try:
@@ -512,11 +552,11 @@ class HealthMonitor:
             'psutil_available': PSUTIL_AVAILABLE,
             'numpy_available': NUMPY_AVAILABLE,
         }
-        if PSUTIL_AVAILABLE:
+        if PSUTIL_AVAILABLE and psutil is not None:
             try:
                 info.update({
                     'cpu_count': psutil.cpu_count(),  # type: ignore
-                    'memory_total_gb': round(psutil.virtual_memory().total / (1024**3), 2),  # type: ignore
+                    'memory_total_gb': round(cast(float, psutil.virtual_memory().total) / (1024**3), 2),  # type: ignore
                 })
             except Exception:
                 pass
@@ -538,7 +578,7 @@ class HealthMonitor:
                 self.check_system_health()
                 dur = time.time() - t0
                 self._last_check_duration = dur
-                self._meta_metrics['check_durations'].append(dur)
+                self._meta_metrics['check_durations'].append(float(dur))
                 consecutive_errors = 0
                 self._shutdown_event.wait(base_interval)
             except Exception as e:
@@ -552,10 +592,10 @@ class HealthMonitor:
         self.logger.info("Health monitoring loop stopped")
 
     def _record_meta_metrics(self) -> None:
-        if PSUTIL_AVAILABLE and self._process:
+        if PSUTIL_AVAILABLE and psutil is not None and self._process is not None:
             try:
-                cpu = self._process.cpu_percent()
-                mem = self._process.memory_info().rss / (1024**2)
+                cpu = float(self._process.cpu_percent())
+                mem = float(self._process.memory_info().rss) / (1024**2)
                 self._meta_metrics['monitor_cpu_usage'].append(cpu)
                 self._meta_metrics['monitor_memory_usage'].append(mem)
             except Exception:
@@ -603,12 +643,12 @@ class HealthMonitor:
     # ─────────────────────────────────────────────────────────
     # Sub-checks
     # ─────────────────────────────────────────────────────────
-    def _get_cached(self, key: str, generator: Callable, ttl: Optional[float] = None) -> Any:
-        ttl = ttl or self.CACHE_TTL
+    def _get_cached(self, key: str, generator: Callable[[], Any], ttl: Optional[float] = None) -> Any:
+        ttl_val = float(ttl if ttl is not None else self.CACHE_TTL)
         with self._cache_lock:
             if key in self._cache:
                 value, ts = self._cache[key]
-                if time.time() - ts < ttl:
+                if time.time() - ts < ttl_val:
                     return value
             val = generator()
             self._cache[key] = (val, time.time())
@@ -622,53 +662,77 @@ class HealthMonitor:
         if breaker.is_open():
             return {'error': 'Circuit breaker open', 'status': 'degraded'}
 
-        def generate():
+        def generate() -> Dict[str, Any]:
             try:
-                cpu_percent = psutil.cpu_percent(interval=None)  # type: ignore
-                cpu_percent = cpu_percent if 0 <= cpu_percent <= 100 else 0.0
+                cpu_percent = float(psutil.cpu_percent(interval=None))  # type: ignore
+                if not (0.0 <= cpu_percent <= 100.0):
+                    cpu_percent = 0.0
+
                 mem = psutil.virtual_memory()  # type: ignore
                 root_path = os.path.abspath(os.sep)
                 disk = psutil.disk_usage(root_path)  # type: ignore
-                net = psutil.net_io_counters()  # type: ignore
+
+                # Net may be None or have unexpected structure; treat via safe getattr
+                net: Optional[_NetCounters] = None
+                try:
+                    net = cast(Optional[_NetCounters], psutil.net_io_counters())  # type: ignore
+                except Exception:
+                    net = None
+
+                # pull counters safely into locals
+                net_sent = float(getattr(net, 'bytes_sent', 0.0)) if net is not None else 0.0
+                net_recv = float(getattr(net, 'bytes_recv', 0.0)) if net is not None else 0.0
 
                 rates = {'network_send_rate_mbps': 0.0, 'network_recv_rate_mbps': 0.0}
                 now = time.time()
-                if self._last_net_io and self._last_net_io_time:
-                    dt = now - self._last_net_io_time
-                    if dt > 0:
-                        ds = net.bytes_sent - self._last_net_io['bytes_sent']
-                        dr = net.bytes_recv - self._last_net_io['bytes_recv']
-                        rates['network_send_rate_mbps'] = round((ds * 8) / (dt * 1024 * 1024), 2)
-                        rates['network_recv_rate_mbps'] = round((dr * 8) / (dt * 1024 * 1024), 2)
-                self._last_net_io = {'bytes_sent': net.bytes_sent, 'bytes_recv': net.bytes_recv}
-                self._last_net_io_time = now
+                if net is not None:
+                    if self._last_net_io is not None and self._last_net_io_time is not None:
+                        dt = now - self._last_net_io_time
+                        if dt > 0:
+                            prev_sent = float(self._last_net_io.get('bytes_sent', 0.0))
+                            prev_recv = float(self._last_net_io.get('bytes_recv', 0.0))
+                            ds = net_sent - prev_sent
+                            dr = net_recv - prev_recv
+                            rates['network_send_rate_mbps'] = round((ds * 8.0) / (dt * 1024.0 * 1024.0), 2)
+                            rates['network_recv_rate_mbps'] = round((dr * 8.0) / (dt * 1024.0 * 1024.0), 2)
+                    # update last snapshot
+                    self._last_net_io = {'bytes_sent': net_sent, 'bytes_recv': net_recv}
+                    self._last_net_io_time = now
+                else:
+                    # If no net, clear previous to avoid misleading deltas later
+                    self._last_net_io = None
+                    self._last_net_io_time = None
 
                 proc_mem = 0.0
                 threads = threading.active_count()
-                if self._process:
+                if self._process is not None:
                     try:
-                        proc_mem = self._process.memory_info().rss / (1024**2)
+                        proc_mem = float(self._process.memory_info().rss) / (1024.0**2)
                     except Exception:
                         self._process = None
 
-                return {
+                out: Dict[str, Any] = {
                     'cpu_percent': round(cpu_percent, 2),
-                    'memory_percent': round(mem.percent, 2),
-                    'memory_available_gb': round(mem.available / (1024**3), 2),
-                    'disk_percent': round(disk.percent, 2),
-                    'disk_free_gb': round(disk.free / (1024**3), 2),
+                    'memory_percent': round(float(mem.percent), 2),
+                    'memory_available_gb': round(float(mem.available) / (1024.0**3), 2),
+                    'disk_percent': round(float(disk.percent), 2),
+                    'disk_free_gb': round(float(disk.free) / (1024.0**3), 2),
                     'process_memory_mb': round(proc_mem, 2),
-                    'network_sent_mb': round(net.bytes_sent / (1024**2), 2),
-                    'network_recv_mb': round(net.bytes_recv / (1024**2), 2),
-                    **rates,
-                    'thread_count': threads
+                    'thread_count': int(threads),
+                    **rates
                 }
+
+                if net is not None:
+                    out['network_sent_mb'] = round(net_sent / (1024.0**2), 2)
+                    out['network_recv_mb'] = round(net_recv / (1024.0**2), 2)
+
+                return out
             except Exception as e:
                 self.logger.error(f"Failed to check system resources: {e}")
                 return {'error': str(e)}
 
         try:
-            res = self._get_cached("system_resources", generate, ttl=2.0)
+            res = cast(Dict[str, Any], self._get_cached("system_resources", generate, ttl=2.0))
             breaker.record_success()
             return res
         except Exception:
@@ -680,14 +744,18 @@ class HealthMonitor:
         unhealthy = 0
         with self._module_health_lock:
             if self.orchestrator and hasattr(self.orchestrator, 'modules'):
-                for name, module in self.orchestrator.modules.items():
-                    info = self._check_single_module_health(name, module)
-                    details[name] = info
-                    if info['status'] in ['critical', 'error', 'disabled']:
+                try:
+                    modules_items = list(getattr(self.orchestrator, 'modules').items())
+                except Exception:
+                    modules_items = []
+                for name, module in modules_items:
+                    info = self._check_single_module_health(str(name), module)
+                    details[str(name)] = info
+                    if info.get('status') in ['critical', 'error', 'disabled']:
                         unhealthy += 1
-                        self.unhealthy_modules.add(name)
+                        self.unhealthy_modules.add(str(name))
                     else:
-                        self.unhealthy_modules.discard(name)
+                        self.unhealthy_modules.discard(str(name))
         return {
             'total_modules': len(details),
             'healthy_modules': len(details) - unhealthy,
@@ -701,7 +769,6 @@ class HealthMonitor:
             if ContractsRegistry:
                 contract = ContractsRegistry.get(module_name)  # type: ignore
                 if contract:
-                    # look for typical flags
                     if contract.get('critical', False):
                         return 1.5
                     if contract.get('category') in ('risk', 'trading'):
@@ -714,7 +781,7 @@ class HealthMonitor:
         try:
             enabled = True
             failures = 0
-            status = 'unknown'
+            status: str = 'unknown'
 
             # enabled?
             try:
@@ -735,20 +802,23 @@ class HealthMonitor:
                 try:
                     mod_status = module.get_health_status()
                     if isinstance(mod_status, dict):
-                        status = mod_status.get('status', status)
+                        status = str(mod_status.get('status', status))
                 except Exception:
                     status = 'error'
 
             # latency
-            avg_latency = None
+            avg_latency: Optional[float] = None
             try:
-                latencies = list(getattr(self.smart_bus, "_latency_history", {}).get(module_name, []))
+                raw = getattr(self.smart_bus, "_latency_history", {}).get(module_name, [])
+                latencies: List[float] = []
+                for v in list(raw)[-10:]:
+                    if isinstance(v, (int, float)):
+                        latencies.append(float(v))
                 if latencies:
-                    if NUMPY_AVAILABLE:
-                        avg_latency = float(np.mean(latencies[-10:]))  # type: ignore
+                    if NUMPY_AVAILABLE and isinstance(np, object):  # type: ignore[truthy-function]
+                        avg_latency = float(np.mean(latencies))  # type: ignore
                     else:
-                        tail = latencies[-10:]
-                        avg_latency = sum(tail) / len(tail)
+                        avg_latency = sum(latencies) / len(latencies)
             except Exception:
                 pass
 
@@ -768,42 +838,50 @@ class HealthMonitor:
 
             # apply latency thresholds
             if avg_latency is not None:
-                thr = self.thresholds.get(f'module.{module_name}', self.thresholds.get('latency_ms', {'warning':150,'critical':300}))
-                if avg_latency > thr.get('critical', 300):
+                thr = self.thresholds.get(f'module.{module_name}', self.thresholds.get('latency_ms', {'warning':150.0,'critical':300.0}))
+                crit = float(thr.get('critical', 300.0))
+                warn = float(thr.get('warning', 150.0))
+                if avg_latency > crit:
                     status = 'critical'
                     score = min(score, 0.3)
-                elif avg_latency > thr.get('warning', 150):
+                elif avg_latency > warn:
                     status = 'warning'
                     score = min(score, 0.7)
 
             # weight by contract criticality
             weight = self._module_criticality_weight(module_name)
+            if weight <= 0:
+                weight = 1.0
             score = max(0.0, min(1.0, score / weight))  # heavier modules penalize more quickly
 
             with self._module_health_lock:
-                self.module_health_scores[module_name] = score
+                self.module_health_scores[module_name] = float(score)
 
-            out = {'enabled': enabled, 'failures': failures, 'status': status, 'score': score}
+            out: Dict[str, Any] = {'enabled': enabled, 'failures': failures, 'status': status, 'score': float(score)}
             if avg_latency is not None:
-                out['avg_latency_ms'] = round(avg_latency, 2)
+                out['avg_latency_ms'] = round(float(avg_latency), 2)
             return out
 
         except Exception as e:
             self.logger.error(f"Error checking module {module_name}: {e}")
-            return {'status': 'error', 'score': 0, 'error': str(e)}
+            return {'status': 'error', 'score': 0.0, 'error': str(e)}
 
     def _check_infobus_health(self) -> Dict[str, Any]:
         try:
             perf = self.smart_bus.get_performance_metrics()
-            event_log_size = perf.get('total_events', 0)
-            disabled = len(perf.get('disabled_modules', []))
-            status = self._assess_infobus_status(perf)
+            cache_hit_rate = _to_float(perf.get('cache_hit_rate', 0.0), 0.0) if isinstance(perf, dict) else 0.0
+            active_modules = int(perf.get('active_modules', 0)) if isinstance(perf, dict) else 0
+            disabled_list = perf.get('disabled_modules', []) if isinstance(perf, dict) else []
+            disabled = int(len(disabled_list)) if isinstance(disabled_list, (list, tuple, set)) else 0
+            data_keys = len(getattr(self.smart_bus, "_data_store", {}))
+            event_log_size = int(perf.get('total_events', 0)) if isinstance(perf, dict) else 0
+            status = self._assess_infobus_status(perf if isinstance(perf, dict) else {})
             return {
-                'cache_hit_rate': round(perf.get('cache_hit_rate', 0), 3),
-                'active_modules': perf.get('active_modules', 0),
+                'cache_hit_rate': round(cache_hit_rate, 3),
+                'active_modules': active_modules,
                 'disabled_modules': disabled,
                 'event_log_size': event_log_size,
-                'data_keys': len(getattr(self.smart_bus, "_data_store", {})),
+                'data_keys': data_keys,
                 'status': status
             }
         except Exception as e:
@@ -815,11 +893,16 @@ class HealthMonitor:
             latencies: List[float] = []
             recent_errors = 0
             if self.orchestrator and hasattr(self.orchestrator, 'modules'):
-                for name in self.orchestrator.modules:
+                for name in list(getattr(self.orchestrator, 'modules').keys()):
                     try:
-                        lats = list(getattr(self.smart_bus, "_latency_history", {}).get(name, []))
-                        if lats:
-                            latencies.extend(lats[-10:])
+                        raw = getattr(self.smart_bus, "_latency_history", {}).get(name, [])
+                        # last 10; coerce to float and filter
+                        tail: List[float] = []
+                        for v in list(raw)[-10:]:
+                            if isinstance(v, (int, float)):
+                                tail.append(float(v))
+                        if tail:
+                            latencies.extend(tail)
                         br = getattr(self.smart_bus, "_circuit_breakers", {}).get(name)
                         if br and hasattr(br, 'failure_count'):
                             recent_errors += int(br.failure_count)
@@ -828,7 +911,7 @@ class HealthMonitor:
 
             total = len(latencies)
             if total:
-                if NUMPY_AVAILABLE:
+                if NUMPY_AVAILABLE and isinstance(np, object):  # type: ignore[truthy-function]
                     avg = float(np.mean(latencies))  # type: ignore
                     mx = float(np.max(latencies))    # type: ignore
                     p95 = float(np.percentile(latencies, 95))  # type: ignore
@@ -836,25 +919,25 @@ class HealthMonitor:
                     avg = sum(latencies) / total
                     mx = max(latencies)
                     s = sorted(latencies)
-                    p95 = s[int(total * 0.95) - 1 if total else 0]
+                    p95 = _safe_percentile(s, 95.0)
             else:
                 avg = mx = p95 = 0.0
 
             # meta metrics
-            meta = {}
+            meta: Dict[str, Any] = {}
             if self._meta_metrics['monitor_cpu_usage']:
-                meta['monitor_cpu_percent'] = round(sum(self._meta_metrics['monitor_cpu_usage']) / len(self._meta_metrics['monitor_cpu_usage']), 2)
+                meta['monitor_cpu_percent'] = round(_safe_mean(self._meta_metrics['monitor_cpu_usage']), 2)
             if self._meta_metrics['monitor_memory_usage']:
-                meta['monitor_memory_mb'] = round(sum(self._meta_metrics['monitor_memory_usage']) / len(self._meta_metrics['monitor_memory_usage']), 2)
+                meta['monitor_memory_mb'] = round(_safe_mean(self._meta_metrics['monitor_memory_usage']), 2)
 
-            uptime = time.time() - self._start_time if self._start_time else 0.0
+            uptime = (time.time() - self._start_time) if self._start_time else 0.0
             return {
                 'avg_latency_ms': round(avg, 2),
                 'max_latency_ms': round(mx, 2),
                 'p95_latency_ms': round(p95, 2),
-                'error_rate': round(recent_errors / max(total, 1), 4),
-                'throughput_per_min': total * 2,
-                'monitor_uptime_seconds': round(uptime, 2),
+                'error_rate': round(float(recent_errors) / float(max(total, 1)), 4),
+                'throughput_per_min': int(total * 2),  # ~ checks per 30s window x2
+                'monitor_uptime_seconds': round(float(uptime), 2),
                 'checks_performed': self._check_count.get(),
                 'monitor_errors': self._error_count.get(),
                 **meta
@@ -874,17 +957,19 @@ class HealthMonitor:
             for metric, thr in [('cpu_percent', self.thresholds.get('cpu_percent', {})),
                                 ('memory_percent', self.thresholds.get('memory_percent', {})),
                                 ('disk_percent', self.thresholds.get('disk_percent', {}))]:
-                v = system.get(metric, 0)
-                if v >= thr.get('critical', 1e9):
+                v = _to_float(system.get(metric, 0.0), 0.0)
+                crit = _to_float(thr.get('critical', 1e9), 1e9)
+                warn = _to_float(thr.get('warning', 1e9), 1e9)
+                if v >= crit:
                     statuses.append('critical')
-                elif v >= thr.get('warning', 1e9):
+                elif v >= warn:
                     statuses.append('warning')
 
         modules = health.get('modules', {})
         if isinstance(modules, dict):
-            total = modules.get('total_modules', 1)
-            unhealthy = modules.get('unhealthy_modules', 0)
-            ratio = unhealthy / max(total, 1)
+            total = int(modules.get('total_modules', 1) or 1)
+            unhealthy = int(modules.get('unhealthy_modules', 0) or 0)
+            ratio = float(unhealthy) / float(max(total, 1))
             if ratio > 0.3:
                 statuses.append('critical')
             elif ratio > 0.1:
@@ -892,11 +977,11 @@ class HealthMonitor:
 
         perf = health.get('performance', {})
         if isinstance(perf, dict):
-            er = perf.get('error_rate', 0)
+            er = _to_float(perf.get('error_rate', 0.0), 0.0)
             thr = self.thresholds.get('error_rate', {'warning': 0.05, 'critical': 0.1})
-            if er >= thr.get('critical', 0.1):
+            if er >= _to_float(thr.get('critical', 0.1), 0.1):
                 statuses.append('critical')
-            elif er >= thr.get('warning', 0.05):
+            elif er >= _to_float(thr.get('warning', 0.05), 0.05):
                 statuses.append('warning')
 
         if 'critical' in statuses:
@@ -906,20 +991,21 @@ class HealthMonitor:
         return HealthStatus.HEALTHY.value
 
     def _record_health_metrics(self, health: Dict[str, Any]) -> None:
-        ts = health['timestamp']
+        ts = _to_float(health.get('timestamp', time.time()), time.time())
         trace = health.get('trace_id')
 
         system = health.get('system', {})
         if isinstance(system, dict):
             for name, value in system.items():
                 if isinstance(value, (int, float)):
+                    valf = float(value)
                     self.metrics[f'system.{name}'].append(
                         HealthMetric(
                             timestamp=ts,
                             metric_type=name,
-                            value=float(value),
-                            threshold=self.thresholds.get(name, {}).get('critical', float('inf')),
-                            status=self._metric_status(name, float(value)),
+                            value=valf,
+                            threshold=_to_float(self.thresholds.get(name, {}).get('critical', float('inf')), float('inf')),
+                            status=self._metric_status(name, valf),
                             trace_id=trace
                         )
                     )
@@ -927,13 +1013,14 @@ class HealthMonitor:
         with self._module_health_lock:
             snapshot = list(self.module_health_scores.items())
         for mod, score in snapshot:
+            scoref = float(score)
             self.metrics[f'module.{mod}.score'].append(
                 HealthMetric(
                     timestamp=ts,
                     metric_type='health_score',
-                    value=float(score),
+                    value=scoref,
                     threshold=0.5,
-                    status='healthy' if score > 0.7 else 'warning' if score > 0.3 else 'critical',
+                    status='healthy' if scoref > 0.7 else 'warning' if scoref > 0.3 else 'critical',
                     trace_id=trace
                 )
             )
@@ -942,9 +1029,11 @@ class HealthMonitor:
         thr = self.thresholds.get(metric)
         if not thr:
             return HealthStatus.HEALTHY.value
-        if value >= thr.get('critical', 1e9):
+        crit = _to_float(thr.get('critical', 1e9), 1e9)
+        warn = _to_float(thr.get('warning', 1e9), 1e9)
+        if value >= crit:
             return HealthStatus.CRITICAL.value
-        if value >= thr.get('warning', 1e9):
+        if value >= warn:
             return HealthStatus.WARNING.value
         return HealthStatus.HEALTHY.value
 
@@ -952,12 +1041,12 @@ class HealthMonitor:
         """
         Prune old in-memory metrics and stale cooldown entries to keep memory bounded.
         """
-        cutoff = time.time() - max_age_seconds
+        cutoff = time.time() - float(max_age_seconds)
 
         # Remove old HealthMetric entries and empty metric keys
         with self._metrics_lock:
             empty_keys: List[str] = []
-            for key, dq in self.metrics.items():
+            for key, dq in list(self.metrics.items()):
                 while dq and dq[0].timestamp < cutoff:
                     dq.popleft()
                 if not dq:
@@ -972,8 +1061,8 @@ class HealthMonitor:
         with self._alerts_lock:
             try:
                 now = time.time()
-                ttl = max(2 * self._alert_cooldown_s, 3600)  # at least 1 hour
-                stale = [k for k, ts in self._cooldowns.items() if (now - ts) > ttl]
+                ttl = max(2 * self._alert_cooldown_s, 3600.0)  # at least 1 hour
+                stale = [k for k, ts in list(self._cooldowns.items()) if (now - ts) > ttl]
                 for k in stale:
                     self._cooldowns.pop(k, None)
             except Exception:
@@ -984,7 +1073,7 @@ class HealthMonitor:
     # ─────────────────────────────────────────────────────────
     def _cooldown_allows(self, key: Tuple[str, str]) -> bool:
         now = time.time()
-        last = self._cooldowns.get(key, 0.0)
+        last = _to_float(self._cooldowns.get(key, 0.0), 0.0)
         if now - last >= self._alert_cooldown_s:
             self._cooldowns[key] = now
             return True
@@ -1001,11 +1090,13 @@ class HealthMonitor:
                     if status != HealthStatus.HEALTHY.value:
                         key = f'system.{metric}'
                         if key not in self.active_alerts:
+                            thr_map = self.thresholds.get(metric, {})
+                            threshold_val = _to_float(thr_map.get(status, thr_map.get('warning', 0.0)), 0.0)
                             alert = {
                                 'type': 'system_resource',
                                 'metric': metric,
-                                'value': value,
-                                'threshold': self.thresholds[metric][status],
+                                'value': float(value),
+                                'threshold': threshold_val,
                                 'status': status,
                                 'timestamp': time.time(),
                                 'trace_id': health.get('trace_id')
@@ -1016,20 +1107,22 @@ class HealthMonitor:
         modules = health.get('modules', {})
         if isinstance(modules, dict):
             details = modules.get('module_details', {})
-            for mod, info in details.items():
-                if info['status'] in ['critical', 'error']:
-                    key = f'module.{mod}'
-                    if key not in self.active_alerts:
-                        alert = {
-                            'type': 'module_health',
-                            'module': mod,
-                            'status': info['status'],
-                            'failures': info.get('failures', 0),
-                            'timestamp': time.time(),
-                            'trace_id': health.get('trace_id')
-                        }
-                        self.active_alerts[key] = alert
-                        to_trigger.append(alert)
+            if isinstance(details, dict):
+                for mod, info in details.items():
+                    s = info.get('status')
+                    if s in ['critical', 'error']:
+                        key = f'module.{mod}'
+                        if key not in self.active_alerts:
+                            alert = {
+                                'type': 'module_health',
+                                'module': mod,
+                                'status': s,
+                                'failures': int(info.get('failures', 0) or 0),
+                                'timestamp': time.time(),
+                                'trace_id': health.get('trace_id')
+                            }
+                            self.active_alerts[key] = alert
+                            to_trigger.append(alert)
 
         for a in to_trigger:
             self._trigger_alert(a)
@@ -1044,16 +1137,17 @@ class HealthMonitor:
                 key = f'system.{metric}'
                 if key in self.active_alerts:
                     v = system.get(metric)
-                    if v is not None and self._metric_status(metric, float(v)) == HealthStatus.HEALTHY.value:
+                    if isinstance(v, (int, float)) and self._metric_status(metric, float(v)) == HealthStatus.HEALTHY.value:
                         resolved.append(key)
 
         modules = health.get('modules', {})
         if isinstance(modules, dict):
             details = modules.get('module_details', {})
-            for mod, info in details.items():
-                key = f'module.{mod}'
-                if key in self.active_alerts and info['status'] not in ['critical', 'error']:
-                    resolved.append(key)
+            if isinstance(details, dict):
+                for mod, info in details.items():
+                    key = f'module.{mod}'
+                    if key in self.active_alerts and info.get('status') not in ['critical', 'error']:
+                        resolved.append(key)
 
         for k in resolved:
             self.active_alerts.pop(k, None)
@@ -1061,11 +1155,11 @@ class HealthMonitor:
 
     def _trigger_alert(self, alert: Dict[str, Any]) -> None:
         self.alert_history.append(alert)
-        key = ('alert', alert.get('type', 'unknown'))
+        key = ('alert', str(alert.get('type', 'unknown')))
         if not self._cooldown_allows(key):
             return
         # operator log
-        msg = f"[ALERT] {alert['type']} - {alert.get('metric') or alert.get('module', 'unknown')} - {alert.get('status','unknown')}"
+        msg = f"[ALERT] {alert.get('type')} - {alert.get('metric') or alert.get('module', 'unknown')} - {alert.get('status','unknown')}"
         self.logger.warning(msg)
         # callbacks
         for cb in list(self._alert_callbacks):
@@ -1085,7 +1179,7 @@ class HealthMonitor:
             pass
 
     @validate_input
-    def register_alert_callback(self, callback: Callable) -> None:
+    def register_alert_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
         if not callable(callback):
             raise ValueError("Callback must be callable")
         import inspect
@@ -1098,29 +1192,40 @@ class HealthMonitor:
     # ─────────────────────────────────────────────────────────
     @validate_input
     def get_health_trends(self, metric_name: str, hours: int = 24) -> Dict[str, Any]:
-        if not (0 <= hours <= 168):
+        # Defensive coerce to int to satisfy the type checker and callers who send floats/strings
+        try:
+            hours_val = int(hours)
+        except Exception:
+            raise ValueError("Hours must be an integer")
+        if hours_val < 0 or hours_val > 168:
             raise ValueError("Hours must be between 0 and 168")
-        cutoff = time.time() - (hours * 3600)
+
+        cutoff = time.time() - (hours_val * 3600.0)
         with self._metrics_lock:
             if metric_name not in self.metrics:
                 return {'error': 'Metric not found'}
             ms = [m for m in self.metrics[metric_name] if m.timestamp > cutoff]
         if not ms:
             return {'error': 'No data in time range'}
-        vals = [m.value for m in ms]
-        if NUMPY_AVAILABLE:
-            avg = float(np.mean(vals))  # type: ignore
-            minimum = float(np.min(vals))  # type: ignore
-            maximum = float(np.max(vals))  # type: ignore
-            std = float(np.std(vals))  # type: ignore
+
+        vals: List[float] = [float(m.value) for m in ms]
+        if NUMPY_AVAILABLE and isinstance(np, object):  # type: ignore[truthy-function]
+            try:
+                avg = float(np.mean(vals))  # type: ignore
+                minimum = float(np.min(vals))  # type: ignore
+                maximum = float(np.max(vals))  # type: ignore
+                std = float(np.std(vals))  # type: ignore
+            except Exception:
+                avg = _safe_mean(vals); minimum = min(vals); maximum = max(vals)
+                var = _safe_mean([(x - avg) ** 2 for x in vals]); std = var ** 0.5
         else:
-            avg = sum(vals) / len(vals)
+            avg = _safe_mean(vals)
             minimum = min(vals); maximum = max(vals)
-            var = sum((x - avg)**2 for x in vals) / len(vals)
-            std = var ** 0.5
+            var = _safe_mean([(x - avg) ** 2 for x in vals]); std = var ** 0.5
+
         return {
             'metric': metric_name,
-            'period_hours': hours,
+            'period_hours': hours_val,
             'data_points': len(vals),
             'current': vals[-1],
             'average': round(avg, 3),
@@ -1135,13 +1240,17 @@ class HealthMonitor:
             return 'insufficient_data'
         third = max(1, len(values)//3)
         a = values[:third]; b = values[-third:]
-        if NUMPY_AVAILABLE:
-            fa = float(np.mean(a)); fb = float(np.mean(b))  # type: ignore
+        if NUMPY_AVAILABLE and isinstance(np, object):  # type: ignore[truthy-function]
+            try:
+                fa = float(np.mean(a)); fb = float(np.mean(b))  # type: ignore
+            except Exception:
+                fa = _safe_mean(a); fb = _safe_mean(b)
         else:
-            fa = sum(a)/len(a); fb = sum(b)/len(b)
-        change = (fb - fa) / max(abs(fa), 1) * 100
-        if change > 10: return 'increasing'
-        if change < -10: return 'decreasing'
+            fa = _safe_mean(a); fb = _safe_mean(b)
+        base = max(abs(fa), 1.0)
+        change = (fb - fa) / base * 100.0
+        if change > 10.0: return 'increasing'
+        if change < -10.0: return 'decreasing'
         return 'stable'
 
     @validate_input
@@ -1157,8 +1266,10 @@ class HealthMonitor:
                 history = list(self.alert_history)[-100:]
             with self._module_health_lock:
                 scores = dict(self.module_health_scores)
-            uptime = time.time() - self._start_time if self._start_time else 0.0
-            data = {
+            uptime = (time.time() - self._start_time) if self._start_time else 0.0
+            avg_check_ms = _safe_mean(self._meta_metrics['check_durations']) * 1000.0
+
+            data: Dict[str, Any] = {
                 'export_time': datetime.now().isoformat(),
                 'current_health': current,
                 'active_alerts': alerts,
@@ -1168,12 +1279,10 @@ class HealthMonitor:
                 'monitor_stats': {
                     'checks_performed': self._check_count.get(),
                     'errors_encountered': self._error_count.get(),
-                    'uptime_seconds': round(uptime, 2),
+                    'uptime_seconds': round(float(uptime), 2),
                     'is_running': self._started,
                     'meta_metrics': {
-                        'avg_check_duration_ms': (
-                            sum(self._meta_metrics['check_durations'])/len(self._meta_metrics['check_durations']) * 1000
-                        ) if self._meta_metrics['check_durations'] else 0
+                        'avg_check_duration_ms': round(avg_check_ms, 3)
                     }
                 }
             }
@@ -1195,18 +1304,18 @@ class HealthMonitor:
 
     def get_status(self) -> Dict[str, Any]:
         with self._metrics_lock:
-            tracked = len(self.metrics)
-        uptime = time.time() - self._start_time if self._start_time else 0.0
+            tracked = int(len(self.metrics))
+        uptime = (time.time() - self._start_time) if self._start_time else 0.0
         return {
             'initialized': self._initialized,
             'running': self._started,
             'checks_performed': self._check_count.get(),
             'errors_encountered': self._error_count.get(),
-            'last_check_duration_ms': self._last_check_duration * 1000,
+            'last_check_duration_ms': float(self._last_check_duration) * 1000.0,
             'active_alerts': len(self.active_alerts),
             'unhealthy_modules': len(self.unhealthy_modules),
-            'thread_alive': self._monitor_thread.is_alive() if self._monitor_thread else False,
-            'uptime_seconds': round(uptime, 2),
+            'thread_alive': (self._monitor_thread.is_alive() if self._monitor_thread else False),
+            'uptime_seconds': round(float(uptime), 2),
             'circuit_breakers': {name: br.state for name, br in self._circuit_breakers.items()},
             'cache_size': len(self._cache),
             'metrics_tracked': tracked
@@ -1226,11 +1335,11 @@ class HealthMonitor:
         recs: List[str] = []
         system = health.get('system', {})
         if isinstance(system, dict):
-            cpu = system.get('cpu_percent', 0)
-            if cpu >= self.thresholds['cpu_percent']['warning']:
+            cpu = _to_float(system.get('cpu_percent', 0.0), 0.0)
+            if cpu >= _to_float(self.thresholds['cpu_percent']['warning'], 70.0):
                 recs.append(f"High CPU usage ({cpu:.1f}%) - optimize compute-heavy modules")
-            mem = system.get('memory_percent', 0)
-            if mem >= self.thresholds['memory_percent']['warning']:
+            mem = _to_float(system.get('memory_percent', 0.0), 0.0)
+            if mem >= _to_float(self.thresholds['memory_percent']['warning'], 75.0):
                 recs.append(f"High memory usage ({mem:.1f}%) - check for leaks")
         with self._module_health_lock:
             if self.unhealthy_modules:
@@ -1239,23 +1348,24 @@ class HealthMonitor:
                 recs.append("Consider restarting or investigating these modules")
         perf = health.get('performance', {})
         if isinstance(perf, dict):
-            avg = perf.get('avg_latency_ms', 0)
-            if avg > 100:
+            avg = _to_float(perf.get('avg_latency_ms', 0.0), 0.0)
+            if avg > 100.0:
                 recs.append(f"High average latency ({avg:.0f}ms) - review module performance")
-            er = perf.get('error_rate', 0)
+            er = _to_float(perf.get('error_rate', 0.0), 0.0)
             if er > 0.05:
                 recs.append(f"High error rate ({er:.1%}) - investigate failing modules")
         bus = health.get('infobus', {})
-        if isinstance(bus, dict) and bus.get('cache_hit_rate', 1) < 0.7:
+        if isinstance(bus, dict) and _to_float(bus.get('cache_hit_rate', 1.0), 1.0) < 0.7:
             recs.append("Low cache hit rate - consider increasing cache size/TTL")
-        if perf.get('monitor_cpu_percent', 0) > 5:
+        if _to_float(perf.get('monitor_cpu_percent', 0.0), 0.0) > 5.0:
             recs.append("Health monitor using excessive CPU - increase check interval")
         return recs
 
     def _assess_infobus_status(self, metrics: Dict[str, Any]) -> str:
-        if metrics.get('cache_hit_rate', 0) < 0.5:
+        if _to_float(metrics.get('cache_hit_rate', 0.0), 0.0) < 0.5:
             return HealthStatus.WARNING.value
-        if len(metrics.get('disabled_modules', [])) > 3:
+        disabled = metrics.get('disabled_modules', [])
+        if isinstance(disabled, (list, tuple, set)) and len(disabled) > 3:
             return HealthStatus.CRITICAL.value
         return HealthStatus.HEALTHY.value
 
@@ -1290,12 +1400,13 @@ class HealthMonitor:
                 )
                 # modules (trim to 100 for safety)
                 mods = health.get('modules', {}).get('module_details', {})
-                self.smart_bus.set(
-                    f"{self._bus_ns}/modules",
-                    {k: v for k, v in list(mods.items())[:100]},
-                    module="HealthMonitor",
-                    thesis="Module health snapshot"
-                )
+                if isinstance(mods, dict):
+                    self.smart_bus.set(
+                        f"{self._bus_ns}/modules",
+                        {k: v for k, v in list(mods.items())[:100]},
+                        module="HealthMonitor",
+                        thesis="Module health snapshot"
+                    )
             except Exception:
                 pass
             time.sleep(self._publish_interval_s)

@@ -169,6 +169,17 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
         # Concurrency guard (avoid overlapping process() runs)
         self._process_lock: asyncio.Lock = asyncio.Lock()
 
+        # ---- NEW: seed init payload so every tick can emit it (contract-required) ----
+        self._init_payload: Dict[str, Any] = {
+            "status": "initializing",
+            "timestamp": dt.datetime.now().isoformat(),
+            "configuration": {
+                "members": self.n_members,
+                "threshold": self.threshold,
+                "consensus_methods": list(self.consensus_methods),
+            },
+        }
+
         # Initialization thesis + early BUS publish
         self._generate_initialization_thesis()
         version = getattr(self.metadata, "version", "3.1.0") if self.metadata else "3.1.0"
@@ -184,14 +195,22 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             )
         )
         try:
+            # Seed contract-provided numeric outputs to avoid early consumer misses
             self.smart_bus.set(
                 "consensus_score",
                 float(self.last_consensus),
                 module="ConsensusDetector",
                 thesis="Initial consensus score placeholder",
             )
+            self.smart_bus.set(
+                "voting_consensus",
+                float(self.last_consensus),
+                module="ConsensusDetector",
+                thesis="Initial voting consensus placeholder",
+            )
         except Exception:
             pass
+
 
     def _init_systems(self) -> None:
         """Initialize logging, error handling, telemetry, health."""
@@ -309,6 +328,7 @@ Consensus Detector v3.1 Initialization:
 
                 results: Dict[str, Any] = {
                     "consensus_score": float(self.last_consensus),
+                    "voting_consensus": float(self.last_consensus),  # contract alias
                     "consensus_quality": float(self.consensus_quality),
                     "consensus_components": dict(self.consensus_components),
                     "directional_consensus": float(self.directional_consensus),
@@ -319,6 +339,17 @@ Consensus Detector v3.1 Initialization:
                     "quality_metrics": dict(self.quality_metrics),
                     "consensus_recommendations": list(recommendations),
                     "health_metrics": self._get_health_metrics(),
+                    "consensus_detector_initialization": dict(
+                        getattr(self, "_init_payload", {
+                            "status": "initialized",
+                            "timestamp": dt.datetime.now().isoformat(),
+                            "configuration": {
+                                "members": self.n_members,
+                                "threshold": self.threshold,
+                                "consensus_methods": list(self.consensus_methods),
+                            },
+                        })
+                    ),
                     "_thesis": thesis,
                 }
 
@@ -1394,6 +1425,12 @@ Consensus Detector v3.1 Initialization:
         try:
             s = self.smart_bus.set
             s("consensus_score", results["consensus_score"], module="ConsensusDetector", thesis=thesis)
+            # Contract-critical keys rebroadcast every tick
+            s("voting_consensus", results["voting_consensus"], module="ConsensusDetector",
+            thesis=f"Voting consensus={results['voting_consensus']:.3f}")
+            s("consensus_detector_initialization", results["consensus_detector_initialization"],
+            module="ConsensusDetector", thesis="Initialization payload")
+
             s(
                 "consensus_quality",
                 results["consensus_quality"],
@@ -1451,6 +1488,7 @@ Consensus Detector v3.1 Initialization:
         except Exception as e:
             ctx = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
             self.logger.error(f"SmartInfoBus update failed: {ctx}")
+
 
     # ────────────────────────────
     # PUBLIC / LEGACY API
@@ -1758,6 +1796,7 @@ Consensus Detector v3.1 Initialization:
     def _generate_error_response(self, ctx: Any) -> Dict[str, Any]:
         return {
             "consensus_score": 0.5,
+            "voting_consensus": 0.5,  # keep contract surface even in error
             "consensus_quality": 0.5,
             "consensus_components": {},
             "directional_consensus": 0.5,
@@ -1768,8 +1807,20 @@ Consensus Detector v3.1 Initialization:
             "quality_metrics": {"error": str(ctx)},
             "consensus_recommendations": ["Investigate consensus detector errors"],
             "health_metrics": {"status": "error", "error_context": str(ctx)},
+            "consensus_detector_initialization": dict(
+                getattr(self, "_init_payload", {
+                    "status": "initialized",
+                    "timestamp": dt.datetime.now().isoformat(),
+                    "configuration": {
+                        "members": self.n_members,
+                        "threshold": self.threshold,
+                        "consensus_methods": list(self.consensus_methods),
+                    },
+                })
+            ),
             "_thesis": f"ConsensusDetector error: {ctx}",
         }
+
 
     def _get_safe_voting_defaults(self) -> Dict[str, Any]:
         return {
@@ -1789,6 +1840,7 @@ Consensus Detector v3.1 Initialization:
     def _generate_disabled_response(self) -> Dict[str, Any]:
         return {
             "consensus_score": 0.5,
+            "voting_consensus": 0.5,  # keep contract surface even in disabled state
             "consensus_quality": 0.5,
             "consensus_components": {},
             "directional_consensus": 0.5,
@@ -1799,8 +1851,20 @@ Consensus Detector v3.1 Initialization:
             "quality_metrics": {"status": "disabled"},
             "consensus_recommendations": ["Restart consensus detector system"],
             "health_metrics": {"status": "disabled", "reason": "circuit_breaker_triggered"},
+            "consensus_detector_initialization": dict(
+                getattr(self, "_init_payload", {
+                    "status": "initialized",
+                    "timestamp": dt.datetime.now().isoformat(),
+                    "configuration": {
+                        "members": self.n_members,
+                        "threshold": self.threshold,
+                        "consensus_methods": list(self.consensus_methods),
+                    },
+                })
+            ),
             "_thesis": "ConsensusDetector disabled due to circuit breaker",
         }
+
 
     # ────────────────────────────
     # STATE / HOT-RELOAD

@@ -220,6 +220,8 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
                 }),
                 'session_performance': self.session_stats.copy(),
                 'health_metrics': self._get_health_metrics(),
+                # Contract: ensure initialization payload is always returned
+                'bias_auditor_initialization': self._get_bias_auditor_initialization_view(),
                 '_thesis': thesis
             }
             
@@ -760,6 +762,19 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             psychological_state = self._generate_psychological_state_summary(results)
             self.smart_bus.set('psychological_state', psychological_state,
                              module='BiasAuditor', thesis="Current psychological trading state assessment")
+
+            # Heartbeat update to keep initialization fresh and present
+            try:
+                init_existing = self.smart_bus.get('bias_auditor_initialization', 'BiasAuditor') or {}
+                init_heartbeat = {
+                    **init_existing,
+                    'status': init_existing.get('status', 'initialized'),
+                    'last_update': datetime.datetime.now().isoformat()
+                }
+                self.smart_bus.set('bias_auditor_initialization', init_heartbeat,
+                                 module='BiasAuditor', thesis='BiasAuditor initialization heartbeat update')
+            except Exception:
+                pass
             
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
@@ -796,6 +811,7 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             }),
             'session_performance': self.session_stats.copy(),
             'health_metrics': {'status': 'error', 'error_context': str(error_context)},
+            'bias_auditor_initialization': self._get_bias_auditor_initialization_view(),
             '_thesis': f"BiasAuditor error: {error_context}"
         }
 
@@ -1114,7 +1130,19 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             }),
             'session_performance': self.session_stats.copy(),
             'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'},
+            'bias_auditor_initialization': self._get_bias_auditor_initialization_view(),
             '_thesis': 'BiasAuditor disabled via circuit breaker'
+        }
+
+    def _get_bias_auditor_initialization_view(self) -> Dict[str, Any]:
+        """Return a safe minimal initialization view for contract compliance."""
+        try:
+            init = self.smart_bus.get('bias_auditor_initialization', 'BiasAuditor') or {}
+        except Exception:
+            init = {}
+        return {
+            'status': init.get('status', 'initialized' if not self.is_disabled else 'disabled'),
+            'timestamp': init.get('timestamp', datetime.datetime.now().isoformat())
         }
 
     def _calculate_session_duration(self) -> str:

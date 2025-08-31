@@ -437,7 +437,11 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'thesis_diversity': analytics_results.get('diversity_score', 0.0),
                 'evolution_history': list(self.evolution_history)[-10:],
                 'market_adaptation': self.market_adaptation.copy(),
-                'health_metrics': self._get_health_metrics()
+                'health_metrics': self._get_health_metrics(),
+                'thesis_evolution_initialization': self._get_tee_init_view(),
+                # Optional convenience for TrainingScript per contract notes
+                'market_thesis': thesis,
+                '_thesis': thesis
             }
             
             # Update SmartInfoBus with comprehensive thesis
@@ -1649,8 +1653,16 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         return "Thesis evolution proceeding optimally with intelligent adaptation"
 
     async def _update_smartinfobus_comprehensive(self, results: Dict[str, Any], thesis: str):
-        """Placeholder for comprehensive SmartInfoBus update"""
-        pass
+        """Publish main results to SmartInfoBus (single-writer keys only)."""
+        try:
+            self.smart_bus.set('active_theses', results.get('active_theses', []), module='ThesisEvolutionEngine', thesis=thesis)
+            self.smart_bus.set('thesis_performance', results.get('thesis_performance', {}), module='ThesisEvolutionEngine', thesis='Performance summary update')
+            self.smart_bus.set('evolution_history', results.get('evolution_history', []), module='ThesisEvolutionEngine', thesis='Evolution history update')
+            self.smart_bus.set('thesis_recommendations', results.get('thesis_recommendations', []), module='ThesisEvolutionEngine', thesis='Recommendations update')
+            self.smart_bus.set('market_thesis', thesis, module='ThesisEvolutionEngine', thesis='Thesis evolution summary')
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
+            self.logger.error(f"SmartInfoBus update failed: {error_context}")
 
     async def _handle_processing_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
         """Handle processing errors with intelligent recovery"""
@@ -1676,7 +1688,10 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             'thesis_diversity': 0.0,
             'evolution_history': [],
             'market_adaptation': {'error': str(error_context)},
-            'health_metrics': {'status': 'error', 'error_context': str(error_context)}
+            'health_metrics': {'status': 'error', 'error_context': str(error_context)},
+            'thesis_evolution_initialization': self._get_tee_init_view(),
+            'market_thesis': "ThesisEvolutionEngine error",
+            '_thesis': f"ThesisEvolutionEngine encountered an error and applied safe fallbacks: {error_context}"
         }
 
     def _get_safe_market_defaults(self) -> Dict[str, Any]:
@@ -1699,7 +1714,10 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             'thesis_diversity': 0.0,
             'evolution_history': [],
             'market_adaptation': {'status': 'disabled'},
-            'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'}
+            'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'},
+            'thesis_evolution_initialization': self._get_tee_init_view(),
+            'market_thesis': "ThesisEvolutionEngine disabled",
+            '_thesis': 'ThesisEvolutionEngine is temporarily disabled due to repeated errors (circuit breaker). It will remain in a safe state until manual intervention or auto-recovery.'
         }
 
     def _get_performance_summary_comprehensive(self) -> Dict[str, Any]:
@@ -1779,6 +1797,23 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "thesis_removal")
             self.logger.warning(f"Thesis removal failed: {error_context}")
+
+    def _get_tee_init_view(self) -> Dict[str, Any]:
+        """Safely read or synthesize initialization view for contract compliance"""
+        try:
+            init_view = self.smart_bus.get('thesis_evolution_initialization', 'ThesisEvolutionEngine')
+            if isinstance(init_view, dict) and init_view:
+                return init_view
+        except Exception:
+            pass
+        return {
+            'status': 'initialized' if not getattr(self, 'is_disabled', False) else 'disabled',
+            'timestamp': datetime.datetime.now().isoformat(),
+            'configuration': {
+                'capacity': getattr(self, 'capacity', 0),
+                'categories': list(getattr(self, 'thesis_categories', {}).keys()) if hasattr(self, 'thesis_categories') else []
+            }
+        }
 
     # ═══════════════════════════════════════════════════════════════════
     # REQUIRED ABSTRACT METHOD IMPLEMENTATIONS

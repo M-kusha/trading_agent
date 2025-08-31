@@ -330,9 +330,13 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'competency_scores': self._get_competency_assessment(),
                 'learning_recommendations': recommendations,
                 'stage_progression': progression_analysis,
+                # Provide a default stage_advancement view to satisfy contract even if no advancement occurred
+                'stage_advancement': self._get_default_stage_advancement_view(),
                 'mastery_assessment': self._get_mastery_assessment(),
                 'learning_analytics': self.learning_stats.copy(),
                 'health_metrics': self._get_health_metrics(),
+                # Ensure curriculum_initialization is always present per contract
+                'curriculum_initialization': self._get_curriculum_initialization_view(),
                 '_thesis': thesis
             }
             
@@ -1058,6 +1062,22 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             mastery_thesis = f"Current mastery level: {results['mastery_assessment']['overall_mastery']:.1%}"
             self.smart_bus.set('mastery_assessment', results['mastery_assessment'],
                              module='CurriculumPlannerPlus', thesis=mastery_thesis)
+
+            # Provide a heartbeat update for curriculum_initialization so the key is present and fresh
+            init_existing = self.smart_bus.get('curriculum_initialization', 'CurriculumPlannerPlus') or {}
+            init_heartbeat = {
+                **init_existing,
+                'status': init_existing.get('status', 'initialized'),
+                'last_update': datetime.datetime.now().isoformat(),
+                'current_stage': results['curriculum_stage'].get('stage_name')
+            }
+            self.smart_bus.set('curriculum_initialization', init_heartbeat,
+                             module='CurriculumPlannerPlus', thesis='Curriculum initialization heartbeat update')
+
+            # Also publish the default stage_advancement view unless an advancement happened elsewhere
+            if 'stage_advancement' in results:
+                self.smart_bus.set('stage_advancement', results['stage_advancement'],
+                                 module='CurriculumPlannerPlus', thesis='Stage advancement status update')
             
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
@@ -1452,9 +1472,11 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             'competency_scores': {k: v['score'] for k, v in self.competency_areas.items()},
             'learning_recommendations': ["Investigate curriculum system errors"],
             'stage_progression': {'ready_for_advancement': False, 'error': str(error_context)},
+            'stage_advancement': self._get_default_stage_advancement_view(),
             'mastery_assessment': {'overall_mastery': 0.5, 'error': str(error_context)},
             'learning_analytics': self.learning_stats.copy(),
-            'health_metrics': {'status': 'error', 'error_context': str(error_context)}
+            'health_metrics': {'status': 'error', 'error_context': str(error_context)},
+            'curriculum_initialization': self._get_curriculum_initialization_view()
         }
 
     def _get_safe_learning_defaults(self) -> Dict[str, Any]:
@@ -1492,9 +1514,11 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             'competency_scores': {k: 0.0 for k in self.competency_areas.keys()},
             'learning_recommendations': ["Restart curriculum planner system", "Check error logs for issues"],
             'stage_progression': {'ready_for_advancement': False, 'status': 'disabled'},
+            'stage_advancement': self._get_default_stage_advancement_view(status='disabled'),
             'mastery_assessment': {'overall_mastery': 0.0, 'status': 'disabled'},
             'learning_analytics': {'status': 'disabled'},
             'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'},
+            'curriculum_initialization': self._get_curriculum_initialization_view(),
             '_thesis': 'Curriculum planner disabled due to circuit breaker; see logs for details.'
         }
 
@@ -1532,6 +1556,33 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             'success_rate': (self.learning_stats['successful_episodes'] / max(1, self.learning_stats['total_episodes'])) * 100,
             'plateau_risk': self.plateau_detection['consecutive_poor_episodes'] >= 3,
             'session_duration': self._calculate_session_duration()
+        }
+
+    def _get_curriculum_initialization_view(self) -> Dict[str, Any]:
+        """Return a safe, minimal curriculum_initialization view for contract compliance"""
+        try:
+            init = self.smart_bus.get('curriculum_initialization', 'CurriculumPlannerPlus') or {}
+        except Exception:
+            init = {}
+        # Construct a minimal, always-valid view
+        return {
+            'status': init.get('status', 'initialized' if not self.is_disabled else 'disabled'),
+            'timestamp': init.get('timestamp', datetime.datetime.now().isoformat()),
+            'curriculum_overview': init.get('curriculum_overview', {
+                'stages': len(self.curriculum_stages),
+                'competencies': list(self.competency_areas.keys()),
+                'current_stage': self.curriculum_stages[self.current_stage]['name']
+            })
+        }
+
+    def _get_default_stage_advancement_view(self, status: str = 'no_change') -> Dict[str, Any]:
+        """Provide a default stage advancement payload when no advancement occurred"""
+        current_name = self.curriculum_stages[self.current_stage]['name']
+        return {
+            'status': status,
+            'old_stage': current_name,
+            'new_stage': current_name,
+            'advancement_thesis': 'No stage change in this cycle'
         }
 
     def get_curriculum_report(self) -> str:

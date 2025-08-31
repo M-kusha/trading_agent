@@ -61,7 +61,6 @@ class CorrelatedRiskConfig:
     hot_reload=True,
     timeout_ms=120,
 ))
-
 class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
     Contract guarantees:
@@ -189,6 +188,51 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             self.step_count = 0
             self.correlation_violations = 0
             self.diversification_violations = 0
+
+            # Publish baseline provides to avoid early BUS MISS for downstream consumers
+            try:
+                self.smart_bus.set(
+                    "correlation_risk",
+                    {
+                        "correlation_risk_score": float(self.correlation_risk_score),
+                        "severity_level": str(self.severity_level),
+                        "risk_metrics": {
+                            "violation_risk": 0.0,
+                            "diversification_risk": 0.0,
+                            "cluster_risk_score": float(self.cluster_risk_score),
+                        },
+                        "summary": {
+                            "pairs_analyzed": 0,
+                            "instruments_analyzed": 0,
+                            "processing_time_ms": 0.0,
+                        },
+                        "timestamp": datetime.datetime.now().isoformat(),
+                        "thesis": "Baseline correlation risk initialized",
+                    },
+                    module="CorrelatedRiskController",
+                    thesis="Baseline correlation risk initialized",
+                )
+                self.smart_bus.set(
+                    "diversification_score",
+                    float(self.diversification_score),
+                    module="CorrelatedRiskController",
+                    thesis="Baseline diversification score initialized",
+                )
+                self.smart_bus.set(
+                    "correlation_clusters",
+                    {},
+                    module="CorrelatedRiskController",
+                    thesis="Baseline correlation clusters initialized",
+                )
+                # Key explicitly referenced by PositionManager at startup
+                self.smart_bus.set(
+                    "correlation_matrix",
+                    {},
+                    module="CorrelatedRiskController",
+                    thesis="Baseline correlation matrix initialized",
+                )
+            except Exception as e:
+                self.logger.warning(f"Baseline bus publish soft-fail: {e}")
 
             self.logger.info("Correlated Risk Controller initialization completed successfully")
         except Exception as e:
@@ -369,7 +413,7 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
 
             self.step_count += 1
 
-            # Extract data from SmartInfoBus
+            # Extract data from SmartInfoBus (contract requires these)
             positions = self.smart_bus.get("positions", "CorrelatedRiskController") or []
             prices = self.smart_bus.get("prices", "CorrelatedRiskController") or {}
             market_context = self.smart_bus.get("market_context", "CorrelatedRiskController") or {}
@@ -431,11 +475,32 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
                 module="CorrelatedRiskController",
                 thesis="Correlation clusters update",
             )
+            # NEW: publish correlation_matrix (contract requires it)
+            self.smart_bus.set(
+                "correlation_matrix",
+                payload["correlation_matrix"],
+                module="CorrelatedRiskController",
+                thesis="Correlation matrix update",
+            )
         except Exception as e:
             err = self.error_pinpointer.analyze_error(e, "bus_write")
             self.logger.error(f"SmartInfoBus update failed: {err}")
 
     # ── payload formatter (contract enforcer) ────────────────
+    def _serialize_corr_matrix(self, corr: Dict[Tuple[str, str], float]) -> Dict[str, float]:
+        """
+        Convert tuple-keyed pair map to JSON-safe string keys.
+        Matches set_state() which expects stringified tuples like "('EURUSD','GBPUSD')".
+        """
+        out: Dict[str, float] = {}
+        for (a, b), v in corr.items():
+            try:
+                key = f"({repr(a)},{repr(b)})"
+            except Exception:
+                key = f"({a},{b})"
+            out[key] = float(v)
+        return out
+
     def _format_provides_output(
         self, correlation_results: Dict[str, Any], risk_metrics: Dict[str, Any], thesis: str
     ) -> Dict[str, Any]:
@@ -458,10 +523,18 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
         }
 
         clusters = correlation_results.get("cluster_analysis", {}).get("clusters", {})
+        # NEW: include correlation_matrix in provides payload
+        corr_matrix_serialized = self._serialize_corr_matrix(
+            {tuple(k): float(v) for k, v in correlation_results.get("correlation_matrix", {}).items()}
+            if isinstance(correlation_results.get("correlation_matrix", {}), dict)
+            else {}
+        )
+
         return {
             "correlation_risk": corr_payload,
             "diversification_score": float(self.diversification_score),
             "correlation_clusters": {int(k): list(v) for k, v in clusters.items()} if clusters else {},
+            "correlation_matrix": corr_matrix_serialized,
             "_thesis": thesis,
             "success": True,
         }
@@ -834,7 +907,7 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
                 "cluster_risk_score": float(self.cluster_risk_score),
                 "severity_level": str(self.severity_level),
                 "violation_risk": float(violation_risk),
-                "diversification_risk": float(disciplinization := diversification_risk),
+                "diversification_risk": float(diversification_risk),
             }
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "risk_metrics")
@@ -911,6 +984,7 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             },
             "diversification_score": float(self.diversification_score),
             "correlation_clusters": {},
+            "correlation_matrix": {},  # NEW: include as required provide, even in fallback
             "_thesis": thesis,
             "success": True,
         }

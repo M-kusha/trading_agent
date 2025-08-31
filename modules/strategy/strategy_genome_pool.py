@@ -286,7 +286,9 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     'generation': self.epoch
                 },
                 'population_metrics': self._get_population_metrics(),
-                'health_metrics': self._get_health_metrics()
+                'health_metrics': self._get_health_metrics(),
+                'strategy_genome_pool_initialization': self._get_sgp_init_view(),
+                '_thesis': thesis
             }
             
             # Update SmartInfoBus with comprehensive thesis
@@ -1568,7 +1570,9 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'evolution_analytics': {'error': str(error_context)},
             'best_genome': {'error': str(error_context)},
             'population_metrics': {'error': str(error_context)},
-            'health_metrics': {'status': 'error', 'error_context': str(error_context)}
+            'health_metrics': {'status': 'error', 'error_context': str(error_context)},
+            'strategy_genome_pool_initialization': self._get_sgp_init_view(),
+            '_thesis': f"StrategyGenomePool encountered an error and applied safe fallbacks: {error_context}"
         }
 
     def _get_safe_market_defaults(self) -> Dict[str, Any]:
@@ -1605,7 +1609,9 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'evolution_analytics': {'status': 'disabled'},
             'best_genome': {'status': 'disabled'},
             'population_metrics': {'status': 'disabled'},
-            'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'}
+            'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'},
+            'strategy_genome_pool_initialization': self._get_sgp_init_view(),
+            '_thesis': 'StrategyGenomePool is temporarily disabled due to repeated errors (circuit breaker). It will remain in a safe state until manual intervention or auto-recovery.'
         }
 
     # ═══════════════════════════════════════════════════════════════════
@@ -1627,6 +1633,25 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'diversity_score': self._calculate_population_diversity(),
             'convergence_score': self.evolution_analytics['convergence_score'],
             'adaptation_events': self.evolution_analytics['adaptation_events']
+        }
+
+    def _get_sgp_init_view(self) -> Dict[str, Any]:
+        """Safely read or synthesize initialization view for contract compliance"""
+        try:
+            init_view = self.smart_bus.get('strategy_genome_pool_initialization', 'StrategyGenomePool')
+            if isinstance(init_view, dict) and init_view:
+                return init_view
+        except Exception:
+            pass
+        # Fallback minimal view
+        return {
+            'status': 'initialized' if not getattr(self, 'is_disabled', False) else 'disabled',
+            'timestamp': datetime.datetime.now().isoformat(),
+            'configuration': {
+                'population_size': getattr(self, 'population_size', 0),
+                'genome_bounds': getattr(self, 'genome_bounds', {}),
+                'selection_strategies': list(getattr(self, 'selection_strategies', {}).keys()) if hasattr(self, 'selection_strategies') else []
+            }
         }
 
     def select_genome(self, mode: str = "smart", k: int = 3, custom_selector: Optional[Callable] = None) -> np.ndarray:

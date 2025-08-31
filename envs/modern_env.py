@@ -1,4 +1,3 @@
-# envs/modern_env.py
 """
 Modern SmartInfoBus Trading Environment
 Zero-wiring architecture with automatic module discovery
@@ -292,6 +291,9 @@ class ModernTradingEnv(gym.Env):
         step = int(self.market_state.current_step)
         if not self.smart_bus:
             return
+
+        aggregated = {}  # NEW: collect per-tf windows into one blob
+
         for instrument in self.instruments:
             for timeframe in ["H1", "H4", "D1"]:
                 try:
@@ -307,7 +309,7 @@ class ModernTradingEnv(gym.Env):
                         module="Environment",
                         thesis=f"Current {instrument} price at step {step}",
                     )
-                    # publish small rolling window (best-effort)
+                    # rolling window
                     w = min(100, step + 1)
                     s = max(0, step - w + 1)
                     ohlcv = {
@@ -326,9 +328,28 @@ class ModernTradingEnv(gym.Env):
                         module="Environment",
                         thesis=f"Market data window for {instrument} {timeframe}",
                     )
+                    # NEW: build the generic 'market_data'
+                    aggregated.setdefault(instrument, {})[timeframe] = ohlcv
                 except Exception:
-                    # keep quiet to avoid spam during tight loops
                     pass
+
+        # NEW: publish generic market_data + step_idx for modules that require them
+        try:
+            self.smart_bus.set(
+                "market_data",
+                aggregated,
+                module="Environment",
+                thesis="Aggregated market data (latest rolling windows)"
+            )
+            self.smart_bus.set(
+                "step_idx",
+                int(step),
+                module="Environment",
+                thesis="Current step index"
+            )
+        except Exception:
+            pass
+
 
     # ──────────────────────────────────────────────────────────────
     # Gymnasium API
@@ -455,6 +476,74 @@ class ModernTradingEnv(gym.Env):
         except Exception:
             pass
 
+        # ──────────────────────────────────────────────────────────
+        # NEW: publish risk_metrics + performance_data for reward module
+        try:
+            if self.smart_bus:
+                self.smart_bus.set(
+                    "risk_metrics",
+                    {
+                        "balance": float(self.market_state.balance),
+                        "equity": float(self.market_state.balance),
+                        "current_drawdown": float(self.market_state.current_drawdown),
+                    },
+                    module="Environment",
+                    thesis="Runtime risk metrics from env/market_state",
+                )
+                self.smart_bus.set(
+                    "performance_data",
+                    {
+                        "balance": float(self.market_state.balance),
+                        "initial_balance": float(self.config.initial_balance),
+                        "starting_balance": float(self.config.initial_balance),
+                    },
+                    module="Environment",
+                    thesis="Performance anchors from env",
+                )
+        except Exception:
+            pass
+        # ──────────────────────────────────────────────────────────
+
+        # ──────────────────────────────────────────────────────────
+        # NEW: publish market_context (regime + volatility_level)
+        try:
+            if self.smart_bus and self.instruments:
+                inst = self.instruments[0]
+                tf = "H1" if "H1" in self.data[inst] else list(self.data[inst].keys())[0]
+                df = self.data[inst][tf]
+                s = max(0, self.current_step - 50)
+                e = min(self.current_step, len(df) - 1)
+                window = df["close"].iloc[s:e+1].to_numpy(dtype=np.float64)
+                if window.size >= 2:
+                    ret = np.diff(window) / np.maximum(window[:-1], 1e-12)
+                    vol = float(np.std(ret))
+                    slope = float(np.polyfit(np.arange(window.size), window, 1)[0]) if window.size >= 5 else 0.0
+                else:
+                    vol, slope = 0.0, 0.0
+
+                if vol < 0.003:
+                    vol_level = "low"
+                elif vol < 0.01:
+                    vol_level = "medium"
+                elif vol < 0.02:
+                    vol_level = "high"
+                else:
+                    vol_level = "extreme"
+
+                regime = "trending" if abs(slope) > 0 and vol_level != "low" else "ranging"
+                if vol_level in ("high", "extreme") and abs(slope) < 1e-12:
+                    regime = "volatile"
+
+                self.smart_bus.set(
+                    "market_context",
+                    {"regime": regime, "volatility_level": vol_level, "consensus": 0.5},
+                    module="Environment",
+                    thesis=f"Basic regime/vol estimate ({inst}/{tf})",
+                )
+        except Exception:
+            pass
+        # ──────────────────────────────────────────────────────────
+
         # Non-blocking orchestrator execution (fire-and-forget)
         if self.orchestrator_enabled and self.orchestrator and hasattr(self.orchestrator, "execute_step"):
             self._run_orchestrator_step({})  # inputs can be extended later
@@ -574,11 +663,16 @@ class ModernTradingEnv(gym.Env):
         return self._create_fallback_observation(expected)
 
     def _create_fallback_observation(self, expected_size: int) -> np.ndarray:
+        """
+        FIXED: remove legacy 10k scaling; use relative/normalized features.
+        Keeps shape compatibility (6 features per instrument/timeframe block).
+        """
         feats: List[float] = []
+        # balance normalized by initial balance (scale-free)
         feats.extend([
-            self.market_state.balance / 10000.0,
+            float(self.market_state.balance) / max(float(self.config.initial_balance), 1e-9),
             float(self.market_state.current_drawdown),
-            float(self.current_step) / 1000.0,
+            float(self.current_step) / max(1.0, float(self.config.max_steps)),
         ])
 
         for instrument in self.instruments:
@@ -592,29 +686,36 @@ class ModernTradingEnv(gym.Env):
                         low_ = float(df["low"].iloc[self.current_step])
                         vol_ = float(df["volume"].iloc[self.current_step])
 
-                        base = max(close_, 1e-12)
-                        feats.extend([
-                            close_ / 10000.0,
-                            (high_ - low_) / base,
-                            (close_ - open_) / base,
-                            vol_ / 1000.0,
-                        ])
+                        # rolling mean for local price normalization (scale-free)
+                        s = max(0, self.current_step - 50)
+                        m_close = float(np.mean(df["close"].iloc[s:self.current_step+1])) if self.current_step >= s else close_
+                        m_vol = float(np.mean(df["volume"].iloc[s:self.current_step+1])) if self.current_step >= s else max(vol_, 1.0)
 
-                        # momentum (5)
+                        # 1) normalized close (relative to rolling mean)
+                        close_rel = (close_ / max(m_close, 1e-12)) - 1.0
+                        # 2) intrabar range relative to close
+                        range_rel = (high_ - low_) / max(abs(close_), 1e-12)
+                        # 3) bar change relative to open
+                        change_rel = (close_ - open_) / max(abs(open_), 1e-12)
+                        # 4) normalized volume vs rolling mean
+                        vol_norm = vol_ / max(m_vol, 1e-12)
+
+                        # 5) momentum (5) as pct change
                         if self.current_step >= 5:
                             prev = float(df["close"].iloc[self.current_step - 5])
-                            feats.append((close_ - prev) / max(prev, 1e-12))
+                            mom5 = (close_ - prev) / max(abs(prev), 1e-12)
                         else:
-                            feats.append(0.0)
+                            mom5 = 0.0
 
-                        # volatility (20)
+                        # 6) rolling volatility (20) as std/mean
                         if self.current_step >= 20:
                             recent = df["close"].iloc[self.current_step - 19:self.current_step + 1].to_numpy(dtype=np.float64)
                             m = float(np.mean(recent, dtype=np.float64))
-                            v = float(np.std(recent, dtype=np.float64) / m) if m > 0 else 0.0
-                            feats.append(v)
+                            v = float(np.std(recent, dtype=np.float64) / max(abs(m), 1e-12))
                         else:
-                            feats.append(0.01)
+                            v = 0.01
+
+                        feats.extend([close_rel, range_rel, change_rel, vol_norm, mom5, v])
                     else:
                         feats.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
                 else:
@@ -626,15 +727,15 @@ class ModernTradingEnv(gym.Env):
             if "H1" in self.data[instrument] and 5 <= self.current_step < len(self.data[instrument]["H1"]):
                 df = self.data[instrument]["H1"]
                 cur, past = float(df["close"].iloc[self.current_step]), float(df["close"].iloc[self.current_step - 5])
-                h1 = (cur - past) / max(past, 1e-12)
+                h1 = (cur - past) / max(abs(past), 1e-12)
             if "H4" in self.data[instrument] and 5 <= self.current_step < len(self.data[instrument]["H4"]):
                 df = self.data[instrument]["H4"]
                 cur, past = float(df["close"].iloc[self.current_step]), float(df["close"].iloc[self.current_step - 5])
-                h4 = (cur - past) / max(past, 1e-12)
+                h4 = (cur - past) / max(abs(past), 1e-12)
             if "D1" in self.data[instrument] and 5 <= self.current_step < len(self.data[instrument]["D1"]):
                 df = self.data[instrument]["D1"]
                 cur, past = float(df["close"].iloc[self.current_step]), float(df["close"].iloc[self.current_step - 5])
-                d1 = (cur - past) / max(past, 1e-12)
+                d1 = (cur - past) / max(abs(past), 1e-12)
             feats.extend([h1, h4, d1, 1.0 if (h1 > 0 and h4 > 0 and d1 > 0) else 0.0, 1.0 if (h1 < 0 and h4 < 0 and d1 < 0) else 0.0])
 
         arr = np.asarray(feats, dtype=np.float32)
@@ -645,6 +746,20 @@ class ModernTradingEnv(gym.Env):
         return arr[:expected_size]
 
     def _execute_step(self, action: np.ndarray) -> float:
+        # ──────────────────────────────────────────────────────────
+        # NEW: Prefer shaped reward if RiskAdjustedReward provided it
+        try:
+            if self.smart_bus:
+                sr = self.smart_bus.get("shaped_reward", "Environment")
+                # RiskAdjustedReward can push dict {"reward": ...} or bare float
+                if isinstance(sr, dict) and "reward" in sr:
+                    return float(sr["reward"])
+                elif isinstance(sr, (int, float, np.floating)):
+                    return float(sr)
+        except Exception:
+            pass
+        # ──────────────────────────────────────────────────────────
+
         # Prefer module-provided trading result if any
         try:
             tr = self.smart_bus.get("trading_result", "Environment") if self.smart_bus else None
@@ -829,6 +944,9 @@ class ModernTradingEnv(gym.Env):
             pass
         self._aio_loop = None
         self._aio_thread = None
+
+        # clear
+        self.smart_bus = None
 
     # ──────────────────────────────────────────────────────────────
     # Legacy helpers (SB3 compatibility)

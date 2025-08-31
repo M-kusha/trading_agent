@@ -341,7 +341,9 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                 'cluster_recommendations': self._generate_intelligent_cluster_recommendations(cluster_analysis),
                 'cluster_effectiveness': self._get_cluster_effectiveness_summary(),
                 'pattern_analysis': self._get_pattern_analysis_summary(),
-                'clustering_thesis': thesis
+                'clustering_thesis': thesis,
+                '_thesis': thesis,
+                'playbook_clusterer_initialization': self._get_pc_init_view()
             }
             
             # Update SmartInfoBus with comprehensive thesis
@@ -1995,7 +1997,27 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             'cluster_recommendations': ["Investigate clustering system errors"],
             'cluster_effectiveness': {'error': str(error_context)},
             'pattern_analysis': {'error': str(error_context)},
-            'clustering_thesis': f"Clustering error: {error_context}"
+            'clustering_thesis': f"Clustering error: {error_context}",
+            '_thesis': f"Clustering error: {error_context}",
+            'playbook_clusterer_initialization': self._get_pc_init_view()
+        }
+
+    def _get_pc_init_view(self) -> Dict[str, Any]:
+        """Safely read or synthesize initialization view for contract compliance"""
+        try:
+            init_view = self.smart_bus.get('playbook_clusterer_initialization', 'PlaybookClusterer')
+            if isinstance(init_view, dict) and init_view:
+                return init_view
+        except Exception:
+            pass
+        return {
+            'status': 'initialized' if not getattr(self, 'is_disabled', False) else 'disabled',
+            'timestamp': datetime.datetime.now().isoformat(),
+            'configuration': {
+                'n_clusters': getattr(self, 'n_clusters', 0),
+                'pca_dim': getattr(self, 'pca_dim', 0),
+                'sklearn_available': 'SKLEARN_AVAILABLE' in globals() and SKLEARN_AVAILABLE
+            }
         }
 
     def _get_safe_clustering_defaults(self) -> Dict[str, Any]:
@@ -2020,7 +2042,9 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             'cluster_recommendations': ["Restart playbook clustering system"],
             'cluster_effectiveness': {'status': 'disabled'},
             'pattern_analysis': {'status': 'disabled'},
-            'clustering_thesis': 'Clustering system disabled due to errors'
+            'clustering_thesis': 'Clustering system disabled due to errors',
+            '_thesis': 'Clustering system disabled due to errors',
+            'playbook_clusterer_initialization': self._get_pc_init_view()
         }
 
     # ═══════════════════════════════════════════════════════════════════
@@ -3055,7 +3079,8 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                 'strategy_recommendation': strategy_recommendation,
                 'dominant_cluster': dominant_cluster,
                 'cluster_confidence': confidence,
-                'cluster_weights': cluster_weights.tolist() if cluster_weights is not None else [],
+                # Ensure cluster_weights is serialized as a plain Python list regardless of type (np.array or list)
+                'cluster_weights': (np.asarray(cluster_weights).tolist() if cluster_weights is not None else []),
                 'cluster_recommendations': cluster_recommendations,
                 'position_sizing': {
                     'base_size': base_size,

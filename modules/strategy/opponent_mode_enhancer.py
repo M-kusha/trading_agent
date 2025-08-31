@@ -281,7 +281,9 @@ class OpponentModeEnhancer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 'market_mode_detection': mode_analysis.get('detected_modes', {}),
                 'strategy_adaptation': weight_adaptation,
                 'mode_performance': self._get_performance_summary(),
-                'health_metrics': self._get_health_metrics()
+                'health_metrics': self._get_health_metrics(),
+                'opponent_mode_enhancer_initialization': self._get_ome_init_view(),
+                '_thesis': thesis
             }
             
             # Update SmartInfoBus with comprehensive thesis
@@ -1099,17 +1101,21 @@ class OpponentModeEnhancer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             thesis_parts = []
             
             # Executive Summary
-            dominant_mode = max(detected_modes.items(), key=lambda x: x[1])
+            if detected_modes:
+                dominant_mode = max(detected_modes.items(), key=lambda x: x[1])
+            else:
+                dominant_mode = ("unknown", 0.0)
+            dom_name, dom_conf = dominant_mode
             thesis_parts.append(
-                f"MODE ANALYSIS: {dominant_mode[0].title()} mode dominant with {dominant_mode[1]:.1%} confidence"
+                f"MODE ANALYSIS: {str(dom_name).title()} mode dominant with {dom_conf:.1%} confidence"
             )
             
             # Detection Analysis
             detection_factors = mode_analysis.get('detection_factors', {})
-            if detection_factors.get(dominant_mode[0]):
-                primary_factors = detection_factors[dominant_mode[0]][:3]
+            if isinstance(dom_name, str) and detection_factors.get(dom_name):
+                primary_factors = detection_factors[dom_name][:3]
                 thesis_parts.append(
-                    f"DETECTION FACTORS: {', '.join(primary_factors)} support {dominant_mode[0]} classification"
+                    f"DETECTION FACTORS: {', '.join(primary_factors)} support {dom_name} classification"
                 )
             
             # Weight Adaptation Summary
@@ -1127,9 +1133,9 @@ class OpponentModeEnhancer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             
             # Performance Context
             performance_summary = self._get_performance_summary()
-            best_mode = performance_summary.get('best_performing_mode', 'unknown')
-            if best_mode != 'unknown':
-                best_performance = performance_summary.get('best_performance', 0)
+            best_mode = performance_summary.get('best_performing_mode')
+            if isinstance(best_mode, str) and best_mode:
+                best_performance = performance_summary.get('best_performance', 0) or 0
                 thesis_parts.append(
                     f"PERFORMANCE LEADER: {best_mode.title()} mode with €{best_performance:.0f} total profit"
                 )
@@ -1341,7 +1347,9 @@ class OpponentModeEnhancer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             'market_mode_detection': {},
             'strategy_adaptation': {'error': str(error_context)},
             'mode_performance': {'error': str(error_context)},
-            'health_metrics': {'status': 'error', 'error_context': str(error_context)}
+            'health_metrics': {'status': 'error', 'error_context': str(error_context)},
+            'opponent_mode_enhancer_initialization': self._get_ome_init_view(),
+            '_thesis': f"OpponentModeEnhancer encountered an error: {error_context}"
         }
 
     def _get_safe_market_defaults(self) -> Dict[str, Any]:
@@ -1379,7 +1387,9 @@ class OpponentModeEnhancer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             'market_mode_detection': {},
             'strategy_adaptation': {'status': 'disabled'},
             'mode_performance': {'status': 'disabled'},
-            'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'}
+            'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'},
+            'opponent_mode_enhancer_initialization': self._get_ome_init_view(),
+            '_thesis': 'OpponentModeEnhancer disabled by circuit breaker due to repeated errors'
         }
 
     # ═══════════════════════════════════════════════════════════════════
@@ -1835,3 +1845,20 @@ class OpponentModeEnhancer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 'error': str(e),
                 'timestamp': datetime.datetime.now().isoformat()
             }
+
+    def _get_ome_init_view(self) -> Dict[str, Any]:
+        """Safely read or synthesize initialization view for contract compliance"""
+        try:
+            init_view = self.smart_bus.get('opponent_mode_enhancer_initialization', 'OpponentModeEnhancer')
+            if isinstance(init_view, dict) and init_view:
+                return init_view
+        except Exception:
+            pass
+        return {
+            'status': 'initialized' if not getattr(self, 'is_disabled', False) else 'disabled',
+            'timestamp': datetime.datetime.now().isoformat(),
+            'configuration': {
+                'modes': getattr(self, 'modes', []),
+                'detection_methods': list(getattr(self, 'condition_detectors', {}).keys()) if hasattr(self, 'condition_detectors') else []
+            }
+        }

@@ -48,7 +48,10 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
         self._initialize_trading_state()
         self._initialize_state_management()
         self._initialize_advanced_systems()
-        
+
+        # Store initialization payload for return in process()
+        self._init_payload = None
+
         # Enhanced explanation configuration
         self.explanation_depth = self.config.get('explanation_depth', 'detailed')
         self.update_frequency = self.config.get('update_frequency', 1)
@@ -332,7 +335,7 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
         - Transparent system operation with comprehensive explanations
         """
         
-        self.smart_bus.set('explanation_generator_initialization', {
+        payload = {
             'status': 'initialized',
             'thesis': thesis,
             'timestamp': datetime.datetime.now().isoformat(),
@@ -341,7 +344,11 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 'categories': list(self.explanation_categories.keys()),
                 'priority_levels': len(self.context_priorities)
             }
-        }, module='ExplanationGenerator', thesis=thesis)
+        }
+        # Persist for contract validation and return in process()
+        self._init_payload = payload
+        self.smart_bus.set('explanation_generator_initialization', payload,
+                           module='ExplanationGenerator', thesis=thesis)
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """
@@ -372,6 +379,9 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             # Generate comprehensive thesis
             thesis = await self._generate_comprehensive_explanation_thesis(explanations, explanation_analysis)
             
+            # Build market overview summary to satisfy contract
+            market_overview = self._build_market_overview(explanation_context, explanation_analysis)
+
             # Create comprehensive results
             results = {
                 'trading_explanations': explanations.get('trading', []),
@@ -382,6 +392,8 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 'decision_rationales': explanations.get('rationales', []),
                 'explanation_metrics': self.session_metrics.copy(),
                 'health_metrics': self._get_health_metrics(),
+                'explanation_generator_initialization': self._init_payload or (self.smart_bus.get('explanation_generator_initialization', 'ExplanationGenerator') or {}),
+                'market_overview': market_overview,
                 '_thesis': thesis
             }
             
@@ -399,6 +411,32 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             
         except Exception as e:
             return await self._handle_processing_error(e, start_time)
+
+    def _build_market_overview(self, context: Dict[str, Any], analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """Construct a lightweight market overview from available context to satisfy contract."""
+        try:
+            market_ctx = context.get('market_context', {}) or {}
+            regime = market_ctx.get('regime', 'unknown')
+            volatility = market_ctx.get('volatility', market_ctx.get('volatility_level', 'unknown'))
+            sentiment = market_ctx.get('sentiment', 'neutral')
+            triggers = analysis.get('explanation_triggers', [])
+            priority = analysis.get('priority_contexts', [])
+
+            return {
+                'regime': regime,
+                'volatility': volatility,
+                'sentiment': sentiment,
+                'timestamp': datetime.datetime.now().isoformat(),
+                'highlights': [t for t in triggers[:3]],
+                'priority_focus': priority[0]['type'] if priority else None
+            }
+        except Exception:
+            return {
+                'regime': 'unknown',
+                'volatility': 'unknown',
+                'sentiment': 'neutral',
+                'timestamp': datetime.datetime.now().isoformat()
+            }
 
     async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
         """
@@ -1386,6 +1424,14 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             rationale_thesis = f"Decision rationales: {len(results['decision_rationales'])} explanations"
             self.smart_bus.set('decision_rationales', results['decision_rationales'],
                              module='ExplanationGenerator', thesis=rationale_thesis)
+            
+            # Initialization and overview for downstream consumers
+            if results.get('explanation_generator_initialization'):
+                self.smart_bus.set('explanation_generator_initialization', results['explanation_generator_initialization'],
+                                   module='ExplanationGenerator', thesis='Initialization payload propagated')
+            if results.get('market_overview') is not None:
+                self.smart_bus.set('market_overview', results['market_overview'],
+                                   module='ExplanationGenerator', thesis='Market overview summary')
             
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "smartinfobus_update")

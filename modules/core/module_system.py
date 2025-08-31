@@ -185,7 +185,7 @@ class ModuleConfig:
             'modules/trading_modes',
             'modules/visualization',
             'modules/voting',
-            # 'modules/simulation',  # legacy until modernized
+            'modules/simulation',  # include simulation modules (ShadowSimulator modernized)
         ])
 
         self.legacy_modules = {

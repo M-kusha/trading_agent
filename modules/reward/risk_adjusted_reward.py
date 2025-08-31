@@ -46,8 +46,6 @@ class RewardMode(Enum):
 class RewardConfig:
     """Configuration for Risk-Adjusted Reward System (bus-first)."""
 
-    # IMPORTANT: No hardcoded initial balance; we prefer the bus/env.
-    # If you *must* set one via config, do it at runtime (e.g. via genome/env or environment_config).
     initial_balance: Optional[float] = None
 
     history_size: int = 50
@@ -227,6 +225,45 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
                 },
                 module="RiskAdjustedReward",
                 thesis="Initial reward system performance metrics",
+            )
+
+            # Pre-provide baselines to avoid early consumer BUS MISS
+            shaped_baseline = {
+                "reward": 0.0,
+                "components": {"init": True, "reason": "baseline"},
+                "calculation_method": "baseline",
+                "timestamp": utcnow(),
+            }
+            self.smart_bus.set(
+                "shaped_reward",
+                shaped_baseline,
+                module="RiskAdjustedReward",
+                thesis="Initial shaped_reward baseline",
+            )
+
+            self.smart_bus.set(
+                "reward_components",
+                {"init": True, "reason": "baseline"},
+                module="RiskAdjustedReward",
+                thesis="Initial reward components baseline",
+            )
+
+            self.smart_bus.set(
+                "reward_analytics",
+                {
+                    "performance_metrics": {
+                        "sharpe_ratio": self._sharpe_ratio,
+                        "consistency_score": self._consistency_score,
+                        "win_rate": self._win_rate,
+                        "avg_reward": self._avg_reward,
+                        "reward_volatility": self._reward_volatility,
+                        "reward_quality": self._reward_quality,
+                    },
+                    "component_analysis": {},
+                    "regime_analysis": {},
+                },
+                module="RiskAdjustedReward",
+                thesis="Initial reward analytics baseline",
             )
         except Exception as e:
             self.logger.error(f"Reward system initialization failed: {e}")
@@ -435,27 +472,47 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
     async def _extract_reward_data(self, **inputs) -> Optional[Dict[str, Any]]:
         try:
             trade_data = self.smart_bus.get("trade_data", "RiskAdjustedReward") or {}
+
+            # NEW: fall back to plain 'trades' from PositionManager if trade_data is absent
+            if not trade_data:
+                pm_trades = self.smart_bus.get("trades", "RiskAdjustedReward")
+                if isinstance(pm_trades, (list, tuple)):
+                    trade_data = {"recent_trades": pm_trades}
+
+            recent_trades = trade_data.get("recent_trades", [])
             risk_metrics = self.smart_bus.get("risk_metrics", "RiskAdjustedReward") or {}
             market_context = self.smart_bus.get("market_context", "RiskAdjustedReward") or {}
             performance_data = self.smart_bus.get("performance_data", "RiskAdjustedReward") or {}
             env_cfg = self.smart_bus.get("environment_config", "RiskAdjustedReward") or {}
+            market_state = self.smart_bus.get("market_state", "RiskAdjustedReward") or {}  # NEW: fallback source
+            market_regime_obj = self.smart_bus.get("market_regime", "RiskAdjustedReward")  # canonical provider
+            regime_prediction = self.smart_bus.get("regime_prediction", "RiskAdjustedReward") or {}
 
-            # Map market context fields to what we need
-            # Prefer canonical keys if present; map hints for compatibility
-            regime = market_context.get("regime", market_context.get("session_canonical", "unknown"))
-            volatility_level = market_context.get("volatility_level", market_context.get("volatility_hint", "medium"))
+            # Resolve regime from canonical sources first, then fall back
+            regime = self._resolve_regime(market_regime_obj, market_state, market_context, regime_prediction)
+
+            # Resolve volatility with broader fallbacks (market_state, risk_metrics, then context hints)
+            volatility_level = (
+                market_context.get("volatility_level")
+                or market_state.get("volatility")
+                or market_state.get("volatility_level")
+                or risk_metrics.get("volatility_level")
+                or market_context.get("volatility_hint")
+                or "medium"
+            )
 
             recent_trades = trade_data.get("recent_trades", [])
             actions = inputs.get("actions")
             raw_reward_inputs = inputs.get("reward_inputs", {})
 
-            # Do NOT set a balance here. We compute it in the calc step from bus/env to avoid 10k fallbacks.
             return {
                 "trades": recent_trades,
                 "risk_metrics": risk_metrics,
                 "market_context": market_context,
                 "performance_data": performance_data,
                 "env_config": env_cfg,
+                "market_state": market_state,  # NEW
+                "market_regime": regime,
                 "regime": regime,
                 "volatility_level": volatility_level,
                 "consensus": float(market_context.get("consensus", 0.5)),
@@ -468,6 +525,52 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
             self.logger.error(f"Failed to extract reward data: {e}")
             return None
 
+    def _resolve_regime(
+        self,
+        market_regime_obj: Any,
+        market_state: Dict[str, Any],
+        market_context: Dict[str, Any],
+        regime_prediction: Dict[str, Any],
+    ) -> str:
+        """Resolve market regime robustly from bus-first canonical sources.
+        Priority:
+          1) market_regime (string or dict with 'regime'/'label')
+          2) market_state.regime
+          3) regime_prediction.predicted or .label
+          4) market_context.regime
+          5) LAST resort: market_context.session/session_canonical (mapped to 'unknown')
+        """
+        try:
+            # 1) market_regime direct
+            if isinstance(market_regime_obj, str) and market_regime_obj:
+                return str(market_regime_obj).strip().lower()
+            if isinstance(market_regime_obj, dict):
+                for k in ("regime", "label", "state"):
+                    v = market_regime_obj.get(k)
+                    if isinstance(v, str) and v:
+                        return v.strip().lower()
+
+            # 2) market_state
+            ms_reg = market_state.get("regime")
+            if isinstance(ms_reg, str) and ms_reg:
+                return ms_reg.strip().lower()
+
+            # 3) regime_prediction
+            for k in ("predicted", "label", "regime"):
+                rp = regime_prediction.get(k)
+                if isinstance(rp, str) and rp:
+                    return rp.strip().lower()
+
+            # 4) market_context
+            mc_reg = market_context.get("regime")
+            if isinstance(mc_reg, str) and mc_reg:
+                return mc_reg.strip().lower()
+
+            # 5) sessions are not regimes; don't mislabel
+            return "unknown"
+        except Exception:
+            return "unknown"
+
     # ─────────────────────────────────────────────────────────────
     # Balance resolution (bus/env first)
     # ─────────────────────────────────────────────────────────────
@@ -478,13 +581,15 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
         Priority:
           1) risk_metrics: balance/equity/account_equity/cash
           2) account_state / performance_data / environment_config
-          3) env attributes (env.balance/env.equity/env.initial_balance)
-          4) cfg.initial_balance (if explicitly set)
+          3) market_state.balance  # NEW fallback
+          4) env attributes (env.balance/env.equity/env.initial_balance)
+          5) cfg.initial_balance (if explicitly set)
         Never fabricate numbers beyond that; final denominator always guarded by epsilon.
         """
         rm = reward_data.get("risk_metrics", {}) or {}
         perf = reward_data.get("performance_data", {}) or {}
         env_cfg = reward_data.get("env_config", {}) or {}
+        ms = reward_data.get("market_state", {}) or {}  # NEW
 
         # 1) Direct risk metrics (most authoritative during runtime)
         candidates = [
@@ -505,7 +610,10 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
             env_cfg.get("starting_balance"),
         ]
 
-        # 3) Env attributes (if present)
+        # 3) NEW: market_state balance as a fallback
+        candidates += [ms.get("balance")]
+
+        # 4) Env attributes (if present)
         if self.env is not None:
             for name in ("balance", "equity", "initial_balance", "starting_balance"):
                 if hasattr(self.env, name):
@@ -514,7 +622,7 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
                     except Exception:
                         pass
 
-        # 4) Config (only if explicitly provided)
+        # 5) Config (only if explicitly provided)
         if self.cfg.initial_balance is not None:
             candidates.append(float(self.cfg.initial_balance))
 
@@ -524,19 +632,18 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
 
         # Establish baseline once if we see a plausible starting balance
         if self._baseline_balance is None:
-            # Prefer explicit initials if present
             initials = [
                 rm.get("initial_balance"),
                 perf.get("initial_balance"),
                 perf.get("starting_balance"),
                 env_cfg.get("initial_balance"),
                 env_cfg.get("starting_balance"),
+                ms.get("session_start_balance"),  # try market_state if present
             ]
             initials = [float(x) for x in initials if isinstance(x, (int, float)) and np.isfinite(x) and x > 0]
             if initials:
                 self._baseline_balance = initials[0]
             elif balance_now > 0:
-                # Fall back to the first observed balance as baseline if nothing else is declared
                 self._baseline_balance = float(balance_now)
 
         self._last_balance_observed = balance_now
@@ -553,13 +660,16 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
             regime = reward_data.get("regime", "unknown")
             volatility_level = reward_data.get("volatility_level", "medium")
             rm = reward_data.get("risk_metrics", {}) or {}
+            ms = reward_data.get("market_state", {}) or {}  # NEW
 
             # Resolve balances from the bus/env
             balance_now, baseline_balance = self._resolve_balance(reward_data)
             denom = float(baseline_balance if (baseline_balance and baseline_balance > 0) else max(1e-9, balance_now))
 
-            # Extract drawdown from bus; safe default to 0.0
-            drawdown = float(rm.get("current_drawdown", rm.get("drawdown", 0.0)) or 0.0)
+            # Extract drawdown from risk_metrics; fallback to market_state; safe default to 0.0  # FIX
+            drawdown = float(
+                rm.get("current_drawdown", rm.get("drawdown", ms.get("drawdown", 0.0)) or 0.0)
+            )
 
             # Realised P&L for this step (if provided per trade; else 0)
             realised_pnl = float(sum(t.get("pnl", 0.0) for t in trades))
@@ -798,6 +908,12 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
         self._pnl_history.append(float(pnl))
         self._trade_count_history.append(int(len(trades)))
         self._reward_history.append(float(reward))
+        # Track reward by last known regime for richer analytics
+        try:
+            if hasattr(self, "_last_regime") and isinstance(self._last_regime, str):
+                self._regime_performance[self._last_regime]["rewards"].append(float(reward))
+        except Exception:
+            pass
         if trades:
             for trade in trades:
                 self._update_trading_metrics(trade)  # mixin sync is fine here
@@ -854,7 +970,6 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
 
     async def _update_performance_metrics(self) -> None:
         try:
-            # Mixins provide _trades_processed/_winning_trades (ensure defaults)
             trades_processed = getattr(self, "_trades_processed", 0)
             winning_trades = getattr(self, "_winning_trades", 0)
             if trades_processed > 0:
@@ -900,7 +1015,6 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
             stats: Dict[str, Any] = {}
             for reg, data in self._regime_performance.items():
                 rewards = data.get("rewards", [])
-                # Keep the compatibility: rewards may not be populated; use pnl instead
                 pnls = data.get("pnl", [])
                 window = pnls[-20:] if pnls else rewards[-20:]
                 if window:
@@ -1187,7 +1301,6 @@ class RiskAdjustedReward(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskM
                 'RiskAdjustedReward', 'reward_calculation', float(processing_time), True
             )
         except Exception as e:
-            # Non-fatal; keep logs quiet in production
             self.logger.debug(f"Performance tracking (success) failed: {e}")
 
         # Reset circuit breaker on success

@@ -796,6 +796,9 @@ class PositionManager(
         - indicators / technical_indicators
         - volatility_data
         - market_context / market_conditions (regime, session)
+
+        Robust against None/empty values and falls back to the
+        position_decision_{instrument} nodes we publish.
         """
         out: Dict[str, Any] = {}
 
@@ -815,7 +818,7 @@ class PositionManager(
         # Voting/arbiter outputs
         bus_signals = self.smart_bus.get('instrument_signals', 'PositionManager') or {}
 
-        def variants(inst: str):
+        def variants(inst: str) -> List[str]:
             core = inst.replace("/", "").replace("_", "")
             return [inst, inst.replace("/", ""), inst.replace("/", "_"),
                     inst.upper(), inst.lower(), core.upper(), core.lower()]
@@ -836,7 +839,7 @@ class PositionManager(
             pd = pick(price_map, inst)
             if isinstance(pd, dict):
                 last = pd.get("last", pd.get("close"))
-                if last is not None:
+                if isinstance(last, (int, float)):
                     inst_dict["current_price"] = float(last)
             if "current_price" not in inst_dict:
                 sp = pick(simple_prices, inst)
@@ -861,25 +864,48 @@ class PositionManager(
             # volatility
             vd = pick(vol_map, inst)
             if isinstance(vd, dict):
-                inst_dict["volatility"] = float(vd.get("atr", vd.get("volatility", self.C.min_volatility)))
+                vol_val = vd.get("atr", vd.get("volatility", self.C.min_volatility))
+                if isinstance(vol_val, (int, float)):
+                    inst_dict["volatility"] = float(vol_val)
 
-            # INTENSITY (bus-first)
+            # INTENSITY — bus first
             sig = pick(bus_signals, inst)
             if isinstance(sig, dict):
                 iv = sig.get("intensity")
                 if isinstance(iv, (int, float)):
-                    inst_dict["intensity"] = float(max(-1.0, min(1.0, iv)))
+                    inst_dict["intensity"] = float(np.clip(iv, -1.0, 1.0))
                     inst_dict["intensity_source"] = "bus"
+            elif isinstance(sig, (int, float)):
+                inst_dict["intensity"] = float(np.clip(sig, -1.0, 1.0))
+                inst_dict["intensity_source"] = "bus"
 
-            # LEGACY PROBE (optional, single canonical key only) — default off
+            # LEGACY PROBE (optional) — single canonical key only
             if "intensity" not in inst_dict and self.enable_legacy_bus_signal_probe:
                 legacy_key = f"signal_{inst.replace('/', '').upper()}"
                 entry = self.smart_bus.get(legacy_key, "PositionManager")
                 if isinstance(entry, dict):
                     iv = entry.get("intensity")
                     if isinstance(iv, (int, float)):
-                        inst_dict["intensity"] = float(max(-1.0, min(1.0, iv)))
+                        inst_dict["intensity"] = float(np.clip(iv, -1.0, 1.0))
                         inst_dict["intensity_source"] = "bus_legacy"
+
+            # FALLBACK: use our own published position_decision_{instrument}
+            if "intensity" not in inst_dict:
+                pd_node = self.smart_bus.get(f"position_decision_{inst}", "PositionManager")
+                if isinstance(pd_node, dict):
+                    iv = pd_node.get("intensity")
+                    if isinstance(iv, (int, float)):
+                        inst_dict["intensity"] = float(np.clip(iv, -1.0, 1.0))
+                        inst_dict["intensity_source"] = "bus_decision"
+                    else:
+                        # infer sign from decision if provided
+                        dec = str(pd_node.get("decision", "")).lower()
+                        if dec in ("open_long", "scale_up"):
+                            inst_dict["intensity"] = 0.5
+                            inst_dict["intensity_source"] = "bus_decision_inferred"
+                        elif dec in ("open_short", "scale_down", "close", "emergency_close"):
+                            inst_dict["intensity"] = -0.5
+                            inst_dict["intensity_source"] = "bus_decision_inferred"
 
             # NEW: derive intensity from indicators if still missing
             if "intensity" not in inst_dict:
@@ -898,6 +924,7 @@ class PositionManager(
             out["market_regime"] = regime
 
         return out if have_any else None
+
 
     def _merge_market_snapshots(self, bus_snap: Dict[str, Any], in_snap: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -940,6 +967,7 @@ class PositionManager(
         Non-destructive merge of bus snapshot with inputs.
         - Preserves bus per-instrument fields.
         - Overlays only non-empty input fields for each instrument.
+        - Prefer **numeric** bus intensity when present (ignore None).
         - Carries over non-instrument global keys from inputs when present.
         """
         out: Dict[str, Any] = dict(bus_map) if isinstance(bus_map, dict) else {}
@@ -948,11 +976,27 @@ class PositionManager(
         for inst in self.instruments:
             b = bus_map.get(inst, {}) if isinstance(bus_map, dict) else {}
             i = in_map.get(inst, {}) if isinstance(in_map, dict) else {}
+
+            merged = dict(b)
             if isinstance(i, dict) and i:
-                merged = dict(b)
                 merged.update(i)
+
+            # Explicitly prefer bus intensity if it is numeric
+            if isinstance(b, dict) and isinstance(b.get("intensity", None), (int, float)):
+                merged["intensity"] = b["intensity"]
+                if "intensity_source" in b:
+                    merged["intensity_source"] = b["intensity_source"]
             else:
-                merged = b
+                # Guard against None coming from inputs
+                iv = merged.get("intensity", None)
+                if not isinstance(iv, (int, float)):
+                    merged.pop("intensity", None)
+                    merged.pop("intensity_source", None)
+
+            # Prefer bus session if present
+            if isinstance(b, dict) and "session" in b:
+                merged["session"] = b["session"]
+
             if merged:
                 out[inst] = merged
 
@@ -966,35 +1010,63 @@ class PositionManager(
             elif v is not None:
                 out[k] = v
 
+        # Prefer bus market_regime if present
+        if isinstance(bus_map, dict) and "market_regime" in bus_map:
+            out["market_regime"] = bus_map["market_regime"]
+
         return out
 
+
     async def _update_smartbus_with_decisions(self, decisions: Dict[str, PositionDecisionResult]) -> None:
-        """Update SmartInfoBus with position decisions"""
+        """Update SmartInfoBus with position decisions + publish canonical instrument_signals."""
+        instrument_signals: Dict[str, Any] = {}
+
         for instrument, decision in decisions.items():
+            # Publish per-instrument decision node
             self.smart_bus.set(
                 f"position_decision_{instrument}",
                 {
                     "decision": decision.decision.value,
-                    "intensity": decision.intensity,
-                    "size": decision.size,
-                    "confidence": decision.confidence,
+                    "intensity": float(decision.intensity),
+                    "size": float(decision.size),
+                    "confidence": float(decision.confidence),
                     "risk_factors": decision.risk_factors,
                 },
                 module="PositionManager",
                 thesis=f"Position decision for {instrument}: {decision.decision.value} with {decision.confidence:.2f} confidence",
             )
 
+            # Build canonical instrument signal (signed intensity)
+            try:
+                signed = self._map_decision_to_intensity(decision)
+            except Exception:
+                signed = 0.0
+
+            instrument_signals[instrument] = {
+                "intensity": float(np.clip(signed, -1.0, 1.0)),
+                "decision": decision.decision.value,
+                "confidence": float(decision.confidence),
+            }
+
         # Set portfolio state
         self.smart_bus.set(
             "portfolio_state",
             {
-                "health_score": self._portfolio_health_score,
-                "exposure_ratio": self._total_exposure_ratio,
-                "open_positions": len(self.open_positions),
-                "decision_quality": self._decision_quality_score,
+                "health_score": float(self._portfolio_health_score),
+                "exposure_ratio": float(self._total_exposure_ratio),
+                "open_positions": int(len(self.open_positions)),
+                "decision_quality": float(self._decision_quality_score),
             },
             module="PositionManager",
             thesis="Current portfolio health and exposure metrics",
+        )
+
+        # Publish canonical instrument_signals map
+        self.smart_bus.set(
+            "instrument_signals",
+            instrument_signals,
+            module="PositionManager",
+            thesis="Canonical instrument signals from PositionManager",
         )
 
         # Also publish the current open positions for downstream consumers
@@ -1005,10 +1077,12 @@ class PositionManager(
                 module="PositionManager",
                 thesis="Snapshot of current open positions",
             )
-        except Exception:  # noqa: BLE001
-            # Avoid hard failure if deep copy fails for any reason
+        except Exception:
             self.smart_bus.set(
-                "current_positions", self.open_positions, module="PositionManager", thesis="Snapshot of current open positions"
+                "current_positions",
+                self.open_positions,
+                module="PositionManager",
+                thesis="Snapshot of current open positions",
             )
 
     async def _generate_position_thesis(
@@ -1305,45 +1379,72 @@ class PositionManager(
         self, instrument: str, market_data: Dict[str, Any], portfolio_health: Dict[str, float]
     ) -> SignalContext:
         """Extract and structure signal context for decision making (canonical-aware)."""
+        inst_data = market_data.get(instrument, {}) or {}
 
-        inst_data = market_data.get(instrument, {})
-
-        # Market signals
-        market_intensity = float(inst_data.get("intensity", 0.0))
+        # Market signals (robust to None)
+        raw_intensity = inst_data.get("intensity", 0.0)
+        market_intensity = float(raw_intensity) if isinstance(raw_intensity, (int, float)) else 0.0
         market_direction = int(np.sign(market_intensity))
-        volatility = max(float(inst_data.get("volatility", self.C.min_volatility)), self.C.min_volatility)
-        trend_strength = float(inst_data.get("trend_strength", 0.0))
-        momentum = float(inst_data.get("momentum", 0.0))
-        volume_profile = float(inst_data.get("volume_profile", 1.0))
 
-        # Regime/session from canonical keys first
+        volatility = inst_data.get("volatility", self.C.min_volatility)
+        volatility = float(volatility) if isinstance(volatility, (int, float)) else self.C.min_volatility
+        volatility = max(volatility, self.C.min_volatility)
+
+        trend_strength = float(inst_data.get("trend_strength", 0.0) or 0.0)
+        momentum = float(inst_data.get("momentum", 0.0) or 0.0)
+        volume_profile = float(inst_data.get("volume_profile", 1.0) or 1.0)
+
+        # Regime/session
         regime = market_data.get("market_regime", None)
         if regime is None:
             regime = self.smart_bus.get("market_regime", "PositionManager") or "normal"
 
-        # Prefer canonical session/conditions
         market_conditions = self.smart_bus.get("market_conditions", "PositionManager") or {}
         session = inst_data.get("session") or market_conditions.get("session", "unknown")
 
         # Correlation penalty (optional)
         correlation_penalty = 0.0
         correlation_data = self.smart_bus.get("correlation_matrix", "PositionManager")
-        if correlation_data and instrument in correlation_data:
+        if isinstance(correlation_data, dict):
             try:
-                correlation_penalty = min(abs(correlation_data[instrument].get("avg_correlation", 0.0)) * 0.5, 0.8)
-            except Exception:  # noqa: BLE001
+                # Handle two formats:
+                # 1) PortfolioRiskSystem matrix-like: {instrument: {avg_correlation: x, ...}}
+                node = correlation_data.get(instrument)
+                if isinstance(node, dict):
+                    ac = node.get("avg_correlation")
+                    if isinstance(ac, (int, float)):
+                        correlation_penalty = min(abs(float(ac)) * 0.5, 0.8)
+                else:
+                    # 2) CorrelatedRiskController pairwise string-keyed map: "('EUR/USD','XAU/USD')": corr
+                    # Compute per-instrument average absolute correlation
+                    total = 0.0
+                    count = 0
+                    for k, v in correlation_data.items():
+                        if not isinstance(k, str):
+                            continue
+                        if instrument in k:
+                            try:
+                                corr_val = float(v)
+                            except Exception:
+                                continue
+                            if np.isfinite(corr_val):
+                                total += abs(corr_val)
+                                count += 1
+                    if count > 0:
+                        avg_abs_corr = total / count
+                        correlation_penalty = min(avg_abs_corr * 0.5, 0.8)
+            except Exception:
                 correlation_penalty = 0.0
 
-        # Liquidity: canonical or adapter from LiquidityHeatmapLayer
+        # Liquidity
         liquidity_score = self._get_liquidity(instrument)
 
-        # Normalize possibly-None portfolio fields
+        # Normalize portfolio fields
         bal_raw = portfolio_health.get("balance")
-        balance_val = float(bal_raw) if bal_raw is not None else float(self.C.initial_balance)
+        balance_val = float(bal_raw) if isinstance(bal_raw, (int, float)) else float(self.C.initial_balance)
         dd_raw = portfolio_health.get("drawdown", 0.0)
-        dd_val = float(dd_raw) if dd_raw is not None else 0.0
+        dd_val = float(dd_raw) if isinstance(dd_raw, (int, float)) else 0.0
 
-        # Build context
         return SignalContext(
             instrument=instrument,
             market_intensity=market_intensity,
@@ -1353,10 +1454,10 @@ class PositionManager(
             momentum=momentum,
             volume_profile=volume_profile,
             correlation_penalty=correlation_penalty,
-            regime=cast(str, regime),
+            regime=str(regime),
             liquidity_score=liquidity_score,
             session=session,
-            current_exposure=portfolio_health.get("exposure_ratio", 0.0),
+            current_exposure=portfolio_health.get("exposure_ratio", 0.0) or 0.0,
             drawdown=dd_val,
             balance=balance_val,
             step_idx=0,
@@ -2420,10 +2521,11 @@ class PositionManager(
         """
         Propose trading actions based on independent signal interpretation.
 
-        This method uses the hierarchical decision making process with SmartInfoBus.
+        Uses the same merge path as `process()` so intensity never disappears
+        when SmartBus lacks / returns None.
         """
         try:
-            obs = inputs.get("obs", None)  # noqa: F841  (reserved for future use)
+            obs = inputs.get("obs", None)  # reserved for future use
 
             if self._forced_action is not None:
                 action_array = np.array([self._forced_action] * len(self.instruments) * 2, dtype=np.float32)
@@ -2434,11 +2536,12 @@ class PositionManager(
                     "confidence": self._forced_conf or 0.8,
                 }
 
-            # Extract market data from SmartInfoBus
-            market_data = self._extract_market_data_from_smartbus()
+            # Build market snapshot exactly like process()
+            market_from_inputs = self._extract_market_data_from_inputs(inputs or {})
+            bus_snapshot = self._extract_market_data_from_smartbus() or {}
+            market_data = self._merge_market_maps(bus_snapshot, market_from_inputs)
 
-            if not market_data:
-                # Fallback: generate neutral signals
+            if not market_data or not any(market_data.get(i) for i in self.instruments):
                 action_array = np.zeros(len(self.instruments) * 2, dtype=np.float32)
                 return {
                     "action_type": "position_management",
@@ -2463,13 +2566,10 @@ class PositionManager(
                     decision_name = "hold"
                     conf_val = 0.5
                 else:
-                    # Map decision to intensity
                     intensity_val = self._map_decision_to_intensity(decision_result)
-                    duration = 1.0  # Standard duration
+                    duration = 1.0
                     decision_name = decision_result.decision.value
-                    conf_val = decision_result.confidence
-
-                    # Update position confidence tracking
+                    conf_val = float(decision_result.confidence)
                     self.position_confidence[inst] = conf_val
 
                 action_details.append(
@@ -2492,7 +2592,7 @@ class PositionManager(
                         decision=decision_name,
                     )
                 )
-                self._flush_logs()  # write proposals immediately
+                self._flush_logs()
 
                 signals.extend([float(intensity_val), float(duration)])
 
@@ -2518,6 +2618,7 @@ class PositionManager(
                 "error": str(e),
                 "confidence": 0.1,
             }
+
 
     async def calculate_confidence(self, action: Dict[str, Any], **inputs: Any) -> float:
         """Calculate confidence in position management decisions"""

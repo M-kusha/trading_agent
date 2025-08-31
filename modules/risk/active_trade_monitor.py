@@ -3,7 +3,7 @@ Enhanced Active Trade Monitor with SmartInfoBus Integration
 Monitors position duration and provides intelligent alerts with context awareness
 
 Contract Guarantees:
-- Always returns: position_duration_risk, duration_alerts, position_tracking, and _thesis
+- Always returns: position_duration_risk, duration_alerts, position_tracking, trade_monitor_status, and _thesis
 - Writes only its owned keys on the SmartInfoBus (single-writer style)
 - All timestamps ISO-8601, numpy scalars cast to Python types
 - Background health monitor (daemon) + circuit breaker for repeated errors
@@ -244,6 +244,8 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                                module='ActiveTradeMonitor', thesis=f"Duration alerts updated")
             self.smart_bus.set('position_tracking', payload['position_tracking'],
                                module='ActiveTradeMonitor', thesis="Position tracking metrics updated")
+            self.smart_bus.set('trade_monitor_status', payload['trade_monitor_status'],
+                               module='ActiveTradeMonitor', thesis="Trade monitor status updated")
         except Exception as e:
             err = self.error_pinpointer.analyze_error(e, "bus_write")
             self.logger.error(f"SmartInfoBus update failed: {err}")
@@ -269,6 +271,17 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                 return v.item()
             return v
 
+        # Status view required by contract
+        status_view = {
+            'initialized': True,
+            'enabled': bool(self.enabled),
+            'positions_tracked': int(_py(monitoring_results.get('positions_tracked', 0))),
+            'breaker_state': str(self._breaker_state),
+            'severity_level': str(self.severity_level),
+            'risk_score': float(_py(self.risk_score)),
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+
         payload = {
             'position_duration_risk': {
                 'risk_score': float(_py(self.risk_score)),
@@ -290,6 +303,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                 'velocities': {k: int(_py(v)) for k, v in self.position_velocity.items()},
                 'statistics': {k: _py(v) for k, v in stats.items()}
             },
+            'trade_monitor_status': status_view,
             '_thesis': thesis
         }
         return payload
@@ -914,6 +928,15 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             },
             'duration_alerts': {'critical': [], 'warning': [], 'info': []},
             'position_tracking': {'durations': {}, 'velocities': {}, 'statistics': {}},
+            'trade_monitor_status': {
+                'initialized': True,
+                'enabled': False,
+                'positions_tracked': 0,
+                'breaker_state': self._breaker_state,
+                'severity_level': 'disabled',
+                'risk_score': 0.0,
+                'timestamp': datetime.datetime.now().isoformat()
+            },
             '_thesis': thesis
         }
 
@@ -940,6 +963,15 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                 'velocities': {k: int(v) for k, v in self.position_velocity.items()},
                 'statistics': self._calculate_duration_statistics()
             },
+            'trade_monitor_status': {
+                'initialized': True,
+                'enabled': bool(self.enabled),
+                'positions_tracked': int(len(self.position_durations)),
+                'breaker_state': self._breaker_state,
+                'severity_level': str(self.severity_level),
+                'risk_score': float(self.risk_score),
+                'timestamp': datetime.datetime.now().isoformat()
+            },
             '_thesis': thesis
         }
 
@@ -965,6 +997,15 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             },
             'duration_alerts': {'critical': [], 'warning': [], 'info': []},
             'position_tracking': {'durations': {}, 'velocities': {}, 'statistics': {}},
+            'trade_monitor_status': {
+                'initialized': True,
+                'enabled': bool(self.enabled),
+                'positions_tracked': 0,
+                'breaker_state': self._breaker_state,
+                'severity_level': 'error',
+                'risk_score': 0.5,
+                'timestamp': datetime.datetime.now().isoformat()
+            },
             '_thesis': thesis
         }
 

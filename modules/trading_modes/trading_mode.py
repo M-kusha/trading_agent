@@ -329,6 +329,17 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                                thesis="TradingModeManager status heartbeat")
             self.smart_bus.set(self._cfg.health_key, self._get_health_metrics(), module='TradingModeManager',
                                thesis="TradingModeManager health metrics")
+            # Also maintain explicit initialization heartbeat key for contract consumers
+            init_view = {
+                'status': 'initialized' if not self.is_disabled else 'disabled',
+                'timestamp': datetime.datetime.now().isoformat(),
+                'current_mode': self.current_mode,
+                'auto_mode': self.auto_mode
+            }
+            try:
+                self.smart_bus.set('trading_mode_manager_initialization', init_view, module='TradingModeManager', thesis='Initialization heartbeat')
+            except Exception:
+                pass
         except Exception as e:
             self.logger.warning(f"[MONITOR] health update failed: {e}")
 
@@ -438,7 +449,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             # Generate comprehensive thesis
             thesis = await self._generate_comprehensive_mode_thesis(mode_decision, effectiveness_analysis)
 
-            # Create comprehensive results
+            # Create comprehensive results (include initialization view for contract compliance)
             results = {
                 'trading_mode': self.current_mode,
                 'mode_config': self._get_mode_configuration(),
@@ -451,7 +462,8 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 'mode_recommendations': list(recommendations),
                 'mode_decision_analysis': mode_decision,
                 'health_metrics': self._get_health_metrics(),
-                '_thesis': thesis
+                '_thesis': thesis,
+                'trading_mode_manager_initialization': self._get_tmm_init_view()
             }
 
             # Update SmartInfoBus with comprehensive thesis (single-writer keys)
@@ -685,9 +697,34 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             else:
                 performance_data.update({'consensus': 0.5, 'vote_agreement': 0.5, 'vote_count': 0, 'consensus_strength': 0.5})
 
-            # Volatility
+            # Volatility (robust aggregation: handle dicts like {symbol: {atr, volatility}} or numeric values)
             volatility_data = market_data.get('volatility_data', {}) or {}
-            performance_data['volatility'] = float(np.mean(list(volatility_data.values()))) if volatility_data else 0.02
+            vol_values: List[float] = []
+            try:
+                if isinstance(volatility_data, dict):
+                    for v in volatility_data.values():
+                        if isinstance(v, dict):
+                            val = v.get('volatility', v.get('atr', None))
+                            if isinstance(val, (int, float, np.generic)):
+                                vol_values.append(float(val))
+                        elif isinstance(v, (int, float, np.generic)):
+                            vol_values.append(float(v))
+                elif isinstance(volatility_data, list):
+                    for v in volatility_data:
+                        if isinstance(v, dict):
+                            val = v.get('volatility', v.get('atr', None))
+                            if isinstance(val, (int, float, np.generic)):
+                                vol_values.append(float(val))
+                        elif isinstance(v, (int, float, np.generic)):
+                            vol_values.append(float(v))
+                # Fallback single value
+                elif isinstance(volatility_data, (int, float, np.generic)):
+                    vol_values.append(float(volatility_data))
+            except Exception:
+                # On any parsing error, keep vol_values as collected so far
+                pass
+
+            performance_data['volatility'] = float(np.mean(vol_values)) if vol_values else 0.02
             performance_data['volatility_regime_score'] = self._get_volatility_regime_score()
 
             # Exposure
@@ -1819,7 +1856,8 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'market_context': {'error': str(error_context), **self._get_market_context_summary()},
             'mode_recommendations': ["Investigate trading mode manager errors"],
             'health_metrics': {'status': 'error', 'error_context': str(error_context), **self._get_health_metrics()},
-            '_thesis': f'TradingModeManager error: {error_context}'
+            '_thesis': f'TradingModeManager error: {error_context}',
+            'trading_mode_manager_initialization': self._get_tmm_init_view()
         }
 
         # Try to publish minimal info
@@ -1862,7 +1900,8 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'market_context': {'status': 'disabled', **self._get_market_context_summary()},
             'mode_recommendations': ["Restart trading mode manager system"],
             'health_metrics': {'status': 'disabled', 'reason': 'circuit_breaker_triggered', **self._get_health_metrics()},
-            '_thesis': 'TradingModeManager disabled due to circuit breaker'
+            '_thesis': 'TradingModeManager disabled due to circuit breaker',
+            'trading_mode_manager_initialization': self._get_tmm_init_view()
         }
 
     def _generate_breaker_response(self) -> Dict[str, Any]:
@@ -1877,7 +1916,23 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'market_context': self._get_market_context_summary(),
             'mode_recommendations': ["Breaker OPEN: skipping decision cycle until cooldown"],
             'health_metrics': {**self._get_health_metrics(), 'breaker_state': self._breaker_state},
-            '_thesis': 'Circuit breaker OPEN due to repeated failures; cooldown in effect.'
+            '_thesis': 'Circuit breaker OPEN due to repeated failures; cooldown in effect.',
+            'trading_mode_manager_initialization': self._get_tmm_init_view()
+        }
+
+    def _get_tmm_init_view(self) -> Dict[str, Any]:
+        """Safely read or synthesize initialization view for contract compliance"""
+        try:
+            init_view = self.smart_bus.get('trading_mode_manager_initialization', 'TradingModeManager')
+            if isinstance(init_view, dict) and init_view:
+                return init_view
+        except Exception:
+            pass
+        return {
+            'status': 'initialized' if not getattr(self, 'is_disabled', False) else 'disabled',
+            'timestamp': datetime.datetime.now().isoformat(),
+            'current_mode': getattr(self, 'current_mode', 'normal'),
+            'auto_mode': getattr(self, 'auto_mode', True)
         }
 
     # ═══════════════════════════════════════════════════════════════════

@@ -201,6 +201,26 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             }
         }, module='TimeHorizonAligner', thesis=thesis)
 
+    def _get_tha_init_view(self) -> Dict[str, Any]:
+        try:
+            payload = self.smart_bus.get('time_horizon_aligner_initialization', 'TimeHorizonAligner') or {}
+            if isinstance(payload, dict) and payload.get('status'):
+                return payload
+        except Exception:
+            pass
+        return {
+            'status': 'initialized',
+            'thesis': 'TimeHorizonAligner initialization heartbeat',
+            'timestamp': datetime.datetime.now().isoformat(),
+            'configuration': {
+                'horizons': self.horizons.tolist(),
+                'adaptive_scaling': bool(self.adaptive_scaling),
+                'regime_awareness': bool(self.regime_awareness),
+                'performance_feedback': bool(self.performance_feedback),
+                'intelligence_parameters': dict(self.alignment_intelligence)
+            }
+        }
+
     # ----------------------------- PROCESS -----------------------------
     async def process(self, **inputs) -> Dict[str, Any]:
         start_time = time.time()
@@ -257,6 +277,7 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     'regime': self.current_regime,
                     'session': self.current_session
                 },
+                'time_horizon_aligner_initialization': self._get_tha_init_view(),
                 '_thesis': ''  # set below
             }
 
@@ -774,6 +795,7 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 'regime': getattr(self, 'current_regime', 'unknown'),
                 'session': getattr(self, 'current_session', 'unknown')
             },
+            'time_horizon_aligner_initialization': self._get_tha_init_view(),
             '_thesis': f"TimeHorizonAligner encountered an error and returned safe defaults: {error_context}"
         }
 
@@ -884,6 +906,7 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 'regime': getattr(self, 'current_regime', 'unknown'),
                 'session': getattr(self, 'current_session', 'unknown')
             },
+            'time_horizon_aligner_initialization': self._get_tha_init_view(),
             '_thesis': 'TimeHorizonAligner disabled by circuit breaker; returning neutral horizon alignment bundle'
         }
 

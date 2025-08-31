@@ -240,6 +240,7 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
                     "sampling_recommendations": await self._generate_intelligent_sampling_recommendations(
                         effectiveness, quality
                     ),
+                    "alternative_reality_sampler_initialization": self._get_ars_init_view(),
                 }
 
                 thesis = await self._generate_comprehensive_sampling_thesis(effectiveness, quality, updates)
@@ -907,6 +908,7 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             "confidence_bounds": {"error": str(ctx)},
             "sampling_recommendations": ["Investigate AlternativeRealitySampler errors"],
             "health_metrics": {"status": "error", "error_context": str(ctx)},
+            "alternative_reality_sampler_initialization": self._get_ars_init_view(),
             "_thesis": f"AlternativeRealitySampler error: {ctx}",
         }
 
@@ -920,6 +922,7 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             "confidence_bounds": {"status": "disabled"},
             "sampling_recommendations": ["Restart AlternativeRealitySampler system"],
             "health_metrics": {"status": "disabled", "reason": "circuit_breaker_triggered"},
+            "alternative_reality_sampler_initialization": self._get_ars_init_view(),
             "_thesis": "AlternativeRealitySampler disabled via circuit breaker",
         }
 
@@ -1110,3 +1113,21 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
                 module="AlternativeRealitySampler",
                 thesis=thesis,
             )
+
+    def _get_ars_init_view(self) -> Dict[str, Any]:
+        try:
+            payload = self.smart_bus.get("alternative_reality_sampler_initialization", "AlternativeRealitySampler") or {}
+            if isinstance(payload, dict) and payload.get("status"):
+                return payload
+        except Exception:
+            pass
+        return {
+            "status": "initialized",
+            "thesis": "ARS initialization heartbeat",
+            "timestamp": dt.datetime.now().isoformat(),
+            "configuration": {
+                "dimensions": int(getattr(self, "dim", 0)),
+                "samples_per_iteration": int(getattr(self, "n_samples", 0)),
+                "intelligence_parameters": dict(getattr(self, "sampling_intelligence", {})),
+            },
+        }

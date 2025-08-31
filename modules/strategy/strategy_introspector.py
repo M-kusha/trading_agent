@@ -119,11 +119,11 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             'confidence_decay': 0.95,
             'prediction_memory': 0.85
         }
-        
-        # Generate initialization thesis
+
+        # Generate initialization thesis and seed default bus values
+        self._init_payload = {}
         self._generate_initialization_thesis()
 
-        # Seed initial SmartInfoBus keys to avoid early BUS MISS by consumers
         try:
             _seed_thesis = "Initialization seed: default strategy_performance and trading_performance published for early consumers"
             default_strategy_performance = {
@@ -133,13 +133,11 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 'recent_adaptations': 0,
                 'timestamp': datetime.datetime.now().isoformat()
             }
-            # Set only if not already present to preserve any prior state
             existing_sp = self.smart_bus.get('strategy_performance', 'StrategyIntrospector')
             if not existing_sp:
                 self.smart_bus.set('strategy_performance', default_strategy_performance,
                                    module='StrategyIntrospector', thesis=_seed_thesis)
 
-            # Also seed trading_performance to satisfy early consumers like TradingModeManager and VisualizationInterface
             default_trading_performance = {
                 'win_rate': 0.0,
                 'avg_pnl': 0.0,
@@ -154,10 +152,22 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             if not existing_tp:
                 self.smart_bus.set('trading_performance', default_trading_performance,
                                    module='StrategyIntrospector', thesis=_seed_thesis)
+
+            existing_md = self.smart_bus.get('module_data', 'StrategyIntrospector') or {}
+            if 'strategy_introspector' not in (existing_md or {}):
+                seeded_module_data = dict(existing_md)
+                seeded_module_data['strategy_introspector'] = {
+                    'status': 'initialized',
+                    'timestamp': datetime.datetime.now().isoformat(),
+                    'summary': {'dominant_strategy_type': 'balanced', 'confidence': 0.5}
+                }
+                self.smart_bus.set('module_data', seeded_module_data,
+                                   module='StrategyIntrospector',
+                                   thesis="Initialization seed: module_data aggregator updated with StrategyIntrospector baseline")
         except Exception:
             # Seeding is best-effort; continue initialization regardless
             pass
-        
+
         version = getattr(self.metadata, 'version', '3.0.0') if self.metadata else '3.0.0'
         self.logger.info(format_operator_message(
             icon="[SEARCH]",
@@ -238,7 +248,7 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
         - Transparent introspection decisions with comprehensive explanations
         """
         
-        self.smart_bus.set('strategy_introspector_initialization', {
+        self._init_payload = {
             'status': 'initialized',
             'thesis': thesis,
             'timestamp': datetime.datetime.now().isoformat(),
@@ -247,7 +257,9 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 'strategy_categories': list(self.strategy_categories.keys()),
                 'baseline_metrics': self._baseline_metrics
             }
-        }, module='StrategyIntrospector', thesis=thesis)
+        }
+        self.smart_bus.set('strategy_introspector_initialization', self._init_payload,
+                           module='StrategyIntrospector', thesis=thesis)
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """
@@ -330,8 +342,22 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             # Include in results so orchestrator publishes them
             results['trading_performance'] = trading_performance
             results['strategy_performance'] = strategy_performance
+
+            # Contract-required: include initialization payload and thesis in outputs
+            if not getattr(self, '_init_payload', None):
+                # Fallback to bus if local payload missing for any reason
+                try:
+                    self._init_payload = self.smart_bus.get('strategy_introspector_initialization', 'StrategyIntrospector') or {}
+                except Exception:
+                    self._init_payload = {}
+            results['strategy_introspector_initialization'] = dict(self._init_payload) if isinstance(self._init_payload, dict) else {}
+            results['_thesis'] = thesis
+
+            # Build & include module_data payload (contract-provided key)
+            module_data_payload = self._build_module_data_payload(results)
+            results['module_data'] = {'strategy_introspector': module_data_payload}
             
-            # Update SmartInfoBus with comprehensive thesis
+            # Update SmartInfoBus with comprehensive thesis (only contract keys)
             await self._update_smartinfobus_comprehensive(results, thesis)
             
             # Record performance metrics
@@ -357,7 +383,9 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 'volatility_data': self.smart_bus.get('volatility_data', 'StrategyIntrospector') or {},
                 'trading_performance': self.smart_bus.get('trading_performance', 'StrategyIntrospector') or {},
                 'strategy_weights': self.smart_bus.get('strategy_weights', 'StrategyIntrospector') or {},
-                'market_context': self.smart_bus.get('market_context', 'StrategyIntrospector') or {}
+                'market_context': self.smart_bus.get('market_context', 'StrategyIntrospector') or {},
+                # Contract-required read
+                'member_performance': self.smart_bus.get('member_performance', 'StrategyIntrospector') or {}
             }
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "StrategyIntrospector")
@@ -416,8 +444,9 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             module_data = market_data.get('module_data', {})
             risk_data = market_data.get('risk_data', {})
             trading_performance = market_data.get('trading_performance', {})
+            member_performance = market_data.get('member_performance', {})  # contract-required
             
-            # Extract strategy information from other modules
+            # Extract strategy information from other modules (if present in aggregator)
             strategy_data = module_data.get('strategy_arbiter', {})
             genome_data = module_data.get('strategy_genome_pool', {})
             mode_data = module_data.get('opponent_mode_enhancer', {})
@@ -426,7 +455,7 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 'timestamp': datetime.datetime.now().isoformat(),
                 'recent_trades': recent_trades,
                 'active_strategies': strategy_data.get('active_strategies', []),
-                'strategy_weights': strategy_data.get('strategy_weights', {}),
+                'strategy_weights': strategy_data.get('strategy_weights', market_data.get('strategy_weights', {})),
                 'active_genome': genome_data.get('active_genome', None),
                 'best_genome': genome_data.get('best_genome', None),
                 'mode_weights': mode_data.get('mode_weights', {}),
@@ -436,7 +465,9 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 'volatility_level': market_data.get('market_context', {}).get('volatility_level', 'medium'),
                 'session_pnl': trading_performance.get('session_pnl', 0),
                 'trade_frequency': self._calculate_trade_frequency_advanced(recent_trades),
-                'strategy_evolution': self._analyze_strategy_evolution(strategy_data, genome_data)
+                'strategy_evolution': self._analyze_strategy_evolution(strategy_data, genome_data),
+                # incorporate member performance context if available
+                'member_performance': member_performance
             }
             
             return strategy_context
@@ -1681,11 +1712,8 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             self.smart_bus.set('strategy_analysis', results['strategy_analysis'],
                              module='StrategyIntrospector', thesis=thesis)
             
-            # Performance insights
-            insights_thesis = f"Strategy introspection: {len(self._records)} records analyzed with {self.current_analysis.get('confidence_level', 0.5):.1%} confidence"
-            self.smart_bus.set('performance_insights', results['performance_insights'],
-                             module='StrategyIntrospector', thesis=insights_thesis)
-            
+            # NOTE: Do NOT publish 'performance_insights' here; not part of contract and avoids duplicate providers.
+
             # Adaptation recommendations
             adaptation_thesis = f"Adaptation analysis: {'immediate action required' if self.current_analysis.get('adaptation_needed', False) else 'no urgent changes needed'}"
             self.smart_bus.set('adaptation_recommendations', results['adaptation_recommendations'],
@@ -1715,6 +1743,14 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             strat_thesis = f"Strategy performance: effectiveness={results.get('strategy_performance', {}).get('effectiveness_score', 0.5):.2f}, confidence={results.get('strategy_performance', {}).get('confidence_score', 0.5):.2f}"
             self.smart_bus.set('strategy_performance', results.get('strategy_performance', {}),
                              module='StrategyIntrospector', thesis=strat_thesis)
+
+            # Publish module_data aggregator (merge existing to avoid overwriting other modules)
+            existing_md = self.smart_bus.get('module_data', 'StrategyIntrospector') or {}
+            merged_md = dict(existing_md)
+            merged_md['strategy_introspector'] = results.get('module_data', {}).get('strategy_introspector', {})
+            self.smart_bus.set('module_data', merged_md,
+                               module='StrategyIntrospector',
+                               thesis="Module data updated: StrategyIntrospector summary merged into aggregator")
             
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
@@ -1763,7 +1799,8 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             'volatility_data': {},
             'trading_performance': {},
             'strategy_weights': {},
-            'market_context': {}
+            'market_context': {},
+            'member_performance': {}
         }
 
     def _get_safe_analysis_defaults(self) -> Dict[str, Any]:
@@ -2032,871 +2069,113 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                     self._baseline_metrics['take_profit'],
                     0.0,  # Win rate variance
                     0.0,  # Risk-reward variance
-                    0.5,  # Performance score
-                    0.5,  # Consistency score
-                    0.0   # Adaptation score
-                ], dtype=np.float32)
-                
-                return baseline
-            
-            # Calculate comprehensive profile from records
-            records_array = np.array([
-                [r['win_rate'], r['stop_loss'], r['take_profit'], 
-                 r['risk_reward_ratio'], r['duration'], r['pnl']] 
-                for r in self._records
+                    0.5,  # Performance 
+                                0.5,  # Consistency baseline
+                self._baseline_metrics['avg_duration'],
+                self._baseline_metrics['volatility_adj'],
+                0.0,  # Avg PnL baseline
+                0.0,  # PnL volatility baseline
+                ])
+                return baseline.astype(np.float32)
+
+            # Build vectors from recent records
+            wr = np.array([r.get('win_rate', self._baseline_metrics['win_rate']) for r in self._records], dtype=float)
+            sl = np.array([r.get('stop_loss', self._baseline_metrics['stop_loss']) for r in self._records], dtype=float)
+            tp = np.array([r.get('take_profit', self._baseline_metrics['take_profit']) for r in self._records], dtype=float)
+            rr = np.array([r.get('risk_reward_ratio', self._baseline_metrics['risk_reward']) for r in self._records], dtype=float)
+            dur = np.array([r.get('duration', self._baseline_metrics['avg_duration']) for r in self._records], dtype=float)
+            vol_adj = np.array([r.get('volatility_adjustment', self._baseline_metrics['volatility_adj']) for r in self._records], dtype=float)
+            pnls = np.array([r.get('pnl', 0.0) for r in self._records], dtype=float)
+
+            # Stats with safe fallbacks
+            wr_mean = float(np.mean(wr)) if wr.size else self._baseline_metrics['win_rate']
+            sl_mean = float(np.mean(sl)) if sl.size else self._baseline_metrics['stop_loss']
+            tp_mean = float(np.mean(tp)) if tp.size else self._baseline_metrics['take_profit']
+            rr_mean = float(np.mean(rr)) if rr.size else self._baseline_metrics['risk_reward']
+            wr_var = float(np.var(wr)) if wr.size > 1 else 0.0
+            rr_var = float(np.var(rr)) if rr.size > 1 else 0.0
+            dur_mean = float(np.mean(dur)) if dur.size else self._baseline_metrics['avg_duration']
+            vol_mean = float(np.mean(vol_adj)) if vol_adj.size else self._baseline_metrics['volatility_adj']
+            pnl_mean = float(np.mean(pnls)) if pnls.size else 0.0
+            pnl_std = float(np.std(pnls)) if pnls.size > 1 else 0.0
+
+            # Consistency: inverse volatility of pnl (bounded to [0,1])
+            if pnls.size > 1:
+                consistency = 1.0 / (1.0 + (pnl_std / (abs(pnl_mean) + 1e-6)))
+            else:
+                consistency = 0.5
+
+            vec = np.array([
+                wr_mean,            # 0: average win_rate
+                sl_mean,            # 1: average stop_loss
+                tp_mean,            # 2: average take_profit
+                wr_var,             # 3: win_rate variance
+                rr_var,             # 4: risk-reward variance
+                float(np.clip(consistency, 0.0, 1.0)),  # 5: consistency score
+                dur_mean,           # 6: average duration
+                vol_mean,           # 7: average volatility adjustment
+                pnl_mean,           # 8: average PnL
+                pnl_std             # 9: PnL volatility
             ], dtype=np.float32)
-            
-            # Validate array
-            if np.any(~np.isfinite(records_array)):
-                records_array = np.nan_to_num(records_array, nan=0.0)
-            
-            # Calculate enhanced profile components
-            mean_vals = records_array.mean(axis=0)
-            var_vals = records_array.var(axis=0) if len(records_array) > 1 else np.zeros(6)
-            
-            # Calculate performance scores
-            dominant_strategy = self.current_analysis.get('dominant_strategy_type', 'balanced')
-            profile_data = self.strategy_profiles.get(dominant_strategy, self._create_empty_profile())
-            
-            performance_score = profile_data.get('performance_score', 0.0)
-            consistency_score = profile_data.get('consistency_score', 0.5)
-            adaptation_score = profile_data.get('adaptation_score', 0.0)
-            
-            # Combine into comprehensive profile
-            profile = np.array([
-                mean_vals[0],        # Mean win rate
-                mean_vals[1],        # Mean stop loss
-                mean_vals[2],        # Mean take profit
-                var_vals[0],         # Win rate variance
-                var_vals[3],         # Risk-reward variance
-                performance_score,   # Performance score
-                consistency_score,   # Consistency score
-                adaptation_score     # Adaptation score
-            ], dtype=np.float32)
-            
-            # Final validation
-            if np.any(~np.isfinite(profile)):
-                profile = np.nan_to_num(profile, nan=0.5)
-            
-            return profile
-            
+
+            return vec
+
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "profile_generation")
-            self.logger.error(f"Profile generation failed: {error_context}")
-            return np.array([
+            self.logger.warning(f"Profile vector construction failed: {e}")
+            fallback = np.array([
                 self._baseline_metrics['win_rate'],
                 self._baseline_metrics['stop_loss'],
                 self._baseline_metrics['take_profit'],
-                0.0, 0.0, 0.5, 0.5, 0.0
+                0.0,
+                0.0,
+                0.5,
+                self._baseline_metrics['avg_duration'],
+                self._baseline_metrics['volatility_adj'],
+                0.0,
+                0.0
             ], dtype=np.float32)
+            return fallback
 
-    def get_observation_components(self) -> np.ndarray:
-        """Return comprehensive strategy observation components"""
-        return self.profile()
-
-    def get_introspection_report(self) -> str:
-        """Generate comprehensive strategy introspection report"""
+    def _build_module_data_payload(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Build a compact module_data payload for aggregators/visualizers.
+        Keeps it lightweight while still actionable for downstream consumers.
+        """
         try:
-            # Current analysis summary
-            current_analysis = self.current_analysis
-            strategy_type = current_analysis.get('dominant_strategy_type', 'unknown')
-            performance_trend = current_analysis.get('performance_trend', 'unknown')
-            confidence = current_analysis.get('confidence_level', 0.0)
-            adaptation_needed = current_analysis.get('adaptation_needed', False)
-            
-            # Performance metrics from current analysis
-            behavioral_patterns = current_analysis.get('behavioral_patterns', {})
-            performance_analysis = behavioral_patterns.get('performance_analysis', {})
-            
-            # Strategy profiles summary
-            profiles_summary = ""
-            for strategy, profile in self.strategy_profiles.items():
-                if profile['trade_count'] > 0:
-                    performance_score = profile.get('performance_score', 0)
-                    consistency_score = profile.get('consistency_score', 0)
-                    status = "[GREEN]" if performance_score > 10 else "[RED]" if performance_score < -10 else "[YELLOW]"
-                    profiles_summary += f"  • {strategy.replace('_', ' ').title()}: {profile['trade_count']} trades, Performance={performance_score:+.1f}, Consistency={consistency_score:.2f} {status}\n"
-            
-            # Recent adaptations
-            recent_adaptations = ""
-            if self.adaptation_history:
-                for adaptation in list(self.adaptation_history)[-3:]:
-                    timestamp = adaptation['timestamp'][:19].replace('T', ' ')
-                    adaptations_list = adaptation.get('adaptations', ['Unknown adaptation'])
-                    recent_adaptations += f"  • {timestamp}: {'; '.join(adaptations_list[:2])}\n"
-            
-            # Recommendations
-            recommendations = current_analysis.get('recommended_adjustments', [])
-            recommendations_str = '\n'.join([f'  • {rec}' for rec in recommendations[:5]])
-            
-            # Performance metrics with safe defaults
-            win_rate = performance_analysis.get('win_rate', 0.5)
-            profit_factor = performance_analysis.get('profit_factor', 1.0)
-            max_drawdown = performance_analysis.get('max_drawdown', 0.0)
-            sharpe_ratio = performance_analysis.get('sharpe_ratio', 0.0)
-            consistency_score = performance_analysis.get('consistency_score', 0.5)
-            
-            return f"""
-[SEARCH] STRATEGY INTROSPECTOR COMPREHENSIVE REPORT
-═══════════════════════════════════════════════════════════════
-[STATS] Current Analysis:
-• Dominant Strategy: {strategy_type.replace('_', ' ').title()}
-• Performance Trend: {performance_trend.replace('_', ' ').title()}
-• Analysis Confidence: {confidence:.1%}
-• Adaptation Needed: {'[OK] Yes' if adaptation_needed else '[FAIL] No'}
-• Risk Assessment: {current_analysis.get('risk_assessment', 'Moderate').title()}
+            perf = results.get('trading_performance', {}) or {}
+            strat_perf = results.get('strategy_performance', {}) or {}
+            analysis = results.get('strategy_analysis', {}) or {}
+            perf_analysis = analysis.get('performance_analysis', {}) if isinstance(analysis, dict) else {}
 
-[CHART] Performance Metrics:
-• Win Rate: {win_rate:.1%}
-• Profit Factor: {profit_factor:.2f}
-• Max Drawdown: {max_drawdown:.1%}
-• Sharpe Ratio: {sharpe_ratio:.2f}
-• Consistency Score: {consistency_score:.2f}
-
-[TARGET] Strategy Profiles:
-{profiles_summary if profiles_summary else '  📭 No strategy profiles available yet'}
-
-[RELOAD] Recent Adaptations:
-{recent_adaptations if recent_adaptations else '  📭 No recent adaptations detected'}
-
-💡 Current Recommendations:
-{recommendations_str if recommendations_str else '  [OK] No specific recommendations - continue current approach'}
-
-🧠 Behavioral Insights:
-• Trading Style: {behavioral_patterns.get('trading_style', 'Unknown').replace('_', ' ').title()}
-• Risk Preference: {behavioral_patterns.get('risk_preference', 'Unknown').replace('_', ' ').title()}
-• Timing Consistency: {behavioral_patterns.get('timing_patterns', {}).get('timing_consistency', 'Unknown').replace('_', ' ').title()}
-• Adaptation Behavior: {behavioral_patterns.get('adaptation_behavior', 'Unknown').replace('_', ' ').title()}
-
-[STATS] Analytics Summary:
-• Total Strategies Analyzed: {self.introspection_metrics['total_strategies_analyzed']}
-• Significant Adaptations: {self.introspection_metrics['significant_adaptations']}
-• Performance Improvements: {self.introspection_metrics['performance_improvements']}
-• Performance Degradations: {self.introspection_metrics['performance_degradations']}
-• Analysis Depth: {self.analysis_depth.title()}
-• Records Maintained: {len(self._records)}/{self.history_len}
-
-[TOOL] System Status:
-• Module Status: {'DISABLED' if self.is_disabled else 'OPERATIONAL'}
-• Error Count: {self.error_count}/{self.circuit_breaker_threshold}
-• Circuit Breaker: {'OPEN' if self.error_count >= self.circuit_breaker_threshold else 'CLOSED'}
-• Intelligence Level: Advanced Behavioral Analysis
-            """
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "introspection_report")
-            return f"Introspection report generation failed: {error_context}"
-
-    # ═══════════════════════════════════════════════════════════════════
-    # STATE MANAGEMENT FOR HOT-RELOAD
-    # ═══════════════════════════════════════════════════════════════════
-
-    def get_state(self) -> Dict[str, Any]:
-        """Get complete state for hot-reload and persistence"""
-        return {
-            'module_info': {
-                'name': 'StrategyIntrospector',
-                'version': '3.0.0',
-                'last_updated': datetime.datetime.now().isoformat()
-            },
-            'configuration': {
-                'history_len': self.history_len,
-                'debug': self.debug,
-                'analysis_depth': self.analysis_depth,
-                'performance_window': self.performance_window,
-                'adaptation_threshold': self.adaptation_threshold
-            },
-            'introspection_state': {
-                'records': list(self._records),
-                'strategy_profiles': {k: v.copy() for k, v in self.strategy_profiles.items()},
-                'performance_analytics': {k: list(v) for k, v in self.performance_analytics.items()},
-                'adaptation_history': list(self.adaptation_history),
-                'introspection_metrics': self.introspection_metrics.copy(),
-                'current_analysis': self.current_analysis.copy(),
-                'analysis_intelligence': self.analysis_intelligence.copy()
-            },
-            'error_state': {
-                'error_count': self.error_count,
-                'is_disabled': self.is_disabled
-            },
-            'baselines': self._baseline_metrics.copy(),
-            'categories': self.strategy_categories.copy(),
-            'performance_metrics': self._get_health_metrics()
-        }
-
-    def set_state(self, state: Dict[str, Any]) -> None:
-        """Set state for hot-reload and persistence"""
-        try:
-            # Load configuration
-            config = state.get("configuration", {})
-            self.history_len = int(config.get("history_len", self.history_len))
-            self.debug = bool(config.get("debug", self.debug))
-            self.analysis_depth = config.get("analysis_depth", self.analysis_depth)
-            self.performance_window = int(config.get("performance_window", self.performance_window))
-            self.adaptation_threshold = float(config.get("adaptation_threshold", self.adaptation_threshold))
-            
-            # Load introspection state
-            introspection_state = state.get("introspection_state", {})
-            self._records = deque(introspection_state.get("records", []), maxlen=self.history_len)
-            
-            # Restore strategy profiles
-            profiles_data = introspection_state.get("strategy_profiles", {})
-            self.strategy_profiles = defaultdict(lambda: self._create_empty_profile())
-            for k, v in profiles_data.items():
-                self.strategy_profiles[k] = v
-            
-            # Restore performance analytics
-            analytics_data = introspection_state.get("performance_analytics", {})
-            self.performance_analytics = defaultdict(list)
-            for k, v in analytics_data.items():
-                self.performance_analytics[k] = list(v)
-            
-            # Restore other state
-            self.adaptation_history = deque(introspection_state.get("adaptation_history", []), maxlen=50)
-            self.introspection_metrics = introspection_state.get("introspection_metrics", self.introspection_metrics)
-            self.current_analysis = introspection_state.get("current_analysis", self.current_analysis)
-            self.analysis_intelligence.update(introspection_state.get("analysis_intelligence", {}))
-            
-            # Load error state
-            error_state = state.get("error_state", {})
-            self.error_count = error_state.get("error_count", 0)
-            self.is_disabled = error_state.get("is_disabled", False)
-            
-            # Load baselines and categories if provided
-            self._baseline_metrics.update(state.get("baselines", {}))
-            self.strategy_categories.update(state.get("categories", {}))
-            
-            self.logger.info(format_operator_message(
-                icon="[RELOAD]",
-                message="Strategy Introspector state restored",
-                records=len(self._records),
-                profiles=len(self.strategy_profiles),
-                adaptations=len(self.adaptation_history),
-                confidence=f"{self.current_analysis.get('confidence_level', 0.5):.1%}"
-            ))
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "state_restoration")
-            self.logger.error(f"State restoration failed: {error_context}")
-
-    def get_health_status(self) -> Dict[str, Any]:
-        """Get health status for system monitoring"""
-        return {
-            'module_name': 'StrategyIntrospector',
-            'status': 'disabled' if self.is_disabled else 'healthy',
-            'metrics': self._get_health_metrics(),
-            'alerts': self._generate_health_alerts(),
-            'recommendations': self._generate_health_recommendations()
-        }
-
-    def _generate_health_alerts(self) -> List[Dict[str, Any]]:
-        """Generate health-related alerts"""
-        alerts = []
-        
-        if self.is_disabled:
-            alerts.append({
-                'severity': 'critical',
-                'message': 'StrategyIntrospector disabled due to errors',
-                'action': 'Investigate error logs and restart module'
-            })
-        
-        if self.error_count > 2:
-            alerts.append({
-                'severity': 'warning',
-                'message': f'High error count: {self.error_count}',
-                'action': 'Monitor for recurring introspection issues'
-            })
-        
-        if self.current_analysis.get('adaptation_needed', False):
-            urgency = 'critical' if 'critical' in str(self.current_analysis.get('recommended_adjustments', [])) else 'warning'
-            alerts.append({
-                'severity': urgency,
-                'message': 'Strategy adaptation recommended',
-                'action': 'Review and implement suggested strategy adjustments'
-            })
-        
-        if len(self._records) < 5:
-            alerts.append({
-                'severity': 'info',
-                'message': f'Limited analysis data: {len(self._records)} records',
-                'action': 'Continue trading to build comprehensive analysis baseline'
-            })
-        
-        # Check for poor performance indicators
-        behavioral_patterns = self.current_analysis.get('behavioral_patterns', {})
-        if behavioral_patterns.get('risk_preference') == 'high_risk_tolerance':
-            alerts.append({
-                'severity': 'warning',
-                'message': 'High-risk behavioral patterns detected',
-                'action': 'Consider implementing additional risk controls'
-            })
-        
-        return alerts
-
-    def _generate_health_recommendations(self) -> List[str]:
-        """Generate health-related recommendations"""
-        recommendations = []
-        
-        if self.is_disabled:
-            recommendations.append("Restart StrategyIntrospector module after investigating errors")
-        
-        if len(self._records) < 10:
-            recommendations.append("Insufficient analysis history - continue operations to build comprehensive baseline")
-        
-        if self.current_analysis.get('confidence_level', 0.5) < 0.4:
-            recommendations.append("Low analysis confidence - increase data collection for more reliable insights")
-        
-        adaptations_needed = self.current_analysis.get('adaptation_needed', False)
-        if adaptations_needed:
-            recommendations.append("Strategy adaptation recommended - review and implement suggested adjustments")
-        
-        significant_adaptations = self.introspection_metrics.get('significant_adaptations', 0)
-        if significant_adaptations > 10:
-            recommendations.append("High adaptation frequency detected - ensure strategy stability")
-        
-        if not recommendations:
-            recommendations.append("StrategyIntrospector operating within normal parameters")
-        
-        return recommendations
-
-    # ═══════════════════════════════════════════════════════════════════
-    # PUBLIC API METHODS (for external use)
-    # ═══════════════════════════════════════════════════════════════════
-
-    def get_strategy_insights(self) -> Dict[str, Any]:
-        """Get comprehensive strategy insights for external analysis"""
-        try:
-            insights = {
-                'current_analysis': self.current_analysis.copy(),
-                'dominant_patterns': {},
-                'performance_summary': {},
-                'adaptation_insights': {},
-                'behavioral_fingerprint': {},
-                'confidence_assessment': self.current_analysis.get('confidence_level', 0.5)
-            }
-            
-            # Dominant patterns across all strategies
-            if self.strategy_profiles:
-                all_styles = []
-                all_risks = []
-                for profile in self.strategy_profiles.values():
-                    if profile['trade_count'] > 0:
-                        fingerprint = profile.get('behavioral_fingerprint', {})
-                        if fingerprint:
-                            all_styles.append(fingerprint.get('adaptation_behavior', 'unknown'))
-                            all_risks.append(fingerprint.get('risk_preference', 'moderate'))
-                
-                if all_styles:
-                    from collections import Counter
-                    insights['dominant_patterns'] = {
-                        'most_common_adaptation': Counter(all_styles).most_common(1)[0][0] if all_styles else 'unknown',
-                        'most_common_risk': Counter(all_risks).most_common(1)[0][0] if all_risks else 'moderate'
-                    }
-            
-            # Performance summary
-            if self._records:
-                recent_records = list(self._records)[-10:]
-                pnls = [r.get('pnl', 0) for r in recent_records]
-                
-                insights['performance_summary'] = {
-                    'recent_performance': np.mean(pnls) if pnls else 0,
-                    'performance_trend': 'improving' if len(pnls) >= 3 and np.mean(pnls[-3:]) > np.mean(pnls[:-3]) else 'stable',
-                    'consistency': len([p for p in pnls if p > 0]) / len(pnls) if pnls else 0.5,
-                    'total_records': len(self._records)
-                }
-            
-            # Adaptation insights
-            insights['adaptation_insights'] = {
-                'adaptation_needed': self.current_analysis.get('adaptation_needed', False),
-                'total_adaptations': self.introspection_metrics.get('significant_adaptations', 0),
-                'recent_adaptations': len(self.adaptation_history),
-                'adaptation_success_rate': self.introspection_metrics.get('adaptation_success_rate', 0.5)
-            }
-            
-            # Current behavioral fingerprint
-            behavioral_patterns = self.current_analysis.get('behavioral_patterns', {})
-            insights['behavioral_fingerprint'] = {
-                'trading_style': behavioral_patterns.get('trading_style', 'unknown'),
-                'risk_preference': behavioral_patterns.get('risk_preference', 'moderate'),
-                'timing_patterns': behavioral_patterns.get('timing_patterns', {}),
-                'market_sensitivity': behavioral_patterns.get('market_sensitivity', {})
-            }
-            
-            return insights
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "strategy_insights")
-            return {'error': str(error_context)}
-
-    def get_adaptation_recommendations(self) -> List[Dict[str, Any]]:
-        """Get structured adaptation recommendations"""
-        try:
-            recommendations = []
-            
-            # Current recommendations from analysis
-            current_recommendations = self.current_analysis.get('recommended_adjustments', [])
-            
-            for i, rec in enumerate(current_recommendations):
-                recommendation = {
-                    'id': f"rec_{i+1}",
-                    'description': rec,
-                    'priority': 'high' if self.current_analysis.get('adaptation_needed', False) else 'medium',
-                    'category': self._categorize_recommendation(rec),
-                    'confidence': self.current_analysis.get('confidence_level', 0.5),
-                    'timestamp': datetime.datetime.now().isoformat()
-                }
-                recommendations.append(recommendation)
-            
-            # Add general recommendations based on metrics
-            if self.introspection_metrics.get('performance_degradations', 0) > 3:
-                recommendations.append({
-                    'id': 'general_perf',
-                    'description': 'Review overall strategy performance due to recent degradations',
-                    'priority': 'medium',
-                    'category': 'performance',
-                    'confidence': 0.7,
-                    'timestamp': datetime.datetime.now().isoformat()
-                })
-            
-            return recommendations
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "adaptation_recommendations")
-            return [{'error': str(error_context)}]
-
-    def _categorize_recommendation(self, recommendation: str) -> str:
-        """Categorize recommendation type"""
-        rec_lower = recommendation.lower()
-        
-        if any(word in rec_lower for word in ['entry', 'signal', 'filter']):
-            return 'entry_strategy'
-        elif any(word in rec_lower for word in ['exit', 'profit', 'stop']):
-            return 'exit_strategy'
-        elif any(word in rec_lower for word in ['risk', 'position', 'size']):
-            return 'risk_management'
-        elif any(word in rec_lower for word in ['timing', 'frequency', 'discipline']):
-            return 'execution'
-        elif any(word in rec_lower for word in ['adapt', 'flexible', 'responsive']):
-            return 'adaptability'
-        else:
-            return 'general'
-
-    def reset_analysis(self) -> bool:
-        """Reset analysis system to initial state"""
-        try:
-            # Clear strategy analysis
-            self._records.clear()
-            self.strategy_profiles.clear()
-            self.performance_analytics.clear()
-            self.adaptation_history.clear()
-            
-            # Reset metrics
-            self.introspection_metrics = {
-                'total_strategies_analyzed': 0,
-                'significant_adaptations': 0,
-                'performance_improvements': 0,
-                'performance_degradations': 0,
-                'last_major_insight': None,
-                'analysis_accuracy': 0.0,
-                'prediction_success_rate': 0.0,
-                'adaptation_success_rate': 0.0
-            }
-            
-            # Reset current analysis
-            self.current_analysis = {
-                'dominant_strategy_type': 'balanced',
-                'performance_trend': 'stable',
-                'adaptation_needed': False,
-                'recommended_adjustments': [],
-                'confidence_level': 0.5,
-                'analysis_timestamp': datetime.datetime.now().isoformat(),
-                'behavioral_patterns': {},
-                'risk_assessment': 'moderate'
-            }
-            
-            # Reset error state
-            self.error_count = 0
-            self.is_disabled = False
-            
-            self.logger.info(format_operator_message(
-                icon="[RELOAD]",
-                message="Strategy Introspector reset completed",
-                analysis_depth=self.analysis_depth,
-                history_capacity=self.history_len
-            ))
-            
-            return True
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "analysis_reset")
-            self.logger.error(f"Analysis reset failed: {error_context}")
-            return False
-
-    def export_analysis_data(self) -> Dict[str, Any]:
-        """Export comprehensive analysis data for external use"""
-        try:
-            export_data = {
-                'metadata': {
-                    'export_timestamp': datetime.datetime.now().isoformat(),
-                    'module_version': '3.0.0',
-                    'analysis_depth': self.analysis_depth,
-                    'records_count': len(self._records)
+            payload = {
+                'status': 'disabled' if self.is_disabled else 'active',
+                'timestamp': datetime.datetime.now().isoformat(),
+                'summary': {
+                    'dominant_strategy_type': self.current_analysis.get('dominant_strategy_type', 'balanced'),
+                    'trend': self.current_analysis.get('performance_trend', 'stable'),
+                    'confidence': float(self.current_analysis.get('confidence_level', 0.5)),
+                    'adaptation_needed': bool(self.current_analysis.get('adaptation_needed', False)),
                 },
-                'configuration': {
-                    'history_len': self.history_len,
-                    'performance_window': self.performance_window,
-                    'adaptation_threshold': self.adaptation_threshold,
-                    'baseline_metrics': self._baseline_metrics,
-                    'strategy_categories': self.strategy_categories
+                'metrics': {
+                    'win_rate': float(perf.get('win_rate', perf_analysis.get('win_rate', 0.5))),
+                    'profit_factor': float(perf.get('profit_factor', perf_analysis.get('profit_factor', 1.0))),
+                    'max_drawdown': float(perf.get('max_drawdown', perf_analysis.get('max_drawdown', 0.0))),
+                    'sharpe': float(perf.get('sharpe', perf_analysis.get('sharpe_ratio', 0.0))),
+                    'trade_frequency': float(perf.get('trade_frequency', perf_analysis.get('trade_frequency', 0.0))),
+                    'session_pnl': float(perf.get('session_pnl', perf_analysis.get('session_pnl', 0.0))),
+                    'effectiveness': float(strat_perf.get('effectiveness_score', 0.5)),
+                    'confidence_score': float(strat_perf.get('confidence_score', 0.5)),
                 },
-                'current_state': {
-                    'records': list(self._records),
-                    'current_analysis': self.current_analysis,
-                    'introspection_metrics': self.introspection_metrics
-                },
-                'historical_data': {
-                    'adaptation_history': list(self.adaptation_history),
-                    'performance_analytics': {k: list(v) for k, v in self.performance_analytics.items()}
-                },
-                'strategy_profiles': {k: v.copy() for k, v in self.strategy_profiles.items()},
-                'system_metrics': {
-                    'error_count': self.error_count,
-                    'is_disabled': self.is_disabled,
-                    'confidence_level': self.current_analysis.get('confidence_level', 0.5)
+                'highlights': {
+                    'immediate_actions': results.get('adaptation_recommendations', {}).get('immediate_actions', []),
+                    'strategic_recommendations': results.get('adaptation_recommendations', {}).get('strategic_recommendations', []),
                 }
             }
-            
-            return export_data
-            
+            return payload
         except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "analysis_export")
-            return {'error': str(error_context)}
-
-    def get_behavioral_analysis(self) -> Dict[str, Any]:
-        """Get detailed behavioral analysis"""
-        try:
-            behavioral_patterns = self.current_analysis.get('behavioral_patterns', {})
-            
-            analysis = {
-                'trading_behavior': {
-                    'style': behavioral_patterns.get('trading_style', 'unknown'),
-                    'style_confidence': self.current_analysis.get('confidence_level', 0.5),
-                    'consistency': behavioral_patterns.get('timing_patterns', {}).get('timing_consistency', 'unknown')
-                },
-                'risk_behavior': {
-                    'preference': behavioral_patterns.get('risk_preference', 'moderate'),
-                    'tolerance_level': self._assess_risk_tolerance(),
-                    'adaptation_style': behavioral_patterns.get('adaptation_behavior', 'stable_consistent')
-                },
-                'market_interaction': {
-                    'sensitivity': behavioral_patterns.get('market_sensitivity', {}),
-                    'preferred_conditions': self._identify_preferred_conditions(),
-                    'adaptation_speed': self._assess_adaptation_speed()
-                },
-                'performance_patterns': {
-                    'consistency_score': self._calculate_overall_consistency(),
-                    'improvement_trend': self._assess_improvement_trend(),
-                    'stability_index': self._calculate_stability_index()
-                }
-            }
-            
-            return analysis
-            
-        except Exception as e:
-            error_context = self.error_pinpointer.analyze_error(e, "behavioral_analysis")
-            return {'error': str(error_context)}
-
-    def _assess_risk_tolerance(self) -> str:
-        """Assess overall risk tolerance level"""
-        try:
-            if not self._records:
-                return 'unknown'
-            
-            recent_records = list(self._records)[-10:]
-            risk_rewards = [r.get('risk_reward_ratio', 1.5) for r in recent_records]
-            avg_risk_reward = np.mean(risk_rewards)
-            
-            if avg_risk_reward > 2.5:
-                return 'high'
-            elif avg_risk_reward > 1.8:
-                return 'moderate_high'
-            elif avg_risk_reward > 1.2:
-                return 'moderate'
-            else:
-                return 'conservative'
-                
-        except Exception:
-            return 'unknown'
-
-    def _identify_preferred_conditions(self) -> List[str]:
-        """Identify preferred market conditions"""
-        try:
-            if not self._records:
-                return []
-            
-            # Analyze performance by market regime
-            regime_performance = defaultdict(list)
-            for record in self._records:
-                regime = record.get('market_regime', 'unknown')
-                pnl = record.get('pnl', 0)
-                regime_performance[regime].append(pnl)
-            
-            # Find regimes with positive average performance
-            preferred = []
-            for regime, pnls in regime_performance.items():
-                if len(pnls) >= 3 and np.mean(pnls) > 5:  # At least 3 trades and positive avg
-                    preferred.append(regime)
-            
-            return preferred
-            
-        except Exception:
-            return []
-
-    def _assess_adaptation_speed(self) -> str:
-        """Assess how quickly the strategy adapts"""
-        try:
-            if len(self.adaptation_history) < 3:
-                return 'unknown'
-            
-            # Calculate time between adaptations
-            adaptation_times = []
-            for i in range(1, len(self.adaptation_history)):
-                try:
-                    t1 = datetime.datetime.fromisoformat(self.adaptation_history[i-1]['timestamp'])
-                    t2 = datetime.datetime.fromisoformat(self.adaptation_history[i]['timestamp'])
-                    gap = (t2 - t1).total_seconds() / 3600  # hours
-                    adaptation_times.append(gap)
-                except:
-                    continue
-            
-            if adaptation_times:
-                avg_gap = np.mean(adaptation_times)
-                if avg_gap < 1:
-                    return 'very_fast'
-                elif avg_gap < 6:
-                    return 'fast'
-                elif avg_gap < 24:
-                    return 'moderate'
-                else:
-                    return 'slow'
-            
-            return 'unknown'
-            
-        except Exception:
-            return 'unknown'
-
-    def _calculate_overall_consistency(self) -> float:
-        """Calculate overall performance consistency"""
-        try:
-            if not self._records:
-                return 0.5
-            
-            pnls = [r.get('pnl', 0) for r in self._records]
-            if len(pnls) < 3:
-                return 0.5
-            
-            # Calculate consistency as inverse of coefficient of variation
-            mean_pnl = np.mean(pnls)
-            std_pnl = np.std(pnls)
-            
-            if abs(mean_pnl) < 1e-6:
-                return 0.5
-            
-            cv = std_pnl / abs(mean_pnl)
-            consistency = 1.0 / (1.0 + cv)
-            
-            return float(min(1.0, max(0.0, float(consistency))))
-            
-        except Exception:
-            return 0.5
-
-    def _assess_improvement_trend(self) -> str:
-        """Assess overall improvement trend"""
-        try:
-            if len(self._records) < 6:
-                return 'insufficient_data'
-            
-            pnls = [r.get('pnl', 0) for r in self._records]
-            
-            # Compare recent vs older performance
-            recent_avg = np.mean(pnls[-3:])
-            older_avg = np.mean(pnls[-6:-3])
-            
-            improvement = (recent_avg - older_avg) / (abs(older_avg) + 1e-6)
-            
-            if improvement > 0.2:
-                return 'strong_improvement'
-            elif improvement > 0.05:
-                return 'gradual_improvement'
-            elif improvement > -0.05:
-                return 'stable'
-            elif improvement > -0.2:
-                return 'gradual_decline'
-            else:
-                return 'strong_decline'
-                
-        except Exception:
-            return 'unknown'
-
-    def _calculate_stability_index(self) -> float:
-        """Calculate strategy stability index"""
-        try:
-            if len(self._records) < 5:
-                return 0.5
-            
-            # Calculate stability based on multiple factors
-            factors = []
-            
-            # Win rate stability
-            win_rates = []
-            records_list = list(self._records)
-            for i in range(len(records_list) - 2):
-                recent_records = records_list[i:i+3]
-                wins = sum(1 for r in recent_records if r.get('pnl', 0) > 0)
-                win_rates.append(wins / 3)
-            
-            if win_rates:
-                wr_stability = 1.0 - np.std(win_rates)
-                factors.append(max(0.0, float(wr_stability)))
-            
-            # Risk-reward stability
-            risk_rewards = [r.get('risk_reward_ratio', 1.5) for r in self._records]
-            if len(risk_rewards) > 1:
-                rr_cv = np.std(risk_rewards) / (np.mean(risk_rewards) + 1e-6)
-                rr_stability = 1.0 / (1.0 + rr_cv)
-                factors.append(rr_stability)
-            
-            # Duration stability
-            durations = [r.get('duration', 30) for r in self._records]
-            if len(durations) > 1:
-                dur_cv = np.std(durations) / (np.mean(durations) + 1e-6)
-                dur_stability = 1.0 / (1.0 + dur_cv)
-                factors.append(dur_stability)
-            
-            return float(np.mean(factors)) if factors else 0.5
-            
-        except Exception:
-            return 0.5
-
-    # ═══════════════════════════════════════════════════════════════════
-    # ABSTRACT METHOD IMPLEMENTATIONS (required by BaseModule)
-    # ═══════════════════════════════════════════════════════════════════
-
-    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
-        """Calculate confidence in proposed action based on strategy analysis"""
-        try:
-            # Base confidence from current analysis
-            base_confidence = self.current_analysis.get('confidence_level', 0.5)
-            
-            # Factor in strategy consistency
-            consistency_score = self._calculate_overall_consistency()
-            
-            # Consider pattern strength
-            pattern_strength = 0.5
-            if hasattr(self, 'strategy_profiles') and self.strategy_profiles:
-                active_profiles = [p for p in self.strategy_profiles.values() if p.get('trade_count', 0) > 0]
-                if active_profiles:
-                    pattern_strength = np.mean([p.get('confidence', 0.5) for p in active_profiles])
-            
-            # Weight factors
-            confidence = (
-                base_confidence * 0.4 +
-                consistency_score * 0.3 +
-                pattern_strength * 0.3
-            )
-            
-            return float(np.clip(confidence, 0.0, 1.0))
-            
-        except Exception as e:
-            self.logger.warning(f"Error calculating confidence: {e}")
-            return 0.5
-
-    async def propose_action(self, **inputs) -> Dict[str, Any]:
-        """Propose action based on strategy introspection analysis"""
-        try:
-            # Get current market context
-            market_data = inputs.get('market_data', {})
-            portfolio_state = inputs.get('portfolio_state', {})
-            
-            # Use current analysis for proposal
-            action = {
-                'type': 'strategy_introspection',
-                'analysis': self.current_analysis.copy(),
-                'recommendations': self._generate_strategy_recommendations(market_data, portfolio_state),
-                'confidence': self.current_analysis.get('confidence_level', 0.5),
-                'timestamp': datetime.datetime.now().isoformat()
-            }
-            
-            # Add strategy-specific insights
-            if hasattr(self, 'strategy_profiles') and self.strategy_profiles:
-                dominant_strategy = max(
-                    self.strategy_profiles.items(),
-                    key=lambda x: x[1].get('trade_count', 0),
-                    default=(None, {})
-                )
-                if dominant_strategy[0]:
-                    action['dominant_strategy'] = {
-                        'name': dominant_strategy[0],
-                        'characteristics': dominant_strategy[1].get('characteristics', {}),
-                        'performance': dominant_strategy[1].get('recent_performance', {})
-                    }
-            
-            return action
-            
-        except Exception as e:
-            self.logger.error(f"Error proposing action: {e}")
+            self.logger.warning(f"module_data payload build failed: {e}")
             return {
-                'type': 'strategy_introspection',
-                'analysis': {'confidence_level': 0.5},
-                'error': str(e),
-                'timestamp': datetime.datetime.now().isoformat()
+                'status': 'error',
+                'timestamp': datetime.datetime.now().isoformat(),
+                'summary': {'error': 'payload_build_failed'}
             }
-
-    def _generate_strategy_recommendations(self, market_data: Dict[str, Any], portfolio_state: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Generate strategy recommendations based on current analysis"""
-        try:
-            recommendations = []
-            
-            # Base recommendation from current analysis
-            if self.current_analysis.get('confidence_level', 0) > 0.7:
-                recommendations.append({
-                    'type': 'maintain_strategy',
-                    'reason': 'High confidence in current strategy analysis',
-                    'priority': 'medium'
-                })
-            elif self.current_analysis.get('confidence_level', 0) < 0.3:
-                recommendations.append({
-                    'type': 'review_strategy',
-                    'reason': 'Low confidence suggests strategy review needed',
-                    'priority': 'high'
-                })
-            
-            # Pattern-based recommendations
-            dominant_type = self.current_analysis.get('dominant_strategy_type')
-            if dominant_type and hasattr(self, 'strategy_profiles'):
-                profile = self.strategy_profiles.get(dominant_type, {})
-                if profile.get('trade_count', 0) > 10:
-                    recommendations.append({
-                        'type': 'leverage_pattern',
-                        'pattern': dominant_type,
-                        'reason': f'Strong {dominant_type} pattern detected',
-                        'priority': 'medium'
-                    })
-            
-            return recommendations
-            
-        except Exception as e:
-            self.logger.warning(f"Error generating strategy recommendations: {e}")
-            return []
-
-    def __str__(self) -> str:
-        """String representation of the introspector"""
-        return f"StrategyIntrospector(records={len(self._records)}, profiles={len(self.strategy_profiles)}, confidence={self.current_analysis.get('confidence_level', 0.5):.1%})"
-
-    def __repr__(self) -> str:
-        """Detailed representation of the introspector"""
-        return (f"StrategyIntrospector(records={len(self._records)}, "
-                f"profiles={len([p for p in self.strategy_profiles.values() if p['trade_count'] > 0])}, "
-                f"adaptations={len(self.adaptation_history)}, "
-                f"confidence={self.current_analysis.get('confidence_level', 0.5):.1%}, "
-                f"style='{self.current_analysis.get('dominant_strategy_type', 'unknown')}')")

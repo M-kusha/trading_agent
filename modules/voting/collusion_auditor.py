@@ -282,6 +282,8 @@ Collusion Auditor v3.1 Initialization:
                 "audit_recommendations": recommendations,
                 "quality_metrics": quality_analysis,
                 "health_metrics": self._get_health_metrics(),
+                # contract heartbeat: include initialization view in results
+                "collusion_auditor_initialization": self._get_collusion_init_view(),
                 "_thesis": thesis,
             }
 
@@ -1314,6 +1316,26 @@ Collusion Auditor v3.1 Initialization:
             error_context = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
             self.logger.error(f"SmartInfoBus update failed: {error_context}")
 
+    def _get_collusion_init_view(self) -> Dict[str, Any]:
+        try:
+            # try read back the init payload to mirror bus
+            init_payload = self.smart_bus.get("collusion_auditor_initialization", "CollusionAuditor") or {}
+            if isinstance(init_payload, dict) and init_payload.get("status"):
+                return init_payload
+        except Exception:
+            pass
+        return {
+            "status": "initialized",
+            "thesis": "Collusion Auditor initialization heartbeat",
+            "timestamp": dt.datetime.now().isoformat(),
+            "configuration": {
+                "members": getattr(self, "n_members", 0),
+                "window": getattr(self, "window", 0),
+                "detection_methods": list(getattr(self, "detection_methods", {}).keys()) if hasattr(self, "detection_methods") else [],
+                "intelligence_parameters": getattr(self, "detection_intelligence", {}),
+            },
+        }
+
     # ────────────────────────────
     # LEGACY / PUBLIC API
     # ────────────────────────────
@@ -1601,6 +1623,7 @@ Collusion Auditor v3.1 Initialization:
             "detection_statistics": {"error": str(ctx)},
             "audit_recommendations": ["Investigate collusion auditor errors"],
             "health_metrics": {"status": "error", "error_context": str(ctx)},
+            "collusion_auditor_initialization": self._get_collusion_init_view(),
             "_thesis": f"CollusionAuditor error: {ctx}",
         }
 
@@ -1630,6 +1653,7 @@ Collusion Auditor v3.1 Initialization:
             "detection_statistics": {"status": "disabled"},
             "audit_recommendations": ["Restart collusion auditor system"],
             "health_metrics": {"status": "disabled", "reason": "circuit_breaker_triggered"},
+            "collusion_auditor_initialization": self._get_collusion_init_view(),
             "_thesis": "CollusionAuditor disabled via circuit breaker",
         }
 

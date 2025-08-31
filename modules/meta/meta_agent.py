@@ -92,6 +92,9 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
         # Keep legacy alias if other code expects it
         self.meta_config: MetaAgentConfig = self.C
 
+        # Minimal pre-initialization so BaseModule.__init__ can call _initialize safely
+        self._preinitialize_minimum()
+
         # Initialize BaseModule with a dict view (contract-safe)
         super().__init__(config=asdict(self.C))
 
@@ -274,6 +277,26 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
     def _initialize(self):
         """Initialize module bus state."""
         try:
+            # Defensive: ensure core components and state exist if called very early
+            if not hasattr(self, "smart_bus"):
+                self.smart_bus = InfoBusManager.get_instance()
+            if not hasattr(self, "logger"):
+                self.logger = RotatingLogger(
+                    name="MetaAgent",
+                    log_path="logs/meta/meta_agent.log",
+                    max_lines=50_000,
+                    operator_mode=True,
+                    plain_english=True,
+                    info_bus_aware=True,
+                )
+            if not hasattr(self, "current_mode"):
+                self.current_mode = MetaMode.INITIALIZATION
+                self.mode_start_time = datetime.datetime.now()
+            if not hasattr(self, "system_confidence"):
+                self.system_confidence = 0.5
+            if not hasattr(self, "automation_score"):
+                self.automation_score = 0.0
+
             initial_status = {
                 "current_mode": self.current_mode.value,
                 "system_confidence": self.system_confidence,
@@ -289,6 +312,43 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
             )
         except Exception as e:
             self.logger.error(f"Initialization failed: {e}")
+
+    def _preinitialize_minimum(self) -> None:
+        """Ensure essential attributes exist before BaseModule may invoke _initialize."""
+        try:
+            # Core services
+            self.smart_bus = InfoBusManager.get_instance()
+            self.logger = RotatingLogger(
+                name="MetaAgent",
+                log_path="logs/meta/meta_agent.log",
+                max_lines=50_000,
+                operator_mode=True,
+                plain_english=True,
+                info_bus_aware=True,
+            )
+        except Exception:
+            # Last-resort stubs to avoid attribute errors; replaced later in advanced systems init
+            if not hasattr(self, "smart_bus"):
+                self.smart_bus = InfoBusManager.get_instance()
+            if not hasattr(self, "logger"):
+                class _Dummy:
+                    def info(self, *a, **k):
+                        pass
+                    def warning(self, *a, **k):
+                        pass
+                    def error(self, *a, **k):
+                        pass
+                self.logger = _Dummy()
+
+        # Minimal state referenced by _initialize
+        if not hasattr(self, "current_mode"):
+            self.current_mode = MetaMode.INITIALIZATION
+        if not hasattr(self, "mode_start_time"):
+            self.mode_start_time = datetime.datetime.now()
+        if not hasattr(self, "system_confidence"):
+            self.system_confidence = 0.5
+        if not hasattr(self, "automation_score"):
+            self.automation_score = 0.0
 
     # ─────────────────────────────────────────────────────────
     # Main processing
@@ -433,10 +493,7 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
             if training_metrics:
                 self._update_training_metrics(training_metrics)
 
-            # Update confidence based on recent performance
-            self._update_system_confidence(meta_data)
-
-            # Store performance history
+            # Store performance history (append BEFORE computing confidence)
             self._performance_history.append(
                 {
                     "timestamp": time.time(),
@@ -446,6 +503,9 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
                     "drawdown": self.drawdown_pct,
                 }
             )
+
+            # Update confidence based on recent performance
+            self._update_system_confidence(meta_data)
 
             return {
                 "performance_updated": True,
@@ -458,6 +518,7 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
         except Exception as e:
             self.logger.error(f"Performance update failed: {e}")
             return {"performance_updated": False, "error": str(e)}
+
 
     def _update_pnl_metrics(self, pnl: float):
         """Update PnL-based metrics"""
@@ -507,10 +568,23 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
         try:
             # Base confidence on recent performance
             if len(self._performance_history) > 0:
-                recent_performance = [p["pnl"] for p in list(self._performance_history)[-10:]]
+                # Tolerate legacy items or external writers without a "pnl" key (or non-dicts)
+                recent_performance: List[float] = []
+                for item in list(self._performance_history)[-10:]:
+                    if isinstance(item, dict):
+                        try:
+                            recent_performance.append(float(item.get("pnl", 0.0) or 0.0))
+                        except Exception:
+                            recent_performance.append(0.0)
+                    else:
+                        try:
+                            recent_performance.append(float(item))
+                        except Exception:
+                            recent_performance.append(0.0)
+
                 if recent_performance:
                     avg_performance = float(np.mean(recent_performance))
-                    performance_confidence = max(0, min(1, (avg_performance + 50.0) / 100.0))
+                    performance_confidence = max(0.0, min(1.0, (avg_performance + 50.0) / 100.0))
                 else:
                     performance_confidence = 0.5
             else:
@@ -542,14 +616,13 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
             )
             self.system_confidence *= self.C.confidence_decay
 
-            # Bound confidence
+            # Bound confidence and track history
             self.system_confidence = max(0.0, min(1.0, self.system_confidence))
-
-            # Store confidence history
             self._confidence_history.append(self.system_confidence)
 
         except Exception as e:
             self.logger.error(f"Confidence update failed: {e}")
+
 
     async def _evaluate_automation_decision(self, meta_data: Dict[str, Any]) -> Dict[str, Any]:
         """Evaluate if automation decision is needed"""
