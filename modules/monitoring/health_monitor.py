@@ -368,7 +368,12 @@ class HealthMonitor:
                     if hasattr(self._smart_bus, "register_provider"):
                         self._smart_bus.register_provider(
                             "HealthMonitor",
-                            [f"{self._bus_ns}/summary", f"{self._bus_ns}/system", f"{self._bus_ns}/modules"]
+                            [
+                                f"{self._bus_ns}/summary",
+                                f"{self._bus_ns}/system",
+                                f"{self._bus_ns}/modules",
+                                "system_health",
+                            ]
                         )
                 except Exception:
                     pass
@@ -1407,6 +1412,25 @@ class HealthMonitor:
                         module="HealthMonitor",
                         thesis="Module health snapshot"
                     )
+                # canonical consolidated health surface for consumers
+                try:
+                    consolidated = {
+                        'overall_status': health.get('overall_status'),
+                        'system': health.get('system', {}),
+                        'modules': mods if isinstance(mods, dict) else {},
+                        'performance': health.get('performance', {}),
+                        'checks_performed': snap.get('checks_performed'),
+                        'errors_encountered': snap.get('errors_encountered'),
+                        'timestamp': time.time(),
+                    }
+                    self.smart_bus.set(
+                        'system_health',
+                        consolidated,
+                        module='HealthMonitor',
+                        thesis='Canonical system health snapshot'
+                    )
+                except Exception:
+                    pass
             except Exception:
                 pass
             time.sleep(self._publish_interval_s)

@@ -36,18 +36,18 @@ from envs.config import TradingConfig
 from modules.utils.audit_utils import RotatingLogger, format_operator_message, AuditConfiguration
 
 
-# ─────────────────────────────────────────────────────────
+####################################################################################################################
 # Integrated Debug System
-# ─────────────────────────────────────────────────────────
+####################################################################################################################
 
 class ActionType(Enum):
-    BUY = "BUY 📈"
-    SELL = "SELL 📉"
-    HOLD = "HOLD ⏸️"
-    SCALE_UP = "ADD_MORE 📊"
-    SCALE_DOWN = "REDUCE 📉"
-    CLOSE_POSITION = "CLOSE 🔒"
-    EMERGENCY_EXIT = "EMERGENCY 🚨"
+    BUY = "BUY"
+    SELL = "SELL"
+    HOLD = "HOLD"
+    SCALE_UP = "ADD_MORE"
+    SCALE_DOWN = "REDUCE"
+    CLOSE_POSITION = "CLOSE"
+    EMERGENCY_EXIT = "EMERGENCY"
 
 
 @dataclass
@@ -179,10 +179,10 @@ class IntegratedDebugger:
                 f.write(f"Time: {snapshot.timestamp}\n")
                 f.write(f"Instrument: {snapshot.instrument}\n")
                 f.write(f"Action: {snapshot.action}\n")
-                f.write(f"Size: €{snapshot.size_eur:,.2f}\n")
+                f.write(f"Size: EUR {snapshot.size_eur:,.2f}\n")
                 f.write(f"Confidence: {snapshot.confidence:.1%}\n")
                 f.write(f"Reason: {snapshot.plain_english_reason}\n")
-                f.write(f"Status: {'✅ EXECUTED' if snapshot.will_execute else '❌ BLOCKED'}\n")
+                f.write(f"Status: {'EXECUTED' if snapshot.will_execute else 'BLOCKED'}\n")
         except Exception:
             pass
 
@@ -198,20 +198,20 @@ class IntegratedDebugger:
             pass
 
     def _alert_buy(self, instrument: str, snapshot: DebugSnapshot) -> None:
-        print(f"\n{'🟢'*30}")
-        print(f"🎯 BUY SIGNAL - {instrument}")
-        print(f"💰 Size: €{snapshot.size_eur:,.2f}")
-        print(f"📊 Confidence: {snapshot.confidence:.1%}")
-        print(f"📝 {snapshot.plain_english_reason}")
-        print(f"{'🟢'*30}\n")
+        print(f"\n{'<'*30}")
+        print(f"BUY SIGNAL - {instrument}")
+        print(f"Size: EUR {snapshot.size_eur:,.2f}")
+        print(f"Confidence: {snapshot.confidence:.1%}")
+        print(f"Reason: {snapshot.plain_english_reason}")
+        print(f"{'<'*30}\n")
 
     def _alert_sell(self, instrument: str, snapshot: DebugSnapshot) -> None:
-        print(f"\n{'🔴'*30}")
-        print(f"📉 SELL SIGNAL - {instrument}")
-        print(f"💰 Size: €{snapshot.size_eur:,.2f}")
-        print(f"📊 Confidence: {snapshot.confidence:.1%}")
-        print(f"📝 {snapshot.plain_english_reason}")
-        print(f"{'🔴'*30}\n")
+        print(f"\n{'>'*30}")
+        print(f"SELL SIGNAL - {instrument}")
+        print(f"Size: EUR {snapshot.size_eur:,.2f}")
+        print(f"Confidence: {snapshot.confidence:.1%}")
+        print(f"Reason: {snapshot.plain_english_reason}")
+        print(f"{'>'*30}\n")
 
     def log_decision(
         self,
@@ -277,24 +277,25 @@ class IntegratedDebugger:
             return None
 
     def print_summary(self) -> None:
+        """Print aggregated decision statistics if debugger enabled."""
         if not self.enabled:
             return
         print("\n" + "=" * 60)
-        print("📊 TRADING DEBUG SUMMARY")
+        print("TRADING DEBUG SUMMARY")
         print("=" * 60)
         print(f"Total Decisions: {self.stats['total_decisions']}")
-        print(f"  • Buy Signals: {self.stats['buy_decisions']}")
-        print(f"  • Sell Decisions: {self.stats['sell_decisions']}")
-        print(f"  • Hold Decisions: {self.stats['hold_decisions']}")
+        print(f"  - Buy Signals: {self.stats['buy_decisions']}")
+        print(f"  - Sell Decisions: {self.stats['sell_decisions']}")
+        print(f"  - Hold Decisions: {self.stats['hold_decisions']}")
         rate = self.stats["executed"] / max(1, self.stats["total_decisions"]) * 100.0
         print(f"Execution Rate: {rate:.1f}%")
-        print(f"📁 Logs: {self.log_dir}")
+        print(f"Logs: {self.log_dir}")
         print("=" * 60 + "\n")
 
 
-# ─────────────────────────────────────────────────────────
+####################################################################################################################
 # Async helper
-# ─────────────────────────────────────────────────────────
+####################################################################################################################
 T_co = TypeVar("T_co")
 
 
@@ -304,9 +305,9 @@ async def _maybe_await(x: Union[Awaitable[T_co], T_co]) -> T_co:
     return cast(T_co, x)
 
 
-# ─────────────────────────────────────────────────────────
+####################################################################################################################
 # Decision enums / payloads
-# ─────────────────────────────────────────────────────────
+####################################################################################################################
 class PositionDecision(Enum):
     HOLD = "hold"
     OPEN_LONG = "open_long"
@@ -366,9 +367,9 @@ class PositionManager(
 ):
     """
     CLEAN ARCH + DEBUG:
-      • This module ONLY decides and enqueues orders on the SmartInfoBus.
-      • Env/Executor execute orders, update balances/positions/trades, and publish execution state.
-      • Integrated debugger records BUY/SELL/HOLD with plain-English reasons to CSV/JSON.
+    - This module ONLY decides and enqueues orders on the SmartInfoBus.
+    - Env/Executor execute orders, update balances/positions/trades, and publish execution state.
+    - Integrated debugger records BUY/SELL/HOLD with plain-English reasons to CSV/JSON.
     """
 
     # Class-level hints
@@ -376,9 +377,9 @@ class PositionManager(
     genome: Dict[str, Any]
     env: Optional[Any]
 
-    # ─────────────────────────────────────────────────────────
+    ####################################################################################################################
     # Lifecycle / initialization
-    # ─────────────────────────────────────────────────────────
+    ####################################################################################################################
     def __init__(
         self,
         config: Optional[TradingConfig | Dict[str, Any]] = None,
@@ -391,8 +392,8 @@ class PositionManager(
         # Integrated debugger
         self.debugger = IntegratedDebugger(log_dir=debug_log_dir, enable=enable_debug)
         if enable_debug:
-            print(f"\n✅ DEBUG MODE ACTIVE - Logging to {debug_log_dir}")
-            print("📊 Tracking BUY/SELL signals with plain English explanations\n")
+            print(f"\nDEBUG MODE ACTIVE - Logging to {debug_log_dir}")
+            print("Tracking BUY/SELL signals with plain English explanations\n")
 
         # whether caller hard-forced instruments
         self._instruments_forced = instruments is not None
@@ -430,10 +431,10 @@ class PositionManager(
         bal, _ = self._read_balance_and_drawdown()
         self.logger.info(
             format_operator_message(
-                "🏦",
+                "INIT",
                 "POSITION_MANAGER_INITIALIZED",
                 instruments_count=len(self.instruments),
-                initial_balance=f"€{bal:,.0f}",
+                initial_balance=f"EUR {bal:,.0f}",
                 max_position_pct=f"{self.C.max_position_pct:.1%}",
                 details="Decider-only with Integrated Debugging" if enable_debug else "Decider-only",
             )
@@ -486,7 +487,7 @@ class PositionManager(
                 "[INIT]",
                 "POSITION_MANAGER_REINITIALIZED",
                 instruments_count=len(self.instruments),
-                initial_balance=f"€{bal:,.0f}",
+                initial_balance=f"EUR {bal:,.0f}",
                 max_position_pct=f"{self.C.max_position_pct:.1%}",
                 details="Clean decider mode + Debugger",
             )
@@ -590,9 +591,9 @@ class PositionManager(
         self._position_performance: Dict[str, Dict[str, Any]] = {}
         self._exit_signals: Dict[str, List[Dict[str, Any]]] = {}
 
-    # ─────────────────────────────────────────────────────────
+    ####################################################################################################################
     # SmartBus execution interface (ENV/Executor execute)
-    # ─────────────────────────────────────────────────────────
+    ####################################################################################################################
     def _publish_bus_feeds(
         self,
         balance: float,
@@ -655,9 +656,9 @@ class PositionManager(
             pass
         return 0.0
 
-    # ─────────────────────────────────────────────────────────
+    ####################################################################################################################
     # Env / balance alignment
-    # ─────────────────────────────────────────────────────────
+    ####################################################################################################################
     def _sync_from_bus_env(self) -> None:
         """Align PM config with the env's published environment_config (balance, instruments)."""
         try:
@@ -706,9 +707,9 @@ class PositionManager(
 
         return balance, drawdown
 
-    # ─────────────────────────────────────────────────────────
+    ####################################################################################################################
     # Order building / enqueue
-    # ─────────────────────────────────────────────────────────
+    ####################################################################################################################
     def _build_order(
         self,
         instrument: str,
@@ -734,7 +735,7 @@ class PositionManager(
             "rationale": rationale,
         }
         if self.debug:
-            self.logger.info(format_operator_message("🧾", "ORDER_BUILT", **order))
+            self.logger.info(format_operator_message("ORDER", "ORDER_BUILT", **order))
             self._flush_logs()
         return order
 
@@ -799,7 +800,7 @@ class PositionManager(
             if self.debug:
                 self.logger.info(
                     format_operator_message(
-                        "📤",
+                        "SIGNAL",
                         "ORDER_ENQUEUED_PREVIEW",
                         instrument=inst,
                         decision=dr.decision.value,
@@ -812,12 +813,12 @@ class PositionManager(
             self._flush_logs()
         return orders
 
-    # ─────────────────────────────────────────────────────────
+    ####################################################################################################################
     # Main processing entry
-    # ─────────────────────────────────────────────────────────
+    ####################################################################################################################
     async def process(self, **inputs: Any) -> Dict[str, Any]:
         """
-        Main processing method — outputs PM-owned contract keys and enqueues orders.
+    Main processing method - outputs PM-owned contract keys and enqueues orders.
         Provides: position_decisions, instrument_signals, position_health, portfolio_state, order_queue
         """
         t0 = time.time()
@@ -915,10 +916,9 @@ class PositionManager(
                 order_queue=current_queue,
                 **metrics,
             )
-
-    # ─────────────────────────────────────────────────────────
+    ####################################################################################################################
     # Contract output builder
-    # ─────────────────────────────────────────────────────────
+    ####################################################################################################################
     def _contract_payload(
         self,
         decisions: Dict[str, PositionDecisionResult],
@@ -1050,13 +1050,12 @@ class PositionManager(
         except Exception:
             pass
         return []
-
-    # ─────────────────────────────────────────────────────────
+    ####################################################################################################################
     # Decision pipeline
-    # ─────────────────────────────────────────────────────────
+    ####################################################################################################################
     @create_error_handler("process_market_signals")
     def process_market_signals(self, market_data: Dict[str, Any]) -> Dict[str, PositionDecisionResult]:
-        """Hierarchical decision making: portfolio → instrument → sizing."""
+        """Hierarchical decision making: portfolio â†’ instrument â†’ sizing."""
         decisions: Dict[str, PositionDecisionResult] = {}
 
         # Portfolio-level assessment
@@ -1095,7 +1094,7 @@ class PositionManager(
                         instrument=instrument,
                         decision=decision_result.decision.value,
                         intensity=f"{decision_result.intensity:.3f}",
-                        size=f"€{decision_result.size:.0f}",
+                        size=f"EUR {decision_result.size:.0f}",
                         confidence=f"{decision_result.confidence:.3f}",
                         rationale=decision_result.rationale.get("stage", "unknown"),
                     )
@@ -1330,10 +1329,9 @@ class PositionManager(
             return float(np.clip(intensity, -1.0, 1.0))
         except Exception:
             return None
-
-    # ─────────────────────────────────────────────────────────
+    ####################################################################################################################
     # SmartBus I/O (inputs + bus)
-    # ─────────────────────────────────────────────────────────
+    ####################################################################################################################
     def _extract_market_data_from_inputs(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
         market_data = inputs.get("market_data") or {}
@@ -1617,9 +1615,9 @@ class PositionManager(
         Publish decision artifacts to the InfoBus (NO execution/balance/trades).
 
         Emits (PM-owned):
-        • 'position_decisions' (aggregated)
-        • 'instrument_signals' (compact)
-        • 'portfolio_state' (light diagnostics)
+    - 'position_decisions' (aggregated)
+    - 'instrument_signals' (compact)
+    - 'portfolio_state' (light diagnostics)
         Also writes per-instrument 'position_decision_<inst>' variants for convenience.
         """
         instrument_signals: Dict[str, Any] = {}
@@ -1645,7 +1643,7 @@ class PositionManager(
             except Exception:
                 pass
 
-        to_register: List[str] = ["position_decisions", "instrument_signals", "portfolio_state", "order_queue"]
+        to_register: List[str] = ["position_decisions", "portfolio_state", "order_queue"]
 
         for instrument, decision in decisions.items():
             payload = {
@@ -1707,12 +1705,13 @@ class PositionManager(
             thesis="Portfolio health (diagnostic)",
         )
 
-        # Canonical instrument_signals map
+        # Publish PM-internal signals under a namespaced key to avoid duplicate providers
+        # StrategyArbiter is the single writer for 'instrument_signals'.
         self.smart_bus.set(
-            "instrument_signals",
+            "position_manager_instrument_signals",
             instrument_signals,
             module="PositionManager",
-            thesis="Canonical instrument signals from PM",
+            thesis="PositionManager instrument signals (namespaced)",
         )
 
         # Register providers for owned keys
@@ -1757,18 +1756,75 @@ class PositionManager(
             "risk_tolerance": 1.0,
             "confidence_threshold": 0.5,
         }
-
-    # ─────────────────────────────────────────────────────────
+    ####################################################################################################################
     # Core decision logic WITH Integrated Debug logging
-    # ─────────────────────────────────────────────────────────
+    ####################################################################################################################
     def _check_emergency_conditions(self, context: SignalContext) -> bool:
-        emergency_conditions = [
-            context.drawdown > 0.15,
-            self.consecutive_losses >= self.C.max_consecutive_losses,
-            context.current_exposure > self.C.max_instrument_concentration * 1.5,
-            context.liquidity_score < 0.3,
-        ]
-        return any(emergency_conditions)
+        """Return True if any emergency condition is met.
+
+        Added diagnostics:
+          - Logs WHICH specific triggers fired (once per step) with their raw values.
+          - Optional suppression if executor appears inactive (to avoid noisy spam while no closer can act).
+
+        Suppression flag precedence:
+          TradingConfig.suppress_emergency_without_executor (bool, default True if missing)
+        Detection of executor activity (cheap heuristics):
+          - Any of: execution_data, executor_debug, positions keys recently published.
+        """
+        triggers = {
+            "drawdown": context.drawdown > float(getattr(self.C, 'emergency_drawdown_trigger', 0.15)),
+            "loss_streak": self.consecutive_losses >= self.C.max_consecutive_losses,
+            "exposure": context.current_exposure > self.C.max_instrument_concentration * 1.5,
+            "liquidity": context.liquidity_score < 0.3,
+        }
+        active = any(triggers.values())
+        if not active:
+            return False
+
+        # Heuristic executor activity check (avoid repeated bus misses by single get chain)
+        executor_active = False
+        try:
+            if self.smart_bus.get("execution_data", "PositionManager", default=None):
+                executor_active = True
+            elif self.smart_bus.get("executor_debug", "PositionManager", default=None):
+                executor_active = True
+            elif self.smart_bus.get("positions", "PositionManager", default=None):
+                executor_active = True
+        except Exception:
+            pass
+
+        suppress = getattr(self.C, "suppress_emergency_without_executor", True) and not executor_active
+
+        # Only log once per step / context timestamp; keep lightweight
+        stamp = getattr(self, "_last_emergency_diag_stamp", None)
+        current_stamp = (context.timestamp or f"step_{context.step_idx}")
+        if stamp != current_stamp:
+            try:
+                self.logger.warning(
+                    format_operator_message(
+                        icon="[ALERT]" if not suppress else "[INFO]",
+                        message="Emergency condition evaluated" + (" (SUPPRESSED)" if suppress else ""),
+                        drawdown=f"{context.drawdown:.4f}",
+                        consecutive_losses=self.consecutive_losses,
+                        loss_streak_trigger=triggers["loss_streak"],
+                        drawdown_trigger=triggers["drawdown"],
+                        exposure=f"{context.current_exposure:.4f}",
+                        exposure_trigger=triggers["exposure"],
+                        liquidity=f"{context.liquidity_score:.3f}",
+                        liquidity_trigger=triggers["liquidity"],
+                        executor_active=executor_active,
+                        suppressed=suppress,
+                    )
+                )
+            except Exception:
+                pass
+            self._last_emergency_diag_stamp = current_stamp
+
+        if suppress:
+            # Do not treat as emergency (executor inactive) â€“ still allow other logic to proceed normally
+            return False
+
+        return True
 
     def _calculate_portfolio_health_score(self, context: SignalContext) -> float:
         drawdown_component = max(0.0, 1.0 - context.drawdown * 3.0)
@@ -1856,7 +1912,7 @@ class PositionManager(
             if self.debug:
                 self.logger.info(
                     format_operator_message(
-                        "📉",
+                        "SELL",
                         "LOSS_STREAK_REDUCTION",
                         reduction_factor=f"{streak_reduction:.2f}",
                         consecutive_losses=self.consecutive_losses,
@@ -2045,7 +2101,7 @@ class PositionManager(
                 intensity = 0.8
                 confidence = 0.9
                 rationale["stage"] = "risk_management"
-                rationale["factors"].append(f"Position approaching loss limit: €{pnl_eur:.2f}")
+                rationale["factors"].append(f"Position approaching loss limit: EUR {pnl_eur:.2f}")
 
         # Risk adjustments
         risk_factors = self._assess_risk_factors(context)
@@ -2193,7 +2249,7 @@ class PositionManager(
             self.logger.warning(f"Parameter adaptation failed: {e}")
 
     def _calculate_current_exposure_ratio(self) -> float:
-        """Σ|notional_eur| / balance from optional Executor bus snapshots."""
+        """Î£|notional_eur| / balance from optional Executor bus snapshots."""
         balance, _ = self._read_balance_and_drawdown()
 
         total_exposure = 0.0
@@ -2364,10 +2420,9 @@ class PositionManager(
             self.failure_count = int(state.get("failure_count", getattr(self, "failure_count", 0)))
         except Exception:
             self.failure_count = getattr(self, "failure_count", 0)
-
-    # ─────────────────────────────────────────────────────────
+    ####################################################################################################################
     # Small helpers
-    # ─────────────────────────────────────────────────────────
+    ####################################################################################################################
     def _map_decision_to_intensity(self, dr: PositionDecisionResult) -> float:
         """Map a decision into a signed intensity for compact instrument_signals."""
         d = dr.decision
@@ -2408,3 +2463,4 @@ class PositionManager(
                 self.debugger.print_summary()
         except Exception:
             pass
+

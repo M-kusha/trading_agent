@@ -45,7 +45,7 @@ from .shared.utils import RewardUtils
     description="Risk-adjusted reward system with comprehensive debugging and analytics",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=3000,
+    timeout_ms=15000,
 ))
 class RiskAdjustedReward(
     BaseModule,

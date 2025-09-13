@@ -440,14 +440,20 @@ class StateManager:
 
     def _check_system_health_for_operation(self, orchestrator: "ModuleOrchestrator") -> bool:
         try:
+            # Allow restoration/saving during cold start when no metrics exist yet.
+            metrics = orchestrator.get_execution_metrics() if hasattr(orchestrator, "get_execution_metrics") else {}
+            if not metrics or metrics.get("total_executions", 0) == 0:
+                return True
+
             if getattr(orchestrator, "get_emergency_mode_status", None):
                 if orchestrator.get_emergency_mode_status().get("active"):
                     self.logger.warning("System in emergency mode")
                     return False
-            metrics = orchestrator.get_execution_metrics() if hasattr(orchestrator, "get_execution_metrics") else {}
+
             if metrics.get("success_rate", 0) < 0.5:
                 self.logger.warning("System success rate too low")
                 return False
+
             cb_status = orchestrator.get_circuit_breaker_status() if hasattr(orchestrator, "get_circuit_breaker_status") else {}
             if cb_status:
                 open_breakers = sum(1 for cb in cb_status.values() if cb.get("state") == "OPEN")

@@ -190,6 +190,12 @@ class TradingConfig:
     emergency_close_threshold: float = 0.85
     confidence_decay: float = 0.95
 
+    # Emergency behavior tuning (centralized, used by PositionManager and others)
+    emergency_drawdown_trigger: float = 0.15   # trigger if current drawdown > 15%
+    emergency_risk_score_threshold: float = 0.7  # require risk_score >= 0.7 to escalate
+    emergency_breach_steps: int = 2             # consecutive steps required before hard emergency action
+    emergency_warmup_steps: int = 20            # ignore emergency checks for first N steps
+
     # Performance thresholds for Position Manager (fallbacks)
     position_max_processing_time_ms: float = 100
     position_circuit_breaker_threshold: int = 3

@@ -832,18 +832,22 @@ class BaseModule(ABC):
     def validate_state(self, state: Dict[str, Any]) -> bool:
         if not isinstance(state, dict):
             return False
-        for f in ('class_name', 'version'):
-            if f not in state:
-                return False
-        # naive: major version compatibility
+        # If the state follows the canonical BaseModule envelope, validate strictly.
+        if ('class_name' in state) and ('version' in state):
+            try:
+                saved_major = int(str(state.get('version', '1.0.0')).split('.')[0])
+                current_major = int(self.metadata.version.split('.')[0])
+                return saved_major == current_major
+            except Exception:
+                return True
+        # Otherwise tolerate custom module snapshots to avoid dropping state.
+        # Apply a best‑effort major version check using an optional 'version' key if present.
         try:
-            saved_major = int(str(state.get('version', '1.0.0')).split('.')[0])
+            saved_major = int(str(state.get('version', self.metadata.version)).split('.')[0])
             current_major = int(self.metadata.version.split('.')[0])
-            if saved_major != current_major:
-                return False
+            return saved_major == current_major
         except Exception:
-            pass
-        return True
+            return True
 
     def validate_state_compatibility(self, state: Dict[str, Any]) -> bool:
         try:

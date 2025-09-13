@@ -69,7 +69,7 @@ class MarketConfig:
 
     # Logging output configuration
     # Write logs to console and/or file (JSONL with rotation)
-    console_log: bool = True
+    console_log: bool = False
     log_to_file: bool = True
     log_file: Optional[str] = None  # if None and log_to_file=True, defaults to logs/market/unified_market.jsonl
     rotate_size_mb: Optional[int] = 10
@@ -134,7 +134,7 @@ class MarketConfig:
         description="Unified market analysis orchestrating fractal, liquidity, theme, regime, and time-risk components",
         error_handling=True,
         hot_reload=True,
-        timeout_ms=5000,
+        timeout_ms=8000,
     )
 )
 class UnifiedMarketModule(
@@ -412,6 +412,38 @@ class UnifiedMarketModule(
             if self.visualizer:
                 self.visualizer.update(aggregated)
 
+            # Add per-symbol timeframe dynamic market_data_{symbol}_{tf} keys (fresh each step)
+            try:
+                from modules.utils.info_bus import InfoBusManager as _IBM
+                _bus = _IBM.get_instance()
+                _mtf = _bus.get('historical_prices', 'UnifiedMarketModule') or {}
+                if isinstance(_mtf, dict):
+                    for _sym, _tfs in _mtf.items():
+                        if not isinstance(_tfs, dict):
+                            continue
+                        _sym_key = str(_sym).replace('/', '').replace('_', '')
+                        for _tf, _rec in _tfs.items():
+                            if not isinstance(_rec, dict):
+                                continue
+                            _cur = _rec.get('current_bar') if isinstance(_rec.get('current_bar'), dict) else {
+                                'open': _rec.get('open'),
+                                'high': _rec.get('high'),
+                                'low': _rec.get('low'),
+                                'close': _rec.get('close'),
+                                'volume': _rec.get('volume'),
+                            }
+                            _val = {
+                                'symbol': _sym,
+                                'timeframe': _tf,
+                                'current_bar': _cur,
+                                'ts': datetime.datetime.utcnow().isoformat(),
+                            }
+                            # Publish both sanitized and raw symbol variants to satisfy all consumers
+                            aggregated[f"market_data_{_sym_key}_{_tf}"] = _val
+                            aggregated[f"market_data_{_sym}_{_tf}"] = _val
+            except Exception:
+                pass
+
             # Add metadata
             aggregated["_metadata"] = {
                 "processing_time_ms": processing_time,
@@ -638,7 +670,36 @@ class UnifiedMarketModule(
             }))
             aggregated.setdefault('time_risk_health', aggregated.get('time_risk_health', {'status': 'UNKNOWN'}))
             aggregated.setdefault('time_risk_status', aggregated.get('time_risk_status', 'UNKNOWN'))
-            aggregated.setdefault('time_risk_analysis', aggregated.get('time_risk_analysis', {}))
+            # Ensure a minimal, always-available time_risk_analysis baseline
+            if not aggregated.get('time_risk_analysis'):
+                try:
+                    now = datetime.datetime.utcnow()
+                    hour = now.hour
+                    minute = now.minute
+                    # Simple session mapping by UTC hour
+                    if 0 <= hour < 8:
+                        sess = 'AS'
+                    elif 8 <= hour < 16:
+                        sess = 'EU'
+                    elif 16 <= hour < 22:
+                        sess = 'US'
+                    else:
+                        sess = 'OFF'
+                    # Rollover window hint (approximate FX rollover)
+                    is_roll = bool(21 <= hour < 23)
+                    vol_hint = aggregated.get('volatility_adjustment')
+                    if isinstance(vol_hint, (int, float)):
+                        vol_label = 'high' if float(vol_hint) > 1.2 else ('medium' if float(vol_hint) > 0.9 else 'low')
+                    else:
+                        vol_label = 'medium'
+                    aggregated['time_risk_analysis'] = {
+                        'session': sess,
+                        'minute_in_session': int((hour % 24) * 60 + minute),
+                        'is_rollover_window': bool(is_roll),
+                        'volatility_hint': str(vol_label),
+                    }
+                except Exception:
+                    aggregated.setdefault('time_risk_analysis', {'session': 'UNKNOWN', 'minute_in_session': 0, 'is_rollover_window': False, 'volatility_hint': 'medium'})
             aggregated.setdefault('volatility_adjustment', float(aggregated.get('volatility_adjustment', 1.0)))
 
             # Unified additions
@@ -1149,6 +1210,14 @@ class UnifiedMarketModule(
             if value is not None:
                 self.trace(f"Updating InfoBus: {key}", level=TraceLevel.TRACE)
                 smart_bus.set(key, value, module="UnifiedMarketModule", thesis=thesis[:200])
+
+        # Publish dynamic per-symbol timeframe keys if present
+        try:
+            for k, v in (aggregated or {}).items():
+                if isinstance(k, str) and k.startswith('market_data_'):
+                    smart_bus.set(k, v, module="UnifiedMarketModule", thesis=thesis[:200])
+        except Exception:
+            pass
 
     async def _handle_process_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
         """Handle process-level errors"""

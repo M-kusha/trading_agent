@@ -1677,26 +1677,43 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                 except Exception:
                     pass
 
-                # Optional: publish into normalized expert_votes feed to support feed-first ingestion
+                # Optional: publish into normalized expert_votes feed (default disabled to avoid provider churn)
                 try:
-                    feed_key = "expert_votes"
-                    entry = {
-                        "expert": "DynamicRiskController",
-                        "vote": dict(proposal) if isinstance(proposal, dict) else {},
-                        "confidence": confidence,
-                        "timestamp": datetime.datetime.now().isoformat(),
-                    }
-                    buf = self.smart_bus.get(feed_key, "DynamicRiskController") or []
-                    if not isinstance(buf, list):
-                        buf = []
-                    # de-duplicate same expert (keep most recent)
-                    buf = [e for e in buf if e.get("expert") != "DynamicRiskController"]
-                    buf.append(entry)
-                    # cap the buffer
-                    cap = 200
-                    if len(buf) > cap:
-                        buf = buf[-cap:]
-                    self.smart_bus.set(feed_key, buf, module="DynamicRiskController", thesis="Published normalized vote entry")
+                    if bool(self.cfg.get("publish_to_expert_votes_feed", False)):
+                        feed_key = "expert_votes"
+                        entry = {
+                            "expert": "DynamicRiskController",
+                            "vote": dict(proposal) if isinstance(proposal, dict) else {},
+                            "confidence": confidence,
+                            "timestamp": datetime.datetime.now().isoformat(),
+                        }
+                        buf = self.smart_bus.get(feed_key, "DynamicRiskController") or []
+                        if not isinstance(buf, list):
+                            buf = []
+                        # de-duplicate same expert (keep most recent)
+                        buf = [e for e in buf if e.get("expert") != "DynamicRiskController"]
+                        buf.append(entry)
+                        # cap the buffer
+                        cap = int(self.cfg.get("max_expert_votes_buffer", 200))
+                        if len(buf) > cap:
+                            buf = buf[-cap:]
+                        self.smart_bus.set(feed_key, buf, module="DynamicRiskController", thesis="Published normalized vote entry")
+                except Exception:
+                    pass
+
+                # Always emit a stream entry for diagnostics (no ownership churn)
+                try:
+                    self.smart_bus.publish(
+                        "vote",
+                        {
+                            "expert": "DynamicRiskController",
+                            "vote": dict(proposal) if isinstance(proposal, dict) else {},
+                            "confidence": float(confidence),
+                            "timestamp": datetime.datetime.now().isoformat(),
+                        },
+                        module="DynamicRiskController",
+                        thesis="DynamicRiskController vote stream",
+                    )
                 except Exception:
                     pass
 

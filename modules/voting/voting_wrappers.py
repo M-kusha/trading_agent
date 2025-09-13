@@ -1,8 +1,10 @@
-# ─────────────────────────────────────────────────────────────
-# File: modules/voting/enhanced_voting_wrappers.py
-# 🚀 Enhanced Voting Wrappers with SmartInfoBus Integration v4.1 (hardened)
-# NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
-# ─────────────────────────────────────────────────────────────
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""Plain ASCII header: voting_wrappers.py
+
+Enhanced voting expert wrappers & committee coordinator integrated with SmartInfoBus.
+All non-ASCII decorative characters and BOM removed.
+"""
 
 import asyncio
 import time
@@ -15,9 +17,9 @@ from typing import Any, Dict, List, Optional, Tuple, Union, Type, cast
 from collections import deque, defaultdict
 from abc import ABC, abstractmethod
 
-# ═══════════════════════════════════════════════════════════════════
+# -----------------------------
 # MODERN SMARTINFOBUS IMPORTS
-# ═══════════════════════════════════════════════════════════════════
+# -----------------------------
 from modules.core.module_base import BaseModule, module
 from modules.core.mixins import (
     SmartInfoBusTradingMixin, SmartInfoBusVotingMixin, SmartInfoBusStateMixin,
@@ -30,13 +32,10 @@ from modules.monitoring.health_monitor import HealthMonitor
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-# ═══════════════════════════════════════════════════════════════════
-# ENHANCED VOTING EXPERT BASE CLASS
-# ═══════════════════════════════════════════════════════════════════
 
 class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVotingMixin, SmartInfoBusStateMixin):
     """
-    🚀 PRODUCTION-GRADE Enhanced Voting Expert Base v4.1 (hardened)
+    Enhanced voting expert base class with modern SmartInfoBus integration
     """
 
     def _initialize(self):
@@ -123,14 +122,13 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
         """Generate comprehensive initialization thesis"""
         expert_type = self.__class__.__name__.replace('Expert', '').replace('Enhanced', '')
 
-        thesis = f"""
-        Enhanced {expert_type} Voting Expert v4.1 Initialization Complete:
-
-        • SmartInfoBus zero-wiring integration; async + hot-reload
-        • Max signal: {self.max_signal_strength}; confidence threshold: {self.confidence_threshold:.1%}
-        • Market-aware; emergency sensitivity: {self.emergency_mode_sensitivity:.1%}
-        • Circuit breaker threshold: {self.circuit_breaker['threshold']}
-        """
+        thesis = (
+            f"Enhanced {expert_type} Voting Expert v4.1 Initialization Complete:\n"
+            f" - SmartInfoBus zero-wiring integration; async + hot-reload\n"
+            f" - Max signal: {self.max_signal_strength}; confidence threshold: {self.confidence_threshold:.1%}\n"
+            f" - Market-aware; emergency sensitivity: {self.emergency_mode_sensitivity:.1%}\n"
+            f" - Circuit breaker threshold: {self.circuit_breaker['threshold']}"
+        )
 
         self.smart_bus.set(f'{self.__class__.__name__}_initialization', {
             'status': 'initialized',
@@ -282,7 +280,7 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
 
             if old_context.get('emergency_mode') != self.market_context['emergency_mode']:
                 self.logger.warning(format_operator_message(
-                    icon="[ALERT]" if self.market_context['emergency_mode'] else "ℹ️",
+                    icon="[ALERT]" if self.market_context['emergency_mode'] else "[INFO]",
                     message="Emergency mode status changed",
                     emergency_active=self.market_context['emergency_mode'],
                     impact="Risk parameters will adjust"
@@ -526,6 +524,7 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
             self.smart_bus.set(f'{name}_analytics', results['expert_analytics'], module=name, thesis=f"Performance analytics for {name}")
 
             # Optional: publish into normalized expert_votes feed (feed-first coordination)
+            # Default enabled to reduce BUS MISS for 'expert_votes' in coordinators
             if bool(self.config.get('publish_to_expert_votes_feed', True)):
                 try:
                     feed_key = self.config.get('expert_votes_bus_key', 'expert_votes')
@@ -550,6 +549,19 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
                     self.smart_bus.set(feed_key, buf, module=name, thesis=f"{name} published normalized vote entry")
                 except Exception as e:
                     self.logger.warning(f"Soft-fail publishing to expert_votes feed: {e}")
+
+            # Always emit a lightweight stream event for diagnostics (no provider churn)
+            try:
+                stream_entry = {
+                    'expert': name,
+                    'vote': dict(proposal),
+                    'confidence': float(confidence),
+                    'timestamp': datetime.datetime.now().isoformat(),
+                }
+                # 'vote' is configured as a stream key on the bus via set_policy('vote', mode='stream')
+                self.smart_bus.publish('vote', stream_entry, module=name, thesis=f"{name} vote stream")
+            except Exception:
+                pass
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
             self.logger.error(f"SmartInfoBus update failed: {error_context}")
@@ -697,9 +709,9 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
         ))
 
 
-# ═══════════════════════════════════════════════════════════════════
+# =============================
 # ENHANCED THEME EXPERT
-# ═══════════════════════════════════════════════════════════════════
+# =============================
 
 @module(**module_args(
     "EnhancedThemeExpert",
@@ -710,7 +722,7 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
 ))
 class EnhancedThemeExpert(EnhancedVotingExpertBase):
     """
-    🎭 PRODUCTION-GRADE Enhanced Theme Expert v4.1
+    PRODUCTION-GRADE Enhanced Theme Expert v4.1
     """
 
     def _initialize(self):
@@ -738,7 +750,7 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
         }
 
         self.logger.info(format_operator_message(
-            icon="🎭",
+            icon="[THEME]",
             message="Enhanced Theme Expert v4.1 initialized",
             theme_sensitivity=self.theme_sensitivity,
             theme_momentum=self.theme_momentum
@@ -959,9 +971,9 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
             self.logger.warning(f"Theme signal recording failed: {e}")
 
 
-# ═══════════════════════════════════════════════════════════════════
+# =============================
 # ENHANCED SEASONALITY RISK EXPERT
-# ═══════════════════════════════════════════════════════════════════
+# =============================
 
 @module(**module_args(
     "EnhancedSeasonalityRiskExpert",
@@ -972,7 +984,7 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
 ))
 class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
     """
-    🕐 PRODUCTION-GRADE Enhanced Seasonality Risk Expert v4.1
+    PRODUCTION-GRADE Enhanced Seasonality Risk Expert v4.1
     """
 
     def _initialize(self):
@@ -993,7 +1005,7 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
         }
 
         self.logger.info(format_operator_message(
-            icon="🕐",
+            icon="[SEASON]",
             message="Enhanced Seasonality Risk Expert v4.1 initialized",
             base_signal_strength=self.base_signal_strength,
             seasonality_sensitivity=self.seasonality_sensitivity
@@ -1018,9 +1030,11 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """
-    Contract-compliant process for EnhancedSeasonalityRiskExpert.
-    Produces: seasonality_voting_proposal, seasonality_confidence, seasonality_analysis,
-          committee_decision, committee_confidence, expert_performance, _thesis.
+        Contract-compliant process for EnhancedSeasonalityRiskExpert.
+        Produces: seasonality_voting_proposal, seasonality_confidence, seasonality_analysis,
+                  expert_performance, _thesis.
+        Note: committee_decision/committee_confidence are owned by
+              EnhancedVotingCommitteeCoordinator and are not produced here.
         """
         start = time.time()
         try:
@@ -1043,17 +1057,7 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
                 'session_adjustment': proposal.get('session_adjustment', {}),
             }
 
-            # Build committee-like projection for contract compliance (not bus-published to avoid collisions)
-            committee_decision = {
-                'decision_type': 'expert_projection',
-                'action': proposal.get('action', 'abstain'),
-                'reason': 'seasonality_expert_projection',
-                'source': self.__class__.__name__,
-                'timestamp': datetime.datetime.now().isoformat()
-            }
-            committee_confidence = float(confidence)
-
-            # Local expert performance index (0..1) combining success_rate and avg_confidence
+            # Local expert performance index (kept internal; committee owns expert_performance on bus)
             expert_performance = {self.__class__.__name__: self._get_local_expert_performance_index()}
 
             name = self.__class__.__name__
@@ -1063,8 +1067,8 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
                 f'{name}_voting_proposal': proposal,
                 f'{name}_confidence': confidence,
                 'seasonality_analysis': seasonality_analysis,
-                'committee_decision': committee_decision,
-                'committee_confidence': committee_confidence,
+                # expert_performance is committee-owned; keep only in-process returns if needed by orchestrator
+                # (not bus-published here)
                 'expert_performance': expert_performance,
                 '_thesis': thesis,
             }
@@ -1080,8 +1084,6 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
                 f'{name}_voting_proposal': {'action': 'abstain', 'reason': f'error:{str(e)}'},
                 f'{name}_confidence': 0.1,
                 'seasonality_analysis': {'status': 'error', 'error': str(e)},
-                'committee_decision': {'action': 'abstain', 'decision_type': 'error', 'reason': str(e), 'source': self.__class__.__name__},
-                'committee_confidence': 0.1,
                 'expert_performance': {self.__class__.__name__: 0.3},
                 '_thesis': f"Seasonality expert failed: {str(e)}",
             }
@@ -1223,9 +1225,9 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
             return 0.5
 
 
-# ═══════════════════════════════════════════════════════════════════
+# =============================
 # FACTORY FUNCTION FOR CREATING ALL ENHANCED EXPERTS
-# ═══════════════════════════════════════════════════════════════════
+# =============================
 
 def create_enhanced_voting_experts(config: Dict[str, Any]) -> List[EnhancedVotingExpertBase]:
     """
@@ -1243,19 +1245,21 @@ def create_enhanced_voting_experts(config: Dict[str, Any]) -> List[EnhancedVotin
                 expert_config = config.get(cls.__name__, {})
                 instance = cast(EnhancedVotingExpertBase, cls(config=expert_config))
                 experts.append(instance)
-                print(f"✅ Created {cls.__name__}")
+                print(f"[OK] Created {cls.__name__}")
             except Exception as e:
-                print(f"❌ Failed to create {cls.__name__}: {e}")
-        print(f"🎯 Successfully created {len(experts)} enhanced voting experts")
+                print(f"[FAIL] Failed to create {cls.__name__}: {e}")
+        print(f"[OK] Successfully created {len(experts)} enhanced voting experts")
         return experts
     except Exception as e:
-        print(f"❌ Enhanced voting expert creation failed: {e}")
+        print(f"[FAIL] Enhanced voting expert creation failed: {e}")
         return []
 
 
-# ═══════════════════════════════════════════════════════════════════
+# =============================
 # ENHANCED VOTING COMMITTEE COORDINATOR (HARDENED)
-# ═══════════════════════════════════════════════════════════════════
+# =============================
+
+_EVCC_INSTANCE = None  # process-lifetime singleton for coordinator reuse
 
 @module(**module_args(
     "EnhancedVotingCommitteeCoordinator",
@@ -1265,12 +1269,20 @@ def create_enhanced_voting_experts(config: Dict[str, Any]) -> List[EnhancedVotin
     timeout_ms=3000,
 ))
 class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, SmartInfoBusStateMixin):
-    """
-        🗳️ PRODUCTION-GRADE Enhanced Voting Committee Coordinator v4.1 (hardened)
-    """
+    """PRODUCTION-GRADE Enhanced Voting Committee Coordinator v4.1 (hardened)"""
+
+    def __new__(cls, *args, **kwargs):
+        global _EVCC_INSTANCE
+        if _EVCC_INSTANCE is None:
+            # Avoid referencing class name to prevent NameError during early registration
+            _EVCC_INSTANCE = super().__new__(cls)
+        return _EVCC_INSTANCE
 
     def _initialize(self):
         """Initialize enhanced voting committee coordinator"""
+        # Prevent repeated heavy initialization if re-instantiated
+        if getattr(self, "_singleton_init_done", False):
+            return
         self._initialize_voting_state()
         self._initialize_state_management()
 
@@ -1317,7 +1329,7 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
         self.performance_tracker = PerformanceTracker()
 
         self.logger.info(format_operator_message(
-            icon="🗳️",
+            icon="[COMMITTEE]",
             message="Enhanced Voting Committee Coordinator v4.1 initialized",
             consensus_threshold=f"{self.consensus_threshold:.1%}",
             minimum_voters=self.minimum_voters
@@ -1346,6 +1358,8 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
             )
         except Exception:
             pass
+        # Mark initialization complete to avoid re-inits
+        self._singleton_init_done = True
 
     # ---------------- HARDENED HELPERS ----------------
 
@@ -1420,7 +1434,7 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
             }
             horizon_alignment = {'status': 'neutral', 'reason': 'no explicit horizon vector'}
 
-            # 4) Update SmartInfoBus (side-effect) — include downstream-friendly keys
+            # 4) Update SmartInfoBus (side-effect) -- include downstream-friendly keys
             await self._update_smartinfobus_committee({
                 'committee_decision': decision,
                 'voting_consensus': consensus,
@@ -1579,7 +1593,7 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                 seen.add(n)
 
         self.logger.info(format_operator_message(
-            icon="🧭",
+            icon="[DISCOVERY]",
             message="Voter discovery",
             voters=",".join(out),
             count=len(out),
@@ -1657,7 +1671,7 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                 expert_votes = expert_votes[-self.max_votes_per_tick:]
 
             self.logger.info(format_operator_message(
-                icon="📊",
+                icon="[VOTES]",
                 message="Expert votes collected",
                 vote_count=len(expert_votes),
                 voters=len(voters),
@@ -1786,7 +1800,7 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
     async def _calculate_committee_confidence(self, expert_votes: List[Dict[str, Any]],
                                               expert_weights: Dict[str, float],
                                               consensus: Optional[Dict[str, Any]] = None) -> float:
-        """Calculate overall committee confidence (weight-adjusted × consensus strength)"""
+        """Calculate overall committee confidence (weight-adjusted Ã— consensus strength)"""
         try:
             if not expert_votes or not expert_weights:
                 return 0.1
@@ -1893,7 +1907,36 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
         """Update SmartInfoBus with committee results"""
         try:
             self.smart_bus.set('committee_decision', results['committee_decision'], module=self.__class__.__name__, thesis=thesis, confidence=results['committee_confidence'])
-            self.smart_bus.set('voting_consensus', results['voting_consensus'], module=self.__class__.__name__, thesis=f"Voting consensus: {results['voting_consensus'].get('consensus_strength', 0):.1%} agreement")
+            # Attempt to publish canonical voting_consensus only if allowed (owner: ConsensusDetector).
+            try:
+                self.smart_bus.set(
+                    'voting_consensus',
+                    results['voting_consensus'],
+                    module=self.__class__.__name__,
+                    thesis=f"Voting consensus: {results['voting_consensus'].get('consensus_strength', 0):.1%} agreement"
+                )
+            except PermissionError:
+                # Ownership conflict -> fallback to namespaced + alias key to avoid repeated hard-fail spam
+                vc = results.get('voting_consensus', {})
+                try:
+                    self.smart_bus.set(
+                        'voting_consensus', vc, module=self.__class__.__name__,
+                        thesis=f"Committee namespaced voting consensus (owner conflict bypass)", namespace='committee'
+                    )
+                except Exception:  # secondary fallback should never raise loudly
+                    pass
+                try:
+                    # Provide an unowned alias for downstream readers expecting a committee-specific snapshot
+                    self.smart_bus.set(
+                        'committee_voting_consensus', vc, module=self.__class__.__name__,
+                        thesis=f"Committee voting consensus snapshot (alias key)"
+                    )
+                except Exception:
+                    pass
+                try:
+                    self.logger.info("[INFOBUS][FALLBACK] Using namespaced/alias voting_consensus keys due to owner=ConsensusDetector")
+                except Exception:
+                    pass
             self.smart_bus.set('committee_confidence', results['committee_confidence'], module=self.__class__.__name__, thesis=f"Committee confidence: {results['committee_confidence']:.1%}")
             # Publish committee_votes (simplified list)
             try:
@@ -1927,8 +1970,15 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
 
             # Publish for downstream modules (Aligner, dashboards, etc.)
             try:
-                expert_perf = dict(results.get('committee_analytics', {}).get('expert_performance', {}))
-                self.smart_bus.set('expert_performance', expert_perf, module=self.__class__.__name__, thesis='Committee-tracked per-expert performance metrics')
+                perf_map = dict(results.get('committee_analytics', {}).get('expert_performance', {}))
+                if not perf_map:
+                    perf_map = dict(results.get('member_confidences', {}))
+                self.smart_bus.set(
+                    'expert_performance',
+                    perf_map,
+                    module=self.__class__.__name__,
+                    thesis='Committee-tracked per-expert performance metrics'
+                )
             except Exception:
                 pass
 
@@ -1983,3 +2033,5 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
             return float(results.get('committee_confidence', 0.3))
         except Exception:
             return 0.2
+
+

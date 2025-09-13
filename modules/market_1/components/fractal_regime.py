@@ -221,17 +221,67 @@ class FractalRegimeComponent(BaseMarketComponent):
                         self._last_series_len = int(arr.size)
                         return arr
 
-        # 3) Nested shapes: market_data['market_data'] or 'historical_prices'
-        nested = market_data.get('market_data') or market_data.get('historical_prices')
-        if isinstance(nested, dict):
-            # Try common keys inside
-            for key in ('close', 'prices'):
-                if key in nested:
-                    arr = np.asarray(nested[key], dtype=np.float64)
-                    if arr.size >= 2:
-                        arr = arr[-max(self.window, self._min_points):]
-                        self._last_series_len = int(arr.size)
-                        return arr
+        # 3) Nested shapes: 'multi_timeframe_data' or 'historical_prices' as
+        #    { instrument: { timeframe: { close: [...] } } }
+        for container_key in ('multi_timeframe_data', 'historical_prices', 'market_data'):
+            nested = market_data.get(container_key)
+            if isinstance(nested, dict):
+                # Prefer common symbols and granular TFs if available
+                instruments = list(nested.keys())
+                if not instruments:
+                    continue
+                # Simple preference order
+                inst_pref = ['EUR/USD', 'XAU/USD'] + instruments
+                tf_pref = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1']
+                chosen_inst = next((s for s in inst_pref if s in nested), instruments[0])
+                inst_block = nested.get(chosen_inst)
+                if isinstance(inst_block, dict):
+                    # If already a flat OHLC block with arrays
+                    if 'close' in inst_block and isinstance(inst_block['close'], (list, np.ndarray)):
+                        arr = np.asarray(inst_block['close'], dtype=np.float64)
+                        if arr.size >= 2:
+                            arr = arr[-max(self.window, self._min_points):]
+                            self._last_series_len = int(arr.size)
+                            self.trace(
+                                f"Fractal source selected: {container_key}:{chosen_inst} flat close series len={arr.size}",
+                                level="TRACE",
+                            )
+                            return arr
+                    # Otherwise expect per-timeframe dicts
+                    # Pick preferred timeframe if present
+                    if any(isinstance(v, dict) for v in inst_block.values()):
+                        # gather available timeframes
+                        tfs = list(inst_block.keys())
+                        chosen_tf = next((t for t in tf_pref if t in inst_block), tfs[0])
+                        tf_rec = inst_block.get(chosen_tf)
+                        if isinstance(tf_rec, dict):
+                            # Some shapes have current_bar + arrays; prefer arrays
+                            series = tf_rec.get('close') or tf_rec.get('prices')
+                            if isinstance(series, (list, np.ndarray)):
+                                arr = np.asarray(series, dtype=np.float64)
+                                if arr.size >= 2:
+                                    arr = arr[-max(self.window, self._min_points):]
+                                    self._last_series_len = int(arr.size)
+                                    self.trace(
+                                        f"Fractal source selected: {container_key}:{chosen_inst}:{chosen_tf} close series len={arr.size}",
+                                        level="TRACE",
+                                    )
+                                    return arr
+                            # Fallback: if only current_bar present, cannot build series
+                            cb = tf_rec.get('current_bar')
+                            if isinstance(cb, dict) and 'close' in cb:
+                                # accumulate a minimal synthetic history around the current close
+                                base = float(cb.get('close') or 0.0)
+                                if base > 0:
+                                    noise = self._rng.normal(0.0, self._synthetic_sigma, self.window)
+                                    arr = (base * (1.0 + np.cumsum(noise))).astype(np.float64)
+                                    self._last_series_len = int(arr.size)
+                                    self._last_used_synthetic = True
+                                    self.trace(
+                                        f"Fractal source had only current_bar for {container_key}:{chosen_inst}:{chosen_tf}; synthesized series around base={base:.5f}",
+                                        level="TRACE",
+                                    )
+                                    return arr
 
         # 4) Synthetic fallback (keeps pipeline alive)
         self.trace("No price data found, generating synthetic", level="WARNING")

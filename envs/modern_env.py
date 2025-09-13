@@ -421,6 +421,38 @@ class ModernTradingEnv(gym.Env):
 
         try:
             if self.smart_bus:
+                # Keep environment_config and execution_mode refreshed at reset
+                env_cfg = {
+                    "instruments": self.instruments,
+                    "initial_balance": float(self.config.initial_balance),
+                    "action_dim": int(self.action_dim),
+                    "max_steps": int(self.config.max_steps),
+                    "bus_data_active": bool(self._bus_data_active),
+                    "mode": "live" if getattr(self.config, "live_mode", False) else "sim",
+                }
+                self.smart_bus.set(
+                    "environment_config",
+                    env_cfg,
+                    module="Environment",
+                    thesis="Environment configuration (reset)"
+                )
+                self.smart_bus.set(
+                    "execution_mode",
+                    env_cfg["mode"],
+                    module="Environment",
+                    thesis="Execution mode (reset)"
+                )
+                # Legacy alias for consumers expecting env_mode
+                try:
+                    self.smart_bus.set(
+                        "env_mode",
+                        env_cfg["mode"],
+                        module="Environment",
+                        thesis="Alias: env_mode (reset)"
+                    )
+                except Exception:
+                    pass
+
                 # Episode info (safe to publish)
                 self.smart_bus.set(
                     "episode_info",
@@ -496,6 +528,42 @@ class ModernTradingEnv(gym.Env):
             if self.smart_bus:
                 self.smart_bus.set("agent_action", action, module="Environment", thesis=f"Agent action at step {self.current_step}")
                 self.smart_bus.set("final_trading_action", action, module="Environment", thesis="Environment echo of action")
+        except Exception:
+            pass
+
+        # Refresh environment_config + execution_mode every step (owner refresh to avoid TTL)
+        try:
+            if self.smart_bus:
+                env_cfg = {
+                    "instruments": self.instruments,
+                    "initial_balance": float(self.config.initial_balance),
+                    "action_dim": int(self.action_dim),
+                    "max_steps": int(self.config.max_steps),
+                    "bus_data_active": bool(self._bus_data_active),
+                    "mode": "live" if getattr(self.config, "live_mode", False) else "sim",
+                }
+                self.smart_bus.set(
+                    "environment_config",
+                    env_cfg,
+                    module="Environment",
+                    thesis=f"Environment configuration (step {self.current_step})"
+                )
+                self.smart_bus.set(
+                    "execution_mode",
+                    env_cfg["mode"],
+                    module="Environment",
+                    thesis=f"Execution mode (step {self.current_step})"
+                )
+                # Legacy alias for consumers expecting env_mode
+                try:
+                    self.smart_bus.set(
+                        "env_mode",
+                        env_cfg["mode"],
+                        module="Environment",
+                        thesis=f"Alias: env_mode (step {self.current_step})"
+                    )
+                except Exception:
+                    pass
         except Exception:
             pass
 

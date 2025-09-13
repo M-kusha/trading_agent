@@ -264,15 +264,56 @@ class LiquidityHeatmapComponent(BaseMarketComponent):
         spreads: List[float] = []
         depth: Dict[str, List[Tuple[float, float]]] = {}
 
-        # Prices
+        # Prices (prefer time-series if available)
         if 'prices' in market_data and isinstance(market_data['prices'], list):
             prices = [float(p) for p in market_data['prices'] if np.isfinite(p)]
         elif 'EUR/USD' in market_data:
             d = market_data['EUR/USD']
-            if isinstance(d, dict) and 'close' in d:
+            if isinstance(d, dict) and isinstance(d.get('close'), (list, tuple, np.ndarray)):
                 prices = [float(p) for p in d['close'] if np.isfinite(p)]
+        # Try nested providers (multi_timeframe_data / historical_prices)
+        if not prices:
+            for container in ('multi_timeframe_data', 'historical_prices'):
+                nested = market_data.get(container)
+                if not isinstance(nested, dict):
+                    continue
+                # choose instrument and timeframe
+                inst_pref = ['EUR/USD', 'XAU/USD'] + list(nested.keys())
+                tf_pref = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1']
+                chosen_inst = next((s for s in inst_pref if s in nested), None)
+                if not chosen_inst:
+                    continue
+                inst_block = nested.get(chosen_inst)
+                if isinstance(inst_block, dict):
+                    # flat OHLC block with arrays
+                    if isinstance(inst_block.get('close'), (list, tuple, np.ndarray)):
+                        arr = np.asarray(inst_block['close'], dtype=np.float64)
+                        prices = [float(p) for p in arr if np.isfinite(p)]
+                        self.trace(
+                            f"Liquidity source selected: {container}:{chosen_inst} flat close series len={len(prices)}",
+                            level="TRACE",
+                        )
+                        break
+                    # per-timeframe block
+                    tfs = list(inst_block.keys())
+                    chosen_tf = next((t for t in tf_pref if t in inst_block), tfs[0] if tfs else None)
+                    if chosen_tf and isinstance(inst_block.get(chosen_tf), dict):
+                        rec = inst_block[chosen_tf]
+                        series = rec.get('close') or rec.get('prices')
+                        if isinstance(series, (list, tuple, np.ndarray)):
+                            arr = np.asarray(series, dtype=np.float64)
+                            prices = [float(p) for p in arr if np.isfinite(p)]
+                            # Volumes from same block if present
+                            vol_series = rec.get('volume')
+                            if isinstance(vol_series, (list, tuple, np.ndarray)):
+                                volumes = [float(v) for v in np.asarray(vol_series, dtype=np.float64) if np.isfinite(v)]
+                            self.trace(
+                                f"Liquidity source selected: {container}:{chosen_inst}:{chosen_tf} prices_len={len(prices)} volumes_len={len(volumes)}",
+                                level="TRACE",
+                            )
+                            break
 
-        # Spreads
+        # Spreads (latest)
         if 'bid_ask_data' in market_data and isinstance(market_data['bid_ask_data'], dict):
             for _, data in market_data['bid_ask_data'].items():
                 s = data.get('spread')
@@ -283,9 +324,20 @@ class LiquidityHeatmapComponent(BaseMarketComponent):
         if 'market_depth' in market_data and isinstance(market_data['market_depth'], dict):
             depth = market_data['market_depth']
 
-        # Volumes (optional)
-        if 'volumes' in market_data and isinstance(market_data['volumes'], list):
+        # Volumes (optional top-level or nested)
+        if not volumes and 'volumes' in market_data and isinstance(market_data['volumes'], list):
             volumes = [float(v) for v in market_data['volumes'] if np.isfinite(v)]
+        # Try ohlcv_data as a generic source for volumes
+        if not volumes and isinstance(market_data.get('ohlcv_data'), dict):
+            # choose first instrument volumes
+            for inst, rec in market_data['ohlcv_data'].items():
+                if isinstance(rec, dict) and isinstance(rec.get('volume'), (list, tuple, np.ndarray)):
+                    volumes = [float(v) for v in np.asarray(rec['volume'], dtype=np.float64) if np.isfinite(v)]
+                    self.trace(
+                        f"Liquidity volumes from ohlcv_data:{inst} len={len(volumes)}",
+                        level="TRACE",
+                    )
+                    break
 
         # Synthetic fallback
         if not prices:

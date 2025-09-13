@@ -178,8 +178,26 @@ modules:
     category: position
     file_path: modules\position\position.py
     module_path: modules.position.position
-    provides: []
-    requires: []
+    provides:
+      - position_decisions
+      - position_health
+      - portfolio_state
+      - order_queue
+    requires:
+      - environment_config
+      - indicators
+      - liquidity_capabilities
+      - liquidity_score
+      - market_conditions
+      - market_context
+      - market_data
+      - market_liquidity
+      - market_regime
+      - price_data
+      - prices
+      - technical_indicators
+      - time_risk_analysis
+      - volatility_data
   RegimePerformanceMatrix:
     category: market
     file_path: modules\market\regime_performance_matrix.py
@@ -228,6 +246,31 @@ modules:
     module_path: modules.voting.time_horizon_aligner
     provides: []
     requires: []
+  TradingModeManager:
+    category: trading_modes
+    file_path: modules\trading_modes\trading_mode.py
+    module_path: modules.trading_modes.trading_mode
+    provides:
+      - decision_factors
+      - mode_config
+      - mode_effectiveness
+      - mode_stats
+      - mode_thresholds
+      - trading_mode
+      - trading_mode_manager_initialization
+      - performance_data
+    requires:
+      - economic_calendar
+      - market_context
+      - market_regime
+      - positions
+      - recent_trades
+      - risk_metrics
+      - session_metrics
+      - strategy_performance
+      - trading_performance
+      - volatility_data
+      - votes
   TradeExplanationAuditor:
     category: auditing
     file_path: modules\auditing\trade_explanation_auditor.py

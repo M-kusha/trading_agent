@@ -264,21 +264,29 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         self._start_monitoring()
 
     def _start_monitoring(self):
-        """Start background monitoring for portfolio risk"""
+        """Start background monitoring for portfolio risk (idempotent)."""
+        if getattr(self, "_monitoring_active", False):
+            # already running
+            return
 
         def monitoring_loop():
+            import time as _time
+            self.logger.info("[LOG] Portfolio risk monitoring loop started")
             while getattr(self, "_monitoring_active", True):
                 try:
                     self._update_portfolio_health()
                     self._analyze_risk_effectiveness()
                     self._adapt_risk_parameters()
-                    time.sleep(30)
+                    _time.sleep(30)
                 except Exception as e:
                     self.logger.error(f"Portfolio risk monitoring error: {e}")
 
         self._monitoring_active = True
-        monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
-        monitor_thread.start()
+        import threading as _threading
+        t = _threading.Thread(target=monitoring_loop, daemon=True)
+        t.start()
+        self._monitoring_thread = t
+
 
     def _initialize(self) -> None:
         """Initialize module with SmartInfoBus integration"""
@@ -325,11 +333,12 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 module="PortfolioRiskSystem",
                 thesis="Initial risk signals (baseline)",
             )
+            # Use namespaced key to avoid ownership conflict with Executor's 'trade_data'
             self.smart_bus.set(
-                "trade_data",
+                "portfolio_trade_data",
                 {"recent_trades": [], "positions": []},
                 module="PortfolioRiskSystem",
-                thesis="Initial trade data (baseline)",
+                thesis="Initial portfolio trade data (baseline)",
             )
             self.smart_bus.set(
                 "trading_data",
@@ -471,7 +480,8 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 # Overall risk score (0-1)
                 "risk_score": float(self.performance_metrics.get("risk_quality", 0.5)),
                 # Trade and trading data passthrough (minimal, safe defaults)
-                "trade_data": {
+                # Publish under portfolio_trade_data (Executor owns canonical trade_data)
+                "portfolio_trade_data": {
                     "recent_trades": portfolio_data.get("trades", []),
                     "positions": portfolio_data.get("positions", []),
                 },
@@ -603,19 +613,100 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         except Exception as e:
             self.logger.error(f"Market context update failed: {e}")
             return {"market_context_updated": False, "error": str(e)}
+        
+    def _infer_notional_eur(self, pos: dict, prices: dict, instrument: str) -> float:
+        """
+        Infer position notional in account currency (EUR).
+        Priority:
+        1) pos["notional_eur"]
+        2) Executor alias pos["size"] (which is already notional per Executor)
+        3) units * (entry_price or current_price)
+        4) 0.0
+        """
+        # 1) Explicit notional
+        n = pos.get("notional_eur")
+        if n is not None:
+            try:
+                return abs(float(n))
+            except Exception:
+                pass
+
+        # 2) Executor alias: 'size' is already notional (per Executor._publish_all comment)
+        size = pos.get("size")
+        if size is not None:
+            try:
+                return abs(float(size))
+            except Exception:
+                pass
+
+        # 3) Reconstruct from units × price
+        try:
+            units = float(pos.get("units", 0.0) or 0.0)
+            # prefer entry price; fallback to current price from pos or prices map
+            entry_px = float(pos.get("entry_price", 0.0) or 0.0)
+            px = entry_px
+            if px <= 0.0:
+                px = float(
+                    pos.get(
+                        "current_price",
+                        prices.get(instrument, prices.get(instrument.replace("/", "").replace("_", ""), 0.0)),
+                    )
+                    or 0.0
+                )
+            if units > 0.0 and px > 0.0:
+                return abs(units * px)
+        except Exception:
+            pass
+
+        # 4) Nothing usable
+        return 0.0
+
 
     async def _update_positions_and_returns(self, portfolio_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update position tracking and returns history"""
+        """Update position tracking and returns history (correct exposure from notional/balance)."""
         try:
-            positions = portfolio_data.get("positions", [])
+            positions = portfolio_data.get("positions", []) or []
             self.current_positions.clear()
+
+            prices = portfolio_data.get("prices", {}) or {}
+
+            # Resolve balance/equity to normalize exposures
+            balance = float(portfolio_data.get("balance", 0.0) or 0.0)
+            if balance <= 0.0:
+                try:
+                    pm = self.smart_bus.get("portfolio_metrics", "PortfolioRiskSystem") or {}
+                    # prefer equity, fallback to balance
+                    balance = float(pm.get("equity", pm.get("balance", 0.0)) or 0.0)
+                except Exception:
+                    balance = 0.0
+
+            # Throttled warning if we still can't normalize exposures
+            if balance <= 0.0:
+                import time as _time
+                now = _time.time()
+                if not hasattr(self, "_last_exposure_warn_ts") or (now - getattr(self, "_last_exposure_warn_ts", 0.0) > 60.0):
+                    self._last_exposure_warn_ts = now
+                    self.logger.warning(
+                        "[WARN] Exposure normalization skipped (balance/equity <= 0). "
+                        "Check upstream portfolio_metrics/equity propagation."
+                    )
 
             for pos in positions:
                 instrument = pos.get("symbol", pos.get("instrument", "UNKNOWN"))
-                size = pos.get("size", pos.get("volume", 0))
-                self.current_positions[instrument] = float(size)
 
-            trades = portfolio_data.get("trades", [])
+                # Compute notional safely (EUR)
+                notional = self._infer_notional_eur(pos, prices, instrument)
+
+                # Normalize to exposure (% of equity)
+                if balance > 0.0:
+                    exposure = notional / balance
+                else:
+                    exposure = 0.0  # avoid divide-by-zero blowups
+
+                self.current_positions[instrument] = float(exposure)
+
+            # Track trades and bootstrap transition
+            trades = portfolio_data.get("trades", []) or []
             if trades:
                 self.trade_count += len(trades)
                 if self.bootstrap_mode and self.trade_count >= self._cfg.bootstrap_trades:
@@ -630,12 +721,15 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                         )
                     )
 
+            # Update returns history (uses prices + last_prices)
             await self._update_returns_history_async(portfolio_data)
 
+            # Keep a short history of exposure snapshots
             if positions:
+                import datetime as _dt
                 self.position_history.append(
                     {
-                        "timestamp": portfolio_data.get("timestamp", datetime.datetime.now().isoformat()),
+                        "timestamp": portfolio_data.get("timestamp", _dt.datetime.now().isoformat()),
                         "positions": dict(self.current_positions),
                         "trade_count": self.trade_count,
                     }
@@ -651,6 +745,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         except Exception as e:
             self.logger.error(f"Position update failed: {e}")
             return {"positions_updated": False, "error": str(e)}
+
 
     async def _update_returns_history_async(self, portfolio_data: Dict[str, Any]):
         """Update returns history from market data"""
@@ -672,6 +767,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 for instrument, position in self.current_positions.items():
                     if instrument in self.returns_history and len(self.returns_history[instrument]) > 0:
                         inst_return = float(self.returns_history[instrument][-1])
+                        # Weight by normalized exposure magnitude
                         weight = abs(position)
                         portfolio_return += inst_return * weight
                         total_weight += weight
@@ -1196,10 +1292,11 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 thesis="Overall portfolio risk score",
             )
 
-            # Trade data (passthrough)
+            # Trade data (passthrough) → use namespaced key to avoid owner conflict with Executor
+            # Prefer an explicitly provided portfolio_trade_data payload; fall back to trade_data if present
             self.smart_bus.set(
-                "trade_data",
-                result.get("trade_data", {}),
+                "portfolio_trade_data",
+                result.get("portfolio_trade_data", result.get("trade_data", {})),
                 module="PortfolioRiskSystem",
                 thesis="Recent trades and positions (risk view)",
             )

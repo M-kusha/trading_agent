@@ -73,35 +73,32 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
                  config: Optional[PlanningConfig] = None,
                  genome: Optional[Dict[str, Any]] = None,
                  **kwargs):
-        
         # Store config first (preservation pattern)
         self.planning_config = config or PlanningConfig()
-        self.config = self.planning_config  # Set config early for init methods
-        
+        # Keep BaseModule config dict separately if needed; retain dataclass in planning_config
+        self.config = getattr(self.planning_config, '__dict__', {})  # lightweight dict view for BaseModule
+
         # Initialize advanced systems before super().__init__()
         self._initialize_advanced_systems()
-        
+
         # Initialize genome parameters
         self._initialize_genome_parameters(genome)
-        
+
         # Initialize planning state
         self._initialize_planning_state()
-        
+
         super().__init__()
-        
+
         # Restore our config after BaseModule initialization (prevents dict conversion)
-        self.config = self.planning_config
-        
+        self.config = getattr(self.planning_config, '__dict__', {})
+
         # Start monitoring after all initialization is complete
-        
         self._start_monitoring()
-        
-        
-        
+
         self.logger.info(
             format_operator_message(
                 "🧠", "METACOGNITIVE_PLANNER_INITIALIZED",
-                details=f"Planning horizon: {self.config.planning_horizon}, Window: {self.config.window}",
+                details=f"Planning horizon: {self.planning_config.planning_horizon}, Window: {self.planning_config.window}",
                 result="Strategic planning system ready",
                 context="metacognitive_planning"
             )
@@ -128,7 +125,7 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
             'failures': 0,
             'last_failure': 0,
             'state': 'CLOSED',
-            'threshold': self.config.circuit_breaker_threshold
+            'threshold': self.planning_config.circuit_breaker_threshold
         }
         
         # Health monitoring
@@ -140,21 +137,21 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
         """Initialize genome-based parameters"""
         if genome:
             self.genome = {
-                "window": int(genome.get("window", self.config.window)),
-                "planning_horizon": int(genome.get("planning_horizon", self.config.planning_horizon)),
-                "adaptation_threshold": float(genome.get("adaptation_threshold", self.config.adaptation_threshold)),
-                "profit_target": float(genome.get("profit_target", self.config.profit_target)),
-                "max_drawdown": float(genome.get("max_drawdown", self.config.max_drawdown)),
-                "min_win_rate": float(genome.get("min_win_rate", self.config.min_win_rate))
+                "window": int(genome.get("window", self.planning_config.window)),
+                "planning_horizon": int(genome.get("planning_horizon", self.planning_config.planning_horizon)),
+                "adaptation_threshold": float(genome.get("adaptation_threshold", self.planning_config.adaptation_threshold)),
+                "profit_target": float(genome.get("profit_target", self.planning_config.profit_target)),
+                "max_drawdown": float(genome.get("max_drawdown", self.planning_config.max_drawdown)),
+                "min_win_rate": float(genome.get("min_win_rate", self.planning_config.min_win_rate))
             }
         else:
             self.genome = {
-                "window": self.config.window,
-                "planning_horizon": self.config.planning_horizon,
-                "adaptation_threshold": self.config.adaptation_threshold,
-                "profit_target": self.config.profit_target,
-                "max_drawdown": self.config.max_drawdown,
-                "min_win_rate": self.config.min_win_rate
+                "window": self.planning_config.window,
+                "planning_horizon": self.planning_config.planning_horizon,
+                "adaptation_threshold": self.planning_config.adaptation_threshold,
+                "profit_target": self.planning_config.profit_target,
+                "max_drawdown": self.planning_config.max_drawdown,
+                "min_win_rate": self.planning_config.min_win_rate
             }
 
     def _initialize_planning_state(self):
@@ -313,16 +310,35 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
     async def _extract_planning_data(self, **inputs) -> Optional[Dict[str, Any]]:
         """Extract planning data from SmartInfoBus (robust, canonical-aware)."""
         try:
-            trades = self.smart_bus.get('trades', 'MetaCognitivePlanner') or []
-            actions = self.smart_bus.get('actions', 'MetaCognitivePlanner') or []
-            market_data = self.smart_bus.get('market_data', 'MetaCognitivePlanner') or {}
-            performance_metrics = self.smart_bus.get('performance_metrics', 'MetaCognitivePlanner') or {}
+            get = self.smart_bus.get
 
-            # Canonical context (prefer these if present)
-            market_regime = self.smart_bus.get('market_regime', 'MetaCognitivePlanner')
-            regime_data = self.smart_bus.get('regime_data', 'MetaCognitivePlanner') or {}
-            vol_adj = self.smart_bus.get('volatility_adjustment', 'MetaCognitivePlanner') or {}
-            market_conditions = self.smart_bus.get('market_conditions', 'MetaCognitivePlanner') or {}
+            trades = get('trades', 'MetaCognitivePlanner') or []
+            if not isinstance(trades, list):
+                trades = []
+            actions = get('actions', 'MetaCognitivePlanner') or []
+            if not isinstance(actions, list):
+                actions = []
+
+            market_data = get('market_data', 'MetaCognitivePlanner')
+            if not isinstance(market_data, dict):
+                # normalize unexpected scalar into dict container
+                market_data = {}
+
+            performance_metrics = get('performance_metrics', 'MetaCognitivePlanner') or {}
+            if not isinstance(performance_metrics, dict):
+                performance_metrics = {}
+
+            # Canonical context (prefer these if present) with defensive coercion
+            market_regime = get('market_regime', 'MetaCognitivePlanner')
+            regime_data = get('regime_data', 'MetaCognitivePlanner')
+            if not isinstance(regime_data, dict):
+                regime_data = {}
+            vol_adj = get('volatility_adjustment', 'MetaCognitivePlanner')
+            if not isinstance(vol_adj, dict):
+                vol_adj = {}
+            market_conditions = get('market_conditions', 'MetaCognitivePlanner')
+            if not isinstance(market_conditions, dict):
+                market_conditions = {}
 
             # Build a normalized context that merges legacy fields with canonical ones
             context = self._extract_standard_context(
@@ -356,6 +372,15 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
         market_conditions: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Build a normalized planning context from legacy and canonical bus keys."""
+        # Defensive coercion in case upstream publishers wrote scalars
+        if not isinstance(market_data, dict):
+            market_data = {}
+        if not isinstance(regime_data, dict):
+            regime_data = {}
+        if not isinstance(vol_adj, dict):
+            vol_adj = {}
+        if not isinstance(market_conditions, dict):
+            market_conditions = {}
         # Regime (prefer canonical market_regime / regime_data)
         regime = (
             market_regime
@@ -631,12 +656,12 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
             transition_reason = ""
             
             # Time-based transitions
-            if phase_duration > self.config.phase_max_duration:
+            if phase_duration > self.planning_config.phase_max_duration:
                 should_transition = True
-                transition_reason = f"Maximum phase duration reached ({self.config.phase_max_duration}s)"
+                transition_reason = f"Maximum phase duration reached ({self.planning_config.phase_max_duration}s)"
             
             # Phase-specific completion criteria
-            elif phase_duration > self.config.phase_min_duration:
+            elif phase_duration > self.planning_config.phase_min_duration:
                 if self.current_phase == PlanningPhase.ANALYSIS:
                     if len(self.strategic_insights) > 0:
                         should_transition = True
@@ -1324,7 +1349,7 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
     def get_state(self) -> Dict[str, Any]:
         """Get module state for persistence"""
         return {
-            'config': self.config.__dict__,
+            'config': getattr(self.planning_config, '__dict__', {}),
             'genome': self.genome.copy(),
             'current_phase': self.current_phase.value,
             'planning_cycle': self.planning_cycle,

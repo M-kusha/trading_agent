@@ -201,7 +201,11 @@ class StrategyArbiter(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
             )
         )
         try:
-            self.smart_bus.set("instruments", list(self.instruments), module="StrategyArbiter", thesis="Universe of instruments")
+            # Publish instrument universe under common aliases to satisfy downstream readers
+            inst_list = list(self.instruments)
+            self.smart_bus.set("instruments", inst_list, module="StrategyArbiter", thesis="Universe of instruments")
+            self.smart_bus.set("universe", inst_list, module="StrategyArbiter", thesis="Instrument universe alias")
+            self.smart_bus.set("watched_instruments", inst_list, module="StrategyArbiter", thesis="Watched instruments alias")
             self.smart_bus.set("alpha_weights", self.weights.tolist(), module="StrategyArbiter", thesis="Initial alpha weights")
             self.smart_bus.set(
                 "blended_action",
@@ -321,6 +325,7 @@ Strategy Arbiter v3.1 Initialization:
                 except Exception:
                     strategy_weights = {"by_member": {}, "members": [], "weights": [], "timestamp": dt.datetime.utcnow().isoformat()}
 
+                inst_list = list(getattr(self, "instruments", []))
                 results: Dict[str, Any] = {
                     "blended_action": blended_proposal.tolist(),
                     "alpha_weights": self.last_alpha.tolist() if self.last_alpha is not None else [],
@@ -334,8 +339,10 @@ Strategy Arbiter v3.1 Initialization:
                     "arbiter_recommendations": list(recommendations),
                     "health_metrics": self._get_health_metrics(),
                     "instrument_signals": signals,
-                        "instruments": list(getattr(self, "instruments", [])),
-                        "_thesis": thesis,
+                    "instruments": inst_list,
+                    "universe": inst_list,
+                    "watched_instruments": inst_list,
+                    "_thesis": thesis,
                     "strategy_arbiter_initialization": init_payload,
                 }
                 await self._update_smartinfobus_comprehensive(results, thesis)
@@ -1031,6 +1038,15 @@ Strategy Arbiter v3.1 Initialization:
                 thesis=f"Recommendations: {len(results['arbiter_recommendations'])}",
             )
 
+            # Keep universe aliases fresh each cycle
+            try:
+                inst_list = list(results.get("instruments", list(getattr(self, "instruments", []))))
+                s("instruments", inst_list, module="StrategyArbiter", thesis="Instrument universe (canonical)")
+                s("universe", inst_list, module="StrategyArbiter", thesis="Instrument universe alias")
+                s("watched_instruments", inst_list, module="StrategyArbiter", thesis="Watched instruments alias")
+            except Exception:
+                pass
+
             # Publish a convenient weights map
             try:
                 names: List[str] = []
@@ -1547,6 +1563,8 @@ Strategy Arbiter v3.1 Initialization:
             "health_metrics": {"status": "disabled", "reason": "circuit_breaker_triggered"},
             "instrument_signals": {},
             "instruments": list(getattr(self, "instruments", [])),
+            "universe": list(getattr(self, "instruments", [])),
+            "watched_instruments": list(getattr(self, "instruments", [])),
             "_thesis": "StrategyArbiter disabled due to circuit breaker",
         }
 

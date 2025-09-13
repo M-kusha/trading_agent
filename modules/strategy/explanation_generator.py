@@ -28,7 +28,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
     description="Advanced intelligent explanation system for trading decisions and system state with contextual adaptation",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=3000,
+    timeout_ms=15000,
 ))
 class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
@@ -378,6 +378,16 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             Dict containing explanations, insights, and system narratives
         """
         start_time = time.time()
+        # Budget-guard to keep Stage 12 within time
+        try:
+            cfg_budget_ms = float(self.config.get('max_processing_time_ms', 300))
+        except Exception:
+            cfg_budget_ms = 300.0
+        budget_s = max(0.1, cfg_budget_ms / 1000.0)
+        end_time = start_time + budget_s
+        def remaining() -> float:
+            rem = end_time - time.time()
+            return 0.0 if rem <= 0 else rem
         
         try:
             # Circuit breaker check
@@ -385,12 +395,18 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 return self._generate_disabled_response()
             
             # Get comprehensive context from SmartInfoBus
+            if remaining() <= 0:
+                return await self._handle_processing_error(TimeoutError('budget_exhausted'), start_time)
             explanation_context = await self._get_comprehensive_explanation_context()
             
             # Core explanation analysis with error handling
+            if remaining() <= 0:
+                return await self._handle_processing_error(TimeoutError('budget_exhausted'), start_time)
             explanation_analysis = await self._analyze_explanation_requirements(explanation_context)
             
             # Generate intelligent explanations
+            if remaining() <= 0:
+                return await self._handle_processing_error(TimeoutError('budget_exhausted'), start_time)
             explanations = await self._generate_intelligent_explanations(explanation_analysis)
             
             # Generate comprehensive thesis

@@ -367,6 +367,31 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 self._update_session_labels()
 
             snapshot = self._build_snapshot()
+            # Back-compat: mirror per-instrument/timeframe aliases expected by legacy readers
+            try:
+                mtd = snapshot.get('multi_timeframe_data', {})
+                # Use explicit configured symbols/tfs to constrain alias set
+                for sym in self.cfg.supported_symbols:
+                    per_tf = mtd.get(sym, {}) or {}
+                    for tf in self.cfg.supported_timeframes:
+                        cur = per_tf.get(tf, {}).get('current_bar')
+                        if isinstance(cur, dict):
+                            key = f"market_data_{sym}_{tf}"
+                            # Publish alias only; do not include in returned snapshot to keep contract clean
+                            try:
+                                self.smart_bus.set(
+                                    key,
+                                    cur,
+                                    module='MarketDataProvider',
+                                    thesis=f'Legacy alias for {sym} {tf}',
+                                    confidence=0.9,
+                                )
+                            except Exception:
+                                # Alias publishing is best-effort; never fail the provider
+                                pass
+            except Exception:
+                # Ignore alias mirroring errors entirely
+                pass
             self._success += 1
             self._proc_times.append((time.time() - t0) * 1000.0)
             return snapshot

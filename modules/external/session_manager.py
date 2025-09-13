@@ -47,12 +47,12 @@ class SessionConfig:
 ))
 class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    Responsibilities:
-      - Track session lifecycle (start, duration).
-      - Expose compact session/health/performance context.
-      - Strict contract discipline: all required top-level keys are always present.
-      - PnL keys (`performance_data`, `pnl_data`, `trading_result`) are pass-through:
-        we forward from env bus if present, otherwise return {} (never fabricate numbers).
+        Responsibilities:
+            - Track session lifecycle (start, duration).
+            - Expose compact session/health/performance context.
+            - Strict contract discipline: all required top-level keys are always present.
+            - PnL keys are namespaced to avoid ownership clashes with Executor (`session_pnl_data` instead of canonical `pnl_data`).
+            - Health snapshot is namespaced (`session_health`) to avoid clashing with canonical `system_health` owner (HealthMonitor).
     """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
@@ -181,11 +181,11 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
         """
         Update session timestamps/labels and return a compact snapshot.
 
-        CONTRACT-ALIGNED TOP-LEVEL OUTPUTS (always present):
-          consensus_data, emergency_mode, episode_data, episode_summary, expert_votes,
-          market_open, memory_usage, mistakes, module_performance, performance_data,
-          playbook_entries, playbook_memory, pnl_data, session_context, session_metrics,
-          system_alerts, system_health, system_performance, trading_result
+                CONTRACT-ALIGNED TOP-LEVEL OUTPUTS (always present):
+                    consensus_data, emergency_mode, episode_data, episode_summary, expert_votes,
+                    market_open, memory_usage, mistakes, module_performance, performance_data,
+                    playbook_entries, playbook_memory, session_pnl_data, session_context, session_metrics,
+                    system_alerts, session_health, system_performance, trading_result
 
         PnL policy:
           - Forward env bus values when available.
@@ -216,7 +216,7 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                 "last_check": datetime.datetime.utcnow().isoformat(),
             }
 
-            system_health = {
+            session_health = {
                 "status": "healthy" if len(self.system_alerts) == 0 else "degraded",
                 "alerts": list(self.system_alerts[-25:]),
             }
@@ -237,16 +237,16 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
             performance_data: Dict[str, Any] = perf_data_bus if isinstance(perf_data_bus, dict) else {}
 
             # pnl_data: build from portfolio_metrics (+ trading_result if present), else {}
-            pnl_data: Dict[str, Any] = {}
+            session_pnl_data: Dict[str, Any] = {}
             if isinstance(portfolio_metrics, dict) and portfolio_metrics:
-                pnl_data = {
+                session_pnl_data = {
                     "balance": portfolio_metrics.get("balance"),
                     "equity": portfolio_metrics.get("equity"),
                     "current_pnl": portfolio_metrics.get("current_pnl"),
                     "step": portfolio_metrics.get("step"),
                 }
                 if isinstance(trading_result_bus, dict) and "pnl" in trading_result_bus:
-                    pnl_data["last_step_pnl"] = trading_result_bus.get("pnl")
+                    session_pnl_data["last_step_pnl"] = trading_result_bus.get("pnl")
 
             # trading_result: echo if present, else {}
             trading_result: Dict[str, Any] = trading_result_bus if isinstance(trading_result_bus, dict) else {}
@@ -265,11 +265,11 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                 "performance_data": performance_data,  # ← always present
                 "playbook_entries": [],
                 "playbook_memory": {},
-                "pnl_data": pnl_data,                 # ← always present
+                "session_pnl_data": session_pnl_data, # ← always present (namespaced)
                 "session_context": session_context,
                 "session_metrics": session_metrics,
                 "system_alerts": list(self.system_alerts[-25:]),
-                "system_health": system_health,
+                "session_health": session_health,
                 "system_performance": system_performance,
                 "trading_result": trading_result,     # ← always present
             }
@@ -294,16 +294,16 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
             trading_result_bus = self._bus_get("trading_result", None)
 
             performance_data = perf_data_bus if isinstance(perf_data_bus, dict) else {}
-            pnl_data: Dict[str, Any] = {}
+            session_pnl_data: Dict[str, Any] = {}
             if isinstance(portfolio_metrics, dict) and portfolio_metrics:
-                pnl_data = {
+                session_pnl_data = {
                     "balance": portfolio_metrics.get("balance"),
                     "equity": portfolio_metrics.get("equity"),
                     "current_pnl": portfolio_metrics.get("current_pnl"),
                     "step": portfolio_metrics.get("step"),
                 }
                 if isinstance(trading_result_bus, dict) and "pnl" in trading_result_bus:
-                    pnl_data["last_step_pnl"] = trading_result_bus.get("pnl")
+                    session_pnl_data["last_step_pnl"] = trading_result_bus.get("pnl")
             trading_result = trading_result_bus if isinstance(trading_result_bus, dict) else {}
 
             return {
@@ -319,7 +319,7 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                 "performance_data": performance_data,  # required key present
                 "playbook_entries": [],
                 "playbook_memory": {},
-                "pnl_data": pnl_data,                  # required key present
+                "session_pnl_data": session_pnl_data,  # required key present (namespaced)
                 "session_context": {
                     "session_canonical": self._session_canonical(),
                     "trading_session": self.trading_session,
@@ -332,7 +332,7 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                     "start_time": datetime.datetime.utcfromtimestamp(self.session_start_ts).isoformat(),
                 },
                 "system_alerts": list(self.system_alerts[-25:]),
-                "system_health": {
+                "session_health": {
                     "status": "degraded",
                     "alerts": list(self.system_alerts[-25:]),
                 },

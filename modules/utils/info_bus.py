@@ -604,6 +604,11 @@ class SmartInfoBus:
                 "risk_data", "sequence_quality", "trade_vote",
             }
 
+            # Ownership registry and policies (lightweight, in-memory)
+            self._owners: Dict[str, str] = {}
+            self._policies: Dict[str, Dict[str, Any]] = defaultdict(dict)
+            self._streams: Dict[str, Deque[Dict[str, Any]]] = defaultdict(lambda: deque(maxlen=10000))
+
             def _single_writer_guard(key: str, value: Any, meta: Dict[str, Any]) -> Any:
                 try:
                     base_key = key.split(":", 1)[1] if ":" in key else key
@@ -669,9 +674,24 @@ class SmartInfoBus:
                     existing_providers = self.get_providers(key) if namespace is None else self.get_providers(f"{namespace}:{key}")
                     if not existing_providers:
                         self.set(key, value, module='SmartInfoBus', thesis=thesis, confidence=confidence, namespace=namespace)
-                
+
+                # Canonical, low-risk placeholders to avoid early "BUS MISS" during startup
                 conditional_seed('market_regime', 'unknown', thesis='Default market regime', confidence=0.5)
-                # ... other conditional_seed calls ...
+                conditional_seed('environment_config', {}, thesis='Default environment config (placeholder)')
+                conditional_seed('execution_mode', 'sim', thesis='Default execution mode (placeholder)')
+                conditional_seed('order_queue', [], thesis='Default empty order queue')
+                conditional_seed('performance_data', {}, thesis='Default performance_data (placeholder)')
+                # risk_metrics has a designated owner (PortfolioRiskSystem) but we can seed an empty schema safely
+                conditional_seed('risk_metrics', {}, thesis='Default risk_metrics (placeholder)', confidence=0.2)
+                # Unified market outputs often arrive later; seed innocuous placeholders
+                conditional_seed('timestamps', [], thesis='Default timestamps (placeholder)')
+                conditional_seed('regime_prediction', {}, thesis='Default regime_prediction (placeholder)')
+                conditional_seed('time_risk_analysis', {}, thesis='Default time_risk_analysis (placeholder)')
+                # Common readers
+                conditional_seed('module_insights', {}, thesis='Default module_insights (placeholder)')
+                conditional_seed('multi_timeframe_data', {}, thesis='Default multi_timeframe_data (placeholder)')
+                conditional_seed('emergency_mode', False, thesis='Default emergency_mode (placeholder)')
+
                 self.logger.info("[OK] SmartInfoBus conditional seeding completed")
             except Exception as e:
                 self.logger.warning(f"SmartInfoBus conditional seeding failed: {e}")
@@ -1045,7 +1065,7 @@ class SmartInfoBus:
             self.logger.debug(f"🗑️ Cleaned: {len(expired)} expired, {removed} LRU")
 
     # ──────────────────────────────────────────────────────────────
-    # Core operations — set/get (+ bulk) with transactions & validators
+    # Core operations – set/get (+ bulk) with transactions & validators
     # ──────────────────────────────────────────────────────────────
     def set(self, key: str, value: Any, module: str, thesis: str | None = None,
             confidence: float = 1.0, dependencies: List[str] | None = None,
@@ -1075,6 +1095,22 @@ class SmartInfoBus:
         }
         value = self._apply_pre_set(full_key, value, meta)
 
+        # Ownership guard (hard-fail on violation)
+        owner = self._owners.get(full_key) or self._owners.get(key)
+        if owner and owner != module:
+            self._log_event({"type": "owner_violation", "key": full_key, "expected_owner": owner, "writer": module})
+            try:
+                self.logger.error(f"[BUS][OWNER] {module} cannot set {full_key}; owner is {owner}")
+            except Exception:
+                pass
+            raise PermissionError(f"{module} cannot set {full_key}; owner is {owner}")
+
+        # Stream policy: append-only (no provider table churn)
+        pol = self._policies.get(full_key) or self._policies.get(key)
+        if pol and pol.get("mode") == "stream":
+            self._streams[full_key].append({"t": time.time(), "module": module, "value": self._safe_clone(value)})
+            return
+
         # Validators (schema/shape)
         validator = self._validators.get(full_key) or self._validators.get(key)
         if validator:
@@ -1092,9 +1128,34 @@ class SmartInfoBus:
 
         self._set_core(full_key, value, module, thesis, confidence, dependencies, processing_time_ms)
 
+    # Ownership & policy helpers
+    def declare_owner(self, key: str, owner: str) -> None:
+        if not key or not owner:
+            raise ValueError("key and owner must be non-empty")
+        self._owners[key] = owner
+
+    def set_policy(self, key: str, *, mode: str = "state", **kwargs) -> None:
+        if mode not in ("state", "stream"):
+            raise ValueError("Unsupported policy mode")
+        self._policies[key] = {"mode": mode, **kwargs}
+
+    def publish(self, key: str, value: Any, module: str, thesis: Optional[str] = None) -> None:
+        pol = self._policies.get(key)
+        if pol and pol.get("mode") == "stream":
+            full_key = self._ns_key(key, None)
+            try:
+                stored_value = self._safe_clone(value)
+            except Exception:
+                stored_value = value
+            self._streams[full_key].append({"t": time.time(), "module": module, "value": stored_value})
+            return
+        # fallback to standard set if not a stream key
+        self.set(key, value, module, thesis)
+
+
     # Core application of a set (factored for transactions)
     def _set_core(self, full_key: str, value: Any, module: str, thesis: Optional[str], confidence: float,
-                  dependencies: Optional[List[str]], processing_time_ms: float) -> None:
+                dependencies: Optional[List[str]], processing_time_ms: float) -> None:
         try:
             with self._write_lock:
                 prev = self._data_store.get(full_key)
@@ -1121,8 +1182,13 @@ class SmartInfoBus:
                 if len(self._data_store) > self.config.max_cache_size:
                     self._cleanup_expired_and_lru()
 
+            # Register provider only for non-stream keys (prevents "provider flip" storms)
             with self._registry_lock:
-                self._providers[full_key].add(module)
+                base_key = full_key.split(":", 1)[-1]
+                pol = self._policies.get(full_key) or self._policies.get(base_key)
+                if not (pol and pol.get("mode") == "stream"):
+                    self._providers[full_key].add(module)
+
                 if dependencies:
                     for dep in dependencies:
                         provider = self._get_primary_provider(dep)
@@ -1134,21 +1200,27 @@ class SmartInfoBus:
                     self._set_log.append((self._now_iso(), module, full_key, version))
                 except Exception:
                     pass
+
             if self.config.debug_mode and getattr(self, "_verbose_io", False):
                 self.logger.info(f"[BUS][SET] {module} → '{full_key}' v{version} (conf={confidence:.2f}) {self._preview(value)}")
 
             with self._performance_lock:
                 self._access_patterns[module][f"write:{full_key}"] += 1
 
-            self._log_event({"type": "set", "key": full_key, "module": module,
-                             "timestamp": data.timestamp, "version": version,
-                             "has_thesis": thesis is not None, "confidence": confidence})
-            self._emit("data_updated", {"key": full_key, "module": module, "version": version,
-                                        "confidence": confidence, "has_thesis": thesis is not None})
+            self._log_event({
+                "type": "set", "key": full_key, "module": module,
+                "timestamp": data.timestamp, "version": version,
+                "has_thesis": thesis is not None, "confidence": confidence
+            })
+            self._emit("data_updated", {
+                "key": full_key, "module": module, "version": version,
+                "confidence": confidence, "has_thesis": thesis is not None
+            })
 
             # Notify waiters
             self._notify_waiters(full_key, data)
 
+            # Post-set hooks + pending requests
             self._apply_post_set(full_key, data)
             self._check_pending_requests(full_key)
 
@@ -1158,6 +1230,7 @@ class SmartInfoBus:
             self.logger.error(f"[CRASH] Failed to set {full_key}: {exc}")
             self.record_module_failure(module, f"set failed: {exc}")
             raise
+
 
     def set_many(self, entries: List[Dict[str, Any]], *, atomic: bool = False, namespace: Optional[str] = None) -> int:
         """
@@ -1187,13 +1260,11 @@ class SmartInfoBus:
             declared_dependencies: Optional[Set[str]] = None) -> Any:
         """
         Get value with freshness/confidence validation, middleware hooks, and dependency enforcement.
-        
-        [FIXED] Added `declared_dependencies` to enforce module contracts.
         """
         try:
             full_key = self._ns_key(key, namespace)
 
-            # [FIXED] Enforce that the calling module has declared this key as a dependency.
+            # Enforce dependency declaration (contract)
             if self.config.enforce_dependency_declaration and declared_dependencies is not None:
                 if full_key not in declared_dependencies and key not in declared_dependencies:
                     raise PermissionError(
@@ -1263,10 +1334,10 @@ class SmartInfoBus:
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to get {key} for {module}: {e}")
             self.record_module_failure(module, f"Data get failed: {str(e)}")
-            # [FIXED] Re-raise contract violations to enforce them
             if isinstance(e, PermissionError):
                 raise
             return default
+
             
     # [NEW] Added for performance-critical paths where cloning can be skipped.
     def get_readonly_ref(self, key: str, module: str, default: Any = None, *, namespace: Optional[str] = None) -> Any:
@@ -1810,50 +1881,47 @@ class SmartInfoBus:
                     self._pending_tasks.discard(task)
 
     def _emit(self, event_type: str, data: Dict[str, Any]) -> None:
+        try:
+            with self._subscription_lock:
+                callbacks = list(self._subscribers.get(event_type, []))
+        except Exception as exc:
+            self.logger.error(f"Emit failed ({event_type}): {exc}")
+            return
+
+        for cb in callbacks:
             try:
-                with self._subscription_lock:
-                    callbacks = list(self._subscribers.get(event_type, []))
-            except Exception as exc:
-                self.logger.error(f"Emit failed ({event_type}): {exc}")
-                return
-            for cb in callbacks:
-                try:
-                    # For core event_logged notifications, invoke synchronously to avoid flakiness in tests
-                    if event_type == 'event_logged':
-                        if asyncio.iscoroutinefunction(cb):
-                            try:
-                                loop = asyncio.get_running_loop()
-                                task = loop.create_task(cb(data))
-                                # [FIXED] Use standard `with` on the thread-safe lock
-                                with self._async_lock:
-                                    self._pending_tasks.add(task)
-                                asyncio.create_task(self._track_task_completion(task))
-                            except RuntimeError:
-                                # No running loop; run in thread pool
-                                result = self._thread_pool.submit(lambda: asyncio.run(cb(data)))
-                                # [FIXED] Use standard `with` on the thread-safe lock
-                                with self._async_lock:
-                                    self._pending_async_ops.append(result)
-                        else:
-                            cb(data)
+                # For core event_logged notifications, invoke synchronously to avoid flakiness in tests
+                if event_type == 'event_logged':
+                    if asyncio.iscoroutinefunction(cb):
+                        try:
+                            loop = asyncio.get_running_loop()
+                            task = loop.create_task(cb(data))
+                            with self._async_lock:
+                                self._pending_tasks.add(task)
+                            asyncio.create_task(self._track_task_completion(task))
+                        except RuntimeError:
+                            # No running loop; run in thread pool
+                            result = self._thread_pool.submit(lambda: asyncio.run(cb(data)))
+                            with self._async_lock:
+                                self._pending_async_ops.append(result)
                     else:
-                        if asyncio.iscoroutinefunction(cb):
-                            try:
-                                loop = asyncio.get_running_loop()
-                                task = loop.create_task(cb(data))
-                                # [FIXED] Use standard `with` on the thread-safe lock
-                                with self._async_lock:
-                                    self._pending_tasks.add(task)
-                                asyncio.create_task(self._track_task_completion(task))
-                            except RuntimeError:
-                                result = self._thread_pool.submit(lambda: asyncio.run(cb(data)))
-                                # [FIXED] Use standard `with` on the thread-safe lock
-                                with self._async_lock:
-                                    self._pending_async_ops.append(result)
-                        else:
-                            self._thread_pool.submit(cb, data)
-                except Exception as exc:
-                    self.logger.error(f"[CRASH] Event callback error for '{event_type}': {exc}")
+                        cb(data)
+                else:
+                    if asyncio.iscoroutinefunction(cb):
+                        try:
+                            loop = asyncio.get_running_loop()
+                            task = loop.create_task(cb(data))
+                            with self._async_lock:
+                                self._pending_tasks.add(task)
+                            asyncio.create_task(self._track_task_completion(task))
+                        except RuntimeError:
+                            result = self._thread_pool.submit(lambda: asyncio.run(cb(data)))
+                            with self._async_lock:
+                                self._pending_async_ops.append(result)
+                    else:
+                        self._thread_pool.submit(cb, data)
+            except Exception as exc:
+                self.logger.error(f"[CRASH] Event callback error for '{event_type}': {exc}")
 
     def _log_event(self, event: Dict[str, Any]):
         try:
@@ -1863,6 +1931,23 @@ class SmartInfoBus:
             self._emit('event_logged', event)
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to log event: {e}")
+
+    # Bootstrap canonical owners (call once during orchestrator start or first get_instance)
+    def bootstrap_canonical_owners(self) -> None:
+        try:
+            self.declare_owner("order_queue", "PositionManager")
+            self.declare_owner("pnl_data", "Executor")
+            self.declare_owner("trade_data", "Executor")
+            self.declare_owner("risk_metrics", "PortfolioRiskSystem")
+            self.declare_owner("system_health", "HealthMonitor")
+            self.declare_owner("market_context", "MarketDataProvider")
+            self.declare_owner("committee_decision", "EnhancedVotingCommitteeCoordinator")
+            self.declare_owner("committee_confidence", "EnhancedVotingCommitteeCoordinator")
+            self.declare_owner("voting_consensus", "ConsensusDetector")
+            self.declare_owner("quality_metrics", "ExecutionQualityMonitor")
+        except Exception:
+            pass
+
 
     def _log_miss(self, key: str, module: str):
         try:
@@ -2458,6 +2543,7 @@ class InfoBusManager:
     _instance: Optional[SmartInfoBus] = None
     _lock = threading.RLock()  # allow re-entrant access during nested calls
 
+    
     @classmethod
     def get_instance(cls) -> SmartInfoBus:
         """Get (or lazily create) the SmartInfoBus singleton instance."""
@@ -2465,6 +2551,13 @@ class InfoBusManager:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = SmartInfoBus()
+                    try:
+                        cls._instance.bootstrap_canonical_owners()
+                        # Default policies for stream-like keys (prevents "provider changed" churn)
+                        cls._instance.set_policy("thesis_stream", mode="stream")
+                        cls._instance.set_policy("vote", mode="stream")
+                    except Exception:
+                        pass
         return cls._instance
 
     @classmethod

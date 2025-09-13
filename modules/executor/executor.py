@@ -56,6 +56,7 @@ class ExecutorConfig:
     error_handling=True,
     hot_reload=True,
     timeout_ms=3000,
+    critical=True,
 ))
 class Executor(BaseModule):
     debugger: ExecutorDebugManager
@@ -209,50 +210,67 @@ class Executor(BaseModule):
 
     async def process(self, **inputs: Any) -> Dict[str, Any]:
         t0 = time.time()
+        try:
+            # use bus step if available to align with env; otherwise monotonic
+            val = self.bus.get("step_idx", "Executor", default=None)
+            if isinstance(val, (int, float)) and not (isinstance(val, float) and math.isnan(val)):
+                self.step_idx = int(val)
+            else:
+                self.step_idx += 1
 
-        # use bus step if available to align with env; otherwise monotonic
-        val = self.bus.get("step_idx", "Executor", default=None)
-        if isinstance(val, (int, float)) and not (isinstance(val, float) and math.isnan(val)):
-            self.step_idx = int(val)
-        else:
-            self.step_idx += 1
+            mode = self._resolve_mode()
+            self._publish_adapter_status()
 
-        mode = self._resolve_mode()
-        self._publish_adapter_status()
+            # capture pre PnL snapshot
+            balance_before = float(self.balance)
+            equity_before = float(self.equity)
 
-        # capture pre PnL snapshot
-        balance_before = float(self.balance)
-        equity_before = float(self.equity)
+            # collect intents
+            self.debugger.begin("collect_intents")
+            accepted, rejected, q_count, dec_count = self._collect_intents()
+            self.debugger.end("collect_intents")
 
-        # collect intents
-        self.debugger.begin("collect_intents")
-        accepted, rejected, q_count, dec_count = self._collect_intents()
-        self.debugger.end("collect_intents")
+            # execute
+            realized_step = 0.0
+            unreal_after = 0.0
+            positions_after: Dict[str, Any] = {}
+            fills: List[Dict[str, Any]] = []
 
-        # execute
-        realized_step = 0.0
-        unreal_after = 0.0
-        positions_after: Dict[str, Any] = {}
-        fills: List[Dict[str, Any]] = []
+            if mode == "live":
+                self.debugger.begin("execute_live")
+                fills, step_pnl = self._execute_live(accepted)
+                self.debugger.end("execute_live")
+                positions_after = self.adapter.sync_positions() if self.adapter else {}
+                acct = self.adapter.get_account_info() if self.adapter else {}
+                self.balance = float(acct.get("balance", self.balance))
+                self.equity = float(acct.get("equity", self.equity))
+            else:
+                self.debugger.begin("execute_sim")
+                fills, step_pnl, realized_step, unreal_after = self._execute_sim(accepted, want_breakdown=True)
+                self.debugger.end("execute_sim")
+                positions_after = {k: v.as_bus() for k, v in self.positions.items()}
 
-        if mode == "live":
-            self.debugger.begin("execute_live")
-            fills, step_pnl = self._execute_live(accepted)
-            self.debugger.end("execute_live")
-            positions_after = self.adapter.sync_positions() if self.adapter else {}
-            acct = self.adapter.get_account_info() if self.adapter else {}
-            self.balance = float(acct.get("balance", self.balance))
-            self.equity = float(acct.get("equity", self.equity))
-        else:
-            self.debugger.begin("execute_sim")
-            fills, step_pnl, realized_step, unreal_after = self._execute_sim(accepted, want_breakdown=True)
-            self.debugger.end("execute_sim")
-            positions_after = {k: v.as_bus() for k, v in self.positions.items()}
-
-        # publish to bus
-        self.debugger.begin("publish_bus")
-        self._publish_all(exec_fills=fills, accepted=accepted, rejected=rejected, step_pnl=step_pnl)
-        self.debugger.end("publish_bus")
+            # publish to bus
+            self.debugger.begin("publish_bus")
+            self._publish_all(exec_fills=fills, accepted=accepted, rejected=rejected, step_pnl=step_pnl)
+            self.debugger.end("publish_bus")
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            try:
+                self.debugger.record_error(f"process_exception: {e}")
+            except Exception:
+                pass
+            self.logger.error(
+                format_operator_message(
+                    "[CRASH]", "EXECUTOR PROCESS FAILED", details=str(e), context="executor_process"
+                )
+            )
+            try:
+                self.logger.error(f"Traceback: {tb}")
+            except Exception:
+                pass
+            raise
 
         # debugger report
         try:
@@ -339,6 +357,11 @@ class Executor(BaseModule):
             # **raw aliases to avoid BUS MISS for simple readers**
             "balance": float(self.balance),
             "equity": float(self.equity),
+            "current_pnl": float(step_pnl),
+
+            # baselines
+            "pending_orders": order_data.get("accepted", []),
+            "account_state": {"balance": float(self.balance), "equity": float(self.equity), "step": int(self.step_idx)},
 
             # housekeeping
             "order_queue": [],
@@ -825,6 +848,18 @@ class Executor(BaseModule):
         self.bus.set("portfolio_metrics", portfolio_metrics, thesis="Portfolio metrics (executor)")
         self.bus.set("trading_result", {"pnl": float(step_pnl)}, thesis="Per-step Δequity (executor)")
         self.bus.set("market_state", market_state, thesis="Market state (executor)")
+        # direct alias for simple consumers
+        try:
+            self.bus.set("current_pnl", float(step_pnl), thesis="alias: current_pnl (executor)")
+        except Exception:
+            pass
+
+        # Baselines for downstream consumers
+        try:
+            self.bus.set("pending_orders", order_data.get("accepted", []), thesis="Orders pending execution (baseline)")
+            self.bus.set("account_state", {"balance": float(self.balance), "equity": float(self.equity), "step": int(self.step_idx)}, thesis="Account state (executor)")
+        except Exception:
+            pass
 
         # **raw aliases to avoid BUS MISS for simple readers**
         self.bus.set("balance", float(self.balance), thesis="alias: balance (executor)")

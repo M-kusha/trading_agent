@@ -28,7 +28,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
     description="Advanced adaptive learning curriculum system for trading strategy optimization with intelligent progression management",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=3000,
+    timeout_ms=15000,
 ))
 class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
@@ -300,6 +300,16 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             Dict containing curriculum status, constraints, recommendations, and progression analysis
         """
         start_time = time.time()
+        # Budget-guard to keep Stage 12 within time
+        try:
+            cfg_budget_ms = float(self.config.get('max_processing_time_ms', 300))
+        except Exception:
+            cfg_budget_ms = 300.0
+        budget_s = max(0.1, cfg_budget_ms / 1000.0)
+        end_time = start_time + budget_s
+        def remaining() -> float:
+            rem = end_time - time.time()
+            return 0.0 if rem <= 0 else rem
         
         try:
             # Circuit breaker check
@@ -310,12 +320,16 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             learning_data = await self._get_comprehensive_learning_data()
             
             # Core curriculum analysis with error handling
+            if remaining() <= 0:
+                return await self._handle_processing_error(TimeoutError('budget_exhausted'), start_time)
             curriculum_analysis = await self._analyze_learning_progress_comprehensive(learning_data)
             
             # Generate intelligent learning recommendations
             recommendations = self._generate_intelligent_learning_recommendations(curriculum_analysis)
             
             # Check for stage progression opportunities
+            if remaining() <= 0:
+                return await self._handle_processing_error(TimeoutError('budget_exhausted'), start_time)
             progression_analysis = await self._evaluate_stage_progression_comprehensive(curriculum_analysis)
             
             # Generate comprehensive thesis

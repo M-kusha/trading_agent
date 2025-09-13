@@ -406,6 +406,18 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                 thesis="Unified memory system initialized",
             )
 
+            # Seed mistake_memory with a typed, empty baseline (single-writer)
+            try:
+                baseline_mm = {"recent": [], "stats": {"count": 0, "last_ts": None}}
+                self.smart_bus.set(
+                    "mistake_memory",
+                    baseline_mm,
+                    module="UnifiedMemory",
+                    thesis="Seeded baseline mistake_memory"
+                )
+            except Exception:
+                pass
+
         except Exception as e:
             self.logger.error(f"Initialization failed: {e}")
 
@@ -884,7 +896,8 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
             "danger_zones": {"zones": [], "zone_count": 0},
             "loss_prevention": {"avoidance_effectiveness": 0.0, "learning_samples": 0},
             "mistake_avoidance": {"avoidance_signal": 0.0, "consecutive_losses": 0},
-            "mistake_memory": {"current_score": 0.0, "avoidance_signal": 0.0},
+            # Typed baseline for mistake_memory (always available)
+            "mistake_memory": {"recent": [], "stats": {"count": 0, "last_ts": None}},
             "pattern_recognition": {"loss_patterns": {}, "win_patterns": {}},
             # Neural defaults
             "attention_retrieval": {"retrieved_count": 0, "similarity_scores": []},

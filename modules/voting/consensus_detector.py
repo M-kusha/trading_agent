@@ -337,6 +337,7 @@ Consensus Detector v3.1 Initialization:
                     "member_contributions": self._get_member_contributions_summary(),
                     "consensus_trends": self._get_consensus_trends_summary(),
                     "quality_metrics": dict(self.quality_metrics),
+                    "consensus_quality_metrics": dict(self.quality_metrics),
                     "consensus_recommendations": list(recommendations),
                     "health_metrics": self._get_health_metrics(),
                     "consensus_detector_initialization": dict(
@@ -1474,7 +1475,7 @@ Consensus Detector v3.1 Initialization:
                 thesis=f"Trends tracked: {len(self.consensus_trends)} points",
             )
             s(
-                "quality_metrics",
+                "consensus_quality_metrics",
                 results["quality_metrics"],
                 module="ConsensusDetector",
                 thesis=f"Quality metrics: {len(results['quality_metrics'])} dimensions",

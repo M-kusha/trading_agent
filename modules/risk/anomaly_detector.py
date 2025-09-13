@@ -1,7 +1,7 @@
-# ─────────────────────────────────────────────────────────────
+########################################################################################################################
 # File: modules/risk/anomaly_detector.py
-# [ROCKET] PRODUCTION-READY Enhanced Anomaly Detector (contract-tight)
-# ─────────────────────────────────────────────────────────────
+# PRODUCTION-READY Enhanced Anomaly Detector (contract-tight)
+########################################################################################################################
 
 from __future__ import annotations
 
@@ -25,9 +25,7 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 
-# ─────────────────────────────────────────────────────────────
 # Fallback analyzers (kept lean)
-# ─────────────────────────────────────────────────────────────
 class SimpleAnalyzer:
     async def analyze_async(self, *args, **kwargs):
         return {'anomalies': [], 'analysis_completed': False, 'fallback': True}
@@ -54,20 +52,22 @@ class AnomalySeverity(Enum):
 
 class AnomalyVote(Enum):
     """Standardized anomaly/risk vote for coordinators/routers."""
-    PROCEED = "proceed"    # normal – green light
-    CAUTION = "caution"    # elevated risk – reduce size / add safeguards
-    HALT    = "halt"       # high/critical risk – pause/halt new risk
-    ABSTAIN = "abstain"    # insufficient signal – do not influence
+    PROCEED = "proceed"    # normal - green light
+    CAUTION = "caution"    # elevated risk - reduce size / add safeguards
+    HALT    = "halt"       # high/critical risk - pause/halt new risk
+    ABSTAIN = "abstain"    # insufficient signal - do not influence
 
 
 
-# ─────────────────────────────────────────────────────────────
 # Typed config (lint-safe) + namespaced health keys
-# ─────────────────────────────────────────────────────────────
 @dataclass
 class AnomalyDetectorConfig:
     # Core thresholds
     pnl_limit: float = 1000.0
+    # Ignore tiny absolute PnL moves (account currency)
+    pnl_min_abs: float = 5.0
+    # Optional dynamic threshold: percentage of equity/balance
+    pnl_pct_limit: float = 0.01  # 1% of balance
     volume_zscore: float = 3.0
     price_zscore: float = 3.0
     observation_zscore: float = 4.0
@@ -84,6 +84,8 @@ class AnomalyDetectorConfig:
     # Training
     training_mode: bool = True
     training_duration_steps: int = 200
+    # Warmup steps before emitting PnL anomalies
+    warmup_steps: int = 20
     synthetic_data_ratio: float = 0.3
     # Performance / quality
     max_processing_time_ms: float = 50.0
@@ -102,15 +104,13 @@ class AnomalyDetectorConfig:
     health_key: str = "anomaly_detector_health"
 
 
-# ─────────────────────────────────────────────────────────────
 # Module
-# ─────────────────────────────────────────────────────────────
 @module(**module_args(
     "EnhancedAnomalyDetector",
     description="Deterministic multi-window feature extraction with circuit breaker, monitoring, and explainability.",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=3000,
+    timeout_ms=15000,
 ))
 class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
@@ -118,11 +118,11 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
     - Returns ONLY provides keys + `_thesis` on success/fallback/error:
       anomaly_detection, anomaly_score, anomaly_alerts, detection_analytics, _thesis
     - Writes ONLY its provides keys to SmartInfoBus; health/status use namespaced keys.
-    - Numpy → Python scalars/lists; timestamps are ISO-8601.
+    - Numpy -> Python scalars/lists; timestamps are ISO-8601.
     - Background monitor posts status & health; circuit breaker with safe fallback.
     """
 
-    # ── init & systems ───────────────────────────────────────
+    # init & systems
     def __init__(self, config: Optional[Union[AnomalyDetectorConfig, Dict[str, Any]]] = None,
                  enabled: bool = True, action_dim: int = 8, **kwargs):
 
@@ -201,6 +201,25 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             }
             self.smart_bus.set(self._cfg.status_key, status, module='EnhancedAnomalyDetector',
                                thesis="Anomaly detector initialization status")
+
+            # Seed baseline voting keys to avoid early BUS MISS for coordinators
+            try:
+                baseline_vote = {
+                    "module": "EnhancedAnomalyDetector",
+                    "topic": "anomaly_risk",
+                    "vote": "abstain",
+                    "confidence": 0.5,
+                    "sizing_multiplier": 0.75,
+                    "reasoning": "Baseline anomaly vote at initialization",
+                    "metrics": {},
+                    "timestamp": datetime.datetime.now().isoformat(),
+                }
+                self.smart_bus.set('EnhancedAnomalyDetector_voting_proposal', baseline_vote,
+                                   module='EnhancedAnomalyDetector', thesis="Baseline anomaly risk voting proposal")
+                self.smart_bus.set('EnhancedAnomalyDetector_confidence', baseline_vote.get('confidence', 0.5),
+                                   module='EnhancedAnomalyDetector', thesis="Baseline anomaly risk vote confidence")
+            except Exception:
+                pass
         except Exception as e:
             self.logger.warning(f"EnhancedAnomalyDetector initialization failed: {e}")
 
@@ -328,7 +347,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         except Exception as e:
             self.logger.error(f"Anomaly detector initialization failed: {e}")
 
-    # ── background monitor ───────────────────────────────────
+    # background monitor
     def _start_monitoring(self):
         if self._monitoring_active:
             return
@@ -364,7 +383,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
     def stop_monitoring(self):
         self._monitoring_active = False
 
-    # ── contract-safe process ────────────────────────────────
+    # contract-safe process
     async def process(self, **inputs) -> Dict[str, Any]:
         start_time = time.time()
         try:
@@ -464,7 +483,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             return payload
 
 
-    # ── SmartInfoBus I/O (single-writer) ─────────────────────
+    # SmartInfoBus I/O (single-writer)
     def _write_bus_from_payload(self, payload: Dict[str, Any], thesis: str) -> None:
         try:
             self.smart_bus.set('anomaly_detection', payload['anomaly_detection'],
@@ -475,6 +494,12 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                             module='EnhancedAnomalyDetector', thesis="Anomaly alerts update")
             self.smart_bus.set('detection_analytics', payload['detection_analytics'],
                             module='EnhancedAnomalyDetector', thesis="Detection analytics update")
+            # Alias for consumers expecting 'anomaly_detector'
+            try:
+                self.smart_bus.set('anomaly_detector', payload.get('anomaly_detector', {}),
+                                module='EnhancedAnomalyDetector', thesis="Compact anomaly detector alias")
+            except Exception:
+                pass
 
             # NEW: publish standardized vote - ALWAYS publish even if None/empty
             vote = payload.get('anomaly_risk_vote') or getattr(self, '_last_vote', None)
@@ -482,7 +507,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 # Fallback vote if none exists
                 vote = {
                     "module": "EnhancedAnomalyDetector",
-                    "topic": "anomaly_risk", 
+                    "topic": "anomaly_risk",
                     "vote": "abstain",
                     "confidence": 0.5,
                     "sizing_multiplier": 0.75,
@@ -500,7 +525,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             err = self.error_pinpointer.analyze_error(e, "bus_write")
             self.logger.error(f"SmartInfoBus update failed: {err}")
 
-    # ── payload formatter (contract enforcer) ────────────────
+    # payload formatter (contract enforcer)
     def _format_provides_output(self, thesis: str) -> Dict[str, Any]:
         # Build anomaly_detection snapshot
         detection_data_payload = {
@@ -566,15 +591,27 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             }
         }
 
+        # Compact alias for DynamicRiskController compatibility
+        alias_payload = {
+            'anomaly_score': float(self.anomaly_score),
+            'emergency_mode': bool(self.current_mode == AnomalyDetectionMode.EMERGENCY),
+            'critical_anomalies_present': any(
+                a.get('severity') == AnomalySeverity.CRITICAL.value for aL in self.anomalies.values() for a in aL
+            ),
+            'detection_confidence': float(self.detection_confidence),
+            'timestamp': datetime.datetime.now().isoformat(),
+        }
+
         return {
             'anomaly_detection': detection_data_payload,
             'anomaly_score': score_data_payload,
             'anomaly_alerts': alerts_data_payload,
             'detection_analytics': analytics_payload,
+            'anomaly_detector': alias_payload,
             '_thesis': thesis
         }
 
-    # ── data extraction & context ────────────────────────────
+    # data extraction & context
     async def _extract_detection_data(self, **inputs) -> Optional[Dict[str, Any]]:
         try:
             risk_data = self.smart_bus.get('risk_data', 'EnhancedAnomalyDetector') or {}
@@ -591,6 +628,14 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             risk_snapshot = risk_data.get('risk_snapshot', {})
             if not pnl and 'recent_pnl' in risk_snapshot:
                 pnl = risk_snapshot['recent_pnl']
+            # Fallback: some producers publish recent PnL under risk_data.metrics
+            if not pnl:
+                try:
+                    metrics = risk_data.get('metrics', {})
+                    if isinstance(metrics, dict) and 'recent_pnl' in metrics:
+                        pnl = metrics.get('recent_pnl')
+                except Exception:
+                    pass
 
             market_snapshot = market_data.get('market_snapshot', {})
             if not volume and 'volume' in market_snapshot:
@@ -676,7 +721,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         except Exception as e:
             self.logger.warning(f"Context baseline update failed: {e}")
 
-    # ── comprehensive detection ──────────────────────────────
+    # comprehensive detection
     async def _detect_anomalies_comprehensive_async(self, detection_data: Dict[str, Any]) -> Dict[str, Any]:
         try:
             # Clear/refresh buckets
@@ -720,11 +765,16 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             self.logger.error(f"Comprehensive anomaly detection failed: {e}")
             return {'comprehensive_detection_completed': False, 'error': str(e)}
 
-    # ── individual detectors (safer) ─────────────────────────
+    # individual detectors (safer)
     async def _detect_pnl_anomalies_async(self, detection_data: Dict[str, Any]) -> Dict[str, Any]:
         try:
             # Ensure thresholds exist (pnl_limit in particular)
             self._ensure_threshold_keys()
+            try:
+                if int(detection_data.get('step_count', 0)) < int(self._cfg.warmup_steps):
+                    return {'pnl_detected': False, 'reason': 'warmup'}
+            except Exception:
+                pass
 
             pnl = float(detection_data.get('pnl', 0.0) or 0.0)
             if self._cfg.training_mode and pnl == 0.0 and len(self.pnl_history) < 10:
@@ -738,12 +788,22 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             anomalies_detected = 0
 
             adjusted_limit = await self._get_context_adjusted_threshold_async('pnl_limit', detection_data)
-            if abs(pnl) > adjusted_limit:
+            # Dynamic limit by equity (if available), and absolute floor
+            dyn_limit = 0.0
+            try:
+                pm = self.smart_bus.get('portfolio_metrics', 'EnhancedAnomalyDetector') or {}
+                bal = float(pm.get('equity', pm.get('balance', 0.0)) or 0.0)
+                if bal > 0:
+                    dyn_limit = float(bal) * float(self._cfg.pnl_pct_limit)
+            except Exception:
+                dyn_limit = 0.0
+            final_limit = max(float(adjusted_limit), float(self._cfg.pnl_min_abs), float(dyn_limit))
+            if abs(pnl) > final_limit:
                 severity = AnomalySeverity.CRITICAL if abs(pnl) > adjusted_limit * 1.5 else AnomalySeverity.WARNING
                 self.anomalies['pnl'].append({
                     'type': 'absolute_limit_exceeded',
                     'value': pnl,
-                    'threshold': float(adjusted_limit),
+                    'threshold': float(final_limit),
                     'base_threshold': float(self.base_thresholds.get('pnl_limit', self._cfg.pnl_limit)),
                     'severity': severity.value,
                     'confidence': 0.9,
@@ -759,13 +819,13 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                     critical_found = True
                     self.logger.error(format_operator_message(
                         message='CRITICAL PnL anomaly detected', icon='[ALERT]',
-                        pnl=f"€{pnl:,.2f}", limit=f"€{adjusted_limit:,.0f}",
+                        pnl=f"€{pnl:,.2f}", limit=f"€{final_limit:,.2f}",
                         regime=self.market_regime, session=self.market_session
                     ))
                 else:
                     self.logger.warning(format_operator_message(
                         message='PnL anomaly detected', icon='[WARN]',
-                        pnl=f"€{pnl:,.2f}", limit=f"€{adjusted_limit:,.0f}"
+                        pnl=f"€{pnl:,.2f}", limit=f"€{final_limit:,.2f}"
                     ))
 
             if len(self.pnl_history) >= self._cfg.min_history_for_stats:
@@ -1080,7 +1140,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             self.logger.warning(f"Market structure anomaly detection failed: {e}")
             return {'market_structure_detected': False, 'error': str(e)}
 
-    # ── pattern analyzers ────────────────────────────────────
+    # pattern analyzers
     def _ensure_analyzers_initialized(self):
         try:
             if self.sequence_analyzer is None:
@@ -1127,11 +1187,16 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             self.logger.warning(f"Pattern analysis failed: {e}")
             return {'pattern_analysis_completed': False, 'error': str(e)}
 
-    # ── adaptation, scoring, training, emergency, mode ───────
+    # adaptation, scoring, training, emergency, mode
     async def _adapt_thresholds_async(self, detection_data: Dict[str, Any]) -> Dict[str, Any]:
         try:
             # Defensive: ensure thresholds exist before adapting
             self._ensure_threshold_keys()
+            try:
+                if int(detection_data.get('step_count', 0)) < int(self._cfg.warmup_steps):
+                    return {'pnl_detected': False, 'reason': 'warmup'}
+            except Exception:
+                pass
             if not self._cfg.adaptive_thresholds or self.step_count < 50:
                 return {'threshold_adaptation': False, 'reason': 'insufficient_data_or_disabled'}
 
@@ -1228,6 +1293,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 self.detection_confidence = float(np.clip(avg_conf, 0.0, 1.0))
             else:
                 self.anomaly_score = 0.0
+               
                 self.detection_confidence = 1.0  # confident there's no anomaly
 
             eff = await self._calculate_detection_effectiveness_async()
@@ -1266,7 +1332,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             self.current_mode = AnomalyDetectionMode.ACTIVE
             self.logger.info(format_operator_message(
                 message="Training completed - transitioning to active detection",
-                icon="🎓", old_mode=old.value, new_mode=self.current_mode.value,
+                icon="Ã°Å¸Å½â€œ", old_mode=old.value, new_mode=self.current_mode.value,
                 steps_trained=int(self.step_count), final_score=f"{self._detection_quality:.2f}"
             ))
         except Exception as e:
@@ -1295,7 +1361,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 old = self.current_mode
                 self.current_mode = AnomalyDetectionMode.EMERGENCY
                 self.logger.error(format_operator_message(
-                    message="EMERGENCY MODE ACTIVATED", icon="🆘",
+                    message="EMERGENCY MODE ACTIVATED", icon="Ã°Å¸â€ Ëœ",
                     old_mode=old.value, reasons=", ".join(reasons[:3]),
                     anomaly_score=f"{self.anomaly_score:.2f}", critical_count=len(all_crit)
                 ))
@@ -1374,6 +1440,8 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 else:
                     parts.append(f"Training: {self.training_progress:.0%} complete")
 
+
+
             if self._cfg.adaptive_thresholds:
                 recent_adapt = len([h for h in list(self.threshold_history)[-10:] if h.get('changes')])
                 parts.append(f"Adaptive: {recent_adapt} recent threshold adjustments")
@@ -1385,7 +1453,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         except Exception as e:
             return f"Detection thesis generation failed: {str(e)} - Core anomaly detection functional"
 
-    # ── fallback & error payloads (contract-safe) ─────────────
+    # fallback & error payloads (contract-safe)
     def _fallback_payload(self, thesis: str) -> Dict[str, Any]:
         return self._format_provides_output(thesis=thesis)
 
@@ -1423,7 +1491,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         self.detection_confidence = min(0.5, float(self.detection_confidence))
         return self._format_provides_output(thesis=f"Anomaly detector error fallback: {str(error)}")
 
-    # ── calculations & utilities ─────────────────────────────
+    # calculations & utilities
     async def _generate_synthetic_pnl_async(self, detection_data: Dict[str, Any]) -> float:
         try:
             base = np.random.normal(0, 100)
@@ -1578,19 +1646,22 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         try:
             # Defensive: ensure thresholds exist before finalization
             self._ensure_threshold_keys()
+            # Use internal step_count; previously referenced undefined detection_data
+            if int(getattr(self, 'step_count', 0)) < int(getattr(self._cfg, 'warmup_steps', 0)):
+                return  # still in warmup; do not finalize yet
             if len(self.pnl_history) >= 100:
                 arr = np.array(list(self.pnl_history), dtype=np.float64)
                 final_pnl = float(np.percentile(np.abs(arr), 98))
                 self.current_thresholds['pnl_limit'] = max(final_pnl, float(self.base_thresholds.get('pnl_limit', self._cfg.pnl_limit)) * 0.8)
             self.logger.info(format_operator_message(
                 message="Training thresholds finalized", icon="[OK]",
-                pnl_threshold=f"€{self.current_thresholds['pnl_limit']:,.0f}",
+                pnl_threshold=f"EUR{self.current_thresholds['pnl_limit']:,.0f}",
                 obs_threshold=f"{float(self.current_thresholds['observation_zscore']):.1f}"
             ))
         except Exception as e:
             self.logger.warning(f"Threshold finalization failed: {e}")
 
-    # ── monitoring & health ──────────────────────────────────
+    # monitoring & health
     def _update_detection_health(self):
         try:
             if not hasattr(self, '_detection_quality') or not hasattr(self, '_processing_times'):
@@ -1679,7 +1750,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             'EnhancedAnomalyDetector', 'anomaly_detection', 0.0, False
         )
 
-    # ── public interface (kept stable) ───────────────────────
+    # ¯\_(ツ)_/¯ public interface (kept stable) ¯\_(ツ)_/¯
     def get_voter_capabilities(self) -> Dict[str, Any]:
         """Describe this voter's topic and schema to any aggregator/router."""
         return {
@@ -1800,7 +1871,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         self.current_mode = AnomalyDetectionMode.EMERGENCY
         self.anomaly_score = float(np.clip(self.anomaly_score + 0.5, 0.0, 1.0))
         self.logger.error(format_operator_message(
-            message="Emergency mode forced", icon="🆘",
+            message="Emergency mode forced", icon="[EMERG]",
             reason=reason, old_mode=old.value, new_score=f"{self.anomaly_score:.2f}"
         ))
 
@@ -1808,7 +1879,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         for k in self.anomalies:
             self.anomalies[k].clear()
         self.anomaly_score = 0.0
-        self.detection_confidence = 0.5
+        self.detection_confidence = 0.0
         self.logger.info("[RELOAD] Anomaly history cleared")
 
     def get_observation_components(self) -> np.ndarray:
@@ -1845,15 +1916,19 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         }
 
     def reset(self) -> None:
+        """Comprehensively reset detector state for a new session/run."""
         super().reset()
+        # Core anomaly collections
         for k in self.anomalies:
             self.anomalies[k].clear()
         self.anomaly_score = 0.0
         self.detection_confidence = 0.5
         self.step_count = 0
+        # Stats & trackers
         self.detection_stats.clear()
         self.false_positive_tracker.clear()
         self.detection_effectiveness.clear()
+        # Histories
         self.pnl_history.clear()
         self.volume_history.clear()
         self.price_history.clear()
@@ -1861,15 +1936,19 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         self.volatility_history.clear()
         self.threshold_history.clear()
         self._processing_times.clear()
+        # Baselines
         self.regime_baselines.clear()
         self.session_baselines.clear()
         self.volatility_baselines.clear()
+        # Regime/session meta
         self.market_regime = "normal"
         self.market_session = "unknown"
         self.volatility_regime = "medium"
         self.market_stress_level = 0.0
+        # Training progress
         self.training_progress = 0.0
         self.is_training_complete = False
+        # Adaptive parameters
         self.adaptive_params.update({
             'sensitivity_multiplier': 1.0,
             'regime_adaptation_factor': 1.0,
@@ -1877,19 +1956,23 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             'learning_momentum': 0.0,
             'detection_confidence_boost': 1.0
         })
+        # Thresholds
         self.current_thresholds = dict(self.base_thresholds)
         self._ensure_threshold_keys()
+        # Circuit breaker & health
         self.circuit_breaker['failures'] = 0
         self.circuit_breaker['state'] = 'CLOSED'
         self._health_status = 'healthy'
         self._detection_quality = 0.5
+        # External sources & compliance
         self.external_anomaly_sources.clear()
         self.compliance_alerts.clear()
+        # Operational mode
         self.current_mode = AnomalyDetectionMode.INITIALIZATION
         self.mode_start_time = datetime.datetime.now()
         self.logger.info("[RELOAD] Enhanced Anomaly Detector reset - all state cleared")
 
-    # ── internal safety: threshold keys ─────────────────────
+    # internal safety: threshold keys
     def _ensure_threshold_keys(self, initial: bool = False) -> None:
         """Ensure required threshold keys exist in base/current dicts.
         Injects defaults from typed config if missing or invalid."""
@@ -1926,9 +2009,10 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                 self.current_thresholds.setdefault(k, float(self.base_thresholds[k]))
 
 
-# ─────────────────────────────────────────────────────────────
+
+
+
 # Supporting analyzers (kept concise, async-friendly)
-# ─────────────────────────────────────────────────────────────
 class SequenceAnomalyAnalyzer:
     def __init__(self):
         self.sequence_history = deque(maxlen=50)
@@ -1971,7 +2055,7 @@ class SequenceAnomalyAnalyzer:
                     anomalies.append({
                         'type': 'unusual_cycle',
                         'cycle_strength': float(ac_window_max / max(ac_total_max, 1e-9)),
-                        'severity': AnomalySeverity.INFO.value, 'confidence': 0.6,
+                        'severity': AnomalySeverity.INFO.value, 'confidence': min(0.9, ac_window_max / (ac_total_max * 3)),
                         'timestamp': context.get('timestamp')
                     })
             return {'anomalies': anomalies, 'analysis_completed': True, 'sequence_length': int(len(sequence))}
@@ -2035,7 +2119,7 @@ class PatternAnomalyDetector:
             # uniform size pattern
             if sizes and len(sizes) >= 6 and len(set(sizes)) == 1:
                 anomalies.append({
-                    'type': 'uniform_trade_sizes', 'size': float(sizes[0]), 'count': int(len(sizes)),
+                    'type': 'uniform_trade_sizes', 'size': float(sizes[0]), 'count': 5,
                     'severity': AnomalySeverity.INFO.value, 'confidence': min(0.9, len(sizes) / 10.0),
                     'timestamp': context.get('timestamp')
                 })

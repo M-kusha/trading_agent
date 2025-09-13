@@ -469,6 +469,17 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             # Update SmartInfoBus with comprehensive thesis (single-writer keys)
             await self._update_smartinfobus_comprehensive(results, thesis)
 
+            # Publish canonical performance_data for downstream consumers (single-writer)
+            try:
+                self.smart_bus.set(
+                    'performance_data',
+                    dict(performance_data or {}),
+                    module='TradingModeManager',
+                    thesis='Canonical performance_data snapshot'
+                )
+            except Exception:
+                pass
+
             # Record performance metrics
             processing_time = int((time.time() - start_time) * 1000)
             self.performance_tracker.record_metric('TradingModeManager', 'process_time', processing_time, True)
@@ -485,6 +496,12 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             # Reset error count on successful processing
             self.error_count = 0
             self._post_health_status()
+
+            # Ensure contract: include performance_data in returned results
+            try:
+                results['performance_data'] = dict(performance_data or {})
+            except Exception:
+                results['performance_data'] = {}
 
             return results
 
@@ -1719,8 +1736,17 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                                module='TradingModeManager', thesis="Decision factors updated")
             self.smart_bus.set('mode_thresholds', results.get('mode_thresholds', {}),
                                module='TradingModeManager', thesis="Mode thresholds updated")
-            self.smart_bus.set('market_context', results.get('market_context', {}),
-                               module='TradingModeManager', thesis="Market context (summary) updated")
+            # Do not write 'market_context' (owned by MarketDataProvider). If needed, embed context in mode_stats.
+            try:
+                mc = results.get('market_context', {})
+                if isinstance(mc, dict) and mc:
+                    stats = results.get('mode_stats', {}) or {}
+                    stats = dict(stats)
+                    stats.setdefault('context', mc)
+                    self.smart_bus.set('mode_stats', stats,
+                                       module='TradingModeManager', thesis="Mode stats updated (with context)")
+            except Exception:
+                pass
             self.smart_bus.set('mode_recommendations', results.get('mode_recommendations', []),
                                module='TradingModeManager', thesis="Mode recommendations updated")
 

@@ -1,0 +1,26 @@
+single_writer_owners:
+  trade_vote: EnhancedVotingCommitteeCoordinator
+  instrument_signals: StrategyArbiter
+  shaped_reward: RiskAdjustedReward
+  reward_components: RiskAdjustedReward
+  reward_analytics: RiskAdjustedReward
+  reward_performance: RiskAdjustedReward
+  market_regime: UnifiedMarketModule
+  risk_data: PortfolioRiskSystem
+  risk_score: PortfolioRiskSystem
+  positions: Executor
+  trades: Executor
+  portfolio_metrics: Executor
+  order_data: Executor
+  execution_data: Executor
+  execution_reports: Executor
+  trade_data: Executor
+  market_state: Executor
+  performance_data: TradingModeManager
+  system_health: HealthMonitor
+  environment_config: Environment
+  execution_mode: Environment
+
+notes:
+  - Only the listed modules may publish the canonical keys above; the InfoBus single-writer guard will log and reject duplicates.
+  - Non-canonical mirrors or namespaced diagnostics (e.g., position_manager_instrument_signals) are allowed for debugging.

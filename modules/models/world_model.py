@@ -126,7 +126,7 @@ class WorldModelConfig:
     description="Deterministic multi-window feature extraction with circuit breaker, monitoring, and explainability.",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=3000,
+    timeout_ms=15000,
 ))
 class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin, nn.Module):
     """
@@ -618,6 +618,17 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process world model operations with enhanced analytics"""
         start_time = time.time()
+        # Enforce an internal time budget to avoid stage-level timeouts
+        try:
+            cfg_budget_ms = float(getattr(self.wm_config, 'max_processing_time_ms', 200))
+        except Exception:
+            cfg_budget_ms = 200.0
+        budget_s = max(0.1, cfg_budget_ms / 1000.0)
+        end_time = start_time + budget_s
+
+        def remaining() -> float:
+            rem = end_time - time.time()
+            return 0.0 if rem <= 0 else rem
         self._maybe_half_open()
         
         try:
@@ -627,31 +638,40 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             if not market_data:
                 return await self._handle_no_data_fallback()
             
-            # Update market context and features
+            # Update market context and features (budget-aware)
+            if remaining() <= 0:
+                return await self._handle_no_data_fallback()
             context_result = await self._update_market_context_async(market_data)
             
             # Process market data and update history
+            if remaining() <= 0:
+                return await self._handle_no_data_fallback()
             processing_result = await self._process_market_data_async(market_data)
             
             # Generate predictions if model is ready
             prediction_result = {}
-            if self.is_trained and len(self.market_history) >= self.wm_config.sequence_length:
+            if remaining() > 0 and self.is_trained and len(self.market_history) >= self.wm_config.sequence_length:
                 prediction_result = await self._generate_predictions_async(market_data)
             
             # Train model if enough data and training is needed
             training_result = {}
-            if await self._should_trigger_training_async():
+            if remaining() > 0 and await self._should_trigger_training_async():
+                # Respect remaining budget for training chunk
                 training_result = await self._train_model_async()
             
             # Generate scenarios if requested or periodically
             scenario_result = {}
-            if inputs.get('generate_scenarios', False) or await self._should_generate_scenarios_async():
+            if remaining() > 0 and (inputs.get('generate_scenarios', False) or await self._should_generate_scenarios_async()):
                 scenario_result = await self._generate_scenarios_async(market_data)
             
             # Update model performance metrics
+            if remaining() <= 0:
+                return await self._handle_no_data_fallback()
             performance_result = await self._update_performance_metrics_async(market_data)
             
             # Update operational mode
+            if remaining() <= 0:
+                return await self._handle_no_data_fallback()
             mode_result = await self._update_operational_mode_async(market_data)
             
             # Combine results
@@ -826,13 +846,27 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         """Update market context awareness (canonical-first)."""
         try:
             # Canonical feeds
-            regime_data   = self.smart_bus.get('regime_data', 'EnhancedWorldModel') or {}
-            market_regime = self.smart_bus.get('market_regime', 'EnhancedWorldModel')
-            vol_adj       = self.smart_bus.get('volatility_adjustment', 'EnhancedWorldModel') or {}
-            market_cond   = self.smart_bus.get('market_conditions', 'EnhancedWorldModel') or {}
+            regime_data_raw   = self.smart_bus.get('regime_data', 'EnhancedWorldModel')
+            market_regime     = self.smart_bus.get('market_regime', 'EnhancedWorldModel')
+            vol_adj_raw       = self.smart_bus.get('volatility_adjustment', 'EnhancedWorldModel')
+            market_cond_raw   = self.smart_bus.get('market_conditions', 'EnhancedWorldModel')
 
-            # Legacy/compat
-            market_context = self.smart_bus.get('market_context', 'EnhancedWorldModel') or {}
+            # Defensive normalization: some upstream modules may still publish scalar regime/volatility values
+            regime_data = regime_data_raw if isinstance(regime_data_raw, dict) else {}
+            vol_adj     = vol_adj_raw if isinstance(vol_adj_raw, dict) else {}
+            market_cond = market_cond_raw if isinstance(market_cond_raw, dict) else {}
+            if regime_data_raw is not None and not isinstance(regime_data_raw, dict):
+                self.logger.debug(f"[context_guard] regime_data non-dict ({type(regime_data_raw).__name__}); coerced -> {{}}")
+            if vol_adj_raw is not None and not isinstance(vol_adj_raw, dict):
+                self.logger.debug(f"[context_guard] volatility_adjustment non-dict ({type(vol_adj_raw).__name__}); coerced -> {{}}")
+            if market_cond_raw is not None and not isinstance(market_cond_raw, dict):
+                self.logger.debug(f"[context_guard] market_conditions non-dict ({type(market_cond_raw).__name__}); coerced -> {{}}")
+
+            # Legacy/compat (guard against non-dict writes)
+            market_context_raw = self.smart_bus.get('market_context', 'EnhancedWorldModel')
+            market_context = market_context_raw if isinstance(market_context_raw, dict) else {}
+            if market_context_raw is not None and not isinstance(market_context_raw, dict):
+                self.logger.debug(f"[context_guard] market_context non-dict ({type(market_context_raw).__name__}); coerced -> {{}}")
 
             # Resolve regime/session/volatility with fallbacks
             regime = (

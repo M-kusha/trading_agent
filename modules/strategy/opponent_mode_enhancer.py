@@ -28,7 +28,7 @@ from modules.monitoring.performance_tracker import PerformanceTracker
     description="Advanced market mode detection and adaptation system with intelligent strategy weighting",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=3000,
+    timeout_ms=8000,
 ))
 class OpponentModeEnhancer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
