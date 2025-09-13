@@ -727,11 +727,45 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             performance_data['volatility'] = float(np.mean(vol_values)) if vol_values else 0.02
             performance_data['volatility_regime_score'] = self._get_volatility_regime_score()
 
-            # Exposure
-            positions = market_data.get('positions', []) or []
-            total_exposure = float(sum(abs(float(pos.get('size', 0) or 0)) for pos in positions))
+            # Exposure (robust to positions being dict keyed by symbol or list of dicts)
+            positions_raw = market_data.get('positions', []) or []
+
+            pos_list: List[Dict[str, Any]] = []
+            if isinstance(positions_raw, dict):
+                for v in positions_raw.values():
+                    if isinstance(v, dict):
+                        pos_list.append(v)
+            elif isinstance(positions_raw, list):
+                for v in positions_raw:
+                    if isinstance(v, dict):
+                        pos_list.append(v)
+
+            def _to_float_safe(x: Any) -> float:
+                try:
+                    if isinstance(x, (int, float, np.generic)):
+                        return float(x)
+                    if isinstance(x, str):
+                        x = x.strip()
+                        return float(x) if x else 0.0
+                except Exception:
+                    return 0.0
+                return 0.0
+
+            def _pos_exposure_value(p: Dict[str, Any]) -> float:
+                # Prefer explicit notionals/exposure, else fall back to size/units, else derive units*price
+                for key in ('notional', 'notional_eur', 'notional_usd', 'notional_value', 'exposure',
+                            'size', 'units', 'quantity', 'qty', 'volume', 'amount'):
+                    if key in p:
+                        return _to_float_safe(p.get(key))
+                units = _to_float_safe(p.get('units', p.get('size', 0)))
+                price = _to_float_safe(p.get('price', p.get('entry_price', 0)))
+                if units and price:
+                    return units * price
+                return units
+
+            total_exposure = float(sum(abs(_pos_exposure_value(pos)) for pos in pos_list))
             performance_data['exposure'] = total_exposure
-            performance_data['position_count'] = int(len(positions))
+            performance_data['position_count'] = int(len(pos_list))
             performance_data['exposure_ratio'] = float(min(1.0, total_exposure / max(performance_data['current_balance'], 1)))
 
             # Strategy performance

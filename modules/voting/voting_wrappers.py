@@ -21,7 +21,6 @@ from abc import ABC, abstractmethod
 from modules.core.module_base import BaseModule, module
 from modules.core.mixins import (
     SmartInfoBusTradingMixin, SmartInfoBusVotingMixin, SmartInfoBusStateMixin,
-    with_mixin_error_handling, MixinStateManager
 )
 from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
 from modules.utils.info_bus import InfoBusManager, extract_standard_context

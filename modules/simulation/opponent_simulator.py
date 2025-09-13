@@ -44,6 +44,8 @@ class OpponentSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
         "historical_prices", "market_context", "market_data", "positions", "prices",
         "regime_data", "session_data", "volatility"
     ]
+    # Keys that may be present but legitimately empty without triggering warnings
+    ALLOW_EMPTY_KEYS = {"positions"}
     CONTRACT_PROVIDES = [
         "adversarial_scenarios", "market_noise", "market_perturbations",
         "opponent_analysis", "opponent_simulation", "perturbation_history",
@@ -222,7 +224,19 @@ class OpponentSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
     # ================== CONTRACT HELPERS ==================
     def _validate_contract_inputs(self, md: Dict[str, Any]) -> None:
         """Warn (don’t crash) if required inputs are missing/empty."""
-        missing = [k for k in self.CONTRACT_REQUIRES if k not in md or md[k] in (None, {}, [], ())]
+        missing = []
+        for k in self.CONTRACT_REQUIRES:
+            if k not in md:
+                missing.append(k)
+                continue
+            v = md.get(k)
+            # Allow certain keys (like positions) to be empty without noise
+            if k in self.ALLOW_EMPTY_KEYS:
+                if v is None:
+                    missing.append(k)
+                continue
+            if v in (None, {}, [], ()):  # treat as missing for other keys
+                missing.append(k)
         if missing:
             self.logger.warning(f"[Contract] Missing/empty required inputs: {missing}")
 
@@ -358,7 +372,19 @@ class OpponentSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             data['regime_data']       = get('regime_data', 'OpponentSimulator') or {}
             data['session_data']      = get('session_data', 'OpponentSimulator') or {}
             data['historical_prices'] = get('historical_prices', 'OpponentSimulator') or {}
-            data['positions']         = get('positions', 'OpponentSimulator') or []
+            # Positions can be published under 'positions' or 'current_positions'; normalize to a list of dicts
+            positions_raw = (
+                get('positions', 'OpponentSimulator')
+                or get('current_positions', 'OpponentSimulator')
+                or []
+            )
+            if isinstance(positions_raw, dict):
+                positions_list = list(positions_raw.values())
+            elif isinstance(positions_raw, list):
+                positions_list = positions_raw
+            else:
+                positions_list = []
+            data['positions'] = positions_list
 
             # Prefer dedicated 'volatility' key; fall back to context-derived estimate
             vol_scalar = get('volatility', 'OpponentSimulator')

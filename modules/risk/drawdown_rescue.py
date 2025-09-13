@@ -438,8 +438,24 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
                 "warnings": [],
                 "adjustments": {},
             }
+    def _read_account_snapshot(self) -> Dict[str, float]:
+        """
+        Canonical read for balance/equity/PNL from SmartInfoBus.
+        Falls back safely if fields are missing.
+        """
+        pm = self.smart_bus.get("portfolio_metrics", "DrawdownRescue") or {}
+        balance = pm.get("balance")
+        equity  = pm.get("equity")
+        pnl     = pm.get("current_pnl")
 
-    # ── contract-safe process ────────────────────────────────
+        # Final defaults
+        balance = float(balance) if balance is not None else 0.0
+        equity  = float(equity)  if equity  is not None else balance
+        pnl     = float(pnl)     if pnl     is not None else 0.0
+        return {"balance": balance, "equity": equity, "current_pnl": pnl}
+
+
+        # ── contract-safe process ────────────────────────────────
     async def process(self, **kwargs) -> Dict[str, Any]:
         """
         Enhanced drawdown monitoring with comprehensive rescue mechanisms
@@ -460,10 +476,11 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
 
             self.step_count += 1
 
-            # Extract required data from SmartInfoBus (contract requires these keys)
-            balance = float(self.smart_bus.get("balance", "DrawdownRescue") or 10000.0)
-            equity = float(self.smart_bus.get("equity", "DrawdownRescue") or balance)
-            _ = self.smart_bus.get("positions", "DrawdownRescue") or []  # required, not used directly
+            # ── CANONICAL READS (updated) ─────────────────────────
+            acct = self._read_account_snapshot()
+            balance, equity = acct["balance"], acct["equity"]
+            # keep 'positions' access to satisfy contract 'requires'
+            positions = self.smart_bus.get("positions", "DrawdownRescue") or []
             market_context = self.smart_bus.get("market_context", "DrawdownRescue") or {}
 
             # Update balance tracking and peak
@@ -507,6 +524,7 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
             except Exception:
                 pass
             return payload
+
 
     # ── SmartInfoBus I/O (single-writer) ─────────────────────
     def _write_bus_from_payload(self, payload: Dict[str, Any], thesis: str) -> None:

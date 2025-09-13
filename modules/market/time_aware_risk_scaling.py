@@ -416,6 +416,25 @@ class TimeAwareRiskScaling(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradin
             thesis="Time-aware risk scaling initialization status for system awareness",
         )
 
+        # Publish minimal baseline health to satisfy early consumers
+        try:
+            self.smart_bus.set(
+                "time_risk_health",
+                {
+                    "success_rate": float(self.success_count / max(int(self.success_count + self.failure_count), 1)),
+                    "avg_processing_time_ms": float(np.mean(self.processing_times)) if self.processing_times else 0.0,
+                    "circuit_breaker_failures": int(self.circuit_breaker_failures),
+                    "current_risk_level": float(self.current_risk_level),
+                    "session_transitions": int(self._session_changes),
+                    "risk_events": int(len(self._risk_events)),
+                    "last_update": datetime.datetime.now().isoformat(),
+                },
+                module="TimeAwareRiskScaling",
+                thesis="Baseline time risk health published at initialization",
+            )
+        except Exception:
+            pass
+
     # ── MAIN PROCESS ───────────────────────────────────────────────
 
     async def process(self, **inputs) -> Dict[str, Any]:

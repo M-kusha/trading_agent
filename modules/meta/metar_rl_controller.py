@@ -161,7 +161,8 @@ class AgentPerformanceTracker:
         "MetaRLController",
         description="Advanced meta RL controller with intelligent automation and agent management",
         error_handling=True,
-        hot_reload=True
+        hot_reload=True,
+        timeout_ms=3000,
     )
 )
 class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):

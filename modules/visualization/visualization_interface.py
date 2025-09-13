@@ -415,32 +415,44 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
             top_balance = self.smart_bus.get('balance', 'VisualizationInterface')
             top_equity = self.smart_bus.get('equity', 'VisualizationInterface')
 
-            # Balance/equity
-            balance_val = (
-                risk_data.get('balance')
-                if isinstance(risk_data.get('balance'), (int, float)) else None
-            )
+            # Balance/equity (bus-first), then environment-config/performance anchors, else final default
+            fallback_sources: Dict[str, Any] = {}
+            balance_val = (risk_data.get('balance') if isinstance(risk_data.get('balance'), (int, float)) else None)
             if balance_val is None:
-                balance_val = (
-                    portfolio_metrics.get('balance')
-                    if isinstance(portfolio_metrics.get('balance'), (int, float)) else None
-                )
-            if balance_val is None and isinstance(top_balance, (int, float)):
-                balance_val = top_balance
+                pm_bal = portfolio_metrics.get('balance')
+                if isinstance(pm_bal, (int, float)):
+                    balance_val = pm_bal
+                elif isinstance(top_balance, (int, float)):
+                    balance_val = top_balance
+            # environment_config/performance_data fallback
             if balance_val is None:
-                balance_val = 10000.0
+                try:
+                    env_cfg = self.smart_bus.get('environment_config', 'VisualizationInterface', default={}) or {}
+                except Exception:
+                    env_cfg = {}
+                try:
+                    perf = self.smart_bus.get('performance_data', 'VisualizationInterface', default={}) or {}
+                except Exception:
+                    perf = {}
+                if isinstance(env_cfg.get('initial_balance'), (int, float)):
+                    balance_val = float(env_cfg['initial_balance']); fallback_sources['balance_fallback'] = 'environment_config.initial_balance'
+                elif isinstance(perf.get('balance'), (int, float)):
+                    balance_val = float(perf['balance']); fallback_sources['balance_fallback'] = 'performance_data.balance'
+                elif isinstance(perf.get('initial_balance'), (int, float)):
+                    balance_val = float(perf['initial_balance']); fallback_sources['balance_fallback'] = 'performance_data.initial_balance'
+            if balance_val is None:
+                balance_val = 10000.0; fallback_sources['balance_fallback'] = 'hard_default_10000'
 
-            equity_val = (
-                risk_data.get('equity')
-                if isinstance(risk_data.get('equity'), (int, float)) else None
-            )
+            equity_val = (risk_data.get('equity') if isinstance(risk_data.get('equity'), (int, float)) else None)
             if equity_val is None and isinstance(top_equity, (int, float)):
                 equity_val = top_equity
             if equity_val is None:
-                equity_val = balance_val
+                equity_val = balance_val; fallback_sources['equity_fallback'] = 'use_balance'
 
             data['balance'] = float(balance_val)
             data['equity'] = float(equity_val)
+            if fallback_sources:
+                data['_fallback_info'] = fallback_sources
 
             # Drawdown
             dd = None
@@ -619,7 +631,7 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
             # Get step information
             step_data = self.smart_bus.get('step_data', 'VisualizationInterface') or {}
             
-            return {
+            out = {
                 # Timestamps
                 '_time': datetime.datetime.now().isoformat(),
                 'timestamp': datetime.datetime.now().isoformat(),
@@ -661,6 +673,10 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
                 'total_exposure': trading_data['total_exposure'],
                 'leverage': trading_data['leverage']
             }
+            # annotate fallback provenance if present
+            if '_fallback_info' in trading_data:
+                out['_fallback_info'] = trading_data.get('_fallback_info', {})
+            return out
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "record_creation")
             self.logger.warning(f"Record creation failed: {error_context}")
@@ -1081,14 +1097,23 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
             positions = record.get('positions', 0)
             drawdown = record.get('drawdown', 0)
             regime = record.get('regime', 'unknown')
-            
-            print(f"[VizInterface] Step {record.get('step', 0)} | "
-                  f"Balance: ${balance:.2f} | "
-                  f"P&L: ${pnl:+.2f} | "
-                  f"DD: {drawdown:.1%} | "
-                  f"Pos: {positions} | "
-                  f"Regime: {regime}")
-            
+            fb = record.get('_fallback_info', {})
+            fb_tag = ''
+            if isinstance(fb, dict) and fb:
+                # compact tag when printing to indicate fallback used
+                src = fb.get('balance_fallback') or fb.get('equity_fallback')
+                if src:
+                    fb_tag = f" [fallback:{src}]"
+
+            print(
+                f"[VizInterface] Step {record.get('step', 0)} | "
+                f"Balance: ${balance:.2f}{fb_tag} | "
+                f"P&L: ${pnl:+.2f} | "
+                f"DD: {drawdown:.1%} | "
+                f"Pos: {positions} | "
+                f"Regime: {regime}"
+            )
+
         except Exception as e:
             self.logger.warning(f"Summary printing failed: {e}")
 

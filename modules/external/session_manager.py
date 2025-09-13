@@ -1,9 +1,9 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/external/session_manager.py
-# PRODUCTION-READY Session Manager (Pure, No Simulation)
-# Tracks session timing & system health without fabricating metrics
-# Pylance-clean: typed self.cfg (dataclass), pass dict to BaseModule
-# Provides only contract-listed keys (no extras)
+# Session Manager (safe, pass-through)
+# - Tracks session timing & health
+# - Does NOT fabricate PnL values
+# - Always returns contract keys; PnL keys are pass-through (empty {} if absent)
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -14,12 +14,18 @@ from dataclasses import dataclass, asdict
 from typing import Dict, Any, Optional, Deque
 from collections import deque
 
-from modules.contracts import module_args
 import numpy as np
 
+from modules.contracts import module_args
 from modules.core.module_base import BaseModule, module
 from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
 from modules.utils.audit_utils import RotatingLogger
+
+# Optional: use the real InfoBus if available
+try:
+    from modules.utils.info_bus import InfoBusManager  # type: ignore
+except Exception:  # pragma: no cover
+    InfoBusManager = None  # type: ignore
 
 
 @dataclass
@@ -34,7 +40,7 @@ class SessionConfig:
 
 @module(**module_args(
     "SessionManager",
-    description="Session timing and health context (no fabricated metrics, no duplication with risk/data modules).",
+    description="Session timing & health context. Returns all contract keys; PnL keys are pass-through of env outputs.",
     error_handling=True,
     hot_reload=True,
     timeout_ms=3000,
@@ -44,8 +50,9 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
     Responsibilities:
       - Track session lifecycle (start, duration).
       - Expose compact session/health/performance context.
-      - Never generates synthetic PnL, votes, or risk/theme data.
-      - Strict contract discipline: only provides contract-listed top-level keys.
+      - Strict contract discipline: all required top-level keys are always present.
+      - PnL keys (`performance_data`, `pnl_data`, `trading_result`) are pass-through:
+        we forward from env bus if present, otherwise return {} (never fabricate numbers).
     """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
@@ -108,6 +115,46 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
             return "us"
         return "closed"
 
+    def _bus_get(self, key: str, default=None):
+        """
+        Robust getter that tries (1) self.smart_bus, (2) InfoBusManager singleton,
+        (3) any mixin-provided helpers.
+        """
+        # 1) self.smart_bus (preferred)
+        sb = getattr(self, "smart_bus", None)
+        if sb is not None:
+            try:
+                # InfoBus.get signature is (key, module)
+                return sb.get(key, "SessionManager")
+            except Exception:
+                pass
+
+        # 2) InfoBusManager singleton
+        if InfoBusManager is not None:
+            try:
+                real_bus = InfoBusManager.get_instance()
+                if real_bus is not None:
+                    try:
+                        return real_bus.get(key, "SessionManager")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        # 3) mixin helpers (defensive)
+        for attr in ("bus_get", "get_from_bus", "get"):
+            fn = getattr(self, attr, None)
+            if callable(fn):
+                try:
+                    try:
+                        return fn(key, default)  # type: ignore[misc]
+                    except TypeError:
+                        val = fn(key)  # type: ignore[misc]
+                        return val if val is not None else default
+                except Exception:
+                    pass
+        return default
+
     # ─────────────────────────────────────────────────────────────
     # Public API
     # ─────────────────────────────────────────────────────────────
@@ -134,11 +181,15 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
         """
         Update session timestamps/labels and return a compact snapshot.
 
-        CONTRACT-ALIGNED TOP-LEVEL OUTPUTS ONLY:
+        CONTRACT-ALIGNED TOP-LEVEL OUTPUTS (always present):
           consensus_data, emergency_mode, episode_data, episode_summary, expert_votes,
           market_open, memory_usage, mistakes, module_performance, performance_data,
           playbook_entries, playbook_memory, pnl_data, session_context, session_metrics,
           system_alerts, system_health, system_performance, trading_result
+
+        PnL policy:
+          - Forward env bus values when available.
+          - Otherwise return {} for PnL-related keys (never fabricate numbers).
         """
         t0 = time.time()
         try:
@@ -177,7 +228,30 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                 "session_type": self.session_type,
             }
 
-            # Build strictly contract-listed top-level keys
+            # ── PnL pass-throughs from bus (do not fabricate) ──────────────────
+            perf_data_bus = self._bus_get("performance_data", None)
+            portfolio_metrics = self._bus_get("portfolio_metrics", None)
+            trading_result_bus = self._bus_get("trading_result", None)
+
+            # performance_data: echo if present, else {}
+            performance_data: Dict[str, Any] = perf_data_bus if isinstance(perf_data_bus, dict) else {}
+
+            # pnl_data: build from portfolio_metrics (+ trading_result if present), else {}
+            pnl_data: Dict[str, Any] = {}
+            if isinstance(portfolio_metrics, dict) and portfolio_metrics:
+                pnl_data = {
+                    "balance": portfolio_metrics.get("balance"),
+                    "equity": portfolio_metrics.get("equity"),
+                    "current_pnl": portfolio_metrics.get("current_pnl"),
+                    "step": portfolio_metrics.get("step"),
+                }
+                if isinstance(trading_result_bus, dict) and "pnl" in trading_result_bus:
+                    pnl_data["last_step_pnl"] = trading_result_bus.get("pnl")
+
+            # trading_result: echo if present, else {}
+            trading_result: Dict[str, Any] = trading_result_bus if isinstance(trading_result_bus, dict) else {}
+
+            # Build strictly contract-listed top-level keys (always present)
             snapshot: Dict[str, Any] = {
                 "consensus_data": {},
                 "emergency_mode": False,
@@ -188,33 +262,50 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                 "memory_usage": {},
                 "mistakes": [],
                 "module_performance": {},
-                "performance_data": {},
+                "performance_data": performance_data,  # ← always present
                 "playbook_entries": [],
                 "playbook_memory": {},
-                "pnl_data": {},
+                "pnl_data": pnl_data,                 # ← always present
                 "session_context": session_context,
                 "session_metrics": session_metrics,
                 "system_alerts": list(self.system_alerts[-25:]),
                 "system_health": system_health,
                 "system_performance": system_performance,
-                # added per contract (Environment reads this key)
-                "trading_result": {},
+                "trading_result": trading_result,     # ← always present
             }
 
-            # Bookkeeping (real)
+            # Bookkeeping
             self._success += 1
             self._proc_times.append((time.time() - t0) * 1000.0)
             return snapshot
 
         except Exception as e:
-            # Record a real failure; do not fabricate
+            # Record a real failure; still return all required keys
             self._fail += 1
             self.system_alerts.append({
                 "level": "error",
                 "message": f"process() exception: {str(e)[:200]}",
                 "timestamp": time.time(),
             })
-            # Still return contract-complete structure
+
+            # Best-effort pass-throughs even on error
+            perf_data_bus = self._bus_get("performance_data", None)
+            portfolio_metrics = self._bus_get("portfolio_metrics", None)
+            trading_result_bus = self._bus_get("trading_result", None)
+
+            performance_data = perf_data_bus if isinstance(perf_data_bus, dict) else {}
+            pnl_data: Dict[str, Any] = {}
+            if isinstance(portfolio_metrics, dict) and portfolio_metrics:
+                pnl_data = {
+                    "balance": portfolio_metrics.get("balance"),
+                    "equity": portfolio_metrics.get("equity"),
+                    "current_pnl": portfolio_metrics.get("current_pnl"),
+                    "step": portfolio_metrics.get("step"),
+                }
+                if isinstance(trading_result_bus, dict) and "pnl" in trading_result_bus:
+                    pnl_data["last_step_pnl"] = trading_result_bus.get("pnl")
+            trading_result = trading_result_bus if isinstance(trading_result_bus, dict) else {}
+
             return {
                 "consensus_data": {},
                 "emergency_mode": False,
@@ -225,10 +316,10 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                 "memory_usage": {},
                 "mistakes": [],
                 "module_performance": {},
-                "performance_data": {},
+                "performance_data": performance_data,  # required key present
                 "playbook_entries": [],
                 "playbook_memory": {},
-                "pnl_data": {},
+                "pnl_data": pnl_data,                  # required key present
                 "session_context": {
                     "session_canonical": self._session_canonical(),
                     "trading_session": self.trading_session,
@@ -252,5 +343,5 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                     "avg_processing_time_ms": float(np.mean(self._proc_times)) if self._proc_times else 0.0,
                     "last_check": datetime.datetime.utcnow().isoformat(),
                 },
-                "trading_result": {},
+                "trading_result": trading_result,      # required key present
             }

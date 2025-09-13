@@ -1,39 +1,35 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/core/persistence.py
-# [ROCKET] PRODUCTION-READY SmartInfoBus Persistence & Replay System
-# NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
-# ENHANCED 2025-08:
-#   - Serializer-aware validation (pickle-first, JSON fallback)
-#   - Checksum bound to chosen serialization method
-#   - Periodic auto-save of all module states
-#   - SmartInfoBus snapshot on startup/shutdown
-#   - Safer health checks & robust replay stats without NumPy
+# Production-ready SmartInfoBus Persistence & Replay System (fixed)
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
-import pickle
-import json
+
 import asyncio
+import hashlib
 import importlib
+import json
+import os
+import pickle
+import shutil
+import sys
+import tempfile
+import threading
 import time
+import traceback
+import zlib
+from pathlib import Path
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+from collections import defaultdict, deque
+
 try:
     import numpy as np
     NUMPY_AVAILABLE = True
-except ImportError:
+except Exception:
     NUMPY_AVAILABLE = False
-    np = None          # type: ignore
-import zlib
-import shutil
-import tempfile
-from pathlib import Path
-from typing import Dict, Any, List, Optional, Callable, Tuple, TYPE_CHECKING
-from datetime import datetime
-from dataclasses import dataclass, field
-from collections import defaultdict, deque
-import traceback
-import hashlib
-import threading
-import sys
+    np = None  # type: ignore
 
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 
@@ -42,13 +38,13 @@ if TYPE_CHECKING:
     from modules.core.module_base import BaseModule
     from modules.utils.info_bus import SmartInfoBus
 
-# ═══════════════════════════════════════════════════════════════════
-# PRODUCTION-GRADE DATA STRUCTURES
-# ═══════════════════════════════════════════════════════════════════
+
+# ═════════════════════════════════════════════════════════════
+# Data classes
+# ═════════════════════════════════════════════════════════════
 
 @dataclass
 class StateValidation:
-    """State validation results"""
     is_valid: bool
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
@@ -57,7 +53,6 @@ class StateValidation:
 
 @dataclass
 class ReplayEvent:
-    """Single event in replay session with comprehensive metadata"""
     timestamp: float
     event_type: str
     module: str
@@ -66,49 +61,43 @@ class ReplayEvent:
     sequence_number: int
     checksum: str = field(default="")
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
     def __post_init__(self):
-        """Calculate checksum for integrity validation"""
         if not self.checksum:
             data_str = json.dumps(self.data, sort_keys=True, default=str)
             content = f"{self.timestamp}:{self.event_type}:{self.module}:{data_str}"
             self.checksum = hashlib.md5(content.encode()).hexdigest()
-    
-    def age_at(self, current_time: float) -> float:
-        """Get age of event at given time"""
-        return current_time - self.timestamp
-    
+
+    def age_at(self, now: float) -> float:
+        return now - self.timestamp
+
     def validate_integrity(self) -> bool:
-        """Validate event integrity using checksum"""
-        expected_checksum = self.checksum
-        self.checksum = ""  # Temporarily clear
-        self.__post_init__()  # Recalculate
-        
-        is_valid = self.checksum == expected_checksum
-        self.checksum = expected_checksum  # Restore
-        return is_valid
-    
+        expected = self.checksum
+        self.checksum = ""
+        self.__post_init__()
+        ok = (self.checksum == expected)
+        self.checksum = expected
+        return ok
+
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization"""
         return {
-            'timestamp': self.timestamp,
-            'event_type': self.event_type,
-            'module': self.module,
-            'data': self.data,
-            'execution_id': self.execution_id,
-            'sequence_number': self.sequence_number,
-            'checksum': self.checksum,
-            'metadata': self.metadata
+            "timestamp": self.timestamp,
+            "event_type": self.event_type,
+            "module": self.module,
+            "data": self.data,
+            "execution_id": self.execution_id,
+            "sequence_number": self.sequence_number,
+            "checksum": self.checksum,
+            "metadata": self.metadata,
         }
-    
+
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'ReplayEvent':
-        """Create from dictionary"""
-        return cls(**data)
+    def from_dict(cls, d: Dict[str, Any]) -> "ReplayEvent":
+        return cls(**d)
+
 
 @dataclass
 class ReplaySession:
-    """Complete replay session with validation and analysis"""
     session_id: str
     start_time: datetime
     end_time: datetime
@@ -119,122 +108,88 @@ class ReplaySession:
     checkpoints: List[Dict[str, Any]] = field(default_factory=list)
     integrity_hash: str = field(default="")
     system_health: Dict[str, Any] = field(default_factory=dict)
-    
+
     def __post_init__(self):
-        """Calculate session integrity hash"""
         if not self.integrity_hash:
-            session_data = {
-                'session_id': self.session_id,
-                'event_count': len(self.events),
-                'start_time': self.start_time.isoformat(),
-                'end_time': self.end_time.isoformat()
+            core = {
+                "session_id": self.session_id,
+                "event_count": len(self.events),
+                "start_time": self.start_time.isoformat(),
+                "end_time": self.end_time.isoformat(),
             }
             self.integrity_hash = hashlib.sha256(
-                json.dumps(session_data, sort_keys=True).encode()
+                json.dumps(core, sort_keys=True).encode()
             ).hexdigest()
-    
+
     @property
     def duration_seconds(self) -> float:
-        """Get session duration in seconds"""
         if self.events:
             return self.events[-1].timestamp - self.events[0].timestamp
         return (self.end_time - self.start_time).total_seconds()
-    
+
     @property
     def event_count(self) -> int:
-        """Get total event count"""
         return len(self.events)
-    
+
     def validate_integrity(self) -> bool:
-        """Validate complete session integrity"""
-        # Check session hash
-        expected_hash = self.integrity_hash
+        expected = self.integrity_hash
         self.integrity_hash = ""
         self.__post_init__()
-        
-        session_valid = self.integrity_hash == expected_hash
-        self.integrity_hash = expected_hash
-        
-        if not session_valid:
+        ok = (self.integrity_hash == expected)
+        self.integrity_hash = expected
+        if not ok:
             return False
-        
-        # Check event integrity
-        for event in self.events:
-            if not event.validate_integrity():
+        for i, e in enumerate(self.events):
+            if e.sequence_number != i or not e.validate_integrity():
                 return False
-        
-        # Check sequence numbers
-        for i, event in enumerate(self.events):
-            if event.sequence_number != i:
-                return False
-        
         return True
-    
+
     def get_statistics(self) -> Dict[str, Any]:
-        """Get comprehensive session statistics"""
         if not self.events:
-            return {'error': 'No events in session'}
-        
-        # Event type distribution
+            return {"error": "No events in session"}
         event_types = defaultdict(int)
         module_activity = defaultdict(int)
-        
-        for event in self.events:
-            event_types[event.event_type] += 1
-            module_activity[event.module] += 1
-        
-        # Time analysis
-        durations = []
-        for i in range(1, len(self.events)):
-            duration = self.events[i].timestamp - self.events[i-1].timestamp
-            durations.append(duration)
-        
+        for e in self.events:
+            event_types[e.event_type] += 1
+            module_activity[e.module] += 1
+        gaps = [self.events[i].timestamp - self.events[i-1].timestamp
+                for i in range(1, len(self.events))]
+
         def _mean(vals):
-            if not vals:
-                return 0.0
-            if NUMPY_AVAILABLE and np is not None:
-                return float(np.mean(vals))
-            return sum(vals)/len(vals)
-        
+            if not vals: return 0.0
+            return float(np.mean(vals)) if NUMPY_AVAILABLE and np is not None else sum(vals)/len(vals)
+
         return {
-            'session_id': self.session_id,
-            'duration_seconds': self.duration_seconds,
-            'total_events': self.event_count,
-            'event_types': dict(event_types),
-            'module_activity': dict(module_activity),
-            'avg_event_interval': _mean(durations) if durations else 0.0,
-            'max_event_interval': max(durations) if durations else 0,
-            'unique_modules': len(module_activity),
-            'unique_event_types': len(event_types),
-            'checkpoints': len(self.checkpoints),
-            'integrity_valid': self.validate_integrity(),
-            'system_health': self.system_health
+            "session_id": self.session_id,
+            "duration_seconds": self.duration_seconds,
+            "total_events": self.event_count,
+            "event_types": dict(event_types),
+            "module_activity": dict(module_activity),
+            "avg_event_interval": _mean(gaps) if gaps else 0.0,
+            "max_event_interval": max(gaps) if gaps else 0.0,
+            "unique_modules": len(module_activity),
+            "unique_event_types": len(event_types),
+            "checkpoints": len(self.checkpoints),
+            "integrity_valid": self.validate_integrity(),
+            "system_health": self.system_health,
         }
 
-# ═══════════════════════════════════════════════════════════════════
-# SMARTINFOBUS SNAPSHOT HELPERS (persistence of shared memory)
-# ═══════════════════════════════════════════════════════════════════
+
+# ═════════════════════════════════════════════════════════════
+# SmartInfoBus snapshot helpers
+# ═════════════════════════════════════════════════════════════
 
 def save_infobus_snapshot(path: str = "state/infobus.json") -> bool:
-    """Persist a lightweight snapshot of SmartInfoBus key/value memory.
-
-    Uses getattr + callable checks so static analyzers don't complain about
-    optional/unknown attributes like `export_snapshot`.
-    """
     try:
         from modules.utils.info_bus import InfoBusManager  # type: ignore
-        bus: Any = InfoBusManager.get_instance()  # type: ignore[assignment]
-
-        # Prefer a public exporter if present; otherwise fall back to internal store
+        bus: Any = InfoBusManager.get_instance()
         exporter = getattr(bus, "export_snapshot", None)
         if callable(exporter):
             snapshot = exporter()
         else:
             store = getattr(bus, "_data_store", None)
             snapshot = dict(store) if isinstance(store, dict) else {}
-
-        p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
+        p = Path(path); p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(snapshot, indent=2, default=str))
         return True
     except Exception:
@@ -242,20 +197,13 @@ def save_infobus_snapshot(path: str = "state/infobus.json") -> bool:
 
 
 def load_infobus_snapshot(path: str = "state/infobus.json") -> bool:
-    """Load a previously persisted SmartInfoBus snapshot.
-
-    Avoids direct attribute access; prefers a `set`-style API if available,
-    otherwise updates an internal dict store when present.
-    """
     try:
         from modules.utils.info_bus import InfoBusManager  # type: ignore
         p = Path(path)
         if not p.exists():
             return False
-
         data = json.loads(p.read_text())
-        bus: Any = InfoBusManager.get_instance()  # type: ignore[assignment]
-
+        bus: Any = InfoBusManager.get_instance()
         setter = getattr(bus, "set", None)
         if callable(setter):
             for k, v in data.items():
@@ -266,574 +214,403 @@ def load_infobus_snapshot(path: str = "state/infobus.json") -> bool:
         else:
             store = getattr(bus, "_data_store", None)
             if isinstance(store, dict):
-                try:
-                    store.update(data)
-                except Exception:
-                    # last-ditch: copy in a new dict if store is a proxy
-                    try:
-                        for k, v in data.items():
-                            store[k] = v  # type: ignore[index]
-                    except Exception:
-                        return False
+                store.update(data)
         return True
     except Exception:
         return False
 
 
-# ═══════════════════════════════════════════════════════════════════
-# PRODUCTION-GRADE STATE MANAGER WITH VALIDATION
-# ═══════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════
+# StateManager
+# ═════════════════════════════════════════════════════════════
 
 class StateManager:
-    """
-    PRODUCTION-GRADE state management with complete validation.
-    
-    ENHANCED:
-    - Serializer-aware validation (pickle-first, JSON fallback)
-    - Checksum bound to chosen serialization method
-    - Atomic disk writes with backups + compression
-    - Save/restore all modules in one call
-    """
-    
     def __init__(self, state_dir: str = "state/modules"):
-        self.state_dir = Path(state_dir)
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Backup directory for safety
-        self.backup_dir = self.state_dir / "backups"
-        self.backup_dir.mkdir(exist_ok=True)
-        
-        # Checkpoint directory
-        self.checkpoint_dir = self.state_dir / "checkpoints"
-        self.checkpoint_dir.mkdir(exist_ok=True)
-        
-        # In-memory state cache with versioning
+        self.state_dir = Path(state_dir); self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.backup_dir = self.state_dir / "backups"; self.backup_dir.mkdir(exist_ok=True)
+        self.checkpoint_dir = self.state_dir / "checkpoints"; self.checkpoint_dir.mkdir(exist_ok=True)
+
         self.state_cache: Dict[str, Dict[str, Any]] = {}
         self.state_versions: Dict[str, int] = {}
         self.state_checksums: Dict[str, str] = {}
-        
-        # Module version tracking
         self.module_versions: Dict[str, str] = {}
         self.version_compatibility: Dict[str, List[str]] = defaultdict(list)
-        
-        # Configuration
+
         self.max_backups = 10
         self.compression_enabled = True
         self.validation_enabled = True
-        self.compression_level = 6  # zlib compression level
-        
-        # State validation rules
+        self.compression_level = 6
+
         self.validation_rules = self._initialize_validation_rules()
-        
-        # Thread safety
         self._lock = threading.RLock()
-        
-        # Setup logging
+
         self.logger = RotatingLogger(
             name="StateManager",
             log_path="logs/state/state_manager.log",
             max_lines=5000,
             operator_mode=True,
-            plain_english=True
+            plain_english=True,
         )
-        
-        # Initialize version compatibility database
         self._initialize_version_compatibility()
-        
-        self.logger.info(
-            format_operator_message(
-                "[SAVE]", "STATE MANAGER INITIALIZED",
-                details=f"Dir: {self.state_dir}",
-                context="startup"
-            )
-        )
-    
+        self.logger.info(format_operator_message("[SAVE]", "STATE MANAGER INITIALIZED", details=f"Dir: {self.state_dir}", context="startup"))
+
+    # ---------- validation & version ----------
+
     def _initialize_validation_rules(self) -> Dict[str, Callable]:
-        """Initialize state validation rules (serializer-aware)."""
         return {
-            'required_fields': lambda envelope: all(
-                field in envelope for field in ['module_name', 'timestamp', 'version', 'state']
-            ),
-            'checksum_valid': lambda envelope: self._validate_checksum(envelope),
-            'version_format': lambda envelope: isinstance(envelope.get('version'), (int, str)),
-            'state_type': lambda envelope: isinstance(envelope.get('state'), dict),
-            'timestamp_valid': lambda envelope: self._validate_timestamp(envelope.get('timestamp')),
-            'size_limit': lambda envelope: self._check_state_size(envelope.get('state')) < 100 * 1024 * 1024  # 100MB (logical)
+            "required_fields": lambda env: all(k in env for k in ("module_name","timestamp","version","state")),
+            "checksum_valid":  lambda env: self._validate_checksum(env),
+            "version_format":  lambda env: isinstance(env.get("version"), (int, str)),
+            "state_type":      lambda env: isinstance(env.get("state"), dict),
+            "timestamp_valid": lambda env: self._validate_timestamp(env.get("timestamp")),
+            "size_limit":      lambda env: self._check_state_size(env.get("state")) < 100 * 1024 * 1024,
         }
-    
+
     def _initialize_version_compatibility(self):
-        """Initialize module version compatibility database"""
-        # Define known compatible versions
         self.version_compatibility = {
-            'default': ['1.0.0', '1.0.1', '1.1.0'],  # Default compatibility
-            # Add specific module compatibility as needed
+            "default": ["1.0.0", "1.0.1", "1.1.0"],
         }
-    
-    def save_module_state(self, module: 'BaseModule') -> bytes:
-        """
-        Save module state with comprehensive validation.
 
-        ENHANCED: Serializer-aware checksum and envelope; supports arbitrary
-        Python objects (e.g., model weights, replay buffers) via pickle.
-        """
-        module_name = module.__class__.__name__
+    # ---------- public save/restore APIs ----------
 
+    def save_module_state(self, module: "BaseModule") -> bytes:
+        name = module.__class__.__name__
         with self._lock:
             try:
-                # Get state from module (prefer explicit API)
-                if hasattr(module, 'get_state'):
-                    state = module.get_state()
-                else:
+                # extract state (robust)
+                state = None
+                if hasattr(module, "get_state"):
+                    try:
+                        state = module.get_state()
+                    except Exception:
+                        state = None
+                if not isinstance(state, dict):
                     state = self._extract_safe_attributes(module)
+                    if not isinstance(state, dict):
+                        state = {"value": state}
 
-                # Pre-save validation (serializer-aware smoke test)
                 validation = self._validate_state_for_save(state, module)
                 if not validation.is_valid:
                     raise ValueError(f"State validation failed: {validation.errors}")
 
-                # Decide serialization method by probing the raw state
-                _probe_blob, method = self._serialize_state({'state': state})
+                _probe_blob, method = self._serialize_state({"state": state})
 
-                # Module version
-                module_version = getattr(module.metadata, 'version', '1.0.0') if hasattr(module, 'metadata') else '1.0.0'
-                self.module_versions[module_name] = module_version
+                module_version = getattr(getattr(module, "metadata", None), "version", "1.0.0")
+                self.module_versions[name] = module_version
 
-                # Envelope
-                version = self.state_versions.get(module_name, 0) + 1
-                timestamp = datetime.now()
+                version = self.state_versions.get(name, 0) + 1
+                timestamp = datetime.now().isoformat()
 
-                state_with_metadata: Dict[str, Any] = {
-                    'module_name': module_name,
-                    'timestamp': timestamp.isoformat(),
-                    'version': version,
-                    'module_version': module_version,
-                    'state': state,
-                    'module_metadata': {
-                        'class_name': module.__class__.__name__,
-                        'module_path': module.__class__.__module__,
-                        'version': module_version,
-                        'health_status': state.get('health_status', 'unknown')
+                envelope: Dict[str, Any] = {
+                    "module_name": name,
+                    "timestamp": timestamp,
+                    "version": version,
+                    "module_version": module_version,
+                    "state": state,
+                    "module_metadata": {
+                        "class_name": module.__class__.__name__,
+                        "module_path": module.__class__.__module__,
+                        "version": module_version,
+                        "health_status": state.get("health_status", "unknown"),
                     },
-                    'system_context': self._get_system_context(),
-                    'validation': validation.__dict__,
-                    'serialization_method': method
+                    "system_context": self._get_system_context(),
+                    "validation": validation.__dict__,
+                    "serialization_method": method,
                 }
 
-                # Checksum bound to method
-                if method == 'json':
+                # checksum bound to chosen method over STATE
+                if method == "json":
                     payload = json.dumps(state, sort_keys=True, default=str).encode()
                 else:
                     payload = pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL)
-                state_with_metadata['checksum'] = hashlib.sha256(payload).hexdigest()
+                envelope["checksum"] = hashlib.sha256(payload).hexdigest()
 
-                # Track in-memory
-                self.state_versions[module_name] = version
-                self.state_checksums[module_name] = state_with_metadata['checksum']
-                self.state_cache[module_name] = state_with_metadata
+                self.state_versions[name] = version
+                self.state_checksums[name] = envelope["checksum"]
+                self.state_cache[name] = envelope
 
-                # Persist to disk (uses serialization_method to pick the writer/ext)
-                self._save_to_disk_with_backup(module_name, state_with_metadata)
-
-                self.logger.info(
-                    format_operator_message(
-                        "[SAVE]", "STATE SAVED",
-                        instrument=module_name,
-                        details=f"v{version} ({len(payload)} bytes, {method})",
-                        context="state_management"
-                    )
-                )
+                self._save_to_disk_with_backup(name, envelope)
+                self.logger.info(format_operator_message("[SAVE]", "STATE SAVED", instrument=name, details=f"v{version} ({len(payload)} bytes, {method})", context="state_management"))
                 return payload
-
             except Exception as e:
-                self.logger.error(f"[CRASH] Failed to save state for {module_name}: {e}")
-                raise RuntimeError(f"State save failed for {module_name}: {e}")
+                self.logger.error(f"[CRASH] Failed to save state for {name}: {e}")
+                raise RuntimeError(f"State save failed for {name}: {e}")
 
-    def save_all_module_states(self, orchestrator: 'ModuleOrchestrator') -> Dict[str, bool]:
-        """Save state for all modules registered in the orchestrator."""
+    def save_all_module_states(self, orchestrator: "ModuleOrchestrator") -> Dict[str, bool]:
         results: Dict[str, bool] = {}
-        for name, module in orchestrator.modules.items():
+        for name, mod in orchestrator.modules.items():
             try:
-                self.save_module_state(module)
+                self.save_module_state(mod)
                 results[name] = True
             except Exception as e:
                 self.logger.error(f"Save failed for {name}: {e}")
                 results[name] = False
         return results
 
-    def _validate_state_for_save(self, state: Dict[str, Any], module: 'BaseModule') -> StateValidation:
-        """Validate state before saving (serializer-aware, no hard JSON requirement)."""
+    def restore_all_states(self, orchestrator: "ModuleOrchestrator") -> Dict[str, bool]:
+        with self._lock:
+            if not self._check_system_health_for_operation(orchestrator):
+                self.logger.warning("System health check failed - limited restoration only")
+
+            results: Dict[str, bool] = {}
+
+            # gather files
+            state_files: List[Path] = []
+            for ext in (".json", ".json.gz", ".pkl", ".pkl.gz"):
+                state_files.extend(self.state_dir.glob(f"*{ext}"))
+            # unique by module using robust parser
+            unique: Dict[str, Path] = {}
+            for p in state_files:
+                mod = self._module_name_from_state_file(p)
+                if mod and (mod not in unique or p.stat().st_mtime > unique[mod].stat().st_mtime):
+                    unique[mod] = p
+
+            for module_name, state_file in unique.items():
+                if module_name not in orchestrator.modules:
+                    continue
+                state_data = self.load_from_disk(module_name)
+                if not state_data:
+                    results[module_name] = False
+                    continue
+                try:
+                    module = orchestrator.modules[module_name]
+                    validation = self._validate_state_for_restore(state_data, module)
+                    if not validation.is_valid:
+                        self.logger.error(f"State validation failed for {module_name}: {validation.errors}")
+                        results[module_name] = False
+                        continue
+                    if validation.required_migrations:
+                        state_data["state"] = self._apply_state_migrations(state_data["state"], validation.required_migrations, module_name)
+                    if hasattr(module, "set_state"):
+                        module.set_state(state_data["state"])
+                        results[module_name] = True
+                        self.logger.info(f"[OK] Restored state for {module_name} (v{state_data.get('version', 0)}, compatibility: {validation.compatibility_score:.1%})")
+                    else:
+                        results[module_name] = False
+                        self.logger.warning(f"Module {module_name} does not support state restoration")
+                except Exception as e:
+                    self.logger.error(f"[CRASH] Failed to restore {module_name}: {e}")
+                    results[module_name] = False
+
+            ok_count = sum(1 for v in results.values() if v)
+            self.logger.info(format_operator_message("[FOLDER]", "STATE RESTORATION COMPLETE", details=f"Restored {ok_count}/{len(results)} modules", context="startup"))
+            return results
+
+    # ---------- helpers & validation ----------
+
+    def _module_name_from_state_file(self, p: Path) -> str:
+        """
+        Robustly extract module name from files:
+        <Module>_state.json(.gz) | <Module>_state.pkl(.gz)
+        """
+        name = p.name
+        for suffix in ("_state.json.gz", "_state.pkl.gz", "_state.json", "_state.pkl", ".json.gz", ".pkl.gz", ".json", ".pkl"):
+            if name.endswith(suffix):
+                name = name[: -len(suffix)]
+                break
+        # also handle accidental double-extensions already stripped
+        if name.endswith("_state"):
+            name = name[:-6]
+        return name
+
+    def _validate_state_for_save(self, state: Any, module: "BaseModule") -> StateValidation:
         v = StateValidation(is_valid=True)
-
+        # coerce to dict if needed
         if not isinstance(state, dict):
-            v.is_valid = False
-            v.errors.append("State must be a dictionary")
-            return v
-
-        # Recommended fields (warnings only)
-        for field in ['class_name', 'version', 'step_count', 'health_status']:
-            if field not in state:
-                v.warnings.append(f"Missing recommended field: {field}")
-
-        # Probe actual serializer we will use
+            v.warnings.append("State was not a dict; wrapping as {'value': ...}")
+            state = {"value": state}
+        # probe serializer
         try:
-            _bytes, _method = self._serialize_state({'state': state})
-            # size warning based on serialized payload
-            if len(_bytes) > 50 * 1024 * 1024:
-                v.warnings.append(f"Large serialized state: {len(_bytes)/1024/1024:.1f}MB")
+            blob, _method = self._serialize_state({"state": state})
+            if len(blob) > 50 * 1024 * 1024:
+                v.warnings.append(f"Large serialized state: {len(blob)/1024/1024:.1f}MB")
         except Exception as e:
             v.is_valid = False
             v.errors.append(f"Serialization failed: {e}")
             return v
-
-        # Module-specific validation (optional)
-        if hasattr(module, 'validate_state'):
+        # module-specific validation (optional)
+        if hasattr(module, "validate_state"):
             try:
                 if not module.validate_state(state):
                     v.is_valid = False
                     v.errors.append("Module-specific validation failed")
             except Exception as e:
                 v.warnings.append(f"Module validation check failed: {e}")
-
         return v
-    
-    def reload_module(self, module_name: str, orchestrator: 'ModuleOrchestrator') -> bool:
-        """
-        Hot-reload module with state preservation and validation.
 
-        ENHANCED: Load state back from disk using format detection to avoid
-        pickle/JSON mismatches. Includes health and version checks.
-        """
-        with self._lock:
-            try:
-                # Current module
-                current_module = orchestrator.modules.get(module_name)
-                if not current_module:
-                    self.logger.error(f"Module {module_name} not found in orchestrator")
-                    return False
-
-                # System health pre-check
-                if not self._check_system_health_for_operation(orchestrator):
-                    self.logger.error("System health check failed - aborting reload")
-                    return False
-
-                # Save current state with backup
-                _ = self.save_module_state(current_module)
-
-                # Pre-reload checkpoint
-                pre_reload_checkpoint = self._create_mini_checkpoint(
-                    module_name, current_module, "pre_reload"
-                )
-
-                # Class & module info
-                module_class = orchestrator.module_classes.get(module_name)
-                if not module_class:
-                    self.logger.error(f"Module class {module_name} not found")
-                    return False
-
-                module_path = module_class.__module__
-
-                # Reload module code
-                self.logger.info(f"[RELOAD] Reloading module code for {module_name}")
-                try:
-                    module_ref = importlib.import_module(module_path)
-                    importlib.reload(module_ref)
-                except Exception as e:
-                    self.logger.error(f"Failed to reload module code: {e}")
-                    return False
-
-                # Get new class
-                new_class = getattr(module_ref, module_name, None)
-                if not new_class:
-                    self.logger.error(f"Class {module_name} not found after reload")
-                    return False
-
-                if not hasattr(new_class, '__module_metadata__'):
-                    self.logger.error(f"Reloaded class missing @module decorator")
-                    return False
-
-                # Version compatibility
-                old_version = self.module_versions.get(module_name, '1.0.0')
-                new_version = getattr(new_class.__module_metadata__, 'version', '1.0.0')
-                if not self._check_version_compatibility(module_name, old_version, new_version):
-                    self.logger.error(f"Version incompatibility: {old_version} -> {new_version}")
-                    return False
-
-                # Create new instance
-                try:
-                    new_instance = new_class()
-                except Exception as e:
-                    self.logger.error(f"Failed to create new instance: {e}")
-                    self._restore_mini_checkpoint(pre_reload_checkpoint, orchestrator)
-                    return False
-
-                # Restore state with validation (load from disk to respect actual format)
-                try:
-                    state_data = self.load_from_disk(module_name)
-                    if not state_data:
-                        self.logger.error(f"Failed to load persisted state for {module_name}")
-                        self._restore_mini_checkpoint(pre_reload_checkpoint, orchestrator)
-                        return False
-
-                    validation = self._validate_state_for_restore(state_data, new_instance)
-                    if not validation.is_valid:
-                        self.logger.error(f"State validation failed: {validation.errors}")
-                        return False
-
-                    # Apply any required migrations
-                    if validation.required_migrations:
-                        state_data['state'] = self._apply_state_migrations(
-                            state_data['state'],
-                            validation.required_migrations,
-                            module_name
-                        )
-
-                    # Restore into instance
-                    if hasattr(new_instance, 'set_state'):
-                        new_instance.set_state(state_data['state'])
-                    else:
-                        self._restore_attributes_safely(new_instance, state_data['state'])
-
-                except Exception as e:
-                    self.logger.error(f"Failed to restore state: {e}")
-                    self._restore_mini_checkpoint(pre_reload_checkpoint, orchestrator)
-                    return False
-
-                # Health check new instance
-                if hasattr(new_instance, 'get_health_status'):
-                    health = new_instance.get_health_status()
-                    if health.get('status') == 'CRITICAL':
-                        self.logger.error("New instance health check failed")
-                        return False
-
-                # Atomically swap into orchestrator
-                orchestrator.modules[module_name] = new_instance
-                orchestrator.module_classes[module_name] = new_class
-
-                # Update metadata if changed
-                old_metadata = orchestrator.metadata.get(module_name)
-                new_metadata = new_class.__module_metadata__
-                if old_metadata and old_metadata.to_dict() != new_metadata.to_dict():
-                    orchestrator.metadata[module_name] = new_metadata
-                    self.logger.info(f"Module metadata updated for {module_name}")
-                    orchestrator.build_execution_plan()
-
-                # Track version
-                self.module_versions[module_name] = new_version
-
-                self.logger.info(
-                    format_operator_message(
-                        "[OK]", "MODULE RELOADED",
-                        instrument=module_name,
-                        details=f"v{old_version} -> v{new_version}",
-                        context="hot_reload"
-                    )
-                )
-                return True
-
-            except Exception as e:
-                self.logger.error(f"[CRASH] Failed to reload {module_name}: {e}")
-                self.logger.error(f"Traceback: {traceback.format_exc()}")
-                return False
-
-    
-    def _check_system_health_for_operation(self, orchestrator: 'ModuleOrchestrator') -> bool:
-        """Check if system is healthy enough for state operations"""
+    def _check_system_health_for_operation(self, orchestrator: "ModuleOrchestrator") -> bool:
         try:
-            # Check emergency mode
-            emergency_status = orchestrator.get_emergency_mode_status()
-            if emergency_status.get('active'):
-                self.logger.warning("System in emergency mode")
-                return False
-            
-            # Check execution metrics
-            metrics = orchestrator.get_execution_metrics()
-            if metrics.get('success_rate', 0) < 0.5:
+            if getattr(orchestrator, "get_emergency_mode_status", None):
+                if orchestrator.get_emergency_mode_status().get("active"):
+                    self.logger.warning("System in emergency mode")
+                    return False
+            metrics = orchestrator.get_execution_metrics() if hasattr(orchestrator, "get_execution_metrics") else {}
+            if metrics.get("success_rate", 0) < 0.5:
                 self.logger.warning("System success rate too low")
                 return False
-            
-            # Check circuit breakers
-            cb_status = orchestrator.get_circuit_breaker_status()
-            open_breakers = sum(1 for cb in cb_status.values() if cb['state'] == 'OPEN')
-            if cb_status and open_breakers > len(cb_status) * 0.3:  # More than 30% open
-                self.logger.warning("Too many circuit breakers open")
-                return False
-            
+            cb_status = orchestrator.get_circuit_breaker_status() if hasattr(orchestrator, "get_circuit_breaker_status") else {}
+            if cb_status:
+                open_breakers = sum(1 for cb in cb_status.values() if cb.get("state") == "OPEN")
+                if open_breakers > len(cb_status) * 0.3:
+                    self.logger.warning("Too many circuit breakers open")
+                    return False
             return True
-            
         except Exception as e:
             self.logger.error(f"Health check failed: {e}")
             return False
-    
-    def _check_version_compatibility(self, module_name: str, old_version: str, new_version: str) -> bool:
-        """Check if module versions are compatible"""
-        # Same version is always compatible
-        if old_version == new_version:
+
+    def _check_version_compatibility(self, module_name: str, old: str, new: str) -> bool:
+        if old == new:
             return True
-        
-        # Check compatibility database
-        compatible_versions = self.version_compatibility.get(module_name, self.version_compatibility['default'])
-        
-        # Both versions should be in compatible list
-        if old_version in compatible_versions and new_version in compatible_versions:
+        compat = self.version_compatibility.get(module_name, self.version_compatibility["default"])
+        if old in compat and new in compat:
             return True
-        
-        # Check semantic versioning
         try:
-            old_parts = [int(x) for x in old_version.split('.')]
-            new_parts = [int(x) for x in new_version.split('.')]
-            
-            # Major version must match
-            if old_parts[0] != new_parts[0]:
+            o = [int(x) for x in old.split(".")]
+            n = [int(x) for x in new.split(".")]
+            if o[0] != n[0]:
                 return False
-            
-            # Minor version can increase
-            if len(old_parts) > 1 and len(new_parts) > 1:
-                if new_parts[1] < old_parts[1]:
-                    return False
-            
+            if len(o) > 1 and len(n) > 1 and n[1] < o[1]:
+                return False
             return True
-            
         except Exception:
-            # If not semantic versioning, require exact match
             return False
-    
-    def _validate_state_for_restore(self, state_data: Dict[str, Any], module: 'BaseModule') -> StateValidation:
-        """Validate state before restoration"""
-        validation = StateValidation(is_valid=True)
-        
-        # Run validation rules
-        for rule_name, rule_func in self.validation_rules.items():
+
+    def _validate_state_for_restore(self, env: Dict[str, Any], module: "BaseModule") -> StateValidation:
+        v = StateValidation(is_valid=True)
+        # Run rules but tolerate checkpoint-only envelopes (which may lack metadata)
+        # If this looks like a bare checkpoint piece (only 'state' key), synthesize an envelope
+        if "module_name" not in env or "timestamp" not in env or "version" not in env:
+            synth = {
+                "module_name": module.__class__.__name__,
+                "timestamp": datetime.now().isoformat(),
+                "version": 0,
+                "state": env.get("state", {}) if "state" in env else env,
+                "serialization_method": env.get("serialization_method", "json"),
+                "checksum": env.get("checksum", ""),
+            }
+            env = synth
+
+        for rule, fn in self.validation_rules.items():
             try:
-                if not rule_func(state_data):
-                    validation.is_valid = False
-                    validation.errors.append(f"Validation rule '{rule_name}' failed")
+                if not fn(env):
+                    v.is_valid = False
+                    v.errors.append(f"Validation rule '{rule}' failed")
             except Exception as e:
-                validation.warnings.append(f"Validation rule '{rule_name}' error: {e}")
-        
-        # Check version compatibility
-        saved_version = state_data.get('module_version', '1.0.0')
-        current_version = getattr(module.metadata, 'version', '1.0.0') if hasattr(module, 'metadata') else '1.0.0'
-        
-        if saved_version != current_version:
-            if self._check_version_compatibility(module.__class__.__name__, saved_version, current_version):
-                validation.compatibility_score = 0.8
-                validation.warnings.append(f"Version mismatch: {saved_version} -> {current_version}")
-                
-                # Check if migrations needed
-                migrations = self._get_required_migrations(
-                    module.__class__.__name__, saved_version, current_version
-                )
-                if migrations:
-                    validation.required_migrations = migrations
+                v.warnings.append(f"Validation rule '{rule}' error: {e}")
+
+        saved = env.get("module_version", "1.0.0")
+        current = getattr(getattr(module, "metadata", None), "version", "1.0.0")
+        if saved != current:
+            if self._check_version_compatibility(module.__class__.__name__, saved, current):
+                v.compatibility_score = 0.8
+                v.warnings.append(f"Version mismatch: {saved} -> {current}")
+                mig = self._get_required_migrations(module.__class__.__name__, saved, current)
+                if mig:
+                    v.required_migrations = mig
             else:
-                validation.is_valid = False
-                validation.errors.append(f"Incompatible versions: {saved_version} -> {current_version}")
-                validation.compatibility_score = 0.0
-        
-        # Check state structure compatibility
-        if hasattr(module, 'validate_state_compatibility'):
+                v.is_valid = False
+                v.errors.append(f"Incompatible versions: {saved} -> {current}")
+                v.compatibility_score = 0.0
+        if hasattr(module, "validate_state_compatibility"):
             try:
-                compat_result = module.validate_state_compatibility(state_data['state'])
-                if not compat_result:
-                    validation.is_valid = False
-                    validation.errors.append("Module state compatibility check failed")
+                if not module.validate_state_compatibility(env["state"]):
+                    v.is_valid = False
+                    v.errors.append("Module state compatibility check failed")
             except Exception as e:
-                validation.warnings.append(f"Compatibility check error: {e}")
-        
-        return validation
+                v.warnings.append(f"Compatibility check error: {e}")
+        return v
+
+    def _get_required_migrations(self, module_name: str, old: str, new: str) -> List[str]:
+        migration_map: Dict[Tuple[str,str], List[str]] = {}
+        return migration_map.get((old, new), [])
     
-    def _get_required_migrations(self, module_name: str, old_version: str, new_version: str) -> List[str]:
-        """Get list of required state migrations"""
-        migrations = []
-        
-        # Define migration mappings
-        migration_map = {
-            # Example: ('1.0.0', '2.0.0'): ['add_new_fields', 'restructure_data']
-        }
-        
-        key = (old_version, new_version)
-        if key in migration_map:
-            migrations = migration_map[key]
-        
-        return migrations
-    
-    def _apply_state_migrations(self, state: Dict[str, Any], migrations: List[str], module_name: str) -> Dict[str, Any]:
-        """Apply state migrations"""
-        migrated_state = state.copy()
-        
+    def _apply_state_migrations(
+    self,
+    state: Dict[str, Any],
+    migrations: List[str],
+    module_name: str
+    ) -> Dict[str, Any]:
+        """
+        Apply in-place migrations to a module's state snapshot.
+
+        This is intentionally conservative: if you haven't defined
+        any real migrations yet, it safely returns the original state.
+        """
+        migrated_state = dict(state)
+
         for migration in migrations:
             try:
-                if migration == 'add_new_fields':
-                    migrated_state.setdefault('new_field', None)
-                elif migration == 'restructure_data':
-                    if 'old_structure' in migrated_state:
-                        migrated_state['new_structure'] = migrated_state.pop('old_structure')
-                
-                self.logger.info(f"Applied migration '{migration}' for {module_name}")
+                if migration == "add_new_fields":
+                    # example: ensure new keys exist
+                    migrated_state.setdefault("new_field", None)
+
+                elif migration == "restructure_data":
+                    # example: rename a key
+                    if "old_structure" in migrated_state:
+                        migrated_state["new_structure"] = migrated_state.pop("old_structure")
+
+                else:
+                    # Unknown migration – log and skip
+                    self.logger.warning(
+                        f"Unknown migration '{migration}' for {module_name}; skipping"
+                    )
+
             except Exception as e:
-                self.logger.error(f"Migration '{migration}' failed: {e}")
-        
+                self.logger.error(
+                    f"Migration '{migration}' failed for {module_name}: {e}"
+                )
+
         return migrated_state
-    
-    def _create_mini_checkpoint(self, module_name: str, module: 'BaseModule', checkpoint_type: str) -> Dict[str, Any]:
-        """Create a mini checkpoint for rollback"""
+
+
+    def _create_mini_checkpoint(self, module_name: str, module: "BaseModule", kind: str) -> Dict[str, Any]:
         try:
-            checkpoint = {
-                'module_name': module_name,
-                'checkpoint_type': checkpoint_type,
-                'timestamp': datetime.now().isoformat(),
-                'module_class': module.__class__,
-                'module_instance': module,
-                'state': module.get_state() if hasattr(module, 'get_state') else {}
+            state = module.get_state() if hasattr(module, "get_state") else {}
+            return {
+                "module_name": module_name,
+                "checkpoint_type": kind,
+                "timestamp": datetime.now().isoformat(),
+                "module_class": module.__class__,
+                "module_instance": module,
+                "state": state if isinstance(state, dict) else {"value": state},
             }
-            return checkpoint
         except Exception as e:
             self.logger.error(f"Failed to create mini checkpoint: {e}")
             return {}
-    
-    def _restore_mini_checkpoint(self, checkpoint: Dict[str, Any], orchestrator: 'ModuleOrchestrator'):
-        """Restore from mini checkpoint"""
+
+    def _restore_mini_checkpoint(self, cp: Dict[str, Any], orchestrator: "ModuleOrchestrator"):
         try:
-            module_name = checkpoint['module_name']
-            module_instance = checkpoint['module_instance']
-            
-            orchestrator.modules[module_name] = module_instance
-            orchestrator.module_classes[module_name] = checkpoint['module_class']
-            
-            self.logger.info(f"Restored module {module_name} from checkpoint")
+            name = cp["module_name"]; inst = cp["module_instance"]
+            orchestrator.modules[name] = inst
+            orchestrator.module_classes[name] = cp["module_class"]
+            self.logger.info(f"Restored module {name} from checkpoint")
         except Exception as e:
             self.logger.error(f"Failed to restore from checkpoint: {e}")
-    
-    def _validate_checksum(self, state_data: Dict[str, Any]) -> bool:
-        """Validate state checksum using the recorded serialization_method."""
-        if 'checksum' not in state_data or 'state' not in state_data:
+
+    def _validate_checksum(self, env: Dict[str, Any]) -> bool:
+        if "checksum" not in env or "state" not in env:
             return False
-        
         try:
-            method = state_data.get('serialization_method', 'pickle')
-            if method == 'json':
-                payload = json.dumps(state_data['state'], sort_keys=True, default=str).encode()
+            method = env.get("serialization_method", "pickle")
+            if method == "json":
+                payload = json.dumps(env["state"], sort_keys=True, default=str).encode()
             else:
-                payload = pickle.dumps(state_data['state'], protocol=pickle.HIGHEST_PROTOCOL)
-            expected_checksum = hashlib.sha256(payload).hexdigest()
-            return state_data['checksum'] == expected_checksum
+                payload = pickle.dumps(env["state"], protocol=pickle.HIGHEST_PROTOCOL)
+            return hashlib.sha256(payload).hexdigest() == env["checksum"]
         except Exception:
             return False
-    
-    def _validate_timestamp(self, timestamp: Any) -> bool:
-        """Validate timestamp format"""
-        if not timestamp:
-            return False
-        
+
+    def _validate_timestamp(self, ts: Any) -> bool:
+        if not ts: return False
         try:
-            if isinstance(timestamp, str):
-                datetime.fromisoformat(timestamp)
+            if isinstance(ts, str):
+                datetime.fromisoformat(ts)
             return True
         except Exception:
             return False
-    
+
     def _check_state_size(self, state: Any) -> int:
-        """Check size of state data (approximate if not JSONable)"""
         try:
             return len(json.dumps(state, default=str).encode())
         except Exception:
@@ -841,651 +618,470 @@ class StateManager:
                 return len(pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL))
             except Exception:
                 return sys.getsizeof(state)
-    
+
     def _get_system_context(self) -> Dict[str, Any]:
-        """Get current system context for state metadata"""
-        import psutil
-        
         try:
+            import psutil  # type: ignore
             return {
-                'save_time': datetime.now().isoformat(),
-                'memory_usage_mb': psutil.Process().memory_info().rss / 1024 / 1024,
-                'cpu_percent': psutil.cpu_percent(interval=0.1),
-                'python_version': sys.version
+                "save_time": datetime.now().isoformat(),
+                "memory_usage_mb": psutil.Process().memory_info().rss / 1024 / 1024,
+                "cpu_percent": psutil.cpu_percent(interval=0.1),
+                "python_version": sys.version,
             }
         except Exception:
-            return {'save_time': datetime.now().isoformat()}
-    
-    def _serialize_state(self, state_data: Dict[str, Any]) -> Tuple[bytes, str]:
-        """
-        Serialize (pickle → fallback json). Returns (blob, method).
-        """
+            return {"save_time": datetime.now().isoformat()}
+
+    def _serialize_state(self, env: Dict[str, Any]) -> Tuple[bytes, str]:
         try:
-            blob = pickle.dumps(state_data, protocol=pickle.HIGHEST_PROTOCOL)
+            blob = pickle.dumps(env, protocol=pickle.HIGHEST_PROTOCOL)
             return blob, "pickle"
         except Exception:
-            blob = json.dumps(state_data, default=str).encode("utf-8")
-            return blob, "json"
+            return json.dumps(env, default=str).encode("utf-8"), "json"
 
-    def _extract_safe_attributes(self, module: 'BaseModule') -> Dict[str, Any]:
-        """Extract safe attributes from module"""
-        safe_state = {}
-        
-        for attr_name, attr_value in module.__dict__.items():
-            # Skip private attributes and methods
-            if attr_name.startswith('_') and not attr_name.startswith('_step_count'):
+    def _extract_safe_attributes(self, module: "BaseModule") -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        for k, v in module.__dict__.items():
+            if k.startswith("_") and not k.startswith("_step_count"):
                 continue
-            
-            if callable(attr_value):
+            if callable(v):
                 continue
-            
-            # Check if attribute is serializable
             try:
-                json.dumps(attr_value, default=str)
-                safe_state[attr_name] = attr_value
-            except (TypeError, ValueError):
-                # Try to convert to string representation
+                json.dumps(v, default=str)
+                out[k] = v
+            except Exception:
                 try:
-                    safe_state[attr_name] = str(attr_value)
+                    out[k] = str(v)
                 except Exception:
-                    # Skip non-serializable attributes
-                    continue
-        
-        return safe_state
-    
-    def _save_to_disk_with_backup(self, module_name: str, state_data: Dict[str, Any]):
-        """Save state to disk with atomic operation and backup."""
-        # Determine file format (must match the method used in checksum)
-        method = state_data.get('serialization_method', 'pickle')
-        if method == 'json':
-            file_ext = '.json'
-            data_to_write = json.dumps(state_data, indent=2, default=str).encode('utf-8')
+                    pass
+        return out
+
+    # ---------- disk IO ----------
+
+    def _save_to_disk_with_backup(self, name: str, env: Dict[str, Any]):
+        method = env.get("serialization_method", "pickle")
+        if method == "json":
+            file_ext = ".json"
+            data = json.dumps(env, indent=2, default=str).encode("utf-8")
         else:
-            file_ext = '.pkl'
-            data_to_write = pickle.dumps(state_data, protocol=pickle.HIGHEST_PROTOCOL)
+            file_ext = ".pkl"
+            data = pickle.dumps(env, protocol=pickle.HIGHEST_PROTOCOL)
 
-        # Optional compression
         if self.compression_enabled:
-            compressed = zlib.compress(data_to_write, level=self.compression_level)
-            # keep compressed only if it saves at least 10%
-            if len(compressed) < len(data_to_write) * 0.9:
-                data_to_write = compressed
-                file_ext += '.gz'
+            comp = zlib.compress(data, level=self.compression_level)
+            if len(comp) < len(data) * 0.9:
+                data = comp
+                file_ext += ".gz"
 
-        file_path = self.state_dir / f"{module_name}_state{file_ext}"
-        temp_path = self.state_dir / f"{module_name}_state.tmp"
-
+        path = self.state_dir / f"{name}_state{file_ext}"
+        tmp = self.state_dir / f"{name}_state.tmp"
         try:
-            # Write to temporary file first (atomic operation)
-            temp_path.write_bytes(data_to_write)
+            tmp.write_bytes(data)
+            if path.exists():
+                backup = self.backup_dir / f"{name}_state_{int(time.time())}{file_ext}"
+                backup.write_bytes(path.read_bytes())
+                self._cleanup_old_backups(name)
+            tmp.replace(path)
+        except Exception:
+            if tmp.exists():
+                tmp.unlink()
+            raise
 
-            # Create backup if file exists
-            if file_path.exists():
-                backup_path = self.backup_dir / f"{module_name}_state_{int(time.time())}{file_ext}"
-                backup_path.write_bytes(file_path.read_bytes())
-                # Clean old backups
-                self._cleanup_old_backups(module_name)
-
-            # Atomic move
-            temp_path.replace(file_path)
-
-        except Exception as e:
-            if temp_path.exists():
-                temp_path.unlink()
-            raise e
-
-    
-    def _cleanup_old_backups(self, module_name: str):
-        """Clean up old backup files"""
-        # Use a default of 7 days for backup retention
-        cutoff_time = time.time() - (7 * 24 * 3600)  # Default 7 days
-        backup_patterns = [
-            f"{module_name}_state_*.pkl",
-            f"{module_name}_state_*.pkl.gz",
-            f"{module_name}_state_*.json",
-            f"{module_name}_state_*.json.gz"
-        ]
-        
-        all_backups = []
-        for pattern in backup_patterns:
-            all_backups.extend(self.backup_dir.glob(pattern))
-        
-        # Sort by modification time (newest first)
-        all_backups.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        
-        # Remove excess backups
-        for old_backup in all_backups[self.max_backups:]:
+    def _cleanup_old_backups(self, name: str):
+        cutoff = time.time() - 7 * 24 * 3600
+        patterns = [f"{name}_state_*.pkl", f"{name}_state_*.pkl.gz",
+                    f"{name}_state_*.json", f"{name}_state_*.json.gz"]
+        files: List[Path] = []
+        for pat in patterns:
+            files.extend(self.backup_dir.glob(pat))
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in files[self.max_backups:]:
             try:
-                old_backup.unlink()
+                old.unlink()
             except Exception as e:
-                self.logger.warning(f"Failed to remove old backup {old_backup}: {e}")
-    
-    def _restore_attributes_safely(self, instance: 'BaseModule', state: Dict[str, Any]):
-        """Safely restore attributes to module instance"""
-        for attr_name, attr_value in state.items():
-            try:
-                # Skip if attribute doesn't exist or is a method
-                if hasattr(instance, attr_name):
-                    current_attr = getattr(instance, attr_name)
-                    if not callable(current_attr):
-                        setattr(instance, attr_name, attr_value)
-            except Exception as e:
-                self.logger.warning(f"Failed to restore attribute {attr_name}: {e}")
-    
+                self.logger.warning(f"Failed to remove old backup {old}: {e}")
+
     def load_from_disk(self, module_name: str) -> Optional[Dict[str, Any]]:
-        """Load state from disk with format detection and decompression"""
-        # Try different file formats
-        extensions = ['.json', '.json.gz', '.pkl', '.pkl.gz']
-        
-        for ext in extensions:
-            file_path = self.state_dir / f"{module_name}_state{ext}"
-            if file_path.exists():
-                try:
-                    data = file_path.read_bytes()
-                    
-                    # Decompress if needed
-                    if ext.endswith('.gz'):
-                        data = zlib.decompress(data)
-                    
-                    # Deserialize
-                    if '.json' in ext:
-                        return json.loads(data.decode('utf-8'))
-                    else:
-                        return pickle.loads(data)
-                        
-                except Exception as e:
-                    self.logger.error(f"Failed to load {file_path}: {e}")
-                    continue
-        
-        return None
-    
-    def restore_all_states(self, orchestrator: 'ModuleOrchestrator') -> Dict[str, bool]:
-        """
-        Restore states for all modules with health validation.
-        """
-        with self._lock:
-            # Check system health first
-            if not self._check_system_health_for_operation(orchestrator):
-                self.logger.warning("System health check failed - limited restoration only")
-                # Continue with restoration but be conservative
-            
-            results = {}
-            
-            # Find all state files
-            state_files = []
-            for ext in ['.json', '.json.gz', '.pkl', '.pkl.gz']:
-                state_files.extend(self.state_dir.glob(f"*_state{ext}"))
-            
-            # Remove duplicates (same module, different formats)
-            unique_modules = {}
-            for state_file in state_files:
-                module_name = state_file.stem.replace('_state', '')
-                if module_name not in unique_modules or state_file.stat().st_mtime > unique_modules[module_name].stat().st_mtime:
-                    unique_modules[module_name] = state_file
-            
-            # Restore each module
-            for module_name, state_file in unique_modules.items():
-                # Skip if module not in orchestrator
-                if module_name not in orchestrator.modules:
-                    continue
-                
-                # Load state with validation
-                state_data = self.load_from_disk(module_name)
-                if not state_data:
-                    results[module_name] = False
-                    continue
-                
-                try:
-                    module = orchestrator.modules[module_name]
-                    
-                    # Validate state before restoration
-                    validation = self._validate_state_for_restore(state_data, module)
-                    
-                    if not validation.is_valid:
-                        self.logger.error(f"State validation failed for {module_name}: {validation.errors}")
-                        results[module_name] = False
-                        continue
-                    
-                    # Apply migrations if needed
-                    if validation.required_migrations:
-                        state_data['state'] = self._apply_state_migrations(
-                            state_data['state'],
-                            validation.required_migrations,
-                            module_name
-                        )
-                    
-                    # Restore state
-                    if hasattr(module, 'set_state'):
-                        module.set_state(state_data['state'])
-                        results[module_name] = True
-                        
-                        self.logger.info(
-                            f"[OK] Restored state for {module_name} "
-                            f"(v{state_data.get('version', 0)}, "
-                            f"compatibility: {validation.compatibility_score:.1%})"
-                        )
-                    else:
-                        self.logger.warning(f"Module {module_name} does not support state restoration")
-                        results[module_name] = False
-                        
-                except Exception as e:
-                    self.logger.error(f"[CRASH] Failed to restore {module_name}: {e}")
-                    results[module_name] = False
-            
-            # Summary
-            success_count = sum(1 for v in results.values() if v)
-            self.logger.info(
-                format_operator_message(
-                    "[FOLDER]", "STATE RESTORATION COMPLETE",
-                    details=f"Restored {success_count}/{len(results)} modules",
-                    context="startup"
-                )
-            )
-            
-            return results
-    
-    def create_checkpoint(self, orchestrator: 'ModuleOrchestrator', checkpoint_name: str = "manual") -> bool:
-        """
-        Create comprehensive system checkpoint with validation.
-        """
-        with self._lock:
-            checkpoint_id = f"{checkpoint_name}_{int(time.time())}"
-            checkpoint_path = self.checkpoint_dir / checkpoint_id
-            checkpoint_path.mkdir(exist_ok=True)
-            
+        for ext in (".json", ".json.gz", ".pkl", ".pkl.gz"):
+            p = self.state_dir / f"{module_name}_state{ext}"
+            if not p.exists():
+                continue
             try:
-                # Get system health snapshot
-                system_health = {
-                    'emergency_mode': orchestrator.get_emergency_mode_status(),
-                    'circuit_breakers': orchestrator.get_circuit_breaker_status(),
-                    'execution_metrics': orchestrator.get_execution_metrics()
-                }
-                
-                checkpoint_data = {
-                    'checkpoint_id': checkpoint_id,
-                    'name': checkpoint_name,
-                    'timestamp': datetime.now().isoformat(),
-                    'orchestrator_state': {
-                        'execution_order': orchestrator.execution_order,
-                        'execution_stages': orchestrator.execution_stages,
-                        'voting_members': orchestrator.voting_members,
-                        'critical_modules': list(orchestrator.critical_modules)
-                    },
-                    'modules': {},
-                    'system_metrics': orchestrator.get_execution_metrics(),
-                    'system_health': system_health,
-                    'validation_results': {}
-                }
-                
-                success_count = 0
-                
-                # Save each module state
-                for module_name, module in orchestrator.modules.items():
+                data = p.read_bytes()
+                if ext.endswith(".gz"):
+                    data = zlib.decompress(data)
+                return json.loads(data.decode("utf-8")) if ".json" in ext else pickle.loads(data)
+            except Exception as e:
+                self.logger.error(f"Failed to load {p}: {e}")
+                continue
+        return None
+
+    # ---------- hot reload (unchanged logic but safer fallbacks) ----------
+
+    def reload_module(self, module_name: str, orchestrator: "ModuleOrchestrator") -> bool:
+        with self._lock:
+            try:
+                current = orchestrator.modules.get(module_name)
+                if not current:
+                    self.logger.error(f"Module {module_name} not found in orchestrator")
+                    return False
+                if not self._check_system_health_for_operation(orchestrator):
+                    self.logger.error("System health check failed - aborting reload")
+                    return False
+
+                _ = self.save_module_state(current)
+                pre = self._create_mini_checkpoint(module_name, current, "pre_reload")
+
+                cls_ref = orchestrator.module_classes.get(module_name)
+                if not cls_ref:
+                    self.logger.error(f"Module class {module_name} not found")
+                    return False
+                module_path = cls_ref.__module__
+
+                self.logger.info(f"[RELOAD] Reloading module code for {module_name}")
+                try:
+                    mod_ref = importlib.import_module(module_path)
+                    importlib.reload(mod_ref)
+                except Exception as e:
+                    self.logger.error(f"Failed to reload module code: {e}")
+                    return False
+
+                new_class = getattr(mod_ref, module_name, None)
+                if not new_class:
+                    self.logger.error(f"Class {module_name} not found after reload")
+                    return False
+                if not hasattr(new_class, "__module_metadata__"):
+                    self.logger.error(f"Reloaded class missing @module decorator")
+                    return False
+
+                old_v = self.module_versions.get(module_name, "1.0.0")
+                new_v = getattr(new_class.__module_metadata__, "version", "1.0.0")
+                if not self._check_version_compatibility(module_name, old_v, new_v):
+                    self.logger.error(f"Version incompatibility: {old_v} -> {new_v}")
+                    return False
+
+                try:
+                    new_inst = new_class()
+                except Exception as e:
+                    self.logger.error(f"Failed to create new instance: {e}")
+                    self._restore_mini_checkpoint(pre, orchestrator)
+                    return False
+
+                try:
+                    env = self.load_from_disk(module_name)
+                    if not env:
+                        self.logger.error(f"Failed to load persisted state for {module_name}")
+                        self._restore_mini_checkpoint(pre, orchestrator)
+                        return False
+                    val = self._validate_state_for_restore(env, new_inst)
+                    if not val.is_valid:
+                        self.logger.error(f"State validation failed: {val.errors}")
+                        return False
+                    if val.required_migrations:
+                        env["state"] = self._apply_state_migrations(env["state"], val.required_migrations, module_name)
+                    if hasattr(new_inst, "set_state"):
+                        new_inst.set_state(env["state"])
+                    else:
+                        self._restore_attributes_safely(new_inst, env["state"])
+                except Exception as e:
+                    self.logger.error(f"Failed to restore state: {e}")
+                    self._restore_mini_checkpoint(pre, orchestrator)
+                    return False
+
+                if hasattr(new_inst, "get_health_status"):
                     try:
-                        if hasattr(module, 'get_state'):
-                            state = module.get_state()
-                            
-                            # Validate state
-                            validation = self._validate_state_for_save(state, module)
-                            checkpoint_data['validation_results'][module_name] = validation.__dict__
-                            
-                            if validation.is_valid:
-                                checkpoint_data['modules'][module_name] = state
-                                
-                                # Save individual module file
-                                module_file = checkpoint_path / f"{module_name}.json"
-                                with open(module_file, 'w') as f:
-                                    json.dump(state, f, indent=2, default=str)
-                                
-                                success_count += 1
-                            else:
-                                self.logger.warning(f"Skipping {module_name} due to validation errors")
-                        
-                    except Exception as e:
-                        self.logger.error(f"Failed to checkpoint {module_name}: {e}")
-                        checkpoint_data['modules'][module_name] = {'error': str(e)}
-                
-                # Calculate checkpoint integrity
-                checkpoint_data['integrity'] = {
-                    'total_modules': len(orchestrator.modules),
-                    'saved_modules': success_count,
-                    'success_rate': success_count / max(len(orchestrator.modules), 1),
-                    'checksum': hashlib.sha256(
-                        json.dumps(checkpoint_data['modules'], sort_keys=True, default=str).encode()
-                    ).hexdigest()
+                        health = new_inst.get_health_status()
+                        if isinstance(health, dict) and health.get("status") == "CRITICAL":
+                            self.logger.error("New instance health check failed")
+                            return False
+                    except Exception:
+                        pass
+
+                orchestrator.modules[module_name] = new_inst
+                orchestrator.module_classes[module_name] = new_class
+
+                old_meta = orchestrator.metadata.get(module_name)
+                new_meta = new_class.__module_metadata__
+                if old_meta and hasattr(old_meta, "to_dict") and old_meta.to_dict() != new_meta.to_dict():
+                    orchestrator.metadata[module_name] = new_meta
+                    orchestrator.build_execution_plan()
+
+                self.module_versions[module_name] = new_v
+                self.logger.info(format_operator_message("[OK]", "MODULE RELOADED", instrument=module_name, details=f"v{old_v} -> v{new_v}", context="hot_reload"))
+                return True
+            except Exception as e:
+                self.logger.error(f"[CRASH] Failed to reload {module_name}: {e}")
+                self.logger.error(f"Traceback: {traceback.format_exc()}")
+                return False
+
+    def _restore_attributes_safely(self, inst: "BaseModule", state: Dict[str, Any]):
+        for k, v in state.items():
+            try:
+                if hasattr(inst, k) and not callable(getattr(inst, k)):
+                    setattr(inst, k, v)
+            except Exception as e:
+                self.logger.warning(f"Failed to restore attribute {k}: {e}")
+
+    # ---------- checkpoints ----------
+
+    def create_checkpoint(self, orchestrator: "ModuleOrchestrator", checkpoint_name: str = "manual") -> bool:
+        with self._lock:
+            cid = f"{checkpoint_name}_{int(time.time())}"
+            cdir = self.checkpoint_dir / cid
+            cdir.mkdir(exist_ok=True)
+            try:
+                system_health = {
+                    "emergency_mode": getattr(orchestrator, "get_emergency_mode_status", lambda: {})(),
+                    "circuit_breakers": getattr(orchestrator, "get_circuit_breaker_status", lambda: {})(),
+                    "execution_metrics": getattr(orchestrator, "get_execution_metrics", lambda: {})(),
                 }
-                
-                # Save checkpoint metadata
-                metadata_file = checkpoint_path / "checkpoint.json"
-                with open(metadata_file, 'w') as f:
-                    json.dump(checkpoint_data, f, indent=2, default=str)
-                
-                # Create compressed archive
+                data = {
+                    "checkpoint_id": cid,
+                    "name": checkpoint_name,
+                    "timestamp": datetime.now().isoformat(),
+                    "orchestrator_state": {
+                        "execution_order": getattr(orchestrator, "execution_order", []),
+                        "execution_stages": getattr(orchestrator, "execution_stages", {}),
+                        "voting_members": getattr(orchestrator, "voting_members", []),
+                        "critical_modules": list(getattr(orchestrator, "critical_modules", set())),
+                    },
+                    "modules": {},
+                    "system_metrics": system_health.get("execution_metrics", {}),
+                    "system_health": system_health,
+                    "validation_results": {},
+                }
+                ok = 0
+                for name, mod in orchestrator.modules.items():
+                    try:
+                        # robust state acquisition
+                        raw = None
+                        if hasattr(mod, "get_state"):
+                            try:
+                                raw = mod.get_state()
+                            except Exception:
+                                raw = None
+                        if not isinstance(raw, dict):
+                            raw = self._extract_safe_attributes(mod)
+                            if not isinstance(raw, dict):
+                                raw = {"value": raw}
+
+                        val = self._validate_state_for_save(raw, mod)
+                        data["validation_results"][name] = val.__dict__
+                        if val.is_valid:
+                            data["modules"][name] = raw
+                            with open(cdir / f"{name}.json", "w") as f:
+                                json.dump(raw, f, indent=2, default=str)
+                            ok += 1
+                        else:
+                            self.logger.warning(f"Skipping {name} due to validation errors")
+                    except Exception as e:
+                        self.logger.error(f"Failed to checkpoint {name}: {e}")
+                        data["modules"][name] = {"error": str(e)}
+
+                data["integrity"] = {
+                    "total_modules": len(orchestrator.modules),
+                    "saved_modules": ok,
+                    "success_rate": ok / max(len(orchestrator.modules), 1),
+                    "checksum": hashlib.sha256(json.dumps(data["modules"], sort_keys=True, default=str).encode()).hexdigest(),
+                }
+                with open(cdir / "checkpoint.json", "w") as f:
+                    json.dump(data, f, indent=2, default=str)
+
                 if self.compression_enabled:
                     try:
-                        archive_path = self.checkpoint_dir / f"{checkpoint_id}.tar.gz"
-                        shutil.make_archive(str(archive_path.with_suffix('')), 'gztar', checkpoint_path)
-                        
-                        # Remove uncompressed directory
-                        shutil.rmtree(checkpoint_path)
-                        
+                        arch = self.checkpoint_dir / f"{cid}.tar.gz"
+                        shutil.make_archive(str(arch.with_suffix("")), "gztar", self.checkpoint_dir, cid)
+                        shutil.rmtree(cdir)
                     except Exception as e:
                         self.logger.warning(f"Compression failed: {e}")
-                
-                self.logger.info(
-                    format_operator_message(
-                        "📸", "CHECKPOINT CREATED",
-                        instrument=checkpoint_name,
-                        details=f"Saved {success_count}/{len(orchestrator.modules)} modules",
-                        context="state_management"
-                    )
-                )
-                
-                return success_count > 0
-                
+
+                self.logger.info(format_operator_message("📸", "CHECKPOINT CREATED", instrument=checkpoint_name, details=f"Saved {ok}/{len(orchestrator.modules)} modules", context="state_management"))
+                return ok > 0
             except Exception as e:
                 self.logger.error(f"[CRASH] Failed to create checkpoint {checkpoint_name}: {e}")
-                # Cleanup failed checkpoint
-                if checkpoint_path.exists():
-                    shutil.rmtree(checkpoint_path, ignore_errors=True)
+                if cdir.exists():
+                    shutil.rmtree(cdir, ignore_errors=True)
                 return False
-    
-    def restore_checkpoint(self, orchestrator: 'ModuleOrchestrator', checkpoint_id: str) -> bool:
-        """
-        Restore system from checkpoint with health validation.
-        """
+
+    def restore_checkpoint(self, orchestrator: "ModuleOrchestrator", checkpoint_id: str) -> bool:
         with self._lock:
-            checkpoint_path = self.checkpoint_dir / checkpoint_id
-            archive_path = self.checkpoint_dir / f"{checkpoint_id}.tar.gz"
-            
+            cdir = self.checkpoint_dir / checkpoint_id
+            arch = self.checkpoint_dir / f"{checkpoint_id}.tar.gz"
             try:
-                # Check system health before restoration
                 if not self._check_system_health_for_operation(orchestrator):
                     self.logger.error("System health too poor for checkpoint restoration")
                     return False
-                
-                # Extract compressed checkpoint if needed
-                if archive_path.exists() and not checkpoint_path.exists():
-                    shutil.unpack_archive(str(archive_path), self.checkpoint_dir)
-                
-                if not checkpoint_path.exists():
+                if arch.exists() and not cdir.exists():
+                    shutil.unpack_archive(str(arch), self.checkpoint_dir)
+                if not cdir.exists():
                     self.logger.error(f"Checkpoint {checkpoint_id} not found")
                     return False
-                
-                # Load checkpoint metadata
-                metadata_file = checkpoint_path / "checkpoint.json"
-                if not metadata_file.exists():
+                meta = cdir / "checkpoint.json"
+                if not meta.exists():
                     self.logger.error("Checkpoint metadata not found")
                     return False
-                
-                with open(metadata_file, 'r') as f:
-                    checkpoint_data = json.load(f)
-                
-                # Verify checkpoint integrity
-                if 'integrity' in checkpoint_data:
-                    saved_checksum = checkpoint_data['integrity']['checksum']
-                    current_checksum = hashlib.sha256(
-                        json.dumps(checkpoint_data['modules'], sort_keys=True, default=str).encode()
-                    ).hexdigest()
-                    
-                    if saved_checksum != current_checksum:
+                data = json.loads(meta.read_text())
+                if "integrity" in data:
+                    saved = data["integrity"]["checksum"]
+                    cur = hashlib.sha256(json.dumps(data["modules"], sort_keys=True, default=str).encode()).hexdigest()
+                    if saved != cur:
                         self.logger.error("Checkpoint integrity check failed")
                         return False
-                
-                self.logger.info(
-                    f"[RELOAD] Restoring checkpoint '{checkpoint_id}' from {checkpoint_data['timestamp']}"
-                )
-                
-                success_count = 0
-                failed_modules = []
-                
-                # Create pre-restore checkpoint for rollback
+
+                self.logger.info(f"[RELOAD] Restoring checkpoint '{checkpoint_id}' from {data['timestamp']}")
                 self.create_checkpoint(orchestrator, "pre_restore_backup")
-                
-                # Restore each module
-                for module_name in checkpoint_data.get('modules', {}):
-                    module_file = checkpoint_path / f"{module_name}.json"
-                    
-                    if not module_file.exists():
+
+                ok, failed = 0, []
+                for name in data.get("modules", {}):
+                    mod_file = cdir / f"{name}.json"
+                    if not mod_file.exists() or name not in orchestrator.modules:
                         continue
-                    
-                    if module_name not in orchestrator.modules:
-                        self.logger.warning(f"Module {module_name} not found in current system")
-                        continue
-                    
                     try:
-                        with open(module_file, 'r') as f:
-                            state = json.load(f)
-                        
-                        module = orchestrator.modules[module_name]
-                        
-                        # Validate state compatibility
-                        validation = self._validate_state_for_restore(
-                            {'state': state, 'module_version': '1.0.0'}, 
-                            module
-                        )
-                        
-                        if not validation.is_valid:
-                            self.logger.error(f"State validation failed for {module_name}")
-                            failed_modules.append(module_name)
+                        state = json.loads(mod_file.read_text())
+                        mod = orchestrator.modules[name]
+                        env = {"state": state, "module_version": getattr(getattr(mod, "metadata", None), "version", "1.0.0")}
+                        val = self._validate_state_for_restore(env, mod)
+                        if not val.is_valid:
+                            self.logger.error(f"State validation failed for {name}")
+                            failed.append(name)
                             continue
-                        
-                        if hasattr(module, 'set_state'):
-                            module.set_state(state)
-                            success_count += 1
-                        
+                        if hasattr(mod, "set_state"):
+                            mod.set_state(state)
+                            ok += 1
                     except Exception as e:
-                        self.logger.error(f"Failed to restore {module_name}: {e}")
-                        failed_modules.append(module_name)
-                
-                # Restore orchestrator state if available
-                if 'orchestrator_state' in checkpoint_data:
-                    orch_state = checkpoint_data['orchestrator_state']
-                    
-                    # Update critical modules set
-                    if 'critical_modules' in orch_state:
-                        orchestrator.critical_modules = set(orch_state['critical_modules'])
-                    
-                    # May need to rebuild execution plan
+                        self.logger.error(f"Failed to restore {name}: {e}")
+                        failed.append(name)
+
+                orch_state = data.get("orchestrator_state", {})
+                if "critical_modules" in orch_state:
+                    orchestrator.critical_modules = set(orch_state["critical_modules"])
+                if hasattr(orchestrator, "build_execution_plan"):
                     orchestrator.build_execution_plan()
-                
-                # Validate restoration success
-                if failed_modules and len(failed_modules) > len(orchestrator.modules) * 0.3:
-                    self.logger.error(f"Too many modules failed to restore: {failed_modules}")
-                    # Consider rollback
+
+                if failed and len(failed) > len(orchestrator.modules) * 0.3:
+                    self.logger.error(f"Too many modules failed to restore: {failed}")
                     return False
-                
-                self.logger.info(
-                    format_operator_message(
-                        "[OK]", "CHECKPOINT RESTORED",
-                        instrument=checkpoint_id,
-                        details=f"Restored {success_count} modules, {len(failed_modules)} failed",
-                        context="state_management"
-                    )
-                )
-                
-                return success_count > 0
-                
+
+                self.logger.info(format_operator_message("[OK]", "CHECKPOINT RESTORED", instrument=checkpoint_id, details=f"Restored {ok} modules, {len(failed)} failed", context="state_management"))
+                return ok > 0
             except Exception as e:
                 self.logger.error(f"[CRASH] Failed to restore checkpoint {checkpoint_id}: {e}")
                 return False
-    
+
     def list_checkpoints(self) -> List[Dict[str, Any]]:
-        """List available checkpoints with metadata"""
-        checkpoints: List[Dict[str, Any]] = []
-
-        # Check for compressed archives
-        for archive_file in self.checkpoint_dir.glob("*.tar.gz"):
-            # FIX: remove both .gz and .tar to get the real folder name
-            checkpoint_id = Path(archive_file.stem).stem
+        cps: List[Dict[str, Any]] = []
+        # archived
+        for arch in self.checkpoint_dir.glob("*.tar.gz"):
+            checkpoint_id = Path(arch.stem).stem  # strip .gz then .tar
             try:
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    shutil.unpack_archive(str(archive_file), temp_dir)
-                    metadata_file = Path(temp_dir) / checkpoint_id / "checkpoint.json"
-
-                    if metadata_file.exists():
-                        with open(metadata_file, 'r') as f:
-                            metadata = json.load(f)
-
-                        # Ensure id present even if missing in file
-                        metadata.setdefault('checkpoint_id', checkpoint_id)
-                        metadata['file_size_mb'] = archive_file.stat().st_size / 1024 / 1024
-                        metadata['compressed'] = True
-                        checkpoints.append(metadata)
-
+                with tempfile.TemporaryDirectory() as tmp:
+                    shutil.unpack_archive(str(arch), tmp)
+                    meta = Path(tmp) / checkpoint_id / "checkpoint.json"
+                    if meta.exists():
+                        d = json.loads(meta.read_text())
+                        d.setdefault("checkpoint_id", checkpoint_id)
+                        d["file_size_mb"] = arch.stat().st_size / 1024 / 1024
+                        d["compressed"] = True
+                        cps.append(d)
             except Exception as e:
-                self.logger.error(f"Failed to read archived checkpoint {archive_file.name}: {e}")
-
-        # Check for uncompressed directories
-        for checkpoint_dir in self.checkpoint_dir.iterdir():
-            if checkpoint_dir.is_dir():
-                metadata_file = checkpoint_dir / "checkpoint.json"
-                if metadata_file.exists():
+                self.logger.error(f"Failed to read archived checkpoint {arch.name}: {e}")
+        # folders
+        for d in self.checkpoint_dir.iterdir():
+            if d.is_dir():
+                meta = d / "checkpoint.json"
+                if meta.exists():
                     try:
-                        with open(metadata_file, 'r') as f:
-                            metadata = json.load(f)
-
-                        metadata.setdefault('checkpoint_id', checkpoint_dir.name)
-                        total_size = sum(
-                            f.stat().st_size for f in checkpoint_dir.rglob('*') if f.is_file()
-                        )
-                        metadata['file_size_mb'] = total_size / 1024 / 1024
-                        metadata['compressed'] = False
-
-                        checkpoints.append(metadata)
+                        info = json.loads(meta.read_text())
+                        info.setdefault("checkpoint_id", d.name)
+                        total = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+                        info["file_size_mb"] = total / 1024 / 1024
+                        info["compressed"] = False
+                        cps.append(info)
                     except Exception as e:
-                        self.logger.error(f"Failed to read checkpoint {checkpoint_dir.name}: {e}")
+                        self.logger.error(f"Failed to read checkpoint {d.name}: {e}")
+        cps.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+        return cps
 
-        # Sort by timestamp (newest first)
-        checkpoints.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
-
-        return checkpoints
-
-    
     def cleanup_old_states(self, days_to_keep: int = 7):
-        """Clean up old state files and checkpoints"""
-        current_time = time.time()
-        cutoff_time = current_time - (days_to_keep * 24 * 3600)
-        
-        cleaned_count = 0
-        
-        # Clean state files
-        for state_file in self.state_dir.glob("*_state.*"):
-            if state_file.stat().st_mtime < cutoff_time:
+        now = time.time(); cutoff = now - days_to_keep * 24 * 3600
+        cleaned = 0
+        for f in self.state_dir.glob("*_state.*"):
+            if f.stat().st_mtime < cutoff:
+                try: f.unlink(); cleaned += 1
+                except Exception as e: self.logger.error(f"Failed to remove {f}: {e}")
+        for f in self.backup_dir.glob("*"):
+            if f.stat().st_mtime < cutoff:
+                try: f.unlink(); cleaned += 1
+                except Exception as e: self.logger.error(f"Failed to remove {f}: {e}")
+        for item in self.checkpoint_dir.iterdir():
+            if item.stat().st_mtime < cutoff:
                 try:
-                    state_file.unlink()
-                    cleaned_count += 1
+                    shutil.rmtree(item) if item.is_dir() else item.unlink()
+                    cleaned += 1
                 except Exception as e:
-                    self.logger.error(f"Failed to remove {state_file}: {e}")
-        
-        # Clean old backups
-        for backup_file in self.backup_dir.glob("*"):
-            if backup_file.stat().st_mtime < cutoff_time:
-                try:
-                    backup_file.unlink()
-                    cleaned_count += 1
-                except Exception as e:
-                    self.logger.error(f"Failed to remove {backup_file}: {e}")
-        
-        # Clean old checkpoints
-        for checkpoint_item in self.checkpoint_dir.iterdir():
-            if checkpoint_item.stat().st_mtime < cutoff_time:
-                try:
-                    if checkpoint_item.is_dir():
-                        shutil.rmtree(checkpoint_item)
-                    else:
-                        checkpoint_item.unlink()
-                    cleaned_count += 1
-                except Exception as e:
-                    self.logger.error(f"Failed to remove {checkpoint_item}: {e}")
-        
-        if cleaned_count > 0:
-            self.logger.info(f"🧹 Cleaned up {cleaned_count} old files")
+                    self.logger.error(f"Failed to remove {item}: {e}")
+        if cleaned:
+            self.logger.info(f"🧹 Cleaned up {cleaned} old files")
 
-# ═══════════════════════════════════════════════════════════════════
-# PRODUCTION-GRADE REPLAY ENGINE
-# ═══════════════════════════════════════════════════════════════════
+
+# ═════════════════════════════════════════════════════════════
+# ReplayEngine (with safe InfoBus subscriptions)
+# ═════════════════════════════════════════════════════════════
 
 class ReplayEngine:
-    """
-    PRODUCTION-GRADE session replay engine for debugging.
-    
-    ENHANCED FEATURES:
-    - Complete event integrity validation
-    - System health tracking during replay
-    - What-if analysis with modifications
-    - Performance profiling
-    """
-    
-    def __init__(self, orchestrator: Optional['ModuleOrchestrator'] = None):
+    def __init__(self, orchestrator: Optional["ModuleOrchestrator"] = None):
         self.orchestrator = orchestrator
-        
-        # Get SmartInfoBus reference
-        from modules.utils.info_bus import InfoBusManager
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
         self.smart_bus = InfoBusManager.get_instance()
-        
-        # Replay state
+
         self.current_session: Optional[ReplaySession] = None
         self.replay_position = 0
-        self.replay_speed = 1.0  # 1.0 = real-time
+        self.replay_speed = 1.0
         self.is_playing = False
         self.is_paused = False
         self.is_recording = False
-        
-        # Event collection for recording
+
         self.recorded_events: List[ReplayEvent] = []
         self.sequence_counter = 0
         self.current_recording_id: Optional[str] = None
         self.recording_start_time = 0
-        
-        # System health tracking
+
         self.health_snapshots: List[Dict[str, Any]] = []
         self.performance_metrics: Dict[str, List[float]] = defaultdict(list)
-        
-        # Replay modifications and analysis
+
         self.event_filters: List[Callable[[ReplayEvent], bool]] = []
         self.event_modifiers: List[Callable[[ReplayEvent], ReplayEvent]] = []
         self.breakpoints: List[Tuple[str, Callable[[ReplayEvent], bool]]] = []
         self.analysis_collectors: List[Dict[str, Any]] = []
-        
-        # Callbacks for real-time monitoring
         self.event_callbacks: Dict[str, List[Callable]] = defaultdict(list)
-        
-        # Session storage
-        self.session_dir = Path("replay_sessions")
-        self.session_dir.mkdir(exist_ok=True)
-        
-        # Thread safety
+
+        self.session_dir = Path("replay_sessions"); self.session_dir.mkdir(exist_ok=True)
         self._lock = threading.RLock()
-        
-        # Setup logging
+
         self.logger = RotatingLogger(
             name="ReplayEngine",
             log_path="logs/replay/replay_engine.log",
             max_lines=5000,
             operator_mode=True,
-            plain_english=True
+            plain_english=True,
         )
-        
-        # Subscribe to SmartInfoBus events for recording
+
         self._setup_event_subscriptions()
-        
-        self.logger.info(
-            format_operator_message(
-                "🎬", "REPLAY ENGINE INITIALIZED",
-                details=f"Session dir: {self.session_dir}",
-                context="startup"
-            )
-        )
-    
+        self.logger.info(format_operator_message("🎬", "REPLAY ENGINE INITIALIZED", details=f"Session dir: {self.session_dir}", context="startup"))
+
     def _setup_event_subscriptions(self):
-        """Setup event subscriptions for recording"""
-        self.smart_bus.subscribe('data_updated', self._record_data_update)
-        self.smart_bus.subscribe('module_disabled', self._record_module_event)
-        self.smart_bus.subscribe('performance_warning', self._record_module_event)
-        self.smart_bus.subscribe('module_enabled', self._record_module_event)
-        self.smart_bus.subscribe('execution_complete', self._record_execution_event)
-    
+        subscribe = getattr(self.smart_bus, "subscribe", None)
+        if not callable(subscribe):
+            self.logger.info("SmartInfoBus has no 'subscribe' support; recording limited to manual events")
+            return
+        try:
+            self.smart_bus.subscribe("data_updated", self._record_data_update)
+            self.smart_bus.subscribe("module_disabled", self._record_module_event)
+            self.smart_bus.subscribe("performance_warning", self._record_module_event)
+            self.smart_bus.subscribe("module_enabled", self._record_module_event)
+            self.smart_bus.subscribe("execution_complete", self._record_execution_event)
+        except Exception as e:
+            self.logger.warning(f"Bus subscription failed: {e}")
+
     def start_recording(self, session_id: Optional[str] = None) -> str:
         """
         Start recording a new session with system health tracking.
@@ -2464,80 +2060,49 @@ class ReplayEngine:
         else:
             self.logger.warning(f"Session {session_id} not found")
 
-# ═══════════════════════════════════════════════════════════════════
-# PRODUCTION-GRADE PERSISTENCE MANAGER
-# ═══════════════════════════════════════════════════════════════════
-
 class PersistenceManager:
-    """
-    PRODUCTION-GRADE unified persistence manager.
-    Coordinates state management and replay functionality.
-    """
-    
-    def __init__(self, 
-                 orchestrator: Optional['ModuleOrchestrator'] = None,
-                 state_dir: str = "state",
-                 session_dir: str = "replay_sessions"):
-        """Initialize persistence manager"""
-        
+    def __init__(self, orchestrator: Optional["ModuleOrchestrator"] = None, state_dir: str = "state", session_dir: str = "replay_sessions"):
         self.orchestrator = orchestrator
         self.state_manager = StateManager(f"{state_dir}/modules")
         self.replay_engine = ReplayEngine(orchestrator)
-        
-        # Unified configuration
+
         self.config = {
-            'auto_checkpoint_interval': 3600,     # 1 hour
-            'auto_state_interval': 300,           # 5 minutes (save all module states)
-            'max_session_age_days': 30,
-            'compression_enabled': True,
-            'validation_enabled': True,
-            'health_check_enabled': True,
-            'persist_infobus': True,
-            'infobus_snapshot_path': f"{state_dir}/infobus.json"
+            "auto_checkpoint_interval": 3600,
+            "auto_state_interval": 300,
+            "max_session_age_days": 30,
+            "compression_enabled": True,
+            "validation_enabled": True,
+            "health_check_enabled": True,
+            "persist_infobus": True,
+            "infobus_snapshot_path": f"{state_dir}/infobus.json",
         }
-        
-        # Background tasks
+
         self._background_tasks = []
         self._shutdown_event = asyncio.Event()
-        
-        # Setup logging
+
         self.logger = RotatingLogger(
             name="PersistenceManager",
             log_path="logs/persistence/persistence_manager.log",
             max_lines=5000,
-            operator_mode=True
+            operator_mode=True,
         )
 
-        # Load SmartInfoBus snapshot (if requested)
-        if self.config['persist_infobus']:
-            loaded = load_infobus_snapshot(self.config['infobus_snapshot_path'])
-            if loaded:
+        if self.config["persist_infobus"]:
+            if load_infobus_snapshot(self.config["infobus_snapshot_path"]):
                 self.logger.info("[SAVE] SmartInfoBus snapshot loaded")
-        
-        # Start background maintenance
+
         self._start_background_maintenance()
-        
-        self.logger.info(
-            format_operator_message(
-                "[SAVE]", "PERSISTENCE MANAGER INITIALIZED",
-                context="startup"
-            )
-        )
-    
+        self.logger.info(format_operator_message("[SAVE]", "PERSISTENCE MANAGER INITIALIZED", context="startup"))
+
     def _start_background_maintenance(self):
-        """Start background maintenance tasks (loop-safe)."""
         async def auto_checkpoint():
             while not self._shutdown_event.is_set():
                 try:
-                    await asyncio.sleep(self.config['auto_checkpoint_interval'])
-                    if self.orchestrator and self.config['health_check_enabled']:
-                        # Only checkpoint if system is healthy
-                        health = self.orchestrator.get_execution_metrics()
-                        if health.get('success_rate', 0) > 0.7:
-                            self.state_manager.create_checkpoint(
-                                self.orchestrator,
-                                f"auto_{int(time.time())}"
-                            )
+                    await asyncio.sleep(self.config["auto_checkpoint_interval"])
+                    if self.orchestrator and self.config["health_check_enabled"]:
+                        health = self.orchestrator.get_execution_metrics() if hasattr(self.orchestrator, "get_execution_metrics") else {}
+                        if health.get("success_rate", 0) > 0.7:
+                            self.state_manager.create_checkpoint(self.orchestrator, f"auto_{int(time.time())}")
                             self.logger.info("[RELOAD] Auto-checkpoint created")
                         else:
                             self.logger.warning("Skipped auto-checkpoint due to poor system health")
@@ -2549,12 +2114,8 @@ class PersistenceManager:
         async def periodic_cleanup():
             while not self._shutdown_event.is_set():
                 try:
-                    await asyncio.sleep(24 * 3600)  # Daily
-                    # Cleanup old states
-                    self.state_manager.cleanup_old_states(
-                        days_to_keep=self.config['max_session_age_days']
-                    )
-                    # Cleanup old sessions
+                    await asyncio.sleep(24 * 3600)
+                    self.state_manager.cleanup_old_states(days_to_keep=self.config["max_session_age_days"])
                     self._cleanup_old_sessions()
                     self.logger.info("🧹 Periodic cleanup completed")
                 except asyncio.CancelledError:
@@ -2565,144 +2126,98 @@ class PersistenceManager:
         async def auto_state_save():
             while not self._shutdown_event.is_set():
                 try:
-                    await asyncio.sleep(self.config['auto_state_interval'])
+                    await asyncio.sleep(self.config["auto_state_interval"])
                     if self.orchestrator:
                         results = self.state_manager.save_all_module_states(self.orchestrator)
                         ok = sum(1 for v in results.values() if v)
                         self.logger.info(f"[SAVE] Auto-saved {ok}/{len(results)} module states")
-                        # Also snapshot InfoBus (lightweight)
-                        if self.config['persist_infobus']:
-                            save_infobus_snapshot(self.config['infobus_snapshot_path'])
+                        if self.config["persist_infobus"]:
+                            save_infobus_snapshot(self.config["infobus_snapshot_path"])
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
                     self.logger.error(f"Auto-state-save failed: {e}")
 
-        # Start tasks only if a loop exists
         try:
             loop = asyncio.get_running_loop()
             self._background_tasks = [
                 loop.create_task(auto_checkpoint()),
                 loop.create_task(periodic_cleanup()),
-                loop.create_task(auto_state_save())
+                loop.create_task(auto_state_save()),
             ]
         except RuntimeError:
             self.logger.info("No running event loop; background tasks not started")
             self._background_tasks = []
 
-    
     def _cleanup_old_sessions(self):
-        """Cleanup old replay sessions"""
-        cutoff_time = time.time() - (self.config['max_session_age_days'] * 24 * 3600)
-        cleaned_count = 0
-        
-        for session_file in self.replay_engine.session_dir.glob("*.replay"):
-            if session_file.stat().st_mtime < cutoff_time:
+        cutoff = time.time() - (self.config["max_session_age_days"] * 24 * 3600)
+        cleaned = 0
+        for s in self.replay_engine.session_dir.glob("*.replay"):
+            if s.stat().st_mtime < cutoff:
                 try:
-                    session_file.unlink()
-                    
-                    # Also remove metadata file
-                    meta_file = session_file.with_suffix('.meta.json')
-                    if meta_file.exists():
-                        meta_file.unlink()
-                    
-                    cleaned_count += 1
+                    s.unlink()
+                    meta = s.with_suffix(".meta.json")
+                    if meta.exists(): meta.unlink()
+                    cleaned += 1
                 except Exception as e:
-                    self.logger.error(f"Failed to remove old session {session_file}: {e}")
-        
-        if cleaned_count > 0:
-            self.logger.info(f"Cleaned up {cleaned_count} old sessions")
-    
+                    self.logger.error(f"Failed to remove old session {s}: {e}")
+        if cleaned:
+            self.logger.info(f"Cleaned up {cleaned} old sessions")
+
     async def shutdown(self):
-        """Graceful shutdown of persistence manager (robust if tasks absent)."""
         self.logger.info("[STOP] Shutting down persistence manager...")
-
-        # Signal shutdown
-        try:
-            self._shutdown_event.set()
-        except Exception:
-            pass
-
-        # Cancel background tasks (if any)
-        for task in list(self._background_tasks):
-            try:
-                task.cancel()
-            except Exception:
-                pass
-
-        # Wait for tasks to complete
+        try: self._shutdown_event.set()
+        except Exception: pass
+        for t in list(self._background_tasks):
+            try: t.cancel()
+            except Exception: pass
         if self._background_tasks:
-            try:
-                await asyncio.gather(*self._background_tasks, return_exceptions=True)
-            except Exception:
-                pass
-
-        # Final save-all if orchestrator available
+            try: await asyncio.gather(*self._background_tasks, return_exceptions=True)
+            except Exception: pass
         if self.orchestrator:
+            try: self.state_manager.save_all_module_states(self.orchestrator)
+            except Exception as e: self.logger.error(f"Final state save failed: {e}")
+        if self.config["persist_infobus"]:
             try:
-                self.state_manager.save_all_module_states(self.orchestrator)
-            except Exception as e:
-                self.logger.error(f"Final state save failed: {e}")
-
-        # Final InfoBus snapshot
-        if self.config['persist_infobus']:
-            try:
-                save_infobus_snapshot(self.config['infobus_snapshot_path'])
+                save_infobus_snapshot(self.config["infobus_snapshot_path"])
                 self.logger.info("[SAVE] SmartInfoBus snapshot saved")
             except Exception as e:
                 self.logger.error(f"InfoBus snapshot failed: {e}")
-
-        # Final checkpoint if orchestrator available
         if self.orchestrator:
-            try:
-                self.state_manager.create_checkpoint(self.orchestrator, "final_shutdown")
-            except Exception as e:
-                self.logger.error(f"Final checkpoint failed: {e}")
-
+            try: self.state_manager.create_checkpoint(self.orchestrator, "final_shutdown")
+            except Exception as e: self.logger.error(f"Final checkpoint failed: {e}")
         self.logger.info("[OK] Persistence manager shutdown complete")
 
-    def get_status_report(self) -> str:
-        """Get comprehensive status report"""
-        
-        # State manager status
-        checkpoints = self.state_manager.list_checkpoints()
-        
-        # Replay engine status
-        sessions = self.replay_engine.list_sessions()
-        
-        # Calculate storage usage
-        state_size_mb = sum(
-            f.stat().st_size for f in self.state_manager.state_dir.rglob('*') if f.is_file()
-        ) / 1024 / 1024
-        
-        replay_size_mb = sum(
-            f.stat().st_size for f in self.replay_engine.session_dir.rglob('*') if f.is_file()
-        ) / 1024 / 1024
+    # --- reporting & utilities (unchanged APIs) ---
 
-        infobus_snapshot = Path(self.config['infobus_snapshot_path'])
+    def get_status_report(self) -> str:
+        checkpoints = self.state_manager.list_checkpoints()
+        sessions = self.replay_engine.list_sessions()
+        state_size_mb = sum(f.stat().st_size for f in self.state_manager.state_dir.rglob('*') if f.is_file()) / 1024 / 1024
+        replay_size_mb = sum(f.stat().st_size for f in self.replay_engine.session_dir.rglob('*') if f.is_file()) / 1024 / 1024
+        infobus_snapshot = Path(self.config["infobus_snapshot_path"])
         infobus_info = "present" if infobus_snapshot.exists() else "absent"
-        
         lines = [
             "PERSISTENCE SYSTEM STATUS",
             "=" * 50,
-            f"State Manager:",
+            "State Manager:",
             f"  Available Checkpoints: {len(checkpoints)}",
             f"  State Directory: {self.state_manager.state_dir}",
             f"  Storage Used: {state_size_mb:.1f} MB",
             f"  Validation Enabled: {self.state_manager.validation_enabled}",
             f"  Compression Enabled: {self.state_manager.compression_enabled}",
             "",
-            f"Replay Engine:",
+            "Replay Engine:",
             f"  Available Sessions: {len(sessions)}",
             f"  Recording Active: {self.replay_engine.is_recording}",
             f"  Playback Active: {self.replay_engine.is_playing}",
             f"  Session Directory: {self.replay_engine.session_dir}",
             f"  Storage Used: {replay_size_mb:.1f} MB",
             "",
-            f"InfoBus:",
+            "InfoBus:",
             f"  Snapshot: {infobus_info} ({self.config['infobus_snapshot_path']})",
             "",
-            f"Configuration:",
+            "Configuration:",
             f"  Auto-checkpoint Interval: {self.config['auto_checkpoint_interval']}s",
             f"  Auto-state Save Interval: {self.config['auto_state_interval']}s",
             f"  Max Session Age: {self.config['max_session_age_days']} days",
@@ -2711,400 +2226,216 @@ class PersistenceManager:
             f"  Health Checks: {self.config['health_check_enabled']}",
             f"  Persist InfoBus: {self.config['persist_infobus']}",
             "",
-            f"Total Storage: {state_size_mb + replay_size_mb:.1f} MB"
+            f"Total Storage: {state_size_mb + replay_size_mb:.1f} MB",
         ]
-        
         return "\n".join(lines)
-    
+
     def create_system_backup(self, backup_name: str = "system_backup") -> bool:
-        """Create complete system backup including states and sessions"""
         try:
             ts = int(time.time())
             backup_id = f"{backup_name}_{ts}"
-            backup_root = Path("backups")
-            backup_root.mkdir(parents=True, exist_ok=True)
-            backup_dir = backup_root / backup_id
-            backup_dir.mkdir(parents=True, exist_ok=True)
-
-            # Create checkpoint (best-effort)
+            root = Path("backups"); root.mkdir(parents=True, exist_ok=True)
+            bdir = root / backup_id; bdir.mkdir(parents=True, exist_ok=True)
             if self.orchestrator:
                 self.state_manager.create_checkpoint(self.orchestrator, backup_name)
-
-            # Copy state files
-            state_backup = backup_dir / "states"
-            shutil.copytree(self.state_manager.state_dir, state_backup)
-
-            # Copy replay sessions
-            replay_backup = backup_dir / "replays"
-            shutil.copytree(self.replay_engine.session_dir, replay_backup)
-
-            # Copy InfoBus snapshot if present
+            shutil.copytree(self.state_manager.state_dir, bdir / "states")
+            shutil.copytree(self.replay_engine.session_dir, bdir / "replays")
             try:
-                ib_path = Path(self.config['infobus_snapshot_path'])
-                if ib_path.exists():
-                    ib_dst = backup_dir / "infobus"
-                    ib_dst.mkdir(exist_ok=True)
-                    shutil.copy2(ib_path, ib_dst / ib_path.name)
+                ib = Path(self.config["infobus_snapshot_path"])
+                if ib.exists():
+                    dst = bdir / "infobus"; dst.mkdir(exist_ok=True)
+                    shutil.copy2(ib, dst / ib.name)
             except Exception:
-                # Snapshot copy is optional
                 pass
-
-            # Create backup metadata
-            metadata = {
-                'backup_id': backup_id,
-                'backup_name': backup_name,
-                'timestamp': datetime.now().isoformat(),
-                'state_root': str(self.state_manager.state_dir),
-                'replay_root': str(self.replay_engine.session_dir),
-                'infobus_snapshot': Path(self.config['infobus_snapshot_path']).exists(),
-                'state_files': len([p for p in (backup_dir / "states").rglob('*') if p.is_file()]),
-                'replay_files': len([p for p in (backup_dir / "replays").rglob('*') if p.is_file()]),
-                'system_info': {
-                    'orchestrator_available': self.orchestrator is not None,
-                    'module_count': len(self.orchestrator.modules) if self.orchestrator else 0
-                }
+            meta = {
+                "backup_id": backup_id,
+                "backup_name": backup_name,
+                "timestamp": datetime.now().isoformat(),
+                "state_root": str(self.state_manager.state_dir),
+                "replay_root": str(self.replay_engine.session_dir),
+                "infobus_snapshot": Path(self.config["infobus_snapshot_path"]).exists(),
+                "state_files": len([p for p in (bdir / "states").rglob("*") if p.is_file()]),
+                "replay_files": len([p for p in (bdir / "replays").rglob("*") if p.is_file()]),
+                "system_info": {"orchestrator_available": self.orchestrator is not None, "module_count": len(self.orchestrator.modules) if self.orchestrator else 0},
             }
-            with open(backup_dir / "backup_metadata.json", 'w') as f:
-                json.dump(metadata, f, indent=2, default=str)
-
-            # Compress backup to .tar.gz
-            archive_base = backup_root / backup_id
+            (bdir / "backup_metadata.json").write_text(json.dumps(meta, indent=2, default=str))
+            arch_base = root / backup_id
             try:
-                shutil.make_archive(
-                    str(archive_base),
-                    'gztar',
-                    root_dir=backup_root,
-                    base_dir=backup_id
-                )
-                # Remove uncompressed directory after successful compression
-                shutil.rmtree(backup_dir)
+                shutil.make_archive(str(arch_base), "gztar", root, backup_id)
+                shutil.rmtree(bdir)
             except Exception as e:
                 self.logger.error(f"Compression failed: {e}")
-                # Keep uncompressed directory for inspection
-
-            self.logger.info(f"[OK] System backup created: {archive_base}.tar.gz")
+            self.logger.info(f"[OK] System backup created: {arch_base}.tar.gz")
             return True
-
         except Exception as e:
             self.logger.error(f"System backup failed: {e}")
             return False
 
-
     def restore_system_backup(self, backup_id: str) -> bool:
-        """Restore complete system from backup (states, replays, InfoBus snapshot)."""
         try:
-            archive_path = Path("backups") / f"{backup_id}.tar.gz"
-            if not archive_path.exists():
+            arch = Path("backups") / f"{backup_id}.tar.gz"
+            if not arch.exists():
                 self.logger.error(f"Backup not found: {backup_id}")
                 return False
-
-            with tempfile.TemporaryDirectory() as temp_dir:
-                shutil.unpack_archive(str(archive_path), temp_dir)
-                backup_dir = Path(temp_dir) / backup_id
-
-                # Read metadata
-                meta_path = backup_dir / "backup_metadata.json"
-                if meta_path.exists():
-                    with open(meta_path, 'r') as f:
-                        metadata = json.load(f)
-                    self.logger.info(f"Restoring backup from {metadata.get('timestamp','unknown time')}")
+            with tempfile.TemporaryDirectory() as tmp:
+                shutil.unpack_archive(str(arch), tmp)
+                bdir = Path(tmp) / backup_id
+                meta = bdir / "backup_metadata.json"
+                if meta.exists():
+                    md = json.loads(meta.read_text())
+                    self.logger.info(f"Restoring backup from {md.get('timestamp','unknown time')}")
                 else:
-                    metadata = {}
                     self.logger.warning("Backup metadata.json missing; continuing with best effort.")
-
-                # Backup current state before restore
-                try:
-                    self.create_system_backup("pre_restore_backup")
-                except Exception as e:
-                    self.logger.warning(f"Pre-restore backup failed (continuing): {e}")
-
-                # Restore state files
-                src_states = backup_dir / "states"
+                try: self.create_system_backup("pre_restore_backup")
+                except Exception as e: self.logger.warning(f"Pre-restore backup failed (continuing): {e}")
+                src_states = bdir / "states"
                 if src_states.exists():
                     shutil.rmtree(self.state_manager.state_dir, ignore_errors=True)
                     shutil.copytree(src_states, self.state_manager.state_dir)
-                else:
-                    self.logger.warning("States folder missing in backup")
-
-                # Restore replay sessions
-                src_replays = backup_dir / "replays"
+                src_replays = bdir / "replays"
                 if src_replays.exists():
                     shutil.rmtree(self.replay_engine.session_dir, ignore_errors=True)
                     shutil.copytree(src_replays, self.replay_engine.session_dir)
-                else:
-                    self.logger.warning("Replays folder missing in backup")
-
-                # Restore InfoBus snapshot (if present)
-                ib_src_dir = backup_dir / "infobus"
-                if ib_src_dir.exists():
+                ib_dir = bdir / "infobus"
+                if ib_dir.exists():
                     try:
-                        dest = Path(self.config['infobus_snapshot_path'])
+                        dest = Path(self.config["infobus_snapshot_path"])
                         dest.parent.mkdir(parents=True, exist_ok=True)
-                        # copy first *.json file found (there should be exactly one)
-                        for p in ib_src_dir.glob("*.json"):
-                            shutil.copy2(p, dest)
-                            break
-                        loaded = load_infobus_snapshot(self.config['infobus_snapshot_path'])
+                        for p in ib_dir.glob("*.json"):
+                            shutil.copy2(p, dest); break
+                        loaded = load_infobus_snapshot(self.config["infobus_snapshot_path"])
                         self.logger.info(f"InfoBus snapshot restore: {'ok' if loaded else 'skipped'}")
                     except Exception as e:
                         self.logger.error(f"Failed to restore InfoBus snapshot: {e}")
-
-                # Restore module states into orchestrator (if available)
                 if self.orchestrator:
                     self.state_manager.restore_all_states(self.orchestrator)
-
                 self.logger.info(f"[OK] System restored from backup: {backup_id}")
                 return True
-
         except Exception as e:
             self.logger.error(f"System restore failed: {e}")
             return False
 
     def get_checkpoint_details(self, checkpoint_id: str) -> Optional[Dict[str, Any]]:
-        """Get detailed information about a specific checkpoint."""
-        checkpoints = self.state_manager.list_checkpoints()
-        for checkpoint in checkpoints:
-            if checkpoint.get('checkpoint_id') == checkpoint_id:
-                return checkpoint
+        for cp in self.state_manager.list_checkpoints():
+            if cp.get("checkpoint_id") == checkpoint_id:
+                return cp
         return None
 
     def get_session_details(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Get detailed information about a specific replay session."""
-        sessions = self.replay_engine.list_sessions()
-        for session in sessions:
-            if session.get('session_id') == session_id:
-                return session
+        for s in self.replay_engine.list_sessions():
+            if s.get("session_id") == session_id:
+                return s
         return None
 
     def export_diagnostics(self, output_path: str = "diagnostics"):
-        """Export comprehensive system diagnostics (status, checkpoints, sessions, config)."""
         try:
-            diag_dir = Path(output_path)
-            diag_dir.mkdir(parents=True, exist_ok=True)
-
-            # Export status report
-            (diag_dir / "status_report.txt").write_text(self.get_status_report())
-
-            # Export checkpoints list
-            checkpoints = self.state_manager.list_checkpoints()
-            with open(diag_dir / "checkpoints.json", 'w') as f:
-                json.dump(checkpoints, f, indent=2, default=str)
-
-            # Export sessions list
-            sessions = self.replay_engine.list_sessions()
-            with open(diag_dir / "sessions.json", 'w') as f:
-                json.dump(sessions, f, indent=2, default=str)
-
-            # Export configuration
-            config_data = {
-                'persistence_config': self.config,
-                'state_manager_config': {
-                    'max_backups': self.state_manager.max_backups,
-                    'compression_enabled': self.state_manager.compression_enabled,
-                    'validation_enabled': self.state_manager.validation_enabled
-                }
-            }
-            with open(diag_dir / "configuration.json", 'w') as f:
-                json.dump(config_data, f, indent=2, default=str)
-
-            # Copy InfoBus snapshot if present
+            d = Path(output_path); d.mkdir(parents=True, exist_ok=True)
+            (d / "status_report.txt").write_text(self.get_status_report())
+            (d / "checkpoints.json").write_text(json.dumps(self.state_manager.list_checkpoints(), indent=2, default=str))
+            (d / "sessions.json").write_text(json.dumps(self.replay_engine.list_sessions(), indent=2, default=str))
+            cfg = {"persistence_config": self.config,
+                   "state_manager_config": {"max_backups": self.state_manager.max_backups,
+                                            "compression_enabled": self.state_manager.compression_enabled,
+                                            "validation_enabled": self.state_manager.validation_enabled}}
+            (d / "configuration.json").write_text(json.dumps(cfg, indent=2, default=str))
             try:
-                ib_path = Path(self.config['infobus_snapshot_path'])
-                if ib_path.exists():
-                    shutil.copy2(ib_path, diag_dir / ib_path.name)
-            except Exception:
-                pass
-
-            self.logger.info(f"[STATS] Diagnostics exported to {diag_dir}")
-
+                ib = Path(self.config["infobus_snapshot_path"])
+                if ib.exists(): shutil.copy2(ib, d / ib.name)
+            except Exception: pass
+            self.logger.info(f"[STATS] Diagnostics exported to {d}")
         except Exception as e:
             self.logger.error(f"Failed to export diagnostics: {e}")
 
     def verify_system_integrity(self) -> Dict[str, Any]:
-        """Verify integrity of all persisted data (checkpoints + sessions)."""
-        results = {
-            'timestamp': datetime.now().isoformat(),
-            'checkpoints': {'total': 0, 'valid': 0, 'corrupted': []},
-            'sessions': {'total': 0, 'valid': 0, 'corrupted': []},
-            'overall_integrity': True
-        }
-
-        # Verify checkpoints (basic integrity presence)
-        checkpoints = self.state_manager.list_checkpoints()
-        results['checkpoints']['total'] = len(checkpoints)
-        for checkpoint in checkpoints:
-            checkpoint_id = checkpoint.get('checkpoint_id', 'unknown')
+        res = {"timestamp": datetime.now().isoformat(),
+               "checkpoints": {"total": 0, "valid": 0, "corrupted": []},
+               "sessions": {"total": 0, "valid": 0, "corrupted": []},
+               "overall_integrity": True}
+        cps = self.state_manager.list_checkpoints(); res["checkpoints"]["total"] = len(cps)
+        for cp in cps:
             try:
-                if 'integrity' in checkpoint:
-                    results['checkpoints']['valid'] += 1
-                else:
-                    results['checkpoints']['corrupted'].append(checkpoint_id)
+                res["checkpoints"]["valid"] += 1 if "integrity" in cp else 0
+                if "integrity" not in cp: res["checkpoints"]["corrupted"].append(cp.get("checkpoint_id","unknown"))
             except Exception as e:
-                results['checkpoints']['corrupted'].append(f"{checkpoint_id}: {str(e)}")
-
-        # Verify replay sessions by loading & validating
-        for session_meta in self.replay_engine.list_sessions():
-            session_id = session_meta.get('session_id', 'unknown')
-            results['sessions']['total'] += 1
+                res["checkpoints"]["corrupted"].append(f"{cp.get('checkpoint_id','unknown')}: {e}")
+        for meta in self.replay_engine.list_sessions():
+            sid = meta.get("session_id", "unknown")
+            res["sessions"]["total"] += 1
             try:
-                session = self.replay_engine.load_session(session_id)
-                if session.validate_integrity():
-                    results['sessions']['valid'] += 1
+                sess = self.replay_engine.load_session(sid)
+                if sess.validate_integrity():
+                    res["sessions"]["valid"] += 1
                 else:
-                    results['sessions']['corrupted'].append(session_id)
+                    res["sessions"]["corrupted"].append(sid)
             except Exception as e:
-                results['sessions']['corrupted'].append(f"{session_id}: {str(e)}")
-
-        if results['checkpoints']['corrupted'] or results['sessions']['corrupted']:
-            results['overall_integrity'] = False
-
-        return results
+                res["sessions"]["corrupted"].append(f"{sid}: {e}")
+        if res["checkpoints"]["corrupted"] or res["sessions"]["corrupted"]:
+            res["overall_integrity"] = False
+        return res
 
     def repair_corrupted_data(self) -> Dict[str, Any]:
-        """Attempt to repair corrupted data (placeholder – logs items that need manual action)."""
-        repair_results = {
-            'checkpoints_repaired': 0,
-            'sessions_repaired': 0,
-            'failed_repairs': []
-        }
-
-        integrity = self.verify_system_integrity()
-
-        # Attempt to repair corrupted checkpoints (future: re-hash module files, etc.)
-        for corrupted_checkpoint in integrity['checkpoints']['corrupted']:
+        report = {"checkpoints_repaired": 0, "sessions_repaired": 0, "failed_repairs": []}
+        integ = self.verify_system_integrity()
+        for chk in integ["checkpoints"]["corrupted"]:
             try:
-                self.logger.warning(f"Would repair checkpoint: {corrupted_checkpoint}")
-                # Implement actual repair steps as needed
+                self.logger.warning(f"Would repair checkpoint: {chk}")
             except Exception as e:
-                repair_results['failed_repairs'].append(f"Checkpoint {corrupted_checkpoint}: {e}")
-
-        # Attempt to repair corrupted sessions (future: rebuild from meta.json)
-        for corrupted_session in integrity['sessions']['corrupted']:
+                report["failed_repairs"].append(f"Checkpoint {chk}: {e}")
+        for sess in integ["sessions"]["corrupted"]:
             try:
-                self.logger.warning(f"Would repair session: {corrupted_session}")
-                # Implement actual repair steps as needed
+                self.logger.warning(f"Would repair session: {sess}")
             except Exception as e:
-                repair_results['failed_repairs'].append(f"Session {corrupted_session}: {e}")
-
-        return repair_results
+                report["failed_repairs"].append(f"Session {sess}: {e}")
+        return report
 
     def get_module_state_history(self, module_name: str) -> List[Dict[str, Any]]:
-        """Get historical states for a specific module from checkpoint metadata."""
-        history: List[Dict[str, Any]] = []
-        checkpoints = self.state_manager.list_checkpoints()
-        for checkpoint in checkpoints:
-            modules = checkpoint.get('modules')
+        out: List[Dict[str, Any]] = []
+        for cp in self.state_manager.list_checkpoints():
+            modules = cp.get("modules")
             if isinstance(modules, dict) and module_name in modules:
-                history.append({
-                    'checkpoint_id': checkpoint.get('checkpoint_id'),
-                    'timestamp': checkpoint.get('timestamp'),
-                    'state_version': modules[module_name].get('version', 0)
-                })
-        history.sort(key=lambda x: x['timestamp'] or '', reverse=True)
-        return history
-
-    async def continuous_recording_mode(self, max_duration_hours: float = 24):
-        """Run continuous recording with automatic session rotation (1 hour chunks)."""
-        start_time = time.time()
-        max_duration_seconds = max_duration_hours * 3600
-        session_number = 1
-
-        try:
-            while time.time() - start_time < max_duration_seconds:
-                # Start new recording session
-                session_id = f"continuous_{datetime.now().strftime('%Y%m%d_%H%M%S')}_part{session_number}"
-                self.replay_engine.start_recording(session_id)
-
-                # Record for 1 hour or until stopped
-                await asyncio.sleep(3600)
-
-                # Stop and save session
-                session = self.replay_engine.stop_recording()
-                if session:
-                    self.logger.info(f"Continuous recording saved: {session.session_id}")
-
-                session_number += 1
-
-                # Brief pause between sessions
-                await asyncio.sleep(1)
-
-        except asyncio.CancelledError:
-            # Stop current recording if cancelled
-            if self.replay_engine.is_recording:
-                self.replay_engine.stop_recording()
-            raise
-
-        self.logger.info(f"Continuous recording completed: {session_number-1} sessions")
+                out.append({"checkpoint_id": cp.get("checkpoint_id"),
+                            "timestamp": cp.get("timestamp"),
+                            "state_version": modules[module_name].get("version", 0)})
+        out.sort(key=lambda x: x["timestamp"] or "", reverse=True)
+        return out
 
 
-# ═══════════════════════════════════════════════════════════════════
-# CONVENIENCE FUNCTIONS
-# ═══════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════
+# Convenience functions
+# ═════════════════════════════════════════════════════════════
 
-def create_persistence_manager(orchestrator: Optional['ModuleOrchestrator'] = None) -> PersistenceManager:
-    """Create and initialize a persistence manager."""
+def create_persistence_manager(orchestrator: Optional["ModuleOrchestrator"] = None) -> PersistenceManager:
     return PersistenceManager(orchestrator)
 
-def quick_checkpoint(orchestrator: 'ModuleOrchestrator', name: str = "quick") -> bool:
-    """Create a quick checkpoint of the system."""
-    manager = StateManager()
-    return manager.create_checkpoint(orchestrator, name)
+def quick_checkpoint(orchestrator: "ModuleOrchestrator", name: str = "quick") -> bool:
+    return StateManager().create_checkpoint(orchestrator, name)
 
-def quick_restore(orchestrator: 'ModuleOrchestrator', checkpoint_id: str) -> bool:
-    """Quickly restore from a checkpoint."""
-    manager = StateManager()
-    return manager.restore_checkpoint(orchestrator, checkpoint_id)
+def quick_restore(orchestrator: "ModuleOrchestrator", checkpoint_id: str) -> bool:
+    return StateManager().restore_checkpoint(orchestrator, checkpoint_id)
 
 async def record_session(duration_seconds: float = 60, session_id: Optional[str] = None) -> Optional[ReplaySession]:
-    """Record a session for specified duration."""
     engine = ReplayEngine()
-    actual_id = engine.start_recording(session_id)
+    _ = engine.start_recording(session_id)
     await asyncio.sleep(duration_seconds)
     return engine.stop_recording()
 
 def list_all_checkpoints() -> List[Dict[str, Any]]:
-    """List all available checkpoints."""
-    manager = StateManager()
-    return manager.list_checkpoints()
+    return StateManager().list_checkpoints()
 
 def list_all_sessions() -> List[Dict[str, Any]]:
-    """List all available replay sessions."""
-    engine = ReplayEngine()
-    return engine.list_sessions()
+    return ReplayEngine().list_sessions()
 
-
-# ═══════════════════════════════════════════════════════════════════
-# MAIN ENTRY POINT FOR TESTING
-# ═══════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    # Example usage
     import asyncio
-
-    async def test_persistence():
-        """Test persistence functionality."""
+    async def _smoke():
         pm = PersistenceManager()
-
-        # Show status
         print(pm.get_status_report())
-
-        # Verify integrity
-        integrity = pm.verify_system_integrity()
-        print(f"\nSystem Integrity: {integrity['overall_integrity']}")
-        if not integrity['overall_integrity']:
-            print(json.dumps(integrity, indent=2))
-
-        # Export diagnostics
+        integ = pm.verify_system_integrity()
+        print(f"\nSystem Integrity: {integ['overall_integrity']}")
+        if not integ["overall_integrity"]:
+            print(json.dumps(integ, indent=2))
         pm.export_diagnostics()
-
-        # Create & restore backup (quick smoke test without orchestrator)
         ok = pm.create_system_backup("smoke_test_backup")
         print(f"\nBackup created: {ok}")
-        if ok:
-            pm.restore_system_backup("smoke_test_backup_" + str(int(time.time())))  # likely won't exist (only example)
-
-        print("\nPersistence system test completed!")
-
-    asyncio.run(test_persistence())
-    
-            
+    asyncio.run(_smoke())

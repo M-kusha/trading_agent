@@ -147,6 +147,16 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         
         # Initialize with seed theses
         self._initialize_seed_theses()
+
+        # Publish a safe baseline market_thesis immediately for early consumers (TrainingScript)
+        try:
+            baseline_thesis = "Thesis evolution initialized; awaiting first market cycle."
+            self.smart_bus.set('market_thesis', baseline_thesis,
+                               module='ThesisEvolutionEngine',
+                               thesis='Baseline market thesis published at initialization')
+        except Exception:
+            # Non-fatal: first process() will publish a full thesis
+            pass
         
         version = getattr(self.metadata, 'version', '3.0.0') if self.metadata else '3.0.0'
         self.logger.info(format_operator_message(

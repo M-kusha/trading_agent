@@ -126,7 +126,7 @@ class WorldModelConfig:
     description="Deterministic multi-window feature extraction with circuit breaker, monitoring, and explainability.",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=120,
+    timeout_ms=3000,
 ))
 class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin, nn.Module):
     """

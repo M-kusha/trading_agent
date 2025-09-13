@@ -1,14 +1,19 @@
 # envs/config.py
 """
 Enhanced Configuration System for InfoBus-Integrated Trading Environment
-Includes presets, factory methods, and full InfoBus compatibility
-(Hardened & type-safe; drop-in compatible)
+BUS-FIRST edition: modules are source-of-truth; config is fallback + guard-rails.
+
+Key changes:
+- Added bus-first policy toggles (prefer_bus_* etc.) to avoid duplicating module logic
+- Added missing fields referenced by ModernTradingEnv (environment_observation_size, prefer_bus_data, fees, etc.)
+- Kept all prior fields for backward compatibility (act as defaults if bus has no data)
 """
+
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field, asdict, replace
-from typing import Any, Dict, List, Optional, Iterable, Tuple
+from typing import Any, Dict, List, Optional
 from pathlib import Path
 
 
@@ -22,12 +27,8 @@ def _ensure_dir(p: str) -> None:
 
 
 def _to_builtin(obj: Any) -> Any:
-    """
-    Recursively convert values to JSON-serializable builtins.
-    Keeps lists/dicts shape, converts Paths, sets, tuples, numpy scalars, etc.
-    """
+    """Recursively convert values to JSON-serializable builtins."""
     try:
-        # Fast path for simple builtins
         if obj is None or isinstance(obj, (bool, int, float, str)):
             return obj
         if isinstance(obj, Path):
@@ -38,16 +39,18 @@ def _to_builtin(obj: Any) -> Any:
             return {str(k): _to_builtin(v) for k, v in obj.items()}
     except Exception:
         pass
-    # Fallback to string
     return str(obj)
 
 
+# ─────────────────────────────────────────────────────────
+# TradingConfig (bus-first; config = fallback + guard rails)
+# ─────────────────────────────────────────────────────────
 @dataclass
 class TradingConfig:
-    """Centralized configuration for InfoBus-integrated trading environment"""
+    """Centralized configuration for InfoBus-integrated trading environment (BUS-FIRST)."""
 
     # ===================================================================
-    # Core Environment Parameters
+    # Core Environment Parameters (fallbacks)
     # ===================================================================
     initial_balance: float = 3000.0
     max_steps: int = 200
@@ -55,42 +58,124 @@ class TradingConfig:
     init_seed: int = 42
     max_steps_per_episode: int = field(init=False)
 
-    # InfoBus Configuration
+    # Observation sizing (env reads this, but will prefer bus features if available)
+    environment_observation_size: int = 256
+
+    # Primary timeframe (used mainly for local fallback data windows)
+    primary_timeframe: str = "H1"
+
+    # ===================================================================
+    # InfoBus & Orchestrator
+    # ===================================================================
     info_bus_enabled: bool = True
     info_bus_audit_level: str = "DEBUG"  # DEBUG, INFO, WARNING, ERROR
     info_bus_validation: bool = True
-    # Initialization behavior
     info_bus_init_timeout: float = 2.0
     orchestrator_init_timeout: float = 10.0
     orchestrator_async_init: bool = True
+    # When the env triggers the orchestrator each step, optionally wait a few ms
+    # so decision modules (e.g., PositionManager) can enqueue orders before the
+    # env collects intents. Keeps bus-first async behavior, but reduces empty cycles.
+    orchestrator_sync_wait_ms: float = 25.0
+
+    # Bus-first policy toggles (single source of truth = modules via SmartInfoBus)
+    bus_first: bool = True
+    prefer_bus_data: bool = True          # prefer MarketDataProvider over local data
+    prefer_bus_features: bool = True      # prefer AdvancedFeatureEngine/MultiScaleFeatureEngine
+    prefer_bus_rewards: bool = True       # prefer RiskAdjustedReward.shaped_reward
+    prefer_bus_metrics: bool = True       # prefer PortfolioRiskSystem/DrawdownRescue/etc
+    prefer_bus_limits: bool = True        # prefer Compliance/PortfolioRiskSystem/etc
+    allow_module_overrides: bool = True   # let modules override defaults at runtime
+    halt_on_emergency: bool = True        # stop new orders on emergency/risk kill switch
+
+    bus_aliases: Dict[str, List[str]] = field(default_factory=lambda: {
+        # Data / step
+        "market_data": ["MarketDataProvider"],
+        "multi_timeframe_data": ["MarketDataProvider"],
+        "step_idx": ["MarketDataProvider"],
+
+        # Positions / portfolio state  (single writer = Executor)
+        "positions": ["Executor"],
+        "equity": ["Executor"],
+        "balance": ["Executor"],
+        "trades": ["Executor"],
+        "portfolio_metrics": ["Executor"],
+        "trading_result": ["Executor"],
+
+        # Order & execution rollups  (consumed by Compliance/EQM/etc.)
+        "order_data": ["Executor"],
+        "execution_data": ["Executor"],
+        "execution_reports": ["Executor"],
+
+        # Helpful aliases (kept canonical)
+        "current_positions": ["Executor"],
+        "pnl_data": ["Executor"],
+
+        # Features / observations
+        "advanced_features": ["AdvancedFeatureEngine", "MultiScaleFeatureEngine"],
+
+        # Reward shaping
+        "shaped_reward": ["RiskAdjustedReward"],
+
+        # Risk metrics and limits
+        "risk_metrics": ["PortfolioRiskSystem"],
+        "risk_score": ["PortfolioRiskSystem"],
+        "drawdown_risk": ["DrawdownRescue"],
+        "correlation_risk": ["CorrelatedRiskController"],
+        "risk_limits": ["ComplianceModule"],
+        "position_limits": ["PortfolioRiskSystem"],
+        "trade_limits": ["RoleCoach"],
+        "mode_thresholds": ["TradingModeManager"],
+        "risk_scaling_factor": ["UnifiedMarketModule"],   # was TimeAwareRiskScaling
+        "risk_scaling": ["DynamicRiskController"],
+
+        # Kill switches
+        "emergency_mode": ["SessionManager"],
+        "risk_alerts": ["DynamicRiskController"],
+
+        # Regime/volatility/session (context)
+        "market_regime": ["UnifiedMarketModule"],         # was FractalRegimeConfirmation
+        "volatility_data": ["MarketDataProvider"],        # drop TimeAwareRiskScaling
+        "trading_session": ["MarketDataProvider"],        # SessionManager doesn't provide this
+    })
+
 
     # ===================================================================
-    # Data and Instruments
+    # Data and Instruments (used as defaults/fallbacks)
     # ===================================================================
     data_dir: str = "data/processed"
     instruments: List[str] = field(default_factory=lambda: ["EUR/USD", "XAU/USD"])
     timeframes: List[str] = field(default_factory=lambda: ["H1", "H4", "D1"])
 
     # ===================================================================
-    # Trading Parameters
+    # Trading Parameters (fallback only; modules own live values)
     # ===================================================================
     no_trade_penalty: float = 0.3
     consensus_min: float = 0.30
     consensus_max: float = 0.70
     max_episodes: int = 10000
 
-    # ===================================================================
-    # Risk Management
-    # ===================================================================
+    # Execution economics (used by embedded executor when PositionManager/ExecutionQualityMonitor
+    # do not provide an override; otherwise treated as fallback)
+    default_spread: float = 0.0
+    slippage_pts: float = 0.0
+    commission_per_million: float = 0.0
+
+    # Soft gating for env-embedded logic (fallback only; modules should own these live)
+    min_confidence: float = 0.0
     min_intensity: float = 0.25
-    min_inst_confidence: float = 0.60
+    ignore_hold: bool = True
+
+    # ===================================================================
+    # Risk Management (fallback guard-rails; Compliance/PortfolioRiskSystem are canonical)
+    # ===================================================================
     rotation_gap: int = 5
-    max_position_pct: float = 0.10
-    max_total_exposure: float = 0.30
-    max_drawdown: float = 0.20
+    max_position_pct: float = 0.10       # fallback cap per-trade
+    max_total_exposure: float = 0.30     # fallback cap portfolio exposure
+    max_drawdown: float = 0.20           # fallback episode/session DD limit
     max_correlation: float = 0.8
 
-    # Position Management Specific
+    # Position Management Specific (fallbacks)
     max_consecutive_losses: int = 5
     loss_reduction: float = 0.2
     max_instrument_concentration: float = 0.25
@@ -105,17 +190,17 @@ class TradingConfig:
     emergency_close_threshold: float = 0.85
     confidence_decay: float = 0.95
 
-    # Performance thresholds for Position Manager
+    # Performance thresholds for Position Manager (fallbacks)
     position_max_processing_time_ms: float = 100
     position_circuit_breaker_threshold: int = 3
 
-    # Enhanced Risk Parameters for InfoBus
+    # Enhanced Risk Parameters for InfoBus (scheduler defaults)
     risk_check_frequency: int = 1  # Steps between risk checks
     risk_alert_cooldown: int = 5   # Steps between similar alerts
     max_concurrent_alerts: int = 10
 
     # ===================================================================
-    # Training Environment
+    # Training Environment (env-level toggles; agent owns PPO hparams)
     # ===================================================================
     num_envs: int = 1
     test_mode: bool = False
@@ -123,7 +208,7 @@ class TradingConfig:
     enable_shadow_sim: bool = True
     enable_news_sentiment: bool = False
 
-    # Module Enablement Flags
+    # Module Enablement Flags (coarse)
     enable_meta_rl: bool = True
     enable_memory_systems: bool = True
     enable_strategy_evolution: bool = True
@@ -131,7 +216,7 @@ class TradingConfig:
     enable_visualization: bool = True
 
     # ===================================================================
-    # PPO Hyperparameters
+    # PPO Hyperparameters (kept for legacy; agents (PPO/PPOLag) should own live HPs)
     # ===================================================================
     learning_rate: float = 3e-4
     n_steps: int = 2048
@@ -147,13 +232,13 @@ class TradingConfig:
     target_kl: Optional[float] = 0.01
 
     # ===================================================================
-    # Network Architecture
+    # Network Architecture (legacy defaults; agent modules own live nets)
     # ===================================================================
     policy_hidden_size: int = 256
     value_hidden_size: int = 256
 
     # ===================================================================
-    # Training Schedule
+    # Training Schedule (env/trainer level schedules)
     # ===================================================================
     final_training_steps: int = 100000
     log_interval: int = 10
@@ -177,36 +262,37 @@ class TradingConfig:
     operator_log_dir: str = "logs/operator"
 
     def __post_init__(self) -> None:
-        """Post-initialization setup with InfoBus support + guard rails."""
-        # Alias for backward compatibility
+        """Post-initialization setup with clamps, dirs, and invariants."""
         object.__setattr__(self, "max_steps_per_episode", int(self.max_steps))
 
         # Sanitize lists
         self.instruments = [str(x) for x in (self.instruments or []) if str(x).strip()]
         self.timeframes = [str(x) for x in (self.timeframes or []) if str(x).strip()]
 
-        # Clamp key probabilities/ratios into valid ranges
+        # Clamp ratios/probabilities
         self.max_drawdown = _clamp(float(self.max_drawdown), 0.0, 0.95)
         self.max_total_exposure = _clamp(float(self.max_total_exposure), 0.0, 5.0)
         self.max_position_pct = _clamp(float(self.max_position_pct), 0.0, 1.0)
-        self.min_inst_confidence = _clamp(float(self.min_inst_confidence), 0.0, 1.0)
+        self.min_intensity = _clamp(float(self.min_intensity), 0.0, 1.0)
         self.consensus_min = _clamp(float(self.consensus_min), 0.0, 1.0)
         self.consensus_max = _clamp(float(self.consensus_max), 0.0, 1.0)
         if self.consensus_min > self.consensus_max:
-            # keep invariant
             self.consensus_min, self.consensus_max = self.consensus_max, self.consensus_min
-
         self.emergency_close_threshold = _clamp(float(self.emergency_close_threshold), 0.0, 1.0)
         self.trail_pct = _clamp(float(self.trail_pct), 0.0, 1.0)
         self.confidence_decay = _clamp(float(self.confidence_decay), 0.0, 1.0)
 
+    # Timers/intervals
         self.info_bus_init_timeout = max(0.0, float(self.info_bus_init_timeout))
         self.orchestrator_init_timeout = max(0.0, float(self.orchestrator_init_timeout))
+        # Clamp small sync wait (non-blocking feel). Set 0 to fully disable waiting.
+        self.orchestrator_sync_wait_ms = max(0.0, float(self.orchestrator_sync_wait_ms))
         self.risk_check_frequency = max(1, int(self.risk_check_frequency))
         self.risk_alert_cooldown = max(0, int(self.risk_alert_cooldown))
         self.max_concurrent_alerts = max(1, int(self.max_concurrent_alerts))
         self.max_steps = max(1, int(self.max_steps))
         self.max_steps_per_episode = self.max_steps  # keep alias in sync
+        self.environment_observation_size = max(1, int(self.environment_observation_size))
 
         # Ensure directories exist
         all_dirs = [
@@ -220,7 +306,7 @@ class TradingConfig:
         # Create module-specific log directories
         module_log_dirs = [
             "logs/trading", "logs/risk", "logs/strategy", "logs/memory",
-            "logs/voting", "logs/market", "logs/position", "logs/features"
+            "logs/voting", "logs/market", "logs/position", "logs/features", "logs/meta"
         ]
         for directory in module_log_dirs:
             _ensure_dir(directory)
@@ -229,7 +315,7 @@ class TradingConfig:
     # Structured views
     # ------------------------------------------------------------------
     def get_model_config(self) -> Dict[str, Any]:
-        """Get PPO model configuration dictionary"""
+        """Legacy PPO model defaults (agents should own live HPs)."""
         return {
             "learning_rate": float(self.learning_rate),
             "n_steps": int(self.n_steps),
@@ -248,7 +334,7 @@ class TradingConfig:
         }
 
     def get_info_bus_config(self) -> Dict[str, Any]:
-        """Get InfoBus configuration dictionary"""
+        """InfoBus configuration dictionary."""
         return {
             "enabled": bool(self.info_bus_enabled),
             "audit_level": str(self.info_bus_audit_level),
@@ -257,8 +343,22 @@ class TradingConfig:
             "rotation_lines": int(self.log_rotation_lines),
         }
 
+    def get_bus_policy(self) -> Dict[str, Any]:
+        """Bus-first policy and alias map for env/trainer wiring."""
+        return {
+            "bus_first": bool(self.bus_first),
+            "prefer_bus_data": bool(self.prefer_bus_data),
+            "prefer_bus_features": bool(self.prefer_bus_features),
+            "prefer_bus_rewards": bool(self.prefer_bus_rewards),
+            "prefer_bus_metrics": bool(self.prefer_bus_metrics),
+            "prefer_bus_limits": bool(self.prefer_bus_limits),
+            "allow_module_overrides": bool(self.allow_module_overrides),
+            "halt_on_emergency": bool(self.halt_on_emergency),
+            "aliases": {k: list(v) for k, v in (self.bus_aliases or {}).items()},
+        }
+
     def get_module_config(self) -> Dict[str, Any]:
-        """Get module configuration dictionary"""
+        """Module configuration defaults."""
         return {
             "debug": bool(self.debug),
             "max_history": 100,
@@ -276,16 +376,15 @@ class TradingConfig:
         return _to_builtin(asdict(self))
 
     def save_config(self, path: str) -> None:
-        """Save configuration to JSON file"""
+        """Save configuration to JSON file."""
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(self.to_dict(), f, indent=2)
 
     @classmethod
     def load_config(cls, path: str) -> "TradingConfig":
-        """Load configuration from JSON file"""
+        """Load configuration from JSON file."""
         with open(path, 'r', encoding='utf-8') as f:
             config_dict = json.load(f)
-        # Filter unexpected keys gracefully
         allowed = {f.name for f in cls.__dataclass_fields__.values()}
         clean = {k: v for k, v in config_dict.items() if k in allowed}
         return cls(**clean)
@@ -295,7 +394,6 @@ class TradingConfig:
     # ------------------------------------------------------------------
     def clone_with(self, **overrides: Any) -> "TradingConfig":
         """Return a copy with selected fields overridden."""
-        # Only apply known fields
         known = {k: v for k, v in overrides.items() if hasattr(self, k)}
         return replace(self, **known)
 
@@ -304,26 +402,28 @@ class TradingConfig:
         for k, v in overrides.items():
             if hasattr(self, k):
                 setattr(self, k, v)
-        # Re-run clamps/dirs if critical fields changed
-        self.__post_init__()
+        self.__post_init__()  # re-run clamps/dirs when critical fields changed
 
     def __str__(self) -> str:
-        """String representation for logging"""
+        """String representation for logging."""
         return (
             f"TradingConfig(\n"
             f"  Mode: {'LIVE' if self.live_mode else ('TEST' if self.test_mode else 'BACKTEST')}\n"
-            f"  InfoBus: {'ENABLED' if self.info_bus_enabled else 'DISABLED'}\n"
+            f"  InfoBus: {'ENABLED' if self.info_bus_enabled else 'DISABLED'}  (bus-first: {self.bus_first})\n"
             f"  Balance: ${self.initial_balance:,.2f}\n"
             f"  Max Steps: {self.max_steps}\n"
             f"  Instruments: {self.instruments}\n"
+            f"  Obs Size: {self.environment_observation_size}\n"
             f"  Training Steps: {self.final_training_steps:,}\n"
-            f"  Learning Rate: {self.learning_rate}\n"
-            f"  Risk Limits: DD={self.max_drawdown:.1%}, Exposure={self.max_total_exposure:.1%}\n"
+            f"  Risk Limits (fallback): DD={self.max_drawdown:.1%}, Exposure={self.max_total_exposure:.1%}, Pos={self.max_position_pct:.1%}\n"
             f"  Log Rotation: {self.log_rotation_lines} lines\n"
             f")"
         )
 
 
+# ─────────────────────────────────────────────────────────
+# Runtime market/episode state (unchanged)
+# ─────────────────────────────────────────────────────────
 @dataclass
 class MarketState:
     """Enhanced market state with InfoBus integration"""
@@ -360,19 +460,20 @@ class EpisodeMetrics:
     risk_alerts: List[Dict[str, Any]] = field(default_factory=list)
 
 
+# ─────────────────────────────────────────────────────────
+# Presets (set bus-first flags to True by default)
+# ─────────────────────────────────────────────────────────
 class ConfigPresets:
     """Enhanced preset configurations for InfoBus-integrated environment"""
 
     @staticmethod
     def conservative_live() -> TradingConfig:
-        """Conservative configuration for live trading with InfoBus"""
         return TradingConfig(
-            # Conservative risk settings
+            # Conservative risk settings (fallbacks)
             initial_balance=1000.0,
             max_position_pct=0.05,
             max_total_exposure=0.15,
             max_drawdown=0.10,
-            min_inst_confidence=0.75,
             consensus_min=0.50,
 
             # Live trading settings
@@ -380,132 +481,144 @@ class ConfigPresets:
             debug=False,
             enable_shadow_sim=False,
 
+            # Bus-first policy
+            bus_first=True,
+            prefer_bus_data=True,
+            prefer_bus_features=True,
+            prefer_bus_rewards=True,
+            prefer_bus_metrics=True,
+            prefer_bus_limits=True,
+            allow_module_overrides=True,
+            halt_on_emergency=True,
+
             # InfoBus settings
             info_bus_enabled=True,
-            info_bus_audit_level="WARNING",  # Only important events
+            info_bus_audit_level="WARNING",
             info_bus_validation=True,
 
-            # Enhanced monitoring
+            # Monitoring
             risk_check_frequency=1,
             risk_alert_cooldown=3,
             max_concurrent_alerts=5,
 
-            # Conservative learning
+            # Learning (legacy defaults)
             learning_rate=1e-4,
             ent_coef=0.001,
             n_steps=1024,
 
-            # Shorter episodes for safety
+            # Episodes
             max_steps=100,
             final_training_steps=50000,
 
-            # More frequent monitoring
+            # Logging cadence
             log_interval=5,
             checkpoint_freq=2500,
             eval_freq=1000,
 
-            # Single instrument to start
             instruments=["EUR/USD"],
             timeframes=["H1", "H4", "D1"],
         )
 
     @staticmethod
     def research_mode() -> TradingConfig:
-        """Research configuration with full InfoBus debugging"""
         return TradingConfig(
-            # Research settings
             initial_balance=5000.0,
             max_position_pct=0.10,
             max_total_exposure=0.30,
             max_drawdown=0.25,
 
-            # Full debugging mode
             live_mode=False,
             test_mode=True,
             debug=True,
             enable_shadow_sim=True,
             enable_news_sentiment=True,
 
-            # InfoBus full debugging
+            # Bus-first policy
+            bus_first=True,
+            prefer_bus_data=True,
+            prefer_bus_features=True,
+            prefer_bus_rewards=True,
+            prefer_bus_metrics=True,
+            prefer_bus_limits=True,
+            allow_module_overrides=True,
+            halt_on_emergency=True,
+
             info_bus_enabled=True,
-            info_bus_audit_level="DEBUG",  # All events
+            info_bus_audit_level="DEBUG",
             info_bus_validation=True,
 
-            # Detailed monitoring
             risk_check_frequency=1,
             risk_alert_cooldown=1,
             max_concurrent_alerts=20,
 
-            # Fast iteration
             learning_rate=3e-4,
             n_steps=1024,
             batch_size=32,
 
-            # Short episodes for experiments
             max_steps=100,
             final_training_steps=25000,
 
-            # Frequent logging
             log_interval=1,
             checkpoint_freq=5000,
             eval_freq=2500,
 
-            # Full instrument set
             instruments=["EUR/USD", "XAU/USD"],
             timeframes=["H1", "H4", "D1"],
         )
 
     @staticmethod
     def production_backtest() -> TradingConfig:
-        """Production backtesting with balanced InfoBus monitoring"""
         return TradingConfig(
-            # Production settings
             initial_balance=10000.0,
             max_position_pct=0.15,
             max_total_exposure=0.40,
             max_drawdown=0.25,
-            min_inst_confidence=0.50,
             consensus_min=0.30,
 
-            # Backtest mode
             live_mode=False,
             test_mode=False,
             debug=False,
             enable_shadow_sim=True,
 
-            # Balanced InfoBus monitoring
+            # Bus-first policy
+            bus_first=True,
+            prefer_bus_data=True,
+            prefer_bus_features=True,
+            prefer_bus_rewards=True,
+            prefer_bus_metrics=True,
+            prefer_bus_limits=True,
+            allow_module_overrides=True,
+            halt_on_emergency=True,
+
             info_bus_enabled=True,
             info_bus_audit_level="DEBUG",
-            
             info_bus_validation=True,
 
-            # Standard monitoring
             risk_check_frequency=1,
             risk_alert_cooldown=5,
             max_concurrent_alerts=10,
 
-            # Production learning
             learning_rate=3e-4,
             n_steps=2048,
             batch_size=64,
 
-            # Full episodes
             max_steps=200,
             final_training_steps=100000,
 
-            # Standard monitoring
             log_interval=10,
             checkpoint_freq=10000,
             eval_freq=5000,
 
-            # Multiple instruments
             instruments=["EUR/USD", "XAU/USD"],
             timeframes=["H1", "H4", "D1"],
         )
 
 
+# ─────────────────────────────────────────────────────────
+# Factory & Validation
+# ─────────────────────────────────────────────────────────
 class ConfigFactory:
-    """Enhanced factory for creating InfoBus-compatible configurations"""
+    """Factory for creating InfoBus-compatible configurations (bus-first)."""
 
     @staticmethod
     def create_config(
@@ -514,16 +627,14 @@ class ConfigFactory:
         info_bus_level: str = "auto",
         **overrides: Any
     ) -> TradingConfig:
-        """Create configuration with InfoBus integration"""
 
-        # Base configurations by mode
         if mode == "live":
             config = ConfigPresets.conservative_live()
         elif mode == "research":
             config = ConfigPresets.research_mode()
         elif mode == "production":
             config = ConfigPresets.production_backtest()
-        else:  # backtest
+        else:
             config = TradingConfig()
 
         # Adjust InfoBus level
@@ -535,24 +646,21 @@ class ConfigFactory:
             else:
                 config.info_bus_audit_level = "INFO"
         else:
-            level = str(info_bus_level).upper()
-            config.info_bus_audit_level = level
+            config.info_bus_audit_level = str(info_bus_level).upper()
 
-        # Adjust risk level
+        # Risk level (affects only fallback guard-rails)
         if risk_level == "conservative":
             config.max_position_pct *= 0.5
             config.max_total_exposure *= 0.7
             config.max_drawdown *= 0.8
-            config.min_inst_confidence = min(config.min_inst_confidence + 0.1, 0.9)
-            config.risk_check_frequency = 1  # More frequent checks
-            config.risk_alert_cooldown = 3   # Faster alerts
+            config.risk_check_frequency = 1
+            config.risk_alert_cooldown = 3
         elif risk_level == "aggressive":
             config.max_position_pct *= 1.5
             config.max_total_exposure *= 1.3
             config.max_drawdown *= 1.2
-            config.min_inst_confidence = max(config.min_inst_confidence - 0.1, 0.3)
-            config.risk_check_frequency = 2  # Less frequent checks
-            config.risk_alert_cooldown = 10  # Slower alerts
+            config.risk_check_frequency = 2
+            config.risk_alert_cooldown = 10
 
         # Apply overrides (known fields only)
         for key, value in overrides.items():
@@ -561,58 +669,49 @@ class ConfigFactory:
             else:
                 print(f"Warning: Unknown config parameter '{key}'")
 
-        # Re-run clamps/invariants after overrides
         config.__post_init__()
         return config
 
 
-# ===================================================================
-# Configuration Validation with InfoBus Checks
-# ===================================================================
 def validate_config(config: TradingConfig) -> List[str]:
-    """Enhanced validation with InfoBus compatibility checks"""
+    """Validation with InfoBus compatibility checks (config = fallback only)."""
     warnings: List[str] = []
 
-    # Standard risk validation
+    # If bus-first but bus disabled → warn
+    if config.bus_first and not config.info_bus_enabled:
+        warnings.append("⚠️ bus_first is True but InfoBus is disabled; falling back to static config.")
+
+    # Standard guard-rail validation (only meaningful when bus data absent)
     if config.max_total_exposure > 1.0:
-        warnings.append("⚠️ Total exposure > 100% is very risky")
-
+        warnings.append("⚠️ Fallback total exposure > 100% is very risky")
     if config.max_drawdown > 0.5:
-        warnings.append("⚠️ Max drawdown > 50% is extremely risky")
-
+        warnings.append("⚠️ Fallback max drawdown > 50% is extremely risky")
     if config.max_position_pct > 0.3:
-        warnings.append("⚠️ Position size > 30% per trade is very risky")
+        warnings.append("⚠️ Fallback position size > 30% per trade is very risky")
 
     # InfoBus validation
     if config.info_bus_enabled:
         if config.info_bus_audit_level not in ["DEBUG", "INFO", "WARNING", "ERROR"]:
             warnings.append("⚠️ Invalid InfoBus audit level")
-
         if config.risk_check_frequency < 1:
             warnings.append("⚠️ Risk check frequency too low for InfoBus")
-
         if config.log_rotation_lines > 5000:
             warnings.append("⚠️ Log rotation lines > 5000 may impact performance")
 
-    # Live mode validation
-    if config.live_mode:
-        if not config.info_bus_enabled:
-            warnings.append("⚠️ InfoBus recommended for live trading")
-
-        if config.debug and config.max_position_pct > 0.1:
-            warnings.append("⚠️ Large positions in live debug mode")
+    # Live mode hints
+    if config.live_mode and not config.info_bus_enabled:
+        warnings.append("⚠️ InfoBus strongly recommended for live trading")
 
     return warnings
 
 
 # ===================================================================
-# Example Usage
+# Example Usage (manual test)
 # ===================================================================
 if __name__ == "__main__":
-    print("🔧 Enhanced Trading Configuration System with InfoBus")
-    print("=" * 70)
+    print("🔧 Enhanced BUS-FIRST Trading Configuration System")
+    print("=" * 72)
 
-    # Test configurations
     configs = {
         "Conservative Live": ConfigPresets.conservative_live(),
         "Research Mode": ConfigPresets.research_mode(),
@@ -621,14 +720,13 @@ if __name__ == "__main__":
 
     for name, config in configs.items():
         print(f"\n📋 {name}:")
-        print(f"  InfoBus: {config.info_bus_enabled} ({config.info_bus_audit_level})")
-        print(f"  Risk Level: {config.max_drawdown:.1%} DD, {config.max_total_exposure:.1%} Exposure")
-        print(f"  Log Rotation: {config.log_rotation_lines} lines")
-
+        print(f"  InfoBus: {config.info_bus_enabled} ({config.info_bus_audit_level}) | bus_first={config.bus_first}")
+        print(f"  Risk Fallbacks: DD={config.max_drawdown:.1%}, Exposure={config.max_total_exposure:.1%}, Pos={config.max_position_pct:.1%}")
+        print(f"  Obs Size: {config.environment_observation_size}")
         warns = validate_config(config)
         if warns:
             print(f"  ⚠️ Warnings: {len(warns)}")
-            for warning in warns[:2]:
+            for warning in warns[:3]:
                 print(f"    - {warning}")
 
-    print("\n✅ Enhanced configuration system test completed!")
+    print("\n✅ BUS-FIRST configuration system test completed!")

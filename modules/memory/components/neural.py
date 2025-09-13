@@ -1,0 +1,552 @@
+# modules/memory/components/neural.py
+"""
+Neural Memory Component
+Implements attention-based memory with importance scoring.
+"""
+
+from __future__ import annotations
+
+import time
+from collections import deque
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from .base import MemoryComponent
+
+
+class NeuralComponent(MemoryComponent):
+    """Neural memory with attention mechanisms."""
+
+    # Fraction of global memory reserved for neural buffer
+    _BUFFER_FRACTION: float = 0.20
+    # Top-K default for retrieval
+    _DEFAULT_TOPK: int = 5
+    # Minimal epsilon to avoid 0/0 etc.
+    _EPS: float = 1e-8
+    # Gentle decay applied per update tick
+    _DEFAULT_DECAY: float = 0.995
+
+    def _initialize_component(self) -> None:
+        """Initialize neural-specific resources."""
+        # Configuration (with safe fallbacks)
+        cfg = self.config
+        self.embed_dim: int = int(getattr(cfg, "embed_dim", 32))
+        self.num_heads: int = int(getattr(cfg, "num_heads", 4))
+        self.memory_decay: float = float(getattr(cfg, "memory_decay", 0.95))
+        self.importance_threshold: float = float(getattr(cfg, "importance_threshold", 0.3))
+        self.max_buffer_size: int = int(getattr(cfg, "max_memory_size", 10_000) * self._BUFFER_FRACTION)
+
+        # Device (match shared encoder if present, else CPU)
+        self._device = self._infer_device()
+
+        # Memory buffer & side data
+        self.buffer: torch.Tensor = torch.zeros((0, self.embed_dim), dtype=torch.float32, device=self._device)
+        self.importance_scores: torch.Tensor = torch.zeros(0, dtype=torch.float32, device=self._device)
+        self.memory_metadata: List[Dict[str, Any]] = []
+
+        # Neural submodules
+        self._init_neural_networks()
+
+        # Tracking
+        self.memories_stored: int = 0
+        self.memories_retrieved: int = 0
+        self.avg_importance: float = 0.0
+        self.attention_efficiency: float = 0.0
+        self.retrieval_history: deque[Dict[str, Any]] = deque(maxlen=100)
+        self.importance_evolution: deque[Dict[str, Any]] = deque(maxlen=500)
+        self.attention_patterns: deque[Any] = deque(maxlen=50)
+        self._last_decay_ts: float = time.time()
+
+        self._log_debug(
+            "neural_initialized",
+            details={
+                "embed_dim": self.embed_dim,
+                "num_heads": self.num_heads,
+                "max_buffer_size": self.max_buffer_size,
+                "device": str(self._device),
+            },
+        )
+
+    # -------------------------------------------------------------------------
+    # Networks / initialization
+    # -------------------------------------------------------------------------
+
+    def _infer_device(self) -> torch.device:
+        """Infer an execution device (prefer encoder's device if available)."""
+        if self.encoder is not None:
+            try:
+                p = next(self.encoder.parameters(), None)
+                if p is not None:
+                    return p.device
+            except Exception:
+                pass
+        return torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
+    def _init_neural_networks(self) -> None:
+        """Initialize neural network components."""
+        try:
+            # Encoder (use shared if available)
+            if self.encoder is not None:
+                self.memory_encoder: nn.Module = self.encoder
+            else:
+                self.memory_encoder = self._create_encoder()
+
+            self.memory_encoder.to(self._device)
+
+            # Multi-head attention (batch_first=True means [B, T, E])
+            self.attention = nn.MultiheadAttention(
+                embed_dim=self.embed_dim,
+                num_heads=self.num_heads,
+                dropout=0.1,
+                batch_first=True,
+                device=self._device,
+            )
+
+            # Importance head
+            self.value_head = nn.Sequential(
+                nn.Linear(self.embed_dim, self.embed_dim // 2),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                nn.Linear(self.embed_dim // 2, 1),
+                nn.Sigmoid(),
+            ).to(self._device)
+
+            # Context integration (kept for future use)
+            self.context_net = nn.Sequential(
+                nn.Linear(self.embed_dim * 2, self.embed_dim),
+                nn.ReLU(),
+                nn.Linear(self.embed_dim, self.embed_dim),
+                nn.LayerNorm(self.embed_dim),
+            ).to(self._device)
+
+            self._init_weights()
+        except Exception as e:
+            self.log_error("Neural network initialization failed", e)
+
+    def _create_encoder(self) -> nn.Module:
+        """Create a simple feed-forward encoder to the embedding space."""
+
+        class Encoder(nn.Module):
+            def __init__(self, dim: int):
+                super().__init__()
+                self.net = nn.Sequential(
+                    nn.Linear(dim, dim * 2),
+                    nn.ReLU(),
+                    nn.Dropout(0.1),
+                    nn.Linear(dim * 2, dim),
+                    nn.LayerNorm(dim),
+                )
+
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return self.net(x)
+
+        return Encoder(self.embed_dim)
+
+    def _init_weights(self) -> None:
+        """Initialize linear layers with Xavier and zero bias."""
+        for module in (self.value_head, self.context_net):
+            for layer in module:
+                if isinstance(layer, nn.Linear):
+                    nn.init.xavier_uniform_(layer.weight)
+                    if layer.bias is not None:
+                        nn.init.zeros_(layer.bias)
+
+    # -------------------------------------------------------------------------
+    # Main loop
+    # -------------------------------------------------------------------------
+
+    async def process(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Process neural memory operations."""
+        try:
+            storage_result = await self._store_experiences(context)
+
+            # Optional retrieval
+            query = context.get("query")
+            if query is not None:
+                retrieval_result = await self._perform_retrieval(query, top_k=int(context.get("top_k", self._DEFAULT_TOPK)))
+                storage_result.update(retrieval_result)
+
+            # Periodic decay and metric updates
+            self._apply_importance_decay()
+            self._update_neural_metrics()
+
+            return self._format_output(storage_result)
+        except Exception as e:
+            self.log_error("Neural processing failed", e)
+            return self._get_fallback_output()
+
+    # -------------------------------------------------------------------------
+    # Storage
+    # -------------------------------------------------------------------------
+
+    async def _store_experiences(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Store new experiences in neural memory."""
+        experiences = context.get("experiences", []) or []
+        stored_count = 0
+
+        for exp in experiences[-10:]:  # process latest batch
+            if not isinstance(exp, dict):
+                continue
+
+            features = self._extract_experience_features(exp, context)
+            if features is None:
+                continue
+
+            encoded = await self._encode_experience(features)  # [E]
+            importance = await self._calculate_importance(encoded, exp)
+
+            if importance > self.importance_threshold:
+                await self._add_to_buffer(encoded, importance, exp)
+                stored_count += 1
+
+        return {
+            "storage_performed": stored_count > 0,
+            "memories_stored": stored_count,
+            "buffer_size": int(self.buffer.shape[0]),
+        }
+
+    def _extract_experience_features(self, exp: Dict[str, Any], context: Dict[str, Any]) -> Optional[np.ndarray]:
+        """Extract a fixed-length feature vector from an experience + context."""
+        try:
+            feats: List[float] = []
+
+            # Observation
+            if "observation" in exp:
+                obs = exp["observation"]
+                if isinstance(obs, np.ndarray):
+                    feats.extend(obs.flatten()[: self.embed_dim // 2].tolist())
+                elif isinstance(obs, (list, tuple)):
+                    feats.extend(list(obs)[: self.embed_dim // 2])
+                else:
+                    feats.append(float(obs))
+
+            # Reward
+            feats.append(float(exp.get("reward", 0.0)))
+
+            # Action
+            act = exp.get("action", None)
+            if isinstance(act, (list, tuple, np.ndarray)):
+                feats.extend(np.array(act, dtype=np.float32).flatten()[:5].tolist())
+            elif act is not None:
+                feats.append(float(act))
+
+            # Market context (lightweight)
+            market_context = context.get("market_context", {}) or {}
+            feats.append(float(market_context.get("volatility", 0.5)))
+
+            # Pad/trim to embed_dim
+            if len(feats) < self.embed_dim:
+                feats.extend([0.0] * (self.embed_dim - len(feats)))
+            else:
+                feats = feats[: self.embed_dim]
+
+            arr = np.asarray(feats, dtype=np.float32)
+            if arr.ndim != 1:
+                arr = arr.reshape(-1)
+            return arr
+        except Exception:
+            return None
+
+    async def _encode_experience(self, features: np.ndarray) -> torch.Tensor:
+        """Encode an experience using the encoder into embedding space."""
+        try:
+            with torch.no_grad():
+                t = torch.from_numpy(features).to(self._device).float().unsqueeze(0)  # [1, E]
+                enc = self.memory_encoder(t)  # [1, E]
+                return enc.squeeze(0)  # [E]
+        except Exception:
+            return torch.zeros(self.embed_dim, dtype=torch.float32, device=self._device)
+
+    async def _calculate_importance(self, encoded: torch.Tensor, exp: Dict[str, Any]) -> float:
+        """Compute importance score ∈ [0,1] using value head, reward, and novelty."""
+        try:
+            with torch.no_grad():
+                base = self.value_head(encoded.unsqueeze(0))  # [1,1]
+                importance = float(base.squeeze())
+
+                # Reward adjustment
+                reward = float(exp.get("reward", 0.0))
+                if reward > 0:
+                    importance *= 1.2
+                elif reward < 0:
+                    importance *= 0.8
+
+                # Novelty adjustment (vs. existing buffer)
+                if self.buffer.shape[0] > 0:
+                    sims = F.cosine_similarity(encoded.unsqueeze(0), self.buffer, dim=1)  # [N]
+                    max_sim = float(torch.clamp(sims.max(), -1.0, 1.0))
+                    novelty = 1.0 - (max_sim + 1.0) / 2.0  # map [-1,1] -> [0,1] similarity, then invert
+                    importance *= (0.5 + 0.5 * novelty)
+
+                return float(np.clip(importance, 0.0, 1.0))
+        except Exception:
+            return 0.0
+
+    async def _add_to_buffer(self, encoded: torch.Tensor, importance: float, exp: Dict[str, Any]) -> None:
+        """Append to neural memory and prune if needed."""
+        try:
+            # Append vectors
+            self.buffer = torch.cat([self.buffer, encoded.unsqueeze(0)], dim=0)  # [N+1, E]
+            self.importance_scores = torch.cat(
+                [self.importance_scores, torch.tensor([importance], dtype=torch.float32, device=self._device)]
+            )
+
+            # Metadata
+            self.memory_metadata.append(
+                {"timestamp": time.time(), "importance": float(importance), "type": str(exp.get("type", "unknown"))}
+            )
+
+            # Prune if beyond capacity
+            if int(self.buffer.shape[0]) > self.max_buffer_size:
+                await self._prune_buffer()
+
+            # Metrics
+            self.memories_stored += 1
+            self._update_importance_metrics(importance)
+        except Exception as e:
+            self.log_error("Buffer addition failed", e)
+
+    async def _prune_buffer(self) -> None:
+        """Prune to capacity, keeping most important and most recent items."""
+        try:
+            n = int(self.buffer.shape[0])
+            if n <= self.max_buffer_size:
+                return
+
+            n_keep = int(max(1, self.max_buffer_size * 0.8))
+
+            # Top by importance
+            top_imp = torch.topk(self.importance_scores, k=min(n_keep // 2, n)).indices
+
+            # Most recent indices
+            recent_start = max(0, n - (n_keep - len(top_imp)))
+            recent = torch.arange(recent_start, n, device=self._device, dtype=torch.long)
+
+            keep = torch.unique(torch.cat([top_imp, recent], dim=0))
+            keep = keep.sort().values  # deterministic order
+
+            self.buffer = self.buffer.index_select(0, keep)
+            self.importance_scores = self.importance_scores.index_select(0, keep)
+
+            keep_set = set(keep.tolist())
+            self.memory_metadata = [m for i, m in enumerate(self.memory_metadata) if i in keep_set]
+        except Exception as e:
+            self.log_error("Buffer pruning failed", e)
+
+    # -------------------------------------------------------------------------
+    # Retrieval
+    # -------------------------------------------------------------------------
+
+    async def _perform_retrieval(self, query: Any, *, top_k: int) -> Dict[str, Any]:
+        """Attention-based retrieval for a query."""
+        try:
+            if int(self.buffer.shape[0]) == 0:
+                return {"retrieval_performed": False, "reason": "empty_buffer"}
+
+            q = self._process_query(query)  # raw -> [E]
+            if q is None:
+                return {"retrieval_performed": False, "reason": "invalid_query"}
+
+            # Encode query to the same space as memory embeddings
+            with torch.no_grad():
+                q_enc = self.memory_encoder(q.unsqueeze(0)).squeeze(0)  # [E]
+
+            # Shapes for attention: [B, T, E]
+            query_batch = q_enc.unsqueeze(0).unsqueeze(0)  # [1, 1, E]
+            memory_batch = self.buffer.unsqueeze(0)        # [1, N, E]
+
+            with torch.no_grad():
+                attn_out, attn_weights = self.attention(query_batch, memory_batch, memory_batch)
+                # attn_weights: [B, Q, N] -> [N]
+                weights = attn_weights.squeeze(0).squeeze(0)
+                weights = torch.clamp(weights, min=0.0)  # ensure non-negative
+                if float(weights.sum()) <= self._EPS:
+                    weights = torch.full_like(weights, 1.0 / max(1, weights.numel()))
+                else:
+                    weights = weights / (weights.sum() + self._EPS)
+
+            # Top-K selection
+            k = int(min(max(1, top_k), int(self.buffer.shape[0])))
+            top_vals, top_idx = torch.topk(weights, k=k, largest=True, sorted=True)
+
+            retrieved: List[Dict[str, Any]] = []
+            sim_scores: List[float] = []
+
+            for idx, w in zip(top_idx.tolist(), top_vals.tolist()):
+                item = {
+                    "embedding": self.buffer[idx].detach().cpu().numpy().tolist(),
+                    "importance": float(self.importance_scores[idx].item()),
+                    "metadata": self.memory_metadata[idx] if idx < len(self.memory_metadata) else {},
+                    "attention_weight": float(w),
+                }
+                retrieved.append(item)
+                sim_scores.append(float(w))
+
+            # Metrics
+            self.memories_retrieved += 1
+            self.retrieval_history.append(
+                {"timestamp": time.time(), "retrieved_count": len(retrieved), "avg_similarity": float(np.mean(sim_scores))}
+            )
+
+            return {
+                "retrieval_performed": True,
+                "retrieved_memories": retrieved,
+                "similarity_scores": sim_scores,
+                "attention_weights": weights.detach().cpu().numpy().tolist(),
+            }
+        except Exception as e:
+            self.log_error("Retrieval failed", e)
+            return {"retrieval_performed": False, "error": str(e)}
+
+    def _process_query(self, query: Any) -> Optional[torch.Tensor]:
+        """Convert an arbitrary query to a length-E vector on the correct device."""
+        try:
+            if isinstance(query, torch.Tensor):
+                t = query.detach().to(self._device).float()
+            elif isinstance(query, np.ndarray):
+                t = torch.from_numpy(query).to(self._device).float()
+            elif isinstance(query, (list, tuple)):
+                t = torch.tensor(list(query), device=self._device, dtype=torch.float32)
+            else:
+                return None
+
+            if t.ndim > 1:
+                t = t.reshape(-1)
+
+            if t.numel() < self.embed_dim:
+                pad = torch.zeros(self.embed_dim - t.numel(), device=self._device)
+                t = torch.cat([t, pad], dim=0)
+            elif t.numel() > self.embed_dim:
+                t = t[: self.embed_dim]
+
+            return t
+        except Exception:
+            return None
+
+    # -------------------------------------------------------------------------
+    # Metrics / decay
+    # -------------------------------------------------------------------------
+
+    def _apply_importance_decay(self) -> None:
+        """Apply gentle exponential decay to stored importance scores."""
+        if self.importance_scores.numel() == 0:
+            return
+        now = time.time()
+        elapsed = max(0.0, now - self._last_decay_ts)
+        # Map elapsed seconds to a compounded decay; use a mild per-second factor.
+        per_sec = self._DEFAULT_DECAY
+        decay_factor = float(per_sec ** elapsed)
+        self.importance_scores.mul_(decay_factor)
+        self._last_decay_ts = now
+
+    def _update_importance_metrics(self, importance: float) -> None:
+        """Update running average and history."""
+        n = max(1, self.memories_stored)
+        if n == 1:
+            self.avg_importance = float(importance)
+        else:
+            self.avg_importance = float(((self.avg_importance * (n - 1)) + importance) / n)
+
+        self.importance_evolution.append(
+            {"timestamp": time.time(), "importance": float(importance), "avg": float(self.avg_importance)}
+        )
+
+    def _update_neural_metrics(self) -> None:
+        """Update neural performance metrics."""
+        n = int(self.buffer.shape[0])
+        if n > 0:
+            high = int((self.importance_scores > 0.7).sum().item())
+            self.attention_efficiency = float(high / max(1, n))
+        else:
+            self.attention_efficiency = 0.0
+
+    # -------------------------------------------------------------------------
+    # Output / scoring
+    # -------------------------------------------------------------------------
+
+    def _format_output(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Format output to match contract requirements."""
+        if self.importance_scores.numel() > 0:
+            avg = float(self.importance_scores.mean().item())
+            mx = float(self.importance_scores.max().item())
+            mn = float(self.importance_scores.min().item())
+            std = float(self.importance_scores.std(unbiased=False).item())
+            total = int(self.importance_scores.numel())
+        else:
+            avg = mx = mn = std = 0.0
+            total = 0
+
+        return {
+            "attention_retrieval": {
+                "retrieved_count": int(len(result.get("retrieved_memories", []))),
+                "similarity_scores": result.get("similarity_scores", []),
+                "top_k": self._DEFAULT_TOPK,
+                "attention_heads": int(self.num_heads),
+            },
+            "importance_scoring": {
+                "average_importance": avg,
+                "max_importance": mx,
+                "min_importance": mn,
+                "std_importance": std,
+                "total_scored": total,
+            },
+            "memory_embedding": {
+                "embedding_dim": int(self.embed_dim),
+                "total_embeddings": int(self.buffer.shape[0]),
+                "importance_threshold": float(self.importance_threshold),
+                "decay_rate": float(self.memory_decay),
+            },
+            "neural_memory": {
+                "buffer_size": int(self.buffer.shape[0]),
+                "memory_utilization": float(self.buffer.shape[0] / max(1, self.max_buffer_size)),
+                "average_importance": float(self.avg_importance),
+                "neural_performance_score": float(self._calculate_performance_score()),
+                "last_updated": time.time(),
+            },
+        }
+
+    def _calculate_performance_score(self) -> float:
+        """Compute a composite neural performance score ∈ [0,100]."""
+        util = float(self.buffer.shape[0] / max(1, self.max_buffer_size))
+        util_score = max(0.0, 1.0 - abs(util - 0.7) * 2.0)  # best near 0.7
+        imp_score = float(self.avg_importance)
+        eff_score = float(self.attention_efficiency)
+
+        score = (0.3 * util_score + 0.4 * imp_score + 0.3 * eff_score) * 100.0
+        score = float(np.clip(score, 0.0, 100.0))
+        return score
+
+    def _get_fallback_output(self) -> Dict[str, Any]:
+        """Conservative payload on error."""
+        return {
+            "attention_retrieval": {
+                "retrieved_count": 0,
+                "similarity_scores": [],
+                "top_k": self._DEFAULT_TOPK,
+                "attention_heads": int(self.num_heads),
+            },
+            "importance_scoring": {
+                "average_importance": 0.0,
+                "max_importance": 0.0,
+                "min_importance": 0.0,
+                "std_importance": 0.0,
+                "total_scored": 0,
+            },
+            "memory_embedding": {
+                "embedding_dim": int(self.embed_dim),
+                "total_embeddings": 0,
+                "importance_threshold": float(self.importance_threshold),
+                "decay_rate": float(self.memory_decay),
+            },
+            "neural_memory": {
+                "buffer_size": 0,
+                "memory_utilization": 0.0,
+                "average_importance": 0.0,
+                "neural_performance_score": 0.0,
+                "last_updated": 0.0,
+            },
+        }

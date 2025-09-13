@@ -393,18 +393,18 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 s = max(0, idx - 19)
                 e = idx + 1
                 rec = {
-                    "open": df["open"].iloc[s:e].astype(float).tolist(),
-                    "high": df["high"].iloc[s:e].astype(float).tolist(),
-                    "low": df["low"].iloc[s:e].astype(float).tolist(),
-                    "close": df["close"].iloc[s:e].astype(float).tolist(),
+                    "open":   df["open"].iloc[s:e].astype(float).tolist(),
+                    "high":   df["high"].iloc[s:e].astype(float).tolist(),
+                    "low":    df["low"].iloc[s:e].astype(float).tolist(),
+                    "close":  df["close"].iloc[s:e].astype(float).tolist(),
                     "volume": df["volume"].iloc[s:e].astype(int).tolist(),
                     "current_bar": {
-                        "open": float(df["open"].iloc[idx]),
-                        "high": float(df["high"].iloc[idx]),
-                        "low": float(df["low"].iloc[idx]),
-                        "close": float(df["close"].iloc[idx]),
+                        "open":   float(df["open"].iloc[idx]),
+                        "high":   float(df["high"].iloc[idx]),
+                        "low":    float(df["low"].iloc[idx]),
+                        "close":  float(df["close"].iloc[idx]),
                         "volume": int(df["volume"].iloc[idx]),
-                        # bid/ask only if present
+                        # bid/ask only if present in CSV
                         "bid": float(df["bid"].iloc[idx]) if "bid" in df.columns else None,
                         "ask": float(df["ask"].iloc[idx]) if "ask" in df.columns else None,
                     },
@@ -415,33 +415,69 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
         # Core maps (from current_bars only)
         market_data = {s: self._bar_with_iso(self.current_bars[s]) for s in self.current_bars}
+
         price_data = {
             s: {
-                "last": market_data[s]["close"],
+                "last":  market_data[s]["close"],
                 "close": market_data[s]["close"],
-                "open": market_data[s]["open"],
-                "high": market_data[s]["high"],
-                "low": market_data[s]["low"],
+                "open":  market_data[s]["open"],
+                "high":  market_data[s]["high"],
+                "low":   market_data[s]["low"],
             } for s in market_data
         }
+
         ohlcv_data = {
             s: {
-                "open": market_data[s]["open"],
-                "high": market_data[s]["high"],
-                "low": market_data[s]["low"],
-                "close": market_data[s]["close"],
+                "open":   market_data[s]["open"],
+                "high":   market_data[s]["high"],
+                "low":    market_data[s]["low"],
+                "close":  market_data[s]["close"],
                 "volume": market_data[s]["volume"],
             } for s in market_data
         }
+
         bid_ask_data = {
             s: {
                 "bid": market_data[s]["bid"],
                 "ask": market_data[s]["ask"],
-                "spread": (market_data[s]["ask"] - market_data[s]["bid"]) if (
-                    market_data[s]["bid"] is not None and market_data[s]["ask"] is not None
-                ) else None,
+                "spread": (
+                    market_data[s]["ask"] - market_data[s]["bid"]
+                ) if (market_data[s]["bid"] is not None and market_data[s]["ask"] is not None) else None,
             } for s in market_data
         }
+
+        # ---- NEW: explicit volume_data (current + per-TF series) ----
+        volume_data: Dict[str, Any] = {}
+        for s in self.cfg.supported_symbols:
+            # current volume if we have a bar for the symbol
+            current_vol = None
+            if s in ohlcv_data:
+                current_vol = int(ohlcv_data[s]["volume"])
+
+            # per-timeframe volume series (from multi_tf windows)
+            tf_series: Dict[str, List[int]] = {}
+            if s in multi_tf:
+                for tf, rec in multi_tf[s].items():
+                    tf_series[tf] = list(rec.get("volume", []))
+
+            volume_data[s] = {
+                "current": current_vol,
+                "timeframes": tf_series,  # may be {}
+            }
+
+        # ---- NEW: explicit liquidity_data (real values only) ----
+        # Mirrors BBO info you already expose + current volume for convenience
+        liquidity_data: Dict[str, Any] = {}
+        for s in self.cfg.supported_symbols:
+            bbo = bid_ask_data.get(s, {})
+            liquidity_data[s] = {
+                "bid": bbo.get("bid"),
+                "ask": bbo.get("ask"),
+                "spread": bbo.get("spread"),
+                "volume": ohlcv_data.get(s, {}).get("volume"),
+                # room for depth later, if your CSVs ever include it:
+                # "market_depth": {"bids": [...], "asks": [...]}
+            }
 
         # Indicators/volatility (computed from actual buffers)
         vol_data = {
@@ -451,11 +487,10 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                                     max(1e-9, market_data[s]["close"])) if s in market_data else 0.0,
             } for s in self.cfg.supported_symbols
         }
-        # Normalize volatility to a coarse level for UI/consumers
+
         vol_level = "high" if any(v.get("volatility", 0.0) > 0.02 for v in vol_data.values()) else \
                     ("medium" if any(v.get("volatility", 0.0) > 0.01 for v in vol_data.values()) else "low")
 
-        # Informative session/market context (allowed top-level key)
         market_context = {
             "volatility_hint": vol_level,
             "market_hours": self._is_market_hours(),
@@ -464,15 +499,14 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
         ts_iso = (self.current_timestamp or datetime.datetime.utcnow()).isoformat()
 
-        # Build contract-clean snapshot (ONLY keys declared in the contract)
+        # Build contract-clean snapshot (now includes volume_data & liquidity_data)
         snapshot: Dict[str, Any] = {
-            # Required contract outputs
             "alerts": [],
             "bid_ask_data": bid_ask_data,
             "economic_calendar": [],
             "environment": {},
             "environment_config": {},
-            "historical_prices": multi_tf,         # alias for compatibility
+            "historical_prices": multi_tf,
             "indicators": {s: {k: float(v) for k, v in d.items()} for s, d in self.technical_indicators.items()},
             "input1": {},
             "input2": {},
@@ -482,7 +516,7 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             "market_conditions": {},
             "market_context": market_context,
             "market_data": market_data,
-            "market_liquidity": {},
+            "market_liquidity": {},  # keep for legacy consumers
             "module_insights": {
                 "provider": "MarketDataProvider",
                 "symbols": list(self.cfg.supported_symbols),
@@ -507,13 +541,17 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             "volatility": {s: float(self.technical_indicators[s].get("atr", 0.0)) for s in self.cfg.supported_symbols},
             "volatility_data": vol_data,
             "volatility_level": vol_level,
+
+            # >>> NEW keys to satisfy UnifiedDataExtractor <<<
+            "volume_data": volume_data,
+            "liquidity_data": liquidity_data,
         }
         return snapshot
+
 
     def _empty_snapshot(self, error: Optional[str] = None) -> Dict[str, Any]:
         """Return a schema-complete but empty snapshot (no fabricated values)."""
         now = datetime.datetime.utcnow().isoformat()
-        empty_prices: Dict[str, Any] = {}
         snapshot: Dict[str, Any] = {
             "alerts": [],
             "bid_ask_data": {},
@@ -547,7 +585,7 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             "ohlcv_data": {},
             "portfolio_metrics": {},
             "price_data": {},
-            "prices": empty_prices,
+            "prices": {},
             "session_type": self.session_type,
             "step_data": {},
             "step_idx": int(self._update_count),
@@ -559,8 +597,13 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             "volatility": {},
             "volatility_data": {},
             "volatility_level": "low",
+
+            # Keep the keys present so the bus sees a provider even in empty/error states
+            "volume_data": {},
+            "liquidity_data": {},
         }
         return snapshot
+
 
     # ─────────────────────────────────────────────────────────────
     # Utilities

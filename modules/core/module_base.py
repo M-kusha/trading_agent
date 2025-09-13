@@ -77,7 +77,7 @@ class ModuleMetadata:
     error_handling: bool = False
 
     VALID_CATEGORIES = [
-        'auditing', 'core', 'external', 'features', 'market', 'memory', 'meta',
+        'auditing', 'core', 'executor','external', 'features', 'market_1', 'memory', 'meta',
         'models', 'monitoring', 'position', 'reward', 'risk', 'simulation',
         'strategy', 'trading_modes', 'utils', 'visualization', 'voting', 'general'
     ]

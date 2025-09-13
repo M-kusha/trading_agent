@@ -164,8 +164,9 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
 
         super().__init__()  # may call _initialize()
 
-        # Detection state
-        self._initialize_detection_state()
+        # Detection state (guard against double-initialization from _initialize)
+        if not getattr(self, "_det_state_initialized", False):
+            self._initialize_detection_state()
         self._monitoring_active = False
         self._start_monitoring()
 
@@ -322,6 +323,8 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             }
             self.smart_bus.set(self._cfg.status_key, status, module='EnhancedAnomalyDetector',
                                thesis="Initial anomaly detector status")
+            # Mark as initialized to avoid duplicate init from both __init__ and _initialize()
+            self._det_state_initialized = True
         except Exception as e:
             self.logger.error(f"Anomaly detector initialization failed: {e}")
 
@@ -1907,12 +1910,15 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                     self.current_thresholds[k] = float(self.base_thresholds.get(k, v))
                     patched.append(f"current:{k}")
             if patched and initial:
-                self.logger.warning(
-                    format_operator_message(
-                        message="Injected missing threshold keys", icon="[SAFE]",
-                        details=", ".join(patched)
+                # Log only once per lifecycle to avoid noisy repeats across hot-reloads
+                if not getattr(self, "_thresholds_injected_logged", False):
+                    self.logger.warning(
+                        format_operator_message(
+                            message="Injected missing threshold keys", icon="[SAFE]",
+                            details=", ".join(patched)
+                        )
                     )
-                )
+                    self._thresholds_injected_logged = True
         except Exception:
             # Never raise from a guard; last-resort defaults
             for k in ['pnl_limit', 'volume_zscore', 'price_zscore', 'observation_zscore']:

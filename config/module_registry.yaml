@@ -246,5 +246,22 @@ modules:
     module_path: modules.external.market_data_provider
     provides: []
     requires: []
-  
+  Executor:
+    category: executor
+    file_path: modules\executor\executor.py
+    module_path: modules.executor.executor
+    provides: []
+    requires: []
+  UnifiedMemory:
+    category: memory
+    file_path: modules\memory\unified_memory.py
+    module_path: modules.memory.unified_memory
+    provides: []
+    requires: []
 
+  UnifiedMarket:
+    category: market
+    file_path: modules\market_1\market_module.py
+    module_path: modules.market_1.market_module
+    provides: []
+    requires: []

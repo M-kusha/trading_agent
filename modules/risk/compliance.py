@@ -48,6 +48,8 @@ class ComplianceConfig:
     max_daily_trades: int = 100
     min_trade_size: float = 0.01
     max_trade_size: float = 10.0
+    # Drawdown limit (fraction, e.g., 0.15 = 15%) to expose to Environment via risk_limits
+    max_drawdown: float = 0.15
 
     # Flags
     enabled: bool = True
@@ -219,6 +221,9 @@ class ComplianceModule(
                 module="ComplianceModule",
                 thesis="Initial compliance module status",
             )
+            # Publish a safe, contract-compliant baseline so consumers don't BUS MISS before first process()
+            baseline = self._fallback_payload("Initial compliance safe defaults")
+            self._write_bus_from_payload(baseline, baseline.get("_thesis", "Initial compliance baseline"))
             self.logger.info("Compliance module initialization completed successfully")
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(
@@ -488,6 +493,8 @@ class ComplianceModule(
             "max_leverage": float(current_limits.get("max_leverage", self.max_leverage)),
             "max_position_risk": float(current_limits.get("max_position_risk", self.max_position_risk)),
             "max_total_risk": float(current_limits.get("max_total_risk", self.max_total_risk)),
+            # Expose drawdown limit expected by Environment termination checks
+            "max_drawdown": float(current_limits.get("max_drawdown", self._cfg.max_drawdown)),
             "current_leverage": float(self.current_leverage),
             "risk_budget_usage": float(self.risk_budget_usage),
         }
@@ -560,6 +567,8 @@ class ComplianceModule(
                 "max_daily_trades": int(self.max_daily_trades),
                 "min_trade_size": float(self.min_trade_size),
                 "max_trade_size": float(self.max_trade_size),
+                # Provide drawdown limit even if not dynamically adjusted
+                "max_drawdown": float(self._cfg.max_drawdown),
             }
 
             if not self.dynamic_limits:
@@ -611,6 +620,7 @@ class ComplianceModule(
                 "max_daily_trades": int(self.max_daily_trades),
                 "min_trade_size": float(self.min_trade_size),
                 "max_trade_size": float(self.max_trade_size),
+                "max_drawdown": float(self._cfg.max_drawdown),
             }
 
     # ── validations ──────────────────────────────────────────
@@ -1274,6 +1284,7 @@ class ComplianceModule(
                 "max_leverage": float(self.max_leverage),
                 "max_position_risk": float(self.max_position_risk),
                 "max_total_risk": float(self.max_total_risk),
+                "max_drawdown": float(self._cfg.max_drawdown),
                 "current_leverage": float(self.current_leverage),
                 "risk_budget_usage": float(self.risk_budget_usage),
             },

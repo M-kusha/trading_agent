@@ -215,6 +215,25 @@ class RegimePerformanceMatrix(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             thesis="Regime performance matrix initialization status for system awareness",
         )
 
+        # Publish a minimal baseline health snapshot for early consumers
+        try:
+            self.smart_bus.set(
+                "regime_matrix_health",
+                {
+                    "success_rate": float(self.success_count / max(int(self.success_count + self.failure_count), 1)),
+                    "avg_processing_time_ms": float(self._safe_mean(self.processing_times, default=0.0)),
+                    "circuit_breaker_failures": int(self.circuit_breaker_failures),
+                    "overall_accuracy": float(self._calculate_overall_accuracy()),
+                    "current_regime": int(self._current_regime),
+                    "regime_transitions": int(len(self._regime_transitions)),
+                    "last_update": datetime.datetime.now().isoformat(),
+                },
+                module="RegimePerformanceMatrix",
+                thesis="Baseline regime matrix health published at initialization",
+            )
+        except Exception:
+            pass
+
     # ── NUMERIC SAFETY ─────────────────────────────────────────────
 
     @staticmethod

@@ -80,6 +80,7 @@ toml>=0.10.0
 # Network & Security
 # ═══════════════════════════════════════════════════════════════════
 aiohttp>=3.8.0  # Async HTTP client for streaming
+aiohttp-cors>=0.7.0  # Optional: CORS support for aiohttp dashboards
 httpx>=0.24.0  # Async HTTP client
 cryptography>=41.0.0  # Security utilities
 

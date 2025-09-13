@@ -140,6 +140,51 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             )
         )
 
+        # Publish a conservative baseline immediately so consumers don't BUS MISS before first process()
+        try:
+            baseline_feats = self._get_fallback_features()
+            thesis = "Baseline features published at init to avoid BUS MISS."
+            adv_payload = {
+                "raw_features": baseline_feats.tolist() if hasattr(baseline_feats, "tolist") else list(baseline_feats),
+                "quality_score": 0.0,
+                "extraction_time_ms": 0.0,
+                "timestamp": time.time(),
+            }
+            # Core keys
+            self.smart_bus.set("advanced_features", adv_payload, module="AdvancedFeatureEngine", thesis=thesis)
+            self.smart_bus.set("features", {"raw_features": adv_payload["raw_features"], "quality_score": 0.0}, module="AdvancedFeatureEngine", thesis="Features alias (baseline)")
+            self.smart_bus.set(
+                "feature_engine_capabilities",
+                {
+                    "window_sizes": list(self.window_sizes),
+                    "out_dim": int(self.out_dim),
+                    "max_buffer_size": int(self.max_buffer_size),
+                    "supports_explainability": bool(self.english_explainer is not None),
+                    "supports_error_pinpointing": bool(self.error_pinpointer is not None),
+                    "supports_performance_tracking": bool(self.performance_tracker is not None),
+                },
+                module="AdvancedFeatureEngine",
+                thesis="Capabilities snapshot (baseline)",
+            )
+            self.smart_bus.set(
+                "feature_health",
+                {
+                    "health_score": float(self.health_metrics.get("health_score", 0.0)),
+                    "performance_trend": self.health_metrics.get("performance_trend", "unknown"),
+                    "statistics": dict(self.feature_stats),
+                },
+                module="AdvancedFeatureEngine",
+                thesis="Feature engine health (baseline)",
+            )
+            self.smart_bus.set("feature_error", None, module="AdvancedFeatureEngine", thesis="No errors (baseline)")
+            # Timeframe aliases
+            for tf in ("H1", "H4", "D1"):
+                payload = {**adv_payload, "timeframe": tf, "alias_of": "advanced_features"}
+                self.smart_bus.set(f"advanced_features_{tf}", payload, module="AdvancedFeatureEngine", thesis=f"Advanced features ({tf}) baseline")
+        except Exception:
+            # Never fail init due to baseline publish
+            pass
+
     # ─────────────────────────────────────────────────────────
     # Internal state & monitoring
     # ─────────────────────────────────────────────────────────

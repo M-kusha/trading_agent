@@ -172,9 +172,10 @@ class ModuleConfig:
         self.module_paths = kwargs.get('module_paths', [
             'modules/auditing',
             'modules/core',
+            'modules/executor',
             'modules/external',
             'modules/features',
-            'modules/market',
+            'modules/market_1',
             'modules/memory',
             'modules/meta',
             'modules/models',
@@ -1697,73 +1698,76 @@ class ModuleOrchestrator:
         self.logger.info("\n".join(lines))
 
     async def _execute_stage(
-        self,
-        module_names: List[str],
-        stage_idx: int,
-        previous_results: Dict[str, Any],
-        execution_id: str
-    ) -> Dict[str, Any]:
-        self.logger.debug(f"Executing stage {stage_idx}: {module_names}")
-        if not module_names:
-            return {}
+            self,
+            module_names: List[str],
+            stage_idx: int,
+            previous_results: Dict[str, Any],
+            execution_id: str
+        ) -> Dict[str, Any]:
+            self.logger.debug(f"Executing stage {stage_idx}: {module_names}")
+            if not module_names:
+                return {}
 
-        tasks: List[Tuple[str, asyncio.Task]] = []
-        scheduled: List[str] = []
-        results: Dict[str, Any] = {}
+            tasks: List[Tuple[str, asyncio.Task]] = []
+            scheduled: List[str] = []
+            results: Dict[str, Any] = {}
 
-        for module_name in module_names:
-            if not self.smart_bus.is_module_enabled(module_name):
-                self.logger.warning(f"Skipping disabled module: {module_name}")
-                continue
+            for module_name in module_names:
+                if not self.smart_bus.is_module_enabled(module_name):
+                    self.logger.warning(f"Skipping disabled module: {module_name}")
+                    continue
 
-            module = self.modules[module_name]
-            metadata = self.metadata[module_name]
+                module = self.modules[module_name]
+                metadata = self.metadata[module_name]
+
+                try:
+                    inputs = self._prepare_module_inputs(module_name, metadata, execution_id)
+                except Exception as e:
+                    self.logger.debug(f"Stage {stage_idx} skip {module_name}: {e}")
+                    continue
+
+                task = asyncio.create_task(
+                    self._execute_module_safe(module, module_name, inputs, metadata, execution_id),
+                    name=f"{execution_id}_{module_name}"
+                )
+                tasks.append((module_name, task))
+                scheduled.append(module_name)
+
+            if not tasks:
+                return {}
+
+            stage_timeout = (max(self.metadata[n].timeout_ms for n in scheduled) / 1000.0) + 5.0
 
             try:
-                inputs = self._prepare_module_inputs(module_name, metadata, execution_id)
-            except Exception as e:
-                self.logger.debug(f"Stage {stage_idx} skip {module_name}: {e}")
-                continue
+                await asyncio.wait_for(
+                    asyncio.gather(*[t for _, t in tasks], return_exceptions=True),
+                    timeout=stage_timeout
+                )
+            except asyncio.TimeoutError:
+                self.logger.error(f"Stage {stage_idx} timeout")
 
-            task = asyncio.create_task(
-                self._execute_module_safe(module, module_name, inputs, metadata, execution_id),
-                name=f"{execution_id}_{module_name}"
-            )
-            tasks.append((module_name, task))
-            scheduled.append(module_name)
+                for _, task in tasks:
+                    if not task.done():
+                        task.cancel()
+                
 
-        if not tasks:
-            return {}
+            for module_name, task in tasks:
+                try:
+                    if task.done() and not task.cancelled():
 
-        stage_timeout = (max(self.metadata[n].timeout_ms for n in scheduled) / 1000.0) + 5.0
-
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(*[t for _, t in tasks], return_exceptions=True),
-                timeout=stage_timeout
-            )
-        except asyncio.TimeoutError:
-            self.logger.error(f"Stage {stage_idx} timeout")
-            for _, task in tasks:
-                if not task.done():
-                    task.cancel()
-
-        for module_name, task in tasks:
-            try:
-                if task.done() and not task.cancelled():
-                    res = task.result()
-                    if isinstance(res, Exception):
-                        self.logger.error(f"Module {module_name} failed: {res}")
-                        results[module_name] = {'error': str(res)}
+                        res = task.result()
+                        if isinstance(res, Exception):
+                            self.logger.error(f"Module {module_name} failed: {res}")
+                            results[module_name] = {'error': str(res)}
+                        else:
+                            results[module_name] = res
                     else:
-                        results[module_name] = res
-                else:
-                    results[module_name] = {'error': 'Task incomplete'}
-            except Exception as e:
-                self.logger.error(f"Error collecting result from {module_name}: {e}")
-                results[module_name] = {'error': str(e)}
+                        results[module_name] = {'error': 'Task incomplete'}
+                except Exception as e:
+                    self.logger.error(f"Error collecting result from {module_name}: {e}")
+                    results[module_name] = {'error': str(e)}
 
-        return results
+            return results
 
     def _prepare_module_inputs(
         self,

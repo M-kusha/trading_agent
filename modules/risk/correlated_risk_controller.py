@@ -571,10 +571,36 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
         """Comprehensive correlation analysis with advanced features"""
         start = datetime.datetime.now()
         try:
+            # Normalize positions input: accept list[dict], dict[str, dict], or list[str]
+            raw_positions: Any = positions
+            if isinstance(raw_positions, dict):
+                pos_iter = list(raw_positions.values())
+            elif isinstance(raw_positions, (list, tuple, set)):
+                pos_iter = list(raw_positions)
+            else:
+                pos_iter = [raw_positions]
+
+            # Build a simple, safe list of position dicts for downstream use
+            norm_positions: List[Dict[str, Any]] = []
+            instruments_set: set[str] = set()
+            for pos in pos_iter:
+                if not pos:
+                    continue
+                if isinstance(pos, str):
+                    sym = pos
+                    norm_positions.append({"symbol": sym})
+                elif isinstance(pos, dict):
+                    sym = str(pos.get("symbol") or pos.get("instrument") or "")
+                    norm_positions.append(pos)
+                else:
+                    sym = str(getattr(pos, "symbol", "") or getattr(pos, "instrument", ""))
+                    # convert to dict minimally to avoid attribute errors downstream
+                    norm_positions.append({"symbol": sym})
+                if sym:
+                    instruments_set.add(sym)
+
             # instruments present in positions with available return history
-            instruments = list(
-                {pos.get("symbol", pos.get("instrument", "")) for pos in positions if pos}
-            )
+            instruments = [i for i in instruments_set if i and i in self.return_history]
             instruments = [i for i in instruments if i and i in self.return_history]
 
             if len(instruments) < 2:
@@ -586,8 +612,8 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             # clustering (greedy union-find style; no external deps)
             cluster_analysis = self._perform_greedy_clustering(corr_matrix, instruments)
 
-            # diversification metrics
-            diversification_metrics = self._calculate_diversification_metrics(corr_matrix, positions)
+            # diversification metrics (use normalized positions list)
+            diversification_metrics = self._calculate_diversification_metrics(corr_matrix, norm_positions)
 
             # violations
             violation_analysis = self._analyze_correlation_violations(corr_matrix)

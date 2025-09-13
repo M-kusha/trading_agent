@@ -18,7 +18,7 @@ import time
 import json
 import hashlib
 import threading
-from typing import Dict, Any, Optional, Union, TYPE_CHECKING, Tuple, Iterable, Callable
+from typing import Dict, Any, Optional, Union, TYPE_CHECKING, Tuple, Iterable, Callable, Protocol
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from collections import deque, defaultdict
@@ -35,6 +35,23 @@ except Exception:  # numpy is optional; degrade gracefully
 
 if TYPE_CHECKING:
     from modules.utils.info_bus import SmartInfoBus  # for type hints only
+
+# Narrow interface for SmartInfoBus used here to avoid circular typing issues
+class InfoBusLike(Protocol):
+    def set(
+        self,
+        key: str,
+        value: Any,
+        module: str,
+        thesis: Optional[str] = None,
+        confidence: float = 1.0,
+        dependencies: Optional[list[str]] = None,
+        processing_time_ms: float = 0.0,
+        *,
+        namespace: Optional[str] = None,
+    ) -> None: ...
+
+    def register_provider(self, module: str, provides: list[str]) -> None: ...
 
 # ═══════════════════════════════════════════════════════════════════
 # Helpers
@@ -272,7 +289,7 @@ class RotatingLogger:
         self._module_stream: deque = deque(maxlen=800)
 
         # 4) Safe SmartInfoBus attachment (if singleton already alive)
-        self.smart_bus: Optional["SmartInfoBus"] = None
+        self.smart_bus: Optional[InfoBusLike] = None
         if self.info_bus_aware and self.config.info_bus_integration:
             try:
                 from modules.utils.info_bus import InfoBusManager  # lazy import
@@ -971,8 +988,7 @@ class AuditSystem:
             operator_mode=True,
             info_bus_aware=not is_bus_bootstrap,
         )
-
-        self.smart_bus: Optional["SmartInfoBus"] = None
+        self.smart_bus: Optional[InfoBusLike] = None
         if not is_bus_bootstrap:
             try:
                 from modules.utils.info_bus import InfoBusManager

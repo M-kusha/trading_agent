@@ -3,24 +3,36 @@
 Advanced strategy analysis system with intelligent pattern recognition and adaptation insights
 """
 
+from __future__ import annotations
 import asyncio
 import time
 from modules.contracts import module_args
 import numpy as np
 import datetime
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, TYPE_CHECKING
 from collections import deque, defaultdict
 
 # ═══════════════════════════════════════════════════════════════════
 # MODERN SMARTINFOBUS IMPORTS
 # ═══════════════════════════════════════════════════════════════════
+
 from modules.core.module_base import BaseModule, module
 from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
 from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
-from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
+
+# Handle SmartInfoBus imports with proper type checking
+if TYPE_CHECKING:
+    from modules.utils.info_bus import SmartInfoBus, InfoBusManager
+else:
+    try:
+        from modules.utils.info_bus import SmartInfoBus, InfoBusManager
+    except ImportError:
+        # Fallback for when imports fail during static analysis
+        SmartInfoBus = None  # type: ignore
+        InfoBusManager = None  # type: ignore
 
 
 @module(**module_args(
@@ -133,8 +145,9 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 'recent_adaptations': 0,
                 'timestamp': datetime.datetime.now().isoformat()
             }
-            existing_sp = self.smart_bus.get('strategy_performance', 'StrategyIntrospector')
-            if not existing_sp:
+            # Don't try to consume what we provide - check if we already have it first
+            existing_strategy_perf = self.smart_bus.get('strategy_performance', 'StrategyIntrospector')
+            if not existing_strategy_perf:
                 self.smart_bus.set('strategy_performance', default_strategy_performance,
                                    module='StrategyIntrospector', thesis=_seed_thesis)
 
@@ -1788,6 +1801,33 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             'behavior_patterns': {'error': str(error_context)},
             'health_metrics': {'status': 'error', 'error_context': str(error_context)}
         }
+
+    def _provide_missing_data_defaults(self):
+        """Provide missing data defaults for ORPHAN consumers identified in logs"""
+        try:
+            # List of missing data keys from log analysis
+            missing_keys_defaults = {
+                'bias_analysis': {'bias_score': 0.0, 'trend_bias': 'neutral', 'momentum_bias': 'balanced', 'timestamp': datetime.datetime.now().isoformat()},
+                'liquidity_capabilities': {'max_position_size': 1.0, 'liquidity_score': 0.8, 'slippage_estimate': 0.0, 'timestamp': datetime.datetime.now().isoformat()},
+                'liquidity_score': 0.8,
+                'market_regime': 'unknown',
+                'pnl_data': {'session_pnl': 0.0, 'total_pnl': 0.0, 'daily_pnl': 0.0, 'weekly_pnl': 0.0, 'monthly_pnl': 0.0, 'timestamp': datetime.datetime.now().isoformat()},
+                'risk_data': {'current_drawdown': 0.0, 'max_drawdown': 0.0, 'var_95': 0.0, 'sharpe_ratio': 0.0, 'risk_exposure': 0.5, 'timestamp': datetime.datetime.now().isoformat()},
+                'risk_metrics': {'var_95': 0.0, 'cvar_95': 0.0, 'max_drawdown': 0.0, 'sharpe_ratio': 0.0, 'sortino_ratio': 0.0, 'risk_adjusted_return': 0.0},
+                'session_metrics': {'total_trades': 0, 'win_trades': 0, 'loss_trades': 0, 'session_duration': 0, 'average_trade_duration': 0, 'timestamp': datetime.datetime.now().isoformat()},
+                'strategy_performance': {'effectiveness_score': 0.5, 'confidence_score': 0.5, 'dominant_style': 'balanced', 'recent_adaptations': 0, 'timestamp': datetime.datetime.now().isoformat()},
+                'system_alerts': {'alerts': [], 'warnings': [], 'critical_issues': [], 'notification_count': 0, 'timestamp': datetime.datetime.now().isoformat()}
+            }
+
+            # Force publish these defaults regardless of existing state
+            for key, default_value in missing_keys_defaults.items():
+                thesis = f"Default initialization: {key} provided for early consumers"
+                self.smart_bus.set(key, default_value, module='StrategyIntrospector', thesis=thesis)
+                self.logger.info(f"Initialized missing data for ORPHAN consumer: {key}")
+
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "missing_data_defaults")
+            self.logger.warning(f"Failed to provide missing data defaults: {error_context}")
 
     def _get_safe_market_defaults(self) -> Dict[str, Any]:
         """Get safe defaults when market data retrieval fails"""

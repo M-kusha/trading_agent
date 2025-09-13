@@ -138,6 +138,23 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
         
         # Generate initialization thesis
         self._generate_initialization_thesis()
+
+        # Publish a safe baseline market_overview immediately for early consumers (TrainingScript)
+        try:
+            baseline_overview = {
+                'regime': 'unknown',
+                'volatility': 'unknown',
+                'sentiment': 'neutral',
+                'timestamp': datetime.datetime.now().isoformat(),
+                'highlights': [],
+                'priority_focus': None
+            }
+            self.smart_bus.set('market_overview', baseline_overview,
+                               module='ExplanationGenerator',
+                               thesis='Baseline market overview published at initialization')
+        except Exception:
+            # Non-fatal: consumers will still get overview on first process() cycle
+            pass
         
         version = getattr(self.metadata, 'version', '3.0.0') if self.metadata else '3.0.0'
         self.logger.info(format_operator_message(

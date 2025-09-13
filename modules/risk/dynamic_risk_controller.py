@@ -278,6 +278,34 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                 thesis="Initial dynamic risk controller status",
             )
 
+            # Publish a baseline voting proposal to avoid early BUS MISS from committee
+            try:
+                baseline_vote = {
+                    "member": "DynamicRiskController",
+                    "type": "risk_posture",
+                    "posture": "maintain",
+                    "target_scale": float(self.current_risk_scale),
+                    "bounds": [float(self._cfg.min_risk_scale), float(self._cfg.max_risk_scale)],
+                    "rationale": "baseline initialization",
+                    "confidence": 0.1,
+                    "timestamp": time.time(),
+                }
+                self.smart_bus.set(
+                    "DynamicRiskController_voting_proposal",
+                    baseline_vote,
+                    module="DynamicRiskController",
+                    thesis="Baseline voting proposal during initialization",
+                )
+                self.smart_bus.set(
+                    "DynamicRiskController_confidence",
+                    0.1,
+                    module="DynamicRiskController",
+                    thesis="Baseline voting confidence during initialization",
+                )
+            except Exception:
+                # best-effort only
+                pass
+
         except Exception as e:
             self.logger.error(f"Risk controller initialization failed: {e}")
 
@@ -646,45 +674,60 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
             return await self._handle_risk_error(e, start_time)
 
     async def _extract_risk_data(self, **inputs) -> Optional[Dict[str, Any]]:
-        """Extract comprehensive risk data from SmartInfoBus"""
+        """Extract comprehensive risk data from SmartInfoBus with robust fallbacks."""
         try:
-            # Get risk data from SmartInfoBus
+            # Primary bus snapshots
             risk_data_bus = self.smart_bus.get("risk_data", "DynamicRiskController") or {}
-
-            # Get performance data
             performance_data = self.smart_bus.get("performance_data", "DynamicRiskController") or {}
-
-            # Get market data
             market_data = self.smart_bus.get("market_data", "DynamicRiskController") or {}
 
-            # Get position data
+            # Positions: prefer normalized 'position_data', fall back to 'positions' / 'current_positions'
             position_data = self.smart_bus.get("position_data", "DynamicRiskController") or {}
+            if not position_data:
+                snap = (
+                    self.smart_bus.get("positions", "DynamicRiskController")
+                    or self.smart_bus.get("current_positions", "DynamicRiskController")
+                    or {}
+                )
+                if isinstance(snap, dict) and snap:
+                    positions = []
+                    for inst, p in snap.items():
+                        notional = float(p.get("notional_eur", 0.0) or 0.0)
+                        units = float(p.get("units", 0.0) or 0.0)
+                        entry_price = float(p.get("entry_price", 0.0) or 0.0)
+                        size = abs(notional) if abs(notional) > 0 else (abs(units * entry_price) if (units and entry_price) else abs(units))
+                        entry = {"instrument": inst, "size": float(size)}
+                        # carry over full snapshot to keep downstream flexible
+                        for k, v in p.items():
+                            if k != "instrument":
+                                entry[k] = v
+                        positions.append(entry)
+                    position_data = {"positions": positions}
 
-            # Get direct inputs (legacy compatibility)
+            # Direct inputs (legacy compatibility)
             drawdown = inputs.get("drawdown", inputs.get("current_drawdown", 0.0))
             volatility = inputs.get("volatility", 0.01)
             pnl = inputs.get("pnl", 0.0)
             balance = inputs.get("balance", inputs.get("current_balance", 0.0))
 
-            # Extract from SmartInfoBus data
-            risk_snapshot = risk_data_bus.get("risk_snapshot", {})
+            # Extract from risk snapshot if not given
+            risk_snapshot = risk_data_bus.get("risk_snapshot", {}) if isinstance(risk_data_bus, dict) else {}
             if not drawdown and "current_drawdown" in risk_snapshot:
                 drawdown = risk_snapshot["current_drawdown"]
-
             if not balance and "balance" in risk_snapshot:
                 balance = risk_snapshot["balance"]
 
-            # Get correlation data
+            # Correlation
             correlation = inputs.get("correlation", 0.0)
             if "correlation_risk" in risk_snapshot:
                 correlation = risk_snapshot["correlation_risk"]
 
             return {
-                "drawdown": float(drawdown),
-                "volatility": float(volatility),
-                "pnl": float(pnl),
-                "balance": float(balance),
-                "correlation": float(correlation),
+                "drawdown": float(drawdown or 0.0),
+                "volatility": float(volatility or 0.01),
+                "pnl": float(pnl or 0.0),
+                "balance": float(balance or 0.0),
+                "correlation": float(correlation or 0.0),
                 "risk_data": risk_data_bus,
                 "performance_data": performance_data,
                 "market_data": market_data,
@@ -695,6 +738,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
         except Exception as e:
             self.logger.error(f"Failed to extract risk data: {e}")
             return None
+
 
     async def _update_market_context_async(self, risk_data: Dict[str, Any]) -> Dict[str, Any]:
         """Update market context awareness asynchronously"""
@@ -1595,19 +1639,66 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                 thesis="Risk control alerts and emergency status tracking",
             )
 
-            # Voting proposal (optional bus write for coordinators)
+            # Voting proposal — publish canonical keys expected by coordinator and optional normalized feed
             if "DynamicRiskController_voting_proposal" in result:
-                self.smart_bus.set(
-                    "voting_member_proposal",
-                    {
-                        "member": "DynamicRiskController",
-                        "proposal": result["DynamicRiskController_voting_proposal"],
-                        "confidence": float(result.get("DynamicRiskController_confidence", 0.0)),
+                proposal = result["DynamicRiskController_voting_proposal"]
+                confidence = float(result.get("DynamicRiskController_confidence", 0.0))
+
+                # Canonical per-module keys (match contracts + coordinator fallback)
+                try:
+                    self.smart_bus.set(
+                        "DynamicRiskController_voting_proposal",
+                        proposal,
+                        module="DynamicRiskController",
+                        thesis="DynamicRiskController voting proposal",
+                    )
+                    self.smart_bus.set(
+                        "DynamicRiskController_confidence",
+                        confidence,
+                        module="DynamicRiskController",
+                        thesis=f"DynamicRiskController voting confidence: {confidence:.1%}",
+                    )
+                except Exception as e:
+                    self.logger.warning(f"Publishing canonical voting keys failed: {e}")
+
+                # Optional generic envelope for other consumers
+                try:
+                    self.smart_bus.set(
+                        "voting_member_proposal",
+                        {
+                            "member": "DynamicRiskController",
+                            "proposal": proposal,
+                            "confidence": confidence,
+                            "timestamp": datetime.datetime.now().isoformat(),
+                        },
+                        module="DynamicRiskController",
+                        thesis="DynamicRiskController voting proposal (generic envelope)",
+                    )
+                except Exception:
+                    pass
+
+                # Optional: publish into normalized expert_votes feed to support feed-first ingestion
+                try:
+                    feed_key = "expert_votes"
+                    entry = {
+                        "expert": "DynamicRiskController",
+                        "vote": dict(proposal) if isinstance(proposal, dict) else {},
+                        "confidence": confidence,
                         "timestamp": datetime.datetime.now().isoformat(),
-                    },
-                    module="DynamicRiskController",
-                    thesis="DynamicRiskController voting proposal",
-                )
+                    }
+                    buf = self.smart_bus.get(feed_key, "DynamicRiskController") or []
+                    if not isinstance(buf, list):
+                        buf = []
+                    # de-duplicate same expert (keep most recent)
+                    buf = [e for e in buf if e.get("expert") != "DynamicRiskController"]
+                    buf.append(entry)
+                    # cap the buffer
+                    cap = 200
+                    if len(buf) > cap:
+                        buf = buf[-cap:]
+                    self.smart_bus.set(feed_key, buf, module="DynamicRiskController", thesis="Published normalized vote entry")
+                except Exception:
+                    pass
 
         except Exception as e:
             self.logger.error(f"Failed to update SmartInfoBus: {e}")

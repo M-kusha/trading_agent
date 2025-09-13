@@ -492,39 +492,106 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
     async def _extract_execution_data(self, **inputs) -> Optional[Dict[str, Any]]:
         """Extract comprehensive execution data from SmartInfoBus"""
         try:
-            # Get execution data from SmartInfoBus
-            execution_data = self.smart_bus.get('execution_data', 'ExecutionQualityMonitor') or {}
-            executions = execution_data.get('executions', [])
+            # Get execution data from SmartInfoBus (robust to dict/list variants)
+            execution_data_raw = self.smart_bus.get('execution_data', 'ExecutionQualityMonitor') or {}
+            if isinstance(execution_data_raw, dict):
+                executions = execution_data_raw.get('executions', []) or []
+            elif isinstance(execution_data_raw, list):
+                # Sometimes a plain list of executions is published
+                executions = execution_data_raw
+            else:
+                executions = []
 
             # Get trade data
-            trade_data = self.smart_bus.get('trade_data', 'ExecutionQualityMonitor') or {}
-            recent_trades = trade_data.get('recent_trades', [])
+            trade_data_raw = self.smart_bus.get('trade_data', 'ExecutionQualityMonitor') or {}
+            if isinstance(trade_data_raw, dict):
+                recent_trades = trade_data_raw.get('recent_trades', []) or []
+            elif isinstance(trade_data_raw, list):
+                recent_trades = trade_data_raw
+            else:
+                recent_trades = []
 
             # Get order data
-            order_data = self.smart_bus.get('order_data', 'ExecutionQualityMonitor') or {}
-            orders = order_data.get('orders', [])
+            order_data_raw = self.smart_bus.get('order_data', 'ExecutionQualityMonitor') or {}
+            if isinstance(order_data_raw, dict):
+                orders = order_data_raw.get('orders', []) or []
+            elif isinstance(order_data_raw, list):
+                orders = order_data_raw
+            else:
+                orders = []
 
-            # Get market data
+            # Get market data (spreads may be dict or list of pairs)
             market_data = self.smart_bus.get('market_data', 'ExecutionQualityMonitor') or {}
-            spreads = market_data.get('spreads', {})
+            spreads: Dict[str, float] = {}
+            if isinstance(market_data, dict):
+                md_spreads = market_data.get('spreads', {})
+                if isinstance(md_spreads, dict):
+                    spreads = md_spreads
+                elif isinstance(md_spreads, list):
+                    # Accept list of {'instrument': x, 'spread': y}
+                    for item in md_spreads:
+                        if isinstance(item, dict):
+                            inst = item.get('instrument') or item.get('symbol')
+                            val = item.get('spread')
+                            if inst is not None and isinstance(val, (int, float, np.generic)):
+                                spreads[str(inst)] = float(val)
+            elif isinstance(market_data, list):
+                # Sometimes a list of spreads entries
+                for item in market_data:
+                    if isinstance(item, dict):
+                        inst = item.get('instrument') or item.get('symbol')
+                        val = item.get('spread')
+                        if inst is not None and isinstance(val, (int, float, np.generic)):
+                            spreads[str(inst)] = float(val)
 
-            # Get direct inputs
-            trade_executions = inputs.get('trade_executions', inputs.get('trades', recent_trades))
-            order_attempts = inputs.get('order_attempts', inputs.get('orders', orders))
-            spread_data = inputs.get('spread_data', spreads)
+            # Get direct inputs and normalize
+            trade_executions_raw = inputs.get('trade_executions', inputs.get('trades', recent_trades))
+            if isinstance(trade_executions_raw, dict):
+                trade_executions = list(trade_executions_raw.values())
+            elif isinstance(trade_executions_raw, list):
+                trade_executions = trade_executions_raw
+            else:
+                trade_executions = []
+
+            order_attempts_raw = inputs.get('order_attempts', inputs.get('orders', orders))
+            if isinstance(order_attempts_raw, dict):
+                order_attempts = list(order_attempts_raw.values())
+            elif isinstance(order_attempts_raw, list):
+                order_attempts = order_attempts_raw
+            else:
+                order_attempts = []
+
+            spread_data_raw = inputs.get('spread_data', spreads)
+            if isinstance(spread_data_raw, dict):
+                spread_data = spread_data_raw
+            elif isinstance(spread_data_raw, list):
+                tmp: Dict[str, float] = {}
+                for item in spread_data_raw:
+                    if isinstance(item, dict):
+                        inst = item.get('instrument') or item.get('symbol')
+                        val = item.get('spread')
+                        if inst is not None and isinstance(val, (int, float, np.generic)):
+                            tmp[str(inst)] = float(val)
+                spread_data = tmp
+            else:
+                spread_data = {}
 
             # Convert trades to executions if needed
-            converted_executions = []
+            converted_executions: List[Dict[str, Any]] = []
             for trade in trade_executions:
-                execution = self._convert_trade_to_execution(trade)
-                if execution:
-                    converted_executions.append(execution)
+                if isinstance(trade, dict):
+                    execution = self._convert_trade_to_execution(trade)
+                    if execution:
+                        converted_executions.append(execution)
+
+            # Filter non-dict executions if any
+            normalized_executions: List[Dict[str, Any]] = [e for e in executions if isinstance(e, dict)]
 
             return {
-                'executions': executions + converted_executions,
-                'orders': order_attempts,
+                'executions': normalized_executions + converted_executions,
+                'orders': [o for o in order_attempts if isinstance(o, dict)],
                 'spreads': spread_data,
-                'market_data': market_data,
+                'market_data': market_data if isinstance(market_data, dict) else {'raw': market_data},
                 'timestamp': datetime.datetime.now().isoformat()
             }
 

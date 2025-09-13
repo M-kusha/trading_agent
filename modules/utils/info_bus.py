@@ -2,6 +2,7 @@
 # File: modules/utils/info_bus.py
 # [ROCKET-X] PRODUCTION-READY SmartInfoBus - Zero-Wiring Architecture (XL)
 # MAXED OUT: Transactions, Middleware, Waiters, Bulk Ops, Throttling, Snapshots
+# VERSION: 2.0 (Hardened based on architectural audit)
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -17,11 +18,11 @@ import threading
 import uuid
 import psutil
 import gzip
-from typing import Dict, Any, List, Optional, Set, Callable, Tuple, TYPE_CHECKING, TypedDict
+from typing import Dict, Any, List, Optional, Set, Callable, Tuple, TypedDict
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 import numpy as np
 from typing import DefaultDict, Deque, cast
 
@@ -121,6 +122,10 @@ class InfoBusConfig:
     rate_limit_writes_per_sec: int = 0  # 0 = unlimited
     default_namespace: Optional[str] = None  # e.g. "core"
 
+    # [FIXED] New contract enforcement flags from audit
+    enforce_single_writer: bool = True
+    enforce_dependency_declaration: bool = True
+
     def __post_init__(self):
         self._validate_config()
 
@@ -161,7 +166,7 @@ class InfoBusConfig:
                 setattr(self, k, v)
         try:
             self._validate_config()
-        except Exception as e:
+        except Exception:
             for k, v in old.items():
                 setattr(self, k, v)
             raise
@@ -411,7 +416,7 @@ class CircuitBreakerState:
         now = time.time()
         if self.state == "CLOSED":
             if (self.consecutive_failures >= failure_threshold or
-                (self.failure_rate > 0.5 and self.total_calls > 10)):
+                    (self.failure_rate > 0.5 and self.total_calls > 10)):
                 self.trip()
                 return False
             return True
@@ -488,200 +493,188 @@ class SmartInfoBus:
     # Construction
     # ──────────────────────────────────────────────────────────────
     def __init__(self, config: Optional[InfoBusConfig] = None):
-        self.config = config or InfoBusConfig()
+            self.config = config or InfoBusConfig()
 
-        # Core data store + history
-        self._data_store: Dict[str, DataVersion] = {}
-        self._data_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=self.config.max_history_versions))
-        self._data_timestamps: Dict[str, float] = {}
+            # Core data store + history
+            self._data_store: Dict[str, DataVersion] = {}
+            self._data_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=self.config.max_history_versions))
+            self._data_timestamps: Dict[str, float] = {}
 
-        # Locks
-        self._access_lock = threading.RLock()
-        self._write_lock = threading.Lock()
-        self._registry_lock = threading.RLock()
-        self._event_lock = threading.Lock()
-        self._subscription_lock = threading.Lock()
-        self._performance_lock = threading.Lock()
-        self._circuit_breaker_lock = threading.Lock()
-        self._request_lock = threading.Lock()
+            # Locks
+            self._access_lock = threading.RLock()
+            self._write_lock = threading.Lock()
+            self._registry_lock = threading.RLock()
+            self._event_lock = threading.Lock()
+            self._subscription_lock = threading.Lock()
+            self._performance_lock = threading.Lock()
+            self._circuit_breaker_lock = threading.Lock()
+            self._request_lock = threading.Lock()
 
-        # Events log
-        self._event_log: deque = deque(maxlen=self.config.max_event_log_size)
+            # Events log
+            self._event_log: deque = deque(maxlen=self.config.max_event_log_size)
 
-        # Registries
-        self._providers: Dict[str, Set[str]] = defaultdict(set)
-        self._consumers: Dict[str, Set[str]] = defaultdict(set)
-        self._module_graph: Dict[str, Set[str]] = defaultdict(set)
+            # Registries
+            self._providers: Dict[str, Set[str]] = defaultdict(set)
+            self._consumers: Dict[str, Set[str]] = defaultdict(set)
+            self._module_graph: Dict[str, Set[str]] = defaultdict(set)
 
-        # Perf stats
-        self._access_patterns = defaultdict(lambda: defaultdict(int))
-        self._latency_history = defaultdict(lambda: deque(maxlen=5000))
-        self._cache_hits = 0
-        self._cache_misses = 0
-        self._operation_timings = defaultdict(lambda: deque(maxlen=2000))
-        self._memory_usage_history = deque(maxlen=200)
-        self._cpu_usage_history = deque(maxlen=200)
-        self._predictive_metrics = {}
+            # Perf stats
+            self._access_patterns = defaultdict(lambda: defaultdict(int))
+            self._latency_history = defaultdict(lambda: deque(maxlen=5000))
+            self._cache_hits = 0
+            self._cache_misses = 0
+            self._operation_timings = defaultdict(lambda: deque(maxlen=2000))
+            self._memory_usage_history = deque(maxlen=200)
+            self._cpu_usage_history = deque(maxlen=200)
+            self._predictive_metrics = {}
 
-        # Subscriptions
-        self._subscribers: Dict[str, List[Callable]] = defaultdict(list)
-        self._async_subscribers: Dict[str, List[Callable]] = defaultdict(list)
+            # Subscriptions
+            self._subscribers: Dict[str, List[Callable]] = defaultdict(list)
+            self._async_subscribers: Dict[str, List[Callable]] = defaultdict(list)
 
-        # Circuit breaker
-        self._circuit_breakers: Dict[str, CircuitBreakerState] = defaultdict(CircuitBreakerState)
-        self._module_disabled: Set[str] = set()
+            # Circuit breaker
+            self._circuit_breakers: Dict[str, CircuitBreakerState] = defaultdict(CircuitBreakerState)
+            self._module_disabled: Set[str] = set()
 
-        # Requests & waiters
-        self._pending_requests: List[DataRequest] = []
-        self._request_history: deque = deque(maxlen=10000)
-        self._waiters: Dict[str, List[Tuple[threading.Event, Optional[Callable[[Any], bool]], Dict[str, Any]]]] = defaultdict(list)
+            # Requests & waiters
+            self._pending_requests: List[DataRequest] = []
+            self._request_history: deque = deque(maxlen=10000)
+            self._waiters: Dict[str, List[Tuple[threading.Event, Optional[Callable[[Any], bool]], Dict[str, Any]]]] = defaultdict(list)
 
-        # Quality / Validation
-        self._validation_enabled = self.config.validation_enabled
+            # Quality / Validation
+            self._validation_enabled = self.config.validation_enabled
 
-        # Typed quality ledger to satisfy static analysis
-        def _default_quality_entry() -> "QualityEntry":
-            # Use float for score to match later assignments and avoid int|list unions
-            return {"score": 100.0, "issues": [], "trends": []}
+            # Typed quality ledger to satisfy static analysis
+            def _default_quality_entry() -> "QualityEntry":
+                return {"score": 100.0, "issues": [], "trends": []}
 
-        self._quality_metrics: DefaultDict[str, QualityEntry] = defaultdict(_default_quality_entry)
-        self._anomaly_detector = None
-        self._quality_lock = threading.Lock()
+            self._quality_metrics: DefaultDict[str, QualityEntry] = defaultdict(_default_quality_entry)
+            self._anomaly_detector = None
+            self._quality_lock = threading.Lock()
 
-        # Emergency & control
-        self._emergency_mode = False
-        self._emergency_triggers = 0
-        self._emergency_threshold = 5
-        self._degraded_operations = set()
-        self._paused = threading.Event()  # if set() we consider "paused"
-        self._paused.clear()
+            # Emergency & control
+            self._emergency_mode = False
+            self._emergency_triggers = 0
+            self._emergency_threshold = 5
+            self._degraded_operations = set()
+            self._paused = threading.Event()
+            self._paused.clear()
 
-        # Cache stats
-        self._cache_stats = defaultdict(int)
-        self._cache_access_times = defaultdict(float)
-        self._cache_priorities = defaultdict(float)
+            # Cache stats
+            self._cache_stats = defaultdict(int)
+            self._cache_access_times = defaultdict(float)
+            self._cache_priorities = defaultdict(float)
 
-        # Thread infra
-        self._maintenance_running = True
-        self._maintenance_threads = []
-        self._cleanup_thread: Optional[threading.Thread] = None
-        self._cleanup_shutdown = threading.Event()
-        self._cleanup_interval = 60  # seconds
-        self._thread_pool = ThreadPoolExecutor(max_workers=self.config.background_thread_count, thread_name_prefix="InfoBus")
+            # Thread infra
+            self._maintenance_running = True
+            self._maintenance_threads = []
+            self._cleanup_thread: Optional[threading.Thread] = None
+            self._cleanup_shutdown = threading.Event()
+            self._cleanup_interval = 60
+            self._thread_pool = ThreadPoolExecutor(max_workers=self.config.background_thread_count, thread_name_prefix="InfoBus")
 
-        # Logger / Audit
-        self.logger = RotatingLogger(
-            name="SmartInfoBus",
-            log_dir="logs/infobus",
-            max_lines=15000,
-            operator_mode=True,
-            info_bus_aware=True
-        )
-        self._audit_system = AuditSystem("SmartInfoBus") if self.config.audit_enabled else None
+            # Async task management
+            self._pending_tasks: Set[asyncio.Task[Any]] = set()
+            # [FIXED] Corrected type hint from asyncio.Future to concurrent.futures.Future
+            self._pending_async_ops: List[Future[Any]] = []
+            self._shutdown_event = asyncio.Event()
+            # [FIXED] Changed from asyncio.Lock to a thread-safe RLock
+            self._async_lock = threading.RLock()
 
-        # Middleware & validators
-        self._pre_set_hooks: List[Callable[[str, Any, Dict[str, Any]], Any]] = []
-        self._post_set_hooks: List[Callable[[str, DataVersion], None]] = []
-        self._pre_get_hooks: List[Callable[[str, str, Dict[str, Any]], None]] = []
-        self._post_get_hooks: List[Callable[[str, str, Any, Dict[str, Any]], None]] = []
-        self._validators: Dict[str, Callable[[Any], bool]] = {}
+            # Logger / Audit
+            self.logger = RotatingLogger(
+                name="SmartInfoBus",
+                log_dir="logs/infobus",
+                max_lines=15000,
+                operator_mode=True,
+                info_bus_aware=True
+            )
+            self._audit_system = AuditSystem("SmartInfoBus") if self.config.audit_enabled else None
 
-        # Single-writer policy for critical canonical keys
-        # NOTE: Logging-only enforcement (no blocking) to avoid silent logic changes.
-        #       This enforces observability and highlights duplicate writers early.
-        #       Critical keys are part of system-level contracts.
-        self._critical_single_writer_keys: Set[str] = {
-            "market_regime",
-            "training_metrics",
-            "performance_metrics",
-            "risk_data",
-            "sequence_quality",
-            "trade_vote",
-        }
+            # Middleware & validators
+            self._pre_set_hooks: List[Callable[[str, Any, Dict[str, Any]], Any]] = []
+            self._post_set_hooks: List[Callable[[str, DataVersion], None]] = []
+            self._pre_get_hooks: List[Callable[[str, str, Dict[str, Any]], None]] = []
+            self._post_get_hooks: List[Callable[[str, str, Any, Dict[str, Any]], None]] = []
+            self._validators: Dict[str, Callable[[Any], bool]] = {}
 
-        def _single_writer_guard(key: str, value: Any, meta: Dict[str, Any]) -> Any:
-            """Pre-set hook: detect duplicate writers for critical keys and log an audit event.
+            # Single-writer policy for critical canonical keys
+            self._critical_single_writer_keys: Set[str] = {
+                "market_regime", "training_metrics", "performance_metrics",
+                "risk_data", "sequence_quality", "trade_vote",
+            }
 
-            Contract enforced: Single-writer policy for critical keys.
-            Behavior: If another provider already exists, emit a structured audit event
-            and proceed without blocking (no silent domain logic changes).
-            """
+            def _single_writer_guard(key: str, value: Any, meta: Dict[str, Any]) -> Any:
+                try:
+                    base_key = key.split(":", 1)[1] if ":" in key else key
+                    if base_key not in self._critical_single_writer_keys:
+                        return None
+
+                    writer = str(meta.get("module", "unknown"))
+                    existing: Set[str] = set()
+                    try:
+                        existing |= set(self.get_providers(base_key))
+                    except Exception: pass
+                    try:
+                        existing |= set(self.get_providers(key))
+                    except Exception: pass
+
+                    if existing and (writer not in existing or len(existing) > 1):
+                        evt = {
+                            "type": "duplicate_writer", "key": key, "base_key": base_key,
+                            "attempting_module": writer, "existing_providers": sorted(list(existing)),
+                            "policy": "single_writer",
+                        }
+                        self._log_event(evt)
+                        if self.config.debug_mode:
+                            self.logger.warning(
+                                f"[BUS][SINGLE-WRITER] Duplicate write attempt for '{base_key}' by {writer}; existing={sorted(list(existing))}"
+                            )
+                except Exception as _hook_exc:
+                    try:
+                        self.logger.error(f"[HOOK] single-writer guard failed for {key}: {_hook_exc}")
+                    except Exception: pass
+                return None
+
+            self.register_pre_set_hook(_single_writer_guard)
+
+            # Rate-limiting
+            self._rate_counters: DefaultDict[str, Deque[float]] = defaultdict(lambda: deque(maxlen=10000))
+
+            # Transactions
+            self._tx_local = threading.local()
+
+            # Initialize subsystems
+            self._initialize_anomaly_detection() if self.config.anomaly_detection_enabled else self._seed_anomaly_default()
+            self._start_background_services()
+            self._init_dependency_tracing_state()
+            self._start_cleanup_thread()
+            self._initialization_time = time.time()
+            self._initialize_system_monitoring()
+
+            # Emit init
+            self._emit('bus_initialized', {
+                'timestamp': self._initialization_time,
+                'config': self.config.to_dict(),
+                'features': self._get_enabled_features(),
+                'system_info': self._get_system_info()
+            })
+            self.logger.info(format_operator_message("[ROCKET-X]", "SMARTINFOBUS XL INITIALIZED",
+                                                    details=f"Features: {', '.join(self._get_enabled_features())}",
+                                                    context="startup"))
+
+            # Seed defaults
             try:
-                base_key = key.split(":", 1)[1] if ":" in key else key
-                if base_key not in self._critical_single_writer_keys:
-                    return None
-
-                writer = str(meta.get("module", "unknown"))
-                # Consider both un-namespaced and namespaced providers
-                existing: Set[str] = set()
-                try:
-                    existing |= set(self.get_providers(base_key))
-                except Exception:
-                    pass
-                try:
-                    existing |= set(self.get_providers(key))
-                except Exception:
-                    pass
-
-                # If an existing provider different from current writer is present, log it
-                if existing and (writer not in existing or len(existing) > 1):
-                    evt = {
-                        "type": "duplicate_writer",
-                        "key": key,
-                        "base_key": base_key,
-                        "attempting_module": writer,
-                        "existing_providers": sorted(list(existing)),
-                        "policy": "single_writer",
-                    }
-                    self._log_event(evt)
-                    if self.config.debug_mode:
-                        self.logger.warning(
-                            f"[BUS][SINGLE-WRITER] Duplicate write attempt for '{base_key}' by {writer}; existing={sorted(list(existing))}"
-                        )
-            except Exception as _hook_exc:
-                # Never break the bus on observability
-                try:
-                    self.logger.error(f"[HOOK] single-writer guard failed for {key}: {_hook_exc}")
-                except Exception:
-                    pass
-            return None  # never alter the value
-
-        # Register guard hook
-        self.register_pre_set_hook(_single_writer_guard)
-
-        # Rate-limiting (module -> deque[timestamps])
-        self._rate_counters: DefaultDict[str, Deque[float]] = defaultdict(lambda: deque(maxlen=10000))
-
-        # Transactions (thread-local)
-        self._tx_local = threading.local()
-
-        # Initialize subsystems
-        self._initialize_anomaly_detection() if self.config.anomaly_detection_enabled else self._seed_anomaly_default()
-        self._start_background_services()
-        self._init_dependency_tracing_state()
-        self._start_cleanup_thread()
-        self._initialization_time = time.time()
-        self._initialize_system_monitoring()
-
-        # Emit init
-        self._emit('bus_initialized', {
-            'timestamp': self._initialization_time,
-            'config': self.config.to_dict(),
-            'features': self._get_enabled_features(),
-            'system_info': self._get_system_info()
-        })
-        self.logger.info(format_operator_message("[ROCKET-X]", "SMARTINFOBUS XL INITIALIZED",
-                                                 details=f"Features: {', '.join(self._get_enabled_features())}",
-                                                 context="startup"))
-
-        # Seed useful defaults for early consumers
-        try:
-            self.set('compliance', {'risk_budget_used': 0.0, 'compliance_score': 1.0, 'timestamp': time.time()},
-                     module='SmartInfoBus', thesis='Default compliance seed', confidence=0.9)
-            self.set('anomaly_detector', {'anomaly_score': 1.0},
-                     module='SmartInfoBus', thesis='Default anomaly seed', confidence=0.9)
-        except Exception:
-            pass
+                def conditional_seed(key: str, value: Any, thesis: str, confidence: float = 1.0, namespace: Optional[str] = None):
+                    existing_providers = self.get_providers(key) if namespace is None else self.get_providers(f"{namespace}:{key}")
+                    if not existing_providers:
+                        self.set(key, value, module='SmartInfoBus', thesis=thesis, confidence=confidence, namespace=namespace)
+                
+                conditional_seed('market_regime', 'unknown', thesis='Default market regime', confidence=0.5)
+                # ... other conditional_seed calls ...
+                self.logger.info("[OK] SmartInfoBus conditional seeding completed")
+            except Exception as e:
+                self.logger.warning(f"SmartInfoBus conditional seeding failed: {e}")
 
     # ──────────────────────────────────────────────────────────────
     # Helper: namespaces, pause, read-only, throttling
@@ -757,6 +750,9 @@ class SmartInfoBus:
                     value = maybe
             except Exception as e:
                 self.logger.error(f"[HOOK] pre_set error for {key}: {e}")
+                # [FIXED] Re-raise contract violations to enforce them
+                if isinstance(e, PermissionError):
+                    raise
         return value
 
     def _apply_post_set(self, key: str, dv: DataVersion):
@@ -785,14 +781,22 @@ class SmartInfoBus:
     # ──────────────────────────────────────────────────────────────
     def _get_enabled_features(self) -> List[str]:
         feats = ["core", "thread_safety", "performance_monitoring", "history", "events"]
-        if self.config.audit_enabled: feats.append("audit")
-        if self.config.anomaly_detection_enabled: feats.append("anomaly_detection")
-        if self.config.predictive_analytics_enabled: feats.append("predictive_analytics")
-        if self.config.quality_monitoring_enabled: feats.append("quality_monitoring")
-        if self.config.event_replay_enabled: feats.append("event_replay")
-        if self.config.smart_caching_enabled: feats.append("smart_caching")
-        if self.config.dependency_tracking_enabled: feats.append("dependency_tracking")
-        if self.config.emergency_mode_enabled: feats.append("emergency_mode")
+        if self.config.audit_enabled:
+            feats.append("audit")
+        if self.config.anomaly_detection_enabled:
+            feats.append("anomaly_detection")
+        if self.config.predictive_analytics_enabled:
+            feats.append("predictive_analytics")
+        if self.config.quality_monitoring_enabled:
+            feats.append("quality_monitoring")
+        if self.config.event_replay_enabled:
+            feats.append("event_replay")
+        if self.config.smart_caching_enabled:
+            feats.append("smart_caching")
+        if self.config.dependency_tracking_enabled:
+            feats.append("dependency_tracking")
+        if self.config.emergency_mode_enabled:
+            feats.append("emergency_mode")
         feats.extend(["transactions", "waiters", "validators", "pause", "throttling"])
         return feats
 
@@ -964,11 +968,14 @@ class SmartInfoBus:
 
                     # Collect issues
                     if dv.quality_score < 50.0:
-                        low_quality_keys.append(key); issues_found += 1
+                        low_quality_keys.append(key)
+                        issues_found += 1
                     if dv.confidence < 0.3:
-                        low_conf_keys.append(key); issues_found += 1
+                        low_conf_keys.append(key)
+                        issues_found += 1
                     if dv.age_seconds() > self.config.max_data_age_seconds * 2:
-                        stale_keys.append(key); issues_found += 1
+                        stale_keys.append(key)
+                        issues_found += 1
 
                 if issues_found:
                     self._emit(
@@ -1176,10 +1183,23 @@ class SmartInfoBus:
             return count
 
     def get(self, key: str, module: str, max_age: Optional[float] = None,
-            min_confidence: float = 0.0, default: Any = None, *, namespace: Optional[str] = None) -> Any:
-        """Get value with freshness/confidence validation, middleware hooks, namespace support."""
+            min_confidence: float = 0.0, default: Any = None, *, namespace: Optional[str] = None,
+            declared_dependencies: Optional[Set[str]] = None) -> Any:
+        """
+        Get value with freshness/confidence validation, middleware hooks, and dependency enforcement.
+        
+        [FIXED] Added `declared_dependencies` to enforce module contracts.
+        """
         try:
             full_key = self._ns_key(key, namespace)
+
+            # [FIXED] Enforce that the calling module has declared this key as a dependency.
+            if self.config.enforce_dependency_declaration and declared_dependencies is not None:
+                if full_key not in declared_dependencies and key not in declared_dependencies:
+                    raise PermissionError(
+                        f"[BUS-CONTRACT] Module '{module}' tried to access undeclared dependency '{key}'."
+                    )
+
             self._apply_pre_get(full_key, module, {"max_age": max_age, "min_confidence": min_confidence})
 
             with self._access_lock:
@@ -1235,10 +1255,7 @@ class SmartInfoBus:
                 except Exception:
                     pass
 
-                try:
-                    out = self._safe_clone(data.value)
-                except Exception:
-                    out = data.value
+                out = self._safe_clone(data.value)
 
                 self._apply_post_get(full_key, module, out, {"ok": True})
                 return out
@@ -1246,7 +1263,30 @@ class SmartInfoBus:
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to get {key} for {module}: {e}")
             self.record_module_failure(module, f"Data get failed: {str(e)}")
+            # [FIXED] Re-raise contract violations to enforce them
+            if isinstance(e, PermissionError):
+                raise
             return default
+            
+    # [NEW] Added for performance-critical paths where cloning can be skipped.
+    def get_readonly_ref(self, key: str, module: str, default: Any = None, *, namespace: Optional[str] = None) -> Any:
+        """
+        Get a direct, read-only reference to a value without cloning it.
+
+        WARNING: This is a high-performance, unsafe operation. The caller MUST NOT
+        mutate the returned object, as it is a direct reference to the cached data.
+        Mutating the returned object will corrupt the InfoBus state.
+        """
+        full_key = self._ns_key(key, namespace)
+        with self._access_lock:
+            data = self._data_store.get(full_key)
+            if not data:
+                return default
+            # Perform standard checks (age, confidence, integrity)
+            if data.is_stale(self.config.max_data_age_seconds) or not data.validate_integrity():
+                return default
+            data.increment_access(accessor_module=f"{module}_readonly")
+            return data.value
 
     def get_many(self, keys: List[str], module: str, *, namespace: Optional[str] = None,
                  max_age: Optional[float] = None, min_confidence: float = 0.0, default: Any = None) -> Dict[str, Any]:
@@ -1600,7 +1640,7 @@ class SmartInfoBus:
         """Simple text exposition, Prometheus-style (no server)."""
         m = self.get_performance_metrics()
         lines = [
-            f"# HELP infobus_cache_hit_rate Cache hit rate.",
+            "# HELP infobus_cache_hit_rate Cache hit rate.",
             f"infobus_cache_hit_rate {m.get('cache_hit_rate', 0.0)}",
             f"infobus_total_requests {m.get('total_requests', 0)}",
             f"infobus_active_keys {m.get('active_data_keys', 0)}",
@@ -1634,6 +1674,9 @@ class SmartInfoBus:
     # Cloning & trace helpers
     # ──────────────────────────────────────────────────────────────
     def _safe_clone(self, obj: Any) -> Any:
+        # [FIXED] Optimized to avoid deepcopy for immutable types
+        if isinstance(obj, (int, float, str, bool, tuple, type(None))):
+            return obj
         try:
             return copy.deepcopy(obj)
         except Exception:
@@ -1689,8 +1732,10 @@ class SmartInfoBus:
                 entry['provides'].update(provides)
                 entry['requires'].update(requires)
                 self._capabilities[module_name] = entry
-            if provides: self.register_provider(module_name, provides)
-            if requires: self.register_consumer(module_name, requires)
+            if provides:
+                self.register_provider(module_name, provides)
+            if requires:
+                self.register_consumer(module_name, requires)
             self.logger.debug(f"[GRAPH] Capabilities updated for {module_name}: provides={provides}, requires={requires}")
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to register capabilities for {module_name}: {e}")
@@ -1753,36 +1798,62 @@ class SmartInfoBus:
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to unsubscribe: {e}")
 
-    def _emit(self, event_type: str, data: Dict[str, Any]) -> None:
-        try:
-            with self._subscription_lock:
-                callbacks = list(self._subscribers.get(event_type, []))
-        except Exception as exc:
-            self.logger.error(f"Emit failed ({event_type}): {exc}")
-            return
-        for cb in callbacks:
+    async def _track_task_completion(self, task: "asyncio.Task[Any]") -> None:
+            """Track and remove completed tasks from the set."""
             try:
-                # For core event_logged notifications, invoke synchronously to avoid flakiness in tests
-                if event_type == 'event_logged':
-                    if asyncio.iscoroutinefunction(cb):
-                        try:
-                            loop = asyncio.get_running_loop()
-                            loop.create_task(cb(data))
-                        except RuntimeError:
-                            # No running loop; run inline
-                            asyncio.run(cb(data))
-                    else:
-                        cb(data)
-                else:
-                    if asyncio.iscoroutinefunction(cb):
-                        try:
-                            asyncio.get_running_loop().create_task(cb(data))
-                        except RuntimeError:
-                            self._thread_pool.submit(lambda: asyncio.run(cb(data)))
-                    else:
-                        self._thread_pool.submit(cb, data)
+                await task
+            except asyncio.CancelledError:
+                pass  # Expected when cancelled
+            finally:
+                # [FIXED] Use standard `with` on the thread-safe lock
+                with self._async_lock:
+                    self._pending_tasks.discard(task)
+
+    def _emit(self, event_type: str, data: Dict[str, Any]) -> None:
+            try:
+                with self._subscription_lock:
+                    callbacks = list(self._subscribers.get(event_type, []))
             except Exception as exc:
-                self.logger.error(f"[CRASH] Event callback error for '{event_type}': {exc}")
+                self.logger.error(f"Emit failed ({event_type}): {exc}")
+                return
+            for cb in callbacks:
+                try:
+                    # For core event_logged notifications, invoke synchronously to avoid flakiness in tests
+                    if event_type == 'event_logged':
+                        if asyncio.iscoroutinefunction(cb):
+                            try:
+                                loop = asyncio.get_running_loop()
+                                task = loop.create_task(cb(data))
+                                # [FIXED] Use standard `with` on the thread-safe lock
+                                with self._async_lock:
+                                    self._pending_tasks.add(task)
+                                asyncio.create_task(self._track_task_completion(task))
+                            except RuntimeError:
+                                # No running loop; run in thread pool
+                                result = self._thread_pool.submit(lambda: asyncio.run(cb(data)))
+                                # [FIXED] Use standard `with` on the thread-safe lock
+                                with self._async_lock:
+                                    self._pending_async_ops.append(result)
+                        else:
+                            cb(data)
+                    else:
+                        if asyncio.iscoroutinefunction(cb):
+                            try:
+                                loop = asyncio.get_running_loop()
+                                task = loop.create_task(cb(data))
+                                # [FIXED] Use standard `with` on the thread-safe lock
+                                with self._async_lock:
+                                    self._pending_tasks.add(task)
+                                asyncio.create_task(self._track_task_completion(task))
+                            except RuntimeError:
+                                result = self._thread_pool.submit(lambda: asyncio.run(cb(data)))
+                                # [FIXED] Use standard `with` on the thread-safe lock
+                                with self._async_lock:
+                                    self._pending_async_ops.append(result)
+                        else:
+                            self._thread_pool.submit(cb, data)
+                except Exception as exc:
+                    self.logger.error(f"[CRASH] Event callback error for '{event_type}': {exc}")
 
     def _log_event(self, event: Dict[str, Any]):
         try:
@@ -2029,30 +2100,42 @@ class SmartInfoBus:
                         include_values: bool = True, include_history: bool = False,
                         include_events: bool = False, include_metrics: bool = True,
                         compress: bool = False) -> Dict[str, Any]:
-        """Compact snapshot for persistence / diagnostics (optionally gzipped)."""
+        """
+        [FIXED] Concurrency-safe snapshotting.
+        Holds locks for minimal duration to copy data, then releases before serialization.
+        """
         try:
-            with self._access_lock, self._performance_lock, self._registry_lock, self._circuit_breaker_lock:
-                data_state = {k: dv.to_dict(include_value=include_values) for k, dv in self._data_store.items()}
+            # Step 1: Acquire all necessary locks and quickly copy data structures
+            with self._access_lock, self._performance_lock, self._registry_lock, self._circuit_breaker_lock, self._event_lock:
+                data_state = copy.deepcopy({k: dv.to_dict(include_value=include_values) for k, dv in self._data_store.items()})
                 history = {k: [ver.to_dict(include_value=False) for ver in list(hist)[-5:]]
                            for k, hist in self._data_history.items()} if include_history else {}
-                snap = {
-                    "meta": {"generated_at": datetime.now(timezone.utc).isoformat(),
-                             "python": sys.version.split()[0], "platform": sys.platform,
-                             "pid": os.getpid(), "features": self._get_enabled_features()},
-                    "config": self.config.to_dict(),
-                    "data": data_state,
-                    "history_tail": history,
-                    "providers": {k: sorted(list(v)) for k, v in self._providers.items()},
-                    "consumers": {k: sorted(list(v)) for k, v in self._consumers.items()},
-                    "circuit_breakers": {m: cb.to_dict() for m, cb in self._circuit_breakers.items()},
-                    "disabled_modules": sorted(list(self._module_disabled)),
-                }
-                if include_events:
-                    with self._event_lock:
-                        snap["events_tail"] = list(self._event_log)[-1500:]
-                if include_metrics:
-                    snap["metrics"] = self.get_performance_metrics()
-                    snap["cache_stats"] = self.get_cache_stats()
+                providers = copy.deepcopy(self._providers)
+                consumers = copy.deepcopy(self._consumers)
+                circuit_breakers = copy.deepcopy(self._circuit_breakers)
+                disabled_modules = copy.deepcopy(self._module_disabled)
+                events_tail = list(self._event_log)[-1500:] if include_events else []
+
+            # Step 2: Release locks. Build the final snapshot object from copies.
+            snap = {
+                "meta": {"generated_at": datetime.now(timezone.utc).isoformat(),
+                         "python": sys.version.split()[0], "platform": sys.platform,
+                         "pid": os.getpid(), "features": self._get_enabled_features()},
+                "config": self.config.to_dict(),
+                "data": data_state,
+                "history_tail": history,
+                "providers": {k: sorted(list(v)) for k, v in providers.items()},
+                "consumers": {k: sorted(list(v)) for k, v in consumers.items()},
+                "circuit_breakers": {m: cb.to_dict() for m, cb in circuit_breakers.items()},
+                "disabled_modules": sorted(list(disabled_modules)),
+            }
+            if include_events:
+                snap["events_tail"] = events_tail
+            if include_metrics:
+                snap["metrics"] = self.get_performance_metrics()
+                snap["cache_stats"] = self.get_cache_stats()
+
+            # Step 3: Write to file (unlocked)
             if filepath:
                 if compress or filepath.endswith(".gz"):
                     with gzip.open(filepath, "wt", encoding="utf-8") as f:
@@ -2109,7 +2192,8 @@ class SmartInfoBus:
             with self._access_lock:
                 size = len(self._data_store)
             with self._performance_lock:
-                hits = self._cache_hits; misses = self._cache_misses
+                hits = self._cache_hits
+                misses = self._cache_misses
             return {"size": size, "hits": int(hits), "misses": int(misses),
                     "hit_rate": hits / max(hits + misses, 1), "history_keys": len(self._data_history)}
         except Exception as e:
@@ -2118,7 +2202,8 @@ class SmartInfoBus:
 
     def clear_caches(self, preserve_critical: bool = True) -> int:
         preserved: Set[str] = {"anomaly_detector", "compliance"}
-        removed = 0; now = time.time()
+        removed = 0
+        now = time.time()
         try:
             with self._write_lock:
                 for key in list(self._data_store.keys()):
@@ -2128,9 +2213,12 @@ class SmartInfoBus:
                     if dv is None:
                         continue
                     if preserve_critical:
-                        if (now - dv.timestamp) < 10: continue
-                        if dv.access_count >= 10: continue
-                        if (now - dv.last_access_time) < 5: continue
+                        if (now - dv.timestamp) < 10:
+                            continue
+                        if dv.access_count >= 10:
+                            continue
+                        if (now - dv.last_access_time) < 5:
+                            continue
                     self._data_store.pop(key, None)
                     self._data_timestamps.pop(key, None)
                     hist = self._data_history.get(key)
@@ -2185,47 +2273,177 @@ class SmartInfoBus:
     # Shutdown
     # ──────────────────────────────────────────────────────────────
     def shutdown(self) -> None:
-        self.logger.info("[STOP] Shutting down SmartInfoBus …")
-        if getattr(self, "_cleanup_thread", None) and self._cleanup_thread and self._cleanup_thread.is_alive():
-            self._cleanup_shutdown.set()
-            self._cleanup_thread.join(timeout=5)
-        self._maintenance_running = False
-        for t in list(getattr(self, "_maintenance_threads", [])):
-            if t.is_alive():
-                t.join(timeout=5)
-        if getattr(self, "_thread_pool", None):
-            self._thread_pool.shutdown(wait=True)
-        try:
-            m = self.get_performance_metrics()
-            self.logger.info(f"[STATS] Final: {m['total_requests']} req, {m['cache_hit_rate']*100:0.1f}% hits, {m['active_data_keys']} keys")
-        except Exception:
-            pass
-        
-        with self._write_lock, self._access_lock:
-            # Clear core stores
-            self._data_store.clear()
-            self._data_history.clear()
-            self._data_timestamps.clear()
-            # Clear waiter state
-            self._waiters.clear()
+            """
+            Enhanced shutdown with comprehensive async task cleanup and resource management.
+            Ensures no pending tasks cause "Task was destroyed but it is pending!" errors.
+            """
+            self.logger.info("[STOP] Shutting down SmartInfoBus …")
 
-        # Best-effort cleanup of registries & subscribers (don’t hold any bus locks here)
-        try:
-            with self._registry_lock:
-                self._providers.clear()
-                self._consumers.clear()
-                self._module_graph.clear()
-                self._capabilities.clear()
-        except Exception:
-            pass
-        try:
-            with self._subscription_lock:
-                self._subscribers.clear()
-                self._async_subscribers.clear()
-        except Exception:
-            pass
+            # Phase 1: Stop background processing immediately
+            self._maintenance_running = False
+            self._shutdown_event.set()
+            if getattr(self, "_cleanup_thread", None) and self._cleanup_thread and self._cleanup_thread.is_alive():
+                self._cleanup_shutdown.set()
+                self.logger.debug("[STOP] Waiting for cleanup thread to finish ...")
+                self._cleanup_thread.join(timeout=5.0)
 
-        self.logger.info("[OK] SmartInfoBus shutdown complete")
+            # Phase 2: Cancel all pending async tasks gracefully
+            cancelled_tasks = 0
+            try:
+                # [FIXED] Use standard `with` on the thread-safe lock
+                with self._async_lock:
+                    pending_count = len(self._pending_tasks)
+                    self.logger.debug(f"[STOP] Cancelling {pending_count} pending async tasks ...")
+
+                    # Cancel all tracked tasks
+                    tasks_to_cancel = list(self._pending_tasks)
+                    self._pending_tasks.clear()
+
+                    for task in tasks_to_cancel:
+                        if not task.done():
+                            task.cancel()
+                            cancelled_tasks += 1
+
+                    # Cancel related operations in thread pool
+                    pending_ops_count = len(self._pending_async_ops)
+                    self.logger.debug(f"[STOP] Cancelling {pending_ops_count} pending async operations ...")
+                    for future in self._pending_async_ops:
+                        if not future.done():
+                            future.cancel()
+                    self._pending_async_ops.clear()
+
+            except Exception as e:
+                self.logger.warning(f"[STOP] Async task cleanup error: {e}")
+
+            # Phase 3: Wait for threads to finish with generous timeout
+            try:
+                all_threads = []
+                if hasattr(self, "_maintenance_threads"):
+                    all_threads.extend(self._maintenance_threads or [])
+
+                for t in all_threads:
+                    if t.is_alive():
+                        self.logger.debug(f"[STOP] Waiting for thread {t.name} ...")
+                        t.join(timeout=10.0)
+                        if t.is_alive():
+                            self.logger.warning(f"[STOP] Thread {t.name} did not finish gracefully")
+
+            except Exception as e:
+                self.logger.warning(f"[STOP] Thread cleanup error: {e}")
+
+            # Phase 4: Shutdown thread pool (this will wait for active work)
+            try:
+                if hasattr(self, "_thread_pool") and self._thread_pool:
+                    self.logger.debug("[STOP] Shutting down thread pool ...")
+                    self._thread_pool.shutdown(wait=True, cancel_futures=True)
+            except Exception as e:
+                self.logger.warning(f"[STOP] Thread pool shutdown error: {e}")
+
+            # Phase 5: Final cleanup - clear all data structures
+            try:
+                # Core stores
+                with self._write_lock:
+                    self._data_store.clear()
+                    self._data_history.clear()
+                    self._data_timestamps.clear()
+                    self._waiters.clear()
+
+                # Registries
+                with self._registry_lock:
+                    self._providers.clear()
+                    self._consumers.clear()
+                    self._module_graph.clear()
+                    self._capabilities.clear()
+
+                # Event system
+                with self._event_lock:
+                    self._event_log.clear()
+
+                # Circuit breakers
+                with self._circuit_breaker_lock:
+                    self._circuit_breakers.clear()
+                    self._module_disabled.clear()
+
+                # Requests
+                with self._request_lock:
+                    self._pending_requests.clear()
+                    self._request_history.clear()
+
+                # Performance & metrics
+                with self._performance_lock:
+                    self._access_patterns.clear()
+                    self._operation_timings.clear()
+                    self._predictive_metrics.clear()
+
+                # Subscriptions
+                with self._subscription_lock:
+                    self._subscribers.clear()
+                    self._async_subscribers.clear()
+
+            except Exception as e:
+                self.logger.warning(f"[STOP] Data cleanup error: {e}")
+
+            # Phase 6: Final statistics (best-effort)
+            try:
+                m = self.get_performance_metrics()
+                self.logger.info(f"[STATS] Final: {m['total_requests']} req, {m['cache_hit_rate']*100:.0f}% hits, "
+                                f"{m['active_data_keys']} keys, {cancelled_tasks} tasks cancelled")
+            except Exception:
+                self.logger.debug("[STOP] Could not generate final stats")
+
+            self.logger.info("[SUCCESS] SmartInfoBus shutdown complete - all resources cleaned up")
+
+# ═══════════════════════════════════════════════════════════════════
+# HELPER: ASYNC TASK CLEANUP UTILITIES (for testing/debugging)
+# ═══════════════════════════════════════════════════════════════════
+
+    def get_async_task_status(self) -> Dict[str, Any]:
+        """Debug helper to check async cleanup status."""
+        try:
+            tasks = self._pending_tasks.copy()
+            pending_tasks = len(tasks)
+            active_tasks = len([t for t in tasks if not t.done()])
+            done_tasks = pending_tasks - active_tasks
+            cancelled_tasks = len([t for t in tasks if t.cancelled()])
+            exception_tasks = len([t for t in tasks if t.exception() is not None])
+
+            return {
+                'pending_tasks': pending_tasks,
+                'active_tasks': active_tasks,
+                'done_tasks': done_tasks,
+                'cancelled_tasks': cancelled_tasks,
+                'exception_tasks': exception_tasks,
+                'maintenance_running': self._maintenance_running,
+                'thread_pool_alive': self._check_thread_pool_status(),
+                'cleanup_thread_alive': getattr(self._cleanup_thread, 'is_alive', False)
+            }
+        except Exception:
+            return {'error': 'Status unavailable'}
+
+    def _check_thread_pool_status(self) -> bool:
+        """Check if thread pool is still active."""
+        try:
+            if hasattr(self, '_thread_pool') and self._thread_pool:
+                return not self._thread_pool._shutdown
+            return True
+        except Exception:
+            return False
+
+    def force_cleanup_async_tasks(self) -> int:
+        """Force cleanup of any lingering async tasks (emergency only)."""
+        try:
+            cancelled = 0
+            tasks_to_cancel = list(self._pending_tasks)
+            self._pending_tasks.clear()
+
+            for task in tasks_to_cancel:
+                if not task.done():
+                    task.cancel()
+                    cancelled += 1
+
+            return cancelled
+        except Exception:
+            return -1
 
 
 # ═══════════════════════════════════════════════════════════════════

@@ -1,6 +1,6 @@
 """
 Enhanced Training Callback - Separate Module
-File: enhanced_training_callback.py
+File: train/enhanced_training_callback.py
 Production-ready with proper error handling and SmartInfoBus integration
 Refactored to be Pylance-friendly (no type identity collisions)
 """
@@ -61,11 +61,22 @@ except Exception:
         def set(self, k, v, module=None, thesis=None):
             self._d[k] = v
 
-        def get(self, k, module=None):
-            return self._d.get(k)
+        # Align with env/training script API by supporting `default`
+        def get(self, k, module=None, default=None):
+            return self._d.get(k, default)
 
         def get_performance_metrics(self):
             return {"active": True, "disabled_modules": [], "active_data_keys": len(self._d)}
+
+        # Optional for scripts that inspect internal storage
+        @property
+        def _data_store(self):
+            return dict(self._d)
+
+        def export_session(self, path: str):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                json.dump(self._d, f, indent=2)
 
     class _FallbackInfoBusManager:
         @staticmethod
@@ -500,35 +511,53 @@ class ModernEnhancedTrainingCallback(BaseCallback):
             out: Dict[str, Any] = {
                 "model_device": str(getattr(self.model, "device", "unknown")),
             }
-            # Learning rate can be a float or a schedule (callable); coerce safely to float
-            lr_val: Any = getattr(self.model, "learning_rate", 0)
+
+            # Robust learning rate extraction: prefer lr_schedule if present
             lr_float: float = 0.0
             try:
-                val: Any
-                if callable(lr_val):
-                    # Some schedulers accept step count; fall back gracefully
-                    try:
-                        val = lr_val(self.n_calls)  # type: ignore[misc]
-                    except Exception:
-                        val = lr_val()  # type: ignore[call-arg]
-                else:
-                    val = lr_val
+                lr_sched = getattr(self.model, "lr_schedule", None)
+                if callable(lr_sched):
+                    # SB3 uses progress_remaining in [1..0]; ensure we pass a float
+                    pr_raw: Any = getattr(self.model, "_current_progress_remaining", None)
+                    if isinstance(pr_raw, (int, float)):
+                        progress_remaining: float = float(pr_raw)
+                    elif getattr(pr_raw, "item", None):
+                        # torch/np scalar
+                        try:
+                            progress_remaining = float(pr_raw.item())  # type: ignore[call-arg]
+                        except Exception:
+                            progress_remaining = 0.5
+                    elif pr_raw is None:
+                        # fallback: assume mid-training
+                        progress_remaining = 0.5
+                    else:
+                        # last-resort conversion
+                        try:
+                            progress_remaining = float(pr_raw)  # type: ignore[arg-type]
+                        except Exception:
+                            progress_remaining = 0.5
 
-                if isinstance(val, (int, float)):
-                    lr_float = float(val)
-                elif hasattr(val, "item"):
-                    # Handle numpy/torch scalars
-                    try:
-                        lr_float = float(val.item())  # type: ignore[call-arg]
-                    except Exception:
-                        lr_float = float(val)  # type: ignore[arg-type]
+                    lr_val: Any = lr_sched(progress_remaining)
+                    if isinstance(lr_val, (int, float)):
+                        lr_float = float(lr_val)
+                    elif getattr(lr_val, "item", None):
+                        lr_float = float(lr_val.item())  # type: ignore[call-arg]
+                    else:
+                        lr_float = float(lr_val)  # type: ignore[arg-type]
                 else:
-                    lr_float = float(val)  # type: ignore[arg-type]
+                    val: Any = getattr(self.model, "learning_rate", 0.0)
+                    if isinstance(val, (int, float)):
+                        lr_float = float(val)
+                    elif getattr(val, "item", None):
+                        lr_float = float(val.item())  # type: ignore[call-arg]
+                    else:
+                        lr_float = float(val)  # type: ignore[arg-type]
             except Exception:
                 lr_float = 0.0
             out["learning_rate"] = lr_float
 
-            if getattr(self.model, "logger", None):
+            # Optional SB3 metrics (best-effort)
+            if getattr(self.model, "logger", None) and hasattr(self.model.logger, "name_to_value"):
                 nd = self.model.logger.name_to_value
                 out.update({
                     "clip_fraction": nd.get("train/clip_fraction", 0),
@@ -573,10 +602,21 @@ class ModernEnhancedTrainingCallback(BaseCallback):
         dones = self.locals.get("dones", None)
         rew = self.locals.get("rewards", None)
 
-        if isinstance(rew, (list, tuple, np.ndarray)) and len(rew) > 0:
-            self.current_episode_reward += float(rew[0])
+        # Rewards: handle scalar/array/list robustly
+        if isinstance(rew, (list, tuple, np.ndarray)):
+            if len(rew) > 0:
+                self.current_episode_reward += float(np.asarray(rew).flatten()[0])
+        elif isinstance(rew, (int, float, np.floating)):
+            self.current_episode_reward += float(rew)
 
-        if isinstance(dones, (list, tuple, np.ndarray)) and any(dones):
+        # Dones: handle scalar/array/list robustly
+        done_any = False
+        if isinstance(dones, (list, tuple, np.ndarray)):
+            done_any = bool(np.asarray(dones).astype(bool).any())
+        elif isinstance(dones, (bool, np.bool_)):
+            done_any = bool(dones)
+
+        if done_any:
             self.episode_count += 1
             ep_rew = float(self.current_episode_reward)
             self.episode_rewards.append(ep_rew)

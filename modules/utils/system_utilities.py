@@ -86,14 +86,22 @@ class SystemUtilitiesConfig:
     ])
     
     module_discovery_paths: List[str] = field(default_factory=lambda: [
-        "modules/auditing",
-        "modules/market",
-        "modules/memory", 
-        "modules/strategy",
-        "modules/risk",
-        "modules/voting",
-        "modules/monitoring",
-        "modules/core"
+            'modules/auditing',
+            'modules/core',
+            'modules/external',
+            'modules/features',
+            'modules/market',
+            'modules/memory',
+            'modules/meta',
+            'modules/models',
+            'modules/position',
+            'modules/reward',
+            'modules/risk',
+            'modules/strategy',
+            'modules/trading_modes',
+            'modules/visualization',
+            'modules/voting',
+            'modules/simulation',  # include simulation modules (ShadowSimulator modernized)
     ])
     
     def __post_init__(self):
