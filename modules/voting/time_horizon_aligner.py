@@ -231,6 +231,46 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             self.clock += 1
             current_time = datetime.datetime.now()
             alignment_data = await self._get_comprehensive_alignment_data()
+            # Soft time budget and trivial-case fast path (avoid stage timeouts)
+            soft_budget_ms = float(self.config.get('soft_time_budget_ms', max(500.0, min(2000.0, getattr(self.metadata, 'timeout_ms', 3000) - 800))))
+            raw_w = alignment_data.get('voting_weights') or []
+            n_members = (len(raw_w) if isinstance(raw_w, (list, tuple)) else (len(raw_w.keys()) if isinstance(raw_w, dict) else 0))
+            if n_members <= 1:
+                neutral = np.ones_like(self.horizons, dtype=np.float32)
+                neutral = neutral / (float(neutral.sum()) + 1e-12)
+                quality_analysis = {
+                    'overall_quality': 0.5,
+                    'effectiveness': 0.5,
+                    'consistency': 0.5,
+                    'adaptability': 0.5,
+                    'regime_alignment': 0.5,
+                }
+                results = {
+                    'aligned_weights': neutral.astype(float).tolist(),
+                    'horizon_distances': (np.ones_like(self.horizons, dtype=np.float32)).tolist(),
+                    'horizon_multipliers': (np.ones_like(self.horizons, dtype=np.float32)).tolist(),
+                    'regime_adjustments': (np.ones_like(self.horizons, dtype=np.float32)).tolist(),
+                    'session_patterns': (np.ones_like(self.horizons, dtype=np.float32)).tolist(),
+                    'alignment_quality': quality_analysis,
+                    'performance_metrics': self._get_performance_metrics_summary(),
+                    'adaptation_status': self._get_adaptation_status(),
+                    'health_metrics': self._get_health_metrics(),
+                    'horizon_alignment': {
+                        'distances': (np.ones_like(self.horizons, dtype=np.float32)).tolist(),
+                        'multipliers': (np.ones_like(self.horizons, dtype=np.float32)).tolist(),
+                        'regime': 'unknown',
+                        'session': 'unknown'
+                    },
+                    'time_horizon_aligner_initialization': self._get_tha_init_view(),
+                    'decision_id': alignment_data.get('decision_id'),
+                    'tick_ts': alignment_data.get('tick_ts') or datetime.datetime.now().isoformat(),
+                    '_thesis': 'Neutral alignment (single/no voter); fast-path applied'
+                }
+                await self._update_smartinfobus_comprehensive(results, results['_thesis'])
+                self.performance_tracker.record_metric('TimeHorizonAligner', 'process_time', (time.time() - start_time) * 1000, True)
+                self.error_count = 0
+                self.last_alignment_time = current_time
+                return results
             await self._update_market_state_comprehensive(alignment_data)
 
             if self.performance_feedback:

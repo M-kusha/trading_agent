@@ -2246,6 +2246,27 @@ class ModuleOrchestrator:
                 self._apply_module_registry(module_registry)
 
             self.config_manager = config_manager
+            # Watch for future config changes and re-apply execution settings on the fly
+            try:
+                def _cm_watcher(name: str, old: Dict[str, Any], new: Dict[str, Any]):
+                    # Only react to system bundle changes (execution lives there)
+                    if name == 'system':
+                        try:
+                            exec_cfg = self.config_manager.get_execution_config() if self.config_manager else {}
+                            if exec_cfg:
+                                self._apply_execution_configuration(exec_cfg)
+                                self.logger.info("[OK] Re-applied execution configuration (hot)")
+                                # Recompute stage plan only if parallel_stages changed
+                                if 'parallel_stages' in exec_cfg:
+                                    try:
+                                        self.build_execution_plan()
+                                    except Exception as e:
+                                        self.logger.warning(f"Execution plan rebuild failed after config change: {e}")
+                        except Exception as e:
+                            self.logger.warning(f"Execution config hot-apply failed: {e}")
+                config_manager.add_config_watcher(_cm_watcher)
+            except Exception as e:
+                self.logger.debug(f"Config watcher registration skipped: {e}")
             self.logger.info("[OK] System configuration loaded from ConfigurationManager")
 
         except Exception as e:
@@ -2262,6 +2283,29 @@ class ModuleOrchestrator:
                     self.module_timeouts = timeouts['by_module']
                 if 'by_category' in timeouts:
                     self.category_timeouts = timeouts['by_category']
+
+                # Apply timeout overrides directly to module metadata so orchestrator uses them
+                try:
+                    overrides_applied = 0
+                    for m_name, meta in self.metadata.items():
+                        override_ms = None
+                        try:
+                            override_ms = (self.module_timeouts or {}).get(m_name)
+                            if override_ms is None:
+                                # Fallback to category-level override
+                                override_ms = (self.category_timeouts or {}).get(getattr(meta, 'category', ''), None)
+                        except Exception:
+                            override_ms = None
+
+                        if override_ms:
+                            new_ms = int(max(1, float(override_ms)))
+                            if getattr(meta, 'timeout_ms', None) != new_ms:
+                                meta.timeout_ms = new_ms  # type: ignore[attr-defined]
+                                overrides_applied += 1
+                    if overrides_applied:
+                        self.logger.info(f"[OK] Applied timeout overrides to {overrides_applied} modules")
+                except Exception as e:
+                    self.logger.warning(f"Timeout override application failed: {e}")
 
             if 'circuit_breakers' in execution_config:
                 cb = execution_config['circuit_breakers'] or {}

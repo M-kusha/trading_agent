@@ -845,6 +845,11 @@ class Executor(BaseModule):
         self.bus.set("order_data", order_data, thesis="Orders seen this step (executor)")
         self.bus.set("execution_data", execution_data, thesis="Fills this step (executor)")
         self.bus.set("execution_reports", exec_fills, thesis="Fills alias (executor)")
+        # Alias for readers expecting 'trade_data'
+        try:
+            self.bus.set("trade_data", trade_ledger, thesis="alias: trade_data (executor)")
+        except Exception:
+            pass
         self.bus.set("portfolio_metrics", portfolio_metrics, thesis="Portfolio metrics (executor)")
         self.bus.set("trading_result", {"pnl": float(step_pnl)}, thesis="Per-step Δequity (executor)")
         self.bus.set("market_state", market_state, thesis="Market state (executor)")

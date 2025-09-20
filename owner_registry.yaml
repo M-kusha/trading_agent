@@ -6,6 +6,10 @@ single_writer_owners:
   reward_analytics: RiskAdjustedReward
   reward_performance: RiskAdjustedReward
   market_regime: UnifiedMarketModule
+  market_data: MarketDataProvider
+  multi_timeframe_data: MarketDataProvider
+  module_insights: MarketDataProvider
+  step_idx: MarketDataProvider
   risk_data: PortfolioRiskSystem
   risk_score: PortfolioRiskSystem
   positions: Executor
@@ -17,6 +21,7 @@ single_writer_owners:
   trade_data: Executor
   market_state: Executor
   performance_data: TradingModeManager
+  performance_metrics: SessionManager
   system_health: HealthMonitor
   environment_config: Environment
   execution_mode: Environment

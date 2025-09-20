@@ -2,6 +2,7 @@ formatting:
   language: english
   structure: problem-solution-reasoning
   tone: professional
+
 thesis_requirements:
   confidence_threshold: 0.7
   max_length: 500
@@ -10,3 +11,104 @@ thesis_requirements:
   - rationale
   - confidence
   - evidence
+
+module_standards:
+  market:
+    explainability_level: 'high'
+    thesis_mandatory: true
+    explanation_depth: 'detailed'
+
+  market_1:
+    explainability_level: 'high'
+    thesis_mandatory: true
+    explanation_depth: 'detailed'
+
+  risk:
+    explainability_level: 'high'
+    thesis_mandatory: true
+    explanation_depth: 'detailed'
+
+  voting:
+    explainability_level: 'medium'
+    thesis_mandatory: true
+    explanation_depth: 'standard'
+
+  strategy:
+    explainability_level: 'high'
+    thesis_mandatory: true
+    explanation_depth: 'detailed'
+
+  meta:
+    explainability_level: 'medium'
+    thesis_mandatory: false
+    explanation_depth: 'standard'
+
+  auditing:
+    explainability_level: 'high'
+    thesis_mandatory: true
+    explanation_depth: 'detailed'
+
+  external:
+    explainability_level: 'low'
+    thesis_mandatory: false
+    explanation_depth: 'basic'
+
+  executor:
+    explainability_level: 'medium'
+    thesis_mandatory: false
+    explanation_depth: 'standard'
+
+  memory:
+    explainability_level: 'low'
+    thesis_mandatory: false
+    explanation_depth: 'basic'
+
+  features:
+    explainability_level: 'medium'
+    thesis_mandatory: false
+    explanation_depth: 'standard'
+
+  position:
+    explainability_level: 'high'
+    thesis_mandatory: true
+    explanation_depth: 'detailed'
+
+  trading_modes:
+    explainability_level: 'medium'
+    thesis_mandatory: true
+    explanation_depth: 'standard'
+
+  reward:
+    explainability_level: 'medium'
+    thesis_mandatory: false
+    explanation_depth: 'standard'
+
+  models:
+    explainability_level: 'medium'
+    thesis_mandatory: false
+    explanation_depth: 'standard'
+
+  visualization:
+    explainability_level: 'low'
+    thesis_mandatory: false
+    explanation_depth: 'basic'
+
+  simulation:
+    explainability_level: 'medium'
+    thesis_mandatory: true
+    explanation_depth: 'standard'
+
+  utils:
+    explainability_level: 'low'
+    thesis_mandatory: false
+    explanation_depth: 'basic'
+
+  monitoring:
+    explainability_level: 'low'
+    thesis_mandatory: false
+    explanation_depth: 'basic'
+
+  core:
+    explainability_level: 'low'
+    thesis_mandatory: false
+    explanation_depth: 'basic'

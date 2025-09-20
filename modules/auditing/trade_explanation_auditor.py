@@ -22,17 +22,6 @@ from modules.utils.audit_utils import format_operator_message
     hot_reload=True,
     timeout_ms=3000,
 ))
-@module(
-    provides=['trade_explanations', 'audit_alerts', 'explanation_metrics'],
-    requires=['trading_signal', 'market_data', 'trades'],
-    category='auditing',
-    is_voting_member=False,
-    hot_reload=True,
-    explainable=True,
-    timeout_ms=100,
-    priority=3,
-    version="2.0.0"
-)
 class TradeExplanationAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin):
     """
     [SEARCH] PRODUCTION-GRADE Trade Explanation Auditor

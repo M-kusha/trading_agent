@@ -46,7 +46,9 @@ class ClusterEffectivenessDict(dict):
 
 # Conditional import for type checking
 if TYPE_CHECKING:
-    from modules.memory.playbook_memory import PlaybookMemory
+    # PlaybookMemory was migrated into the unified memory system as a component
+    # New location: modules.memory.components.playbook.PlaybookComponent
+    from modules.memory.components.playbook import PlaybookComponent as PlaybookMemory
 else:
     # Runtime fallback - PlaybookMemory will be Any type
     PlaybookMemory = Any
@@ -63,11 +65,11 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.health_monitor import HealthMonitor
 from modules.monitoring.performance_tracker import PerformanceTracker
 
-# Conditional import to handle potential circular dependencies
+# Conditional import to handle potential circular dependencies (use new path)
 try:
-    from modules.memory.playbook_memory import PlaybookMemory
+    from modules.memory.components.playbook import PlaybookComponent as PlaybookMemory
 except ImportError:
-    # Fallback if PlaybookMemory is not available
+    # Fallback if PlaybookComponent is not available at runtime
     PlaybookMemory = Any
 
 

@@ -152,10 +152,10 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
         )
 
     # Keep BaseModule contract but maintain our dataclass as source of truth
-    def set_config(self, new_cfg: Dict[str, Any]) -> None:
+    def set_config(self, config: Dict[str, Any]) -> None:
         """Safely merge incoming config dict into dataclass + dict view."""
         try:
-            for k, v in (new_cfg or {}).items():
+            for k, v in (config or {}).items():
                 if hasattr(self.C, k):
                     setattr(self.C, k, v)
         finally:

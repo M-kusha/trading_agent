@@ -1,5 +1,5 @@
 """
-🗳️ Unified Voting Kernel v1.0
+Unified Voting Kernel v1.0
 Deterministic orchestration of all voting modules with single debug surface
 """
 
@@ -39,15 +39,15 @@ from modules.voting.strategy_arbiter import StrategyArbiter
 ))
 class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
-    🗳️ UNIFIED VOTING KERNEL v1.0
+    UNIFIED VOTING KERNEL v1.0
 
     Orchestrates all 6 voting modules in deterministic order:
-    1. Committee (VotingWrappers) → proposal_vectors, member_confidences, decision_id
-    2. ConsensusDetector → consensus_score, components
-    3. CollusionAuditor → collusion_score, suspicious_pairs
-    4. TimeHorizonAligner → aligned_weights, horizon_alignment
-    5. AlternativeRealitySampler → uncertainty level, fragility
-    6. StrategyArbiter → signals, final gate
+    1. Committee (VotingWrappers) -> proposal_vectors, member_confidences, decision_id
+    2. ConsensusDetector -> consensus_score, components
+    3. CollusionAuditor -> collusion_score, suspicious_pairs
+    4. TimeHorizonAligner -> aligned_weights, horizon_alignment
+    5. AlternativeRealitySampler -> uncertainty level, fragility
+    6. StrategyArbiter -> signals, final gate
 
     Emits single voting/decision_bundle per tick with full schema validation.
     """
@@ -103,7 +103,7 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
 
         self.logger.info(
             format_operator_message(
-                icon="🗳️",
+                icon="[VOTING]",
                 message="VotingKernel v1.0 initialized",
                 committee=self.enable_committee,
                 consensus=self.enable_consensus,
@@ -271,13 +271,43 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
             processing_time = (time.time() - start_time) * 1000
             self._update_pipeline_stats(processing_time, timeline, True)
 
-            # Publish bundle
+            # Build contract surfaces
+            decision_coordination = {
+                "decision_id": decision_id,
+                "tick_ts": tick_ts,
+                "stages": len(timeline),
+                "status": "ok",
+            }
+            voting_consensus = dict(pipeline_results.get("consensus", {}))
+            consensus_summary = {
+                "score": voting_consensus.get("score"),
+                "components": voting_consensus.get("components", {}),
+            }
+            voting_metrics = {
+                "processing_time_ms": processing_time,
+                "avg_processing_time_ms": self.pipeline_stats.get("avg_processing_time_ms", 0.0),
+                "total_ticks": self.pipeline_stats.get("total_ticks", 0),
+                "successful_ticks": self.pipeline_stats.get("successful_ticks", 0),
+                "failed_ticks": self.pipeline_stats.get("failed_ticks", 0),
+            }
+            trade_vote_v2 = dict(pipeline_results.get("trade_vote_v2", {}))
+
+            # Publish bundle and key surfaces to SmartInfoBus for downstreams
             self.smart_bus.set(
                 "voting/decision_bundle",
                 bundle,
                 module="VotingKernel",
                 thesis=f"Unified voting decision {decision_id} ({processing_time:.1f}ms)"
             )
+
+            try:
+                self.smart_bus.set("decision_coordination", decision_coordination, module="VotingKernel", thesis="Decision coordination")
+                self.smart_bus.set("voting_consensus", voting_consensus, module="VotingKernel", thesis="Consensus snapshot")
+                self.smart_bus.set("consensus_summary", consensus_summary, module="VotingKernel", thesis="Consensus summary")
+                self.smart_bus.set("voting_metrics", voting_metrics, module="VotingKernel", thesis="Voting metrics")
+                self.smart_bus.set("trade_vote_v2", trade_vote_v2, module="VotingKernel", thesis="Final vote bundle (v2)")
+            except Exception:
+                pass
 
             if self.debug_timeline:
                 self.smart_bus.set(
@@ -289,6 +319,11 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
 
             return {
                 "decision_bundle": bundle,
+                "decision_coordination": decision_coordination,
+                "voting_consensus": voting_consensus,
+                "consensus_summary": consensus_summary,
+                "voting_metrics": voting_metrics,
+                "trade_vote_v2": trade_vote_v2,
                 "pipeline_timeline": timeline,
                 "processing_time_ms": processing_time,
                 "pipeline_stats": dict(self.pipeline_stats),
@@ -431,7 +466,7 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
             self.is_disabled = True
             self.logger.error(
                 format_operator_message(
-                    icon="🚨",
+                    icon="[ALERT]",
                     message="VotingKernel disabled due to repeated errors",
                     error_count=self.error_count,
                     threshold=self.circuit_breaker_threshold,
@@ -476,3 +511,4 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
             self.pipeline_stats.update(cs["pipeline_stats"])
         self.error_count = int(cs.get("error_count", 0))
         self.is_disabled = bool(cs.get("is_disabled", False))
+

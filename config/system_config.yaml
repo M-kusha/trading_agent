@@ -2,11 +2,530 @@ execution:
   max_workers: 4
   retry_attempts: 3
   timeout: 30
+  # Orchestrator-specific execution settings
+  timeouts:
+    default_ms: 300
+    by_module:
+      AlternativeRealitySampler: 6000
+      DynamicRiskController: 6000
+      TimeHorizonAligner: 6000
+      CollusionAuditor: 6000
+    by_category:
+      voting: 5000
+  stage:
+    timeout_overhead_s: 6.0
+    timeout_pct_padding: 0.50
+    pre_stage_readiness_preview: true
+    soft_schedule_on_missing_inputs: false
+    heartbeat_interval_s: 6.0
+    report_to_bus: true
+
 monitoring:
   health_check_interval: 30
   log_level: DEBUG
   metrics_interval: 60
+
 system:
   environment: development
   name: Trading Agent System
   version: 1.0.0
+
+# Module-specific configurations
+modules:
+  # Market Analysis Modules
+  MarketThemeDetector:
+    config:
+      lookback_periods: [5, 10, 20, 50]
+      confidence_threshold: 0.75
+      theme_categories: ['bullish', 'bearish', 'ranging', 'breakout']
+      timeout_ms: 150
+
+  AdvancedFeatureEngine:
+    config:
+      feature_sets: ['technical', 'statistical', 'momentum', 'volatility']
+      normalization: 'z_score'
+      feature_selection: true
+      timeout_ms: 100
+
+  UnifiedMarket:
+    config:
+      regime_detection_window: 50
+      theme_confidence_threshold: 0.7
+      liquidity_threshold: 0.5
+      fractal_analysis_depth: 3
+      timeout_ms: 400
+
+  FractalRegimeConfirmation:
+    config:
+      fractal_levels: [5, 13, 34]
+      confirmation_threshold: 0.75
+      lookback_periods: 100
+      timeout_ms: 200
+
+  RegimePerformanceMatrix:
+    config:
+      regime_types: ['trending', 'ranging', 'volatile']
+      performance_window: 200
+      update_frequency: 20
+      confidence_threshold: 0.8
+      timeout_ms: 300
+
+  TimeAwareRiskScaling:
+    config:
+      time_zones: ['asian', 'london', 'newyork']
+      volatility_scaling: true
+      session_risk_factors: [0.8, 1.2, 1.0]
+      overlap_boost: 1.1
+      timeout_ms: 150
+
+  # Risk Management Modules
+  RiskManager:
+    config:
+      risk_assessment_frequency: 60
+      alert_notification: true
+      automated_responses: true
+      risk_reporting: true
+      timeout_ms: 50
+
+  DynamicRiskController:
+    config:
+      base_risk_scale: 1.0
+      min_risk_scale: 0.1
+      max_risk_scale: 1.5
+      vol_history_len: 30
+      dd_threshold: 0.15
+      vol_ratio_threshold: 2.0
+      recovery_speed: 0.15
+      risk_decay: 0.95
+      adaptive_scaling: true
+      regime_sensitivity: 1.0
+      max_processing_time_ms: 100
+      timeout_ms: 3000
+
+  EnhancedAnomalyDetector:
+    config:
+      anomaly_threshold: 0.7
+      lookback_window: 50
+      sensitivity: 0.8
+      detection_methods: ['statistical', 'ml_based', 'pattern']
+      alert_cooldown: 300
+      timeout_ms: 200
+
+  PortfolioRiskSystem:
+    config:
+      max_portfolio_var: 0.025
+      position_limit_pct: 0.15
+      correlation_threshold: 0.8
+      var_confidence: 0.95
+      rebalance_threshold: 0.05
+      timeout_ms: 150
+
+  ExecutionQualityMonitor:
+    config:
+      slippage_threshold: 0.001
+      latency_threshold_ms: 50
+      quality_score_threshold: 0.8
+      monitoring_window: 100
+      alert_threshold: 0.7
+      timeout_ms: 100
+
+  ActiveTradeMonitor:
+    config:
+      max_trade_duration: 3600
+      position_check_interval: 60
+      risk_alert_threshold: 0.8
+      duration_alert_hours: 24
+      timeout_ms: 100
+
+  ComplianceModule:
+    config:
+      max_leverage: 10.0
+      position_limits:
+        individual: 0.1
+        sector: 0.3
+      compliance_checks: ['leverage', 'position_size', 'regulatory']
+      alert_threshold: 0.9
+      timeout_ms: 150
+
+  DrawdownRescue:
+    config:
+      rescue_threshold: 0.10
+      max_drawdown_limit: 0.20
+      recovery_target: 0.05
+      rescue_mode_duration: 3600
+      timeout_ms: 200
+
+  CorrelatedRiskController:
+    config:
+      correlation_threshold: 0.7
+      lookback_period: 60
+      diversification_target: 0.3
+      cluster_threshold: 0.8
+      timeout_ms: 200
+
+  # Voting System Modules
+  StrategyArbiter:
+    config:
+      action_dim: 4
+      adapt_rate: 0.01
+      min_confidence: 0.3
+      bootstrap_steps: 50
+      debug: true
+      reinforce_lr: 0.001
+      prior_blend: 0.30
+      timeout_ms: 3000
+
+  AlternativeRealitySampler:
+    config:
+      num_samples: 1000
+      confidence_threshold: 0.6
+      diversity_weight: 0.3
+      sample_horizon: 20
+      bootstrap_ratio: 0.8
+      timeout_ms: 6000
+
+  CollusionAuditor:
+    config:
+      detection_threshold: 0.8
+      correlation_window: 30
+      independence_threshold: 0.5
+      audit_frequency: 10
+      suspicious_threshold: 0.7
+      timeout_ms: 6000
+
+  ConsensusDetector:
+    config:
+      consensus_threshold: 0.7
+      quality_threshold: 0.6
+      member_weight_decay: 0.95
+      confidence_weight: 0.4
+      timeout_ms: 1000
+
+  TimeHorizonAligner:
+    config:
+      alignment_threshold: 0.8
+      horizon_weights: [1.0, 0.8, 0.6, 0.4]
+      adaptation_rate: 0.05
+      regime_sensitivity: 1.2
+      timeout_ms: 6000
+
+  VotingKernel:
+    config:
+      voting_method: 'weighted_average'
+      min_votes: 3
+      confidence_weighting: true
+      consensus_threshold: 0.6
+      timeout_ms: 2000
+
+  EnhancedVotingCommitteeCoordinator:
+    config:
+      committee_size: 5
+      rotation_frequency: 50
+      performance_weight: 0.6
+      diversity_weight: 0.4
+      timeout_ms: 3000
+
+  # Strategy Modules
+  StrategyGenomePool:
+    config:
+      population_size: 50
+      mutation_rate: 0.1
+      selection_pressure: 0.7
+      genome_types: ['momentum', 'mean_reversion', 'breakout', 'arbitrage']
+      timeout_ms: 200
+
+  BiasAuditor:
+    config:
+      bias_detection_threshold: 0.7
+      correction_strength: 0.5
+      audit_window: 100
+      bias_types: ['confirmation', 'anchoring', 'overconfidence']
+      timeout_ms: 300
+
+  CurriculumPlannerPlus:
+    config:
+      learning_stages: ['basic', 'intermediate', 'advanced']
+      mastery_threshold: 0.8
+      progression_rate: 0.05
+      stage_duration: 1000
+      timeout_ms: 400
+
+  ExplanationGenerator:
+    config:
+      explanation_depth: 'detailed'
+      narrative_style: 'technical'
+      update_frequency: 60
+      context_window: 50
+      timeout_ms: 500
+
+  OpponentModeEnhancer:
+    config:
+      mode_detection_window: 30
+      adaptation_speed: 0.1
+      market_modes: ['trending', 'ranging', 'volatile', 'calm']
+      confidence_threshold: 0.7
+      timeout_ms: 300
+
+  PlaybookClusterer:
+    config:
+      num_clusters: 10
+      clustering_method: 'kmeans'
+      feature_dimensions: 20
+      update_frequency: 100
+      min_cluster_size: 5
+      timeout_ms: 400
+
+  StrategyIntrospector:
+    config:
+      introspection_depth: 3
+      pattern_window: 50
+      adaptation_threshold: 0.6
+      analysis_frequency: 25
+      timeout_ms: 300
+
+  ThesisEvolutionEngine:
+    config:
+      population_size: 20
+      mutation_rate: 0.1
+      crossover_rate: 0.7
+      evolution_generations: 50
+      fitness_threshold: 0.8
+      timeout_ms: 500
+
+  # Meta System Modules
+  MetaAgent:
+    config:
+      window: 20
+      profit_target: 150.0
+      retrain_threshold: -50.0
+      emergency_threshold: -100.0
+      confidence_threshold: 0.7
+      min_training_episodes: 100
+      max_processing_time_ms: 300
+      timeout_ms: 3000
+
+  MetaCognitivePlanner:
+    config:
+      planning_horizon: 50
+      adaptation_rate: 0.05
+      strategic_weight: 0.6
+      tactical_weight: 0.4
+      timeout_ms: 400
+
+  MetaRLController:
+    config:
+      learning_rate: 0.001
+      batch_size: 64
+      replay_buffer_size: 10000
+      target_update_frequency: 100
+      exploration_rate: 0.1
+      timeout_ms: 500
+
+  PPOAgent:
+    config:
+      learning_rate: 0.0003
+      clip_eps: 0.2
+      value_coeff: 0.5
+      entropy_coeff: 0.01
+      timeout_ms: 300
+
+  # Memory System
+  UnifiedMemory:
+    config:
+      memory_capacity: 100000
+      compression_ratio: 0.1
+      retrieval_threshold: 0.7
+      pattern_recognition_depth: 5
+      forgetting_rate: 0.001
+      timeout_ms: 200
+
+  # External Data Modules
+  SessionManager:
+    config:
+      session_duration: 3600
+      health_check_interval: 30
+      emergency_mode_threshold: 0.9
+      performance_tracking: true
+      timeout_ms: 100
+
+  MarketDataProvider:
+    config:
+      update_frequency: 1.0
+      data_sources: ['primary', 'backup']
+      cache_duration: 60
+      quality_threshold: 0.95
+      timeout_ms: 200
+
+  # Execution System
+  Executor:
+    config:
+      execution_timeout: 5.0
+      order_validation: true
+      risk_checks: true
+      slippage_tolerance: 0.001
+      timeout_ms: 1000
+
+  # Position Management
+  PositionManager:
+    config:
+      max_positions: 10
+      position_size_limit: 0.1
+      rebalance_threshold: 0.05
+      liquidation_threshold: 0.95
+      timeout_ms: 300
+
+  # Trading Modes
+  TradingModeManager:
+    config:
+      available_modes: ['conservative', 'balanced', 'aggressive']
+      mode_switch_threshold: 0.8
+      evaluation_window: 100
+      default_mode: 'balanced'
+      timeout_ms: 200
+
+  # Reward System
+  RiskAdjustedReward:
+    config:
+      risk_penalty_weight: 0.3
+      return_weight: 0.7
+      sharpe_target: 1.5
+      max_drawdown_penalty: 2.0
+      timeout_ms: 150
+
+  # Auditing Modules
+  AuditingCoordinator:
+    config:
+      audit_frequency: 100
+      audit_depth: 'comprehensive'
+      report_format: 'detailed'
+      alert_threshold: 0.8
+      timeout_ms: 300
+
+  TradeExplanationAuditor:
+    config:
+      explanation_required: true
+      min_explanation_quality: 0.7
+      audit_all_trades: true
+      explanation_timeout: 30
+      timeout_ms: 200
+
+  TradeThesisTracker:
+    config:
+      thesis_validation: true
+      tracking_window: 50
+      thesis_score_threshold: 0.6
+      update_frequency: 10
+      timeout_ms: 200
+
+  # Features Modules
+  MultiScaleFeatureEngine:
+    config:
+      scales: [1, 5, 15, 60]
+      feature_dimensions: 50
+      neural_layers: [128, 64, 32]
+      dropout_rate: 0.2
+      timeout_ms: 300
+
+  # Missing Modules (from log warnings)
+  NewsSentimentModule:
+    config:
+      sentiment_threshold: 0.6
+      news_sources: ['reuters', 'bloomberg', 'cnbc']
+      update_frequency: 300
+      language_models: ['sentiment_basic']
+      timeout_ms: 500
+
+  UnifiedMarketModule:
+    config:
+      analysis_depth: 'comprehensive'
+      regime_detection: true
+      liquidity_analysis: true
+      theme_detection: true
+      fractal_analysis: true
+      timeout_ms: 600
+
+  PPOLagAgent:
+    config:
+      learning_rate: 0.0003
+      clip_eps: 0.2
+      value_coeff: 0.5
+      entropy_coeff: 0.01
+      lag_compensation: true
+      lag_detection_threshold: 100
+      timeout_ms: 400
+
+  EnhancedWorldModel:
+    config:
+      model_complexity: 'medium'
+      prediction_horizon: 50
+      state_dimensions: 128
+      action_dimensions: 32
+      learning_rate: 0.001
+      update_frequency: 10
+      timeout_ms: 800
+
+  VisualizationInterface:
+    config:
+      chart_types: ['candlestick', 'line', 'volume']
+      update_frequency: 1.0
+      max_data_points: 1000
+      real_time_updates: true
+      export_formats: ['png', 'svg']
+      timeout_ms: 200
+
+  OpponentSimulator:
+    config:
+      simulation_depth: 3
+      opponent_types: ['aggressive', 'conservative', 'random']
+      adaptation_rate: 0.05
+      simulation_runs: 100
+      confidence_threshold: 0.7
+      timeout_ms: 1000
+
+  RoleCoach:
+    config:
+      coaching_intensity: 'medium'
+      feedback_frequency: 25
+      performance_tracking: true
+      improvement_suggestions: true
+      learning_acceleration: 1.2
+      timeout_ms: 300
+
+  ShadowSimulator:
+    config:
+      shadow_depth: 2
+      parallel_simulations: 5
+      reality_divergence_threshold: 0.3
+      shadow_update_frequency: 10
+      confidence_weighting: true
+      timeout_ms: 800
+
+  # Additional voting modules from contracts
+  EnhancedSeasonalityRiskExpert:
+    config:
+      seasonal_analysis_depth: 'comprehensive'
+      historical_lookback_years: 5
+      risk_seasonality_threshold: 0.6
+      adaptive_weighting: true
+      timeout_ms: 300
+
+  EnhancedThemeExpert:
+    config:
+      theme_detection_threshold: 0.7
+      theme_categories: ['bullish', 'bearish', 'neutral', 'breakout']
+      confidence_weighting: true
+      adaptation_speed: 0.1
+      timeout_ms: 250
+
+  # Visualization modules
+  TradeMapVisualizer:
+    config:
+      chart_types: ['performance', 'trade_timeline', 'risk_heatmap']
+      update_frequency: 5.0
+      max_trade_history: 500
+      visualization_quality: 'high'
+      export_formats: ['png', 'svg', 'pdf']
+      timeout_ms: 400
+
+# Note: Portfolio risk limits are now managed in risk_policy.yaml
+# This provides better separation of concerns and centralized risk management

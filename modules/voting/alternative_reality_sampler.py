@@ -217,6 +217,30 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
 
             try:
                 voting_data = await self._get_comprehensive_voting_data()
+                # Soft budget/trivial-case fast path: skip heavy sampling when committee is trivial
+                members = voting_data.get('strategy_arbiter_weights') or voting_data.get('voting_weights') or {}
+                n_members = (len(members) if isinstance(members, dict) else (len(members) if isinstance(members, (list, tuple)) else 0))
+                if n_members <= 1:
+                    now = dt.datetime.now().isoformat()
+                    minimal = {
+                        "alternative_samples": [],
+                        "sampling_uncertainty": 0.5,
+                        "diversity_score": 0.0,
+                        "sampling_stats": {"samples_generated": 0, "avg_uncertainty": 0.5},
+                        "effective_samples": 0,
+                        "confidence_bounds": {"lower": 0.0, "upper": 0.0},
+                        "sampling_recommendations": ["insufficient_voters: neutral handling"],
+                        "alternative_reality_sampler_initialization": self._get_ars_init_view(),
+                        "decision_id": voting_data.get("decision_id"),
+                        "tick_ts": voting_data.get("tick_ts") or now,
+                        "_thesis": "Alternative sampling skipped (single/no voter); fast-path applied",
+                    }
+                    # Publish diagnostics surfaces lightly (with alias)
+                    with contextlib.suppress(Exception):
+                        self.smart_bus.set("sampling_uncertainty", 0.5, module="AlternativeRealitySampler", thesis="ARS sampling uncertainty")
+                        self.smart_bus.set("uncertainty", 0.5, module="AlternativeRealitySampler", thesis="ARS uncertainty alias")
+                        self.smart_bus.set("effective_samples", 0, module="AlternativeRealitySampler", thesis="ARS effective samples")
+                    return minimal
                 await self._update_sampling_parameters_comprehensive(voting_data)
                 effectiveness = await self._analyze_sampling_effectiveness_comprehensive(voting_data)
                 updates = await self._update_sampling_strategy_weights(effectiveness)
@@ -247,6 +271,21 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
 
                 thesis = await self._generate_comprehensive_sampling_thesis(effectiveness, quality, updates)
                 results["_thesis"] = thesis
+
+                # Publish uncertainty surfaces for downstream readers that pull from bus directly
+                try:
+                    unc = float(results.get("sampling_uncertainty", 0.5))
+                    eff = int(results.get("effective_samples", 0))
+                    # simple fragility heuristic from diversity (lower diversity => higher fragility)
+                    div = float(results.get("diversity_score", 0.0))
+                    fragility = max(0.0, min(1.0, 1.0 - div))
+                    self.smart_bus.set("sampling_uncertainty", unc, module="AlternativeRealitySampler", thesis="ARS sampling uncertainty")
+                    # Alias for downstream consumers
+                    self.smart_bus.set("uncertainty", unc, module="AlternativeRealitySampler", thesis="ARS uncertainty alias")
+                    self.smart_bus.set("effective_samples", eff, module="AlternativeRealitySampler", thesis="ARS effective samples")
+                    self.smart_bus.set("fragility", fragility, module="AlternativeRealitySampler", thesis="ARS fragility estimate")
+                except Exception:
+                    pass
 
                 # auxiliary diagnostics (atomic if bus supports transaction)
                 with contextlib.suppress(Exception):

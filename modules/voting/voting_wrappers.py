@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """Plain ASCII header: voting_wrappers.py
 
@@ -905,6 +905,109 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
         except Exception as e:
             self.logger.warning(f"Theme signal recording failed: {e}")
 
+    async def process(self, **inputs) -> Dict[str, Any]:
+        """Contract-compliant process for EnhancedThemeExpert.
+        Produces: theme_voting_proposal, theme_confidence, theme_analysis,
+                  agreement_score, consensus_direction, member_confidences,
+                  raw_proposals, strategy_arbiter_weights, _thesis, and
+                  EnhancedThemeExpert_voting_proposal/EnhancedThemeExpert_confidence mirrors.
+        """
+        start = time.time()
+        name = self.__class__.__name__
+        try:
+            base = await super().process(**inputs)
+
+            proposal = dict(base.get('voting_proposal') or {})
+            confidence = float(base.get('confidence', 0.0))
+            thesis_base = base.get('thesis', f"{name} thesis unavailable")
+
+            # Compute momentum and alignment for agreement scoring
+            momentum = self._calculate_theme_momentum()
+            regime = self.market_context.get('regime', 'unknown')
+            aligned = 1.0 if self._is_theme_regime_aligned(self.current_theme, regime) else 0.5
+            strength = float(self.theme_strength or 0.0)
+            # Agreement blends strength, momentum, and alignment
+            agreement_score = max(0.0, min(1.0, 0.4 * strength + 0.4 * float(momentum) + 0.2 * aligned))
+
+            # Theme analysis bundle
+            theme_analysis = {
+                'current_theme': int(self.current_theme),
+                'theme_strength': strength,
+                'theme_momentum': float(momentum),
+                'regime': regime,
+                'aligned_with_regime': bool(aligned > 0.9),
+                'avg_strength': float(self.theme_performance.get(self.current_theme, {}).get('avg_strength', 0.0)),
+            }
+
+            # Normalized keys expected by downstream
+            theme_voting_proposal = dict(proposal)
+            theme_confidence = confidence
+            consensus_direction = str(proposal.get('action', 'neutral'))
+
+            # Single-expert publications in committee-like shape for compatibility
+            member_confidences = {name: theme_confidence}
+            raw_proposals = {name: dict(theme_voting_proposal)}
+            strategy_arbiter_weights = {name: 1.0}
+
+            # Build thesis
+            thesis = (
+                f"{name}: theme {theme_analysis['current_theme']} | "
+                f"strength {theme_analysis['theme_strength']:.2f} | "
+                f"momentum {theme_analysis['theme_momentum']:.2f} | "
+                f"regime {regime} | aligned {theme_analysis['aligned_with_regime']} | "
+                f"agreement {agreement_score:.2f}. {thesis_base}"
+            )
+
+            # Publish to SmartInfoBus explicit normalized keys for robustness
+            try:
+                self.smart_bus.set(f'{name}_voting_proposal', theme_voting_proposal, module=name, thesis=thesis, confidence=theme_confidence)
+                self.smart_bus.set(f'{name}_confidence', theme_confidence, module=name, thesis=f"{name} confidence: {theme_confidence:.1%}")
+                # Normalized mirrors for downstream consumers
+                self.smart_bus.set('theme_voting_proposal', theme_voting_proposal, module=name, thesis=thesis, confidence=theme_confidence)
+                self.smart_bus.set('theme_confidence', theme_confidence, module=name, thesis=f"Theme confidence {theme_confidence:.1%}")
+                self.smart_bus.set('agreement_score', agreement_score, module=name, thesis=f"Agreement score {agreement_score:.2f}")
+            except Exception:
+                pass
+
+            return {
+                'theme_voting_proposal': theme_voting_proposal,
+                'theme_confidence': theme_confidence,
+                'theme_analysis': theme_analysis,
+                'agreement_score': agreement_score,
+                'consensus_direction': consensus_direction,
+                'member_confidences': member_confidences,
+                'raw_proposals': raw_proposals,
+                'strategy_arbiter_weights': strategy_arbiter_weights,
+                'EnhancedThemeExpert_voting_proposal': dict(theme_voting_proposal),
+                'EnhancedThemeExpert_confidence': theme_confidence,
+                '_thesis': thesis,
+            }
+
+        except Exception as error:
+            # Degraded contract-compliant payload on error
+            error_msg = f"{type(error).__name__}: {str(error)[:160]}"
+            self.logger.error(f"EnhancedThemeExpert error: {error_msg}")
+            return {
+                'theme_voting_proposal': {'action': 'abstain', 'reason': 'theme-expert-error'},
+                'theme_confidence': 0.1,
+                'theme_analysis': {
+                    'current_theme': int(getattr(self, 'current_theme', 0) or 0),
+                    'theme_strength': float(getattr(self, 'theme_strength', 0.0) or 0.0),
+                    'theme_momentum': float(self._calculate_theme_momentum() if hasattr(self, '_calculate_theme_momentum') else 0.5),
+                    'regime': self.market_context.get('regime', 'unknown'),
+                    'aligned_with_regime': False,
+                    'avg_strength': float(self.theme_performance.get(self.current_theme, {}).get('avg_strength', 0.0)) if hasattr(self, 'theme_performance') else 0.0,
+                },
+                'agreement_score': 0.0,
+                'consensus_direction': 'neutral',
+                'member_confidences': {self.__class__.__name__: 0.1},
+                'raw_proposals': {self.__class__.__name__: {'action': 'abstain'}},
+                'strategy_arbiter_weights': {self.__class__.__name__: 1.0},
+                'EnhancedThemeExpert_voting_proposal': {'action': 'abstain'},
+                'EnhancedThemeExpert_confidence': 0.1,
+                '_thesis': f"Operating in degraded mode due to {error_msg}",
+            }
+
 
 # =============================
 # ENHANCED SEASONALITY RISK EXPERT
@@ -967,7 +1070,7 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
         """
         Contract-compliant process for EnhancedSeasonalityRiskExpert.
         Produces: seasonality_voting_proposal, seasonality_confidence, seasonality_analysis,
-                  expert_performance, _thesis.
+                  seasonality_risk_analysis, expert_performance, _thesis.
         Note: committee_decision/committee_confidence are owned by
               EnhancedVotingCommitteeCoordinator and are not produced here.
         """
@@ -993,6 +1096,46 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
                 'session_adjustment': proposal.get('session_adjustment', {}),
             }
 
+            # Seasonality risk analysis built from real factors (no placeholders)
+            try:
+                session = str(self.market_context.get('session', mc.get('session_type', 'unknown')))
+                vol = str(self.market_context.get('volatility_level', 'medium')).lower()
+                vol_score = 0.5 if vol not in ('low', 'quiet', 'high', 'elevated', 'very_high') else (0.2 if vol in ('low', 'quiet') else 0.8)
+                deviation = abs(float(getattr(self, 'current_seasonality_factor', 1.0)) - 1.0)
+                trend = float(self._calculate_seasonality_trend())
+                emergency_active = bool(emergency.get('emergency_active', False))
+
+                risk_score = 0.4 * min(1.0, deviation * 2.0) \
+                           + 0.25 * min(1.0, abs(trend) * 2.0) \
+                           + 0.2 * vol_score \
+                           + 0.15 * (1.0 if emergency_active else 0.0)
+                risk_score = max(0.0, min(1.0, float(risk_score)))
+                risk_bias = 'high' if risk_score >= 0.7 else ('elevated' if risk_score >= 0.4 else 'normal')
+
+                seasonality_risk_analysis = {
+                    'session': session,
+                    'volatility_level': vol,
+                    'current_factor': float(getattr(self, 'current_seasonality_factor', 1.0)),
+                    'trend': trend,
+                    'risk_score': risk_score,
+                    'risk_bias': risk_bias,
+                    'emergency': emergency_active,
+                    'seasonality_metadata': seasonality_analysis['seasonality_metadata'],
+                    'session_adjustment': seasonality_analysis['session_adjustment'],
+                }
+            except Exception:
+                seasonality_risk_analysis = {
+                    'session': self.market_context.get('session', 'unknown'),
+                    'volatility_level': self.market_context.get('volatility_level', 'medium'),
+                    'current_factor': float(getattr(self, 'current_seasonality_factor', 1.0)),
+                    'trend': 0.0,
+                    'risk_score': 0.5,
+                    'risk_bias': 'elevated',
+                    'emergency': bool(emergency.get('emergency_active', False)),
+                    'seasonality_metadata': seasonality_analysis['seasonality_metadata'],
+                    'session_adjustment': seasonality_analysis['session_adjustment'],
+                }
+
             # Local expert performance index (kept internal; committee owns expert_performance on bus)
             expert_performance = {self.__class__.__name__: self._get_local_expert_performance_index()}
 
@@ -1000,6 +1143,10 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
             out = {
                 'seasonality_voting_proposal': proposal,
                 'seasonality_confidence': confidence,
+                'seasonality_risk_analysis': seasonality_risk_analysis,
+                # Aliases for older readers
+                'seasonal_voting_proposal': proposal,
+                'seasonal_confidence': confidence,
                 f'{name}_voting_proposal': proposal,
                 f'{name}_confidence': confidence,
                 'seasonality_analysis': seasonality_analysis,
@@ -1029,6 +1176,19 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
             return {
                 'seasonality_voting_proposal': safe_proposal,
                 'seasonality_confidence': 0.2,
+                'seasonality_risk_analysis': {
+                    'session': self.market_context.get('session', 'unknown'),
+                    'volatility_level': self.market_context.get('volatility_level', 'medium'),
+                    'current_factor': float(getattr(self, 'current_seasonality_factor', 1.0)),
+                    'trend': 0.0,
+                    'risk_score': 0.6,
+                    'risk_bias': 'elevated',
+                    'emergency': False,
+                    'seasonality_metadata': {},
+                    'session_adjustment': {},
+                },
+                'seasonal_voting_proposal': safe_proposal,
+                'seasonal_confidence': 0.2,
                 f'{name}_voting_proposal': safe_proposal,
                 f'{name}_confidence': 0.2,
                 'seasonality_analysis': {'error': str(error_context)},
@@ -1242,7 +1402,8 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
 
         # Ingestion & discovery knobs (hardened)
         self.expert_votes_bus_key = str(self.config.get('expert_votes_bus_key', 'expert_votes'))
-        self.discovery_mode = str(self.config.get('discovery_mode', 'feed_then_registry'))  # feed_only | registry_only | feed_then_registry
+        # Prefer registry-only by default to avoid dependency on expert_votes feed
+        self.discovery_mode = str(self.config.get('discovery_mode', 'registry_only'))  # feed_only | registry_only | feed_then_registry
         self.voter_flag_name = str(self.config.get('voter_flag_name', 'is_voting_member'))
         self.voters_from_config = list(self.config.get('voters', []))  # optional static list of module names
         self.ingest_minimum = int(self.config.get('ingest_minimum', self.minimum_voters))
@@ -1835,7 +1996,7 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
     async def _calculate_committee_confidence(self, expert_votes: List[Dict[str, Any]],
                                               expert_weights: Dict[str, float],
                                               consensus: Optional[Dict[str, Any]] = None) -> float:
-        """Calculate overall committee confidence (weight-adjusted × consensus strength)"""
+        """Calculate overall committee confidence (weight-adjusted x consensus strength)"""
         try:
             if not expert_votes or not expert_weights:
                 return 0.1
@@ -2025,8 +2186,7 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                 "time_of_day",
                 "performance_feedback",
                 "member_confidences",
-                "decision_id",
-                "tick_ts",
+                # decision_id/tick_ts are owned by VotingKernel; avoid overriding
             ]:
                 if k in results:
                     try:
@@ -2034,89 +2194,9 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                     except Exception:
                         pass
 
-            # Publish trade_vote (legacy) and trade_vote_v2 (expanded)
-            try:
-                trade_vote = {
-                    'action': results['committee_decision'].get('action', 'abstain'),
-                    'confidence': float(results['committee_confidence']),
-                    'source': self.__class__.__name__,
-                    'consensus_strength': float(results.get('committee_consensus', {}).get('consensus_strength', 0.0)),
-                    'timestamp': datetime.datetime.now().isoformat()
-                }
-                self.smart_bus.set(
-                    'trade_vote',
-                    trade_vote,
-                    module=self.__class__.__name__,
-                    thesis='Canonical trade vote (legacy v1)',
-                    confidence=float(results['committee_confidence'])
-                )
+            # Intentionally avoid publishing trade_vote/trade_vote_v2 here to prevent provider churn
 
-                # Expanded v2
-                trade_vote_v2 = {
-                    "action": trade_vote["action"],
-                    "size": float(results.get("committee_confidence", 0.0)),
-                    "horizon_minutes": int(results.get("horizon_alignment", {}).get("intended_horizon_minutes", 0))
-                        if isinstance(results.get("horizon_alignment", {}), dict) else 0,
-                    "confidence": float(results.get("committee_confidence", 0.0)),
-                    "reason": results.get("committee_decision", {}).get("reason", ""),
-                    "decision_id": results.get("decision_id"),
-                    "timestamp": results.get("tick_ts") or trade_vote["timestamp"],
-                }
-                self.smart_bus.set(
-                    "trade_vote_v2",
-                    trade_vote_v2,
-                    module=self.__class__.__name__,
-                    thesis="Expanded trade vote v2",
-                )
-            except Exception as e:
-                self.logger.warning(f"Trade vote publish soft-fail: {e}")
-
-            # ---- NEW: publish canonical decision bundle (schema v1) ----------------------
-            try:
-                # Pull optional cross-module signals for bundle (single-writer keys)
-                consensus_score = self.smart_bus.get("consensus_score", self.__class__.__name__, default=None)
-                collusion_score = self.smart_bus.get("collusion_score", self.__class__.__name__, default=None)
-                aligned_weights = self.smart_bus.get("aligned_weights", self.__class__.__name__) or []
-                uncertainty = self.smart_bus.get("uncertainty", self.__class__.__name__) or {}
-                signals = self.smart_bus.get("signals", self.__class__.__name__) or {}
-
-                # Raw weights vector aligned to committee order (if available)
-                raw_weights = []
-                members = results.get("committee_members", [])
-                ew = results.get("expert_weights", {})
-                if isinstance(members, list) and isinstance(ew, dict):
-                    raw_weights = [float(ew.get(m, 0.0)) for m in members]
-
-                bundle = {
-                    "decision_id": results.get("decision_id"),
-                    "tick_ts": results.get("tick_ts") or datetime.datetime.now().isoformat(),
-                    "committee": {
-                        "members": members,
-                        "proposal_vectors": results.get("proposal_vectors", []),
-                        "member_confidences": results.get("member_confidences_ordered", []),
-                        "committee_consensus": results.get("committee_consensus", {}),
-                        "raw": {
-                            "votes": self.smart_bus.get("committee_votes", self.__class__.__name__) or [],
-                            "meta": {"n_members": results.get("n_members", 0)}
-                        },
-                    },
-                    "consensus": {"score": consensus_score},
-                    "collusion": {"score": collusion_score},
-                    "weights": {"raw": raw_weights, "aligned": aligned_weights},
-                    "uncertainty": uncertainty,
-                    "trade_vote_v2": trade_vote_v2,
-                    "signals": signals,
-                    "_schema_version": "v1",
-                }
-
-                self.smart_bus.set(
-                    "voting/decision_bundle",
-                    bundle,
-                    module=self.__class__.__name__,
-                    thesis=f"Decision bundle {bundle['decision_id']}"
-                )
-            except Exception as e:
-                self.logger.warning(f"Decision bundle publish soft-fail: {e}")
+            # Avoid publishing decision bundle; VotingKernel is the canonical bundle publisher
 
         except Exception as e:
             self.logger.error(f"SmartInfoBus committee update failed: {e}")

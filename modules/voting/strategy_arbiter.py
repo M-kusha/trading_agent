@@ -325,6 +325,9 @@ Strategy Arbiter v3.1 Initialization:
                 except Exception:
                     strategy_weights = {"by_member": {}, "members": [], "weights": [], "timestamp": dt.datetime.utcnow().isoformat()}
 
+                # Generate expert_performance output required by contract
+                expert_performance = self._generate_expert_performance_output()
+
                 inst_list = list(getattr(self, "instruments", []))
                 results: Dict[str, Any] = {
                     "blended_action": blended_proposal.tolist(),
@@ -346,6 +349,7 @@ Strategy Arbiter v3.1 Initialization:
                     "tick_ts": market_data.get("tick_ts") or dt.datetime.utcnow().isoformat(),
                     "_thesis": thesis,
                     "strategy_arbiter_initialization": init_payload,
+                    "expert_performance": expert_performance,
                 }
                 await self._update_smartinfobus_comprehensive(results, thesis)
 
@@ -1099,6 +1103,12 @@ Strategy Arbiter v3.1 Initialization:
                 module="StrategyArbiter",
                 thesis=f"Recommendations: {len(results['arbiter_recommendations'])}",
             )
+            s(
+                "expert_performance",
+                results["expert_performance"],
+                module="StrategyArbiter",
+                thesis=f"Expert performance: {len(results['expert_performance'])} experts tracked",
+            )
 
             # Keep universe aliases fresh each cycle
             try:
@@ -1420,6 +1430,68 @@ Strategy Arbiter v3.1 Initialization:
         except Exception:
             return {}
 
+    def _generate_expert_performance_output(self) -> Dict[str, Any]:
+        """
+        Generate expert_performance output required by module contract.
+        Maps member names to their normalized performance scores (0.0-1.0).
+        """
+        try:
+            expert_performance: Dict[str, Any] = {}
+
+            # Generate member name to performance mapping
+            for idx, perf in self.member_performance.items():
+                # Get member name
+                member_name = f"member_{int(idx)}"
+                try:
+                    if idx < len(self.members):
+                        member = self.members[idx]
+                        nm = getattr(member, "name", None) or getattr(member, "module_name", None)
+                        if isinstance(nm, str) and nm:
+                            member_name = nm
+                except Exception:
+                    pass
+
+                # Calculate normalized performance score (0.0-1.0)
+                contribution = float(perf.get("contribution_score", 0.5))
+                reliability = float(perf.get("reliability_index", 0.5))
+                specialization = float(perf.get("specialization_score", 0.5))
+
+                # Weighted performance score
+                performance_score = (
+                    0.4 * contribution +
+                    0.4 * reliability +
+                    0.2 * specialization
+                )
+
+                expert_performance[member_name] = float(np.clip(performance_score, 0.0, 1.0))
+
+            # Add aggregate metrics
+            expert_performance["_metadata"] = {
+                "total_experts": len(self.members),
+                "active_experts": len([p for p in self.member_performance.values() if p.get("proposals_made", 0) > 0]),
+                "avg_performance": float(np.mean(list(expert_performance.values()))) if expert_performance else 0.5,
+                "performance_std": float(np.std(list(expert_performance.values()))) if len(expert_performance) > 1 else 0.0,
+                "timestamp": dt.datetime.utcnow().isoformat(),
+                "arbiter_version": "3.1.0"
+            }
+
+            return expert_performance
+
+        except Exception as e:
+            # Return safe fallback expert_performance
+            self.logger.warning(f"Failed to generate expert_performance: {e}")
+            return {
+                "_metadata": {
+                    "total_experts": len(getattr(self, "members", [])),
+                    "active_experts": 0,
+                    "avg_performance": 0.5,
+                    "performance_std": 0.0,
+                    "timestamp": dt.datetime.utcnow().isoformat(),
+                    "arbiter_version": "3.1.0",
+                    "error": str(e)
+                }
+            }
+
     def _get_recent_proposal_analysis(self) -> Dict[str, Any]:
         try:
             if not self.proposal_history:
@@ -1593,6 +1665,7 @@ Strategy Arbiter v3.1 Initialization:
             "health_metrics": {"status": "error", "error_context": str(ctx)},
             "instrument_signals": {},
             "instruments": list(getattr(self, "instruments", [])),
+            "expert_performance": {"_metadata": {"error": str(ctx), "timestamp": dt.datetime.utcnow().isoformat()}},
             "_thesis": f"StrategyArbiter error: {ctx}",
         }
 
@@ -1628,6 +1701,7 @@ Strategy Arbiter v3.1 Initialization:
             "instruments": list(getattr(self, "instruments", [])),
             "universe": list(getattr(self, "instruments", [])),
             "watched_instruments": list(getattr(self, "instruments", [])),
+            "expert_performance": {"_metadata": {"status": "disabled", "timestamp": dt.datetime.utcnow().isoformat()}},
             "_thesis": "StrategyArbiter disabled due to circuit breaker",
         }
 

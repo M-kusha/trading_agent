@@ -374,21 +374,25 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 for sym in self.cfg.supported_symbols:
                     per_tf = mtd.get(sym, {}) or {}
                     for tf in self.cfg.supported_timeframes:
-                        cur = per_tf.get(tf, {}).get('current_bar')
-                        if isinstance(cur, dict):
-                            key = f"market_data_{sym}_{tf}"
-                            # Publish alias only; do not include in returned snapshot to keep contract clean
-                            try:
-                                self.smart_bus.set(
-                                    key,
-                                    cur,
-                                    module='MarketDataProvider',
-                                    thesis=f'Legacy alias for {sym} {tf}',
-                                    confidence=0.9,
-                                )
-                            except Exception:
-                                # Alias publishing is best-effort; never fail the provider
-                                pass
+                        cur = None
+                        try:
+                            cur = per_tf.get(tf, {}).get('current_bar')
+                        except Exception:
+                            cur = None
+                        key = f"market_data_{sym}_{tf}"
+                        # Always publish alias; use {} as placeholder if no current bar yet
+                        try:
+                            payload = cur if isinstance(cur, dict) else {}
+                            self.smart_bus.set(
+                                key,
+                                payload,
+                                module='MarketDataProvider',
+                                thesis=f'Alias for {sym} {tf} (placeholder when unavailable)',
+                                confidence=0.8,
+                            )
+                        except Exception:
+                            # Alias publishing is best-effort; never fail the provider
+                            pass
             except Exception:
                 # Ignore alias mirroring errors entirely
                 pass
@@ -398,6 +402,14 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         except Exception as e:
             self._fail += 1
             self.logger.error(f"[FAIL] process(): {e}")
+            # Best-effort: publish empty aliases to satisfy legacy readers
+            try:
+                for sym in self.cfg.supported_symbols:
+                    for tf in self.cfg.supported_timeframes:
+                        key = f"market_data_{sym}_{tf}"
+                        self.smart_bus.set(key, {}, module='MarketDataProvider', thesis='Alias placeholder (error path)')
+            except Exception:
+                pass
             return self._empty_snapshot(error=str(e))
 
     # ─────────────────────────────────────────────────────────────

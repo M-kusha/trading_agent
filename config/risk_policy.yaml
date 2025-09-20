@@ -1,11 +1,50 @@
+# Risk Policy Configuration
+# Used by risk category modules (DynamicRiskController, PortfolioRiskSystem, etc.)
+
+# Global Risk Controls
 controls:
   stop_loss_enabled: true
   take_profit_enabled: true
   trailing_stop_enabled: false
+  circuit_breaker_enabled: true
+  position_monitoring_enabled: true
+
+# Risk Escalation Thresholds
 escalation:
   alert_threshold: 0.03
+  warning_threshold: 0.04
   shutdown_threshold: 0.05
+  emergency_threshold: 0.08
+
+# Portfolio Risk Limits
 limits:
   max_daily_loss: 0.02
   max_drawdown: 0.05
   max_position_size: 0.1
+  max_portfolio_var: 0.025
+  max_leverage: 10.0
+  max_correlation: 0.8
+
+# Risk Module Specific Overrides
+modules:
+  DynamicRiskController:
+    base_risk_scale: 1.0
+    emergency_scaling: 0.3
+    recovery_multiplier: 1.2
+
+  PortfolioRiskSystem:
+    var_confidence: 0.95
+    correlation_window: 30
+    rebalance_frequency: 'daily'
+
+  DrawdownRescue:
+    activation_threshold: 0.10
+    max_rescue_duration: 3600
+    recovery_target: 0.05
+
+# Risk Assessment Parameters
+assessment:
+  lookback_period_days: 30
+  confidence_interval: 0.95
+  stress_test_scenarios: ['market_crash', 'liquidity_crisis', 'volatility_spike']
+  monte_carlo_simulations: 1000

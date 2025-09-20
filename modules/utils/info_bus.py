@@ -1943,6 +1943,14 @@ class SmartInfoBus:
             self.declare_owner("risk_metrics", "PortfolioRiskSystem")
             self.declare_owner("system_health", "HealthMonitor")
             self.declare_owner("market_context", "MarketDataProvider")
+            # Market data canonical owners to avoid Environment/provider churn
+            try:
+                self.declare_owner("market_data", "MarketDataProvider")
+                self.declare_owner("multi_timeframe_data", "MarketDataProvider")
+                self.declare_owner("module_insights", "MarketDataProvider")
+                self.declare_owner("step_idx", "MarketDataProvider")
+            except Exception:
+                pass
             self.declare_owner("committee_decision", "EnhancedVotingCommitteeCoordinator")
             self.declare_owner("committee_confidence", "EnhancedVotingCommitteeCoordinator")
             self.declare_owner("voting_consensus", "ConsensusDetector")
@@ -1950,11 +1958,26 @@ class SmartInfoBus:
             # Avoid provider churn on contested keys by assigning canonical owners
             self.declare_owner("voting_member_proposal", "EnhancedVotingCommitteeCoordinator")
             self.declare_owner("pattern_analysis", "PlaybookClusterer")
-            self.declare_owner("performance_metrics", "TimeHorizonAligner")
+            # Correct canonical owner: performance_metrics is produced by SessionManager
+            self.declare_owner("performance_metrics", "SessionManager")
+            # Ensure environment_config is owned by SessionManager in this setup
+            self.declare_owner("environment_config", "SessionManager")
+            # Unified market analytics
+            try:
+                self.declare_owner("market_regime", "UnifiedMarketModule")
+                self.declare_owner("timestamps", "UnifiedMarketModule")
+                self.declare_owner("regime_prediction", "UnifiedMarketModule")
+                self.declare_owner("time_risk_analysis", "UnifiedMarketModule")
+            except Exception:
+                pass
             # Additional canonical owners to prevent provider flipping
             self.declare_owner("mode_recommendations", "OpponentModeEnhancer")
             self.declare_owner("member_confidences", "EnhancedThemeExpert")
-            self.declare_owner("expert_votes", "EnhancedVotingCommitteeCoordinator")
+            # Treat expert_votes as a stream feed (no single writer)
+            try:
+                self.set_policy("expert_votes", mode="stream")
+            except Exception:
+                pass
         except Exception:
             pass
 

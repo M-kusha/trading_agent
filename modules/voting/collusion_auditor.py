@@ -257,6 +257,30 @@ Collusion Auditor v3.1 Initialization:
                 return self._generate_disabled_response()
 
             voting_data = await self._get_comprehensive_voting_data()
+            # Trivial-case fast path: if fewer than 2 votes/members, avoid heavy analysis
+            votes = voting_data.get("votes") or []
+            if not isinstance(votes, list) or len(votes) < 2:
+                thesis = "Collusion analysis skipped (insufficient votes); fast-path applied"
+                results = {
+                    "collusion_score": 0.0,
+                    "suspicious_pairs": [],
+                    "member_independence_scores": {},
+                    "collusion_alerts": [],
+                    "behavioral_profiles": {},
+                    "coordination_events": [],
+                    "detection_statistics": {"total_checks": int(self.detection_stats.get("total_checks", 0))},
+                    "audit_recommendations": ["no_action"],
+                    "quality_metrics": {"overall_effectiveness": 0.5},
+                    "health_metrics": self._get_health_metrics(),
+                    "collusion_auditor_initialization": self._get_collusion_init_view(),
+                    "decision_id": voting_data.get("decision_id"),
+                    "tick_ts": voting_data.get("tick_ts") or dt.datetime.now().isoformat(),
+                    "_thesis": thesis,
+                }
+                await self._update_smartinfobus_comprehensive(results, thesis)
+                self.performance_tracker.record_metric("CollusionAuditor", "process_time_ms", (time.time() - start_time) * 1000.0, True)
+                self.error_count = 0
+                return results
             await self._update_detection_parameters_comprehensive(voting_data)
 
             collusion_analysis = await self._perform_comprehensive_collusion_analysis(voting_data)

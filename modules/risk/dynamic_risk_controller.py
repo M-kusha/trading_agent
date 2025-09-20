@@ -563,6 +563,30 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                 await self._update_risk_smart_bus(fallback, fallback.get("_thesis", "No data fallback"))
                 return fallback
 
+            # Trivial-case fast path: if no positions and low risk metrics, avoid heavy analysis
+            pos = risk_data.get("position_data", {}) or {}
+            pos_count = int(pos.get("count", len(pos.get("positions", [])) if isinstance(pos, dict) else 0))
+            low_drawdown = float(risk_data.get("drawdown", 0.0)) <= 0.005
+            low_vol = float(risk_data.get("volatility", 0.01)) <= 0.01
+            if pos_count == 0 and low_drawdown and low_vol:
+                thesis = "Risk stable (no positions, low drawdown/volatility); fast-path applied"
+                result = {
+                    "risk_alerts": [],
+                    "risk_analytics": {},
+                    "risk_factors": self.risk_factors.copy(),
+                    "risk_scaling": {
+                        "current_mode": self.current_mode.value,
+                        "current_risk_scale": float(self.current_risk_scale),
+                        "base_risk_scale": float(self._cfg.base_risk_scale),
+                        "timestamp": datetime.datetime.now().isoformat(),
+                    },
+                    "DynamicRiskController_voting_proposal": await self.vote(),
+                    "DynamicRiskController_confidence": 0.5,
+                    "_thesis": thesis,
+                }
+                await self._update_risk_smart_bus(result, thesis)
+                return result
+
             # Update market context
             context_result = await self._update_market_context_async(risk_data)
 

@@ -110,7 +110,7 @@ class AnomalyDetectorConfig:
     description="Deterministic multi-window feature extraction with circuit breaker, monitoring, and explainability.",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=15000,
+    timeout_ms=30000,
 ))
 class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """

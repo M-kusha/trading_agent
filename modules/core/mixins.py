@@ -232,13 +232,13 @@ class SmartInfoBusTradingMixin(ABC):
         )
 
     @abstractmethod
-    async def propose_action(self, **inputs) -> Dict[str, Any]:
-        """ASYNC trading action proposal - different from BaseModule sync version"""
+    async def propose_action(self, **inputs) -> Optional[Dict[str, Any]]:
+        """ASYNC trading action proposal - aligned with BaseModule (may return None)."""
         pass
 
     @abstractmethod
-    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
-        """ASYNC confidence calc - different from BaseModule sync version"""
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> Optional[float]:
+        """ASYNC confidence calc - aligned with BaseModule (may return None)."""
         pass
 
     @with_mixin_error_handling("process_trades")
@@ -1265,7 +1265,7 @@ class SmartInfoBusVotingMixin(ABC):
         )
 
     @abstractmethod
-    async def propose_action(self, **inputs) -> Dict[str, Any]:
+    async def propose_action(self, **inputs) -> Optional[Dict[str, Any]]:
         """
         Propose voting action based on inputs.
         Must return dict with 'action', 'confidence', 'reasoning'
@@ -1273,7 +1273,7 @@ class SmartInfoBusVotingMixin(ABC):
         pass
 
     @abstractmethod
-    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
+    async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> Optional[float]:
         """Calculate confidence level for proposed action"""
         pass
 
@@ -1294,15 +1294,20 @@ class SmartInfoBusVotingMixin(ABC):
             }
 
         try:
-            # Get action proposal
+            # Get action proposal (may be None per Optional contract)
             action_proposal = await self.propose_action(**inputs)
-            confidence = await self.calculate_confidence(action_proposal, **inputs)
+            # Ensure non-None for typed confidence calc
+            _action_for_conf = action_proposal or {}
+            confidence = await self.calculate_confidence(_action_for_conf, **inputs)
 
             # Analyze current consensus if available
             consensus_analysis = await self._analyze_consensus(inputs)
 
             # Generate comprehensive thesis
-            thesis = await self._generate_vote_thesis(action_proposal, confidence, inputs, consensus_analysis)
+            # Generate thesis with non-None types for strict signature
+            _action_for_thesis = action_proposal or {}
+            _conf_for_thesis = float(confidence or 0.0)
+            thesis = await self._generate_vote_thesis(_action_for_thesis, _conf_for_thesis, inputs, consensus_analysis)
 
             # Create enhanced vote
             vote = {
