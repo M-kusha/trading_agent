@@ -303,6 +303,54 @@ class ModuleConfig:
 
 
 # ─────────────────────────────────────────────────────────────
+# Helper: attribute-access dict wrapper for module configs
+# ─────────────────────────────────────────────────────────────
+class _AttrDict(dict):
+    """A dict that also supports attribute access and exposes __dict__.
+
+    - Access values via both obj['key'] and obj.key
+    - Nested dicts are converted recursively
+    - Provides a __dict__ property returning itself so patterns like
+      dict(config.__dict__) work for shallow copies in modules
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        # initialize using dict semantics, then wrap nested mappings
+        base = dict(*args, **kwargs)
+        for k, v in base.items():
+            super().__setitem__(k, self._wrap(v))
+
+    @staticmethod
+    def _wrap(value):
+        if isinstance(value, dict):
+            return _AttrDict(value)
+        if isinstance(value, list):
+            return [ _AttrDict._wrap(v) for v in value ]
+        if isinstance(value, tuple):
+            return tuple(_AttrDict._wrap(v) for v in value)
+        return value
+
+    # attribute accessors
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as e:
+            raise AttributeError(name) from e
+
+    def __setattr__(self, name, value):
+        # keep normal attributes on the class if they already exist
+        if name in ("__class__",):
+            return super().__setattr__(name, value)
+        self[name] = self._wrap(value)
+
+    # expose __dict__ to behave like a lightweight config object
+    @property
+    def __dict__(self):  # type: ignore[override]
+        return self
+
+
+# ─────────────────────────────────────────────────────────────
 # Module Orchestrator
 # ─────────────────────────────────────────────────────────────
 class ModuleOrchestrator:
@@ -1513,7 +1561,8 @@ class ModuleOrchestrator:
 
             # Construct with config if accepted; otherwise set later
             try:
-                instance = module_class(config=module_config) if module_config else module_class()
+                config_obj: Any = _AttrDict(module_config) if isinstance(module_config, dict) and module_config else module_config
+                instance = module_class(config=config_obj) if module_config else module_class()
             except TypeError:
                 instance = module_class()
                 if hasattr(instance, 'set_config') and module_config:
