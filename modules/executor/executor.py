@@ -55,7 +55,7 @@ class ExecutorConfig:
     description="Single-writer order executor for sim/live. Reads order_queue and publishes canonical execution state.",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=3000,
+    timeout_ms=6000,
     critical=True,
 ))
 class Executor(BaseModule):

@@ -97,27 +97,19 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             }
         )
 
-        # Quality metrics (will be combined into 'overall_effectiveness')
+        # Quality metrics
         self.quality_metrics: Dict[str, float] = {
-            "coherence": 0.5,
-            "stability": 0.5,
-            "diversity": 0.5,
-            "reliability": 0.5,
-            "predictive_accuracy": 0.5,
-            "temporal_consistency": 0.5,
-            "overall_effectiveness": 0.5,
+            "coherence": 0.5, "stability": 0.5, "diversity": 0.5,
+            "reliability": 0.5, "predictive_accuracy": 0.5,
+            "temporal_consistency": 0.5, "overall_effectiveness": 0.5,
         }
 
         # Intelligence knobs
         self.consensus_intelligence: Dict[str, Any] = {
-            "smoothing_alpha": 0.3,
-            "stability_window": 10,
-            "quality_threshold": 0.7,
-            "trend_sensitivity": 0.15,
-            "adaptation_rate": 0.12,
-            "confidence_weighting": 0.8,
-            "temporal_memory": 0.85,
-            "max_dim": 256,  # cap padded vector length defensively
+            "smoothing_alpha": 0.3, "stability_window": 10, "quality_threshold": 0.7,
+            "trend_sensitivity": 0.15, "adaptation_rate": 0.12,
+            "confidence_weighting": 0.8, "temporal_memory": 0.85,
+            "max_dim": 256,
         }
 
         # Market adaptation
@@ -131,34 +123,22 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                 "unknown": {"weight_multiplier": 1.00, "stability_factor": 1.00},
             },
             "volatility_adjustments": {
-                "very_low": 0.90,
-                "low": 0.95,
-                "medium": 1.00,
-                "high": 1.10,
-                "extreme": 1.20,
+                "very_low": 0.90, "low": 0.95, "medium": 1.00, "high": 1.10, "extreme": 1.20,
             },
         }
 
         # Stats & analysis
         self.consensus_stats: Dict[str, Any] = {
-            "total_computations": 0,
-            "high_consensus_count": 0,
-            "low_consensus_count": 0,
-            "avg_consensus": 0.5,
-            "consensus_volatility": 0.0,
-            "quality_score": 0.5,
-            "trend_accuracy": 0.0,
-            "prediction_accuracy": 0.0,
+            "total_computations": 0, "high_consensus_count": 0, "low_consensus_count": 0,
+            "avg_consensus": 0.5, "consensus_volatility": 0.0, "quality_score": 0.5,
+            "trend_accuracy": 0.0, "prediction_accuracy": 0.0,
             "session_start": dt.datetime.now().isoformat(),
         }
         self.regime_consensus_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=40))
         self.consensus_patterns: Dict[str, Any] = defaultdict(list)
         self.prediction_history: deque = deque(maxlen=40)
         self.consensus_insights: Dict[str, Any] = {
-            "dominant_patterns": [],
-            "member_dynamics": {},
-            "consensus_predictors": {},
-            "quality_drivers": {},
+            "dominant_patterns": [], "member_dynamics": {}, "consensus_predictors": {}, "quality_drivers": {},
         }
 
         # Circuit breaker
@@ -166,10 +146,10 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
         self.circuit_breaker_threshold: int = 5
         self.is_disabled: bool = False
 
-        # Concurrency guard (avoid overlapping process() runs)
+        # Concurrency guard
         self._process_lock: asyncio.Lock = asyncio.Lock()
 
-        # ---- NEW: seed init payload so every tick can emit it (contract-required) ----
+        # Init payload
         self._init_payload: Dict[str, Any] = {
             "status": "initializing",
             "timestamp": dt.datetime.now().isoformat(),
@@ -195,18 +175,12 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             )
         )
         try:
-            # Seed contract-provided numeric outputs to avoid early consumer misses
+            # Seed ONLY the canonical numeric output. Do NOT seed/write 'voting_consensus' on the bus.
             self.smart_bus.set(
                 "consensus_score",
                 float(self.last_consensus),
                 module="ConsensusDetector",
                 thesis="Initial consensus score placeholder",
-            )
-            self.smart_bus.set(
-                "voting_consensus",
-                float(self.last_consensus),
-                module="ConsensusDetector",
-                thesis="Initial voting consensus placeholder",
             )
         except Exception:
             pass
@@ -368,13 +342,24 @@ Consensus Detector v3.1 Initialization:
     # BUS IO
     # ────────────────────────────
     async def _get_comprehensive_voting_data(self) -> Dict[str, Any]:
-        """Pull everything we may need from the bus with safe fallbacks."""
+        """Pull everything we may need from the bus with safe fallbacks (schema v1-aware)."""
         try:
             g = self.smart_bus.get
+            # Prefer the canonical committee surfaces; keep legacy fallbacks.
+            member_confs = (
+                g("member_confidences_ordered", "ConsensusDetector")
+                or g("member_confidences", "ConsensusDetector")
+                or []
+            )
             return {
-                "votes": g("votes", "ConsensusDetector") or [],
+                # Canonical numeric vectors for analytics (preferred)
+                "proposal_vectors": g("proposal_vectors", "ConsensusDetector") or [],
+                # Legacy / UI-friendly fallbacks
                 "raw_proposals": g("raw_proposals", "ConsensusDetector") or [],
-                "member_confidences": g("member_confidences", "ConsensusDetector") or [],
+                "votes": g("votes", "ConsensusDetector") or [],
+                # Confidences (aligned to proposal_vectors order when present)
+                "member_confidences": member_confs,
+                # Context
                 "voting_summary": g("voting_summary", "ConsensusDetector") or {},
                 "alpha_weights": g("alpha_weights", "ConsensusDetector") or [],
                 "blended_action": g("blended_action", "ConsensusDetector") or [],
@@ -383,11 +368,15 @@ Consensus Detector v3.1 Initialization:
                 "consensus_direction": g("consensus_direction", "ConsensusDetector") or "neutral",
                 "market_regime": g("market_regime", "ConsensusDetector") or "unknown",
                 "volatility_data": g("volatility_data", "ConsensusDetector") or {},
+                # Pass-through orchestration tags (set by the committee)
+                "decision_id": g("decision_id", "ConsensusDetector"),
+                "tick_ts": g("tick_ts", "ConsensusDetector"),
             }
         except Exception as e:
             ctx = self.error_pinpointer.analyze_error(e, "ConsensusDetector")
             self.logger.warning(f"Voting data retrieval incomplete: {ctx}")
             return self._get_safe_voting_defaults()
+
 
     # ────────────────────────────
     # ADAPTIVE PARAMS
@@ -558,25 +547,37 @@ Consensus Detector v3.1 Initialization:
     # Input extraction & validation
     def _extract_voting_actions(self, voting_data: Dict[str, Any]) -> List[np.ndarray]:
         try:
+            # Preferred: committee-published numeric vectors (schema v1)
+            pv = voting_data.get("proposal_vectors", [])
+            if isinstance(pv, list) and len(pv) >= 2:
+                out: List[np.ndarray] = []
+                for p in pv[: self.n_members]:
+                    if isinstance(p, (list, np.ndarray)) and len(p) > 0:
+                        out.append(np.asarray(p, dtype=np.float32).flatten())
+                if len(out) >= 2:
+                    return out
+
+            # Legacy: raw_proposals may be vectors already
             raw = voting_data.get("raw_proposals", [])
             if raw and len(raw) >= 2:
-                out: List[np.ndarray] = []
+                out = []
                 for p in raw[: self.n_members]:
                     if isinstance(p, (list, np.ndarray)) and len(p) > 0:
                         out.append(np.asarray(p, dtype=np.float32).flatten())
                 if len(out) >= 2:
                     return out
 
+            # Fallback: synthesize from blended_action if present
             blended = voting_data.get("blended_action", [])
             if isinstance(blended, (list, np.ndarray)) and len(blended) > 0:
                 base = np.asarray(blended, dtype=np.float32).flatten()
                 out = [base]
-                # generate a few variants safely (cap dimensions)
                 for _ in range(min(self.n_members - 1, 4)):
                     noise = np.random.normal(0.0, 0.1, size=min(len(base), self.consensus_intelligence["max_dim"]))
                     out.append((base[: len(noise)] + noise).astype(np.float32))
                 return out
 
+            # Very old path: scalar votes -> 1D vectors
             votes = voting_data.get("votes", [])
             if votes and len(votes) >= 2:
                 return [np.array([float(v)], dtype=np.float32) for v in votes[: self.n_members]]
@@ -584,6 +585,7 @@ Consensus Detector v3.1 Initialization:
             return []
         except Exception:
             return []
+
 
     def _extract_member_confidences(self, voting_data: Dict[str, Any]) -> List[float]:
         try:
@@ -1425,67 +1427,33 @@ Consensus Detector v3.1 Initialization:
     async def _update_smartinfobus_comprehensive(self, results: Dict[str, Any], thesis: str) -> None:
         try:
             s = self.smart_bus.set
+
+            # Canonical numeric consensus (single-writer)
             s("consensus_score", results["consensus_score"], module="ConsensusDetector", thesis=thesis)
-            # Contract-critical keys rebroadcast every tick
-            s("voting_consensus", results["voting_consensus"], module="ConsensusDetector",
-            thesis=f"Voting consensus={results['voting_consensus']:.3f}")
+
+            # NOTE: Do NOT write 'voting_consensus' to the bus. (Kept only as a return alias for compat.)
+
+            # Contract-critical diagnostics (all safe single-writer keys under our module)
             s("consensus_detector_initialization", results["consensus_detector_initialization"],
             module="ConsensusDetector", thesis="Initialization payload")
-
-            s(
-                "consensus_quality",
-                results["consensus_quality"],
-                module="ConsensusDetector",
-                thesis=f"Consensus quality: {results['consensus_quality']:.3f}",
-            )
-            s(
-                "consensus_components",
-                results["consensus_components"],
-                module="ConsensusDetector",
-                thesis=f"Components analyzed: {len(results['consensus_components'])}",
-            )
-            s(
-                "directional_consensus",
-                results["directional_consensus"],
-                module="ConsensusDetector",
-                thesis=f"Directional alignment: {results['directional_consensus']:.3f}",
-            )
-            s(
-                "magnitude_consensus",
-                results["magnitude_consensus"],
-                module="ConsensusDetector",
-                thesis=f"Magnitude agreement: {results['magnitude_consensus']:.3f}",
-            )
-            s(
-                "confidence_consensus",
-                results["confidence_consensus"],
-                module="ConsensusDetector",
-                thesis=f"Confidence-weighted: {results['confidence_consensus']:.3f}",
-            )
-            s(
-                "member_contributions",
-                results["member_contributions"],
-                module="ConsensusDetector",
-                thesis=f"Member contributions: {len(results['member_contributions'])} profiles",
-            )
-            s(
-                "consensus_trends",
-                results["consensus_trends"],
-                module="ConsensusDetector",
-                thesis=f"Trends tracked: {len(self.consensus_trends)} points",
-            )
-            s(
-                "consensus_quality_metrics",
-                results["quality_metrics"],
-                module="ConsensusDetector",
-                thesis=f"Quality metrics: {len(results['quality_metrics'])} dimensions",
-            )
-            s(
-                "consensus_recommendations",
-                results["consensus_recommendations"],
-                module="ConsensusDetector",
-                thesis=f"Recommendations: {len(results['consensus_recommendations'])}",
-            )
+            s("consensus_quality", results["consensus_quality"], module="ConsensusDetector",
+            thesis=f"Consensus quality: {results['consensus_quality']:.3f}")
+            s("consensus_components", results["consensus_components"], module="ConsensusDetector",
+            thesis=f"Components analyzed: {len(results['consensus_components'])}")
+            s("directional_consensus", results["directional_consensus"], module="ConsensusDetector",
+            thesis=f"Directional alignment: {results['directional_consensus']:.3f}")
+            s("magnitude_consensus", results["magnitude_consensus"], module="ConsensusDetector",
+            thesis=f"Magnitude agreement: {results['magnitude_consensus']:.3f}")
+            s("confidence_consensus", results["confidence_consensus"], module="ConsensusDetector",
+            thesis=f"Confidence-weighted: {results['confidence_consensus']:.3f}")
+            s("member_contributions", results["member_contributions"], module="ConsensusDetector",
+            thesis=f"Member contributions: {len(results['member_contributions'])} profiles")
+            s("consensus_trends", results["consensus_trends"], module="ConsensusDetector",
+            thesis=f"Trends tracked: {len(self.consensus_trends)} points")
+            s("consensus_quality_metrics", results["quality_metrics"], module="ConsensusDetector",
+            thesis=f"Quality metrics: {len(results['quality_metrics'])} dimensions")
+            s("consensus_recommendations", results["consensus_recommendations"], module="ConsensusDetector",
+            thesis=f"Recommendations: {len(results['consensus_recommendations'])}")
         except Exception as e:
             ctx = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
             self.logger.error(f"SmartInfoBus update failed: {ctx}")
@@ -1825,6 +1793,7 @@ Consensus Detector v3.1 Initialization:
 
     def _get_safe_voting_defaults(self) -> Dict[str, Any]:
         return {
+            "proposal_vectors": [],
             "votes": [],
             "raw_proposals": [],
             "member_confidences": [],
@@ -1836,7 +1805,10 @@ Consensus Detector v3.1 Initialization:
             "consensus_direction": "neutral",
             "market_regime": "unknown",
             "volatility_data": {},
+            "decision_id": None,
+            "tick_ts": None,
         }
+
 
     def _generate_disabled_response(self) -> Dict[str, Any]:
         return {

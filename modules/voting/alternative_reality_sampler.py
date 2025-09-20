@@ -241,6 +241,8 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
                         effectiveness, quality
                     ),
                     "alternative_reality_sampler_initialization": self._get_ars_init_view(),
+                    "decision_id": voting_data.get("decision_id"),
+                    "tick_ts": voting_data.get("tick_ts") or dt.datetime.now().isoformat(),
                 }
 
                 thesis = await self._generate_comprehensive_sampling_thesis(effectiveness, quality, updates)
@@ -986,6 +988,8 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
                 "market_regime": g("market_regime", "AlternativeRealitySampler") or "unknown",
                 "recent_trades": g("recent_trades", "AlternativeRealitySampler") or [],
                 "session_metrics": g("session_metrics", "AlternativeRealitySampler") or {},
+                "decision_id": g("decision_id", "AlternativeRealitySampler"),
+                "tick_ts": g("tick_ts", "AlternativeRealitySampler"),
             }
         except Exception as e:
             ctx = self.error_pinpointer.analyze_error(e, "AlternativeRealitySampler")

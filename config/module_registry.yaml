@@ -102,22 +102,10 @@ modules:
     module_path: modules.market.fractal_regime_confirmation
     provides: []
     requires: []
-  HistoricalReplayAnalyzer:
-    category: memory
-    file_path: modules\memory\historical_replay_analyzer.py
-    module_path: modules.memory.historical_replay_analyzer
-    provides: []
-    requires: []
   MarketThemeDetector:
     category: market
     file_path: modules\market\market_theme_detector.py
     module_path: modules.market.market_theme_detector
-    provides: []
-    requires: []
-  MemoryCompressor:
-    category: memory
-    file_path: modules\memory\memory_compressor.py
-    module_path: modules.memory.memory_compressor
     provides: []
     requires: []
   MetaCognitivePlanner:
@@ -132,22 +120,10 @@ modules:
     module_path: modules.meta.metar_rl_controller
     provides: []
     requires: []
-  MistakeMemory:
-    category: memory
-    file_path: modules\memory\mistake_memory.py
-    module_path: modules.memory.mistake_memory
-    provides: []
-    requires: []
   MultiScaleFeatureEngine:
     category: features
     file_path: modules\features\multiscale_feature_engine.py
     module_path: modules.features.multiscale_feature_engine
-    provides: []
-    requires: []
-  NeuralMemoryArchitect:
-    category: memory
-    file_path: modules\memory\neural_memory_architect.py
-    module_path: modules.memory.neural_memory_architect
     provides: []
     requires: []
   OpponentModeEnhancer:
@@ -160,12 +136,6 @@ modules:
     category: strategy
     file_path: modules\strategy\playbook_clusterer.py
     module_path: modules.strategy.playbook_clusterer
-    provides: []
-    requires: []
-  PlaybookMemory:
-    category: memory
-    file_path: modules\memory\playbook_memory.py
-    module_path: modules.memory.playbook_memory
     provides: []
     requires: []
   PortfolioRiskSystem:

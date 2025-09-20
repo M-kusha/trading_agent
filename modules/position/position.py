@@ -260,7 +260,9 @@ class IntegratedDebugger:
             elif action in ("SELL", "CLOSE_POSITION", "EMERGENCY_EXIT", "SCALE_DOWN"):
                 self.stats["sell_decisions"] += 1
                 self.sell_signals.append(snapshot.to_dict())
-                self._alert_sell(instrument, snapshot)
+                # Avoid noisy alerts for emergency exits that cannot execute (size=0)
+                if not (action == "EMERGENCY_EXIT" and snapshot.size_eur <= 0.0):
+                    self._alert_sell(instrument, snapshot)
             else:
                 self.stats["hold_decisions"] += 1
 
@@ -1777,19 +1779,29 @@ class PositionManager(
             "exposure": context.current_exposure > self.C.max_instrument_concentration * 1.5,
             "liquidity": context.liquidity_score < 0.3,
         }
-        active = any(triggers.values())
+        # Do not trigger emergency on liquidity alone; require another hard trigger
+        active = bool(triggers["drawdown"] or triggers["loss_streak"] or triggers["exposure"])
         if not active:
             return False
 
-        # Heuristic executor activity check (avoid repeated bus misses by single get chain)
+        # Executor activity check with recency guard (avoid stale bus data)
         executor_active = False
         try:
-            if self.smart_bus.get("execution_data", "PositionManager", default=None):
-                executor_active = True
-            elif self.smart_bus.get("executor_debug", "PositionManager", default=None):
-                executor_active = True
-            elif self.smart_bus.get("positions", "PositionManager", default=None):
-                executor_active = True
+            for key in ("execution_data", "executor_debug", "positions"):
+                try:
+                    md = getattr(self.smart_bus, "get_with_metadata", None)
+                    if md is not None:
+                        rec = md(key, "PositionManager")
+                        if rec and rec.value is not None and hasattr(rec, "age_seconds") and rec.age_seconds() < 10.0:
+                            executor_active = True
+                            break
+                    else:
+                        val = self.smart_bus.get(key, "PositionManager", default=None)
+                        if val:
+                            executor_active = True
+                            break
+                except Exception:
+                    continue
         except Exception:
             pass
 
@@ -2317,8 +2329,22 @@ class PositionManager(
 
     def set_state(self, state: Dict[str, Any]) -> None:
         if "config" in state and isinstance(state["config"], dict):
-            self.C = TradingConfig(**state["config"])
+            # TradingConfig has computed/alias fields (e.g., max_steps_per_episode with init=False)
+            # Filter out non-init keys to avoid __init__ errors on restore.
+            cfg_in = dict(state["config"])  # shallow copy
+            cfg_in.pop("max_steps_per_episode", None)
+            try:
+                self.C = TradingConfig(**cfg_in)
+            except TypeError:
+                # In case other non-init keys sneak in, drop unknowns conservatively.
+                # Keep only attributes present on a default instance that are not callables/dunder.
+                default_cfg = TradingConfig()
+                allowed = {k for k in vars(default_cfg).keys()}
+                sanitized = {k: v for k, v in cfg_in.items() if k in allowed}
+                self.C = TradingConfig(**sanitized)
             self.config.update(self.C.__dict__)
+            # keep dependent cached values in sync
+            self.default_max_pct = self.C.max_position_pct
 
         # Genome / params
         if isinstance(state.get("genome"), dict):

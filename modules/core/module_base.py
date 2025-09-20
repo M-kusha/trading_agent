@@ -850,11 +850,38 @@ class BaseModule(ABC):
             return True
 
     def validate_state_compatibility(self, state: Dict[str, Any]) -> bool:
+        """
+        Best-effort compatibility check for restored state.
+
+        Many modules override get_state() and may not include a top-level
+        'version' key (e.g., they store it under 'module_info'). Be tolerant
+        to avoid false negatives on restore and let the Persistence layer's
+        envelope/version checks gate true incompatibilities.
+        """
         try:
-            saved_major = int(str(state.get('version', '1.0.0')).split('.')[0])
+            version_value: Optional[str] = None
+            if isinstance(state, dict):
+                # Primary: explicit version on the state snapshot
+                v = state.get('version')
+                if isinstance(v, (str, int)):
+                    version_value = str(v)
+                else:
+                    # Secondary: nested metadata commonly used by modules
+                    mi = state.get('module_info')
+                    if isinstance(mi, dict):
+                        mv = mi.get('version')
+                        if isinstance(mv, (str, int)):
+                            version_value = str(mv)
+
+            # If no version could be determined, tolerate (let outer checks decide)
+            if not version_value:
+                return True
+
+            saved_major = int(str(version_value).split('.')[0])
             current_major = int(self.metadata.version.split('.')[0])
             return saved_major == current_major
         except Exception:
+            # On any parsing issue, default to permissive to avoid dropping state
             return True
 
     def reset(self):

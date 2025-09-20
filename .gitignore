@@ -37,3 +37,6 @@ docker-compose.yml
 .env
 frontend/node_modules/
 frontend/package-lock.json
+
+# Ignore runtime state snapshots
+state/

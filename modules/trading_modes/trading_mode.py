@@ -1747,8 +1747,15 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                                        module='TradingModeManager', thesis="Mode stats updated (with context)")
             except Exception:
                 pass
-            self.smart_bus.set('mode_recommendations', results.get('mode_recommendations', []),
-                               module='TradingModeManager', thesis="Mode recommendations updated")
+            # Do not publish contested key 'mode_recommendations' (canonical owner: OpponentModeEnhancer)
+            # If needed for dashboards, include recommendations under namespaced stats instead.
+            recs = results.get('mode_recommendations', [])
+            if isinstance(recs, list) and recs:
+                stats = results.get('mode_stats', {}) or {}
+                stats = dict(stats)
+                stats['recommendations'] = list(recs)
+                self.smart_bus.set('mode_stats', stats,
+                                   module='TradingModeManager', thesis="Mode stats updated (with recommendations)")
 
             # Namespaced health/status
             self._post_health_status()

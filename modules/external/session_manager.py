@@ -1,10 +1,10 @@
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # File: modules/external/session_manager.py
 # Session Manager (safe, pass-through)
 # - Tracks session timing & health
 # - Does NOT fabricate PnL values
 # - Always returns contract keys; PnL keys are pass-through (empty {} if absent)
-# ─────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 from __future__ import annotations
 
@@ -83,9 +83,9 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
         self._update_session_labels()
         self.logger.info("[OK] SessionManager initialized.")
 
-    # ─────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Utilities
-    # ─────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _update_session_labels(self) -> None:
         """Human session labels (for nested session_context only)."""
         hour = datetime.datetime.utcnow().hour
@@ -155,9 +155,9 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                     pass
         return default
 
-    # ─────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Public API
-    # ─────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     async def calculate_confidence(self, action: Optional[Dict[str, Any]] = None, **inputs) -> float:
         """
         Confidence reflects recency of health checks and availability of basic counters.
@@ -228,7 +228,7 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                 "session_type": self.session_type,
             }
 
-            # ── PnL pass-throughs from bus (do not fabricate) ──────────────────
+            # â”€â”€ PnL pass-throughs from bus (do not fabricate) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             perf_data_bus = self._bus_get("performance_data", None)
             portfolio_metrics = self._bus_get("portfolio_metrics", None)
             trading_result_bus = self._bus_get("trading_result", None)
@@ -248,6 +248,12 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                 if isinstance(trading_result_bus, dict) and "pnl" in trading_result_bus:
                     session_pnl_data["last_step_pnl"] = trading_result_bus.get("pnl")
 
+            performance_metrics: Dict[str, Any] = {
+                'system_performance': system_performance,
+                'session_pnl': dict(session_pnl_data) if session_pnl_data else {},
+            }
+            if isinstance(portfolio_metrics, dict) and portfolio_metrics:
+                performance_metrics['portfolio'] = dict(portfolio_metrics)
             # trading_result: echo if present, else {}
             trading_result: Dict[str, Any] = trading_result_bus if isinstance(trading_result_bus, dict) else {}
 
@@ -262,16 +268,17 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                 "memory_usage": {},
                 "mistakes": [],
                 "module_performance": {},
-                "performance_data": performance_data,  # ← always present
+                "performance_data": performance_data,  # â† always present
                 "playbook_entries": [],
                 "playbook_memory": {},
-                "session_pnl_data": session_pnl_data, # ← always present (namespaced)
+                "session_pnl_data": session_pnl_data, # â† always present (namespaced)
+                "performance_metrics": performance_metrics,
                 "session_context": session_context,
                 "session_metrics": session_metrics,
                 "system_alerts": list(self.system_alerts[-25:]),
                 "session_health": session_health,
                 "system_performance": system_performance,
-                "trading_result": trading_result,     # ← always present
+                "trading_result": trading_result,     # â† always present
             }
 
             # Bookkeeping
@@ -304,6 +311,19 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                 }
                 if isinstance(trading_result_bus, dict) and "pnl" in trading_result_bus:
                     session_pnl_data["last_step_pnl"] = trading_result_bus.get("pnl")
+            system_performance_error = {
+                'success_count': int(self._success),
+                'failure_count': int(self._fail),
+                'success_rate': float(self._success / max(1, self._success + self._fail)),
+                'avg_processing_time_ms': float(np.mean(self._proc_times)) if self._proc_times else 0.0,
+                'last_check': datetime.datetime.utcnow().isoformat(),
+            }
+            performance_metrics = {
+                'system_performance': system_performance_error,
+                'session_pnl': dict(session_pnl_data) if session_pnl_data else {},
+            }
+            if isinstance(portfolio_metrics, dict) and portfolio_metrics:
+                performance_metrics['portfolio'] = dict(portfolio_metrics)
             trading_result = trading_result_bus if isinstance(trading_result_bus, dict) else {}
 
             return {
@@ -320,6 +340,7 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                 "playbook_entries": [],
                 "playbook_memory": {},
                 "session_pnl_data": session_pnl_data,  # required key present (namespaced)
+                "performance_metrics": performance_metrics,
                 "session_context": {
                     "session_canonical": self._session_canonical(),
                     "trading_session": self.trading_session,
@@ -336,12 +357,6 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                     "status": "degraded",
                     "alerts": list(self.system_alerts[-25:]),
                 },
-                "system_performance": {
-                    "success_count": int(self._success),
-                    "failure_count": int(self._fail),
-                    "success_rate": float(self._success / max(1, self._success + self._fail)),
-                    "avg_processing_time_ms": float(np.mean(self._proc_times)) if self._proc_times else 0.0,
-                    "last_check": datetime.datetime.utcnow().isoformat(),
-                },
+                "system_performance": system_performance_error,
                 "trading_result": trading_result,      # required key present
             }

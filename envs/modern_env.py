@@ -231,7 +231,8 @@ class ModernTradingEnv(gym.Env):
 
                 def init_orch():
                     try:
-                        orch = MO()  # type: ignore[call-arg]
+                        # Reuse singleton orchestrator to avoid repeated boot sequences
+                        orch = MO.get_instance()  # type: ignore[attr-defined]
                         if hasattr(orch, "initialize"):
                             orch.initialize()
                         self.orchestrator = orch
@@ -1015,14 +1016,12 @@ class ModernTradingEnv(gym.Env):
         except Exception:
             pass
 
-        try:
-            if self.orchestrator and hasattr(self.orchestrator, "shutdown"):
-                self.orchestrator.shutdown()
-        except Exception as e:
-            try:
-                self.logger.warning(f"Orchestrator shutdown warning: {e}")
-            except Exception:
-                pass
+        # IMPORTANT: Do not shutdown the global orchestrator singleton here.
+        # Multiple environments may share the same ModuleOrchestrator via get_instance().
+        # Shutting it down here clears module registries and causes KeyError on next step
+        # (e.g., 'SessionManager' missing). If a full process shutdown is required, call
+        # ModuleOrchestrator.get_instance().shutdown() explicitly from the top-level runner.
+        # Keeping the orchestrator alive avoids repeated boot sequences and preserves state.
 
         loop = self._aio_loop
         try:

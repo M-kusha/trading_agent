@@ -278,6 +278,8 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     'session': self.current_session
                 },
                 'time_horizon_aligner_initialization': self._get_tha_init_view(),
+                'decision_id': alignment_data.get('decision_id'),
+                'tick_ts': alignment_data.get('tick_ts') or datetime.datetime.now().isoformat(),
                 '_thesis': ''  # set below
             }
 
@@ -330,7 +332,9 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 'performance_feedback': get('performance_feedback', 'TimeHorizonAligner') or {},
                 'member_confidences': get('member_confidences', 'TimeHorizonAligner') or [],
                 'recent_trades': get('recent_trades', 'TimeHorizonAligner') or [],
-                'expert_performance': get('expert_performance', 'TimeHorizonAligner') or {}
+                'expert_performance': get('expert_performance', 'TimeHorizonAligner') or {},
+                'decision_id': get('decision_id', 'TimeHorizonAligner'),
+                'tick_ts': get('tick_ts', 'TimeHorizonAligner')
             }
         except Exception as e:
             err = self.error_pinpointer.analyze_error(e, "TimeHorizonAligner")
@@ -622,6 +626,14 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                thesis=f"Performance metrics: Comprehensive alignment analytics")
             sb('horizon_alignment', results['horizon_alignment'], module='TimeHorizonAligner',
                thesis='Combined horizon alignment bundle (distances, multipliers, regime, session)')
+
+            # Decision coordination
+            if results.get('decision_id'):
+                sb('decision_id', results['decision_id'], module='TimeHorizonAligner',
+                   thesis=f"Decision ID for tick coordination: {results['decision_id']}")
+            if results.get('tick_ts'):
+                sb('tick_ts', results['tick_ts'], module='TimeHorizonAligner',
+                   thesis=f"Tick timestamp: {results['tick_ts']}")
         except Exception as e:
             _ = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
             self.logger.error("SmartInfoBus update failed")

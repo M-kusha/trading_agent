@@ -602,6 +602,8 @@ class SmartInfoBus:
             self._critical_single_writer_keys: Set[str] = {
                 "market_regime", "training_metrics", "performance_metrics",
                 "risk_data", "sequence_quality", "trade_vote",
+                # Contended keys: enforce single-writer policy explicitly
+                "mode_recommendations", "member_confidences", "expert_votes",
             }
 
             # Ownership registry and policies (lightweight, in-memory)
@@ -1095,15 +1097,15 @@ class SmartInfoBus:
         }
         value = self._apply_pre_set(full_key, value, meta)
 
-        # Ownership guard (hard-fail on violation)
+        # Ownership guard: block non-owner writes to canonical keys (soft-fail)
         owner = self._owners.get(full_key) or self._owners.get(key)
         if owner and owner != module:
             self._log_event({"type": "owner_violation", "key": full_key, "expected_owner": owner, "writer": module})
             try:
-                self.logger.error(f"[BUS][OWNER] {module} cannot set {full_key}; owner is {owner}")
+                self.logger.warning(f"[BUS][OWNER] Blocked write: {module} -> {full_key}; owner is {owner}")
             except Exception:
                 pass
-            raise PermissionError(f"{module} cannot set {full_key}; owner is {owner}")
+            return
 
         # Stream policy: append-only (no provider table churn)
         pol = self._policies.get(full_key) or self._policies.get(key)
@@ -1945,6 +1947,14 @@ class SmartInfoBus:
             self.declare_owner("committee_confidence", "EnhancedVotingCommitteeCoordinator")
             self.declare_owner("voting_consensus", "ConsensusDetector")
             self.declare_owner("quality_metrics", "ExecutionQualityMonitor")
+            # Avoid provider churn on contested keys by assigning canonical owners
+            self.declare_owner("voting_member_proposal", "EnhancedVotingCommitteeCoordinator")
+            self.declare_owner("pattern_analysis", "PlaybookClusterer")
+            self.declare_owner("performance_metrics", "TimeHorizonAligner")
+            # Additional canonical owners to prevent provider flipping
+            self.declare_owner("mode_recommendations", "OpponentModeEnhancer")
+            self.declare_owner("member_confidences", "EnhancedThemeExpert")
+            self.declare_owner("expert_votes", "EnhancedVotingCommitteeCoordinator")
         except Exception:
             pass
 

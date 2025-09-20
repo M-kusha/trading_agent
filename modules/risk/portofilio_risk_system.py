@@ -1325,17 +1325,23 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
 
     # --- Voting helper: optional coordinator bus write (kept separate from provides) ---
     async def _write_voting_to_bus(self, vote_payload: Dict[str, Any]) -> None:
+        """Publish module-scoped voting outputs to avoid canonical-key thrash.
+
+        Coordinator (EnhancedVotingCommitteeCoordinator) owns the canonical
+        committee decision. We publish namespaced keys here.
+        """
         try:
             self.smart_bus.set(
-                "voting_member_proposal",
-                {
-                    "member": "PortfolioRiskSystem",
-                    "proposal": vote_payload,
-                    "confidence": float(vote_payload.get("confidence", 0.0)),
-                    "timestamp": datetime.datetime.now().isoformat(),
-                },
+                "PortfolioRiskSystem_voting_proposal",
+                vote_payload,
                 module="PortfolioRiskSystem",
                 thesis="PortfolioRiskSystem voting proposal",
+            )
+            self.smart_bus.set(
+                "PortfolioRiskSystem_confidence",
+                float(vote_payload.get("confidence", 0.0)),
+                module="PortfolioRiskSystem",
+                thesis="PortfolioRiskSystem vote confidence",
             )
         except Exception as e:
             self.logger.warning(f"Voting bus write failed: {e}")

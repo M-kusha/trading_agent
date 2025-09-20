@@ -1,4 +1,4 @@
-﻿# modules/contracts.py
+# modules/contracts.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -67,6 +67,26 @@ CONTRACTS: Dict[str, ModuleContract] = {
         provides=['audit_recommendations', 'behavioral_profiles', 'collusion_alerts', 'collusion_auditor_initialization', 'collusion_score', 'coordination_events', 'detection_statistics', 'member_independence_scores', 'suspicious_pairs'],
         requires=['agreement_score', 'consensus_direction', 'market_context', 'market_regime', 'member_confidences', 'raw_proposals', 'recent_trades', 'strategy_arbiter_weights', 'volatility_data', 'votes', 'voting_summary'],
         meta={'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'voting', 'version': '3.0.0'}
+    ),
+
+    'VotingKernel': ModuleContract(
+        name='VotingKernel',
+        file='voting/voting_kernel.py',
+        provides=[
+            'voting/decision_bundle',
+            'trade_vote_v2',
+        ],
+        requires=[
+            'committee_decision', 'committee_confidence', 'committee_votes',
+            'voting_weights', 'member_confidences', 'voting_consensus',
+            'consensus_score', 'consensus_components',
+            'collusion_score', 'suspicious_pairs',
+            'aligned_weights', 'horizon_alignment',
+            'sampling_uncertainty', 'effective_samples',
+            'instrument_signals',
+            'market_regime', 'session_type', 'volatility_data',
+        ],
+        meta={'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'voting', 'version': '1.0.0'}
     ),
 
     'ComplianceModule': ModuleContract(
@@ -371,7 +391,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'environment_config', 'indicators', 'liquidity_capabilities', 'liquidity_score',
             'market_conditions', 'market_context', 'market_data', 'market_liquidity',
             'market_regime',
-            # removed to break PMâ†”Executor cycle:
+            # removed to break PM↔Executor cycle:
             # 'market_state', 'portfolio_metrics',
             'price_data', 'prices',
             'technical_indicators', 'time_risk_analysis', 'volatility_data'
@@ -432,14 +452,13 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='SessionManager',
         file='external/session_manager.py',
         provides=[
-            'consensus_data', 'emergency_mode', 'episode_data', 'episode_summary', 
-            'market_open', 'memory_usage', 'mistakes', 'module_performance',
+            'consensus_data', 'emergency_mode', 'episode_data', 'episode_summary', 'expert_votes',
+            'market_open', 'memory_usage', 'mistakes', 'module_performance', 'performance_metrics',
             'playbook_entries', 'playbook_memory', 'session_pnl_data', 'session_context', 'session_metrics',
             'system_alerts', 'session_health', 'system_performance'
-            # 'trading_result'  # single-writer: owner is Executor (removed)
         ],
+        # 'trading_result'  # single-writer: owner is Executor (removed)
         requires=[],
-        meta={'is_voting_member': 'False', 'thesis_required': 'False', 'explainable': 'False', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'external', 'version': '1.0.0'}
     ),
 
     'ShadowSimulator': ModuleContract(
@@ -605,7 +624,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'prices', 'price_data',
             # runtime context
             'environment_config', 'step_idx',
-            # optional toggle for simâ†”live (falls back to env config if absent)
+            # optional toggle for sim↔live (falls back to env config if absent)
             'execution_mode',
         ],
         meta={

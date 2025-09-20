@@ -1661,25 +1661,13 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                 except Exception as e:
                     self.logger.warning(f"Publishing canonical voting keys failed: {e}")
 
-                # Optional generic envelope for other consumers
-                try:
-                    self.smart_bus.set(
-                        "voting_member_proposal",
-                        {
-                            "member": "DynamicRiskController",
-                            "proposal": proposal,
-                            "confidence": confidence,
-                            "timestamp": datetime.datetime.now().isoformat(),
-                        },
-                        module="DynamicRiskController",
-                        thesis="DynamicRiskController voting proposal (generic envelope)",
-                    )
-                except Exception:
-                    pass
+                # Do not publish the canonical 'voting_member_proposal' to avoid provider thrash.
+                # Coordinator aggregates module-scoped proposals.
 
                 # Optional: publish into normalized expert_votes feed (default disabled to avoid provider churn)
                 try:
-                    if bool(self.cfg.get("publish_to_expert_votes_feed", False)):
+                    # Use BaseModule.config (dict) for optional runtime flags; typed dataclass is self._cfg
+                    if bool(self.config.get("publish_to_expert_votes_feed", False)):
                         feed_key = "expert_votes"
                         entry = {
                             "expert": "DynamicRiskController",
@@ -1694,7 +1682,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                         buf = [e for e in buf if e.get("expert") != "DynamicRiskController"]
                         buf.append(entry)
                         # cap the buffer
-                        cap = int(self.cfg.get("max_expert_votes_buffer", 200))
+                        cap = int(self.config.get("max_expert_votes_buffer", 200))
                         if len(buf) > cap:
                             buf = buf[-cap:]
                         self.smart_bus.set(feed_key, buf, module="DynamicRiskController", thesis="Published normalized vote entry")

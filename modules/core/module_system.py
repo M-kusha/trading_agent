@@ -618,6 +618,11 @@ class ModuleOrchestrator:
         execution_id: str,
         tag: str = "CRASH",
     ):
+        # Emit a clear diagnostic line for easier troubleshooting
+        try:
+            self.logger.error(f"[FAIL] {module_name} failed ({tag}) after {dur_ms:.1f}ms: {error_msg}")
+        except Exception:
+            pass
         self.smart_bus.record_module_failure(module_name, error_msg)
         module.record_execution(dur_ms, False, error_msg)
 

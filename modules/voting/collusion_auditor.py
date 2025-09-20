@@ -284,6 +284,8 @@ Collusion Auditor v3.1 Initialization:
                 "health_metrics": self._get_health_metrics(),
                 # contract heartbeat: include initialization view in results
                 "collusion_auditor_initialization": self._get_collusion_init_view(),
+                "decision_id": voting_data.get("decision_id"),
+                "tick_ts": voting_data.get("tick_ts") or dt.datetime.now().isoformat(),
                 "_thesis": thesis,
             }
 
@@ -316,6 +318,8 @@ Collusion Auditor v3.1 Initialization:
                 "recent_trades": g("recent_trades", "CollusionAuditor") or [],
                 "market_regime": g("market_regime", "CollusionAuditor") or "unknown",
                 "volatility_data": g("volatility_data", "CollusionAuditor") or {},
+                "decision_id": g("decision_id", "CollusionAuditor"),
+                "tick_ts": g("tick_ts", "CollusionAuditor"),
             }
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "CollusionAuditor")

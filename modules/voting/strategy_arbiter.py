@@ -342,6 +342,8 @@ Strategy Arbiter v3.1 Initialization:
                     "instruments": inst_list,
                     "universe": inst_list,
                     "watched_instruments": inst_list,
+                    "decision_id": market_data.get("decision_id"),
+                    "tick_ts": market_data.get("tick_ts") or dt.datetime.utcnow().isoformat(),
                     "_thesis": thesis,
                     "strategy_arbiter_initialization": init_payload,
                 }
@@ -363,11 +365,16 @@ Strategy Arbiter v3.1 Initialization:
     async def _get_comprehensive_market_data(self) -> Dict[str, Any]:
         try:
             g = self.smart_bus.get
+            # Use proposal_vectors (numeric) when available, fall back to member_proposals (rich dicts)
+            proposal_vectors = g("proposal_vectors", "StrategyArbiter") or []
+            member_proposals = g("member_proposals", "StrategyArbiter") or []
+
             return {
                 "market_context": g("market_context", "StrategyArbiter") or {},
                 "recent_trades": g("recent_trades", "StrategyArbiter") or [],
                 "current_positions": g("current_positions", "StrategyArbiter") or [],
-                "member_proposals": g("member_proposals", "StrategyArbiter") or [],
+                "member_proposals": proposal_vectors if proposal_vectors else member_proposals,
+                "proposal_vectors": proposal_vectors,  # Keep separate for clarity
                 "member_confidences": g("member_confidences", "StrategyArbiter") or [],
                 "consensus_score": g("consensus_score", "StrategyArbiter") or 0.5,
                 "collusion_score": g("collusion_score", "StrategyArbiter") or 0.0,
@@ -376,6 +383,8 @@ Strategy Arbiter v3.1 Initialization:
                 "market_regime": g("market_regime", "StrategyArbiter") or "unknown",
                 "session_data": g("session_data", "StrategyArbiter") or {},
                 "instruments": g("instruments", "StrategyArbiter") or list(getattr(self, "instruments", [])),
+                "decision_id": g("decision_id", "StrategyArbiter"),
+                "tick_ts": g("tick_ts", "StrategyArbiter"),
             }
         except Exception as e:
             ctx = self.error_pinpointer.analyze_error(e, "StrategyArbiter")
@@ -740,6 +749,57 @@ Strategy Arbiter v3.1 Initialization:
             _ = self.error_pinpointer.analyze_error(e, "member_performance_analysis")
             return {"member_updates": {}, "coordination_effectiveness": 0.5}
 
+    def _handle_proposal_dimension_mismatch(self, proposal: Any, target_dim: Optional[int] = None) -> np.ndarray:
+        """Handle dimension mismatches in proposals - pad, trim, or extract numeric features"""
+        try:
+            target_dim = target_dim or self.action_dim
+
+            # If it's already a numeric array
+            if isinstance(proposal, (list, np.ndarray)):
+                arr = np.asarray(proposal, dtype=np.float32).flatten()
+                if arr.size == target_dim:
+                    return arr
+                elif arr.size < target_dim:
+                    # Pad with zeros
+                    return np.pad(arr, (0, target_dim - arr.size))
+                else:
+                    # Trim to target size
+                    return arr[:target_dim]
+
+            # If it's a dict (rich proposal), extract numeric features
+            elif isinstance(proposal, dict):
+                vote = proposal.get('vote', {})
+                action = str(vote.get('action', 'abstain')).lower()
+                signal_strength = float(vote.get('signal_strength', 0.0))
+                confidence = float(proposal.get('confidence', 0.0))
+
+                # Create a minimal numeric vector
+                numeric_features = [
+                    self._action_to_numeric(action) * signal_strength,
+                    confidence
+                ]
+
+                # Pad or trim to target dimension
+                arr = np.array(numeric_features, dtype=np.float32)
+                if arr.size < target_dim:
+                    arr = np.pad(arr, (0, target_dim - arr.size))
+                elif arr.size > target_dim:
+                    arr = arr[:target_dim]
+                return arr
+
+            # Fallback: return zeros
+            return np.zeros(target_dim, dtype=np.float32)
+
+        except Exception:
+            return np.zeros(target_dim or self.action_dim, dtype=np.float32)
+
+    def _action_to_numeric(self, action: str) -> float:
+        """Convert action string to numeric value"""
+        action = action.lower()
+        if action in ('long', 'buy'): return 1.0
+        elif action in ('short', 'sell'): return -1.0
+        else: return 0.0  # abstain, hold, etc.
+
     async def _analyze_individual_member_performance(
         self, member_idx: int, proposals: List[Any], confidences: List[Any], recent_success_rate: float
     ) -> Dict[str, Any]:
@@ -751,10 +811,12 @@ Strategy Arbiter v3.1 Initialization:
             old_conf = float(perf.get("avg_confidence", 0.5))
             perf["avg_confidence"] = float(old_conf * 0.9 + cur_conf * 0.1)
 
-            # Proposal quality
+            # Proposal quality with dimension handling
             pq = 0.5
-            if member_idx < len(proposals) and isinstance(proposals[member_idx], (list, np.ndarray)):
-                pq = await self._assess_proposal_quality(np.asarray(proposals[member_idx], dtype=np.float32), cur_conf)
+            if member_idx < len(proposals):
+                proposal = proposals[member_idx]
+                normalized_proposal = self._handle_proposal_dimension_mismatch(proposal)
+                pq = await self._assess_proposal_quality(normalized_proposal, cur_conf)
 
             try:
                 perf["quality_scores"].append(pq)
@@ -1540,6 +1602,7 @@ Strategy Arbiter v3.1 Initialization:
             "recent_trades": [],
             "current_positions": [],
             "member_proposals": [],
+            "proposal_vectors": [],
             "member_confidences": [],
             "consensus_score": 0.5,
             "collusion_score": 0.0,
