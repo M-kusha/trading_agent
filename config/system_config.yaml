@@ -1,34 +1,78 @@
 execution:
   max_workers: 4
-  retry_attempts: 3
-  timeout: 30
+  retry_attempts: 5
+  timeout: 60
+  # Stability configurations
+  provider_switch_delay_ms: 1000
+  provider_stability_threshold: 5
   # Orchestrator-specific execution settings
   timeouts:
-    default_ms: 300
+    default_ms: 500
     by_module:
+      # Voting modules (complex consensus/coordination)
       AlternativeRealitySampler: 6000
       DynamicRiskController: 6000
       TimeHorizonAligner: 6000
       CollusionAuditor: 6000
+      EnhancedVotingCommitteeCoordinator: 8000
+      StrategyArbiter: 5000
+      # Auditing modules (complex analysis)
+      AuditingCoordinator: 5000
+      TradeExplanationAuditor: 4000
+      TradeThesisTracker: 4000
+      # Strategy modules (complex processing)
+      BiasAuditor: 4000
+      CurriculumPlannerPlus: 6000
+      ThesisEvolutionEngine: 5000
+      # Meta and analysis modules
+      MetaAgent: 5000
+      EnhancedAnomalyDetector: 8000
+      RiskAdjustedReward: 30000
+      # Simulation modules
+      OpponentSimulator: 4000
+      ShadowSimulator: 5000
+      EnhancedWorldModel: 6000
     by_category:
       voting: 5000
+      auditing: 4000
+      strategy: 4000
+      simulation: 4000
+      meta: 4000
   stage:
-    timeout_overhead_s: 6.0
+    timeout_overhead_s: 8.0
     timeout_pct_padding: 0.50
     pre_stage_readiness_preview: true
-    soft_schedule_on_missing_inputs: false
+    soft_schedule_on_missing_inputs: true
     heartbeat_interval_s: 6.0
     report_to_bus: true
+  # Auto-tuning timing configurations
+  adaptive:
+    auto_tune_timeouts: true
+    timeout_target_pctl: 0.95
+    timeout_floor_ms: 150
+    timeout_ceiling_ms: 10000
+    readiness_grace_s: 0.75
+    half_open_single_probe: true
+    stale_warn_s: 60.0
+    dynamic_config_bus_key: "config_update"
 
 monitoring:
   health_check_interval: 30
-  log_level: DEBUG
+  log_level: WARNING
   metrics_interval: 60
+  # Memory optimization
+  memory_warning_threshold: 80
+  memory_cleanup_threshold: 85
+  gc_frequency: 30
 
 system:
-  environment: development
+  environment: production
   name: Trading Agent System
   version: 1.0.0
+  # Memory management
+  max_memory_usage_mb: 12000
+  enable_memory_cleanup: true
+  log_rotation_size_mb: 100
 
 # Module-specific configurations
 modules:
@@ -109,7 +153,7 @@ modules:
       sensitivity: 0.8
       detection_methods: ['statistical', 'ml_based', 'pattern']
       alert_cooldown: 300
-      timeout_ms: 200
+      timeout_ms: 4000
 
   PortfolioRiskSystem:
     config:
@@ -216,6 +260,12 @@ modules:
       confidence_weighting: true
       consensus_threshold: 0.6
       timeout_ms: 2000
+      # Provide missing data keys
+      provides_data:
+        - fragility
+        - committee_members
+        - signals
+        - proposal_vectors
 
   EnhancedVotingCommitteeCoordinator:
     config:
@@ -240,7 +290,7 @@ modules:
       correction_strength: 0.5
       audit_window: 100
       bias_types: ['confirmation', 'anchoring', 'overconfidence']
-      timeout_ms: 300
+      timeout_ms: 2000
 
   CurriculumPlannerPlus:
     config:
@@ -248,7 +298,7 @@ modules:
       mastery_threshold: 0.8
       progression_rate: 0.05
       stage_duration: 1000
-      timeout_ms: 400
+      timeout_ms: 3000
 
   ExplanationGenerator:
     config:
@@ -332,6 +382,7 @@ modules:
   # Memory System
   UnifiedMemory:
     config:
+      # Legacy settings
       memory_capacity: 100000
       compression_ratio: 0.1
       retrieval_threshold: 0.7
@@ -339,13 +390,81 @@ modules:
       forgetting_rate: 0.001
       timeout_ms: 200
 
+      # Debug settings (optimized for performance)
+      debug: false
+      debug_level: "WARNING"
+      debug_log_path: "logs/memory/unified_debug.log"
+      enable_combined_log: false
+      enable_trace_log: false
+      trace_file_path: null
+      enable_debug_log: false
+      debug_file_path: null
+      enable_info_log: false
+      info_file_path: null
+      enable_warning_log: true
+      warning_file_path: null
+      enable_error_log: true
+      error_file_path: null
+
+      # Core settings (optimized)
+      max_memory_size: 5000
+      batch_size: 16
+      parallel_processing: true
+      cache_size: 5000
+
+      # Component enable flags (selective enabling)
+      enable_replay: true
+      enable_compression: false
+      enable_mistakes: true
+      enable_neural: false
+      enable_playbook: true
+      enable_budget: false
+
+      # Performance settings (faster)
+      max_processing_time_ms: 200
+      circuit_breaker_threshold: 3
+      health_check_interval: 60
+
+      # Replay settings
+      replay_interval: 10
+      replay_decay: 0.9
+      sequence_len: 5
+      replay_profit_threshold: 10.0
+
+      # Compression settings
+      n_components: 8
+      compress_interval: 10
+
+      # Mistakes settings
+      n_clusters: 5
+      danger_threshold: 0.7
+      avoidance_sensitivity: 1.0
+      mistake_profit_threshold: 10.0
+
+      # Neural settings
+      embed_dim: 32
+      num_heads: 4
+      memory_decay: 0.95
+      importance_threshold: 0.3
+
+      # Playbook settings
+      k_neighbors: 5
+      similarity_threshold: 0.7
+      pattern_memory_size: 50
+
+      # Budget settings
+      rebalance_interval: 50
+      utilization_target: 0.8
+      efficiency_weight: 0.7
+      recency_weight: 0.3
+
   # External Data Modules
   SessionManager:
     config:
       session_duration: 3600
-      health_check_interval: 30
+      health_check_interval: 60
       emergency_mode_threshold: 0.9
-      performance_tracking: true
+      performance_tracking: false
       timeout_ms: 100
 
   MarketDataProvider:
@@ -355,6 +474,27 @@ modules:
       cache_duration: 60
       quality_threshold: 0.95
       timeout_ms: 200
+      # Instrument configurations
+      instruments:
+        EUR/USD:
+          timeframes: ['H1', 'H4', 'D1']
+          enabled: true
+          priority: high
+        XAU/USD:
+          timeframes: ['H1', 'H4', 'D1']
+          enabled: true
+          priority: high
+      # Market data keys to provide
+      provides_data:
+        - market_data_EUR/USD_H1
+        - market_data_EUR/USD_H4
+        - market_data_EUR/USD_D1
+        - market_data_XAU/USD_H1
+        - market_data_XAU/USD_H4
+        - market_data_XAU/USD_D1
+        - volatility_data
+        - universe
+        - watched_instruments
 
   # Execution System
   Executor:
@@ -390,7 +530,8 @@ modules:
       return_weight: 0.7
       sharpe_target: 1.5
       max_drawdown_penalty: 2.0
-      timeout_ms: 150
+      timeout_ms: 30000
+      max_processing_time_ms: 30000
 
   # Auditing Modules
   AuditingCoordinator:
@@ -399,7 +540,7 @@ modules:
       audit_depth: 'comprehensive'
       report_format: 'detailed'
       alert_threshold: 0.8
-      timeout_ms: 300
+      timeout_ms: 2000
 
   TradeExplanationAuditor:
     config:
@@ -407,7 +548,7 @@ modules:
       min_explanation_quality: 0.7
       audit_all_trades: true
       explanation_timeout: 30
-      timeout_ms: 200
+      timeout_ms: 1500
 
   TradeThesisTracker:
     config:
@@ -415,7 +556,7 @@ modules:
       tracking_window: 50
       thesis_score_threshold: 0.6
       update_frequency: 10
-      timeout_ms: 200
+      timeout_ms: 1500
 
   # Features Modules
   MultiScaleFeatureEngine:
@@ -508,6 +649,9 @@ modules:
       risk_seasonality_threshold: 0.6
       adaptive_weighting: true
       timeout_ms: 300
+      # Provide missing expert votes
+      provides_data:
+        - expert_votes
 
   EnhancedThemeExpert:
     config:
@@ -516,6 +660,9 @@ modules:
       confidence_weighting: true
       adaptation_speed: 0.1
       timeout_ms: 250
+      # Provide missing expert votes
+      provides_data:
+        - expert_votes
 
   # Visualization modules
   TradeMapVisualizer:

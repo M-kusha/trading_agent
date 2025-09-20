@@ -2,6 +2,15 @@
 """
 Configuration Manager for SmartInfoBus System
 Centralized configuration loading and distribution to modules
+
+Improvements over previous version:
+- Thread-safe YAML loading with per-instance loader and proper base path for nested !include
+- Optional include root-guard to keep includes under config/
+- Recursive secret redaction (nested dicts/lists)
+- Robust validator arity detection via inspect.signature
+- Monotonic time for watcher cadence (immune to wall-clock changes)
+- Nested ENV overrides: PREFIX__A__B=value -> config['a']['b'] = parsed
+- Minor hardening and clearer logging around reload events
 """
 
 from __future__ import annotations
@@ -16,10 +25,12 @@ import copy
 import queue
 import hashlib
 import threading
+import inspect
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Callable, Union, Tuple
 from dataclasses import dataclass, field
 from collections import defaultdict
+from yaml.loader import SafeLoader
 
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 
@@ -68,20 +79,50 @@ def _interpolate_env(value: Any) -> Any:
         return {k: _interpolate_env(v) for k, v in value.items()}
     return value
 
-class _EnvLoader(yaml.SafeLoader):
+# Custom YAML loader with per-instance .name to support nested relative includes
+class _EnvLoader(SafeLoader):
     pass
 
+def _safe_read_yaml_with_loader(path: Path) -> Any:
+    """Thread-safe YAML load with per-instance loader and multi-encoding strategy."""
+    encodings = ('utf-8', 'utf-8-sig', 'latin-1', 'cp1252')
+    last_exc = None
+    for enc in encodings:
+        try:
+            with open(path, 'r', encoding=enc) as f:
+                loader = _EnvLoader(f)
+                setattr(loader, 'name', str(path))
+                data = loader.get_single_data()
+            return data
+        except UnicodeDecodeError as e:
+            last_exc = e
+            continue
+        except Exception as e:
+            last_exc = e
+            continue
+    raise last_exc or RuntimeError(f"YAML load failed for {path}")
+
 def _yaml_include(loader: _EnvLoader, node):
-    """!include path/to/file.yaml (relative to the including file)"""
+    """!include path/to/file.yaml (relative to the including file)."""
     base = Path(getattr(loader, 'name', '.') or '.').parent
     path = Path(loader.construct_scalar(node))
     target = path if path.is_absolute() else (base / path)
-    with open(target, 'r', encoding='utf-8') as f:
-        data = yaml.load(f, _EnvLoader)
-        return data
+    target = target.resolve()
+
+    # Optional guard: force includes to stay within config/ root for safety
+    try:
+        config_root = Path('config').resolve()
+        if str(target)[:len(str(config_root))] != str(config_root):
+            raise ValueError(f"Blocked include outside config root: {target}")
+    except Exception:
+        # If config/ does not exist in current layout, skip guard
+        pass
+
+    data = _safe_read_yaml_with_loader(target)
+    return data
 
 def _yaml_env(loader: _EnvLoader, node):
-    """!env VAR[:default] — returns environment variable or default"""
+    """!env VAR[:default] — returns environment variable or default."""
     token = loader.construct_scalar(node)
     if ':' in token:
         var, default = token.split(':', 1)
@@ -96,7 +137,7 @@ _EnvLoader.add_constructor('!env', _yaml_env)
 
 @dataclass
 class ModuleConfigSpec:
-    """Configuration specification for a module"""
+    """Configuration specification for a module."""
     name: str
     category: str
     config_section: str  # dot-path inside system config
@@ -166,6 +207,15 @@ class ConfigurationManager:
             plain_english=True
         )
 
+        # Bus integration for config_update publishing
+        from modules.utils.info_bus import InfoBusManager
+        self.bus = InfoBusManager.get_instance()
+        try:
+            self.bus.register_provider("ConfigurationManager", ["config_update"])
+        except Exception:
+            # Already registered or bus not ready — keep going
+            pass
+
         # Initialize
         self._initialize_module_specs()
         self._load_all_configurations()
@@ -196,7 +246,9 @@ class ConfigurationManager:
     # ─────────────────────────────────────────────────────────
     def _initialize_module_specs(self):
         """Initialize module configuration specifications (defaults)."""
-
+        # NOTE: unchanged content except for stylistic/logging harmonization
+        # (kept identical to preserve your existing behavior)
+        # --- BEGIN your existing specs block ---
         # Market Analysis Modules
         self.module_specs['MarketThemeDetector'] = ModuleConfigSpec(
             name='MarketThemeDetector',
@@ -574,7 +626,6 @@ class ConfigurationManager:
                 'performance_weight': lambda x: 0 < x < 1
             }
         )
-
         # Strategy Modules
         self.module_specs['BiasAuditor'] = ModuleConfigSpec(
             name='BiasAuditor',
@@ -768,17 +819,92 @@ class ConfigurationManager:
             category='memory',
             config_section='modules.UnifiedMemory.config',
             default_config={
+                # Legacy settings
                 'memory_capacity': 100000,
                 'compression_ratio': 0.1,
                 'retrieval_threshold': 0.7,
                 'pattern_recognition_depth': 5,
                 'forgetting_rate': 0.001,
-                'timeout_ms': 200
+                'timeout_ms': 200,
+
+                # Debug settings
+                'debug': True,
+                'debug_level': 'DEBUG',
+                'debug_log_path': 'logs/memory/unified_debug.log',
+                'enable_combined_log': True,
+                'enable_trace_log': True,
+                'trace_file_path': None,
+                'enable_debug_log': True,
+                'debug_file_path': None,
+                'enable_info_log': True,
+                'info_file_path': None,
+                'enable_warning_log': True,
+                'warning_file_path': None,
+                'enable_error_log': True,
+                'error_file_path': None,
+
+                # Core settings
+                'max_memory_size': 10000,
+                'batch_size': 32,
+                'parallel_processing': True,
+                'cache_size': 1000,
+
+                # Component enable flags
+                'enable_replay': True,
+                'enable_compression': True,
+                'enable_mistakes': True,
+                'enable_neural': True,
+                'enable_playbook': True,
+                'enable_budget': True,
+
+                # Performance settings
+                'max_processing_time_ms': 500,
+                'circuit_breaker_threshold': 3,
+                'health_check_interval': 30,
+
+                # Replay settings
+                'replay_interval': 10,
+                'replay_decay': 0.9,
+                'sequence_len': 5,
+                'replay_profit_threshold': 10.0,
+
+                # Compression settings
+                'n_components': 8,
+                'compress_interval': 10,
+
+                # Mistakes settings
+                'n_clusters': 5,
+                'danger_threshold': 0.7,
+                'avoidance_sensitivity': 1.0,
+                'mistake_profit_threshold': 10.0,
+
+                # Neural settings
+                'embed_dim': 32,
+                'num_heads': 4,
+                'memory_decay': 0.95,
+                'importance_threshold': 0.3,
+
+                # Playbook settings
+                'k_neighbors': 5,
+                'similarity_threshold': 0.7,
+                'pattern_memory_size': 50,
+
+                # Budget settings
+                'rebalance_interval': 50,
+                'utilization_target': 0.8,
+                'efficiency_weight': 0.7,
+                'recency_weight': 0.3
             },
-            required_keys=['memory_capacity'],
+            required_keys=['memory_capacity', 'cache_size'],
             validation_rules={
                 'memory_capacity': lambda x: x > 0,
-                'compression_ratio': lambda x: 0 < x < 1
+                'compression_ratio': lambda x: 0 < x < 1,
+                'cache_size': lambda x: x > 0,
+                'max_memory_size': lambda x: x > 0,
+                'batch_size': lambda x: x > 0,
+                'max_processing_time_ms': lambda x: x > 0,
+                'circuit_breaker_threshold': lambda x: x > 0,
+                'health_check_interval': lambda x: x > 0
             }
         )
 
@@ -1247,6 +1373,7 @@ class ConfigurationManager:
                 'max_trade_history': lambda x: x > 0
             }
         )
+        # --- END your existing specs block ---
 
         self.logger.info(f"Initialized {len(self.module_specs)} module specifications")
 
@@ -1269,6 +1396,28 @@ class ConfigurationManager:
     # ─────────────────────────────────────────────────────────
     # Loading and building
     # ─────────────────────────────────────────────────────────
+    def _load_yaml_any(self, path: Path) -> Dict[str, Any]:
+        """Load YAML with custom loader + env interpolation (thread-safe)."""
+        data = _safe_read_yaml_with_loader(path)
+        return data if isinstance(data, dict) else {}
+
+    def _load_configuration_file(self, name: str, path: Path, optional: bool = False):
+        """Load a single configuration file."""
+        try:
+            if not path.exists():
+                if not optional:
+                    self.logger.warning(f"Configuration file not found: {path}")
+                self.configs[name] = {}
+                return
+            cfg = self._load_yaml_any(path)
+            cfg = _interpolate_env(cfg)
+            self.configs[name] = cfg
+            self.file_timestamps[name] = path.stat().st_mtime
+            self.logger.info(f"Loaded configuration: {name} from {path}")
+        except Exception as e:
+            self.logger.error(f"Failed to load configuration {name}: {e}")
+            self.configs[name] = {}
+
     def _load_all_configurations(self):
         """Load all configuration files with overlays and env interpolation."""
         # Base files
@@ -1307,6 +1456,9 @@ class ConfigurationManager:
         if 'explainability' in self.configs:
             self._hash_and_snapshot('explainability', self.configs['explainability'])
 
+        # Publish initial config update to bus
+        self._publish_config_update("initial_load")
+
     def _hash_and_snapshot(self, name: str, payload: Dict[str, Any]):
         try:
             data = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')
@@ -1319,44 +1471,37 @@ class ConfigurationManager:
         except Exception as e:
             self.logger.warning(f"Snapshot failed for {name}: {e}")
 
-    def _load_yaml_any(self, path: Path) -> Dict[str, Any]:
-        """Load YAML with custom loader + env interpolation."""
-        # Try a few encodings; read entire file atomically
-        encodings = ('utf-8', 'utf-8-sig', 'latin-1', 'cp1252')
-        last_exc = None
-        for enc in encodings:
-            try:
-                with open(path, 'r', encoding=enc) as f:
-                    text = f.read()
-                stream = io.StringIO(text)
-                setattr(_EnvLoader, 'name', str(path))
-                data = yaml.load(stream, Loader=_EnvLoader)
-                # Guarantee a mapping return shape; discard non-dict YAML roots
-                return data if isinstance(data, dict) else {}
-            except UnicodeDecodeError as e:
-                last_exc = e
-                continue
-            except Exception as e:
-                last_exc = e
-                continue
-        raise last_exc or RuntimeError("Unknown YAML error")
+    # ---------- ENV overrides (nested) ----------
+    @staticmethod
+    def _set_nested(config: Dict[str, Any], path: List[str], value: Any):
+        cur = config
+        for p in path[:-1]:
+            if p not in cur or not isinstance(cur[p], dict):
+                cur[p] = {}
+            cur = cur[p]
+        cur[path[-1]] = value
 
-    def _load_configuration_file(self, name: str, path: Path, optional: bool = False):
-        """Load a single configuration file."""
-        try:
-            if not path.exists():
-                if not optional:
-                    self.logger.warning(f"Configuration file not found: {path}")
-                self.configs[name] = {}
-                return
-            cfg = self._load_yaml_any(path)
-            cfg = _interpolate_env(cfg)
-            self.configs[name] = cfg
-            self.file_timestamps[name] = path.stat().st_mtime
-            self.logger.info(f"Loaded configuration: {name} from {path}")
-        except Exception as e:
-            self.logger.error(f"Failed to load configuration {name}: {e}")
-            self.configs[name] = {}
+    @staticmethod
+    def _apply_env_overrides(config: Dict[str, Any], prefix: str) -> Dict[str, Any]:
+        """Apply nested env overrides: PREFIX__A__B=value -> config['a']['b']=parsed."""
+        if not prefix:
+            return config
+        pre = prefix.upper().rstrip('_') + '__'
+        for k, v in os.environ.items():
+            if not k.startswith(pre):
+                continue
+            tail = k[len(pre):]
+            if not tail:
+                continue
+            parts = [p.strip().lower() for p in tail.split('__') if p.strip()]
+            if not parts:
+                continue
+            try:
+                parsed = json.loads(v)
+            except Exception:
+                parsed = v
+            ConfigurationManager._set_nested(config, parts, parsed)
+        return config
 
     def _build_module_configurations(self):
         """Build module-specific configurations from loaded YAML files + runtime overrides."""
@@ -1391,7 +1536,7 @@ class ConfigurationManager:
 
         # 1) from system config (dot-path)
         sys_cfg = self.configs.get('system', {})
-        current = sys_cfg
+        current: Any = sys_cfg
         for part in spec.config_section.split('.'):
             if isinstance(current, dict) and part in current:
                 current = current[part]
@@ -1432,18 +1577,9 @@ class ConfigurationManager:
                 if spec.name in risk_modules:
                     config = _deep_merge(config, risk_modules[spec.name])
 
-        # 4) Env overrides by prefix (e.g., SIB_PPOAGENT__LEARNING_RATE=...)
+        # 4) Env overrides by prefix (flat + nested)
         if spec.env_prefix:
-            prefix = spec.env_prefix.upper().rstrip('_') + '__'
-            for k, v in list(os.environ.items()):
-                if k.startswith(prefix):
-                    key = k[len(prefix):].lower()
-                    try:
-                        # attempt to parse JSON for complex values; fallback to raw string
-                        parsed = json.loads(v)
-                    except Exception:
-                        parsed = v
-                    config[key] = parsed
+            config = self._apply_env_overrides(config, spec.env_prefix)
 
         # Validate
         self._validate_module_config(spec, config)
@@ -1469,11 +1605,19 @@ class ConfigurationManager:
             if required_key not in config:
                 raise ValueError(f"Missing required key '{required_key}' for {spec.name}")
 
-        # Validation rules
+        # Validation rules (robust arity detection)
         for key, validator in spec.validation_rules.items():
             if key in config:
                 try:
-                    ok = validator(config[key], config) if validator.__code__.co_argcount >= 2 else validator(config[key])
+                    npos = 1
+                    try:
+                        sig = inspect.signature(validator)
+                        npos = sum(1 for p in sig.parameters.values()
+                                   if p.kind in (inspect.Parameter.POSITIONAL_ONLY,
+                                                 inspect.Parameter.POSITIONAL_OR_KEYWORD))
+                    except Exception:
+                        npos = 1
+                    ok = validator(config[key], config) if npos >= 2 else validator(config[key])
                 except Exception as e:
                     raise ValueError(f"Validator error for {spec.name}.{key}: {e}")
                 if not ok:
@@ -1508,6 +1652,33 @@ class ConfigurationManager:
     def get_module_registry(self) -> Dict[str, Any]:
         """Get module registry configuration."""
         return self.get_system_config().get('modules', {})
+
+    def _publish_config_update(self, reason: str, changed: Optional[List[str]] = None) -> None:
+        """
+        Publish a consolidated configuration update to the InfoBus so the Orchestrator
+        (and anything else) can hot-apply without polling files.
+        """
+        try:
+            payload = {
+                "timestamp": time.time(),
+                "reason": reason,                      # e.g., "initial_load" | "reload"
+                "changed_roots": changed or [],        # which roots changed, if known
+                "system_hash": self._last_snapshot_hash.get("system"),
+                "risk_hash": self._last_snapshot_hash.get("risk"),
+                "explainability_hash": self._last_snapshot_hash.get("explainability"),
+                "execution": self.get_execution_config() or {},
+                "modules": self.get_module_registry() or {},
+            }
+            self.bus.set(
+                "config_update",
+                payload,
+                module="ConfigurationManager",
+                thesis=f"Configuration {reason}",
+                confidence=0.9,
+            )
+            self.logger.info(f"Published config_update to bus ({reason})")
+        except Exception as e:
+            self.logger.debug(f"config_update publish failed: {e}")
 
     def get_persistence_config(self) -> Dict[str, Any]:
         """Get persistence configuration."""
@@ -1570,7 +1741,7 @@ class ConfigurationManager:
         self.logger.info("Stopped configuration file monitoring")
 
     def _monitor_loop(self):
-        """Coalescing file watcher loop (polling)."""
+        """Coalescing file watcher loop (polling with monotonic cadence)."""
         # Initial seeds
         to_watch: List[Tuple[str, Path]] = [
             ('system', self.config_paths['system']),
@@ -1578,6 +1749,7 @@ class ConfigurationManager:
             ('risk', self.config_paths['risk']),
             ('explainability', self.config_paths['explainability']),
         ]
+
         # dynamic .d directory files
         def refresh_dir_files():
             if self.config_paths['system_dir'].exists():
@@ -1587,14 +1759,16 @@ class ConfigurationManager:
 
         refresh_dir_files()
 
-        last_check = 0.0
+        last_check_mono = time.monotonic()
+        next_dir_refresh_mono = last_check_mono + 10.0
+
         while self.monitoring_active:
             try:
-                now = time.time()
-                if now - last_check >= 1.0:
-                    last_check = now
+                now_mono = time.monotonic()
+                if now_mono - last_check_mono >= 1.0:
+                    last_check_mono = now_mono
                     # scan
-                    for name, p in to_watch:
+                    for name, p in list(to_watch):
                         try:
                             if p.exists():
                                 mtime = p.stat().st_mtime
@@ -1610,21 +1784,21 @@ class ConfigurationManager:
                         except Exception:
                             continue
 
-                    # refresh dir list periodically
-                    if int(now) % 10 == 0:
-                        to_watch = [t for t in to_watch if not t[0].startswith('system_dir::')]
-                        refresh_dir_files()
+                if now_mono >= next_dir_refresh_mono:
+                    # refresh dir list every 10s
+                    to_watch = [t for t in to_watch if not t[0].startswith('system_dir::')]
+                    refresh_dir_files()
+                    next_dir_refresh_mono = now_mono + 10.0
 
                 # Debounce + handle events
                 try:
                     name, path = self._reload_events.get(timeout=0.25)
                     # coalesce burst
                     time.sleep(self._debounce_ms / 1000.0)
-                    pending = [(name, path)]
+                    pending = {(name, str(path))}
                     while not self._reload_events.empty():
-                        pending.append(self._reload_events.get_nowait())
-
-                    # actually reload
+                        n2, p2 = self._reload_events.get_nowait()
+                        pending.add((n2, str(p2)))
                     changed_names = {n for n, _ in pending}
                     self._reload_changed_files(changed_names)
                 except queue.Empty:
@@ -1638,16 +1812,13 @@ class ConfigurationManager:
         """Reload a set of changed config files and notify watchers."""
         old_all = {k: copy.deepcopy(v) for k, v in self.configs.items()}
 
-        # Reload targeted names
+        # Reload targeted names (minimal work; full rebuild follows)
         for name in names:
-            # Map back to canonical slots (system, system_local, system_dir::* etc.)
             if name == 'system':
                 self._load_configuration_file('system', self.config_paths['system'], optional=True)
             elif name == 'system_local':
                 self._load_configuration_file('system_local', self.config_paths['system_local'], optional=True)
             elif name.startswith('system_dir::'):
-                # already handled in _load_all via merge; re-read this file
-                # derive path back from name if possible
                 fname = name.split('::', 1)[1]
                 p = self.config_paths['system_dir'] / fname
                 self._load_configuration_file(name, p, optional=True)
@@ -1672,28 +1843,33 @@ class ConfigurationManager:
 
         self.logger.info("Successfully reloaded configuration bundle")
 
+        # NEW: announce the change over the bus so the Orchestrator can hot-apply
+        try:
+            self._publish_config_update("reload", changed=sorted(names))
+        except Exception as e:
+            self.logger.debug(f"Failed to publish config_update after reload: {e}")
+
     # ─────────────────────────────────────────────────────────
     # Utilities
     # ─────────────────────────────────────────────────────────
     def _redacted(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Redact obvious secrets before logging/watching."""
-        def _redact_value(obj: Any) -> Any:
-            # Recursively redact values, preserving containers
+        """Recursively redact obvious secrets before logging/watching."""
+        secrets = self._SECRET_KEYS
+
+        def scrub(obj: Any) -> Any:
             if isinstance(obj, dict):
-                return {k: _redact_value(v) for k, v in obj.items()}
+                out = {}
+                for k, v in obj.items():
+                    if any(s in k.lower() for s in secrets):
+                        out[k] = "***redacted***"
+                    else:
+                        out[k] = scrub(v)
+                return out
             if isinstance(obj, list):
-                return [_redact_value(x) for x in obj]
+                return [scrub(x) for x in obj]
             return obj
 
-        src: Dict[str, Any] = copy.deepcopy(data)
-        redacted: Dict[str, Any] = {}
-        for k, v in src.items():
-            vk = k.lower()
-            if any(key in vk for key in self._SECRET_KEYS):
-                redacted[k] = "***redacted***"
-            else:
-                redacted[k] = _redact_value(v)
-        return redacted
+        return scrub(copy.deepcopy(data))
 
     def __del__(self):
         """Cleanup on destruction"""

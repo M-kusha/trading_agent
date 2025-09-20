@@ -300,7 +300,7 @@ class RiskAdjustedReward(
     async def process(self, **inputs) -> Dict[str, Any]:
         async with self._process_lock:
             start_time = time.time()
-            budget_s = getattr(self.cfg, "max_processing_time_ms", 3000) / 1000.0
+            budget_s = getattr(self.cfg, "max_processing_time_ms", 30000) / 1000.0
 
             try:
                 if self.debug_manager.enabled:

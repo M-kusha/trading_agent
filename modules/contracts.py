@@ -278,7 +278,9 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'agreement_score', 'consensus_direction', 'member_confidences', 'raw_proposals',
             'strategy_arbiter_weights',
             # theme surfaces
-            'theme_voting_proposal', 'theme_confidence'
+            'theme_voting_proposal', 'theme_confidence',
+            # expert voting data
+            'expert_votes'
         ],
         requires=['market_data', 'price_data', 'technical_indicators', 'market_regime', 'market_open'],
         meta={'is_voting_member': True, 'thesis_required': True, 'explainable': True, 'health_monitoring': True,
@@ -294,7 +296,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
         # normalize to seasonality_*; include seasonal_* aliases for backward compatibility
         provides=['seasonality_risk_analysis', 'seasonal_voting_proposal', 'seasonal_confidence',
                   'seasonality_analysis', 'seasonality_voting_proposal', 'seasonality_confidence',
-                  'EnhancedSeasonalityRiskExpert_confidence', 'EnhancedSeasonalityRiskExpert_voting_proposal'],
+                  'EnhancedSeasonalityRiskExpert_confidence', 'EnhancedSeasonalityRiskExpert_voting_proposal',
+                  'expert_votes'],
         requires=['market_data', 'price_data', 'technical_indicators', 'market_regime', 'market_open'],
         meta={'is_voting_member': False, 'thesis_required': True, 'explainable': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'voting', 'version': '4.0.0'}
@@ -367,7 +370,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='VotingKernel',
         file='voting/voting_kernel.py',
         provides=['decision_coordination', 'voting_consensus', 'consensus_summary',
-                  'voting_metrics', 'decision_bundle', 'trade_vote_v2'],
+                  'voting_metrics', 'decision_bundle', 'trade_vote_v2',
+                  'fragility', 'committee_members', 'signals', 'proposal_vectors'],
         # keep the minimal, current implementation requires to avoid orchestration stalls
         requires=['market_data', 'price_data', 'technical_indicators', 'market_regime', 'portfolio_state'],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
@@ -439,7 +443,11 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'module_insights', 'multi_timeframe_data', 'ohlcv_data', 'price_data', 'prices',
             'session_type', 'step_data', 'step_idx', 'strategy_status', 'symbols',
             'technical_indicators', 'timestamp', 'trading_session', 'volatility', 'volatility_data',
-            'volatility_level', 'volume_data', 'liquidity_data'
+            'volatility_level', 'volume_data', 'liquidity_data',
+            # Specific instrument data
+            'market_data_EUR/USD_H1', 'market_data_EUR/USD_H4', 'market_data_EUR/USD_D1',
+            'market_data_XAU/USD_H1', 'market_data_XAU/USD_H4', 'market_data_XAU/USD_D1',
+            'universe', 'watched_instruments'
         ],
         requires=[],
         meta={'is_voting_member': False, 'thesis_required': False, 'explainable': False,
@@ -477,7 +485,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
     'PositionManager': ModuleContract(
         name='PositionManager',
         file='position/position.py',
-        provides=['position_decisions', 'position_health', 'portfolio_state', 'order_queue'],
+        provides=['position_decisions', 'position_health', 'portfolio_state', 'order_queue', 'position_data'],
         requires=['environment_config', 'indicators', 'liquidity_capabilities', 'liquidity_score',
                   'market_conditions', 'market_context', 'market_data', 'market_liquidity',
                   'market_regime', 'price_data', 'prices', 'technical_indicators',
