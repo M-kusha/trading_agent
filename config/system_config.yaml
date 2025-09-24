@@ -42,7 +42,7 @@ execution:
     timeout_overhead_s: 8.0
     timeout_pct_padding: 0.50
     pre_stage_readiness_preview: true
-    soft_schedule_on_missing_inputs: true
+    soft_schedule_on_missing_inputs: false
     heartbeat_interval_s: 6.0
     report_to_bus: true
   # Auto-tuning timing configurations
@@ -51,7 +51,7 @@ execution:
     timeout_target_pctl: 0.95
     timeout_floor_ms: 150
     timeout_ceiling_ms: 10000
-    readiness_grace_s: 0.75
+    readiness_grace_s: 1.5
     half_open_single_probe: true
     stale_warn_s: 60.0
     dynamic_config_bus_key: "config_update"

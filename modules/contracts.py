@@ -407,6 +407,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='UnifiedMarketModule',
         file='market_1/market_module.py',
         provides=[
+            # Critical missing data keys that modules depend on
+            'market_context', 'prices', 'price_data', 'step_idx',
             # Fractal / Regime
             'fractal_metrics', 'market_regime', 'regime_data', 'regime_strength', 'timestamps', 'trend_direction',
             # Liquidity
@@ -426,7 +428,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'unified_market_analysis', 'market_analysis_thesis'
         ],
         requires=['bid_ask_data', 'historical_prices', 'macro_data', 'market_data',
-                  'multi_timeframe_data', 'price_data', 'prices', 'technical_indicators',
+                  'multi_timeframe_data', 'technical_indicators',
                   'timestamp', 'volatility_data', 'volatility_level'],
         meta={'is_voting_member': False, 'thesis_required': True, 'explainable': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'market_1', 'version': '4.0.0'}

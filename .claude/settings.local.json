@@ -1,7 +1,18 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(git checkout:*)",
+      "Bash(npm run build:*)",
+      "Bash(npx eslint:*)",
+      "Bash(sed:*)",
+      "Bash(cp:*)",
+      "Bash(xxd:*)",
+      "Bash(dos2unix:*)",
+      "Bash(unix2dos:*)",
+      "Bash(npm run lint)"
     ],
     "deny": [],
     "ask": []

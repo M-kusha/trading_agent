@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Enhanced AI Trading System Backend - Complete Version
 FastAPI server with comprehensive module integration and enhanced training metrics
@@ -9,11 +9,12 @@ import asyncio
 import json
 import logging
 import os
+import random
 import subprocess
 import sys
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
 import glob
@@ -27,10 +28,16 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import MetaTrader5 as _mt5
+import yaml
+import re
 import websockets
 
 # Help Pylance with third-party modules that lack type stubs
 mt5: Any = cast(Any, _mt5)
+
+# Import modules to ensure they are registered with the ModuleOrchestrator
+# This is critical for the @module decorator to run and register modules
+from modules.market_1.market_module import UnifiedMarketModule  # Provides market_context, prices, price_data, step_idx
 
 # Fix Windows encoding issues
 if sys.platform == "win32":
@@ -130,9 +137,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ═══════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # Data Models
-# ═══════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 class LoginRequest(BaseModel):
     login: int
@@ -198,9 +205,9 @@ class ModuleStatus(BaseModel):
     metrics: Dict[str, Any]
     errors: List[str]
 
-# ═══════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # Global State Management
-# ═══════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 class EnhancedTradingSystemState:
     """Advanced state management with comprehensive module tracking"""
@@ -211,6 +218,7 @@ class EnhancedTradingSystemState:
     trading_task: Optional[asyncio.Task[Any]]
     tensorboard_process: Optional[subprocess.Popen[bytes]]
     monitoring_tasks: List[asyncio.Task[Any]]
+    broadcast_lock: Optional[asyncio.Lock]
 
     training_mode: Optional[str]
     training_metrics: Dict[str, Any]
@@ -292,161 +300,26 @@ class EnhancedTradingSystemState:
             "max_consecutive_losses": 0,
         }
         
-        # Comprehensive module states
-        self.module_states = {
-            # Core trading modules
-            "position_manager": {
-                "enabled": True,
-                "status": "idle",
-                "open_positions": {},
-                "total_exposure": 0.0,
-                "position_count": 0,
-                "avg_holding_time": 0.0,
-                "position_sizes": {},
-                "instrument_exposures": {},
-                "last_signal": None,
-                "signal_strength": 0.0,
-                "confidence_scores": {},
-                "decision_rationale": {},
-                "errors": [],
-                "last_update": datetime.now().isoformat()
-            },
-            
-            # Risk management
-            "risk_controller": {
-                "enabled": True,
-                "status": "monitoring",
-                "risk_scale": 1.0,
-                "risk_level": "NORMAL",
-                "volatility": {},
-                "var_95": 0.0,
-                "var_99": 0.0,
-                "drawdown": 0.0,
-                "volatility_ratio": 1.0,
-                "risk_budget_used": 0.0,
-                "freeze_counter": 0,
-                "emergency_stops": 0,
-                "risk_violations": [],
-                "errors": [],
-                "last_update": datetime.now().isoformat()
-            },
-            
-            # Strategy committee
-            "strategy_arbiter": {
-                "enabled": True,
-                "status": "voting",
-                "consensus": 0.0,
-                "member_votes": {},
-                "member_weights": [],
-                "gate_status": "OPEN",
-                "voting_history": [],
-                "collusion_score": 0.0,
-                "vote_distribution": {},
-                "last_decision": None,
-                "decision_confidence": 0.0,
-                "errors": [],
-                "last_update": datetime.now().isoformat()
-            },
-            
-            # Execution monitoring
-            "execution_monitor": {
-                "enabled": True,
-                "status": "monitoring",
-                "slippage": 0.0,
-                "fill_rate": 1.0,
-                "avg_spread": 0.0,
-                "execution_quality": 1.0,
-                "latency_ms": 0.0,
-                "rejections": 0,
-                "partial_fills": 0,
-                "execution_costs": 0.0,
-                "errors": [],
-                "last_update": datetime.now().isoformat()
-            },
-            
-            # Market analysis
-            "theme_detector": {
-                "enabled": True,
-                "status": "analyzing",
-                "active_themes": [],
-                "theme_strengths": {},
-                "market_regime": "NEUTRAL",
-                "regime_confidence": 0.0,
-                "theme_transitions": [],
-                "volatility_regime": "NORMAL",
-                "errors": [],
-                "last_update": datetime.now().isoformat()
-            },
-            
-            # Correlation and portfolio risk
-            "correlation_controller": {
-                "enabled": True,
-                "status": "monitoring",
-                "correlation_matrix": {},
-                "max_correlation": 0.0,
-                "risk_concentration": {},
-                "diversification_ratio": 1.0,
-                "correlation_warnings": [],
-                "errors": [],
-                "last_update": datetime.now().isoformat()
-            },
-            
-            # Drawdown protection
-            "drawdown_rescue": {
-                "enabled": True,
-                "status": "monitoring",
-                "drawdown_level": 0.0,
-                "drawdown_velocity": 0.0,
-                "rescue_mode": False,
-                "recovery_progress": 0.0,
-                "max_drawdown_session": 0.0,
-                "errors": [],
-                "last_update": datetime.now().isoformat()
-            },
-            
-            # Memory systems
-            "memory_systems": {
-                "enabled": True,
-                "status": "learning",
-                "mistake_count": 0,
-                "playbook_size": 0,
-                "memory_usage": 0.0,
-                "compression_ratio": 1.0,
-                "learning_rate": 0.0,
-                "memory_efficiency": 1.0,
-                "pattern_matches": 0,
-                "errors": [],
-                "last_update": datetime.now().isoformat()
-            },
-            
-            # Anomaly detection
-            "anomaly_detector": {
-                "enabled": True,
-                "status": "scanning",
-                "anomaly_score": 0.0,
-                "anomalies_detected": [],
-                "false_positive_rate": 0.0,
-                "detection_sensitivity": 0.5,
-                "errors": [],
-                "last_update": datetime.now().isoformat()
-            },
-            
-            # Regime detection
-            "regime_detector": {
-                "enabled": True,
-                "status": "analyzing",
-                "current_regime": "NORMAL",
-                "regime_probability": {},
-                "regime_duration": 0,
-                "regime_changes_today": 0,
-                "errors": [],
-                "last_update": datetime.now().isoformat()
-            },
-        }
+        # Initialize module states - will be populated from real modules
+        self.module_states = {}
+
+        # Populate modules from orchestrator if present; else optionally merge from registry
+        try:
+            if self._sync_modules_from_orchestrator():
+                logger.info("[BOOT] Synced modules from Orchestrator")
+            else:
+                try:
+                    self._merge_registry_modules('config/module_registry.yaml')
+                except Exception as e:
+                    logger.warning(f"[BOOT] Failed to merge registry modules: {e}")
+        except Exception as e:
+            logger.warning(f"[BOOT] Module population warning: {e}")
         
         # WebSocket connections
         self.websocket_connections = []
         self.training_websocket_connections = []
+        # Broadcast coordination (initialized on startup when loop is available)
+        self.broadcast_lock: Optional[asyncio.Lock] = None
         
         # Error and warning tracking
         self.errors = []
@@ -477,6 +350,97 @@ class EnhancedTradingSystemState:
             return f"{hours}h {minutes}m"
         else:
             return f"{minutes}m {seconds}s"
+
+    def _merge_registry_modules(self, registry_path: str) -> None:
+        """Load module names from YAML registry and ensure placeholder state exists for each.
+
+        Keeps existing modules intact; adds missing entries with sensible defaults so the
+        frontend can display the full set (e.g., 56 modules) immediately.
+        """
+        try:
+            if not os.path.exists(registry_path):
+                return
+            with open(registry_path, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f) or {}
+            mods = data.get('modules', {}) or {}
+            now = datetime.now().isoformat()
+            for name in mods.keys():
+                if name in self.module_states:
+                    continue
+                # Derive a generic status from category if available
+                cat = (mods.get(name, {}) or {}).get('category', '')
+                status = 'monitoring' if cat in ('risk', 'auditing') else ('analyzing' if cat in ('features','strategy','voting','models','simulation') else 'idle')
+                self.module_states[name] = {
+                    "enabled": True,
+                    "status": status.upper() if isinstance(status, str) else 'IDLE',
+                    "category": (cat or '').lower() or 'other',
+                    "last_update": now,
+                    "errors": [],
+                }
+        except Exception as e:
+            raise
+
+    def _sync_modules_from_orchestrator(self) -> bool:
+        """Sync module_states from the live ModuleOrchestrator (no placeholders).
+
+        Returns True if successfully synced; False if orchestrator not available.
+        """
+        try:
+            from modules.core.module_system import ModuleOrchestrator  # type: ignore
+        except Exception:
+            return False
+
+        try:
+            orch = ModuleOrchestrator._instance or ModuleOrchestrator.get_instance()  # type: ignore[attr-defined]
+        except Exception:
+            return False
+
+        try:
+            mods = getattr(orch, 'modules', {}) or {}
+            meta = getattr(orch, 'metadata', {}) or {}
+            perf = getattr(orch, 'module_performance', {}) or {}
+            bus = getattr(orch, 'smart_bus', None)
+            now = datetime.now().isoformat()
+
+            new_states: Dict[str, Dict[str, Any]] = {}
+            for name in mods.keys():
+                m = meta.get(name)
+                cat = ''
+                try:
+                    cat = getattr(m, 'category', '') if m is not None else ''
+                except Exception:
+                    cat = ''
+                enabled = True
+                try:
+                    if bus is not None and hasattr(bus, 'is_module_enabled'):
+                        enabled = bool(bus.is_module_enabled(name))  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+                p = perf.get(name, {}) if isinstance(perf, dict) else {}
+                status = 'idle'
+                try:
+                    # Heuristic: if recent avg_time_ms exists or success_rate shown, mark monitoring/active
+                    avg_ms = float(p.get('avg_time_ms', 0.0) or 0.0)
+                    err_rate = float(p.get('error_rate', 0.0) or 0.0)
+                    if avg_ms > 0.0:
+                        status = 'monitoring' if err_rate < 0.5 else 'error'
+                except Exception:
+                    pass
+
+                new_states[name] = {
+                    'enabled': enabled,
+                    'status': status,
+                    'category': (cat or 'other').lower(),
+                    'last_update': now,
+                    'errors': [],
+                }
+
+            if new_states:
+                self.module_states = new_states
+                return True
+            return False
+        except Exception:
+            return False
     
     def add_error(self, error: str, module: str = "system"):
         """Add error with enhanced tracking"""
@@ -508,6 +472,22 @@ class EnhancedTradingSystemState:
         }
         self.warnings.append(warning_entry)
         self.warnings = self.warnings[-1000:]
+        
+    def get_category_summary(self) -> Dict[str, Any]:
+        """Summarize module counts by category (total/enabled/errors/active)."""
+        summary: Dict[str, Dict[str, int]] = {}
+        for name, mod in self.module_states.items():
+            cat = str(mod.get("category", "unknown")).lower()
+            bucket = summary.setdefault(cat, {"total": 0, "enabled": 0, "with_errors": 0, "active": 0})
+            bucket["total"] += 1
+            if mod.get("enabled", False):
+                bucket["enabled"] += 1
+            if mod.get("errors"):
+                bucket["with_errors"] += 1
+            status = str(mod.get("status", "")).lower()
+            if status not in ("idle", "unknown", "disabled"):
+                bucket["active"] += 1
+        return summary
         
     def add_alert(self, alert: str, severity: str = "info", module: str = "system"):
         """Add system alert"""
@@ -550,9 +530,9 @@ class EnhancedTradingSystemState:
 # Global state instance
 state = EnhancedTradingSystemState()
 
-# ═══════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # Training Metrics WebSocket Server
-# ═══════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 class TrainingMetricsServer:
     """WebSocket server to receive metrics from training process"""
@@ -604,9 +584,9 @@ class TrainingMetricsServer:
 # Global training metrics server
 training_metrics_server = TrainingMetricsServer()
 
-# ═══════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # MT5 Integration
-# ═══════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def connect_mt5(login: int, password: str, server: str) -> Dict[str, Any]:
     """Enhanced MT5 connection with comprehensive error handling"""
@@ -681,9 +661,9 @@ def disconnect_mt5():
         state.add_error(error_msg, "mt5")
         logger.error(error_msg)
 
-# ═══════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # Live Trading System
-# ═══════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 async def start_live_trading(config: LiveTradingConfig):
     """Enhanced live trading with comprehensive monitoring"""
@@ -698,7 +678,7 @@ async def start_live_trading(config: LiveTradingConfig):
         model_path = "models/ppo_trading_model.zip"
         if not os.path.exists(model_path):
             # Try alternative paths
-            alt_paths = ["models/ppo_final_model.zip", "models/best/best_model.zip"]
+            alt_paths = ["models/ppo_final_model.zip", "models/modern_ppo_final.zip"]
             for alt_path in alt_paths:
                 if os.path.exists(alt_path):
                     model_path = alt_path
@@ -1046,9 +1026,9 @@ def check_emergency_conditions() -> bool:
         state.add_error(f"Emergency check error: {str(e)}", "system")
         return False
 
-# ═══════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # Training Management Enhanced
-# ═══════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 async def start_training(config: PPOTrainingConfig):
     """Start PPO training with enhanced mode selection and metrics"""
@@ -1181,9 +1161,9 @@ async def monitor_training_process():
     except Exception as e:
         state.add_error(f"Training monitoring error: {str(e)}", "training")
 
-# ═══════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # WebSocket Management Enhanced
-# ═══════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 async def broadcast_system_state():
     """Broadcast comprehensive system state including training metrics"""
@@ -1191,6 +1171,54 @@ async def broadcast_system_state():
         return
     
     try:
+        # Optional analytics enrichments from InfoBus
+        regime_analytics: Dict[str, Any] = {}
+        trading_analytics: Dict[str, Any] = {}
+        try:
+            from modules.utils.info_bus import InfoBusManager  # type: ignore
+            bus = InfoBusManager.get_instance()
+            # Regime analytics
+            regime_pred = bus.get('regime_prediction', 'BackendAPI', default=None)
+            regime_probs = bus.get('regime_probabilities', 'BackendAPI', default={}) or {}
+            regime_perf = bus.get('regime_performance', 'BackendAPI', default={}) or {}
+            regime_matrix = bus.get('regime_matrix_analysis', 'BackendAPI', default={}) or {}
+
+            # Normalize current_regime to a simple string when possible
+            def _norm_regime(val: Any) -> Any:
+                try:
+                    if isinstance(val, str):
+                        return val
+                    if isinstance(val, dict):
+                        for k in ('label', 'name', 'regime', 'state'):
+                            if k in val and isinstance(val[k], str):
+                                return val[k]
+                    if isinstance(val, (list, tuple)) and val:
+                        if isinstance(val[0], str):
+                            return val[0]
+                        if isinstance(val[0], dict):
+                            for k in ('label', 'name', 'regime'):
+                                if k in val[0] and isinstance(val[0][k], str):
+                                    return val[0][k]
+                except Exception:
+                    pass
+                return val
+
+            regime_analytics = {
+                "current_regime": _norm_regime(regime_pred),
+                "regime_probabilities": regime_probs,
+                "regime_performance": regime_perf,
+                "regime_matrix_analysis": regime_matrix,
+            }
+
+            # Trading analytics (lightweight)
+            trading_analytics = {
+                "active_strategy": bus.get('active_strategy', 'BackendAPI', default=None),
+                "risk_level": bus.get('risk_level', 'BackendAPI', default=None),
+                "auto_mode": bus.get('auto_mode', 'BackendAPI', default=None),
+            }
+        except Exception:
+            pass
+
         # Include training progress in system state
         system_state = {
             "type": "system_state",
@@ -1205,28 +1233,266 @@ async def broadcast_system_state():
                 "alerts": state.alerts[-10:],
                 "system_metrics": state.system_metrics,
                 "training_progress": state.get_training_progress(),
+                "regime_analytics": regime_analytics,
+                "trading_analytics": trading_analytics,
                 "timestamp": datetime.now().isoformat(),
             }
         }
         
-        # Send to all connected clients
-        disconnected = []
-        for websocket in state.websocket_connections:
+        # Send to all connected clients via common helper (with locking)
+        await _send_to_all_websockets(system_state)
+
+    except Exception as e:
+        state.add_error(f"Broadcast error: {str(e)}", "websocket")
+
+async def broadcast_mt5_data_update():
+    """Broadcast MT5 data updates"""
+    if not state.websocket_connections:
+        return
+
+    try:
+        # Get fresh MT5 data (filter to EURUSD and XAUUSD only)
+        chart_data = None  # Do not push chart data via WS to avoid overwriting HTTP-fetched series
+        recent_trades: List[Dict[str, Any]] = []
+        symbols: List[Dict[str, Any]] = []
+
+        # Try to get real MT5 data if connected
+        if state.mt5_connected:
             try:
-                await websocket.send_json(system_state)
+                # Get recent trades
+                deals = mt5.history_deals_get(datetime.now() - timedelta(days=1), datetime.now())
+                if deals:
+                    recent_trades = [{
+                        "ticket": deal.ticket,
+                        "symbol": deal.symbol,
+                        "profit": deal.profit,
+                        "volume": deal.volume,
+                        "time": deal.time,
+                        "type": "BUY" if deal.type == mt5.DEAL_TYPE_BUY else "SELL"
+                    } for deal in deals[-10:]]  # Last 10 trades
+
+                # Live prices for EURUSD and XAUUSD only
+                for sym in ("EURUSD", "XAUUSD"):
+                    try:
+                        info = mt5.symbol_info(sym)
+                        if info is not None:
+                            symbols.append({
+                                "symbol": getattr(info, 'name', sym) or sym,
+                                "description": getattr(info, 'description', sym) or sym,
+                                "bid": float(getattr(info, 'bid', 0.0) or 0.0),
+                                "ask": float(getattr(info, 'ask', 0.0) or 0.0),
+                                "spread": int(getattr(info, 'spread', 0) or 0),
+                            })
+                        else:
+                            symbols.append({
+                                "symbol": sym,
+                                "description": sym,
+                                "bid": 0.0,
+                                "ask": 0.0,
+                                "spread": 0,
+                            })
+                    except Exception:
+                        symbols.append({
+                            "symbol": sym,
+                            "description": sym,
+                            "bid": 0.0,
+                            "ask": 0.0,
+                            "spread": 0,
+                        })
+            except Exception as mt5_error:
+                logger.warning(f"Could not get live MT5 data: {mt5_error}")
+
+        payload: Dict[str, Any] = {
+            "recentTrades": recent_trades,
+            "symbols": symbols,
+            "timestamp": datetime.now().isoformat(),
+        }
+        if chart_data is not None:
+            payload["chartData"] = chart_data
+
+        message = {
+            "type": "mt5_data_update",
+            "data": payload,
+        }
+
+        await _send_to_all_websockets(message)
+    except Exception as e:
+        logger.error(f"Error broadcasting MT5 data update: {e}")
+
+async def start_real_time_updates():
+    """Start periodic real-time updates"""
+    while True:
+        try:
+            # Broadcast system state every 5 seconds
+            await broadcast_system_state()
+
+            # Broadcast module updates every 10 seconds
+            await asyncio.sleep(5)
+            await broadcast_modules_update()
+
+            # Broadcast MT5 data every 15 seconds
+            await asyncio.sleep(5)
+            await broadcast_mt5_data_update()
+
+            # Wait before next cycle
+            await asyncio.sleep(5)
+
+        except Exception as e:
+            logger.error(f"Error in real-time updates: {e}")
+            await asyncio.sleep(10)  # Wait longer on error
+
+async def broadcast_modules_update():
+    """Broadcast only modules data update"""
+    if not state.websocket_connections:
+        return
+
+    try:
+        # Build enriched module list (match /api/modules shape)
+        modules_data: List[Dict[str, Any]] = []
+        module_registry: Dict[str, Any] = {}
+
+        try:
+            with open('config/module_registry.yaml', 'r', encoding='utf-8') as f:
+                registry_data = yaml.safe_load(f) or {}
+                module_registry = registry_data.get('modules', {}) or {}
+        except Exception:
+            pass
+
+        # Attempt to get InfoBus for live data
+        try:
+            from modules.utils.info_bus import InfoBusManager  # type: ignore
+            bus = InfoBusManager.get_instance()
+        except Exception:
+            bus = None
+
+        for name, module in state.module_states.items():
+            registry_info = module_registry.get(name, {}) or {}
+
+            live_data: Dict[str, Any] = {}
+            if bus:
+                try:
+                    for key in registry_info.get('provides', []) or []:
+                        val = bus.get(key, name, default=None)
+                        if val is not None:
+                            live_data[key] = val
+                except Exception:
+                    pass
+
+            health_score = calculate_module_health(module, live_data, registry_info)
+            insights = extract_module_insights(name, live_data, module.get("category", "unknown"))
+            real_status = determine_real_status(module, live_data, insights)
+
+            modules_data.append({
+                "name": name,
+                "enabled": module.get("enabled", False),
+                "status": real_status,
+                "category": (module.get("category") or "other").lower(),
+                "last_update": module.get("last_update", datetime.now().isoformat()),
+                "file_path": registry_info.get("file_path", ""),
+                "provides": registry_info.get("provides", []),
+                "requires": registry_info.get("requires", []),
+                "live_data": live_data,
+                "insights": insights,
+                "health_score": health_score,
+                "health_status": get_health_status(health_score),
+                "metrics": {k: v for k, v in module.items() if k not in ["enabled", "status", "last_update", "errors", "category"]},
+                "error_count": len(module.get("errors", [])),
+                "errors": module.get("errors", [])[-5:],
+                "has_errors": len(module.get("errors", [])) > 0,
+                "data_richness": len(live_data),
+                "provides_count": len(registry_info.get("provides", [])),
+                "requires_count": len(registry_info.get("requires", [])),
+            })
+
+        # Categories + stats in the shape the frontend expects
+        categories: Dict[str, Dict[str, int]] = {}
+        for m in modules_data:
+            cat = m["category"]
+            bucket = categories.setdefault(cat, {"total": 0, "enabled": 0, "with_data": 0, "with_errors": 0})
+            bucket["total"] += 1
+            if m["enabled"]:
+                bucket["enabled"] += 1
+            if m["data_richness"] > 0:
+                bucket["with_data"] += 1
+            if m["has_errors"]:
+                bucket["with_errors"] += 1
+
+        stats = {
+            "total": len(modules_data),
+            "enabled": sum(1 for m in modules_data if m["enabled"]),
+            "withData": sum(1 for m in modules_data if m["data_richness"] > 0),
+            "withErrors": sum(1 for m in modules_data if m["has_errors"]),
+        }
+
+        message = {
+            "type": "modules_update",
+            "data": {
+                "modules": modules_data,
+                "categories": categories,
+                "stats": stats,
+            }
+        }
+
+        await _send_to_all_websockets(message)
+    except Exception as e:
+        logger.error(f"Error broadcasting modules update: {e}")
+
+async def broadcast_alerts_update():
+    """Broadcast only alerts update"""
+    if not state.websocket_connections:
+        return
+
+    try:
+        message = {
+            "type": "alerts_update",
+            "data": state.alerts[-20:]  # Send last 20 alerts
+        }
+
+        await _send_to_all_websockets(message)
+    except Exception as e:
+        logger.error(f"Error broadcasting alerts update: {e}")
+
+async def broadcast_logs_update(category: str, logs_data: list):
+    """Broadcast logs update for specific category"""
+    if not state.websocket_connections:
+        return
+
+    try:
+        message = {
+            "type": "logs_update",
+            "category": category,
+            "data": logs_data
+        }
+
+        await _send_to_all_websockets(message)
+    except Exception as e:
+        logger.error(f"Error broadcasting logs update: {e}")
+
+async def _send_to_all_websockets(message: dict):
+    """Helper function to send message to all connected websockets"""
+    lock = getattr(state, "broadcast_lock", None)
+    if lock is not None:
+        async with lock:  # ensure only one broadcast runs at a time
+            disconnected = []
+            for websocket in list(state.websocket_connections):
+                try:
+                    await websocket.send_json(message)
+                except Exception:
+                    disconnected.append(websocket)
+            for ws in disconnected:
+                if ws in state.websocket_connections:
+                    state.websocket_connections.remove(ws)
+    else:
+        # Fallback without lock (startup race); still send sequentially
+        disconnected = []
+        for websocket in list(state.websocket_connections):
+            try:
+                await websocket.send_json(message)
             except Exception:
                 disconnected.append(websocket)
-        
-        # Remove disconnected clients
         for ws in disconnected:
             if ws in state.websocket_connections:
                 state.websocket_connections.remove(ws)
-        
-        # Update connection count
-        state.system_metrics["active_connections"] = len(state.websocket_connections)
-        
-    except Exception as e:
-        state.add_error(f"Broadcast error: {str(e)}", "websocket")
 
 async def broadcast_training_metrics(metrics: Dict[str, Any]):
     """Broadcast training metrics to frontend"""
@@ -1239,24 +1505,14 @@ async def broadcast_training_metrics(metrics: Dict[str, Any]):
             "data": metrics,
             "timestamp": datetime.now().isoformat()
         }
-        
-        disconnected = []
-        for websocket in state.websocket_connections:
-            try:
-                await websocket.send_json(message)
-            except Exception:
-                disconnected.append(websocket)
-        
-        for ws in disconnected:
-            if ws in state.websocket_connections:
-                state.websocket_connections.remove(ws)
+        await _send_to_all_websockets(message)
                 
     except Exception as e:
         logger.error(f"Training metrics broadcast error: {e}")
 
-# ═══════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # Emergency Controls
-# ═══════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 async def emergency_stop():
     """Enhanced emergency stop with comprehensive cleanup"""
@@ -1321,9 +1577,9 @@ async def emergency_stop():
         logger.error(error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
 
-# ═══════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # API Endpoints
-# ═══════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 @app.on_event("startup")
 async def startup_event():
@@ -1344,14 +1600,21 @@ async def startup_event():
 
     # Start training metrics WebSocket server
     asyncio.create_task(training_metrics_server.start())
-    
+
+    # Initialize broadcast lock when event loop is available
+    try:
+        state.broadcast_lock = asyncio.Lock()
+    except Exception:
+        state.broadcast_lock = None
+
     # Start background monitoring tasks
     state.monitoring_tasks.extend([
         asyncio.create_task(periodic_metrics_collector()),
         asyncio.create_task(system_health_monitor()),
         asyncio.create_task(performance_tracker()),
+        asyncio.create_task(start_real_time_updates()),  # Start real-time WebSocket updates
     ])
-    
+
     logger.info("[ROCKET] Enhanced Trading Dashboard Backend Started")
     state.add_alert("System started successfully", "success", "system")
 
@@ -1416,6 +1679,11 @@ async def performance_tracker():
     """Track and update performance metrics"""
     while True:
         try:
+            # Periodically sync module states from orchestrator (real-time view)
+            try:
+                state._sync_modules_from_orchestrator()
+            except Exception:
+                pass
             if state.mt5_connected and state.system_status == "TRADING":
                 update_balance_from_broker()
             await asyncio.sleep(30)  # Update every 30 seconds
@@ -1568,26 +1836,485 @@ async def get_comprehensive_status():
         "timestamp": datetime.now().isoformat(),
     }
 
+@app.get("/api/config/system")
+async def get_system_configuration():
+    """Get system configuration for frontend"""
+    try:
+        # Load system config from YAML
+        config_path = Path(__file__).parent.parent / "config" / "system_config.yaml"
+
+        if config_path.exists():
+            with open(config_path, 'r', encoding='utf-8') as f:
+                system_config = yaml.safe_load(f)
+        else:
+            system_config = {}
+
+        # Extract relevant configuration sections
+        response = {
+            "trading": {
+                "instruments": ["EURUSD", "XAUUSD"],
+                "timeframes": ["H1", "H4", "D1"],
+                "update_interval": system_config.get("modules", {}).get("MarketDataProvider", {}).get("config", {}).get("update_frequency", 5),
+                "max_position_size": 0.1,
+                "max_total_exposure": 0.3,
+                "min_trade_interval": 60,
+                "use_trailing_stop": True,
+                "emergency_drawdown_limit": 0.25,
+                "debug": False
+            },
+            "training": {
+                "mode": "offline",
+                "timesteps": 100000,
+                "learning_rate": system_config.get("modules", {}).get("PPOAgent", {}).get("config", {}).get("learning_rate", 3e-4),
+                "batch_size": 64,
+                "n_epochs": 10,
+                "gamma": 0.99,
+                "n_steps": 2048,
+                "clip_range": system_config.get("modules", {}).get("PPOAgent", {}).get("config", {}).get("clip_eps", 0.2),
+                "ent_coef": system_config.get("modules", {}).get("PPOAgent", {}).get("config", {}).get("entropy_coeff", 0.01),
+                "vf_coef": system_config.get("modules", {}).get("PPOAgent", {}).get("config", {}).get("value_coeff", 0.5),
+                "max_grad_norm": 0.5,
+                "target_kl": 0.01,
+                "checkpoint_freq": 10000,
+                "eval_freq": 5000,
+                "num_envs": 1,
+                "data_dir": "data/processed",
+                "initial_balance": 10000,
+                "pretrained_model": None,
+                "auto_pretrained": False,
+                "debug": False
+            },
+            "mt5": {
+                "server": "MetaQuotes-Demo"
+            },
+            "system": system_config.get("system", {}),
+            "monitoring": system_config.get("monitoring", {})
+        }
+
+        return response
+
+    except Exception as e:
+        logger.error(f"Error loading system configuration: {e}")
+        return HTTPException(status_code=500, detail=f"Failed to load configuration: {str(e)}")
+
+@app.get("/api/performance/chart-data")
+async def get_performance_chart_data():
+    """Get performance chart data for frontend charts"""
+    try:
+        # Generate realistic performance data based on current metrics
+        current_time = datetime.now()
+        start_balance = state.performance_metrics.get("start_balance", 10000)
+        current_balance = state.performance_metrics.get("current_balance", start_balance)
+        total_pnl = state.performance_metrics.get("total_pnl", 0)
+
+        # Generate hourly data points for the last 24 hours
+        chart_data = []
+        for i in range(24):
+            time_point = current_time - timedelta(hours=23-i)
+            # Simulate realistic balance progression
+            progress = i / 23.0
+            balance_factor = 1.0 + (total_pnl / start_balance) * progress
+            balance = start_balance * balance_factor
+            pnl = (balance - start_balance)
+
+            chart_data.append({
+                "time": time_point.strftime("%H:%M"),
+                "timestamp": time_point.isoformat(),
+                "balance": round(balance, 2),
+                "pnl": round(pnl, 2),
+                "cumulative_return": round((balance / start_balance - 1) * 100, 2)
+            })
+
+        return {
+            "success": True,
+            "data": chart_data,
+            "metadata": {
+                "start_balance": start_balance,
+                "current_balance": current_balance,
+                "total_pnl": total_pnl,
+                "timeframe": "24h"
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Error generating performance chart data: {e}")
+        return HTTPException(status_code=500, detail=f"Failed to generate chart data: {str(e)}")
+
+@app.get("/api/trading/symbols")
+async def get_trading_symbols():
+    """Get available trading symbols from MT5 or configuration"""
+    try:
+        # Get symbols from MT5 if connected, otherwise from config
+        if state.mt5_connected:
+            # Try to get symbols from MT5
+            try:
+                symbols = mt5.symbols_get()
+                if symbols:
+                    symbol_list = []
+                    for symbol in symbols[:20]:  # Limit to top 20
+                        symbol_list.append({
+                            "symbol": symbol.name,
+                            "description": symbol.description,
+                            "currency_base": symbol.currency_base,
+                            "currency_profit": symbol.currency_profit,
+                            "enabled": True
+                        })
+                    return {"success": True, "symbols": symbol_list}
+            except Exception as mt5_error:
+                logger.warning(f"Could not get MT5 symbols: {mt5_error}")
+
+        # Fallback to configured symbols
+        default_symbols = [
+            {"symbol": "EURUSD", "description": "Euro vs US Dollar", "currency_base": "EUR", "currency_profit": "USD", "enabled": True},
+            {"symbol": "XAUUSD", "description": "Gold vs US Dollar", "currency_base": "XAU", "currency_profit": "USD", "enabled": True},
+            {"symbol": "GBPUSD", "description": "British Pound vs US Dollar", "currency_base": "GBP", "currency_profit": "USD", "enabled": True},
+            {"symbol": "USDJPY", "description": "US Dollar vs Japanese Yen", "currency_base": "USD", "currency_profit": "JPY", "enabled": True},
+            {"symbol": "AUDUSD", "description": "Australian Dollar vs US Dollar", "currency_base": "AUD", "currency_profit": "USD", "enabled": True}
+        ]
+
+        return {"success": True, "symbols": default_symbols}
+
+    except Exception as e:
+        logger.error(f"Error getting trading symbols: {e}")
+        return HTTPException(status_code=500, detail=f"Failed to get symbols: {str(e)}")
+
+def calculate_module_health(module: Dict[str, Any], live_data: Dict[str, Any], registry_info: Dict[str, Any]) -> int:
+    """Calculate module health score (0-100) based on multiple factors"""
+    score = 100
+
+    # Enabled status (critical factor)
+    if not module.get("enabled", False):
+        score -= 50
+
+    # Error rate
+    errors = len(module.get("errors", []))
+    if errors > 0:
+        score -= min(errors * 10, 30)  # Max -30 for errors
+
+    # Data availability
+    expected_provides = len(registry_info.get("provides", []))
+    actual_provides = len(live_data)
+    if expected_provides > 0:
+        data_ratio = actual_provides / expected_provides
+        score -= int((1.0 - data_ratio) * 20)  # Max -20 for missing data
+
+    # Last update freshness
+    last_update = module.get("last_update", "never")
+    if last_update == "never":
+        score -= 15
+    elif isinstance(last_update, str) and "ago" in last_update.lower():
+        # Extract time info if available
+        if "hour" in last_update or "day" in last_update:
+            score -= 10
+
+    # Status quality
+    status = module.get("status", "unknown").lower()
+    if status in ["unknown", "error", "failed"]:
+        score -= 20
+    elif status in ["idle", "disabled"]:
+        score -= 10
+
+    return max(0, min(100, score))
+
+def get_health_status(score: int) -> str:
+    """Convert health score to status string"""
+    if score >= 90:
+        return "excellent"
+    elif score >= 75:
+        return "good"
+    elif score >= 60:
+        return "fair"
+    elif score >= 40:
+        return "poor"
+    else:
+        return "critical"
+
+def extract_module_insights(name: str, live_data: Dict[str, Any], category: str) -> Dict[str, Any]:
+    """Extract rich insights from module live data based on category"""
+    insights = {
+        "summary": "No data available",
+        "key_metrics": {},
+        "alerts": [],
+        "performance": {},
+        "recommendations": []
+    }
+
+    if not live_data:
+        return insights
+
+    try:
+        # Strategy modules
+        if category == "strategy":
+            insights["summary"] = extract_strategy_insights(live_data)
+            insights["key_metrics"] = {k: v for k, v in live_data.items()
+                                     if any(x in k.lower() for x in ["score", "ratio", "performance", "accuracy"])}
+
+        # Risk modules
+        elif category == "risk":
+            insights["summary"] = extract_risk_insights(live_data)
+            insights["key_metrics"] = {k: v for k, v in live_data.items()
+                                     if any(x in k.lower() for x in ["risk", "alert", "violation", "threshold"])}
+
+        # Feature modules
+        elif category == "features":
+            insights["summary"] = extract_feature_insights(live_data)
+            insights["key_metrics"] = {k: v for k, v in live_data.items()
+                                     if any(x in k.lower() for x in ["feature", "health", "quality", "engine"])}
+
+        # Voting modules
+        elif category == "voting":
+            insights["summary"] = extract_voting_insights(live_data)
+            insights["key_metrics"] = {k: v for k, v in live_data.items()
+                                     if any(x in k.lower() for x in ["confidence", "consensus", "vote", "proposal"])}
+
+        # Default extraction
+        else:
+            insights["summary"] = f"Processing {len(live_data)} data points"
+            insights["key_metrics"] = {k: v for k, v in live_data.items() if isinstance(v, (int, float))}
+
+    except Exception as e:
+        insights["summary"] = f"Data processing error: {str(e)[:50]}"
+
+    return insights
+
+def extract_strategy_insights(data: Dict[str, Any]) -> str:
+    """Extract strategy-specific insights"""
+    if "strategy_performance" in data:
+        perf = data["strategy_performance"]
+        if isinstance(perf, dict):
+            return f"Performance tracking: {len(perf)} metrics"
+    if "behavior_patterns" in data:
+        patterns = data["behavior_patterns"]
+        return f"Analyzing {len(patterns) if isinstance(patterns, (list, dict)) else 'behavioral'} patterns"
+    if "introspection_metrics" in data:
+        return "Deep strategy analysis active"
+    return f"Strategy analysis: {len(data)} data streams"
+
+def extract_risk_insights(data: Dict[str, Any]) -> str:
+    """Extract risk-specific insights"""
+    if "anomaly_score" in data:
+        score = data["anomaly_score"]
+        if isinstance(score, (int, float)):
+            if score > 0.8:
+                return f"HIGH RISK: Anomaly score {score:.2f}"
+            elif score > 0.5:
+                return f"Medium risk: Anomaly score {score:.2f}"
+            else:
+                return f"Low risk: Anomaly score {score:.2f}"
+    if "risk_alerts" in data or "anomaly_alerts" in data:
+        return "Active risk monitoring with alerts"
+    if "position_duration_risk" in data:
+        return "Monitoring position duration risks"
+    return f"Risk monitoring: {len(data)} parameters"
+
+def extract_feature_insights(data: Dict[str, Any]) -> str:
+    """Extract feature-specific insights"""
+    if "feature_health" in data:
+        health = data["feature_health"]
+        return f"Feature engine health: {health}"
+    if "feature_thesis" in data:
+        return "Advanced feature thesis analysis active"
+    if "advanced_features" in data:
+        features = data["advanced_features"]
+        return f"Processing {len(features) if isinstance(features, (list, dict)) else 'advanced'} features"
+    return f"Feature processing: {len(data)} components"
+
+def extract_voting_insights(data: Dict[str, Any]) -> str:
+    """Extract voting-specific insights"""
+    if "confidence_bounds" in data:
+        return "Confidence analysis with uncertainty bounds"
+    if "committee_confidence" in data:
+        conf = data["committee_confidence"]
+        return f"Committee confidence: {conf}"
+    if "consensus" in data:
+        consensus = data["consensus"]
+        return f"Consensus level: {consensus}"
+    return f"Voting analysis: {len(data)} factors"
+
+def determine_real_status(module: Dict[str, Any], live_data: Dict[str, Any], insights: Dict[str, Any]) -> str:
+    """Determine real-time status based on live data and insights"""
+    base_status = module.get("status", "unknown").lower()
+
+    # If module is disabled, return disabled
+    if not module.get("enabled", False):
+        return "DISABLED"
+
+    # If we have live data, the module is active
+    if live_data:
+        category = module.get("category", "").lower()
+
+        # Check for specific indicators in live data
+        if any(key in live_data for key in ["error", "failed", "critical"]):
+            return "ERROR"
+        elif any(key in live_data for key in ["alert", "warning"]):
+            return "WARNING"
+        elif category == "risk" and any(key in live_data for key in ["anomaly_score", "risk_alerts"]):
+            return "MONITORING"
+        elif category == "strategy" and any(key in live_data for key in ["analysis", "performance"]):
+            return "ANALYZING"
+        elif category == "voting" and any(key in live_data for key in ["consensus", "voting"]):
+            return "VOTING"
+        elif category == "features":
+            return "PROCESSING"
+        else:
+            return "ACTIVE"
+
+    # Fallback to base status, but make it more descriptive
+    status_map = {
+        "idle": "IDLE",
+        "monitoring": "MONITORING",
+        "analyzing": "ANALYZING",
+        "active": "ACTIVE",
+        "voting": "VOTING",
+        "learning": "LEARNING",
+        "scanning": "SCANNING",
+        "unknown": "UNKNOWN"
+    }
+
+    return status_map.get(base_status, "UNKNOWN")
+
 @app.get("/api/modules")
 async def list_modules():
-    """List all modules with detailed status"""
-    return {
-        "modules": [
-            {
+    """Get comprehensive module states with enhanced data"""
+    try:
+        modules_data = []
+
+        # Get data from InfoBus for each module
+        try:
+            from modules.utils.info_bus import InfoBusManager
+            bus = InfoBusManager.get_instance()
+        except Exception:
+            bus = None
+
+        # Load module registry for additional metadata
+        module_registry = {}
+        try:
+            import yaml
+            with open('config/module_registry.yaml', 'r') as f:
+                registry_data = yaml.safe_load(f)
+                module_registry = registry_data.get('modules', {})
+        except Exception:
+            pass
+
+        for name, module in state.module_states.items():
+            # Get registry info for this module
+            registry_info = module_registry.get(name, {})
+
+            # Get live data from InfoBus
+            live_data = {}
+            if bus:
+                try:
+                    # Get all data this module provides
+                    provides = registry_info.get('provides', [])
+                    for key in provides:
+                        value = bus.get(key, name, default=None)
+                        if value is not None:
+                            live_data[key] = value
+                except Exception:
+                    pass
+
+            # Calculate health score (0-100)
+            health_score = calculate_module_health(module, live_data, registry_info)
+
+            # Extract rich insights from live data
+            insights = extract_module_insights(name, live_data, module.get("category", "unknown"))
+
+            # Determine real-time status
+            real_status = determine_real_status(module, live_data, insights)
+
+            # Enhanced module data
+            module_data = {
                 "name": name,
                 "enabled": module.get("enabled", False),
-                "status": module.get("status", "unknown"),
+                "status": real_status,
+                "category": module.get("category", "unknown"),
                 "last_update": module.get("last_update", "never"),
-                "metrics": {k: v for k, v in module.items() 
-                          if k not in ["enabled", "status", "last_update", "errors"]},
+                "file_path": registry_info.get("file_path", ""),
+                "provides": registry_info.get("provides", []),
+                "requires": registry_info.get("requires", []),
+                "live_data": live_data,
+                "insights": insights,
+                "health_score": health_score,
+                "health_status": get_health_status(health_score),
+                "metrics": {k: v for k, v in module.items()
+                          if k not in ["enabled", "status", "last_update", "errors", "category"]},
                 "error_count": len(module.get("errors", [])),
+                "errors": module.get("errors", [])[-5:],  # Last 5 errors
+                "has_errors": len(module.get("errors", [])) > 0,
+                "data_richness": len(live_data),
+                "provides_count": len(registry_info.get("provides", [])),
+                "requires_count": len(registry_info.get("requires", []))
             }
-            for name, module in state.module_states.items()
-        ],
-        "total_modules": len(state.module_states),
-        "active_modules": sum(1 for m in state.module_states.values() if m.get("enabled", False)),
+            modules_data.append(module_data)
+
+        # Sort by category then name
+        modules_data.sort(key=lambda x: (x["category"], x["name"]))
+
+    except Exception as e:
+        logger.error(f"Error listing modules: {e}")
+        modules_data = []
+
+    # Calculate category statistics
+    categories = {}
+    for module in modules_data:
+        cat = module["category"]
+        if cat not in categories:
+            categories[cat] = {"total": 0, "enabled": 0, "with_data": 0, "with_errors": 0}
+        categories[cat]["total"] += 1
+        if module["enabled"]:
+            categories[cat]["enabled"] += 1
+        if module["data_richness"] > 0:
+            categories[cat]["with_data"] += 1
+        if module["has_errors"]:
+            categories[cat]["with_errors"] += 1
+
+    return {
+        "modules": modules_data,
+        "total_modules": len(modules_data),
+        "enabled_modules": sum(1 for m in modules_data if m["enabled"]),
+        "categories": categories,
+        "modules_with_data": sum(1 for m in modules_data if m["data_richness"] > 0),
+        "modules_with_errors": sum(1 for m in modules_data if m["has_errors"]),
         "timestamp": datetime.now().isoformat(),
     }
+
+@app.get("/api/reports/health")
+async def health_report():
+    """Structured health report including system, categories, and errors."""
+    return {
+        "system": {
+            "status": state.system_status,
+            "uptime": state.get_uptime(),
+            "mt5_connected": state.mt5_connected,
+            "model_loaded": state.model_loaded,
+            "active_websockets": len(state.websocket_connections),
+        },
+        "metrics": state.system_metrics,
+        "categories": state.get_category_summary(),
+        "errors": state.errors[-20:],
+        "warnings": state.warnings[-20:],
+        "timestamp": datetime.now().isoformat(),
+    }
+
+@app.get("/api/reports/state")
+async def state_report():
+    """Human-readable state report (plain text)."""
+    cats = state.get_category_summary()
+    lines = []
+    lines.append("AI TRADING SYSTEM STATE REPORT")
+    lines.append("".ljust(40, "="))
+    lines.append(f"Status: {state.system_status}")
+    lines.append(f"Uptime: {state.get_uptime()}")
+    lines.append(f"MT5 Connected: {state.mt5_connected}")
+    lines.append(f"Model Loaded: {state.model_loaded}")
+    lines.append("")
+    lines.append("MODULE CATEGORIES:")
+    for cat, s in sorted(cats.items()):
+        lines.append(f"  - {cat}: total={s['total']}, enabled={s['enabled']}, active={s['active']}, with_errors={s['with_errors']}")
+    lines.append("")
+    lines.append(f"Errors: {len(state.errors)} | Warnings: {len(state.warnings)} | Alerts: {len(state.alerts)}")
+    lines.append(f"Active WS: {len(state.websocket_connections)}")
+    return {"report": "\n".join(lines), "timestamp": datetime.now().isoformat()}
 
 @app.get("/api/modules/{module_name}")
 async def get_module_detailed_state(module_name: str):
@@ -1605,21 +2332,94 @@ async def get_module_detailed_state(module_name: str):
 @app.post("/api/modules/{module_name}/toggle")
 async def toggle_module(module_name: str):
     """Toggle module enabled/disabled state"""
-    if module_name not in state.module_states:
+    # Prefer orchestrator control when available
+    orchestrator_ok = False
+    try:
+        from modules.core.module_system import ModuleOrchestrator  # type: ignore
+        orch = ModuleOrchestrator._instance or ModuleOrchestrator.get_instance()  # type: ignore[attr-defined]
+        current_state = bool(state.module_states.get(module_name, {}).get("enabled", True))
+        if current_state:
+            ok = bool(orch.disable_module(module_name, reason="User toggle"))
+        else:
+            ok = bool(orch.enable_module(module_name))
+        orchestrator_ok = ok
+    except Exception:
+        orchestrator_ok = False
+
+    if module_name not in state.module_states and not orchestrator_ok:
         raise HTTPException(status_code=404, detail=f"Module {module_name} not found")
-    
-    current_state = state.module_states[module_name].get("enabled", False)
-    state.module_states[module_name]["enabled"] = not current_state
-    
-    action = "enabled" if not current_state else "disabled"
+
+    # Sync from orchestrator if possible, else flip local state
+    if not state._sync_modules_from_orchestrator():
+        cur = state.module_states.get(module_name, {}).get("enabled", False)
+        state.module_states.setdefault(module_name, {})["enabled"] = not cur
+
+    action = "enabled" if state.module_states.get(module_name, {}).get("enabled", False) else "disabled"
     state.add_alert(f"Module {module_name} {action}", "info", module_name)
-    
+
+    await broadcast_system_state()
+    return {"module": module_name, "enabled": state.module_states[module_name]["enabled"], "message": f"Module {action} successfully"}
+
+@app.post("/api/modules/enable-all")
+async def enable_all_modules():
+    """Enable all known modules (frontend convenience)."""
+    try:
+        from modules.core.module_system import ModuleOrchestrator  # type: ignore
+        orch = ModuleOrchestrator._instance or ModuleOrchestrator.get_instance()  # type: ignore[attr-defined]
+        for name in list(getattr(orch, 'modules', {}).keys()):
+            try:
+                orch.enable_module(name)
+            except Exception:
+                pass
+        state._sync_modules_from_orchestrator()
+    except Exception:
+        for name in list(state.module_states.keys()):
+            state.module_states[name]["enabled"] = True
+            state.module_states[name]["last_update"] = datetime.now().isoformat()
     await broadcast_system_state()
     return {
-        "module": module_name,
-        "enabled": not current_state,
-        "message": f"Module {action} successfully"
+        "success": True,
+        "enabled_modules": len(state.module_states),
+        "timestamp": datetime.now().isoformat(),
     }
+
+@app.post("/api/modules/disable-all")
+async def disable_all_modules():
+    """Disable all known modules (frontend convenience)."""
+    try:
+        from modules.core.module_system import ModuleOrchestrator  # type: ignore
+        orch = ModuleOrchestrator._instance or ModuleOrchestrator.get_instance()  # type: ignore[attr-defined]
+        for name in list(getattr(orch, 'modules', {}).keys()):
+            try:
+                orch.disable_module(name, reason="User disable-all")
+            except Exception:
+                pass
+        state._sync_modules_from_orchestrator()
+    except Exception:
+        for name in list(state.module_states.keys()):
+            state.module_states[name]["enabled"] = False
+            state.module_states[name]["last_update"] = datetime.now().isoformat()
+    await broadcast_system_state()
+    return {
+        "success": True,
+        "disabled_modules": len(state.module_states),
+        "timestamp": datetime.now().isoformat(),
+    }
+
+@app.post("/api/modules/refresh")
+async def refresh_modules_from_registry():
+    """Sync modules from orchestrator if available; otherwise reload registry."""
+    try:
+        if not state._sync_modules_from_orchestrator():
+            state._merge_registry_modules('config/module_registry.yaml')
+        await broadcast_system_state()
+        return {
+            "success": True,
+            "total_modules": len(state.module_states),
+            "timestamp": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to refresh modules: {e}")
 
 @app.get("/api/performance")
 async def get_performance_metrics():
@@ -1650,6 +2450,943 @@ async def get_alerts(limit: int = Query(default=50, le=1000)):
         "total_alerts": len(state.alerts),
         "timestamp": datetime.now().isoformat(),
     }
+
+# ================== VISUALIZATION ENDPOINTS ==================
+@app.get("/api/visualization/overview")
+async def visualization_overview():
+    """Return visualization summary (records, perf metrics, stats)."""
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        bus = InfoBusManager.get_instance()
+        viz = bus.get('visualization_data', 'BackendAPI', default={}) or {}
+        # Trim performance_metrics to last 100 points
+        pm = viz.get('performance_metrics', {}) if isinstance(viz, dict) else {}
+        out = {
+            'total_records': viz.get('total_records', 0),
+            'statistics': viz.get('statistics', {}),
+            'streaming_enabled': viz.get('streaming_enabled', False),
+            'performance_metrics': pm,
+        }
+        return {"success": True, **out, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/visualization/dashboard")
+async def visualization_dashboard():
+    """Return dashboard data prepared by VisualizationInterface (if available)."""
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        bus = InfoBusManager.get_instance()
+        db = bus.get('dashboard_data', 'BackendAPI', default={}) or {}
+        return {"success": True, "dashboard": db, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/visualization/alerts")
+async def visualization_alerts(limit: int = Query(default=50, le=1000)):
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        bus = InfoBusManager.get_instance()
+        al = bus.get('alert_timeline', 'BackendAPI', default=[]) or []
+        return {"success": True, "alerts": al[-limit:], "count": len(al), "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/visualization/trace")
+async def visualization_trace(limit: int = Query(default=100, le=2000)):
+    """Return recent decision trace/records if VisualizationInterface publishes them."""
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        bus = InfoBusManager.get_instance()
+        viz = bus.get('visualization_data', 'BackendAPI', default={}) or {}
+        trace = viz.get('decision_trace', []) if isinstance(viz, dict) else []
+        if not isinstance(trace, list):
+            trace = []
+        return {"success": True, "trace": trace[-limit:], "count": len(trace), "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/visualization/reports")
+async def visualization_reports():
+    """Return analytics reports/performance report prepared by VisualizationInterface."""
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        bus = InfoBusManager.get_instance()
+        analytics = bus.get('analytics_reports', 'BackendAPI', default={}) or {}
+        return {"success": True, "analytics_reports": analytics, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/visualization/trade-charts")
+async def visualization_trade_charts():
+    """Return charts generated by TradeMapVisualizer (summaries + data)."""
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        bus = InfoBusManager.get_instance()
+        out = {
+            "chart_statistics": bus.get('chart_statistics', 'BackendAPI', default={}) or {},
+            "chart_history": bus.get('chart_history', 'BackendAPI', default=[]) or [],
+            "trade_charts": bus.get('trade_charts', 'BackendAPI', default={}) or {},
+            "performance_charts": bus.get('performance_charts', 'BackendAPI', default={}) or {},
+            "dashboard_charts": bus.get('dashboard_charts', 'BackendAPI', default={}) or {},
+        }
+        return {"success": True, **out, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# ================== FRONTEND COMPATIBILITY ENDPOINTS ==================
+@app.get("/api/visualization-data")
+async def get_visualization_data():
+    """Consolidated visualization data for frontend analytics dashboard"""
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        bus = InfoBusManager.get_instance()
+
+        # Collect all visualization data
+        viz_data = bus.get('visualization_data', 'BackendAPI', default={}) or {}
+
+        # Build comprehensive response combining multiple data sources
+        response = {
+            "success": True,
+            "timestamp": datetime.now().isoformat(),
+
+            # Core visualization data
+            "total_records": viz_data.get('total_records', 0),
+            "statistics": viz_data.get('statistics', {}),
+            "streaming_enabled": viz_data.get('streaming_enabled', False),
+            "performance_metrics": viz_data.get('performance_metrics', {}),
+            "decision_trace": viz_data.get('decision_trace', []),
+
+            # Regime analytics
+            "regime_analytics": {
+                "current_regime": bus.get('regime_prediction', 'BackendAPI', default=None),
+                "regime_probabilities": bus.get('regime_probabilities', 'BackendAPI', default={}) or {},
+                "regime_performance": bus.get('regime_performance', 'BackendAPI', default={}) or {},
+                "regime_matrix_analysis": bus.get('regime_matrix_analysis', 'BackendAPI', default={}) or {},
+            },
+
+            # Market analytics
+            "market_analytics": {
+                "themes": bus.get('market_themes', 'BackendAPI', default={}) or {},
+                "sentiment": bus.get('market_sentiment', 'BackendAPI', default={}) or {},
+                "volatility": bus.get('volatility_analysis', 'BackendAPI', default={}) or {},
+            },
+
+            # Trading analytics
+            "trading_analytics": {
+                "recent_trades": bus.get('recent_trades', 'BackendAPI', default=[]) or [],
+                "trade_performance": bus.get('trade_performance', 'BackendAPI', default={}) or {},
+                "risk_metrics": bus.get('risk_metrics', 'BackendAPI', default={}) or {},
+            },
+
+            # Charts and visualizations
+            "charts": {
+                "trade_charts": bus.get('trade_charts', 'BackendAPI', default={}) or {},
+                "performance_charts": bus.get('performance_charts', 'BackendAPI', default={}) or {},
+                "dashboard_charts": bus.get('dashboard_charts', 'BackendAPI', default={}) or {},
+                "chart_statistics": bus.get('chart_statistics', 'BackendAPI', default={}) or {},
+            }
+        }
+
+        return response
+
+    except Exception as e:
+        return {"success": False, "error": str(e), "timestamp": datetime.now().isoformat()}
+
+@app.get("/api/dashboard-data")
+async def get_dashboard_data():
+    """Consolidated dashboard data for frontend analytics"""
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        bus = InfoBusManager.get_instance()
+
+        # Get dashboard data from InfoBus
+        dashboard_data = bus.get('dashboard_data', 'BackendAPI', default={}) or {}
+
+        # Enhanced dashboard response
+        response = {
+            "success": True,
+            "timestamp": datetime.now().isoformat(),
+            "dashboard": dashboard_data,
+
+            # Additional dashboard metrics
+            "system_health": {
+                "uptime": state.get_uptime(),
+                "session_id": state.current_session_id,
+                "system_status": state.system_status,
+                "mt5_connected": state.mt5_connected,
+            },
+
+            # Module status overview
+            "modules_overview": {
+                "total_modules": len(state.module_states),
+                "active_modules": sum(1 for m in state.module_states.values() if m.get("enabled", False)),
+                "module_health": {name: mod.get("status", "unknown") for name, mod in state.module_states.items()},
+            },
+
+            # Recent activity
+            "recent_activity": {
+                "recent_alerts": state.alerts[-10:] if state.alerts else [],
+                "recent_trades": bus.get('recent_trades', 'BackendAPI', default=[]) or [],
+                "latest_decisions": bus.get('latest_decisions', 'BackendAPI', default=[]) or [],
+            }
+        }
+
+        return response
+
+    except Exception as e:
+        return {"success": False, "error": str(e), "timestamp": datetime.now().isoformat()}
+
+@app.get("/api/performance-metrics")
+async def get_performance_metrics_v2():
+    """Enhanced performance metrics endpoint for frontend compatibility"""
+    try:
+        # Get existing performance data
+        perf_data = state.performance_metrics
+
+        # Enhanced response with additional analytics
+        response = {
+            "success": True,
+            "timestamp": datetime.now().isoformat(),
+
+            # Core performance metrics (from existing endpoint)
+            "performance": perf_data,
+
+            # Risk metrics
+            "risk_metrics": {
+                "current_drawdown": perf_data.get("current_drawdown", 0.0),
+                "max_drawdown": perf_data.get("max_drawdown", 0.0),
+                "sharpe_ratio": perf_data.get("sharpe_ratio", 0.0),
+                "win_rate": perf_data.get("win_rate", 0.0),
+                "profit_factor": perf_data.get("profit_factor", 0.0),
+                "var_95": perf_data.get("var_95", 0.0),
+                "expected_shortfall": perf_data.get("expected_shortfall", 0.0),
+            },
+
+            # Trading statistics
+            "trading_stats": {
+                "total_trades": perf_data.get("total_trades", 0),
+                "winning_trades": perf_data.get("winning_trades", 0),
+                "losing_trades": perf_data.get("losing_trades", 0),
+                "trades_today": perf_data.get("trades_today", 0),
+                "avg_trade_duration": perf_data.get("avg_trade_duration", 0),
+                "largest_win": perf_data.get("largest_win", 0.0),
+                "largest_loss": perf_data.get("largest_loss", 0.0),
+            },
+
+            # Balance tracking
+            "balance_metrics": {
+                "current_balance": perf_data.get("current_balance", 0.0),
+                "start_balance": perf_data.get("start_balance", 0.0),
+                "peak_balance": perf_data.get("peak_balance", 0.0),
+                "daily_pnl": perf_data.get("daily_pnl", 0.0),
+                "total_pnl": perf_data.get("total_pnl", 0.0),
+                "unrealized_pnl": perf_data.get("unrealized_pnl", 0.0),
+            },
+
+            # Performance trends (from InfoBus if available)
+            "performance_trends": {},
+        }
+
+        # Add InfoBus performance data if available
+        try:
+            from modules.utils.info_bus import InfoBusManager  # type: ignore
+            bus = InfoBusManager.get_instance()
+
+            response["performance_trends"] = {
+                "performance_data": bus.get('performance_data', 'BackendAPI', default={}) or {},
+                "performance_history": bus.get('performance_history', 'BackendAPI', default=[]) or [],
+                "trade_analytics": bus.get('trade_analytics', 'BackendAPI', default={}) or {},
+            }
+        except Exception:
+            pass  # InfoBus data is optional
+
+        return response
+
+    except Exception as e:
+        return {"success": False, "error": str(e), "timestamp": datetime.now().isoformat()}
+
+# ================== MT5 STATUS/ACCOUNT ==================
+@app.get("/api/mt5/status")
+async def mt5_status():
+    try:
+        info: Dict[str, Any] = {"connected": bool(state.mt5_connected)}
+        if state.mt5_connected:
+            try:
+                ti = mt5.terminal_info()
+                if ti is not None:
+                    info.update({
+                        "trade_allowed": bool(getattr(ti, 'trade_allowed', False)),
+                        "community_connected": bool(getattr(ti, 'community_connected', False)),
+                        "name": getattr(ti, 'name', None),
+                        "company": getattr(ti, 'company', None),
+                    })
+            except Exception:
+                pass
+        return {"success": True, **info, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/mt5/account")
+async def mt5_account():
+    try:
+        if not state.mt5_connected:
+            raise HTTPException(status_code=400, detail="MT5 not connected")
+        ai = mt5.account_info()
+        if ai is None:
+            raise HTTPException(status_code=500, detail="Failed to retrieve MT5 account information")
+        data = {
+            "login": getattr(ai, 'login', None),
+            "balance": getattr(ai, 'balance', None),
+            "equity": getattr(ai, 'equity', None),
+            "margin": getattr(ai, 'margin', None),
+            "margin_free": getattr(ai, 'margin_free', None),
+            "currency": getattr(ai, 'currency', None),
+            "leverage": getattr(ai, 'leverage', None),
+            "profit": getattr(ai, 'profit', None),
+            "margin_level": getattr(ai, 'margin_level', None),
+            "company": getattr(ai, 'company', None),
+        }
+        return {"success": True, "account": data, "timestamp": datetime.now().isoformat()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/mt5/chart-data/{symbol}")
+async def get_mt5_chart_data(symbol: str, timeframe: str = "M5", count: int = 50):
+    """Get real-time MT5 chart data for overview dashboard"""
+    try:
+        if not state.mt5_connected:
+            # Return simulated data if MT5 not connected
+            return generate_simulated_chart_data(symbol, count, timeframe)
+
+        # Map timeframe string to MT5 constant
+        timeframe_map = {
+            "M1": mt5.TIMEFRAME_M1,
+            "M5": mt5.TIMEFRAME_M5,
+            "M15": mt5.TIMEFRAME_M15,
+            "M30": mt5.TIMEFRAME_M30,
+            "H1": mt5.TIMEFRAME_H1,
+            "H4": mt5.TIMEFRAME_H4,
+            "D1": mt5.TIMEFRAME_D1
+        }
+
+        tf = timeframe_map.get(timeframe, mt5.TIMEFRAME_M5)
+
+        # Get rates from MT5
+        rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
+
+        if rates is None or len(rates) == 0:
+            return generate_simulated_chart_data(symbol, count, timeframe)
+
+        # Convert to frontend format
+        chart_data = []
+        for i, rate in enumerate(rates):
+            # Normalize server timestamp to local time for display and include epoch for charting
+            ts_utc = datetime.utcfromtimestamp(int(rate['time'])).replace(tzinfo=timezone.utc)
+            ts_local = ts_utc.astimezone()
+            chart_data.append({
+                "time": ts_local.strftime("%H:%M"),  # human-readable local time
+                "ts": int(ts_utc.timestamp()),        # epoch seconds
+                "timestamp_ms": int(ts_utc.timestamp() * 1000),
+                "open": float(rate['open']),
+                "high": float(rate['high']),
+                "low": float(rate['low']),
+                "close": float(rate['close']),
+                "volume": int(rate['tick_volume'])
+            })
+
+        return {
+            "success": True,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "data": chart_data,
+            "timestamp": datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        # Fallback to simulated data on error
+        return generate_simulated_chart_data(symbol, count, timeframe)
+
+def generate_simulated_chart_data(symbol: str, count: int, timeframe: str = "M5"):
+    """Generate realistic simulated chart data when MT5 is not available"""
+    data = []
+    # Determine bar interval seconds from timeframe
+    tf_seconds = {
+        "M1": 60,
+        "M5": 300,
+        "M15": 900,
+        "M30": 1800,
+        "H1": 3600,
+        "H4": 14400,
+        "D1": 86400,
+    }.get(timeframe.upper(), 300)
+    now_utc = datetime.now(timezone.utc)
+
+    base_price = {
+        "EURUSD": 1.0850,
+        "XAUUSD": 2045.50
+    }.get(symbol.replace("/", ""), 1.0850)
+
+    # Oldest to newest
+    start_ts = int(now_utc.timestamp()) - count * tf_seconds
+    for i in range(count):
+        # Adjust variation based on symbol type
+        if symbol == "XAUUSD":
+            variation = (random.random() - 0.5) * 2.0  # Gold moves in dollars
+            high_low_range = random.random() * 1.0
+        else:
+            variation = (random.random() - 0.5) * 0.002  # Forex moves in pips
+            high_low_range = random.random() * 0.001
+
+        open_price = base_price
+        close_price = base_price + variation
+        high_price = max(open_price, close_price) + high_low_range
+        low_price = min(open_price, close_price) - high_low_range
+
+        # Adjust precision based on symbol
+        precision = 2 if symbol == "XAUUSD" else 5
+
+        ts_utc = start_ts + (i * tf_seconds)
+        ts_dt_utc = datetime.fromtimestamp(ts_utc, tz=timezone.utc)
+        ts_local = ts_dt_utc.astimezone()
+
+        data.append({
+            "time": ts_local.strftime("%H:%M"),
+            "ts": ts_utc,
+            "timestamp_ms": ts_utc * 1000,
+            "open": round(open_price, precision),
+            "high": round(high_price, precision),
+            "low": round(low_price, precision),
+            "close": round(close_price, precision),
+            "volume": random.randint(500, 1500)
+        })
+        base_price = close_price
+
+    return {
+        "success": True,
+        "symbol": symbol,
+        "simulated": True,
+        "timeframe": timeframe,
+        "data": data,
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.get("/api/mt5/positions")
+async def get_mt5_positions():
+    """Get current MT5 positions for overview dashboard"""
+    try:
+        if not state.mt5_connected:
+            # Return simulated positions
+            return {
+                "success": True,
+                "positions": [
+                    {
+                        "ticket": 12345678,
+                        "symbol": "EURUSD",
+                        "type": "BUY",
+                        "volume": 0.1,
+                        "price_open": 1.0845,
+                        "price_current": 1.0850,
+                        "profit": 47.50,
+                        "time": (datetime.now() - timedelta(minutes=15)).isoformat()
+                    },
+                    {
+                        "ticket": 12345679,
+                        "symbol": "GBPJPY",
+                        "type": "SELL",
+                        "volume": 0.05,
+                        "price_open": 188.55,
+                        "price_current": 188.32,
+                        "profit": 89.30,
+                        "time": (datetime.now() - timedelta(minutes=45)).isoformat()
+                    }
+                ],
+                "simulated": True,
+                "timestamp": datetime.now().isoformat()
+            }
+
+        # Get real positions from MT5
+        positions = mt5.positions_get()
+        if positions is None:
+            positions = []
+
+        position_data = []
+        for pos in positions:
+            position_data.append({
+                "ticket": pos.ticket,
+                "symbol": pos.symbol,
+                "type": "BUY" if pos.type == mt5.ORDER_TYPE_BUY else "SELL",
+                "volume": pos.volume,
+                "price_open": pos.price_open,
+                "price_current": pos.price_current,
+                "profit": pos.profit,
+                "time": datetime.fromtimestamp(pos.time).isoformat()
+            })
+
+        return {
+            "success": True,
+            "positions": position_data,
+            "timestamp": datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/mt5/deals/recent")
+async def get_recent_mt5_deals(limit: int = 10):
+    """Get recent MT5 deals for overview dashboard"""
+    try:
+        if not state.mt5_connected:
+            # Return simulated recent trades
+            return {
+                "success": True,
+                "deals": [
+                    {
+                        "ticket": 12345670,
+                        "symbol": "EURUSD",
+                        "type": "BUY",
+                        "volume": 0.1,
+                        "price": 1.0845,
+                        "profit": 47.50,
+                        "time": (datetime.now() - timedelta(minutes=2)).strftime("%H:%M")
+                    },
+                    {
+                        "ticket": 12345671,
+                        "symbol": "GBPJPY",
+                        "type": "SELL",
+                        "volume": 0.05,
+                        "price": 188.55,
+                        "profit": -23.20,
+                        "time": (datetime.now() - timedelta(minutes=17)).strftime("%H:%M")
+                    },
+                    {
+                        "ticket": 12345672,
+                        "symbol": "USDCHF",
+                        "type": "BUY",
+                        "volume": 0.08,
+                        "price": 0.8945,
+                        "profit": 89.30,
+                        "time": (datetime.now() - timedelta(minutes=37)).strftime("%H:%M")
+                    },
+                    {
+                        "ticket": 12345673,
+                        "symbol": "AUDUSD",
+                        "type": "SELL",
+                        "volume": 0.12,
+                        "price": 0.6725,
+                        "profit": 156.70,
+                        "time": (datetime.now() - timedelta(minutes=52)).strftime("%H:%M")
+                    }
+                ],
+                "simulated": True,
+                "timestamp": datetime.now().isoformat()
+            }
+
+        # Get real deals from MT5
+        from_date = datetime.now() - timedelta(days=1)
+        to_date = datetime.now()
+        deals = mt5.history_deals_get(from_date, to_date)
+
+        if deals is None:
+            deals = []
+
+        # Sort by time and take most recent
+        deals = sorted(deals, key=lambda x: x.time, reverse=True)[:limit]
+
+        deal_data = []
+        for deal in deals:
+            deal_data.append({
+                "ticket": deal.ticket,
+                "symbol": deal.symbol,
+                "type": "BUY" if deal.type == mt5.DEAL_TYPE_BUY else "SELL",
+                "volume": deal.volume,
+                "price": deal.price,
+                "profit": deal.profit,
+                "time": datetime.fromtimestamp(deal.time).strftime("%H:%M")
+            })
+
+        return {
+            "success": True,
+            "deals": deal_data,
+            "timestamp": datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/mt5/symbols/active")
+async def get_active_mt5_symbols():
+    """Get active MT5 symbols with current prices"""
+    try:
+        if not state.mt5_connected:
+            # Return simulated symbol data
+            return {
+                "success": True,
+                "symbols": [
+                    {"symbol": "EURUSD", "bid": 1.0848, "ask": 1.0850, "spread": 2},
+                    {"symbol": "XAUUSD", "bid": 2045.30, "ask": 2045.80, "spread": 50}
+                ],
+                "simulated": True,
+                "timestamp": datetime.now().isoformat()
+            }
+
+        # Get specific pairs requested by user
+        major_pairs = ["EURUSD", "XAUUSD"]
+        symbol_data = []
+
+        for symbol in major_pairs:
+            try:
+                tick = mt5.symbol_info_tick(symbol)
+                if tick is not None:
+                    symbol_data.append({
+                        "symbol": symbol,
+                        "bid": tick.bid,
+                        "ask": tick.ask,
+                        "spread": int((tick.ask - tick.bid) / mt5.symbol_info(symbol).point)
+                    })
+            except:
+                continue
+
+        return {
+            "success": True,
+            "symbols": symbol_data,
+            "timestamp": datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# ================== AUDITING REPORT ENDPOINTS ==================
+@app.get("/api/auditing/overview")
+async def auditing_overview():
+    """Return auditing coordinator overview (status, metrics, report preview)."""
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        bus = InfoBusManager.get_instance()
+        status = bus.get('audit_status', 'BackendAPI', default=None)
+        metrics = bus.get('audit_metrics', 'BackendAPI', default={}) or {}
+        report = bus.get('audit_report', 'BackendAPI', default=None)
+        preview = report[:600] if isinstance(report, str) else None
+        return {
+            "success": True,
+            "audit_status": status,
+            "audit_metrics": metrics,
+            "audit_report_preview": preview,
+            "timestamp": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/auditing/trade-explanations")
+async def auditing_trade_explanations():
+    """Return trade explanations, metrics, and alerts from TradeExplanationAuditor."""
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        bus = InfoBusManager.get_instance()
+        explanations = bus.get('trade_explanations', 'BackendAPI', default=[]) or []
+        explanation_metrics = bus.get('explanation_metrics', 'BackendAPI', default={}) or {}
+        audit_alerts = bus.get('audit_alerts', 'BackendAPI', default=[]) or []
+        return {
+            "success": True,
+            "trade_explanations": explanations,
+            "explanation_metrics": explanation_metrics,
+            "audit_alerts": audit_alerts,
+            "timestamp": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/auditing/thesis")
+async def auditing_thesis():
+    """Return thesis analysis/performance/alerts from TradeThesisTracker."""
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        bus = InfoBusManager.get_instance()
+        thesis_analysis = bus.get('thesis_analysis', 'BackendAPI', default={}) or {}
+        thesis_performance = bus.get('thesis_performance', 'BackendAPI', default={}) or {}
+        thesis_alerts = bus.get('thesis_alerts', 'BackendAPI', default=[]) or []
+        return {
+            "success": True,
+            "thesis_analysis": thesis_analysis,
+            "thesis_performance": thesis_performance,
+            "thesis_alerts": thesis_alerts,
+            "timestamp": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# ================== ANALYSIS ENDPOINTS ==================
+@app.get("/api/analysis/overview")
+async def analysis_overview():
+    """Market analysis overview (regime, volatility/session, theme status)."""
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        bus = InfoBusManager.get_instance()
+        out = {
+            "market_regime": bus.get('market_regime', 'BackendAPI', default=None),
+            "volatility_level": bus.get('volatility_level', 'BackendAPI', default=None),
+            "session_data": bus.get('session_data', 'BackendAPI', default={}) or {},
+            "theme_detector_status": bus.get('theme_detector_status', 'BackendAPI', default=None),
+            "theme_strength": bus.get('theme_strength', 'BackendAPI', default=None),
+        }
+        return {"success": True, **out, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/analysis/themes")
+async def analysis_themes():
+    """Detailed theme analytics from UnifiedMarket/ThemeDetector when present."""
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        bus = InfoBusManager.get_instance()
+        out = {
+            "active_theme": bus.get('market_theme', 'BackendAPI', default=None),
+            "theme_strengths": bus.get('theme_strengths', 'BackendAPI', default={}) or {},
+            "theme_transitions": bus.get('theme_transitions', 'BackendAPI', default=[]) or [],
+            "unified_market_analysis": bus.get('unified_market_analysis', 'BackendAPI', default=None),
+        }
+        return {"success": True, **out, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/analysis/regime")
+async def analysis_regime():
+    """Regime details (type, probabilities, performance/matrix summaries)."""
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        bus = InfoBusManager.get_instance()
+        out = {
+            "market_regime": bus.get('market_regime', 'BackendAPI', default=None),
+            "regime_prediction": bus.get('regime_prediction', 'BackendAPI', default=None),
+            "regime_probabilities": bus.get('regime_probabilities', 'BackendAPI', default=None) or bus.get('regime_probability', 'BackendAPI', default=None),
+            "regime_performance": bus.get('regime_performance', 'BackendAPI', default=None),
+            "regime_matrix_analysis": bus.get('regime_matrix_analysis', 'BackendAPI', default=None),
+            "regime_matrix_status": bus.get('regime_matrix_status', 'BackendAPI', default=None),
+            "regime_matrix_health": bus.get('regime_matrix_health', 'BackendAPI', default=None),
+        }
+        return {"success": True, **out, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# ================== EXECUTOR ENDPOINTS ==================
+@app.get("/api/executor/overview")
+async def executor_overview():
+    """Executor overview combining PositionManager and ExecutionQualityMonitor state."""
+    try:
+        pm = state.module_states.get('position_manager', {})
+        eq = state.module_states.get('execution_monitor', {})
+        # Positions can also be on the bus
+        try:
+            from modules.utils.info_bus import InfoBusManager  # type: ignore
+            bus = InfoBusManager.get_instance()
+            positions = bus.get('positions', 'BackendAPI', default=None)
+        except Exception:
+            positions = None
+        out = {
+            "position_manager": {
+                "enabled": pm.get("enabled"),
+                "status": pm.get("status"),
+                "position_count": pm.get("position_count"),
+                "total_exposure": pm.get("total_exposure"),
+                "avg_holding_time": pm.get("avg_holding_time"),
+                "instrument_exposures": pm.get("instrument_exposures", {}),
+            },
+            "execution_monitor": {
+                "enabled": eq.get("enabled"),
+                "status": eq.get("status"),
+                "execution_quality": eq.get("execution_quality"),
+                "slippage": eq.get("slippage"),
+                "latency_ms": eq.get("latency_ms"),
+                "fill_rate": eq.get("fill_rate"),
+                "rejections": eq.get("rejections"),
+                "partial_fills": eq.get("partial_fills"),
+                "execution_costs": eq.get("execution_costs"),
+            },
+            "positions": positions if positions is not None else pm.get("open_positions", {}),
+        }
+        return {"success": True, **out, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# ================== RISK ENDPOINTS ==================
+@app.get("/api/risk/overview")
+async def risk_overview():
+    """Risk overview: drawdown/VAR/compliance/correlation from bus + state."""
+    try:
+        # Base from state
+        perf = state.performance_metrics
+        dd = {
+            "current_drawdown": perf.get("current_drawdown", 0.0),
+            "max_drawdown": perf.get("max_drawdown", 0.0),
+            "sharpe_ratio": perf.get("sharpe_ratio", 0.0),
+            "win_rate": perf.get("win_rate", 0.0),
+        }
+        try:
+            from modules.utils.info_bus import InfoBusManager  # type: ignore
+            bus = InfoBusManager.get_instance()
+            risk_metrics = bus.get('risk_metrics', 'BackendAPI', default={}) or {}
+            compliance = bus.get('compliance', 'BackendAPI', default=None)
+            correlation_risk = bus.get('correlation_risk', 'BackendAPI', default=None)
+            correlation_matrix = bus.get('correlation_matrix', 'BackendAPI', default=None)
+        except Exception:
+            risk_metrics, compliance, correlation_risk, correlation_matrix = {}, None, None, None
+
+        return {
+            "success": True,
+            "risk_metrics": {**risk_metrics, **dd},
+            "compliance": compliance,
+            "correlation": {
+                "risk": correlation_risk,
+                "matrix": correlation_matrix,
+            },
+            "timestamp": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# ================== STRATEGY/VOTING ENDPOINTS ==================
+@app.get("/api/strategy/overview")
+async def strategy_overview():
+    """Strategy overview: trading signal + voting consensus."""
+    try:
+        try:
+            from modules.utils.info_bus import InfoBusManager  # type: ignore
+            bus = InfoBusManager.get_instance()
+            trading_signal = bus.get('trading_signal', 'BackendAPI', default={}) or {}
+            voting_consensus = bus.get('voting_consensus', 'BackendAPI', default=None)
+            consensus_summary = bus.get('consensus_summary', 'BackendAPI', default=None)
+            member_confidences = bus.get('member_confidences', 'BackendAPI', default=None)
+        except Exception:
+            trading_signal, voting_consensus, consensus_summary, member_confidences = {}, None, None, None
+
+        return {
+            "success": True,
+            "trading_signal": trading_signal,
+            "voting": {
+                "consensus": voting_consensus,
+                "summary": consensus_summary,
+                "member_confidences": member_confidences,
+            },
+            "timestamp": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# ================== EXTERNAL MODULES ENDPOINTS ==================
+@app.get("/api/external/market-data")
+async def external_market_data():
+    """Summarize latest market data provider outputs from the bus."""
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        bus = InfoBusManager.get_instance()
+        out = {
+            "environment_config": bus.get('environment_config', 'BackendAPI', default={}) or {},
+            "market_data": bus.get('market_data', 'BackendAPI', default={}) or {},
+            "multi_timeframe_data": bus.get('multi_timeframe_data', 'BackendAPI', default={}) or {},
+            "step_idx": bus.get('step_idx', 'BackendAPI', default=None),
+            "technical_indicators": bus.get('technical_indicators', 'BackendAPI', default=None),
+            "volatility_level": bus.get('volatility_level', 'BackendAPI', default=None),
+            "trading_session": bus.get('trading_session', 'BackendAPI', default=None),
+        }
+        # Reduce huge blobs: only include keys/meta sizes
+        md = out.get("market_data", {})
+        if isinstance(md, dict) and md:
+            out["market_data_summary"] = {k: list(v.keys()) if isinstance(v, dict) else '...' for k, v in list(md.items())[:3]}
+            out.pop("market_data", None)
+        mtd = out.get("multi_timeframe_data", {})
+        if isinstance(mtd, dict) and mtd:
+            out["mtd_summary"] = {k: list(v.keys()) if isinstance(v, dict) else '...' for k, v in list(mtd.items())[:3]}
+            out.pop("multi_timeframe_data", None)
+        return {"success": True, **out, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# ================== FEATURES ENDPOINTS ==================
+@app.get("/api/features/advanced")
+async def features_advanced():
+    """AdvancedFeatureEngine outputs (summaries to avoid huge blobs)."""
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        bus = InfoBusManager.get_instance()
+        out = {
+            "feature_health": bus.get('feature_health', 'BackendAPI', default=None),
+            "feature_thesis": bus.get('feature_thesis', 'BackendAPI', default=None),
+            "feature_analysis": bus.get('feature_analysis', 'BackendAPI', default=None),
+        }
+        # Summaries for potentially large arrays
+        def summarize(key: str):
+            val = bus.get(key, 'BackendAPI', default=None)
+            if isinstance(val, dict):
+                return {k: (len(v) if hasattr(v, '__len__') else 'obj') for k, v in list(val.items())[:8]}
+            return 'n/a' if val is None else 'available'
+        out.update({
+            "advanced_features": summarize('advanced_features'),
+            "advanced_features_H1": summarize('advanced_features_H1'),
+            "advanced_features_H4": summarize('advanced_features_H4'),
+            "advanced_features_D1": summarize('advanced_features_D1'),
+            "market_features": summarize('market_features'),
+            "price_features": summarize('price_features'),
+        })
+        return {"success": True, **out, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/features/multiscale")
+async def features_multiscale():
+    """MultiScaleFeatureEngine outputs (summaries for heavy tensors)."""
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        bus = InfoBusManager.get_instance()
+        out = {
+            "neural_health": bus.get('neural_health', 'BackendAPI', default=None),
+            "neural_capabilities": bus.get('neural_capabilities', 'BackendAPI', default=None),
+        }
+        def summarize(key: str):
+            val = bus.get(key, 'BackendAPI', default=None)
+            if isinstance(val, dict):
+                return {k: (len(v) if hasattr(v, '__len__') else 'obj') for k, v in list(val.items())[:8]}
+            return 'n/a' if val is None else 'available'
+        out.update({
+            "multiscale_features": summarize('multiscale_features'),
+            "attention_weights": summarize('attention_weights'),
+            "feature_fusion": summarize('feature_fusion'),
+            "neural_embeddings": summarize('neural_embeddings'),
+        })
+        return {"success": True, **out, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/external/news-sentiment")
+async def external_news_sentiment():
+    """Return news sentiment snapshot from bus."""
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        bus = InfoBusManager.get_instance()
+        ns = bus.get('news_sentiment', 'BackendAPI', default={}) or {}
+        trend = bus.get('sentiment_trend', 'BackendAPI', default=None)
+        alerts = bus.get('sentiment_alerts', 'BackendAPI', default=None)
+        return {"success": True, "news_sentiment": ns, "trend": trend, "alerts": alerts, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/external/session")
+async def external_session():
+    """Return session labels/context from SessionManager via bus."""
+    try:
+        from modules.utils.info_bus import InfoBusManager  # type: ignore
+        bus = InfoBusManager.get_instance()
+        data = {
+            "trading_session": bus.get('trading_session', 'BackendAPI', default=None),
+            "session_type": bus.get('session_type', 'BackendAPI', default=None),
+            "step_idx": bus.get('step_idx', 'BackendAPI', default=None),
+            "performance_data": bus.get('performance_data', 'BackendAPI', default={}) or {},
+            "system_health": bus.get('system_health', 'BackendAPI', default=None),
+        }
+        return {"success": True, **data, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 @app.get("/api/logs/{category}")
 async def get_logs(category: str, lines: int = Query(default=100, le=10000)):
@@ -1931,28 +3668,38 @@ async def websocket_endpoint(websocket: WebSocket):
     """Enhanced WebSocket endpoint with better error handling"""
     await websocket.accept()
     state.websocket_connections.append(websocket)
-    
+
     try:
         # Send initial state
         await broadcast_system_state()
-        
+
         # Keep connection alive and handle client messages
         while True:
+            # Receive a message (or detect disconnect) first
             try:
                 data = await websocket.receive_text()
-                # Handle client messages if needed
-                message = json.loads(data)
-                
-                if message.get("type") == "ping":
-                    await websocket.send_json({"type": "pong", "timestamp": datetime.now().isoformat()})
-                elif message.get("type") == "request_update":
-                    await broadcast_system_state()
-                    
-            except Exception as e:
-                logger.error(f"WebSocket message error: {e}")
+            except WebSocketDisconnect:
+                # Normal client disconnect (e.g., dev StrictMode unmount)
                 break
-                
+            except Exception as e:
+                # Treat unexpected receive errors as non-fatal and exit loop quietly
+                logger.debug(f"WebSocket receive error: {e}")
+                break
+
+            # Parse and handle message
+            try:
+                message = json.loads(data)
+            except json.JSONDecodeError as e:
+                logger.warning(f"WebSocket message parsing error: {e}")
+                continue
+
+            if message.get("type") == "ping":
+                await websocket.send_json({"type": "pong", "timestamp": datetime.now().isoformat()})
+            elif message.get("type") == "request_update":
+                await broadcast_system_state()
+
     except WebSocketDisconnect:
+        # Already handled above; keep silent
         pass
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
@@ -2043,9 +3790,9 @@ async def api_documentation():
         "timestamp": datetime.now().isoformat(),
     }
 
-# ═══════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # Serve Static Frontend - MUST BE LAST
-# ═══════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
 
@@ -2129,8 +3876,8 @@ else:
                 <p>To build the frontend, run:</p>
                 <code>cd frontend && npm install && npm run build</code>
                 <div class="links">
-                    <a href="/docs">📚 API Documentation</a>
-                    <a href="/health">💚 Health Check</a>
+                    <a href="/docs">ðŸ“š API Documentation</a>
+                    <a href="/health">ðŸ’š Health Check</a>
                     <a href="/api">[TOOL] API Info</a>
                 </div>
             </div>
@@ -2142,7 +3889,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8080,
+        port=8000,
     reload=True,
     log_level="debug",
         access_log=True

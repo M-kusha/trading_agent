@@ -8,19 +8,23 @@ import datetime
 import logging
 import pandas as pd
 import numpy as np
-import MetaTrader5 as mt5
-from typing import Any, Dict, List, Optional, Tuple
+import MetaTrader5 as _MT5
+from typing import Any, Dict, List, Optional, Tuple, cast
+
+# Pylance-friendly alias: the MT5 library exposes dynamic attributes at runtime.
+# Casting to Any avoids false-positive attribute errors while retaining runtime behavior.
+mt5: Any = cast(Any, _MT5)
 from collections import deque, defaultdict
 from stable_baselines3.common.callbacks import BaseCallback
 
 # InfoBus and audit infrastructure
 from modules.utils.info_bus import InfoBus, InfoBusUpdater, InfoBusExtractor
 from modules.utils.audit_utils import RotatingLogger, AuditTracker, format_operator_message, system_audit
-from modules.core.core import Module, ModuleConfig
+from modules.core.module_system import ModuleConfig
 from live.mt5_credentials import MT5Credentials
 
 
-class InfoBusLiveDataConnector(Module):
+class InfoBusLiveDataConnector:
     """
     Enhanced live data connector with comprehensive InfoBus integration.
     Provides real-time market data with health monitoring and audit trails.
@@ -34,8 +38,8 @@ class InfoBusLiveDataConnector(Module):
         retry_delay: float = 5.0,
         config: Optional[ModuleConfig] = None
     ):
-        # Initialize base module with InfoBus support
-        super().__init__(config or ModuleConfig())
+        # Store configuration (align with ModuleConfig used across system)
+        self.config = config or ModuleConfig()
         
         # Connection credentials
         self.account = MT5Credentials.ACCOUNT
@@ -84,7 +88,7 @@ class InfoBusLiveDataConnector(Module):
         # ══════════════════════════════════════════════════════════════
         # Enhanced MT5 Timeframe Mapping
         # ══════════════════════════════════════════════════════════════
-        
+
         self._tf_map = {
             "M1": mt5.TIMEFRAME_M1,
             "M5": mt5.TIMEFRAME_M5,
@@ -122,7 +126,6 @@ class InfoBusLiveDataConnector(Module):
 
     def reset(self) -> None:
         """Enhanced reset with InfoBus state clearing"""
-        super().reset()
         
         # Reset connection state
         self.connected = False
@@ -650,6 +653,25 @@ class InfoBusLiveDataConnector(Module):
                 )
             )
 
+    # ══════════════════════════════════════════════════════════════
+    # Legacy Compatibility Aliases
+    # ══════════════════════════════════════════════════════════════
+    def get_historical_data(self, n_bars: int = 1000, info_bus: Optional[InfoBus] = None) -> Dict[str, Dict[str, pd.DataFrame]]:
+        """Backward-compatible alias for get_historical_data_with_infobus."""
+        return self.get_historical_data_with_infobus(n_bars=n_bars, info_bus=info_bus)
+
+    def fetch_historical(self, symbol: str, timeframe: str, n_bars: int, info_bus: Optional[InfoBus] = None) -> pd.DataFrame:
+        """Backward-compatible alias for fetch_historical_with_infobus."""
+        return self.fetch_historical_with_infobus(symbol=symbol, timeframe=timeframe, n_bars=n_bars, info_bus=info_bus)
+
+    def sync_positions_with_env(self, env, info_bus: Optional[InfoBus] = None) -> None:
+        """Backward-compatible alias for sync_positions_with_env_infobus."""
+        self.sync_positions_with_env_infobus(env, info_bus)
+
+    def get_positions(self) -> List[Dict[str, Any]]:
+        """Backward-compatible alias for get_positions_enhanced."""
+        return self.get_positions_enhanced()
+
     def get_positions_enhanced(self) -> List[Dict[str, Any]]:
         """Enhanced position retrieval with error handling"""
         
@@ -932,7 +954,8 @@ class InfoBusLiveDataConnector(Module):
                     context="data_validation"
                 )
             )
-            df = df.fillna(method='ffill').fillna(method='bfill')
+            # Use explicit forward/backward fill methods to satisfy type checkers
+            df = df.ffill().bfill()
         
         # Validate OHLC consistency
         invalid_rows = (df['high'] < df[['open', 'close']].max(axis=1)) | (df['low'] > df[['open', 'close']].min(axis=1))
@@ -967,12 +990,19 @@ class InfoBusLiveDataConnector(Module):
             return False
         
         # Simple gap detection based on expected frequency
-        time_diffs = df.index.to_series().diff()[1:]
-        median_diff = time_diffs.median()
-        
-        # Look for gaps larger than 3x median difference
-        large_gaps = time_diffs > (median_diff * 3)
-        return large_gaps.any()
+        diffs = df.index.to_series().diff().dt.total_seconds().iloc[1:]
+        if diffs.empty:
+            return False
+        # Use pandas median to avoid numpy typing issues on ExtensionArray
+        try:
+            median_diff = float(diffs.astype('float64').median()) if len(diffs) else 0.0
+        except Exception:
+            median_diff = float(diffs.median()) if len(diffs) else 0.0
+        if median_diff <= 0:
+            return False
+        # Look for gaps larger than 3x median difference (in seconds)
+        large_gaps = diffs > (median_diff * 3.0)
+        return bool(large_gaps.any())
 
     def _calculate_single_dataset_quality(self, df: pd.DataFrame, fetch_time: float) -> float:
         """Calculate quality score for a single dataset"""
@@ -1021,15 +1051,15 @@ class InfoBusLiveTradingCallback(BaseCallback):
         super().__init__(verbose)
         self.connector = connector
         
-        # InfoBus-integrated logging
-        self.logger = RotatingLogger(
+        # InfoBus-integrated logging (avoid clashing with BaseCallback.logger property)
+        self.op_logger = RotatingLogger(
             name="LiveTradingCallback",
             log_path=f"logs/live/callback_{datetime.datetime.now().strftime('%Y%m%d')}.log",
             max_lines=2000,
             operator_mode=True
         )
-        
-        self.logger.info(
+
+        self.op_logger.info(
             format_operator_message(
                 "🚀", "LIVE_TRADING_CALLBACK_INITIALIZED",
                 details="InfoBus integration enabled",
@@ -1046,8 +1076,8 @@ class InfoBusLiveTradingCallback(BaseCallback):
             
             # Establish MT5 connection with InfoBus integration
             self.connector.connect(info_bus)
-            
-            self.logger.info(
+
+            self.op_logger.info(
                 format_operator_message(
                     "✅", "LIVE_TRAINING_STARTED",
                     details="MT5 connection established",
@@ -1056,7 +1086,7 @@ class InfoBusLiveTradingCallback(BaseCallback):
             )
             
         except Exception as e:
-            self.logger.error(
+            self.op_logger.error(
                 format_operator_message(
                     "❌", "LIVE_TRAINING_START_FAILED",
                     details=str(e),
@@ -1069,8 +1099,11 @@ class InfoBusLiveTradingCallback(BaseCallback):
         """Enhanced step with InfoBus position synchronization"""
         
         try:
-            # Get environment reference
-            env = self.training_env.envs[0]
+            # Get environment reference safely across VecEnv types
+            envs = getattr(self.training_env, 'envs', None)
+            env = envs[0] if isinstance(envs, list) and envs else getattr(self.training_env, 'env', None)
+            if env is not None and hasattr(env, 'unwrapped'):
+                env = getattr(env, 'unwrapped')
             
             # Create InfoBus for this step
             info_bus = self._create_info_bus_from_env(env)
@@ -1082,9 +1115,9 @@ class InfoBusLiveTradingCallback(BaseCallback):
             self.connector._step_impl(info_bus)
             
             return True
-            
+
         except Exception as e:
-            self.logger.error(
+            self.op_logger.error(
                 format_operator_message(
                     "💥", "LIVE_STEP_ERROR",
                     details=str(e),
@@ -1102,8 +1135,8 @@ class InfoBusLiveTradingCallback(BaseCallback):
             
             # Clean disconnect with InfoBus
             self.connector.disconnect(info_bus)
-            
-            self.logger.info(
+
+            self.op_logger.info(
                 format_operator_message(
                     "🏁", "LIVE_TRAINING_ENDED",
                     details="Clean disconnection completed",
@@ -1112,7 +1145,7 @@ class InfoBusLiveTradingCallback(BaseCallback):
             )
             
         except Exception as e:
-            self.logger.error(
+            self.op_logger.error(
                 format_operator_message(
                     "❌", "LIVE_TRAINING_END_ERROR",
                     details=str(e),
@@ -1138,8 +1171,8 @@ class InfoBusLiveTradingCallback(BaseCallback):
         
         try:
             # Use environment's InfoBus if available
-            if hasattr(env, 'unwrapped') and hasattr(env.unwrapped, 'info_bus'):
-                base_info_bus = env.unwrapped.info_bus or {}
+            if hasattr(env, 'info_bus'):
+                base_info_bus = getattr(env, 'info_bus') or {}
             else:
                 base_info_bus = {}
             
@@ -1156,7 +1189,7 @@ class InfoBusLiveTradingCallback(BaseCallback):
             return enhanced_info_bus
             
         except Exception as e:
-            self.logger.warning(f"Failed to create InfoBus from env: {e}")
+            self.op_logger.warning(f"Failed to create InfoBus from env: {e}")
             return self._create_info_bus()
 
     def connect(self):

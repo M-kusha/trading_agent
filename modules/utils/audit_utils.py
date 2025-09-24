@@ -1494,3 +1494,96 @@ Total Decisions: {m['thesis_count']}
 Average Confidence: {m['avg_confidence']:.1%}
 Minimum Confidence: {m['min_confidence']:.1%}
 """.strip()
+
+# ---------------------------------------------------------------------------
+# Backward-compatibility shims
+# ---------------------------------------------------------------------------
+
+class AuditTracker:
+    """
+    Backward-compatible wrapper around AuditSystem.
+
+    Older modules may import `AuditTracker` from this module and expect to
+    construct it with a `system_name`. We map that to a dedicated AuditSystem
+    instance and expose a few convenience methods.
+    """
+
+    def __init__(self, system_name: str = "TradingSystem") -> None:
+        self._audit = AuditSystem(system_name)
+
+    # Common legacy-style helpers
+    def record_decision(
+        self,
+        module: str,
+        decision: str,
+        thesis: str,
+        confidence: float,
+        duration_ms: float = 0.0,
+        inputs: Optional[Dict[str, Any]] = None,
+        outputs: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self._audit.record_module_decision(
+            module,
+            decision,
+            thesis,
+            confidence,
+            duration_ms=duration_ms,
+            inputs=inputs,
+            outputs=outputs,
+        )
+
+    def record_performance(
+        self,
+        module: str,
+        duration_ms: float,
+        success: bool = True,
+        error: Optional[str] = None,
+    ) -> None:
+        self._audit.record_module_performance(module, duration_ms, success, error)
+
+    # Friendly aliases
+    def decision(self, *args, **kwargs) -> None:
+        self.record_decision(*args, **kwargs)
+
+    def performance(self, *args, **kwargs) -> None:
+        self.record_performance(*args, **kwargs)
+
+    def record_event(
+        self,
+        event_type: str,
+        module: str,
+        data: Optional[Dict[str, Any]] = None,
+        severity: str = "info",
+        message: Optional[str] = None,
+    ) -> None:
+        """Generic event recorder to match legacy usage.
+
+        Maps to AuditSystem by emitting an AuditEvent through the audit logger.
+        """
+        try:
+            sev = str(severity or "INFO").upper()
+            evt = AuditEvent(
+                event_type=event_type,
+                module_name=module,
+                operator_message=message or event_type,
+                severity=sev,
+                category="business",
+                data=dict(data or {}),
+            )
+            self._audit.audit_logger.audit(evt, level=sev)
+        except Exception:
+            # Never throw from audit path
+            try:
+                self._audit.operator_logger.warning(
+                    f"AuditTracker.record_event failed for {module}:{event_type}"
+                )
+            except Exception:
+                pass
+
+    # Access to the underlying system
+    def system(self) -> AuditSystem:
+        return self._audit
+
+
+# Legacy global accessor name expected by some modules
+system_audit: AuditSystem = get_audit_system()

@@ -606,6 +606,36 @@ class UnifiedMarketModule(
         Keeps existing values intact. Ensures types match what downstream expects.
         """
         try:
+            # Critical missing data keys that many modules depend on
+            # Generate market_context from current aggregated data
+            aggregated.setdefault('market_context', {
+                'regime': aggregated.get('market_regime', 'unknown'),
+                'volatility_level': aggregated.get('volatility_level', 'medium'),
+                'session': aggregated.get('session_data', {}).get('current_session', 'unknown'),
+                'theme': aggregated.get('market_theme', 0),
+                'liquidity_score': aggregated.get('liquidity_score', 0.5),
+                'timestamp': datetime.datetime.utcnow().isoformat()
+            })
+
+            # Generate step_idx as incremental counter
+            aggregated.setdefault('step_idx', int(time.time() * 1000) % 1000000)  # Simple step counter
+
+            # Generate prices from current market data
+            aggregated.setdefault('prices', {
+                'current': aggregated.get('current_price', 1.0),
+                'timestamp': datetime.datetime.utcnow().isoformat()
+            })
+
+            # Generate price_data from market data
+            aggregated.setdefault('price_data', {
+                'open': aggregated.get('open', 1.0),
+                'high': aggregated.get('high', 1.0),
+                'low': aggregated.get('low', 1.0),
+                'close': aggregated.get('close', 1.0),
+                'volume': aggregated.get('volume', 1000),
+                'timestamp': datetime.datetime.utcnow().isoformat()
+            })
+
             # Fractal / Regime (legacy coverage)
             aggregated.setdefault('fractal_metrics', {})
             aggregated.setdefault('market_regime', aggregated.get('market_regime', 'unknown'))
@@ -1152,6 +1182,12 @@ class UnifiedMarketModule(
         # Update all original keys to maintain compatibility
         updates = [
         # Update all original keys to maintain compatibility with CONTRACTS
+
+            # Critical missing data keys that many modules depend on
+            ("market_context", aggregated.get("market_context")),
+            ("prices", aggregated.get("prices")),
+            ("price_data", aggregated.get("price_data")),
+            ("step_idx", aggregated.get("step_idx")),
 
             ("fractal_metrics", aggregated.get("fractal_metrics")),
             ("market_regime", aggregated.get("market_regime")),

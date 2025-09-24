@@ -1,19 +1,6 @@
 import os
+from datetime import datetime, timezone
 import numpy as np
-
-try:
-    from tomlkit import datetime
-except ImportError:
-    import datetime
-
-# ── Universal Module import/stub ────────────────────────────
-try:
-    from modules.core.core import Module
-except ImportError:
-    class Module:
-        def reset(self): pass
-        def step(self, *a, **kw): pass
-        def get_observation_components(self): pass
 
 # ── Directory and UTC helpers ───────────────────────────────
 def _ensure_dir(path: str):
@@ -27,7 +14,7 @@ def utcnow() -> str:
     """
     Get the current UTC time as an ISO8601 string.
     """
-    return datetime.datetime.utcnow().isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Voting system constants and helper functions

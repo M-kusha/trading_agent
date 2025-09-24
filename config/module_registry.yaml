@@ -369,12 +369,7 @@ modules:
       - strategy_status
       - system_alerts
 
-  FractalRegimeConfirmation:
-    category: market
-    file_path: modules\market\fractal_regime_confirmation.py
-    module_path: modules.market.fractal_regime_confirmation
-    provides: []
-    requires: []
+  # FractalRegimeConfirmation: removed — integrated under UnifiedMarket
 
   MarketThemeDetector:
     category: market
@@ -565,12 +560,7 @@ modules:
     requires:
       - market_data
 
-  RegimePerformanceMatrix:
-    category: market
-    file_path: modules\market\regime_performance_matrix.py
-    module_path: modules.market.regime_performance_matrix
-    provides: []
-    requires: []
+  # RegimePerformanceMatrix: removed — integrated under UnifiedMarket
 
   RiskAdjustedReward:
     category: reward
@@ -691,12 +681,7 @@ modules:
       - trading_performance
       - volatility_data
 
-  TimeAwareRiskScaling:
-    category: market
-    file_path: modules\market\time_aware_risk_scaling.py
-    module_path: modules.market.time_aware_risk_scaling
-    provides: []
-    requires: []
+  # TimeAwareRiskScaling: removed — integrated under UnifiedMarket
 
   TimeHorizonAligner:
     category: voting

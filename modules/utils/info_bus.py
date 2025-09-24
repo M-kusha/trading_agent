@@ -52,7 +52,15 @@ __all__ = [
     "InfoBusExtractor",
     "InfoBusUpdater",
     "InfoBusQuality",
+    # Legacy type alias exported for backward compatibility
+    "InfoBus",
 ]
+
+# Backward compatibility: some modules import `InfoBus` as a type symbol.
+# The legacy InfoBus is a dict-shaped container that may include a
+# reference to the XL SmartInfoBus under the `_smart_bus` key.
+# Providing this alias maintains compatibility without changing callers.
+InfoBus = Dict[str, Any]
 
 # ═══════════════════════════════════════════════════════════════════
 # CONFIGURATION
@@ -2876,6 +2884,63 @@ class InfoBusUpdater:
                     confidence=0.95,
                     namespace="market"
                 )
+
+    @staticmethod
+    def add_alert(info_bus: Dict[str, Any], message: str, *, severity: str = "info", module: str = "InfoBusUpdater", code: Optional[str] = None) -> None:
+        """Append an alert to the legacy InfoBus and mirror to SmartInfoBus if available."""
+        alert = {
+            'timestamp': now_utc(),
+            'severity': severity.upper(),
+            'module': module,
+            'message': message,
+        }
+        if code:
+            alert['code'] = code
+
+        alerts = info_bus.get('alerts')
+        if not isinstance(alerts, list):
+            alerts = []
+        alerts.append(alert)
+        info_bus['alerts'] = alerts
+
+        # Mirror to SmartInfoBus as a stream entry when available
+        if '_smart_bus' in info_bus:
+            try:
+                smart_bus: SmartInfoBus = info_bus['_smart_bus']
+                # Use publish() for append-only stream semantics
+                smart_bus.set(
+                    'last_alert',
+                    alert,
+                    module='InfoBusUpdater',
+                    thesis=f"{severity.upper()} alert from {module}",
+                    confidence=1.0,
+                    namespace='alerts'
+                )
+            except Exception:
+                pass
+
+    @staticmethod
+    def add_module_data(info_bus: Dict[str, Any], module_name: str, data: Dict[str, Any]) -> None:
+        """Record module-scoped data in legacy shape and mirror to SmartInfoBus."""
+        md = info_bus.get('module_data')
+        if not isinstance(md, dict):
+            md = {}
+        md[module_name] = data
+        info_bus['module_data'] = md
+
+        if '_smart_bus' in info_bus:
+            try:
+                smart_bus: SmartInfoBus = info_bus['_smart_bus']
+                smart_bus.set(
+                    module_name,
+                    data,
+                    module='InfoBusUpdater',
+                    thesis=f"Module data update for {module_name}",
+                    confidence=0.9,
+                    namespace='modules'
+                )
+            except Exception:
+                pass
 
 
 # ═══════════════════════════════════════════════════════════════════

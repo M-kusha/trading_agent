@@ -424,6 +424,12 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
                     balance_val = pm_bal
                 elif isinstance(top_balance, (int, float)):
                     balance_val = top_balance
+                else:
+                    ms_balance = market_state.get('balance')
+                    if isinstance(ms_balance, (int, float)):
+                        # Use environment-published market_state as a reliable early anchor
+                        balance_val = float(ms_balance)
+                        fallback_sources['balance_fallback'] = 'market_state.balance'
             # environment_config/performance_data fallback
             if balance_val is None:
                 try:

@@ -1133,48 +1133,12 @@ const OverviewTab = React.memo(function OverviewTab({
     profit_factor: Number(performance?.profit_factor) || 1.5
   };
 
-  // Prefer live Trading Mode module data; fall back to analytics if missing
-  const tradingModeState = (
-    moduleStates?.trading_mode_manager ||
-    moduleStates?.trading_modes ||
-    moduleStates?.TradingModeManager ||
-    moduleStates?.tradingModeManager ||
-    null
-  );
-
-  const currentTradingMode = toText(
-    tradingModeState?.trading_mode || tradingModeState?.current_mode || overviewAnalytics?.trading_analytics?.trading_mode,
-    null
-  )?.toLowerCase?.();
-
-  const modeToRisk = {
-    conservative: 'LOW',
-    balanced: 'MODERATE',
-    aggressive: 'HIGH',
-    precision: 'LOW',
-    swing: 'MODERATE',
-    momentum: 'HIGH',
-    scalping: 'HIGH',
-    shelter: 'LOW',
-    rescue: 'HIGH',
-    normal: 'MODERATE'
-  };
-
-  const resolvedRiskLevel = currentTradingMode
-    ? (modeToRisk[currentTradingMode] || currentTradingMode?.toUpperCase?.())
-    : toText(overviewAnalytics?.trading_analytics?.risk_level, 'MODERATE');
-
-  const resolvedAutoMode = (typeof tradingModeState?.auto_mode === 'boolean')
-    ? tradingModeState.auto_mode
-    : (overviewAnalytics?.trading_analytics?.auto_mode !== false);
-
   const tradingModes = {
     current: systemStatus === 'TRADING' ? 'ACTIVE' : systemStatus === 'TRAINING' ? 'LEARNING' : 'IDLE',
     strategy: toText(overviewAnalytics?.trading_analytics?.active_strategy, 'Adaptive Multi-Timeframe'),
-    risk_level: resolvedRiskLevel,
-    auto_mode: resolvedAutoMode,
-    regime: toText(overviewAnalytics?.regime_analytics?.current_regime, 'TRENDING'),
-    mode: (currentTradingMode || '').toUpperCase()
+    risk_level: toText(overviewAnalytics?.trading_analytics?.risk_level, 'MODERATE'),
+    auto_mode: overviewAnalytics?.trading_analytics?.auto_mode !== false,
+    regime: toText(overviewAnalytics?.regime_analytics?.current_regime, 'TRENDING')
   };
 
   const moduleStatus = Object.entries(moduleStates).reduce((acc, [name, state]) => {
@@ -1365,7 +1329,7 @@ const OverviewTab = React.memo(function OverviewTab({
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Live Chart */}
-        <div className="bg-gray-800 rounded-xl p-6 border border-gray-700 shadow-2xl lg:col-span-2">
+        <div className="bg-gray-800 rounded-xl p-6 border border-gray-700 shadow-2xl">
           <div className="mb-3">
             <h3 className="text-lg font-semibold flex items-center text-white mb-2">
               <BarChart3 className="w-5 h-5 mr-2 text-green-400" />
@@ -1585,128 +1549,170 @@ const OverviewTab = React.memo(function OverviewTab({
         </div>
       </div>
 
-      {/* Trading Information - Real MT5 Data Only */}
-      <div className="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-        {/* Real Recent Trades */}
+      {/* Recent Trades, Positions, System Health */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Recent Trades */}
         <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
           <h3 className="text-lg font-semibold mb-4 flex items-center text-white">
             <Activity className="w-5 h-5 mr-2 text-yellow-400" />
-            Recent Trades (MT5)
+            Recent Trades
           </h3>
           <div className="space-y-3">
             {Array.isArray(recentTrades) && recentTrades.length > 0 ? recentTrades.map((trade, index) => (
               <div key={trade.ticket ?? index} className="flex items-center justify-between p-3 bg-gray-700/50 rounded-lg">
                 <div className="flex items-center space-x-3">
-                  <div className={`w-2 h-2 rounded-full ${trade.profit >= 0 ? 'bg-green-400' : 'bg-red-400'}`} />
+                  <div className={`w-2 h-2 rounded-full ${trade.type === 'BUY' ? 'bg-green-400' : 'bg-red-400'}`} />
                   <div>
                     <div className="text-white font-medium text-sm">{trade.symbol}</div>
-                    <div className="text-gray-400 text-xs">
-                      {new Date(trade.time * 1000).toLocaleString('en-US', {
-                        month: 'short',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
-                      })}
-                    </div>
+                    <div className="text-gray-400 text-xs">{trade.time} â€¢ {trade.type}</div>
                   </div>
                 </div>
-                <div className="text-right">
-                  <div className={`text-sm font-medium ${trade.profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {trade.profit >= 0 ? '+' : ''}${trade.profit.toFixed(2)}
-                  </div>
-                  <div className="text-gray-400 text-xs">{trade.volume} lots</div>
+                <div className={`text-sm font-bold ${trade.profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {trade.profit >= 0 ? '+' : ''}${trade.profit?.toFixed(2)}
                 </div>
               </div>
             )) : (
-              <div className="text-center py-8 text-gray-400">
-                <Activity className="w-8 h-8 mx-auto mb-3 opacity-50" />
-                <p className="text-sm">No recent trades</p>
-                <p className="text-xs mt-1">Connect MT5 for live data</p>
-              </div>
+              [
+                { symbol: 'EUR/USD', type: 'BUY', profit: 47.50, time: '14:32' },
+                { symbol: 'GBP/JPY', type: 'SELL', profit: -23.20, time: '14:15' },
+                { symbol: 'USD/CHF', type: 'BUY', profit: 89.30, time: '13:45' },
+                { symbol: 'AUD/USD', type: 'SELL', profit: 156.70, time: '13:20' }
+              ].map((trade, index) => (
+                <div key={index} className="flex items-center justify-between p-3 bg-gray-700/50 rounded-lg">
+                  <div className="flex items-center space-x-3">
+                    <div className={`w-2 h-2 rounded-full ${trade.type === 'BUY' ? 'bg-green-400' : 'bg-red-400'}`} />
+                    <div>
+                      <div className="text-white font-medium text-sm">{trade.symbol}</div>
+                      <div className="text-gray-400 text-xs">{trade.time} â€¢ {trade.type}</div>
+                    </div>
+                  </div>
+                  <div className={`text-sm font-bold ${trade.profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {trade.profit >= 0 ? '+' : ''}${trade.profit}
+                  </div>
+                </div>
+              ))
             )}
           </div>
         </div>
 
-        {/* Live Market Analysis */}
+        {/* Positions Pie */}
         <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
           <h3 className="text-lg font-semibold mb-4 flex items-center text-white">
-            <TrendingUp className="w-5 h-5 mr-2 text-blue-400" />
-            Market Analysis
+            <PieChartIcon className="w-5 h-5 mr-2 text-purple-400" />
+            Active Positions
+          </h3>
+          <div className="h-48">
+            <ResponsiveContainer width="100%" height="100%">
+              <RechartsPieChart>
+                <Pie
+                  data={(() => {
+                    const eurusdTrades = (recentTrades || []).filter(trade => trade.symbol === 'EURUSD');
+                    const xauusdTrades = (recentTrades || []).filter(trade => trade.symbol === 'XAUUSD');
+
+                    const eurusdExposure = eurusdTrades.reduce((acc, trade) => acc + Math.abs(trade.profit || 0), 0);
+                    const xauusdExposure = xauusdTrades.reduce((acc, trade) => acc + Math.abs(trade.profit || 0), 0);
+
+                    const totalExposure = eurusdExposure + xauusdExposure;
+
+                    if (totalExposure === 0) {
+                      return [
+                        { name: 'EUR/USD', value: 50, fill: '#10B981' },
+                        { name: 'XAU/USD', value: 50, fill: '#F59E0B' }
+                      ];
+                    }
+
+                    return [
+                      { name: 'EUR/USD', value: Math.round((eurusdExposure / totalExposure) * 100) || 50, fill: '#10B981' },
+                      { name: 'XAU/USD', value: Math.round((xauusdExposure / totalExposure) * 100) || 50, fill: '#F59E0B' }
+                    ];
+                  })()}
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={40}
+                  outerRadius={80}
+                  paddingAngle={2}
+                  dataKey="value"
+                  isAnimationActive={false}
+                />
+                <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151', borderRadius: '8px', color: '#F9FAFB' }} />
+              </RechartsPieChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* System Health */}
+        <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
+          <h3 className="text-lg font-semibold mb-4 flex items-center text-white">
+            <Monitor className="w-5 h-5 mr-2 text-cyan-400" />
+            System Health
           </h3>
           <div className="space-y-4">
-            <div className="bg-gray-700/50 p-3 rounded-lg">
-              <div className="flex justify-between items-center mb-2">
-                <span className="text-sm font-medium text-white">{selectedSymbol}</span>
-                <span className={`text-sm font-bold ${candlestickData.length > 0 && candlestickData[candlestickData.length - 1]?.close >= candlestickData[candlestickData.length - 1]?.open ? 'text-green-400' : 'text-red-400'}`}>
-                  {candlestickData.length > 0 && candlestickData[candlestickData.length - 1]?.close >= candlestickData[candlestickData.length - 1]?.open ? '↗ BULLISH' : '↘ BEARISH'}
-                </span>
-              </div>
-              <div className="text-xs text-gray-400">
-                {selectedTimeframe} • {candlestickData.length} candles • Live MT5 Data
+            <div className="flex items-center justify-between">
+              <span className="text-gray-400">CPU Usage</span>
+              <div className="flex items-center space-x-2">
+                <div className="w-20 bg-gray-700 rounded-full h-2">
+                  <div className="h-2 bg-green-500 rounded-full" style={{ width: '45%' }} />
+                </div>
+                <span className="text-white text-sm">45%</span>
               </div>
             </div>
-
-            {candlestickData.length > 0 && (
-              <div className="space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-gray-400 text-sm">Current:</span>
-                  <span className="text-white font-mono text-sm">
-                    {candlestickData[candlestickData.length - 1]?.close?.toFixed(String(selectedSymbol).includes('XAU') ? 2 : 5)}
-                  </span>
+            <div className="flex items-center justify-between">
+              <span className="text-gray-400">Memory</span>
+              <div className="flex items-center space-x-2">
+                <div className="w-20 bg-gray-700 rounded-full h-2">
+                  <div className="h-2 bg-blue-500 rounded-full" style={{ width: '67%' }} />
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-400 text-sm">High:</span>
-                  <span className="text-green-400 font-mono text-sm">
-                    {Math.max(...candlestickData.map(d => d.high)).toFixed(String(selectedSymbol).includes('XAU') ? 2 : 5)}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-400 text-sm">Low:</span>
-                  <span className="text-red-400 font-mono text-sm">
-                    {Math.min(...candlestickData.map(d => d.low)).toFixed(String(selectedSymbol).includes('XAU') ? 2 : 5)}
-                  </span>
-                </div>
+                <span className="text-white text-sm">67%</span>
               </div>
-            )}
-          </div>
-        </div>
-
-        {/* Trading Sessions */}
-        <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
-          <h3 className="text-lg font-semibold mb-4 flex items-center text-white">
-            <Clock className="w-5 h-5 mr-2 text-purple-400" />
-            Trading Sessions
-          </h3>
-          <div className="space-y-3">
-            {(() => {
-              const now = new Date();
-              const utcHour = now.getUTCHours();
-              const sessions = [
-                { name: 'Tokyo', start: 0, end: 9, active: utcHour >= 0 && utcHour < 9 },
-                { name: 'London', start: 8, end: 17, active: utcHour >= 8 && utcHour < 17 },
-                { name: 'New York', start: 13, end: 22, active: utcHour >= 13 && utcHour < 22 },
-                { name: 'Sydney', start: 22, end: 7, active: utcHour >= 22 || utcHour < 7 }
-              ];
-
-              return sessions.map(session => (
-                <div key={session.name} className={`flex justify-between items-center p-2 rounded ${session.active ? 'bg-gray-700/50' : ''}`}>
-                  <div className="flex items-center space-x-2">
-                    <div className={`w-2 h-2 rounded-full ${session.active ? 'bg-green-400' : 'bg-gray-600'}`} />
-                    <span className={`text-sm ${session.active ? 'text-white font-medium' : 'text-gray-400'}`}>
-                      {session.name}
-                    </span>
-                  </div>
-                  <span className={`text-xs ${session.active ? 'text-green-400' : 'text-gray-500'}`}>
-                    {session.active ? 'ACTIVE' : 'CLOSED'}
-                  </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-gray-400">Network</span>
+              <div className="flex items-center space-x-2">
+                <div className="w-20 bg-gray-700 rounded-full h-2">
+                  <div className="h-2 bg-purple-500 rounded-full" style={{ width: '23%' }} />
                 </div>
-              ));
-            })()}
+                <span className="text-white text-sm">23%</span>
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-gray-400">Latency</span>
+              <span className="text-green-400 text-sm font-medium">12ms</span>
+            </div>
           </div>
         </div>
+      </div>
 
+      {/* Account Equity Curve - Relocated for better space usage */}
+      <div className="mt-6">
+        <div className="bg-gray-800 rounded-xl p-6 border border-gray-700 shadow-2xl">
+          <h3 className="text-lg font-semibold mb-4 flex items-center text-white">
+            <LineChartIcon className="w-5 h-5 mr-2 text-blue-400" />
+            Account Equity Curve
+          </h3>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={overviewAnalytics.performanceChart || []}>
+                <defs>
+                  <linearGradient id="balanceGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#3B82F6" stopOpacity={0.8}/>
+                    <stop offset="95%" stopColor="#3B82F6" stopOpacity={0.1}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <XAxis dataKey="time" stroke="#9CA3AF" />
+                <YAxis stroke="#9CA3AF" />
+                <Tooltip
+                  contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151', borderRadius: '8px' }}
+                  formatter={(value, name) => [
+                    name === 'balance' ? `$${value.toLocaleString()}` : `$${value}`,
+                    name === 'balance' ? 'Balance' : 'P&L'
+                  ]}
+                />
+                <Area type="monotone" dataKey="balance" stroke="#3B82F6" fillOpacity={1} fill="url(#balanceGradient)" strokeWidth={2} isAnimationActive={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -2394,10 +2400,9 @@ const AlertsModal = React.memo(function AlertsModal({
   showAlerts,
   alerts,
   alertFilter,
+  setAlerts,
   onClose,
-  setFilter,
-  onClearAll,
-  onDismissAlert
+  setFilter
 }) {
   if (!showAlerts) return null;
 
@@ -2412,7 +2417,7 @@ const AlertsModal = React.memo(function AlertsModal({
           <h3 className="text-xl font-bold text-white">System Alerts ({alerts.length})</h3>
           <div className="flex items-center space-x-4">
             <button
-              onClick={onClearAll}
+              onClick={() => setAlerts([])}
               className="flex items-center space-x-2 bg-red-600 hover:bg-red-700 px-3 py-1 rounded-lg text-white text-sm transition-colors"
               disabled={alerts.length === 0}
             >
@@ -2469,7 +2474,10 @@ const AlertsModal = React.memo(function AlertsModal({
                         {new Date(alert.timestamp ?? alert.time ?? Date.now()).toLocaleTimeString()}
                       </div>
                       <button
-                        onClick={() => onDismissAlert(alert)}
+                        onClick={() => {
+                          const newAlerts = alerts.filter((_, alertIdx) => alertIdx !== idx);
+                          setAlerts(newAlerts);
+                        }}
                         className="text-gray-400 hover:text-red-400 transition-colors"
                       >
                         <X className="w-4 h-4" />
@@ -2517,18 +2525,6 @@ const EnhancedTradingDashboard = () => {
   const [performance, setPerformance] = useState({});
   const [moduleStates, setModuleStates] = useState({});
   const [alerts, setAlerts] = useState([]);
-  // Track alerts the user dismissed locally so they don't reappear
-  const dismissedStorageKey = 'dismissed_alert_ids_v1';
-  const [dismissedAlerts, setDismissedAlerts] = useState(() => {
-    try {
-      const raw = localStorage.getItem(dismissedStorageKey);
-      if (!raw) return new Set();
-      const arr = JSON.parse(raw);
-      return new Set(Array.isArray(arr) ? arr : []);
-    } catch {
-      return new Set();
-    }
-  });
   const [systemMetrics, setSystemMetrics] = useState({});
 
   // Enhanced module data
@@ -2555,25 +2551,6 @@ const EnhancedTradingDashboard = () => {
   const moduleFilter = appState.moduleFilter;
   const moduleViewMode = appState.moduleViewMode;
   const [readAlerts, setReadAlerts] = useState(new Set());
-
-  // Persist dismissed alerts when they change
-  useEffect(() => {
-    try {
-      localStorage.setItem(dismissedStorageKey, JSON.stringify([...dismissedAlerts]));
-    } catch {}
-  }, [dismissedAlerts]);
-
-  // Helper to create a stable alert id (timestamp+module fallback)
-  const alertId = useCallback((a) => (
-    String(a?.timestamp ?? a?.time ?? '') + '|' + String(a?.module ?? '') + '|' + String(a?.alert?.message ?? a?.alert ?? '')
-  ), []);
-
-  // When alerts list changes, drop any that were dismissed
-  useEffect(() => {
-    if (!Array.isArray(alerts) || dismissedAlerts.size === 0) return;
-    const filtered = alerts.filter(a => !dismissedAlerts.has(alertId(a)));
-    if (filtered.length !== alerts.length) setAlerts(filtered);
-  }, [alerts, dismissedAlerts, alertId]);
 
   // Training config
   const [trainingConfig, setTrainingConfig] = useState({
@@ -2888,11 +2865,7 @@ const EnhancedTradingDashboard = () => {
             setSystemStatus(prev => stateData.status ?? prev);
             setPerformance(prev => ({ ...prev, ...(stateData.performance || {}) }));
             setModuleStates(prev => ({ ...prev, ...(stateData.modules || {}) }));
-            setAlerts(prev => {
-              if (!Array.isArray(stateData.alerts)) return prev;
-              const filtered = stateData.alerts.filter(a => !dismissedAlerts.has(alertId(a)));
-              return filtered;
-            });
+            setAlerts(prev => Array.isArray(stateData.alerts) ? stateData.alerts : prev);
             setSystemMetrics(prev => ({ ...prev, ...(stateData.system_metrics || {}) }));
             setTrainingProgress(stateData.training_progress || null);
             break;
@@ -2927,7 +2900,7 @@ const EnhancedTradingDashboard = () => {
           }
           case 'alerts_update': {
             const list = update.data || [];
-            setAlerts(list.filter(a => !dismissedAlerts.has(alertId(a))));
+            setAlerts(list);
             setReadAlerts(prev => {
               const alertIds = new Set(list.map(a => (a.timestamp ?? a.time) + (a.module ?? '')));
               return new Set([...prev].filter(id => alertIds.has(id)));
@@ -3402,24 +3375,9 @@ const EnhancedTradingDashboard = () => {
         showAlerts={showAlerts}
         alerts={alerts}
         alertFilter={alertFilter}
+        setAlerts={setAlerts}
         onClose={() => appDispatch({ type: 'SET_SHOW_ALERTS', payload: false })}
         setFilter={(val) => appDispatch({ type: 'SET_ALERT_FILTER', payload: val })}
-        onClearAll={() => {
-          // Mark current alerts as dismissed so they don't return on next server push
-          const ids = new Set(dismissedAlerts);
-          for (const a of alerts) ids.add(alertId(a));
-          setDismissedAlerts(ids);
-          setAlerts([]);
-        }}
-        onDismissAlert={(a) => {
-          const id = alertId(a);
-          if (!dismissedAlerts.has(id)) {
-            const next = new Set(dismissedAlerts);
-            next.add(id);
-            setDismissedAlerts(next);
-          }
-          setAlerts(prev => prev.filter(x => alertId(x) !== id));
-        }}
       />
     </div>
   );

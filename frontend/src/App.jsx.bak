@@ -1,4 +1,4 @@
-﻿import React, {
+import React, {
   useState,
   useEffect,
   useCallback,
@@ -29,19 +29,15 @@ import {
   ComposedChart, Scatter
 } from 'recharts';
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Custom Components
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ───────────────────────────────────────────────────────────────────────────────
 // Constants
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ───────────────────────────────────────────────────────────────────────────────
 
 const API_BASE = '/api';
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ───────────────────────────────────────────────────────────────────────────────
 // Context & Global State
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ───────────────────────────────────────────────────────────────────────────────
 
 const AppStateContext = createContext();
 
@@ -182,9 +178,9 @@ const useAppState = () => {
   return ctx;
 };
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ───────────────────────────────────────────────────────────────────────────────
 // Error Boundary
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ───────────────────────────────────────────────────────────────────────────────
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -220,40 +216,15 @@ class ErrorBoundary extends React.Component {
   }
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ───────────────────────────────────────────────────────────────────────────────
 /** Helpers */
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ───────────────────────────────────────────────────────────────────────────────
 
 const formatTime = (seconds) => {
   if (seconds < 60) return `${Math.round(seconds)}s`;
   if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
   return `${Math.round(seconds / 3600)}h`;
 };
-
-const toArray = (v) =>
-  Array.isArray(v) ? v : (v && typeof v === 'object') ? Object.values(v) : [];
-
-// Normalize possibly structured values to a human-readable string
-const toText = (v, fallback = '') => {
-  try {
-    if (v == null) return fallback;
-    if (typeof v === 'string') return v;
-    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-    if (Array.isArray(v)) {
-      if (v.length === 0) return fallback;
-      return toText(v[0], fallback);
-    }
-    if (typeof v === 'object') {
-      for (const k of ['label', 'name', 'regime', 'state', 'value']) {
-        if (k in v && typeof v[k] === 'string') return v[k];
-      }
-      const keys = Object.keys(v);
-      if (keys.length > 0 && typeof v[keys[0]] === 'string') return v[keys[0]];
-    }
-  } catch {}
-  return fallback || String(v);
-};
-
 
 const getCategoryIcon = (category) => {
   const icons = {
@@ -300,7 +271,6 @@ const getCategoryColor = (category) => {
 };
 
 const getStatusColor = (status) => {
-  const key = String(status || '').toLowerCase();
   const colors = {
     'active': 'text-green-400',
     'monitoring': 'text-blue-400',
@@ -312,7 +282,7 @@ const getStatusColor = (status) => {
     'error': 'text-red-400',
     'disabled': 'text-gray-500'
   };
-  return colors[key] || 'text-gray-400';
+  return colors[status] || 'text-gray-400';
 };
 
 const getHealthColor = (score) => {
@@ -331,9 +301,9 @@ const getHealthBarColor = (score) => {
   return 'bg-gradient-to-r from-red-500 to-red-400';
 };
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ───────────────────────────────────────────────────────────────────────────────
 /** UI Atoms (hoisted & memoized) */
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ───────────────────────────────────────────────────────────────────────────────
 
 const StatusIndicator = React.memo(function StatusIndicator({ status, className = '' }) {
   const configs = {
@@ -636,9 +606,9 @@ const ModeSelector = React.memo(function ModeSelector({ value, onChange }) {
   );
 });
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ───────────────────────────────────────────────────────────────────────────────
 /** Tabs (hoisted). They use context where convenient, and props for actions. */
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ───────────────────────────────────────────────────────────────────────────────
 
 const AnalyticsTab = React.memo(function AnalyticsTab() {
   const { state: appState, dispatch: appDispatch } = useAppState();
@@ -797,7 +767,7 @@ const AnalyticsTab = React.memo(function AnalyticsTab() {
   };
 
   const renderModuleAnalytics = () => {
-    const modules = toArray(analyticsData.modules?.modules);
+    const modules = analyticsData.modules?.modules || [];
     const modulesByCategory = modules.reduce((acc, module) => {
       if (!acc[module.category]) acc[module.category] = [];
       acc[module.category].push(module);
@@ -952,7 +922,7 @@ const AnalyticsTab = React.memo(function AnalyticsTab() {
                     {alert.alert?.message || JSON.stringify(alert.alert).slice(0, 50)}
                   </div>
                   <div className="text-xs text-gray-400 mt-1">
-                    {alert.module} â€¢ {new Date(alert.time).toLocaleTimeString()}
+                    {alert.module} • {new Date(alert.time).toLocaleTimeString()}
                   </div>
                 </div>
               </div>
@@ -1030,22 +1000,15 @@ const OverviewTab = React.memo(function OverviewTab({
   setReadAlerts,
 }) {
   const { state: appState, dispatch: appDispatch } = useAppState();
-  const { selectedSymbol, mt5ChartData, recentTrades, mt5Symbols, selectedTimeframe } = appState;
+  const { selectedSymbol, mt5ChartData, recentTrades, mt5Symbols } = appState;
 
   const [overviewAnalytics, setOverviewAnalytics] = useState({});
-  const prevTfRef = useRef(appState.selectedTimeframe);
 
-  const fetchMt5Data = useCallback(async (symbolParam = selectedSymbol) => {
-    const tfMap = { '1m': 'M1', '5m': 'M5', '15m': 'M15', '30m': 'M30', '1h': 'H1', '4h': 'H4', '1d': 'D1', '1w': 'D1' };
-    const tfParam = tfMap[selectedTimeframe] || 'M5';
-    const symbol = (symbolParam === 'XAU/USD' ? 'XAUUSD' : symbolParam) || 'EURUSD';
-
-    const now = Date.now();
-    const tfChanged = prevTfRef.current !== selectedTimeframe;
-    if (!tfChanged && (now - appState.lastUpdate.mt5) < 10000) return;
+  const fetchMt5Data = useCallback(async (symbol = selectedSymbol) => {
+    if (Date.now() - appState.lastUpdate.mt5 < 10000) return;
 
     try {
-      const chartResponse = await fetch(`/api/mt5/chart-data/${symbol}?timeframe=${tfParam}&count=150`);
+      const chartResponse = await fetch(`/api/mt5/chart-data/${symbol}?timeframe=M5&count=50`);
       if (chartResponse.ok) {
         const chartData = await chartResponse.json();
         if (chartData.success) {
@@ -1053,7 +1016,6 @@ const OverviewTab = React.memo(function OverviewTab({
             type: 'SET_MT5_DATA',
             payload: { chartData: chartData.data || [] }
           });
-          prevTfRef.current = selectedTimeframe;
         }
       }
 
@@ -1101,21 +1063,13 @@ const OverviewTab = React.memo(function OverviewTab({
     } catch (error) {
       console.error('Failed to fetch MT5 data:', error);
     }
-  }, [selectedSymbol, selectedTimeframe, appState.lastUpdate.mt5, appDispatch]);
+  }, [selectedSymbol, appState.lastUpdate.mt5, appDispatch]);
 
   useEffect(() => {
-    fetchMt5Data(selectedSymbol);
-  }, [selectedSymbol, selectedTimeframe, appState.dataLoaded.mt5Data, fetchMt5Data]);
-
-  // Keep chart updating periodically (polling cadence based on timeframe)
-  useEffect(() => {
-    const cadence = { '1m': 5000, '5m': 10000, '15m': 30000, '30m': 60000, '1h': 120000, '4h': 300000, '1d': 600000 };
-    const period = cadence[selectedTimeframe] || 15000;
-    const id = setInterval(() => {
+    if (!appState.dataLoaded.mt5Data || selectedSymbol) {
       fetchMt5Data(selectedSymbol);
-    }, period);
-    return () => clearInterval(id);
-  }, [selectedSymbol, selectedTimeframe, fetchMt5Data]);
+    }
+  }, [selectedSymbol, appState.dataLoaded.mt5Data, fetchMt5Data]);
 
   const candlestickData = mt5ChartData;
 
@@ -1133,48 +1087,12 @@ const OverviewTab = React.memo(function OverviewTab({
     profit_factor: Number(performance?.profit_factor) || 1.5
   };
 
-  // Prefer live Trading Mode module data; fall back to analytics if missing
-  const tradingModeState = (
-    moduleStates?.trading_mode_manager ||
-    moduleStates?.trading_modes ||
-    moduleStates?.TradingModeManager ||
-    moduleStates?.tradingModeManager ||
-    null
-  );
-
-  const currentTradingMode = toText(
-    tradingModeState?.trading_mode || tradingModeState?.current_mode || overviewAnalytics?.trading_analytics?.trading_mode,
-    null
-  )?.toLowerCase?.();
-
-  const modeToRisk = {
-    conservative: 'LOW',
-    balanced: 'MODERATE',
-    aggressive: 'HIGH',
-    precision: 'LOW',
-    swing: 'MODERATE',
-    momentum: 'HIGH',
-    scalping: 'HIGH',
-    shelter: 'LOW',
-    rescue: 'HIGH',
-    normal: 'MODERATE'
-  };
-
-  const resolvedRiskLevel = currentTradingMode
-    ? (modeToRisk[currentTradingMode] || currentTradingMode?.toUpperCase?.())
-    : toText(overviewAnalytics?.trading_analytics?.risk_level, 'MODERATE');
-
-  const resolvedAutoMode = (typeof tradingModeState?.auto_mode === 'boolean')
-    ? tradingModeState.auto_mode
-    : (overviewAnalytics?.trading_analytics?.auto_mode !== false);
-
   const tradingModes = {
     current: systemStatus === 'TRADING' ? 'ACTIVE' : systemStatus === 'TRAINING' ? 'LEARNING' : 'IDLE',
-    strategy: toText(overviewAnalytics?.trading_analytics?.active_strategy, 'Adaptive Multi-Timeframe'),
-    risk_level: resolvedRiskLevel,
-    auto_mode: resolvedAutoMode,
-    regime: toText(overviewAnalytics?.regime_analytics?.current_regime, 'TRENDING'),
-    mode: (currentTradingMode || '').toUpperCase()
+    strategy: String(overviewAnalytics?.trading_analytics?.active_strategy || 'Adaptive Multi-Timeframe'),
+    risk_level: String(overviewAnalytics?.trading_analytics?.risk_level || 'MODERATE'),
+    auto_mode: overviewAnalytics?.trading_analytics?.auto_mode !== false,
+    regime: String(overviewAnalytics?.regime_analytics?.current_regime || 'TRENDING')
   };
 
   const moduleStatus = Object.entries(moduleStates).reduce((acc, [name, state]) => {
@@ -1306,9 +1224,7 @@ const OverviewTab = React.memo(function OverviewTab({
               <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
               <span className="text-gray-400 text-sm font-medium">LIVE PRICES</span>
             </div>
-            {(() => {
-              const visible = (Array.isArray(mt5Symbols) ? mt5Symbols : []).filter(s => s && ['EURUSD','XAUUSD'].includes(String(s.symbol || '').toUpperCase()));
-              return visible.map((symbol) => (
+            {mt5Symbols.filter(symbol => symbol && symbol.symbol).map((symbol) => (
               <div key={symbol.symbol} className="flex items-center space-x-3 px-4 py-2 bg-gray-700/30 rounded-lg flex-shrink-0">
                 <div className="text-white font-bold text-sm">{String(symbol.symbol)}</div>
                 <div className="text-gray-300 text-xs">
@@ -1320,8 +1236,7 @@ const OverviewTab = React.memo(function OverviewTab({
                   {symbol.spread || 0}pts
                 </div>
               </div>
-              ));
-            })()}
+            ))}
           </div>
         </div>
       )}
@@ -1365,348 +1280,219 @@ const OverviewTab = React.memo(function OverviewTab({
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Live Chart */}
-        <div className="bg-gray-800 rounded-xl p-6 border border-gray-700 shadow-2xl lg:col-span-2">
-          <div className="mb-3">
-            <h3 className="text-lg font-semibold flex items-center text-white mb-2">
+        <div className="bg-gray-800 rounded-xl p-6 border border-gray-700 shadow-2xl">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold flex items-center text-white">
               <BarChart3 className="w-5 h-5 mr-2 text-green-400" />
-              {selectedSymbol} Live Chart ({(() => { const m = { '1m':'M1','5m':'M5','15m':'M15','30m':'M30','1h':'H1','4h':'H4','1d':'D1', '1w':'D1'}; return m[selectedTimeframe] || 'M5'; })()})
+              {selectedSymbol} Live Chart (M5)
             </h3>
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <div className="flex items-center space-x-3">
-                <select
-                  value={selectedSymbol}
-                  onChange={(e) => appDispatch({ type: 'SET_SYMBOL', payload: e.target.value })}
-                  className="bg-gray-700 text-white px-3 py-1 rounded text-sm border border-gray-600 focus:border-green-400 focus:outline-none"
-                >
-                  <option value="EURUSD">EUR/USD</option>
-                  <option value="XAUUSD">XAU/USD</option>
-                </select>
-                <div className="flex items-center space-x-1">
-                  {['1m','5m','15m','30m','1h','4h','1d'].map(tf => (
-                    <button
-                      key={tf}
-                      onClick={() => appDispatch({ type: 'SET_TIMEFRAME', payload: tf })}
-                      className={`px-2 py-1 rounded text-xs font-medium ${selectedTimeframe === tf ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
-                    >
-                      {tf}
-                    </button>
-                  ))}
-                </div>
-              </div>
+            <div className="flex items-center space-x-3">
+              <select
+                value={selectedSymbol}
+                onChange={(e) => appDispatch({ type: 'SET_SYMBOL', payload: e.target.value })}
+                className="bg-gray-700 text-white px-3 py-1 rounded text-sm border border-gray-600 focus:border-green-400 focus:outline-none"
+              >
+                {Array.isArray(mt5Symbols) && mt5Symbols.length > 0 ? (
+                  mt5Symbols.map(symbol => (
+                    <option key={symbol.symbol} value={symbol.symbol}>
+                      {symbol.description || symbol.symbol}
+                    </option>
+                  ))
+                ) : (
+                  <>
+                    <option value="EURUSD">EUR/USD</option>
+                    <option value="XAUUSD">XAU/USD</option>
+                  </>
+                )}
+              </select>
               <div className="flex items-center space-x-2">
                 <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
                 <span className="text-xs text-gray-400">LIVE</span>
               </div>
             </div>
           </div>
-          <div className="h-[500px]">
+          <div className="h-80">
             <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart
-                data={candlestickData.map(item => ({
-                  ...item,
-                  // Fix timezone - display local time
-                  time: new Date(item.timestamp_ms || Date.now()).toLocaleTimeString('en-US', {
-                    hour12: false,
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
-                  })
-                }))}
-                margin={{ top: 30, right: 70, left: 20, bottom: 30 }}
-              >
+              <ComposedChart data={candlestickData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <XAxis dataKey="time" stroke="#9CA3AF" fontSize={10} />
+                <YAxis stroke="#9CA3AF" fontSize={10} domain={['dataMin - 0.001', 'dataMax + 0.001']} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151', borderRadius: '8px' }}
+                  formatter={(value, name) => [typeof value === 'number' ? value.toFixed(5) : value, name.toUpperCase()]}
+                />
+                <Bar dataKey="volume" fill="#10B981" opacity={0.6} isAnimationActive={false} />
+                <Line type="monotone" dataKey="close" stroke="#10B981" strokeWidth={2} dot={false} isAnimationActive={false} />
+                <Line type="monotone" dataKey="high" stroke="#3B82F6" strokeWidth={1} strokeDasharray="5 5" dot={false} isAnimationActive={false} />
+                <Line type="monotone" dataKey="low" stroke="#EF4444" strokeWidth={1} strokeDasharray="5 5" dot={false} isAnimationActive={false} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* Equity Curve */}
+        <div className="bg-gray-800 rounded-xl p-6 border border-gray-700 shadow-2xl">
+          <h3 className="text-lg font-semibold mb-4 flex items-center text-white">
+            <LineChartIcon className="w-5 h-5 mr-2 text-blue-400" />
+            Account Equity Curve
+          </h3>
+          <div className="h-80">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={overviewAnalytics.performanceChart || []}>
                 <defs>
-                  <linearGradient id="volumeGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#10B981" stopOpacity={0.4} />
-                    <stop offset="100%" stopColor="#10B981" stopOpacity={0.1} />
+                  <linearGradient id="balanceGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#3B82F6" stopOpacity={0.8}/>
+                    <stop offset="95%" stopColor="#3B82F6" stopOpacity={0.1}/>
                   </linearGradient>
                 </defs>
-
-                <CartesianGrid strokeDasharray="2 4" stroke="#374151" opacity={0.2} />
-
-                <XAxis
-                  dataKey="time"
-                  stroke="#9CA3AF"
-                  fontSize={12}
-                  tick={{ fill: '#9CA3AF', fontSize: 11 }}
-                  axisLine={{ stroke: '#4B5563' }}
-                  tickLine={{ stroke: '#4B5563' }}
-                  interval="preserveStartEnd"
-                />
-
-                <YAxis
-                  yAxisId="price"
-                  stroke="#9CA3AF"
-                  fontSize={12}
-                  tick={{ fill: '#9CA3AF', fontSize: 11 }}
-                  axisLine={{ stroke: '#4B5563' }}
-                  tickLine={{ stroke: '#4B5563' }}
-                  domain={['dataMin - 0.0005', 'dataMax + 0.0005']}
-                  orientation="right"
-                  width={60}
-                />
-
-                <YAxis
-                  yAxisId="volume"
-                  stroke="#9CA3AF"
-                  fontSize={11}
-                  tick={{ fill: '#6B7280', fontSize: 10 }}
-                  axisLine={{ stroke: '#4B5563' }}
-                  tickLine={{ stroke: '#4B5563' }}
-                  orientation="left"
-                  domain={[0, 'dataMax * 2.5']}
-                  width={50}
-                />
-
+                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <XAxis dataKey="time" stroke="#9CA3AF" />
+                <YAxis stroke="#9CA3AF" />
                 <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#111827',
-                    border: '1px solid #374151',
-                    borderRadius: '12px',
-                    boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
-                    padding: '12px',
-                    color: '#F9FAFB'
-                  }}
-                  content={({ active, payload, label }) => {
-                    if (!active || !payload || !payload[0]) return null;
-                    const data = payload[0].payload;
-                    const isGold = String(selectedSymbol).toUpperCase().includes('XAU');
-                    const precision = isGold ? 2 : 5;
-
-                    // Fix timezone for tooltip
-                    const localTime = new Date(data.timestamp_ms || Date.now()).toLocaleString('en-US', {
-                      year: 'numeric',
-                      month: 'short',
-                      day: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit',
-                      second: '2-digit',
-                      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
-                    });
-
-                    return (
-                      <div className="bg-gray-900 border border-gray-600 rounded-lg p-3 shadow-xl">
-                        <p className="text-gray-300 text-sm mb-2">{localTime}</p>
-                        <div className="space-y-1 text-sm">
-                          <div className="flex justify-between gap-4">
-                            <span className="text-gray-400">Open:</span>
-                            <span className="text-white font-mono">{data.open?.toFixed(precision)}</span>
-                          </div>
-                          <div className="flex justify-between gap-4">
-                            <span className="text-gray-400">High:</span>
-                            <span className="text-green-400 font-mono">{data.high?.toFixed(precision)}</span>
-                          </div>
-                          <div className="flex justify-between gap-4">
-                            <span className="text-gray-400">Low:</span>
-                            <span className="text-red-400 font-mono">{data.low?.toFixed(precision)}</span>
-                          </div>
-                          <div className="flex justify-between gap-4">
-                            <span className="text-gray-400">Close:</span>
-                            <span className={`font-mono ${data.close >= data.open ? 'text-green-400' : 'text-red-400'}`}>
-                              {data.close?.toFixed(precision)}
-                            </span>
-                          </div>
-                          <div className="flex justify-between gap-4 pt-1 border-t border-gray-600">
-                            <span className="text-gray-400">Volume:</span>
-                            <span className="text-blue-400 font-mono">{data.volume?.toLocaleString()}</span>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  }}
+                  contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151', borderRadius: '8px' }}
+                  formatter={(value, name) => [
+                    name === 'balance' ? `$${value.toLocaleString()}` : `$${value}`,
+                    name === 'balance' ? 'Balance' : 'P&L'
+                  ]}
                 />
-
-                {/* Volume bars */}
-                <Bar
-                  yAxisId="volume"
-                  dataKey="volume"
-                  fill="url(#volumeGradient)"
-                  opacity={0.25}
-                  isAnimationActive={false}
-                  maxBarSize={3}
-                />
-
-                {/* Candlestick representation using Scatter with custom shape */}
-                <Scatter
-                  yAxisId="price"
-                  dataKey="close"
-                  shape={(props) => {
-                    const { cx, cy, payload } = props;
-                    if (!payload) return null;
-
-                    const { open, high, low, close } = payload;
-                    const isGreen = close >= open;
-
-                    // Calculate Y-axis scale with larger chart height
-                    const yAxisDomain = [Math.min(...candlestickData.map(d => Math.min(d.open, d.high, d.low, d.close))),
-                                         Math.max(...candlestickData.map(d => Math.max(d.open, d.high, d.low, d.close)))];
-                    const yAxisRange = yAxisDomain[1] - yAxisDomain[0];
-                    const chartHeight = 400; // larger chart height
-                    const pixelsPerUnit = chartHeight / yAxisRange;
-
-                    // Calculate positions
-                    const highY = cy - (high - close) * pixelsPerUnit;
-                    const lowY = cy + (close - low) * pixelsPerUnit;
-                    const openY = cy - (open - close) * pixelsPerUnit;
-
-                    const bodyTop = Math.min(cy, openY);
-                    const bodyBottom = Math.max(cy, openY);
-                    const bodyHeight = Math.abs(bodyBottom - bodyTop);
-
-                    return (
-                      <g key={`candle-${cx}`}>
-                        {/* High-Low Wick */}
-                        <line
-                          x1={cx}
-                          y1={highY}
-                          x2={cx}
-                          y2={lowY}
-                          stroke={isGreen ? '#10B981' : '#EF4444'}
-                          strokeWidth={1.2}
-                        />
-
-                        {/* Open-Close Body */}
-                        <rect
-                          x={cx - 5}
-                          y={bodyTop}
-                          width={10}
-                          height={Math.max(bodyHeight, 1.5)}
-                          fill={isGreen ? 'transparent' : '#EF4444'}
-                          stroke={isGreen ? '#10B981' : '#EF4444'}
-                          strokeWidth={1.8}
-                        />
-                      </g>
-                    );
-                  }}
-                  isAnimationActive={false}
-                />
-              </ComposedChart>
+                <Area type="monotone" dataKey="balance" stroke="#3B82F6" fillOpacity={1} fill="url(#balanceGradient)" strokeWidth={2} isAnimationActive={false} />
+              </AreaChart>
             </ResponsiveContainer>
           </div>
         </div>
       </div>
 
-      {/* Trading Information - Real MT5 Data Only */}
-      <div className="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-        {/* Real Recent Trades */}
+      {/* Recent Trades, Positions, System Health */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Recent Trades */}
         <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
           <h3 className="text-lg font-semibold mb-4 flex items-center text-white">
             <Activity className="w-5 h-5 mr-2 text-yellow-400" />
-            Recent Trades (MT5)
+            Recent Trades
           </h3>
           <div className="space-y-3">
             {Array.isArray(recentTrades) && recentTrades.length > 0 ? recentTrades.map((trade, index) => (
               <div key={trade.ticket ?? index} className="flex items-center justify-between p-3 bg-gray-700/50 rounded-lg">
                 <div className="flex items-center space-x-3">
-                  <div className={`w-2 h-2 rounded-full ${trade.profit >= 0 ? 'bg-green-400' : 'bg-red-400'}`} />
+                  <div className={`w-2 h-2 rounded-full ${trade.type === 'BUY' ? 'bg-green-400' : 'bg-red-400'}`} />
                   <div>
                     <div className="text-white font-medium text-sm">{trade.symbol}</div>
-                    <div className="text-gray-400 text-xs">
-                      {new Date(trade.time * 1000).toLocaleString('en-US', {
-                        month: 'short',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
-                      })}
-                    </div>
+                    <div className="text-gray-400 text-xs">{trade.time} • {trade.type}</div>
                   </div>
                 </div>
-                <div className="text-right">
-                  <div className={`text-sm font-medium ${trade.profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {trade.profit >= 0 ? '+' : ''}${trade.profit.toFixed(2)}
-                  </div>
-                  <div className="text-gray-400 text-xs">{trade.volume} lots</div>
+                <div className={`text-sm font-bold ${trade.profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {trade.profit >= 0 ? '+' : ''}${trade.profit?.toFixed(2)}
                 </div>
               </div>
             )) : (
-              <div className="text-center py-8 text-gray-400">
-                <Activity className="w-8 h-8 mx-auto mb-3 opacity-50" />
-                <p className="text-sm">No recent trades</p>
-                <p className="text-xs mt-1">Connect MT5 for live data</p>
-              </div>
+              [
+                { symbol: 'EUR/USD', type: 'BUY', profit: 47.50, time: '14:32' },
+                { symbol: 'GBP/JPY', type: 'SELL', profit: -23.20, time: '14:15' },
+                { symbol: 'USD/CHF', type: 'BUY', profit: 89.30, time: '13:45' },
+                { symbol: 'AUD/USD', type: 'SELL', profit: 156.70, time: '13:20' }
+              ].map((trade, index) => (
+                <div key={index} className="flex items-center justify-between p-3 bg-gray-700/50 rounded-lg">
+                  <div className="flex items-center space-x-3">
+                    <div className={`w-2 h-2 rounded-full ${trade.type === 'BUY' ? 'bg-green-400' : 'bg-red-400'}`} />
+                    <div>
+                      <div className="text-white font-medium text-sm">{trade.symbol}</div>
+                      <div className="text-gray-400 text-xs">{trade.time} • {trade.type}</div>
+                    </div>
+                  </div>
+                  <div className={`text-sm font-bold ${trade.profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {trade.profit >= 0 ? '+' : ''}${trade.profit}
+                  </div>
+                </div>
+              ))
             )}
           </div>
         </div>
 
-        {/* Live Market Analysis */}
+        {/* Positions Pie */}
         <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
           <h3 className="text-lg font-semibold mb-4 flex items-center text-white">
-            <TrendingUp className="w-5 h-5 mr-2 text-blue-400" />
-            Market Analysis
+            <PieChartIcon className="w-5 h-5 mr-2 text-purple-400" />
+            Active Positions
+          </h3>
+          <div className="h-48">
+            <ResponsiveContainer width="100%" height="100%">
+              <RechartsPieChart>
+                <Pie
+                  data={(() => {
+                    const eurusdTrades = (recentTrades || []).filter(trade => trade.symbol === 'EURUSD');
+                    const xauusdTrades = (recentTrades || []).filter(trade => trade.symbol === 'XAUUSD');
+
+                    const eurusdExposure = eurusdTrades.reduce((acc, trade) => acc + Math.abs(trade.profit || 0), 0);
+                    const xauusdExposure = xauusdTrades.reduce((acc, trade) => acc + Math.abs(trade.profit || 0), 0);
+
+                    const totalExposure = eurusdExposure + xauusdExposure;
+
+                    if (totalExposure === 0) {
+                      return [
+                        { name: 'EUR/USD', value: 50, fill: '#10B981' },
+                        { name: 'XAU/USD', value: 50, fill: '#F59E0B' }
+                      ];
+                    }
+
+                    return [
+                      { name: 'EUR/USD', value: Math.round((eurusdExposure / totalExposure) * 100) || 50, fill: '#10B981' },
+                      { name: 'XAU/USD', value: Math.round((xauusdExposure / totalExposure) * 100) || 50, fill: '#F59E0B' }
+                    ];
+                  })()}
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={40}
+                  outerRadius={80}
+                  paddingAngle={2}
+                  dataKey="value"
+                  isAnimationActive={false}
+                />
+                <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151', borderRadius: '8px', color: '#F9FAFB' }} />
+              </RechartsPieChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* System Health */}
+        <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
+          <h3 className="text-lg font-semibold mb-4 flex items-center text-white">
+            <Monitor className="w-5 h-5 mr-2 text-cyan-400" />
+            System Health
           </h3>
           <div className="space-y-4">
-            <div className="bg-gray-700/50 p-3 rounded-lg">
-              <div className="flex justify-between items-center mb-2">
-                <span className="text-sm font-medium text-white">{selectedSymbol}</span>
-                <span className={`text-sm font-bold ${candlestickData.length > 0 && candlestickData[candlestickData.length - 1]?.close >= candlestickData[candlestickData.length - 1]?.open ? 'text-green-400' : 'text-red-400'}`}>
-                  {candlestickData.length > 0 && candlestickData[candlestickData.length - 1]?.close >= candlestickData[candlestickData.length - 1]?.open ? '↗ BULLISH' : '↘ BEARISH'}
-                </span>
-              </div>
-              <div className="text-xs text-gray-400">
-                {selectedTimeframe} • {candlestickData.length} candles • Live MT5 Data
+            <div className="flex items-center justify-between">
+              <span className="text-gray-400">CPU Usage</span>
+              <div className="flex items-center space-x-2">
+                <div className="w-20 bg-gray-700 rounded-full h-2">
+                  <div className="h-2 bg-green-500 rounded-full" style={{ width: '45%' }} />
+                </div>
+                <span className="text-white text-sm">45%</span>
               </div>
             </div>
-
-            {candlestickData.length > 0 && (
-              <div className="space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-gray-400 text-sm">Current:</span>
-                  <span className="text-white font-mono text-sm">
-                    {candlestickData[candlestickData.length - 1]?.close?.toFixed(String(selectedSymbol).includes('XAU') ? 2 : 5)}
-                  </span>
+            <div className="flex items-center justify-between">
+              <span className="text-gray-400">Memory</span>
+              <div className="flex items-center space-x-2">
+                <div className="w-20 bg-gray-700 rounded-full h-2">
+                  <div className="h-2 bg-blue-500 rounded-full" style={{ width: '67%' }} />
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-400 text-sm">High:</span>
-                  <span className="text-green-400 font-mono text-sm">
-                    {Math.max(...candlestickData.map(d => d.high)).toFixed(String(selectedSymbol).includes('XAU') ? 2 : 5)}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-400 text-sm">Low:</span>
-                  <span className="text-red-400 font-mono text-sm">
-                    {Math.min(...candlestickData.map(d => d.low)).toFixed(String(selectedSymbol).includes('XAU') ? 2 : 5)}
-                  </span>
-                </div>
+                <span className="text-white text-sm">67%</span>
               </div>
-            )}
-          </div>
-        </div>
-
-        {/* Trading Sessions */}
-        <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
-          <h3 className="text-lg font-semibold mb-4 flex items-center text-white">
-            <Clock className="w-5 h-5 mr-2 text-purple-400" />
-            Trading Sessions
-          </h3>
-          <div className="space-y-3">
-            {(() => {
-              const now = new Date();
-              const utcHour = now.getUTCHours();
-              const sessions = [
-                { name: 'Tokyo', start: 0, end: 9, active: utcHour >= 0 && utcHour < 9 },
-                { name: 'London', start: 8, end: 17, active: utcHour >= 8 && utcHour < 17 },
-                { name: 'New York', start: 13, end: 22, active: utcHour >= 13 && utcHour < 22 },
-                { name: 'Sydney', start: 22, end: 7, active: utcHour >= 22 || utcHour < 7 }
-              ];
-
-              return sessions.map(session => (
-                <div key={session.name} className={`flex justify-between items-center p-2 rounded ${session.active ? 'bg-gray-700/50' : ''}`}>
-                  <div className="flex items-center space-x-2">
-                    <div className={`w-2 h-2 rounded-full ${session.active ? 'bg-green-400' : 'bg-gray-600'}`} />
-                    <span className={`text-sm ${session.active ? 'text-white font-medium' : 'text-gray-400'}`}>
-                      {session.name}
-                    </span>
-                  </div>
-                  <span className={`text-xs ${session.active ? 'text-green-400' : 'text-gray-500'}`}>
-                    {session.active ? 'ACTIVE' : 'CLOSED'}
-                  </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-gray-400">Network</span>
+              <div className="flex items-center space-x-2">
+                <div className="w-20 bg-gray-700 rounded-full h-2">
+                  <div className="h-2 bg-purple-500 rounded-full" style={{ width: '23%' }} />
                 </div>
-              ));
-            })()}
+                <span className="text-white text-sm">23%</span>
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-gray-400">Latency</span>
+              <span className="text-green-400 text-sm font-medium">12ms</span>
+            </div>
           </div>
         </div>
-
       </div>
     </div>
   );
@@ -1723,8 +1509,6 @@ const ModulesTab = React.memo(function ModulesTab({
 }) {
   const { state: appState, dispatch: appDispatch } = useAppState();
   const { moduleSearch, moduleFilter, moduleViewMode } = appState;
-  const [portalRoot, setPortalRoot] = useState(null);
-  useEffect(() => { setPortalRoot(document.body); }, []);
 
   const filteredModules = useMemo(() => {
     return (Array.isArray(modules) ? modules : []).filter(module => {
@@ -1876,7 +1660,7 @@ const ModulesTab = React.memo(function ModulesTab({
             Modules ({filteredModules.length})
           </h3>
           <div className="text-sm text-gray-400">
-            Showing {filteredModules.length} of {(Array.isArray(modules) ? modules.length : 0)} modules
+            Showing {filteredModules.length} of {modules.length} modules
           </div>
         </div>
 
@@ -1909,7 +1693,7 @@ const ModulesTab = React.memo(function ModulesTab({
                       <div>
                         <h3 className="text-white font-medium text-sm">{module.name}</h3>
                         <p className="text-gray-400 text-xs">
-                          {module.category} â€¢ {module.provides_count} outputs â€¢ {module.data_richness} live
+                          {module.category} • {module.provides_count} outputs • {module.data_richness} live
                         </p>
                       </div>
                     </div>
@@ -1934,7 +1718,7 @@ const ModulesTab = React.memo(function ModulesTab({
       </div>
 
       {/* Details Modal via portal (prevents reflow/flicker) */}
-      {portalRoot && selectedModule && createPortal(
+      {selectedModule && createPortal(
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <div className="bg-gray-800 rounded-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between p-6 border-b border-gray-700">
@@ -1968,7 +1752,7 @@ const ModulesTab = React.memo(function ModulesTab({
                 </div>
                 <div className="bg-gray-900 rounded-lg p-4">
                   <h3 className="text-white font-semibold mb-2">Last Update</h3>
-                  <p className="text-gray-300 text-sm">{selectedModule.last_update ? new Date(selectedModule.last_update).toLocaleString() : 'â€”'}</p>
+                  <p className="text-gray-300 text-sm">{selectedModule.last_update ? new Date(selectedModule.last_update).toLocaleString() : '—'}</p>
                 </div>
               </div>
 
@@ -2127,7 +1911,6 @@ const ModulesTab = React.memo(function ModulesTab({
       )}
     </div>
   );
-  portalRoot
 });
 
 const TrainingTab = React.memo(function TrainingTab({
@@ -2394,10 +2177,9 @@ const AlertsModal = React.memo(function AlertsModal({
   showAlerts,
   alerts,
   alertFilter,
+  setAlerts,
   onClose,
-  setFilter,
-  onClearAll,
-  onDismissAlert
+  setFilter
 }) {
   if (!showAlerts) return null;
 
@@ -2412,7 +2194,7 @@ const AlertsModal = React.memo(function AlertsModal({
           <h3 className="text-xl font-bold text-white">System Alerts ({alerts.length})</h3>
           <div className="flex items-center space-x-4">
             <button
-              onClick={onClearAll}
+              onClick={() => setAlerts([])}
               className="flex items-center space-x-2 bg-red-600 hover:bg-red-700 px-3 py-1 rounded-lg text-white text-sm transition-colors"
               disabled={alerts.length === 0}
             >
@@ -2462,14 +2244,17 @@ const AlertsModal = React.memo(function AlertsModal({
                         </span>
                         <span className="text-xs text-gray-400">{alert.module}</span>
                       </div>
-                      <p className="text-white">{alert.alert?.message || alert.alert || 'â€”'}</p>
+                      <p className="text-white">{alert.alert?.message || alert.alert || '—'}</p>
                     </div>
                     <div className="flex items-center space-x-3 ml-4">
                       <div className="text-xs text-gray-400">
                         {new Date(alert.timestamp ?? alert.time ?? Date.now()).toLocaleTimeString()}
                       </div>
                       <button
-                        onClick={() => onDismissAlert(alert)}
+                        onClick={() => {
+                          const newAlerts = alerts.filter((_, alertIdx) => alertIdx !== idx);
+                          setAlerts(newAlerts);
+                        }}
                         className="text-gray-400 hover:text-red-400 transition-colors"
                       >
                         <X className="w-4 h-4" />
@@ -2491,9 +2276,9 @@ const AlertsModal = React.memo(function AlertsModal({
   );
 });
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ───────────────────────────────────────────────────────────────────────────────
 /** Main Dashboard (stateful container) */
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ───────────────────────────────────────────────────────────────────────────────
 
 const EnhancedTradingDashboard = () => {
   const { state: appState, dispatch: appDispatch } = useAppState();
@@ -2517,18 +2302,6 @@ const EnhancedTradingDashboard = () => {
   const [performance, setPerformance] = useState({});
   const [moduleStates, setModuleStates] = useState({});
   const [alerts, setAlerts] = useState([]);
-  // Track alerts the user dismissed locally so they don't reappear
-  const dismissedStorageKey = 'dismissed_alert_ids_v1';
-  const [dismissedAlerts, setDismissedAlerts] = useState(() => {
-    try {
-      const raw = localStorage.getItem(dismissedStorageKey);
-      if (!raw) return new Set();
-      const arr = JSON.parse(raw);
-      return new Set(Array.isArray(arr) ? arr : []);
-    } catch {
-      return new Set();
-    }
-  });
   const [systemMetrics, setSystemMetrics] = useState({});
 
   // Enhanced module data
@@ -2555,25 +2328,6 @@ const EnhancedTradingDashboard = () => {
   const moduleFilter = appState.moduleFilter;
   const moduleViewMode = appState.moduleViewMode;
   const [readAlerts, setReadAlerts] = useState(new Set());
-
-  // Persist dismissed alerts when they change
-  useEffect(() => {
-    try {
-      localStorage.setItem(dismissedStorageKey, JSON.stringify([...dismissedAlerts]));
-    } catch {}
-  }, [dismissedAlerts]);
-
-  // Helper to create a stable alert id (timestamp+module fallback)
-  const alertId = useCallback((a) => (
-    String(a?.timestamp ?? a?.time ?? '') + '|' + String(a?.module ?? '') + '|' + String(a?.alert?.message ?? a?.alert ?? '')
-  ), []);
-
-  // When alerts list changes, drop any that were dismissed
-  useEffect(() => {
-    if (!Array.isArray(alerts) || dismissedAlerts.size === 0) return;
-    const filtered = alerts.filter(a => !dismissedAlerts.has(alertId(a)));
-    if (filtered.length !== alerts.length) setAlerts(filtered);
-  }, [alerts, dismissedAlerts, alertId]);
 
   // Training config
   const [trainingConfig, setTrainingConfig] = useState({
@@ -2730,7 +2484,7 @@ const EnhancedTradingDashboard = () => {
   };
 
   const emergencyStop = async () => {
-    if (!confirm('âš ï¸ EMERGENCY STOP: This will close all positions immediately. Are you sure?')) return;
+    if (!confirm('⚠️ EMERGENCY STOP: This will close all positions immediately. Are you sure?')) return;
     try {
       await apiCall('/trading/emergency-stop', { method: 'POST', noCache: true });
     } catch (err) {
@@ -2795,7 +2549,7 @@ const EnhancedTradingDashboard = () => {
   const fetchEnhancedModules = useCallback(async () => {
     try {
       const data = await apiCall('/modules');
-      const modulesArr = toArray(data.modules);
+      const modulesArr = data.modules || [];
       setModulesData(modulesArr);
       setModulesById(prev => {
         const next = { ...prev };
@@ -2868,9 +2622,9 @@ const EnhancedTradingDashboard = () => {
     }
   };
 
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ────────────────────────────────────────────────────────────────────────────
   // WebSocket connection with throttled/batched updates (no flicker)
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ────────────────────────────────────────────────────────────────────────────
 
   const processUpdateQueue = useCallback(async () => {
     if (isProcessingQueue.current || updateQueue.current.length === 0) return;
@@ -2888,11 +2642,7 @@ const EnhancedTradingDashboard = () => {
             setSystemStatus(prev => stateData.status ?? prev);
             setPerformance(prev => ({ ...prev, ...(stateData.performance || {}) }));
             setModuleStates(prev => ({ ...prev, ...(stateData.modules || {}) }));
-            setAlerts(prev => {
-              if (!Array.isArray(stateData.alerts)) return prev;
-              const filtered = stateData.alerts.filter(a => !dismissedAlerts.has(alertId(a)));
-              return filtered;
-            });
+            setAlerts(prev => Array.isArray(stateData.alerts) ? stateData.alerts : prev);
             setSystemMetrics(prev => ({ ...prev, ...(stateData.system_metrics || {}) }));
             setTrainingProgress(stateData.training_progress || null);
             break;
@@ -2903,7 +2653,7 @@ const EnhancedTradingDashboard = () => {
             break;
           }
           case 'modules_update': {
-            const arr = toArray(update.data?.modules);
+            const arr = update.data?.modules || [];
             setModulesData(arr);
             setModulesById(prev => {
               const next = { ...prev };
@@ -2927,7 +2677,7 @@ const EnhancedTradingDashboard = () => {
           }
           case 'alerts_update': {
             const list = update.data || [];
-            setAlerts(list.filter(a => !dismissedAlerts.has(alertId(a))));
+            setAlerts(list);
             setReadAlerts(prev => {
               const alertIds = new Set(list.map(a => (a.timestamp ?? a.time) + (a.module ?? '')));
               return new Set([...prev].filter(id => alertIds.has(id)));
@@ -2955,37 +2705,18 @@ const EnhancedTradingDashboard = () => {
   }, [appDispatch]);
 
   const connectWebSocket = useCallback(() => {
-    // Avoid forcing a reconnect if already connected or in progress
-    if (ws.current && (ws.current.readyState === WebSocket.OPEN || ws.current.readyState === WebSocket.CONNECTING)) {
-      return;
-    }
+    if (ws.current && ws.current.readyState !== WebSocket.CLOSED) ws.current.close();
 
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const backendHttp = import.meta.env.VITE_BACKEND_URL;
-    let wsUrl;
-    if (backendHttp && typeof backendHttp === 'string') {
-      const http = backendHttp.endsWith('/') ? backendHttp.slice(0, -1) : backendHttp;
-      const scheme = http.startsWith('https:') ? 'wss:' : 'ws:';
-      wsUrl = `${scheme}//${http.replace(/^https?:\/\//, '')}/ws`;
-    } else {
-      wsUrl = `${wsProtocol}//${window.location.host}/ws`;
-    }
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
 
     ws.current = new WebSocket(wsUrl);
 
     ws.current.onopen = () => {
       setWsConnected(true);
       reconnectAttempts.current = 0;
-      // Cancel any pending reconnect timer now that we're connected
-      if (reconnectTimer.current) {
-        clearTimeout(reconnectTimer.current);
-        reconnectTimer.current = null;
-      }
-      if (ws.current?.readyState === WebSocket.OPEN) {
-        ws.current.send(JSON.stringify({ type: 'ping' }));
-      }
+      ws.current?.send(JSON.stringify({ type: 'ping' }));
     };
-
 
     ws.current.onmessage = (event) => {
       try {
@@ -3022,11 +2753,8 @@ const EnhancedTradingDashboard = () => {
       }
     };
 
-    ws.current.onclose = (evt) => {
+    ws.current.onclose = () => {
       setWsConnected(false);
-      try {
-        console.warn('WebSocket closed', { code: evt?.code, reason: evt?.reason });
-      } catch {}
       if (reconnectAttempts.current < maxReconnectAttempts) {
         const delay = Math.min(1000 * Math.pow(2, Math.min(reconnectAttempts.current, 5)), 30000);
         reconnectAttempts.current++;
@@ -3082,9 +2810,9 @@ const EnhancedTradingDashboard = () => {
     return modulesById[selectedModuleId] ?? null;
   }, [selectedModuleId, modulesById]);
 
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ────────────────────────────────────────────────────────────────────────────
   // Login screen
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ────────────────────────────────────────────────────────────────────────────
 
   if (!isLoggedIn) {
     return (
@@ -3160,9 +2888,9 @@ const EnhancedTradingDashboard = () => {
     );
   }
 
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ────────────────────────────────────────────────────────────────────────────
   // Main render
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ────────────────────────────────────────────────────────────────────────────
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white">
@@ -3402,32 +3130,17 @@ const EnhancedTradingDashboard = () => {
         showAlerts={showAlerts}
         alerts={alerts}
         alertFilter={alertFilter}
+        setAlerts={setAlerts}
         onClose={() => appDispatch({ type: 'SET_SHOW_ALERTS', payload: false })}
         setFilter={(val) => appDispatch({ type: 'SET_ALERT_FILTER', payload: val })}
-        onClearAll={() => {
-          // Mark current alerts as dismissed so they don't return on next server push
-          const ids = new Set(dismissedAlerts);
-          for (const a of alerts) ids.add(alertId(a));
-          setDismissedAlerts(ids);
-          setAlerts([]);
-        }}
-        onDismissAlert={(a) => {
-          const id = alertId(a);
-          if (!dismissedAlerts.has(id)) {
-            const next = new Set(dismissedAlerts);
-            next.add(id);
-            setDismissedAlerts(next);
-          }
-          setAlerts(prev => prev.filter(x => alertId(x) !== id));
-        }}
       />
     </div>
   );
 };
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ───────────────────────────────────────────────────────────────────────────────
 // Root App
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ───────────────────────────────────────────────────────────────────────────────
 
 const App = () => (
   <ErrorBoundary>

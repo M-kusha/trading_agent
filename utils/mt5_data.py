@@ -9,13 +9,16 @@ import sys
 import logging
 import pickle
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any, cast
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import MetaTrader5 as mt5
-from dataclasses import dataclass
+import MetaTrader5 as _mt5
+from dataclasses import dataclass, field
+
+# Help Pylance by marking the MT5 module as "Any" so attribute access is not flagged.
+mt5: Any = cast(Any, _mt5)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -25,36 +28,25 @@ from dataclasses import dataclass
 @dataclass
 class DataConfig:
     """Configuration for data collection"""
-    symbols: List[str] = None
-    timeframes: Dict[str, int] = None
-    start_date: datetime = None
-    end_date: datetime = None
+    symbols: List[str] = field(default_factory=lambda: ["EURUSD", "XAUUSD"])
+    timeframes: Dict[str, int] = field(
+        default_factory=lambda: {
+            "H1": mt5.TIMEFRAME_H1,
+            "H4": mt5.TIMEFRAME_H4,
+            "D1": mt5.TIMEFRAME_D1,
+        }
+    )
+    # Default: 2 years of data
+    start_date: datetime = field(default_factory=lambda: datetime.now() - timedelta(days=730))
+    end_date: datetime = field(default_factory=datetime.now)
     output_dir: str = "data"
     min_bars: int = 1000
-    
-    def __post_init__(self):
-        if self.symbols is None:
-            self.symbols = ["EURUSD", "XAUUSD"]
-        
-        if self.timeframes is None:
-            self.timeframes = {
-                "H1": mt5.TIMEFRAME_H1,
-                "H4": mt5.TIMEFRAME_H4,
-                "D1": mt5.TIMEFRAME_D1
-            }
-        
-        if self.start_date is None:
-            # Default: 2 years of data
-            self.start_date = datetime.now() - timedelta(days=730)
-        
-        if self.end_date is None:
-            self.end_date = datetime.now()
 
 
 class MT5DataCollector:
     """Complete MT5 data collection and cleaning system"""
     
-    def __init__(self, config: DataConfig = None):
+    def __init__(self, config: Optional[DataConfig] = None):
         self.config = config or DataConfig()
         self.setup_logging()
         self.data_cache = {}
@@ -81,12 +73,12 @@ class MT5DataCollector:
     def connect_mt5(self) -> bool:
         """Connect to MT5 terminal"""
         try:
-            if not mt5.initialize():
-                self.logger.error(f"MT5 initialization failed: {mt5.last_error()}")
+            if not mt5.initialize():  # type: ignore[attr-defined]
+                self.logger.error(f"MT5 initialization failed: {mt5.last_error()}")  # type: ignore[attr-defined]
                 return False
             
             # Get account info
-            account_info = mt5.account_info()
+            account_info = mt5.account_info()  # type: ignore[attr-defined]
             if account_info is None:
                 self.logger.warning("No account info available")
             else:
@@ -104,13 +96,13 @@ class MT5DataCollector:
         
         for symbol in self.config.symbols:
             # Try to select symbol
-            if not mt5.symbol_select(symbol, True):
+            if not mt5.symbol_select(symbol, True):  # type: ignore[attr-defined]
                 self.logger.error(f"Failed to select symbol: {symbol}")
                 success = False
                 continue
             
             # Get symbol info
-            symbol_info = mt5.symbol_info(symbol)
+            symbol_info = mt5.symbol_info(symbol)  # type: ignore[attr-defined]
             if symbol_info is None:
                 self.logger.error(f"No symbol info for: {symbol}")
                 success = False
@@ -137,7 +129,7 @@ class MT5DataCollector:
             self.logger.info(f"Fetching {symbol} {timeframe_name} data...")
             
             # Get data from MT5
-            rates = mt5.copy_rates_range(
+            rates = mt5.copy_rates_range(  # type: ignore[attr-defined]
                 symbol,
                 timeframe,
                 self.config.start_date,
@@ -208,8 +200,8 @@ class MT5DataCollector:
                 # Convert symbol name to standard format
                 standard_name = self.standardize_symbol_name(symbol)
                 all_data[standard_name] = symbol_data
-        
-        mt5.shutdown()
+
+        mt5.shutdown()  # type: ignore[attr-defined]
         self.logger.info(f"✅ Data collection completed for {len(all_data)} symbols")
         
         return all_data
@@ -265,7 +257,7 @@ class MT5DataCollector:
             df_clean.loc[df_clean['volume'] <= 0, 'volume'] = median_vol
         
         # 6. Fill remaining NaN values
-        df_clean['volume'] = df_clean['volume'].fillna(method='ffill').fillna(1.0)
+        df_clean['volume'] = df_clean['volume'].ffill().fillna(1.0)
         
         # 7. Sort by timestamp
         df_clean = df_clean.sort_index()
@@ -286,7 +278,7 @@ class MT5DataCollector:
         # 1. Volatility (rolling standard deviation of returns)
         returns = df_enhanced['close'].pct_change()
         df_enhanced['volatility'] = returns.rolling(window=20, min_periods=5).std()
-        df_enhanced['volatility'] = df_enhanced['volatility'].fillna(method='ffill').fillna(0.01)
+        df_enhanced['volatility'] = df_enhanced['volatility'].ffill().fillna(0.01)
         
         # 2. Average True Range (ATR)
         high_low = df_enhanced['high'] - df_enhanced['low']
@@ -295,7 +287,7 @@ class MT5DataCollector:
         
         true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         df_enhanced['atr'] = true_range.rolling(window=14, min_periods=5).mean()
-        df_enhanced['atr'] = df_enhanced['atr'].fillna(method='ffill').fillna(0.001)
+        df_enhanced['atr'] = df_enhanced['atr'].ffill().fillna(0.001)
         
         # 3. Price momentum
         df_enhanced['momentum_5'] = df_enhanced['close'].pct_change(5)
@@ -307,7 +299,7 @@ class MT5DataCollector:
         
         # Fill any remaining NaN values
         numeric_cols = df_enhanced.select_dtypes(include=[np.number]).columns
-        df_enhanced[numeric_cols] = df_enhanced[numeric_cols].fillna(method='ffill').fillna(0)
+        df_enhanced[numeric_cols] = df_enhanced[numeric_cols].ffill().fillna(0)
         
         return df_enhanced
     
@@ -516,7 +508,7 @@ class MT5DataCollector:
 # ═══════════════════════════════════════════════════════════════════
 
 def quick_collect_data(
-    symbols: List[str] = None,
+    symbols: Optional[List[str]] = None,
     days_back: int = 365,
     output_dir: str = "data"
 ) -> Dict[str, Dict[str, pd.DataFrame]]:
