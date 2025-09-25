@@ -76,13 +76,7 @@ system:
 
 # Module-specific configurations
 modules:
-  # Market Analysis Modules
-  MarketThemeDetector:
-    config:
-      lookback_periods: [5, 10, 20, 50]
-      confidence_threshold: 0.75
-      theme_categories: ['bullish', 'bearish', 'ranging', 'breakout']
-      timeout_ms: 150
+
 
   AdvancedFeatureEngine:
     config:
@@ -90,14 +84,6 @@ modules:
       normalization: 'z_score'
       feature_selection: true
       timeout_ms: 100
-
-  UnifiedMarket:
-    config:
-      regime_detection_window: 50
-      theme_confidence_threshold: 0.7
-      liquidity_threshold: 0.5
-      fractal_analysis_depth: 3
-      timeout_ms: 400
 
   FractalRegimeConfirmation:
     config:
@@ -674,5 +660,3 @@ modules:
       export_formats: ['png', 'svg', 'pdf']
       timeout_ms: 400
 
-# Note: Portfolio risk limits are now managed in risk_policy.yaml
-# This provides better separation of concerns and centralized risk management

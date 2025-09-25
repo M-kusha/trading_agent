@@ -405,7 +405,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
     # ═══════════════════════════════ MARKET ══════════════════════════════════
     'UnifiedMarketModule': ModuleContract(
         name='UnifiedMarketModule',
-        file='market_1/market_module.py',
+        file='market/market_module.py',
         provides=[
             # Critical missing data keys that modules depend on
             'market_context', 'prices', 'price_data', 'step_idx',
@@ -431,7 +431,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
                   'multi_timeframe_data', 'technical_indicators',
                   'timestamp', 'volatility_data', 'volatility_level'],
         meta={'is_voting_member': False, 'thesis_required': True, 'explainable': True, 'health_monitoring': True,
-              'performance_tracking': True, 'category': 'market_1', 'version': '4.0.0'}
+              'performance_tracking': True, 'category': 'market', 'version': '4.0.0'}
     ),
 
     # ═════════════════════════════ EXTERNAL / IO ═════════════════════════════

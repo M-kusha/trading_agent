@@ -1664,39 +1664,11 @@ class SystemUtilities:
         return self.validator.fix_common_issues(*args, **kwargs)
     
     # Combined utilities
-    def comprehensive_system_report(self) -> str:
-        """Generate comprehensive system report combining validation and explanations"""
-        
-        # Run validation
+    def generate_integration_report(self) -> str:
+        """Generate a comprehensive integration report"""
         validation_report = self.validate_system()
         
-        # Get system metrics (would come from monitoring)
-        system_metrics = {
-            'cpu_percent': 45.2,
-            'memory_percent': 67.8,
-            'disk_percent': 23.1
-        }
-        
-        module_health = {
-            'StrategyGenomePool': 'healthy',
-            'MarketThemeDetector': 'healthy',
-            'RiskManager': 'warning'
-        }
-        
-        # Generate combined report
-        validation_section = validation_report.to_plain_english()
-        health_section = self.explainer.explain_health_status(
-            overall_status='healthy',
-            system_metrics=system_metrics,
-            module_health=module_health,
-            alerts=[],
-            recommendations=['Continue monitoring system health']
-        )
-        
         return f"""
-{validation_section}
-
-{health_section}
 
 INTEGRATION STATUS:
 Score: {validation_report.integration_score:.1f}%

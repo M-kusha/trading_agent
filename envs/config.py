@@ -211,6 +211,7 @@ class TradingConfig:
     num_envs: int = 1
     test_mode: bool = False
     live_mode: bool = False
+    training_mode: bool = False
     enable_shadow_sim: bool = True
     enable_news_sentiment: bool = False
 

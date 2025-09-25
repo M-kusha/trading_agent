@@ -250,22 +250,6 @@ class ConfigurationManager:
         # (kept identical to preserve your existing behavior)
         # --- BEGIN your existing specs block ---
         # Market Analysis Modules
-        self.module_specs['MarketThemeDetector'] = ModuleConfigSpec(
-            name='MarketThemeDetector',
-            category='market',
-            config_section='modules.MarketThemeDetector.config',
-            default_config={
-                'lookback_periods': [5, 10, 20, 50],
-                'confidence_threshold': 0.7,
-                'theme_categories': ['bullish', 'bearish', 'ranging', 'breakout'],
-                'timeout_ms': 150
-            },
-            required_keys=['lookback_periods', 'confidence_threshold'],
-            validation_rules={
-                'confidence_threshold': lambda x: 0 <= x <= 1,
-                'lookback_periods': lambda x: isinstance(x, list) and len(x) > 0
-            }
-        )
 
         self.module_specs['AdvancedFeatureEngine'] = ModuleConfigSpec(
             name='AdvancedFeatureEngine',
@@ -1092,24 +1076,6 @@ class ConfigurationManager:
             }
         )
 
-        # Market Analysis Modules
-        self.module_specs['UnifiedMarket'] = ModuleConfigSpec(
-            name='UnifiedMarket',
-            category='market',
-            config_section='modules.UnifiedMarket.config',
-            default_config={
-                'regime_detection_window': 50,
-                'theme_confidence_threshold': 0.7,
-                'liquidity_threshold': 0.5,
-                'fractal_analysis_depth': 3,
-                'timeout_ms': 400
-            },
-            required_keys=['regime_detection_window'],
-            validation_rules={
-                'regime_detection_window': lambda x: x > 0,
-                'theme_confidence_threshold': lambda x: 0 < x < 1
-            }
-        )
 
         self.module_specs['FractalRegimeConfirmation'] = ModuleConfigSpec(
             name='FractalRegimeConfirmation',
@@ -1182,7 +1148,7 @@ class ConfigurationManager:
 
         self.module_specs['UnifiedMarketModule'] = ModuleConfigSpec(
             name='UnifiedMarketModule',
-            category='market_1',
+            category='market',
             config_section='modules.UnifiedMarketModule.config',
             default_config={
                 'analysis_depth': 'comprehensive',

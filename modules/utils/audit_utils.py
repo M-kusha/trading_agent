@@ -118,7 +118,7 @@ class AuditEvent:
     correlation_id: Optional[str] = None
 
     # Details
-    severity: str = "INFO"       # DEBUG, INFO, WARNING, ERROR, CRITICAL
+    severity: str = "DEBUG"       # DEBUG, INFO, WARNING, ERROR, CRITICAL
     category: str = "general"    # general, security, performance, business
 
     # Payload
@@ -326,24 +326,58 @@ class RotatingLogger:
     # Setup
     # ─────────────────────────────────────────
     def _get_log_category(self, module_name: str) -> str:
-        categories = {
-            "agents": ["PPOAgent", "PPOLagAgent", "MetaAgent"],
-            "memory": ["MemoryBudgetOptimizer", "MemoryCompressor", "NeuralMemoryArchitect", "PlaybookMemory", "MistakeMemory"],
-            "risk": ["PortfolioRiskSystem", "DynamicRiskController", "CorrelatedRiskController", "DrawdownRescue", "ActiveTradeMonitor"],
-            "features": ["AdvancedFeatureEngine", "MultiScaleFeatureEngine", "FractalRegimeConfirmation"],
-            "meta": ["MetaRLController", "MetaCognitivePlanner"],
-            "models": ["EnhancedWorldModel", "EnhancedAnomalyDetector"],
-            "environment": ["ModernTradingEnv"],
-            "position": ["PositionManager"],
-            "reward": ["RiskAdjustedReward"],
-            "utils": ["EnglishExplainer", "ErrorPinpointer", "SystemUtilities"],
-            "auditing": ["AuditingCoordinator", "ComplianceModule", "TradeExplanationAuditor"],
-            "analysis": ["HistoricalReplayAnalyzer", "MarketThemeDetector", "RegimePerformanceMatrix"],
-            "trading": ["NewsSentimentModule", "LiquidityHeatmapLayer", "TimeAwareRiskScaling", "TradeThesisTracker"],
+        """Derive dynamic log subdirectory based on module contracts.
+
+        Priority:
+          1. Exact CONTRACTS name match → use its file path prefix (folder before filename)
+          2. Startswith match against known contract names (to catch suffixed variants)
+          3. Heuristic fallback by common substrings (risk, voting, strategy, etc.)
+          4. Default: other
+
+        Returned value always prefixed with 'rotate_logger/'.
+        Safe against import issues (will fallback silently).
+        """
+        try:
+            from modules.contracts import CONTRACTS  # local import to avoid circulars at module import time
+        except Exception:
+            CONTRACTS = {}
+
+        # 1. Exact match
+        if module_name in CONTRACTS:
+            rel_path = CONTRACTS[module_name].file or ""
+            category_folder = rel_path.split("/")[0] if rel_path else "other"
+            return f"rotate_logger/{category_folder}"
+
+        # 2. Startswith fuzzy match (handles subclasses / decorated variants)
+        for cname, mc in CONTRACTS.items():
+            if module_name.startswith(cname):
+                rel_path = mc.file or ""
+                category_folder = rel_path.split("/")[0] if rel_path else "other"
+                return f"rotate_logger/{category_folder}"
+
+        # 3. Heuristic fallback by keyword in name
+        lowered = module_name.lower()
+        keyword_map = {
+            "agent": "meta",
+            "memory": "memory",
+            "risk": "risk",
+            "feature": "features",
+            "meta": "meta",
+            "model": "models",
+            "env": "environment",
+            "position": "position",
+            "reward": "reward",
+            "audit": "auditing",
+            "strategy": "strategy",
+            "trade": "trading",
+            "vote": "voting",
+            "market": "market",
         }
-        for category, modules in categories.items():
-            if any(module_name.startswith(m) for m in modules):
-                return f"rotate_logger/{category}"
+        for k, v in keyword_map.items():
+            if k in lowered:
+                return f"rotate_logger/{v}"
+
+        # 4. Default fallback
         return "rotate_logger/other"
 
     def _register_with_smart_bus(self):

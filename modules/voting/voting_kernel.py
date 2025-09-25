@@ -291,6 +291,26 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
                 "failed_ticks": self.pipeline_stats.get("failed_ticks", 0),
             }
             trade_vote_v2 = dict(pipeline_results.get("trade_vote_v2", {}))
+            # Derive fragility (uncertainty.fragility) for contract + bus exposure
+            fragility_value = 0.0
+            try:
+                if isinstance(pipeline_results.get("uncertainty"), dict):
+                    fragility_value = float(pipeline_results["uncertainty"].get("fragility", 0.0) or 0.0)
+            except Exception:
+                fragility_value = 0.0
+            # Derive committee_members (contract surface) from committee stage or bus
+            committee_section = pipeline_results.get("committee", {}) or {}
+            committee_members = []
+            try:
+                if isinstance(committee_section, dict) and isinstance(committee_section.get("members"), list):
+                    committee_members = list(committee_section.get("members", []))
+                if not committee_members:
+                    # Fallback direct bus read if committee stage absent
+                    bus_members = self.smart_bus.get("committee_members", "VotingKernel")
+                    if isinstance(bus_members, list):
+                        committee_members = list(bus_members)
+            except Exception:
+                committee_members = []
 
             # Publish bundle and key surfaces to SmartInfoBus for downstreams
             self.smart_bus.set(
@@ -306,6 +326,38 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
                 self.smart_bus.set("consensus_summary", consensus_summary, module="VotingKernel", thesis="Consensus summary")
                 self.smart_bus.set("voting_metrics", voting_metrics, module="VotingKernel", thesis="Voting metrics")
                 self.smart_bus.set("trade_vote_v2", trade_vote_v2, module="VotingKernel", thesis="Final vote bundle (v2)")
+                # If available, publish signals under VotingKernel namespace (contract owner)
+                try:
+                    signals_payload = dict(pipeline_results.get("signals", {}) or {})
+                    self.smart_bus.set(
+                        "signals",
+                        signals_payload,
+                        module="VotingKernel",
+                        thesis=f"Voting signals ({len(signals_payload) if isinstance(signals_payload, dict) else 0})",
+                    )
+                except Exception:
+                    pass
+                # Publish standalone fragility surface (mirrors uncertainty.fragility)
+                try:
+                    self.smart_bus.set("fragility", fragility_value, module="VotingKernel", thesis=f"Voting fragility {fragility_value:.3f}")
+                    # Record performance metric for fragility exposure (success assumed if bus write succeeds)
+                    try:
+                        self.performance_tracker.record_metric(
+                            self.__class__.__name__,
+                            'fragility_publish',
+                            0.0,
+                            True,
+                            error=f"fragility={fragility_value:.4f}"  # reuse error/context slot for value annotation
+                        )
+                    except Exception:
+                        pass
+                    # Publish committee_members (even if empty) for contract consumers
+                    try:
+                        self.smart_bus.set("committee_members", committee_members, module="VotingKernel", thesis=f"Committee members ({len(committee_members)})")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
             except Exception:
                 pass
 
@@ -317,6 +369,18 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
                     thesis=f"Pipeline timeline for {decision_id}"
                 )
 
+            # Derive proposal_vectors (contract surface) from committee stage or bus
+            try:
+                committee_proposals = []
+                if isinstance(committee_section.get("proposal_vectors"), list):
+                    committee_proposals = list(committee_section.get("proposal_vectors", []))
+                if not committee_proposals:
+                    bus_proposals = self.smart_bus.get("proposal_vectors", "VotingKernel")
+                    if isinstance(bus_proposals, list):
+                        committee_proposals = list(bus_proposals)
+            except Exception:
+                committee_proposals = []
+
             return {
                 "decision_bundle": bundle,
                 "decision_coordination": decision_coordination,
@@ -324,6 +388,14 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
                 "consensus_summary": consensus_summary,
                 "voting_metrics": voting_metrics,
                 "trade_vote_v2": trade_vote_v2,
+                # Contract key: expose signals (may be empty dict)
+                "signals": pipeline_results.get("signals", {}) if isinstance(pipeline_results.get("signals"), dict) else {},
+                # Contract key: expose top-level fragility (mirror uncertainty.fragility when available)
+                "fragility": fragility_value,
+                # Contract key: expose committee_members (even if empty)
+                "committee_members": committee_members,
+                # Contract key: expose proposal_vectors (even if empty)
+                "proposal_vectors": committee_proposals,
                 "pipeline_timeline": timeline,
                 "processing_time_ms": processing_time,
                 "pipeline_stats": dict(self.pipeline_stats),
@@ -480,6 +552,8 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
             "pipeline_timeline": timeline,
             "processing_time_ms": processing_time,
             "pipeline_stats": dict(self.pipeline_stats),
+            "fragility": 0.0,
+            "committee_members": [],
             "_thesis": f"VotingKernel error: {ctx}",
         }
 
@@ -490,6 +564,8 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
             "pipeline_timeline": [],
             "processing_time_ms": 0.0,
             "pipeline_stats": dict(self.pipeline_stats),
+            "fragility": 0.0,
+            "committee_members": [],
             "_thesis": "VotingKernel disabled via circuit breaker",
         }
 

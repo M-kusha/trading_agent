@@ -18,7 +18,7 @@ module_standards:
     thesis_mandatory: true
     explanation_depth: 'detailed'
 
-  market_1:
+  market:
     explainability_level: 'high'
     thesis_mandatory: true
     explanation_depth: 'detailed'

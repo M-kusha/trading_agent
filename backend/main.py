@@ -9,7 +9,6 @@ import asyncio
 import json
 import logging
 import os
-import random
 import subprocess
 import sys
 import time
@@ -37,7 +36,7 @@ mt5: Any = cast(Any, _mt5)
 
 # Import modules to ensure they are registered with the ModuleOrchestrator
 # This is critical for the @module decorator to run and register modules
-from modules.market_1.market_module import UnifiedMarketModule  # Provides market_context, prices, price_data, step_idx
+from modules.market.market_module import UnifiedMarketModule  # Provides market_context, prices, price_data, step_idx
 
 # Fix Windows encoding issues
 if sys.platform == "win32":
@@ -1911,11 +1910,9 @@ async def get_performance_chart_data():
         chart_data = []
         for i in range(24):
             time_point = current_time - timedelta(hours=23-i)
-            # Simulate realistic balance progression
-            progress = i / 23.0
-            balance_factor = 1.0 + (total_pnl / start_balance) * progress
-            balance = start_balance * balance_factor
-            pnl = (balance - start_balance)
+            # Use actual balance data from InfoBus or MT5
+            balance = current_balance  # Use current real balance
+            pnl = total_pnl  # Use current real PnL
 
             chart_data.append({
                 "time": time_point.strftime("%H:%M"),
@@ -2758,8 +2755,8 @@ async def get_mt5_chart_data(symbol: str, timeframe: str = "M5", count: int = 50
     """Get real-time MT5 chart data for overview dashboard"""
     try:
         if not state.mt5_connected:
-            # Return simulated data if MT5 not connected
-            return generate_simulated_chart_data(symbol, count, timeframe)
+            # Return error if MT5 not connected (no simulated data)
+            return {"success": False, "error": "MT5 not connected - no historical data available"}
 
         # Map timeframe string to MT5 constant
         timeframe_map = {
@@ -2778,7 +2775,7 @@ async def get_mt5_chart_data(symbol: str, timeframe: str = "M5", count: int = 50
         rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
 
         if rates is None or len(rates) == 0:
-            return generate_simulated_chart_data(symbol, count, timeframe)
+            return {"success": False, "error": "MT5 not connected - no historical data available"}
 
         # Convert to frontend format
         chart_data = []
@@ -2806,106 +2803,17 @@ async def get_mt5_chart_data(symbol: str, timeframe: str = "M5", count: int = 50
         }
 
     except Exception as e:
-        # Fallback to simulated data on error
-        return generate_simulated_chart_data(symbol, count, timeframe)
+        # Return error on exception
+        return {"success": False, "error": f"Error fetching chart data: {str(e)}"}
 
-def generate_simulated_chart_data(symbol: str, count: int, timeframe: str = "M5"):
-    """Generate realistic simulated chart data when MT5 is not available"""
-    data = []
-    # Determine bar interval seconds from timeframe
-    tf_seconds = {
-        "M1": 60,
-        "M5": 300,
-        "M15": 900,
-        "M30": 1800,
-        "H1": 3600,
-        "H4": 14400,
-        "D1": 86400,
-    }.get(timeframe.upper(), 300)
-    now_utc = datetime.now(timezone.utc)
-
-    base_price = {
-        "EURUSD": 1.0850,
-        "XAUUSD": 2045.50
-    }.get(symbol.replace("/", ""), 1.0850)
-
-    # Oldest to newest
-    start_ts = int(now_utc.timestamp()) - count * tf_seconds
-    for i in range(count):
-        # Adjust variation based on symbol type
-        if symbol == "XAUUSD":
-            variation = (random.random() - 0.5) * 2.0  # Gold moves in dollars
-            high_low_range = random.random() * 1.0
-        else:
-            variation = (random.random() - 0.5) * 0.002  # Forex moves in pips
-            high_low_range = random.random() * 0.001
-
-        open_price = base_price
-        close_price = base_price + variation
-        high_price = max(open_price, close_price) + high_low_range
-        low_price = min(open_price, close_price) - high_low_range
-
-        # Adjust precision based on symbol
-        precision = 2 if symbol == "XAUUSD" else 5
-
-        ts_utc = start_ts + (i * tf_seconds)
-        ts_dt_utc = datetime.fromtimestamp(ts_utc, tz=timezone.utc)
-        ts_local = ts_dt_utc.astimezone()
-
-        data.append({
-            "time": ts_local.strftime("%H:%M"),
-            "ts": ts_utc,
-            "timestamp_ms": ts_utc * 1000,
-            "open": round(open_price, precision),
-            "high": round(high_price, precision),
-            "low": round(low_price, precision),
-            "close": round(close_price, precision),
-            "volume": random.randint(500, 1500)
-        })
-        base_price = close_price
-
-    return {
-        "success": True,
-        "symbol": symbol,
-        "simulated": True,
-        "timeframe": timeframe,
-        "data": data,
-        "timestamp": datetime.now().isoformat()
-    }
 
 @app.get("/api/mt5/positions")
 async def get_mt5_positions():
     """Get current MT5 positions for overview dashboard"""
     try:
         if not state.mt5_connected:
-            # Return simulated positions
-            return {
-                "success": True,
-                "positions": [
-                    {
-                        "ticket": 12345678,
-                        "symbol": "EURUSD",
-                        "type": "BUY",
-                        "volume": 0.1,
-                        "price_open": 1.0845,
-                        "price_current": 1.0850,
-                        "profit": 47.50,
-                        "time": (datetime.now() - timedelta(minutes=15)).isoformat()
-                    },
-                    {
-                        "ticket": 12345679,
-                        "symbol": "GBPJPY",
-                        "type": "SELL",
-                        "volume": 0.05,
-                        "price_open": 188.55,
-                        "price_current": 188.32,
-                        "profit": 89.30,
-                        "time": (datetime.now() - timedelta(minutes=45)).isoformat()
-                    }
-                ],
-                "simulated": True,
-                "timestamp": datetime.now().isoformat()
-            }
+            # Return error if MT5 not connected
+            return {"success": False, "error": "MT5 not connected - no position data available"}
 
         # Get real positions from MT5
         positions = mt5.positions_get()
@@ -2939,50 +2847,8 @@ async def get_recent_mt5_deals(limit: int = 10):
     """Get recent MT5 deals for overview dashboard"""
     try:
         if not state.mt5_connected:
-            # Return simulated recent trades
-            return {
-                "success": True,
-                "deals": [
-                    {
-                        "ticket": 12345670,
-                        "symbol": "EURUSD",
-                        "type": "BUY",
-                        "volume": 0.1,
-                        "price": 1.0845,
-                        "profit": 47.50,
-                        "time": (datetime.now() - timedelta(minutes=2)).strftime("%H:%M")
-                    },
-                    {
-                        "ticket": 12345671,
-                        "symbol": "GBPJPY",
-                        "type": "SELL",
-                        "volume": 0.05,
-                        "price": 188.55,
-                        "profit": -23.20,
-                        "time": (datetime.now() - timedelta(minutes=17)).strftime("%H:%M")
-                    },
-                    {
-                        "ticket": 12345672,
-                        "symbol": "USDCHF",
-                        "type": "BUY",
-                        "volume": 0.08,
-                        "price": 0.8945,
-                        "profit": 89.30,
-                        "time": (datetime.now() - timedelta(minutes=37)).strftime("%H:%M")
-                    },
-                    {
-                        "ticket": 12345673,
-                        "symbol": "AUDUSD",
-                        "type": "SELL",
-                        "volume": 0.12,
-                        "price": 0.6725,
-                        "profit": 156.70,
-                        "time": (datetime.now() - timedelta(minutes=52)).strftime("%H:%M")
-                    }
-                ],
-                "simulated": True,
-                "timestamp": datetime.now().isoformat()
-            }
+            # Return error if MT5 not connected
+            return {"success": False, "error": "MT5 not connected - no deal history available"}
 
         # Get real deals from MT5
         from_date = datetime.now() - timedelta(days=1)
@@ -3021,16 +2887,8 @@ async def get_active_mt5_symbols():
     """Get active MT5 symbols with current prices"""
     try:
         if not state.mt5_connected:
-            # Return simulated symbol data
-            return {
-                "success": True,
-                "symbols": [
-                    {"symbol": "EURUSD", "bid": 1.0848, "ask": 1.0850, "spread": 2},
-                    {"symbol": "XAUUSD", "bid": 2045.30, "ask": 2045.80, "spread": 50}
-                ],
-                "simulated": True,
-                "timestamp": datetime.now().isoformat()
-            }
+            # Return error if MT5 not connected
+            return {"success": False, "error": "MT5 not connected - no symbol data available"}
 
         # Get specific pairs requested by user
         major_pairs = ["EURUSD", "XAUUSD"]
@@ -3210,10 +3068,10 @@ async def executor_overview():
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-# ================== RISK ENDPOINTS ==================
-@app.get("/api/risk/overview")
-async def risk_overview():
-    """Risk overview: drawdown/VAR/compliance/correlation from bus + state."""
+# ================== LEGACY RISK ENDPOINT (for compatibility) ==================
+@app.get("/api/risk/legacy")
+async def risk_overview_legacy():
+    """Legacy risk overview: drawdown/VAR/compliance/correlation from bus + state."""
     try:
         # Base from state
         perf = state.performance_metrics
@@ -3355,6 +3213,817 @@ async def features_multiscale():
             "neural_embeddings": summarize('neural_embeddings'),
         })
         return {"success": True, **out, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# ================== MEMORY ENDPOINTS ==================
+@app.get("/api/memory/overview")
+async def memory_overview():
+    """Get unified memory system overview"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        # Get memory data from InfoBus
+        unified_metrics = bus.get('unified_metrics', 'UnifiedMemory', default={}) or {}
+        memory_status = bus.get('unified_memory_status', 'UnifiedMemory', default={}) or {}
+
+        # Extract core metrics
+        overview = {
+            "total_memories": unified_metrics.get("total_memories", 0),
+            "memory_utilization": unified_metrics.get("memory_utilization", 0.0),
+            "components_active": unified_metrics.get("components_active", 0),
+            "processing_status": unified_metrics.get("processing_status", "unknown"),
+            "health_status": unified_metrics.get("health_status", "unknown"),
+            "components_enabled": memory_status.get("components_enabled", 0),
+            "status": memory_status.get("status", "unknown")
+        }
+
+        return {"success": True, **overview, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/memory/components")
+async def memory_components():
+    """Get all memory components status and data"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        components = {
+            "neural": {
+                "neural_memory": bus.get('neural_memory', 'UnifiedMemory', default={}) or {},
+                "attention_retrieval": bus.get('attention_retrieval', 'UnifiedMemory', default={}) or {},
+                "memory_embedding": bus.get('memory_embedding', 'UnifiedMemory', default={}) or {},
+                "importance_scoring": bus.get('importance_scoring', 'UnifiedMemory', default={}) or {}
+            },
+            "playbook": {
+                "playbook_recall": bus.get('playbook_recall', 'UnifiedMemory', default={}) or {},
+                "pattern_memory": bus.get('pattern_memory', 'UnifiedMemory', default={}) or {},
+                "playbook_quality": bus.get('playbook_quality', 'UnifiedMemory', default={}) or {},
+                "memory_analytics": bus.get('memory_analytics', 'UnifiedMemory', default={}) or {}
+            },
+            "mistakes": {
+                "mistake_memory": bus.get('mistake_memory', 'UnifiedMemory', default={}) or {},
+                "mistake_avoidance": bus.get('mistake_avoidance', 'UnifiedMemory', default={}) or {},
+                "danger_zones": bus.get('danger_zones', 'UnifiedMemory', default={}) or {},
+                "loss_prevention": bus.get('loss_prevention', 'UnifiedMemory', default={}) or {},
+                "pattern_recognition": bus.get('pattern_recognition', 'UnifiedMemory', default={}) or {}
+            },
+            "replay": {
+                "replay_sequences": bus.get('replay_sequences', 'UnifiedMemory', default={}) or {},
+                "pattern_analysis": bus.get('pattern_analysis', 'UnifiedMemory', default={}) or {},
+                "learning_progress": bus.get('learning_progress', 'UnifiedMemory', default={}) or {},
+                "sequence_quality": bus.get('sequence_quality', 'UnifiedMemory', default={}) or {}
+            },
+            "compression": {
+                "compressed_patterns": bus.get('compressed_patterns', 'UnifiedMemory', default={}) or {},
+                "feature_importance": bus.get('feature_importance', 'UnifiedMemory', default={}) or {},
+                "intuition_vector": bus.get('intuition_vector', 'UnifiedMemory', default={}) or {},
+                "memory_compression": bus.get('memory_compression', 'UnifiedMemory', default={}) or {}
+            },
+            "budget": {
+                "memory_allocation": bus.get('memory_allocation', 'UnifiedMemory', default={}) or {},
+                "budget_optimization": bus.get('budget_optimization', 'UnifiedMemory', default={}) or {},
+                "memory_efficiency": bus.get('memory_efficiency', 'UnifiedMemory', default={}) or {},
+                "allocation_strategy": bus.get('allocation_strategy', 'UnifiedMemory', default={}) or {}
+            }
+        }
+
+        return {"success": True, "components": components, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/memory/patterns")
+async def memory_patterns():
+    """Get pattern analysis from memory components"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        patterns = {
+            "neural_patterns": {
+                "attention_retrieval": bus.get('attention_retrieval', 'UnifiedMemory', default={}) or {},
+                "memory_embedding": bus.get('memory_embedding', 'UnifiedMemory', default={}) or {}
+            },
+            "playbook_patterns": {
+                "pattern_memory": bus.get('pattern_memory', 'UnifiedMemory', default={}) or {},
+                "pattern_analysis": bus.get('pattern_analysis', 'UnifiedMemory', default={}) or {}
+            },
+            "compressed_patterns": bus.get('compressed_patterns', 'UnifiedMemory', default={}) or {},
+            "pattern_recognition": bus.get('pattern_recognition', 'UnifiedMemory', default={}) or {}
+        }
+
+        return {"success": True, "patterns": patterns, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/memory/mistakes")
+async def memory_mistakes():
+    """Get mistake analysis and danger zones"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        mistakes = {
+            "mistake_memory": bus.get('mistake_memory', 'UnifiedMemory', default={}) or {},
+            "mistake_avoidance": bus.get('mistake_avoidance', 'UnifiedMemory', default={}) or {},
+            "danger_zones": bus.get('danger_zones', 'UnifiedMemory', default={}) or {},
+            "loss_prevention": bus.get('loss_prevention', 'UnifiedMemory', default={}) or {},
+            "pattern_recognition": bus.get('pattern_recognition', 'UnifiedMemory', default={}) or {}
+        }
+
+        return {"success": True, "mistakes": mistakes, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/memory/performance")
+async def memory_performance():
+    """Get memory performance metrics and health data"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        performance = {
+            "overview": bus.get('unified_metrics', 'UnifiedMemory', default={}) or {},
+            "neural_performance": {
+                "neural_memory": bus.get('neural_memory', 'UnifiedMemory', default={}) or {},
+                "importance_scoring": bus.get('importance_scoring', 'UnifiedMemory', default={}) or {}
+            },
+            "playbook_performance": {
+                "playbook_quality": bus.get('playbook_quality', 'UnifiedMemory', default={}) or {},
+                "memory_analytics": bus.get('memory_analytics', 'UnifiedMemory', default={}) or {}
+            },
+            "compression_performance": {
+                "memory_compression": bus.get('memory_compression', 'UnifiedMemory', default={}) or {},
+                "feature_importance": bus.get('feature_importance', 'UnifiedMemory', default={}) or {}
+            },
+            "budget_performance": {
+                "budget_optimization": bus.get('budget_optimization', 'UnifiedMemory', default={}) or {},
+                "memory_efficiency": bus.get('memory_efficiency', 'UnifiedMemory', default={}) or {}
+            }
+        }
+
+        return {"success": True, "performance": performance, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# ================== RISK ENDPOINTS ==================
+@app.get("/api/risk/overview")
+async def risk_overview_enhanced():
+    """Enhanced risk overview with comprehensive risk metrics"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        # Base performance metrics
+        perf = state.performance_metrics
+        base_metrics = {
+            "current_drawdown": perf.get("current_drawdown", 0.0),
+            "max_drawdown": perf.get("max_drawdown", 0.0),
+            "sharpe_ratio": perf.get("sharpe_ratio", 0.0),
+            "win_rate": perf.get("win_rate", 0.0),
+        }
+
+        # Risk system metrics from InfoBus
+        risk_metrics = bus.get('risk_metrics', 'BackendAPI', default={}) or {}
+        risk_level = bus.get('risk_level', 'BackendAPI', default='UNKNOWN')
+        risk_scale = bus.get('risk_scale', 'BackendAPI', default=1.0)
+
+        # Module states for additional context
+        risk_controller = state.module_states.get("risk_controller", {})
+        drawdown_rescue = state.module_states.get("drawdown_rescue", {})
+
+        overview = {
+            **base_metrics,
+            **risk_metrics,
+            "risk_level": risk_level,
+            "risk_scale": risk_scale,
+            "system_status": risk_controller.get("status", "unknown"),
+            "rescue_active": drawdown_rescue.get("rescue_active", False),
+            "var_95": risk_controller.get("var_95", 0.0),
+            "var_99": risk_controller.get("var_99", 0.0),
+            "volatility_ratio": risk_controller.get("volatility_ratio", 1.0),
+            "risk_budget_used": risk_controller.get("risk_budget_used", 0.0)
+        }
+
+        return {"success": True, **overview, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/risk/anomalies")
+async def risk_anomalies():
+    """Get anomaly detection data and alerts"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        anomalies = {
+            "anomaly_detection": bus.get('anomaly_detection', 'AnomalyDetector', default={}) or {},
+            "anomaly_alerts": bus.get('anomaly_alerts', 'AnomalyDetector', default=[]) or [],
+            "anomaly_score": bus.get('anomaly_score', 'AnomalyDetector', default=0.0),
+            "anomaly_threshold": bus.get('anomaly_threshold', 'AnomalyDetector', default=0.8),
+            "detection_mode": bus.get('detection_mode', 'AnomalyDetector', default='NORMAL'),
+            "anomaly_history": bus.get('anomaly_history', 'AnomalyDetector', default=[]) or [],
+            "system_health": bus.get('system_health', 'AnomalyDetector', default={}) or {}
+        }
+
+        return {"success": True, "anomalies": anomalies, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/risk/compliance")
+async def risk_compliance():
+    """Get compliance monitoring data and violations"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        compliance = {
+            "compliance_status": bus.get('compliance', 'BackendAPI', default={}) or {},
+            "trade_compliance": bus.get('trade_compliance', 'Compliance', default={}) or {},
+            "compliance_violations": bus.get('compliance_violations', 'Compliance', default=[]) or [],
+            "risk_limits": bus.get('risk_limits', 'Compliance', default={}) or {},
+            "position_compliance": bus.get('position_compliance', 'Compliance', default={}) or {},
+            "leverage_compliance": bus.get('leverage_compliance', 'Compliance', default={}) or {},
+            "daily_limits": bus.get('daily_limits', 'Compliance', default={}) or {}
+        }
+
+        return {"success": True, "compliance": compliance, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/risk/drawdown")
+async def risk_drawdown():
+    """Get drawdown monitoring and rescue system data"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        # Module state for drawdown rescue
+        drawdown_state = state.module_states.get("drawdown_rescue", {})
+
+        drawdown = {
+            "drawdown_status": bus.get('drawdown_status', 'DrawdownRescue', default={}) or {},
+            "rescue_status": bus.get('rescue_status', 'DrawdownRescue', default={}) or {},
+            "drawdown_analysis": bus.get('drawdown_analysis', 'DrawdownRescue', default={}) or {},
+            "recovery_progress": bus.get('recovery_progress', 'DrawdownRescue', default={}) or {},
+            "drawdown_history": bus.get('drawdown_history', 'DrawdownRescue', default=[]) or [],
+            "rescue_triggers": bus.get('rescue_triggers', 'DrawdownRescue', default=[]) or [],
+            "velocity_analysis": bus.get('velocity_analysis', 'DrawdownRescue', default={}) or {},
+            "rescue_active": drawdown_state.get("rescue_active", False),
+            "current_drawdown": drawdown_state.get("current_drawdown", 0.0),
+            "max_drawdown": drawdown_state.get("max_drawdown", 0.0)
+        }
+
+        return {"success": True, "drawdown": drawdown, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/risk/execution")
+async def risk_execution():
+    """Get execution quality monitoring data"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        execution = {
+            "execution_quality": bus.get('execution_quality', 'ExecutionQualityMonitor', default={}) or {},
+            "execution_metrics": bus.get('execution_metrics', 'ExecutionQualityMonitor', default={}) or {},
+            "execution_alerts": bus.get('execution_alerts', 'ExecutionQualityMonitor', default=[]) or [],
+            "slippage_analysis": bus.get('slippage_analysis', 'ExecutionQualityMonitor', default={}) or {},
+            "latency_metrics": bus.get('latency_metrics', 'ExecutionQualityMonitor', default={}) or {},
+            "fill_rate_analysis": bus.get('fill_rate_analysis', 'ExecutionQualityMonitor', default={}) or {},
+            "execution_vote": bus.get('execution_vote', 'ExecutionQualityMonitor', default='ABSTAIN'),
+            "quality_score": bus.get('quality_score', 'ExecutionQualityMonitor', default=0.0)
+        }
+
+        return {"success": True, "execution": execution, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/risk/portfolio")
+async def risk_portfolio():
+    """Get portfolio risk system data and correlation analysis"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        portfolio = {
+            "portfolio_risk": bus.get('portfolio_risk', 'PortfolioRiskSystem', default={}) or {},
+            "correlation_matrix": bus.get('correlation_matrix', 'BackendAPI', default={}) or {},
+            "correlation_risk": bus.get('correlation_risk', 'BackendAPI', default={}) or {},
+            "position_risk": bus.get('position_risk', 'PortfolioRiskSystem', default={}) or {},
+            "var_analysis": bus.get('var_analysis', 'PortfolioRiskSystem', default={}) or {},
+            "risk_attribution": bus.get('risk_attribution', 'PortfolioRiskSystem', default={}) or {},
+            "exposure_analysis": bus.get('exposure_analysis', 'PortfolioRiskSystem', default={}) or {},
+            "diversification_metrics": bus.get('diversification_metrics', 'PortfolioRiskSystem', default={}) or {}
+        }
+
+        return {"success": True, "portfolio": portfolio, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/risk/dynamic")
+async def risk_dynamic():
+    """Get dynamic risk controller data and scaling metrics"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        # Module state for additional context
+        risk_controller = state.module_states.get("risk_controller", {})
+
+        dynamic = {
+            "dynamic_risk": bus.get('dynamic_risk', 'DynamicRiskController', default={}) or {},
+            "risk_scaling": bus.get('risk_scaling', 'DynamicRiskController', default={}) or {},
+            "volatility_analysis": bus.get('volatility_analysis', 'DynamicRiskController', default={}) or {},
+            "risk_adjustments": bus.get('risk_adjustments', 'DynamicRiskController', default=[]) or [],
+            "control_mode": bus.get('control_mode', 'DynamicRiskController', default='NORMAL'),
+            "scaling_history": bus.get('scaling_history', 'DynamicRiskController', default=[]) or [],
+            "risk_level": risk_controller.get("risk_level", "NORMAL"),
+            "risk_scale": risk_controller.get("risk_scale", 1.0),
+            "volatility": risk_controller.get("volatility", {}),
+            "freeze_counter": risk_controller.get("freeze_counter", 0)
+        }
+
+        return {"success": True, "dynamic": dynamic, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/risk/alerts")
+async def risk_alerts():
+    """Get all risk-related alerts and notifications"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        # Collect alerts from all risk modules
+        alerts = {
+            "anomaly_alerts": bus.get('anomaly_alerts', 'AnomalyDetector', default=[]) or [],
+            "compliance_alerts": bus.get('compliance_violations', 'Compliance', default=[]) or [],
+            "drawdown_alerts": bus.get('rescue_triggers', 'DrawdownRescue', default=[]) or [],
+            "execution_alerts": bus.get('execution_alerts', 'ExecutionQualityMonitor', default=[]) or [],
+            "portfolio_alerts": bus.get('portfolio_alerts', 'PortfolioRiskSystem', default=[]) or [],
+            "risk_alerts": bus.get('risk_alerts', 'DynamicRiskController', default=[]) or [],
+            "system_alerts": [alert for alert in state.alerts if alert.get('category') == 'risk']
+        }
+
+        # Calculate alert summary
+        total_alerts = sum(len(alert_list) for alert_list in alerts.values())
+        critical_count = sum(1 for alert_list in alerts.values()
+                           for alert in alert_list if alert.get('severity') == 'critical')
+
+        summary = {
+            "total_alerts": total_alerts,
+            "critical_count": critical_count,
+            "last_update": datetime.now().isoformat()
+        }
+
+        return {"success": True, "alerts": alerts, "summary": summary, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# ═══════════════════════════════════════════════════════════════════
+# VOTING SYSTEM API ENDPOINTS v1.0
+# ═══════════════════════════════════════════════════════════════════
+
+@app.get("/api/voting/overview")
+async def voting_overview():
+    """Get comprehensive voting system overview"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        # Core voting metrics
+        voting_metrics = bus.get('voting_metrics', 'VotingKernel', default={}) or {}
+        decision_coordination = bus.get('decision_coordination', 'VotingKernel', default={}) or {}
+        consensus_summary = bus.get('consensus_summary', 'VotingKernel', default={}) or {}
+        pipeline_stats = bus.get('pipeline_stats', 'VotingKernel', default={}) or {}
+
+        # Calculate health status based on metrics
+        successful_ticks = voting_metrics.get('successful_ticks', 0)
+        total_ticks = voting_metrics.get('total_ticks', 1)
+        success_rate = successful_ticks / max(total_ticks, 1)
+
+        if success_rate >= 0.9:
+            health_status = "healthy"
+        elif success_rate >= 0.7:
+            health_status = "warning"
+        else:
+            health_status = "critical"
+
+        # Active components count
+        components_active = 0
+        if bus.get('committee_members', 'VotingKernel'):
+            components_active += 1
+        if bus.get('consensus_score', 'VotingKernel') is not None:
+            components_active += 1
+        if bus.get('collusion_score', 'VotingKernel') is not None:
+            components_active += 1
+        if bus.get('aligned_weights', 'VotingKernel'):
+            components_active += 1
+        if bus.get('sampling_uncertainty', 'VotingKernel') is not None:
+            components_active += 1
+        if bus.get('trade_vote_v2', 'VotingKernel'):
+            components_active += 1
+
+        overview = {
+            "total_decisions": total_ticks,
+            "successful_decisions": successful_ticks,
+            "success_rate": success_rate,
+            "components_active": components_active,
+            "health_status": health_status,
+            "current_consensus": consensus_summary.get('score', 0.0),
+            "processing_time_ms": voting_metrics.get('avg_processing_time_ms', 0.0),
+            "decision_id": decision_coordination.get('decision_id', 'none'),
+            "last_update": datetime.now().isoformat()
+        }
+
+        return {"success": True, **overview, "timestamp": datetime.now().isoformat()}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/voting/committee")
+async def voting_committee():
+    """Get voting committee data and member analytics"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        # Committee data
+        committee_data = {
+            "members": bus.get('committee_members', 'VotingKernel', default=[]) or [],
+            "proposal_vectors": bus.get('proposal_vectors', 'VotingKernel', default=[]) or [],
+            "member_confidences": bus.get('member_confidences_ordered', 'VotingKernel', default=[]) or [],
+            "committee_consensus": bus.get('committee_consensus', 'VotingKernel', default={}) or {},
+            "committee_votes": bus.get('committee_votes', 'VotingKernel', default=[]) or [],
+        }
+
+        # Member analytics from InfoBus
+        member_analytics = bus.get('member_analytics', 'VotingKernel', default=[]) or []
+
+        committee_summary = {
+            "total_members": len(committee_data["members"]),
+            "active_members": len([m for m in committee_data["members"] if m.get("active", True)]),
+            "avg_confidence": sum(c for c in committee_data["member_confidences"]) / max(len(committee_data["member_confidences"]), 1),
+            "consensus_strength": committee_data["committee_consensus"].get("strength", 0.0),
+            "last_vote_time": bus.get('last_vote_time', 'VotingKernel', default=datetime.now().isoformat())
+        }
+
+        return {
+            "success": True,
+            "committee": {
+                "data": committee_data,
+                "analytics": member_analytics,
+                "summary": committee_summary
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/voting/consensus")
+async def voting_consensus():
+    """Get consensus detection data and analysis"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        # Consensus data
+        consensus_score = bus.get('consensus_score', 'VotingKernel', default=0.0)
+        consensus_components = bus.get('consensus_components', 'VotingKernel', default={}) or {}
+        voting_consensus = bus.get('voting_consensus', 'VotingKernel', default={}) or {}
+
+        # Component breakdown
+        consensus_breakdown = {
+            "directional": consensus_components.get('directional_consensus', 0.0),
+            "magnitude": consensus_components.get('magnitude_consensus', 0.0),
+            "confidence": consensus_components.get('confidence_consensus', 0.0),
+            "temporal": consensus_components.get('temporal_stability', 0.0),
+            "network": consensus_components.get('network_consensus', 0.0)
+        }
+
+        # Consensus analytics
+        consensus_analytics = {
+            "overall_score": consensus_score or 0.0,
+            "quality": voting_consensus.get('quality', 0.0),
+            "stability": consensus_components.get('temporal_stability', 0.0),
+            "agreement_level": "high" if consensus_score and consensus_score > 0.7 else "medium" if consensus_score and consensus_score > 0.4 else "low",
+            "trend": "improving" if consensus_score and consensus_score > 0.6 else "stable",
+            "reliability": voting_consensus.get('reliability', 0.0)
+        }
+
+        return {
+            "success": True,
+            "consensus": {
+                "score": consensus_score,
+                "components": consensus_components,
+                "breakdown": consensus_breakdown,
+                "analytics": consensus_analytics,
+                "raw_data": voting_consensus
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/voting/collusion")
+async def voting_collusion():
+    """Get collusion detection and anti-manipulation data"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        # Collusion data
+        collusion_score = bus.get('collusion_score', 'VotingKernel', default=0.0)
+        suspicious_pairs = bus.get('suspicious_pairs', 'VotingKernel', default=[]) or []
+
+        # Collusion analysis
+        collusion_analysis = {
+            "risk_level": "high" if collusion_score and collusion_score > 0.8 else "medium" if collusion_score and collusion_score > 0.5 else "low",
+            "suspicious_pairs_count": len(suspicious_pairs),
+            "detection_status": "active",
+            "last_scan": datetime.now().isoformat(),
+            "threat_score": collusion_score or 0.0
+        }
+
+        # Member integrity scores from InfoBus
+        member_integrity = bus.get('member_integrity', 'VotingKernel', default=[]) or []
+
+        # Collusion alerts from InfoBus
+        collusion_alerts = bus.get('collusion_alerts', 'VotingKernel', default=[]) or []
+
+        return {
+            "success": True,
+            "collusion": {
+                "score": collusion_score,
+                "suspicious_pairs": suspicious_pairs,
+                "analysis": collusion_analysis,
+                "member_integrity": member_integrity,
+                "alerts": collusion_alerts
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/voting/alignment")
+async def voting_alignment():
+    """Get time horizon alignment and weight distribution data"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        # Weight alignment data
+        voting_weights = bus.get('voting_weights', 'VotingKernel', default=[]) or []
+        aligned_weights = bus.get('aligned_weights', 'VotingKernel', default=[]) or []
+
+        # Time horizon analysis from InfoBus
+        alignment_analysis = bus.get('alignment_analysis', 'VotingKernel', default={
+            "raw_weights": voting_weights,
+            "aligned_weights": aligned_weights,
+            "alignment_quality": 0.0,
+            "temporal_coherence": 0.0,
+            "horizon_distribution": {}
+        }) or {
+            "raw_weights": voting_weights,
+            "aligned_weights": aligned_weights,
+            "alignment_quality": 0.0,
+            "temporal_coherence": 0.0,
+            "horizon_distribution": {}
+        }
+
+        # Alignment metrics from InfoBus
+        alignment_metrics = bus.get('alignment_metrics', 'VotingKernel', default={
+            "total_weights": len(voting_weights),
+            "alignment_strength": 0.0,
+            "temporal_stability": 0.0,
+            "weight_variance": 0.0,
+            "optimization_score": 0.0
+        }) or {
+            "total_weights": len(voting_weights),
+            "alignment_strength": 0.0,
+            "temporal_stability": 0.0,
+            "weight_variance": 0.0,
+            "optimization_score": 0.0
+        }
+
+        # Horizon breakdown from InfoBus
+        horizon_breakdown = bus.get('horizon_breakdown', 'VotingKernel', default=[]) or []
+
+        return {
+            "success": True,
+            "alignment": {
+                "analysis": alignment_analysis,
+                "metrics": alignment_metrics,
+                "horizon_breakdown": horizon_breakdown
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/voting/sampling")
+async def voting_sampling():
+    """Get alternative reality sampling and uncertainty data"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        # Sampling data
+        sampling_uncertainty = bus.get('sampling_uncertainty', 'VotingKernel', default=0.0)
+        fragility = bus.get('fragility', 'VotingKernel', default=0.0)
+        effective_samples = bus.get('effective_samples', 'VotingKernel', default=0)
+
+        # Uncertainty analysis from InfoBus
+        uncertainty_analysis = bus.get('uncertainty_analysis', 'VotingKernel', default={
+            "uncertainty_level": sampling_uncertainty or 0.0,
+            "fragility_score": fragility or 0.0,
+            "robustness": 1.0 - (fragility or 0.0) if fragility else 0.0,
+            "confidence_interval": 0.0,
+            "sample_diversity": 0.0,
+            "stability_measure": 0.0
+        }) or {
+            "uncertainty_level": sampling_uncertainty or 0.0,
+            "fragility_score": fragility or 0.0,
+            "robustness": 1.0 - (fragility or 0.0) if fragility else 0.0,
+            "confidence_interval": 0.0,
+            "sample_diversity": 0.0,
+            "stability_measure": 0.0
+        }
+
+        # Sampling metrics from InfoBus
+        sampling_metrics = bus.get('sampling_metrics', 'VotingKernel', default={
+            "total_samples": effective_samples or 0,
+            "effective_samples": effective_samples or 0,
+            "sample_quality": 0.0,
+            "convergence_rate": 0.0,
+            "exploration_breadth": 0.0
+        }) or {
+            "total_samples": effective_samples or 0,
+            "effective_samples": effective_samples or 0,
+            "sample_quality": 0.0,
+            "convergence_rate": 0.0,
+            "exploration_breadth": 0.0
+        }
+
+        # Risk assessment
+        uncertainty_level = sampling_uncertainty or 0.0
+        risk_assessment = {
+            "risk_level": "high" if uncertainty_level > 0.7 else "medium" if uncertainty_level > 0.4 else "low",
+            "recommendation": "caution" if uncertainty_level > 0.6 else "proceed" if uncertainty_level < 0.3 else "monitor",
+            "confidence_score": 1.0 - uncertainty_level,
+            "decision_quality": "high" if uncertainty_level < 0.3 else "medium" if uncertainty_level < 0.6 else "low"
+        }
+
+        return {
+            "success": True,
+            "sampling": {
+                "analysis": uncertainty_analysis,
+                "metrics": sampling_metrics,
+                "risk_assessment": risk_assessment
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/voting/strategy")
+async def voting_strategy():
+    """Get strategy arbiter and final gating data"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        # Strategy data
+        trade_vote_v2 = bus.get('trade_vote_v2', 'VotingKernel', default={}) or {}
+        signals = bus.get('signals', 'VotingKernel', default={}) or {}
+
+        # Strategy analysis from InfoBus
+        strategy_analysis = bus.get('strategy_analysis', 'VotingKernel', default={
+            "final_decision": trade_vote_v2.get('decision', 'none'),
+            "confidence": trade_vote_v2.get('confidence', 0.0),
+            "signal_strength": signals.get('strength', 0.0),
+            "gating_status": "passed" if trade_vote_v2.get('decision') != 'none' else "blocked",
+            "arbitration_quality": 0.0
+        }) or {
+            "final_decision": trade_vote_v2.get('decision', 'none'),
+            "confidence": trade_vote_v2.get('confidence', 0.0),
+            "signal_strength": signals.get('strength', 0.0),
+            "gating_status": "passed" if trade_vote_v2.get('decision') != 'none' else "blocked",
+            "arbitration_quality": 0.0
+        }
+
+        # Signal breakdown from InfoBus
+        signal_breakdown = bus.get('signal_breakdown', 'VotingKernel', default={
+            "primary_signal": signals.get('primary', 'neutral'),
+            "secondary_signals": signals.get('secondary', []),
+            "signal_coherence": 0.0,
+            "cross_validation": 0.0,
+            "execution_readiness": 0.0
+        }) or {
+            "primary_signal": signals.get('primary', 'neutral'),
+            "secondary_signals": signals.get('secondary', []),
+            "signal_coherence": 0.0,
+            "cross_validation": 0.0,
+            "execution_readiness": 0.0
+        }
+
+        # Strategy metrics from InfoBus
+        strategy_metrics = bus.get('strategy_metrics', 'VotingKernel', default={
+            "arbitration_success_rate": 0.0,
+            "signal_accuracy": 0.0,
+            "gating_efficiency": 0.0,
+            "decision_latency_ms": trade_vote_v2.get('processing_time', 0),
+            "quality_score": 0.0
+        }) or {
+            "arbitration_success_rate": 0.0,
+            "signal_accuracy": 0.0,
+            "gating_efficiency": 0.0,
+            "decision_latency_ms": trade_vote_v2.get('processing_time', 0),
+            "quality_score": 0.0
+        }
+
+        # Performance tracking from InfoBus
+        performance_tracking = bus.get('performance_tracking', 'VotingKernel', default={
+            "total_arbitrations": 0,
+            "successful_arbitrations": 0,
+            "blocked_decisions": 0,
+            "avg_confidence": 0.0,
+            "last_arbitration": None
+        }) or {
+            "total_arbitrations": 0,
+            "successful_arbitrations": 0,
+            "blocked_decisions": 0,
+            "avg_confidence": 0.0,
+            "last_arbitration": None
+        }
+
+        return {
+            "success": True,
+            "strategy": {
+                "trade_vote": trade_vote_v2,
+                "signals": signals,
+                "analysis": strategy_analysis,
+                "breakdown": signal_breakdown,
+                "metrics": strategy_metrics,
+                "performance": performance_tracking
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/voting/timeline")
+async def voting_timeline():
+    """Get voting pipeline timeline and performance data"""
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        # Timeline data
+        kernel_timeline = bus.get('voting/kernel_timeline', 'VotingKernel', default={}) or {}
+        pipeline_stats = bus.get('pipeline_stats', 'VotingKernel', default={}) or {}
+
+        # Extract timeline
+        timeline = kernel_timeline.get('timeline', [])
+        decision_id = kernel_timeline.get('decision_id', 'none')
+
+        # Performance analysis
+        performance_analysis = {
+            "total_stages": len(timeline),
+            "successful_stages": len([s for s in timeline if s.get('status') == 'success']),
+            "failed_stages": len([s for s in timeline if s.get('status') == 'error']),
+            "avg_stage_time": sum(s.get('duration_ms', 0) for s in timeline) / max(len(timeline), 1),
+            "bottleneck_stage": max(timeline, key=lambda x: x.get('duration_ms', 0)).get('stage', 'none') if timeline else 'none'
+        }
+
+        # Stage breakdown
+        stage_breakdown = []
+        stage_names = ['committee', 'consensus', 'collusion', 'horizon', 'sampling', 'arbiter']
+        for stage in stage_names:
+            stage_data = next((s for s in timeline if s.get('stage') == stage), {})
+            breakdown = {
+                "stage": stage,
+                "status": stage_data.get('status', 'unknown'),
+                "duration_ms": stage_data.get('duration_ms', 0),
+                "success_rate": pipeline_stats.get('module_success_rates', {}).get(stage, {}).get('success', 0) /
+                               max(pipeline_stats.get('module_success_rates', {}).get(stage, {}).get('total', 1), 1)
+            }
+            stage_breakdown.append(breakdown)
+
+        return {
+            "success": True,
+            "timeline": {
+                "decision_id": decision_id,
+                "stages": timeline,
+                "analysis": performance_analysis,
+                "breakdown": stage_breakdown,
+                "pipeline_stats": pipeline_stats
+            },
+            "timestamp": datetime.now().isoformat()
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 

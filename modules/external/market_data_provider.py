@@ -45,6 +45,7 @@ class MarketDataConfig:
     error_handling=True,
     hot_reload=True,
     timeout_ms=3000,
+    critical=True,  # Ensure provider always runs (even in emergency mode)
 ))
 class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
@@ -355,62 +356,98 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         }
 
     async def process(self, **inputs) -> Dict[str, Any]:
-        """Advance data (if due) and return a full snapshot adhering strictly to the contract."""
+        """
+        Advance data (if due) and return a full snapshot adhering strictly to the contract.
+        Enhancements:
+          - Per-symbol advancement isolation (one bad symbol won't crash whole provider)
+          - Alias keys included directly in returned snapshot to satisfy output validation
+          - Universe / watched_instruments + heartbeat status
+          - Critical flag ensures execution during emergency mode
+        """
         t0 = time.time()
+        errors: Dict[str, str] = {}
         try:
             now = time.time()
             if now - self._last_update_ts >= self.cfg.update_frequency:
                 for sym in self.cfg.supported_symbols:
-                    self._advance_symbol_data(sym)
+                    try:
+                        self._advance_symbol_data(sym)
+                    except Exception as sym_err:  # isolate per-symbol issues
+                        errors[sym] = str(sym_err)
+                        self.logger.warning(f"[WARN] Failed advancing {sym}: {sym_err}")
                 self._update_count += 1
                 self._last_update_ts = now
-                self._update_session_labels()
+                try:
+                    self._update_session_labels()
+                except Exception as sess_e:
+                    self.logger.warning(f"[WARN] Session label update failed: {sess_e}")
 
             snapshot = self._build_snapshot()
-            # Back-compat: mirror per-instrument/timeframe aliases expected by legacy readers
-            try:
-                mtd = snapshot.get('multi_timeframe_data', {})
-                # Use explicit configured symbols/tfs to constrain alias set
-                for sym in self.cfg.supported_symbols:
-                    per_tf = mtd.get(sym, {}) or {}
-                    for tf in self.cfg.supported_timeframes:
-                        cur = None
-                        try:
-                            cur = per_tf.get(tf, {}).get('current_bar')
-                        except Exception:
-                            cur = None
-                        key = f"market_data_{sym}_{tf}"
-                        # Always publish alias; use {} as placeholder if no current bar yet
-                        try:
-                            payload = cur if isinstance(cur, dict) else {}
-                            self.smart_bus.set(
-                                key,
-                                payload,
-                                module='MarketDataProvider',
-                                thesis=f'Alias for {sym} {tf} (placeholder when unavailable)',
-                                confidence=0.8,
-                            )
-                        except Exception:
-                            # Alias publishing is best-effort; never fail the provider
-                            pass
-            except Exception:
-                # Ignore alias mirroring errors entirely
-                pass
+
+            # Construct alias map (contract requires these explicit keys)
+            alias_map: Dict[str, Any] = {}
+            mtd = snapshot.get('multi_timeframe_data', {}) or {}
+            for sym in self.cfg.supported_symbols:
+                per_tf = mtd.get(sym, {}) or {}
+                for tf in self.cfg.supported_timeframes:
+                    cur_bar = None
+                    try:
+                        cur_bar = per_tf.get(tf, {}).get('current_bar')
+                    except Exception:
+                        cur_bar = None
+                    alias_key = f"market_data_{sym}_{tf}"
+                    alias_map[alias_key] = cur_bar if isinstance(cur_bar, dict) else {}
+
+            # Append required meta keys not presently in snapshot
+            snapshot['universe'] = list(self.cfg.supported_symbols)
+            snapshot['watched_instruments'] = list(self.cfg.supported_symbols)
+
+            # Merge aliases into snapshot so validate_outputs sees them
+            snapshot.update(alias_map)
+
+            # Heartbeat / status (not in contract but useful)
+            snapshot['provider_status'] = {
+                'update_count': int(self._update_count),
+                'last_update_ts': float(self._last_update_ts),
+                'ms_since_last': (time.time() - self._last_update_ts) * 1000.0 if self._last_update_ts else None,
+                'symbol_errors': errors,
+                'fail_count': int(self._fail),
+                'success_count': int(self._success),
+            }
+
+            # Publish aliases to bus (still useful for legacy listeners); tolerate errors
+            for k, v in alias_map.items():
+                try:
+                    self.smart_bus.set(
+                        k,
+                        v,
+                        module='MarketDataProvider',
+                        thesis=f'Alias publish {k}',
+                        confidence=0.8,
+                    )
+                except Exception:
+                    pass
+
             self._success += 1
             self._proc_times.append((time.time() - t0) * 1000.0)
             return snapshot
         except Exception as e:
             self._fail += 1
             self.logger.error(f"[FAIL] process(): {e}")
-            # Best-effort: publish empty aliases to satisfy legacy readers
-            try:
-                for sym in self.cfg.supported_symbols:
-                    for tf in self.cfg.supported_timeframes:
-                        key = f"market_data_{sym}_{tf}"
-                        self.smart_bus.set(key, {}, module='MarketDataProvider', thesis='Alias placeholder (error path)')
-            except Exception:
-                pass
-            return self._empty_snapshot(error=str(e))
+            # Build minimally compliant empty snapshot including alias keys
+            empty = self._empty_snapshot(error=str(e))
+            for sym in self.cfg.supported_symbols:
+                for tf in self.cfg.supported_timeframes:
+                    empty[f"market_data_{sym}_{tf}"] = {}
+            empty['universe'] = list(self.cfg.supported_symbols)
+            empty['watched_instruments'] = list(self.cfg.supported_symbols)
+            empty['provider_status'] = {
+                'update_count': int(self._update_count),
+                'last_error': str(e),
+                'fail_count': int(self._fail),
+                'success_count': int(self._success),
+            }
+            return empty
 
     # ─────────────────────────────────────────────────────────────
     # Snapshot builders (Contract-clean)

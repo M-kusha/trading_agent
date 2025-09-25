@@ -723,11 +723,69 @@ class DataProvider(Protocol):
     def load(self, config: TradingConfig) -> Dict[str, Dict[str, pd.DataFrame]]:
         ...
 
+class FileDataProvider:
+    """
+    Loads CSV data directly from the data directory.
+    """
+
+    def load(self, config: TradingConfig) -> Dict[str, Dict[str, pd.DataFrame]]:
+        data_dir = getattr(config, "data_dir", "data/processed")
+        if not os.path.exists(data_dir):
+            print(f"[WARN] Data dir not found: {data_dir}; using dummy data")
+            return create_dummy_data(config)
+
+        data: Dict[str, Dict[str, pd.DataFrame]] = {}
+        for file in os.listdir(data_dir):
+            if not file.endswith(".csv"):
+                continue
+            try:
+                path = os.path.join(data_dir, file)
+                # Parse filename: EURUSD_H1_features.csv -> EUR/USD, H1
+                base = file.replace(".csv", "").replace("_features", "")
+                parts = base.split("_")
+                if len(parts) >= 2:
+                    # EURUSD -> EUR/USD, XAUUSD -> XAU/USD
+                    instrument_raw = parts[0]
+                    if instrument_raw == "EURUSD":
+                        instrument = "EUR/USD"
+                    elif instrument_raw == "XAUUSD":
+                        instrument = "XAU/USD"
+                    else:
+                        instrument = instrument_raw
+                    timeframe = parts[1]
+                else:
+                    instrument, timeframe = base, "H1"
+
+                df = pd.read_csv(path)
+                req = {"open", "high", "low", "close"}
+                if not req.issubset(df.columns):
+                    print(f"[WARN] Skip {file}: missing OHLC columns")
+                    continue
+
+                if "volume" not in df.columns:
+                    df["volume"] = 1.0
+
+                # Ensure proper dtypes
+                for col in ["open", "high", "low", "close", "volume"]:
+                    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(np.float32)
+
+                data.setdefault(instrument, {})[timeframe] = df
+                print(f"[INFO] Loaded {len(df)} bars for {instrument} {timeframe}")
+
+            except Exception as e:
+                print(f"[ERROR] Failed to load {file}: {e}")
+
+        if not data:
+            print("[WARN] No usable CSVs; using dummy data")
+            return create_dummy_data(config)
+
+        total_bars = sum(len(df) for d in data.values() for df in d.values())
+        print(f"[INFO] Loaded {len(data)} instruments, {total_bars:,} total bars from files")
+        return data
+
 class OrchestratorOrDummyProvider:
     """
-    Pulls data via SmartInfoBus if upstream has preloaded frames.
-    Expected keys: market_data_{instrument}_{timeframe} -> dict with arrays
-    Falls back to in-memory synthetic OHLCV if nothing is present.
+    First tries InfoBus, then files, finally dummy data.
     """
 
     def load(self, config: TradingConfig) -> Dict[str, Dict[str, pd.DataFrame]]:
@@ -766,9 +824,13 @@ class OrchestratorOrDummyProvider:
             pass
 
         if not data:
-            # No orchestrator data available → use dummy to keep training flow unblocked
-            data = create_dummy_data(config)
-            print("[WARN] No SmartInfoBus market_data_* found. Using synthetic dummy data.")
+            # No orchestrator data available → try file data first, then dummy as last resort
+            print("[WARN] No SmartInfoBus market_data_* found. Trying file data...")
+            try:
+                data = FileDataProvider().load(config)
+            except Exception as e:
+                print(f"[WARN] File data loading failed: {e}. Using synthetic dummy data.")
+                data = create_dummy_data(config)
 
         total_bars = sum(len(df) for d in data.values() for df in d.values())
         print(f"[SUMMARY] Training data: {len(data)} instruments, {total_bars:,} bars")
@@ -999,6 +1061,20 @@ def main():
     p.add_argument("--pretrained", type=str)
     p.add_argument("--auto-pretrained", action="store_true")
     p.add_argument("--debug", action="store_true")
+
+    # Additional PPO hyperparameters sent by backend
+    p.add_argument("--n_epochs", type=int)
+    p.add_argument("--gamma", type=float)
+    p.add_argument("--n_steps", type=int)
+    p.add_argument("--clip_range", type=float)
+    p.add_argument("--ent_coef", type=float)
+    p.add_argument("--vf_coef", type=float)
+    p.add_argument("--max_grad_norm", type=float)
+    p.add_argument("--target_kl", type=float)
+    p.add_argument("--checkpoint_freq", type=int)
+    p.add_argument("--eval_freq", type=int)
+    p.add_argument("--num_envs", type=int)
+    p.add_argument("--data_dir", type=str, default="data/processed")
     args = p.parse_args()
 
     # Config
@@ -1014,7 +1090,7 @@ def main():
     elif args.preset == "production":
         config = ConfigPresets.production_backtest()
     else:
-        config = TradingConfig(test_mode=(args.mode == "test"), live_mode=False)
+        config = TradingConfig(test_mode=(args.mode == "test"), live_mode=False, training_mode=True)
 
     # Overrides
     if args.timesteps: config.final_training_steps = args.timesteps
@@ -1022,6 +1098,20 @@ def main():
     if args.batch_size: config.batch_size = args.batch_size
     if args.balance: config.initial_balance = args.balance
     if args.debug: config.debug = True
+
+    # Additional PPO hyperparameter overrides
+    if args.n_epochs: config.n_epochs = args.n_epochs
+    if args.gamma: config.gamma = args.gamma
+    if args.n_steps: config.n_steps = args.n_steps
+    if args.clip_range: config.clip_range = args.clip_range
+    if args.ent_coef: config.ent_coef = args.ent_coef
+    if args.vf_coef: config.vf_coef = args.vf_coef
+    if args.max_grad_norm: config.max_grad_norm = args.max_grad_norm
+    if args.target_kl: config.target_kl = args.target_kl
+    if args.checkpoint_freq: config.checkpoint_freq = args.checkpoint_freq
+    if args.eval_freq: config.eval_freq = args.eval_freq
+    if args.num_envs: config.num_envs = args.num_envs if hasattr(config, 'num_envs') else 1
+    if args.data_dir: config.data_dir = args.data_dir
 
     # Sensible default when not specified
     if not args.timesteps and args.mode == "test":

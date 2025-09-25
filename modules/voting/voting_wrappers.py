@@ -980,6 +980,13 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
                 'strategy_arbiter_weights': strategy_arbiter_weights,
                 'EnhancedThemeExpert_voting_proposal': dict(theme_voting_proposal),
                 'EnhancedThemeExpert_confidence': theme_confidence,
+                # Provide local expert vote if enabled (for early consumers / contract uniformity)
+                'expert_votes': ([{
+                    'expert': name,
+                    'vote': dict(theme_voting_proposal),
+                    'confidence': float(theme_confidence),
+                    'timestamp': datetime.datetime.now().isoformat()
+                }] if bool(self.config.get('include_local_expert_vote', True)) else []),
                 '_thesis': thesis,
             }
 
@@ -1005,6 +1012,12 @@ class EnhancedThemeExpert(EnhancedVotingExpertBase):
                 'strategy_arbiter_weights': {self.__class__.__name__: 1.0},
                 'EnhancedThemeExpert_voting_proposal': {'action': 'abstain'},
                 'EnhancedThemeExpert_confidence': 0.1,
+                'expert_votes': ([{
+                    'expert': self.__class__.__name__,
+                    'vote': {'action': 'abstain', 'reason': 'theme-expert-error'},
+                    'confidence': 0.1,
+                    'timestamp': datetime.datetime.now().isoformat()
+                }] if bool(self.config.get('include_local_expert_vote', True)) else []),
                 '_thesis': f"Operating in degraded mode due to {error_msg}",
             }
 
@@ -1140,6 +1153,18 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
             expert_performance = {self.__class__.__name__: self._get_local_expert_performance_index()}
 
             name = self.__class__.__name__
+            include_local_vote = bool(self.config.get('include_local_expert_vote', True))
+            expert_votes_list = []
+            if include_local_vote:
+                try:
+                    expert_votes_list.append({
+                        'expert': name,
+                        'vote': proposal,
+                        'confidence': confidence,
+                        'timestamp': datetime.datetime.now().isoformat()
+                    })
+                except Exception:
+                    pass
             out = {
                 'seasonality_voting_proposal': proposal,
                 'seasonality_confidence': confidence,
@@ -1153,6 +1178,8 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
                 # expert_performance is committee-owned; keep only in-process returns if needed by orchestrator
                 # (not bus-published here)
                 'expert_performance': expert_performance,
+                # Provide local expert vote (gated) to satisfy contract and enable early consumers
+                'expert_votes': expert_votes_list,
                 '_thesis': thesis,
             }
             self.performance_tracker.record_metric(self.__class__.__name__, 'process', (time.time() - start) * 1000, True)
@@ -1193,6 +1220,12 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
                 f'{name}_confidence': 0.2,
                 'seasonality_analysis': {'error': str(error_context)},
                 'expert_performance': {name: self._get_local_expert_performance_index()},
+                'expert_votes': [{
+                    'expert': name,
+                    'vote': safe_proposal,
+                    'confidence': 0.2,
+                    'timestamp': datetime.datetime.now().isoformat()
+                }] if bool(self.config.get('include_local_expert_vote', True)) else [],
                 '_thesis': f"Processing error in {name}: {error_context}",
             }
 

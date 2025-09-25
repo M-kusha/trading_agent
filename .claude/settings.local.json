@@ -12,7 +12,8 @@
       "Bash(xxd:*)",
       "Bash(dos2unix:*)",
       "Bash(unix2dos:*)",
-      "Bash(npm run lint)"
+      "Bash(npm run lint)",
+      "Bash(timeout:*)"
     ],
     "deny": [],
     "ask": []

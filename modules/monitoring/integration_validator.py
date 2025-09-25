@@ -366,7 +366,7 @@ class IntegrationValidator:
             for child in self.modules_root.iterdir():
                 if child.is_dir() and child.name not in {"__pycache__", "tests", "test"}:
                     roots.append(child)
-        special = self.modules_root / "market_1"
+        special = self.modules_root / "market"
         if special.exists():
             roots.append(special)
         uniq: List[Path] = []
@@ -381,7 +381,7 @@ class IntegrationValidator:
     def _derive_categories_from_paths(self) -> Set[str]:
         cats: Set[str] = set()
         for root in self.module_roots:
-            cats.add(root.name if root.name != "market_1" else "market")
+            cats.add(root.name if root.name != "market" else "market")
         # keep minimal known extras
         for k in ("executor", "external", "trading_modes"):
             cats.add(k)
@@ -556,7 +556,7 @@ class IntegrationValidator:
             idx = p.parts.index("modules")
             if idx + 1 < len(p.parts):
                 part = p.parts[idx + 1]
-                return "market" if part == "market_1" else part
+                return "market" if part == "market" else part
         except Exception:
             pass
         if class_name.startswith(("PPO", "Meta")):

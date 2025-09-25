@@ -274,7 +274,7 @@ class ModuleConfig:
             'modules/executor',
             'modules/external',
             'modules/features',
-            'modules/market_1',
+            'modules/market',
             'modules/memory',
             'modules/meta',
             'modules/models',

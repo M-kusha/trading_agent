@@ -369,14 +369,6 @@ modules:
       - strategy_status
       - system_alerts
 
-  # FractalRegimeConfirmation: removed — integrated under UnifiedMarket
-
-  MarketThemeDetector:
-    category: market
-    file_path: modules\market\market_theme_detector.py
-    module_path: modules.market.market_theme_detector
-    provides: []
-    requires: []
 
   MetaAgent:
     category: meta
@@ -681,7 +673,6 @@ modules:
       - trading_performance
       - volatility_data
 
-  # TimeAwareRiskScaling: removed — integrated under UnifiedMarket
 
   TimeHorizonAligner:
     category: voting
@@ -892,62 +883,7 @@ modules:
       - time_risk_analysis
       - trades
 
-  UnifiedMarket:
-    category: market
-    file_path: modules\market_1\market_module.py
-    module_path: modules.market_1.market_module
-    provides:
-      - fractal_metrics
-      - market_regime
-      - regime_data
-      - regime_strength
-      - timestamps
-      - trend_direction
-      - liquidity_capabilities
-      - liquidity_prediction
-      - liquidity_score
-      - liquidity_thesis
-      - market_depth
-      - session_data
-      - spread_analysis
-      - trading_sessions
-      - market_theme
-      - theme_detection
-      - theme_detector_health
-      - theme_detector_status
-      - theme_strength
-      - theme_transition
-      - theme_confidence
-      - backtesting_data
-      - performance_metrics
-      - regime_accuracy
-      - regime_analysis
-      - regime_matrix_analysis
-      - regime_matrix_health
-      - regime_matrix_status
-      - regime_performance
-      - regime_prediction
-      - stress_test_results
-      - risk_scaling_factor
-      - session_risk
-      - time_risk_health
-      - time_risk_status
-      - time_risk_analysis
-      - volatility_adjustment
-      - unified_market_analysis
-      - market_analysis_thesis
-    requires:
-      - bid_ask_data
-      - historical_prices
-      - macro_data
-      - market_data
-      - multi_timeframe_data
-      - price_data
-      - prices
-      - technical_indicators
-      - timestamp
-      - volatility_data
-      - volatility_level
+
 
   VotingKernel:
     category: voting
@@ -1115,9 +1051,9 @@ modules:
       - trading_performance
 
   UnifiedMarketModule:
-    category: market_1
-    file_path: modules\market_1\market_module.py
-    module_path: modules.market_1.market_module
+    category: market
+    file_path: modules\market\market_module.py
+    module_path: modules.market.market_module
     provides:
       - fractal_metrics
       - market_regime

@@ -1,5 +1,5 @@
 """
-modules.market_1 package exports (modern only)
+modules.market package exports (modern only)
 """
 
 # Primary orchestrator exports

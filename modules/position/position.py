@@ -197,7 +197,22 @@ class IntegratedDebugger:
         except Exception:
             pass
 
+    def _should_suppress_alerts(self) -> bool:
+        """Check if alerts should be suppressed during training/simulation mode."""
+        try:
+            env_cfg = self.smart_bus.get("environment_config", "PositionManager")
+            if isinstance(env_cfg, dict):
+                mode = env_cfg.get("mode", "")
+                # Suppress alerts in simulation mode (training)
+                return mode == "sim"
+        except Exception:
+            pass
+        return False
+
     def _alert_buy(self, instrument: str, snapshot: DebugSnapshot) -> None:
+        # Suppress alerts during training/simulation mode
+        if self._should_suppress_alerts():
+            return
         print(f"\n{'<'*30}")
         print(f"BUY SIGNAL - {instrument}")
         print(f"Size: EUR {snapshot.size_eur:,.2f}")
@@ -206,6 +221,9 @@ class IntegratedDebugger:
         print(f"{'<'*30}\n")
 
     def _alert_sell(self, instrument: str, snapshot: DebugSnapshot) -> None:
+        # Suppress alerts during training/simulation mode
+        if self._should_suppress_alerts():
+            return
         print(f"\n{'>'*30}")
         print(f"SELL SIGNAL - {instrument}")
         print(f"Size: EUR {snapshot.size_eur:,.2f}")

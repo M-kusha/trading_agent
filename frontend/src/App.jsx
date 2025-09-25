@@ -14,7 +14,7 @@ import { createPortal } from 'react-dom';
 
 import {
   Play, Pause, Square, AlertTriangle, TrendingUp, Activity, Database, Settings, LogOut, Brain, Heart,
-  Shield, Target, BarChart3, Users, Zap, CheckCircle, XCircle, Clock, DollarSign,
+  Shield, Target, BarChart3, Users, Zap, CheckCircle, XCircle, Clock, DollarSign, Vote,
   ArrowUp, ArrowDown, Wifi, WifiOff, Save, Upload, Download, RefreshCw, AlertCircle,
   Cpu, HardDrive, Network, Eye, BarChart2, PieChart as PieChartIcon, LineChart as LineChartIcon, Layers, Bell, X,
   TrendingDown, Percent, Timer, Gauge, Monitor, Server, CloudOff, Power, FileUp,
@@ -29,19 +29,8 @@ import {
   ComposedChart, Scatter
 } from 'recharts';
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Custom Components
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Constants
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const API_BASE = '/api';
-
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Context & Global State
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const AppStateContext = createContext();
 
@@ -220,9 +209,6 @@ class ErrorBoundary extends React.Component {
   }
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-/** Helpers */
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const formatTime = (seconds) => {
   if (seconds < 60) return `${Math.round(seconds)}s`;
@@ -264,7 +250,8 @@ const getCategoryIcon = (category) => {
     'auditing': Eye,
     'memory': Database,
     'market': TrendingUp,
-    'market_1': Flame,
+    // If a distinct thematic variant is ever introduced, use 'market_theme'
+    'market_theme': Flame,
     'trading': Target,
     'monitoring': Monitor,
     'reward': Crown,
@@ -286,7 +273,8 @@ const getCategoryColor = (category) => {
     'auditing': 'from-yellow-500 to-yellow-600',
     'memory': 'from-indigo-500 to-indigo-600',
     'market': 'from-orange-500 to-orange-600',
-    'market_1': 'from-pink-500 to-pink-600',
+    // Optional thematic variant if needed later
+    'market_theme': 'from-pink-500 to-pink-600',
     'trading': 'from-cyan-500 to-cyan-600',
     'monitoring': 'from-teal-500 to-teal-600',
     'reward': 'from-amber-500 to-amber-600',
@@ -1013,6 +1001,2663 @@ const AnalyticsTab = React.memo(function AnalyticsTab() {
       <div className="animate-in fade-in duration-500">
         {viewComponents[selectedView]()}
       </div>
+    </div>
+  );
+});
+
+const MemoryTab = React.memo(function MemoryTab() {
+  const [memoryData, setMemoryData] = useState({
+    overview: {},
+    components: {},
+    patterns: {},
+    mistakes: {},
+    performance: {}
+  });
+  const [loading, setLoading] = useState(false);
+  const [selectedComponent, setSelectedComponent] = useState('overview');
+  const [lastUpdate, setLastUpdate] = useState(0);
+
+  const fetchMemoryData = useCallback(async () => {
+    if (loading || Date.now() - lastUpdate < 5000) return;
+
+    setLoading(true);
+    try {
+      const [overviewRes, componentsRes, patternsRes, mistakesRes, performanceRes] = await Promise.all([
+        fetch('/api/memory/overview').then(r => r.json()),
+        fetch('/api/memory/components').then(r => r.json()),
+        fetch('/api/memory/patterns').then(r => r.json()),
+        fetch('/api/memory/mistakes').then(r => r.json()),
+        fetch('/api/memory/performance').then(r => r.json())
+      ]);
+
+      setMemoryData({
+        overview: overviewRes.success ? overviewRes : { error: overviewRes.error },
+        components: componentsRes.success ? componentsRes.components : {},
+        patterns: patternsRes.success ? patternsRes.patterns : {},
+        mistakes: mistakesRes.success ? mistakesRes.mistakes : {},
+        performance: performanceRes.success ? performanceRes.performance : {}
+      });
+      setLastUpdate(Date.now());
+    } catch (error) {
+      console.error('Error fetching memory data:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, [loading, lastUpdate]);
+
+  useEffect(() => {
+    fetchMemoryData();
+    const interval = setInterval(fetchMemoryData, 10000); // Update every 10 seconds
+    return () => clearInterval(interval);
+  }, [fetchMemoryData]);
+
+  const componentTabs = [
+    { key: 'overview', label: 'Overview', icon: BarChart3 },
+    { key: 'neural', label: 'Neural', icon: Brain },
+    { key: 'playbook', label: 'Playbook', icon: Target },
+    { key: 'mistakes', label: 'Mistakes', icon: AlertTriangle },
+    { key: 'patterns', label: 'Patterns', icon: Sparkles },
+    { key: 'performance', label: 'Performance', icon: Activity }
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-white mb-2">Memory System</h1>
+          <p className="text-gray-400">Monitor unified memory components and performance</p>
+        </div>
+        <button
+          onClick={fetchMemoryData}
+          disabled={loading}
+          className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded-lg transition-colors text-white font-medium"
+        >
+          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          <span>Refresh</span>
+        </button>
+      </div>
+
+      {/* Memory Overview Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <div className="flex items-center space-x-3 mb-4">
+            <div className="p-2 bg-blue-500/20 rounded-lg">
+              <HardDrive className="w-5 h-5 text-blue-400" />
+            </div>
+            <div>
+              <h3 className="text-gray-400 text-sm font-medium">Total Memories</h3>
+              <div className="text-2xl font-bold text-white">
+                {memoryData.overview.total_memories || 0}
+              </div>
+            </div>
+          </div>
+          <div className="text-xs text-gray-500">Stored experiences</div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <div className="flex items-center space-x-3 mb-4">
+            <div className="p-2 bg-green-500/20 rounded-lg">
+              <Activity className="w-5 h-5 text-green-400" />
+            </div>
+            <div>
+              <h3 className="text-gray-400 text-sm font-medium">Memory Usage</h3>
+              <div className="text-2xl font-bold text-white">
+                {((memoryData.overview.memory_utilization || 0) * 100).toFixed(1)}%
+              </div>
+            </div>
+          </div>
+          <div className="w-full bg-gray-700 rounded-full h-2 mt-2">
+            <div
+              className="bg-green-400 h-2 rounded-full transition-all duration-300"
+              style={{ width: `${(memoryData.overview.memory_utilization || 0) * 100}%` }}
+            />
+          </div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <div className="flex items-center space-x-3 mb-4">
+            <div className="p-2 bg-purple-500/20 rounded-lg">
+              <Cpu className="w-5 h-5 text-purple-400" />
+            </div>
+            <div>
+              <h3 className="text-gray-400 text-sm font-medium">Active Components</h3>
+              <div className="text-2xl font-bold text-white">
+                {memoryData.overview.components_active || 0}
+              </div>
+            </div>
+          </div>
+          <div className="text-xs text-gray-500">Running modules</div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <div className="flex items-center space-x-3 mb-4">
+            <div className={`p-2 rounded-lg ${
+              memoryData.overview.health_status === 'healthy' ? 'bg-green-500/20' :
+              memoryData.overview.health_status === 'warning' ? 'bg-yellow-500/20' :
+              'bg-red-500/20'
+            }`}>
+              <Heart className={`w-5 h-5 ${
+                memoryData.overview.health_status === 'healthy' ? 'text-green-400' :
+                memoryData.overview.health_status === 'warning' ? 'text-yellow-400' :
+                'text-red-400'
+              }`} />
+            </div>
+            <div>
+              <h3 className="text-gray-400 text-sm font-medium">Health Status</h3>
+              <div className={`text-2xl font-bold capitalize ${
+                memoryData.overview.health_status === 'healthy' ? 'text-green-400' :
+                memoryData.overview.health_status === 'warning' ? 'text-yellow-400' :
+                'text-red-400'
+              }`}>
+                {memoryData.overview.health_status || 'Unknown'}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Component Navigation */}
+      <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-4">
+        <div className="flex flex-wrap gap-2">
+          {componentTabs.map(({ key, label, icon: Icon }) => (
+            <button
+              key={key}
+              onClick={() => setSelectedComponent(key)}
+              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium transition-all ${
+                selectedComponent === key
+                  ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white'
+                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              <Icon size={16} />
+              <span>{label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Dynamic Content Based on Selected Component */}
+      <div className="animate-in fade-in duration-500">
+        {selectedComponent === 'overview' && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <MemoryOverviewChart data={memoryData.overview} />
+            <MemoryHealthPanel data={memoryData.overview} />
+          </div>
+        )}
+
+        {selectedComponent === 'neural' && (
+          <NeuralMemoryPanel data={memoryData.components.neural || {}} />
+        )}
+
+        {selectedComponent === 'playbook' && (
+          <PlaybookMemoryPanel data={memoryData.components.playbook || {}} />
+        )}
+
+        {selectedComponent === 'mistakes' && (
+          <MistakeMemoryPanel data={memoryData.mistakes} />
+        )}
+
+        {selectedComponent === 'patterns' && (
+          <PatternsPanel data={memoryData.patterns} />
+        )}
+
+        {selectedComponent === 'performance' && (
+          <MemoryPerformancePanel data={memoryData.performance} />
+        )}
+      </div>
+    </div>
+  );
+});
+
+// Memory Visualization Components
+const MemoryOverviewChart = React.memo(function MemoryOverviewChart({ data }) {
+  const chartData = [
+    { name: 'Usage', value: (data.memory_utilization || 0) * 100, color: '#10b981' },
+    { name: 'Free', value: 100 - ((data.memory_utilization || 0) * 100), color: '#374151' }
+  ];
+
+  return (
+    <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+      <h3 className="text-lg font-semibold text-white mb-4">Memory Usage Overview</h3>
+      <div className="flex items-center justify-center h-64">
+        <ResponsiveContainer width="100%" height="100%">
+          <RechartsPieChart>
+            <Pie
+              data={chartData}
+              cx="50%"
+              cy="50%"
+              innerRadius={60}
+              outerRadius={100}
+              fill="#8884d8"
+              dataKey="value"
+            >
+              {chartData.map((entry, index) => (
+                <Cell key={`cell-${index}`} fill={entry.color} />
+              ))}
+            </Pie>
+            <Tooltip formatter={(value) => `${value.toFixed(1)}%`} />
+          </RechartsPieChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="flex justify-center space-x-4 mt-4">
+        <div className="flex items-center space-x-2">
+          <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+          <span className="text-sm text-gray-400">Used</span>
+        </div>
+        <div className="flex items-center space-x-2">
+          <div className="w-3 h-3 bg-gray-600 rounded-full"></div>
+          <span className="text-sm text-gray-400">Free</span>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const MemoryHealthPanel = React.memo(function MemoryHealthPanel({ data }) {
+  const getStatusColor = (status) => {
+    switch (status) {
+      case 'healthy': return 'text-green-400';
+      case 'warning': return 'text-yellow-400';
+      case 'critical': return 'text-red-400';
+      default: return 'text-gray-400';
+    }
+  };
+
+  const getStatusBg = (status) => {
+    switch (status) {
+      case 'healthy': return 'bg-green-500/20';
+      case 'warning': return 'bg-yellow-500/20';
+      case 'critical': return 'bg-red-500/20';
+      default: return 'bg-gray-500/20';
+    }
+  };
+
+  return (
+    <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+      <h3 className="text-lg font-semibold text-white mb-4">System Health</h3>
+      <div className="space-y-4">
+        <div className={`p-4 rounded-lg ${getStatusBg(data.health_status)}`}>
+          <div className="flex items-center justify-between">
+            <span className="text-gray-300">Overall Status</span>
+            <span className={`font-bold capitalize ${getStatusColor(data.health_status)}`}>
+              {data.health_status || 'Unknown'}
+            </span>
+          </div>
+        </div>
+
+        <div className="bg-gray-700/50 rounded-lg p-4">
+          <div className="flex items-center justify-between">
+            <span className="text-gray-300">Processing Status</span>
+            <span className="text-blue-400 font-medium">
+              {data.processing_status || 'Unknown'}
+            </span>
+          </div>
+        </div>
+
+        <div className="bg-gray-700/50 rounded-lg p-4">
+          <div className="flex items-center justify-between">
+            <span className="text-gray-300">System Status</span>
+            <span className="text-purple-400 font-medium">
+              {data.status || 'Unknown'}
+            </span>
+          </div>
+        </div>
+
+        <div className="bg-gray-700/50 rounded-lg p-4">
+          <div className="flex items-center justify-between">
+            <span className="text-gray-300">Components Enabled</span>
+            <span className="text-green-400 font-bold">
+              {data.components_enabled || 0}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const NeuralMemoryPanel = React.memo(function NeuralMemoryPanel({ data }) {
+  const neural = data.neural_memory || {};
+  const attention = data.attention_retrieval || {};
+  const embedding = data.memory_embedding || {};
+  const scoring = data.importance_scoring || {};
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+        <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+          <Brain className="w-5 h-5 mr-2 text-purple-400" />
+          Neural Memory Status
+        </h3>
+        <div className="space-y-3">
+          <div className="flex justify-between">
+            <span className="text-gray-400">Buffer Size</span>
+            <span className="text-white font-medium">{neural.buffer_size || 0}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Memory Utilization</span>
+            <span className="text-blue-400 font-medium">
+              {((neural.memory_utilization || 0) * 100).toFixed(1)}%
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Total Embeddings</span>
+            <span className="text-purple-400 font-medium">{embedding.total_embeddings || 0}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Embedding Dimension</span>
+            <span className="text-green-400 font-medium">{embedding.embedding_dim || 0}</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+        <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+          <Eye className="w-5 h-5 mr-2 text-blue-400" />
+          Attention & Scoring
+        </h3>
+        <div className="space-y-3">
+          <div className="flex justify-between">
+            <span className="text-gray-400">Retrieved Count</span>
+            <span className="text-blue-400 font-medium">{attention.retrieved_count || 0}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Avg Importance</span>
+            <span className="text-yellow-400 font-medium">
+              {(scoring.average_importance || 0).toFixed(3)}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Total Scored</span>
+            <span className="text-green-400 font-medium">{scoring.total_scored || 0}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Similarity Scores</span>
+            <span className="text-purple-400 font-medium">
+              {(attention.similarity_scores || []).length}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const PlaybookMemoryPanel = React.memo(function PlaybookMemoryPanel({ data }) {
+  const recall = data.playbook_recall || {};
+  const patterns = data.pattern_memory || {};
+  const quality = data.playbook_quality || {};
+  const analytics = data.memory_analytics || {};
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+        <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+          <Target className="w-5 h-5 mr-2 text-cyan-400" />
+          Playbook Status
+        </h3>
+        <div className="space-y-3">
+          <div className="flex justify-between">
+            <span className="text-gray-400">Memory Entries</span>
+            <span className="text-cyan-400 font-medium">{recall.memory_entries || 0}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Patterns Identified</span>
+            <span className="text-blue-400 font-medium">{recall.patterns_identified || 0}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Total Patterns</span>
+            <span className="text-purple-400 font-medium">{patterns.total_patterns || 0}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Quality Score</span>
+            <span className="text-green-400 font-medium">
+              {(quality.quality_score || 0).toFixed(2)}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+        <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+          <BarChart3 className="w-5 h-5 mr-2 text-green-400" />
+          Analytics
+        </h3>
+        <div className="space-y-3">
+          <div className="flex justify-between">
+            <span className="text-gray-400">Total Recalls</span>
+            <span className="text-green-400 font-medium">{analytics.total_recalls || 0}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Memory Health</span>
+            <span className="text-yellow-400 font-medium capitalize">
+              {analytics.memory_health || 'Unknown'}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Memory Utilization</span>
+            <span className="text-blue-400 font-medium">
+              {((quality.memory_utilization || 0) * 100).toFixed(1)}%
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Pattern Effectiveness</span>
+            <span className="text-purple-400 font-medium">
+              {Object.keys(patterns.pattern_effectiveness || {}).length}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const MistakeMemoryPanel = React.memo(function MistakeMemoryPanel({ data }) {
+  const mistakes = data.mistake_memory || {};
+  const avoidance = data.mistake_avoidance || {};
+  const dangers = data.danger_zones || {};
+  const prevention = data.loss_prevention || {};
+  const recognition = data.pattern_recognition || {};
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+            <AlertTriangle className="w-5 h-5 mr-2 text-red-400" />
+            Mistake Tracking
+          </h3>
+          <div className="space-y-3">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Recent Count</span>
+              <span className="text-red-400 font-medium">
+                {(mistakes.recent || []).length}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Total Mistakes</span>
+              <span className="text-orange-400 font-medium">
+                {mistakes.stats?.count || 0}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Avoidance Signal</span>
+              <span className="text-yellow-400 font-medium">
+                {(avoidance.avoidance_signal || 0).toFixed(3)}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+            <Shield className="w-5 h-5 mr-2 text-blue-400" />
+            Loss Prevention
+          </h3>
+          <div className="space-y-3">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Effectiveness</span>
+              <span className="text-blue-400 font-medium">
+                {((prevention.avoidance_effectiveness || 0) * 100).toFixed(1)}%
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Learning Samples</span>
+              <span className="text-green-400 font-medium">
+                {prevention.learning_samples || 0}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Consecutive Losses</span>
+              <span className="text-red-400 font-medium">
+                {avoidance.consecutive_losses || 0}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+            <Sparkles className="w-5 h-5 mr-2 text-purple-400" />
+            Pattern Recognition
+          </h3>
+          <div className="space-y-3">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Loss Patterns</span>
+              <span className="text-red-400 font-medium">
+                {Object.keys(recognition.loss_patterns || {}).length}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Win Patterns</span>
+              <span className="text-green-400 font-medium">
+                {Object.keys(recognition.win_patterns || {}).length}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Danger Zones</span>
+              <span className="text-yellow-400 font-medium">
+                {(dangers.zones || []).length}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const PatternsPanel = React.memo(function PatternsPanel({ data }) {
+  const neural = data.neural_patterns || {};
+  const playbook = data.playbook_patterns || {};
+  const compressed = data.compressed_patterns || {};
+  const recognition = data.pattern_recognition || {};
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+        <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+          <Brain className="w-5 h-5 mr-2 text-purple-400" />
+          Neural Patterns
+        </h3>
+        <div className="space-y-3">
+          <div className="flex justify-between">
+            <span className="text-gray-400">Attention Retrieval</span>
+            <span className="text-purple-400 font-medium">
+              {neural.attention_retrieval?.retrieved_count || 0}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Memory Embeddings</span>
+            <span className="text-blue-400 font-medium">
+              {neural.memory_embedding?.total_embeddings || 0}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Compressed Profit</span>
+            <span className="text-green-400 font-medium">
+              {(compressed.profit_direction || []).length}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Compressed Loss</span>
+            <span className="text-red-400 font-medium">
+              {(compressed.loss_direction || []).length}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+        <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+          <Target className="w-5 h-5 mr-2 text-cyan-400" />
+          Playbook Patterns
+        </h3>
+        <div className="space-y-3">
+          <div className="flex justify-between">
+            <span className="text-gray-400">Pattern Memory</span>
+            <span className="text-cyan-400 font-medium">
+              {playbook.pattern_memory?.total_patterns || 0}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Pattern Analysis</span>
+            <span className="text-blue-400 font-medium">
+              {playbook.pattern_analysis?.total_patterns || 0}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Win Patterns</span>
+            <span className="text-green-400 font-medium">
+              {Object.keys(recognition.win_patterns || {}).length}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">Loss Patterns</span>
+            <span className="text-red-400 font-medium">
+              {Object.keys(recognition.loss_patterns || {}).length}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const MemoryPerformancePanel = React.memo(function MemoryPerformancePanel({ data }) {
+  const overview = data.overview || {};
+  const neural = data.neural_performance || {};
+  const playbook = data.playbook_performance || {};
+  const compression = data.compression_performance || {};
+  const budget = data.budget_performance || {};
+
+  const performanceData = [
+    { name: 'Neural', score: (neural.importance_scoring?.average_importance || 0) * 100 },
+    { name: 'Playbook', score: (playbook.playbook_quality?.quality_score || 0) * 100 },
+    { name: 'Compression', score: (compression.memory_compression?.compression_efficiency || 0) * 100 },
+    { name: 'Budget', score: (budget.budget_optimization?.optimality_score || 0) * 100 }
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+        <h3 className="text-lg font-semibold text-white mb-4">Component Performance</h3>
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={performanceData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+              <XAxis dataKey="name" stroke="#9CA3AF" />
+              <YAxis stroke="#9CA3AF" />
+              <Tooltip
+                contentStyle={{
+                  backgroundColor: '#1F2937',
+                  border: '1px solid #374151',
+                  borderRadius: '0.5rem'
+                }}
+              />
+              <Bar dataKey="score" fill="#8B5CF6" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">Budget Optimization</h3>
+          <div className="space-y-3">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Optimality Score</span>
+              <span className="text-green-400 font-medium">
+                {(budget.budget_optimization?.optimality_score || 0).toFixed(2)}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Total Profit</span>
+              <span className="text-blue-400 font-medium">
+                ${(budget.budget_optimization?.total_profit || 0).toFixed(2)}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Optimization Count</span>
+              <span className="text-purple-400 font-medium">
+                {budget.budget_optimization?.optimization_count || 0}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">Memory Compression</h3>
+          <div className="space-y-3">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Total Memories</span>
+              <span className="text-cyan-400 font-medium">
+                {compression.memory_compression?.total_memories || 0}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Compression Efficiency</span>
+              <span className="text-green-400 font-medium">
+                {((compression.memory_compression?.compression_efficiency || 0) * 100).toFixed(1)}%
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Feature Components</span>
+              <span className="text-yellow-400 font-medium">
+                {(compression.feature_importance?.profit_components || []).length}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const RiskTab = React.memo(function RiskTab() {
+  const [riskData, setRiskData] = useState({
+    overview: {},
+    anomalies: {},
+    compliance: {},
+    drawdown: {},
+    execution: {},
+    portfolio: {},
+    dynamic: {},
+    alerts: {}
+  });
+  const [loading, setLoading] = useState(false);
+  const [selectedComponent, setSelectedComponent] = useState('overview');
+  const [lastUpdate, setLastUpdate] = useState(0);
+
+  const fetchRiskData = useCallback(async () => {
+    if (loading || Date.now() - lastUpdate < 5000) return;
+
+    setLoading(true);
+    try {
+      const [overviewRes, anomaliesRes, complianceRes, drawdownRes, executionRes, portfolioRes, dynamicRes, alertsRes] = await Promise.all([
+        fetch('/api/risk/overview').then(r => r.json()),
+        fetch('/api/risk/anomalies').then(r => r.json()),
+        fetch('/api/risk/compliance').then(r => r.json()),
+        fetch('/api/risk/drawdown').then(r => r.json()),
+        fetch('/api/risk/execution').then(r => r.json()),
+        fetch('/api/risk/portfolio').then(r => r.json()),
+        fetch('/api/risk/dynamic').then(r => r.json()),
+        fetch('/api/risk/alerts').then(r => r.json())
+      ]);
+
+      setRiskData({
+        overview: overviewRes.success ? overviewRes : { error: overviewRes.error },
+        anomalies: anomaliesRes.success ? anomaliesRes.anomalies : {},
+        compliance: complianceRes.success ? complianceRes.compliance : {},
+        drawdown: drawdownRes.success ? drawdownRes.drawdown : {},
+        execution: executionRes.success ? executionRes.execution : {},
+        portfolio: portfolioRes.success ? portfolioRes.portfolio : {},
+        dynamic: dynamicRes.success ? dynamicRes.dynamic : {},
+        alerts: alertsRes.success ? alertsRes.alerts : {}
+      });
+      setLastUpdate(Date.now());
+    } catch (error) {
+      console.error('Error fetching risk data:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, [loading, lastUpdate]);
+
+  useEffect(() => {
+    fetchRiskData();
+    const interval = setInterval(fetchRiskData, 10000); // Update every 10 seconds
+    return () => clearInterval(interval);
+  }, [fetchRiskData]);
+
+  const componentTabs = [
+    { key: 'overview', label: 'Overview', icon: Shield },
+    { key: 'anomalies', label: 'Anomalies', icon: AlertTriangle },
+    { key: 'compliance', label: 'Compliance', icon: CheckCircle },
+    { key: 'drawdown', label: 'Drawdown', icon: TrendingDown },
+    { key: 'execution', label: 'Execution', icon: Target },
+    { key: 'portfolio', label: 'Portfolio', icon: PieChartIcon },
+    { key: 'dynamic', label: 'Dynamic', icon: Activity },
+    { key: 'alerts', label: 'Alerts', icon: Bell }
+  ];
+
+  const getRiskLevelColor = (level) => {
+    switch (level?.toUpperCase()) {
+      case 'LOW':
+      case 'NORMAL': return 'text-green-400';
+      case 'ELEVATED':
+      case 'WARNING': return 'text-yellow-400';
+      case 'HIGH':
+      case 'CRITICAL': return 'text-red-400';
+      case 'EMERGENCY': return 'text-red-500';
+      default: return 'text-gray-400';
+    }
+  };
+
+  const getRiskLevelBg = (level) => {
+    switch (level?.toUpperCase()) {
+      case 'LOW':
+      case 'NORMAL': return 'bg-green-500/20';
+      case 'ELEVATED':
+      case 'WARNING': return 'bg-yellow-500/20';
+      case 'HIGH':
+      case 'CRITICAL': return 'bg-red-500/20';
+      case 'EMERGENCY': return 'bg-red-500/30';
+      default: return 'bg-gray-500/20';
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-white mb-2">Risk Management</h1>
+          <p className="text-gray-400">Monitor risk systems and alerts</p>
+        </div>
+        <button
+          onClick={fetchRiskData}
+          disabled={loading}
+          className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded-lg transition-colors text-white font-medium"
+        >
+          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          <span>Refresh</span>
+        </button>
+      </div>
+
+      {/* Risk Overview Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className={`rounded-lg p-6 border backdrop-blur-sm ${getRiskLevelBg(riskData.overview.risk_level)} border-gray-700`}>
+          <div className="flex items-center space-x-3 mb-4">
+            <div className="p-2 bg-red-500/20 rounded-lg">
+              <Shield className="w-5 h-5 text-red-400" />
+            </div>
+            <div>
+              <h3 className="text-gray-400 text-sm font-medium">Risk Level</h3>
+              <div className={`text-2xl font-bold ${getRiskLevelColor(riskData.overview.risk_level)}`}>
+                {riskData.overview.risk_level || 'UNKNOWN'}
+              </div>
+            </div>
+          </div>
+          <div className="text-xs text-gray-500">System risk assessment</div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <div className="flex items-center space-x-3 mb-4">
+            <div className="p-2 bg-blue-500/20 rounded-lg">
+              <TrendingDown className="w-5 h-5 text-blue-400" />
+            </div>
+            <div>
+              <h3 className="text-gray-400 text-sm font-medium">Current Drawdown</h3>
+              <div className="text-2xl font-bold text-white">
+                {((riskData.overview.current_drawdown || 0) * 100).toFixed(2)}%
+              </div>
+            </div>
+          </div>
+          <div className="w-full bg-gray-700 rounded-full h-2 mt-2">
+            <div
+              className="bg-red-400 h-2 rounded-full transition-all duration-300"
+              style={{ width: `${Math.min((riskData.overview.current_drawdown || 0) * 100 * 4, 100)}%` }}
+            />
+          </div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <div className="flex items-center space-x-3 mb-4">
+            <div className="p-2 bg-purple-500/20 rounded-lg">
+              <Activity className="w-5 h-5 text-purple-400" />
+            </div>
+            <div>
+              <h3 className="text-gray-400 text-sm font-medium">Risk Scale</h3>
+              <div className="text-2xl font-bold text-white">
+                {(riskData.overview.risk_scale || 1.0).toFixed(2)}x
+              </div>
+            </div>
+          </div>
+          <div className="text-xs text-gray-500">Position sizing multiplier</div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <div className="flex items-center space-x-3 mb-4">
+            <div className="p-2 bg-green-500/20 rounded-lg">
+              <CheckCircle className="w-5 h-5 text-green-400" />
+            </div>
+            <div>
+              <h3 className="text-gray-400 text-sm font-medium">Win Rate</h3>
+              <div className="text-2xl font-bold text-white">
+                {((riskData.overview.win_rate || 0) * 100).toFixed(1)}%
+              </div>
+            </div>
+          </div>
+          <div className="w-full bg-gray-700 rounded-full h-2 mt-2">
+            <div
+              className="bg-green-400 h-2 rounded-full transition-all duration-300"
+              style={{ width: `${(riskData.overview.win_rate || 0) * 100}%` }}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Component Navigation */}
+      <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-4">
+        <div className="flex flex-wrap gap-2">
+          {componentTabs.map(({ key, label, icon: Icon }) => (
+            <button
+              key={key}
+              onClick={() => setSelectedComponent(key)}
+              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium transition-all ${
+                selectedComponent === key
+                  ? 'bg-gradient-to-r from-red-600 to-red-700 text-white'
+                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              <Icon size={16} />
+              <span>{label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Dynamic Content Based on Selected Component */}
+      <div className="animate-in fade-in duration-500">
+        {selectedComponent === 'overview' && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <RiskOverviewChart data={riskData.overview} />
+            <RiskMetricsPanel data={riskData.overview} />
+          </div>
+        )}
+
+        {selectedComponent === 'anomalies' && (
+          <AnomaliesPanel data={riskData.anomalies} />
+        )}
+
+        {selectedComponent === 'compliance' && (
+          <CompliancePanel data={riskData.compliance} />
+        )}
+
+        {selectedComponent === 'drawdown' && (
+          <DrawdownPanel data={riskData.drawdown} />
+        )}
+
+        {selectedComponent === 'execution' && (
+          <ExecutionPanel data={riskData.execution} />
+        )}
+
+        {selectedComponent === 'portfolio' && (
+          <PortfolioRiskPanel data={riskData.portfolio} />
+        )}
+
+        {selectedComponent === 'dynamic' && (
+          <DynamicRiskPanel data={riskData.dynamic} />
+        )}
+
+        {selectedComponent === 'alerts' && (
+          <RiskAlertsPanel data={riskData.alerts} />
+        )}
+      </div>
+    </div>
+  );
+});
+
+// Risk Visualization Components
+const RiskOverviewChart = React.memo(function RiskOverviewChart({ data }) {
+  const chartData = [
+    { name: 'Current DD', value: (data.current_drawdown || 0) * 100, color: '#ef4444' },
+    { name: 'Max DD', value: (data.max_drawdown || 0) * 100, color: '#dc2626' },
+    { name: 'VAR 95%', value: (data.var_95 || 0) * 100, color: '#f97316' },
+    { name: 'VAR 99%', value: (data.var_99 || 0) * 100, color: '#ea580c' }
+  ];
+
+  return (
+    <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+      <h3 className="text-lg font-semibold text-white mb-4">Risk Metrics Overview</h3>
+      <div className="h-64">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={chartData}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+            <XAxis dataKey="name" stroke="#9CA3AF" />
+            <YAxis stroke="#9CA3AF" />
+            <Tooltip
+              contentStyle={{
+                backgroundColor: '#1F2937',
+                border: '1px solid #374151',
+                borderRadius: '0.5rem'
+              }}
+              formatter={(value) => [`${value.toFixed(2)}%`, 'Value']}
+            />
+            <Bar dataKey="value" fill="#ef4444" />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+});
+
+const RiskMetricsPanel = React.memo(function RiskMetricsPanel({ data }) {
+  return (
+    <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+      <h3 className="text-lg font-semibold text-white mb-4">Risk Metrics</h3>
+      <div className="space-y-4">
+        <div className="bg-gray-700/50 rounded-lg p-4">
+          <div className="flex items-center justify-between">
+            <span className="text-gray-300">Sharpe Ratio</span>
+            <span className="text-blue-400 font-medium">
+              {(data.sharpe_ratio || 0).toFixed(2)}
+            </span>
+          </div>
+        </div>
+
+        <div className="bg-gray-700/50 rounded-lg p-4">
+          <div className="flex items-center justify-between">
+            <span className="text-gray-300">Volatility Ratio</span>
+            <span className="text-purple-400 font-medium">
+              {(data.volatility_ratio || 1.0).toFixed(2)}x
+            </span>
+          </div>
+        </div>
+
+        <div className="bg-gray-700/50 rounded-lg p-4">
+          <div className="flex items-center justify-between">
+            <span className="text-gray-300">Risk Budget Used</span>
+            <span className="text-yellow-400 font-medium">
+              {((data.risk_budget_used || 0) * 100).toFixed(1)}%
+            </span>
+          </div>
+        </div>
+
+        <div className="bg-gray-700/50 rounded-lg p-4">
+          <div className="flex items-center justify-between">
+            <span className="text-gray-300">System Status</span>
+            <span className="text-green-400 font-medium capitalize">
+              {data.system_status || 'Unknown'}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const AnomaliesPanel = React.memo(function AnomaliesPanel({ data }) {
+  const anomalyScore = data.anomaly_score || 0;
+  const threshold = data.anomaly_threshold || 0.8;
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+            <AlertTriangle className="w-5 h-5 mr-2 text-red-400" />
+            Anomaly Detection
+          </h3>
+          <div className="space-y-4">
+            <div className="flex justify-between items-center">
+              <span className="text-gray-400">Current Score</span>
+              <div className="flex items-center space-x-2">
+                <span className={`font-bold ${anomalyScore > threshold ? 'text-red-400' : 'text-green-400'}`}>
+                  {anomalyScore.toFixed(3)}
+                </span>
+                <div className={`w-3 h-3 rounded-full ${anomalyScore > threshold ? 'bg-red-400' : 'bg-green-400'}`}></div>
+              </div>
+            </div>
+            <div className="w-full bg-gray-700 rounded-full h-2">
+              <div
+                className={`h-2 rounded-full transition-all duration-300 ${
+                  anomalyScore > threshold ? 'bg-red-400' : 'bg-green-400'
+                }`}
+                style={{ width: `${Math.min(anomalyScore * 100, 100)}%` }}
+              />
+            </div>
+            <div className="flex justify-between text-sm text-gray-400">
+              <span>Normal</span>
+              <span>Threshold: {threshold}</span>
+              <span>Anomaly</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">System Health</h3>
+          <div className="space-y-3">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Detection Mode</span>
+              <span className="text-blue-400 font-medium">
+                {data.detection_mode || 'NORMAL'}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Active Alerts</span>
+              <span className="text-red-400 font-medium">
+                {(data.anomaly_alerts || []).length}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">History Count</span>
+              <span className="text-purple-400 font-medium">
+                {(data.anomaly_history || []).length}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {(data.anomaly_alerts || []).length > 0 && (
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">Recent Anomaly Alerts</h3>
+          <div className="space-y-2 max-h-48 overflow-y-auto">
+            {(data.anomaly_alerts || []).slice(0, 10).map((alert, index) => (
+              <div key={index} className="bg-red-900/20 border border-red-500/30 rounded p-3">
+                <div className="flex justify-between items-start">
+                  <span className="text-red-300">{alert.message || alert.type || 'Anomaly detected'}</span>
+                  <span className="text-xs text-gray-400">
+                    {alert.timestamp ? new Date(alert.timestamp).toLocaleTimeString() : 'Recent'}
+                  </span>
+                </div>
+                {alert.severity && (
+                  <span className={`text-xs px-2 py-1 rounded mt-2 inline-block ${
+                    alert.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
+                    alert.severity === 'warning' ? 'bg-yellow-500/20 text-yellow-400' :
+                    'bg-blue-500/20 text-blue-400'
+                  }`}>
+                    {alert.severity.toUpperCase()}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
+const CompliancePanel = React.memo(function CompliancePanel({ data }) {
+  const violations = data.compliance_violations || [];
+  const limits = data.risk_limits || {};
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+            <CheckCircle className="w-5 h-5 mr-2 text-green-400" />
+            Trade Compliance
+          </h3>
+          <div className="space-y-3">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Status</span>
+              <span className={`font-medium ${violations.length === 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {violations.length === 0 ? 'COMPLIANT' : 'VIOLATIONS'}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Active Violations</span>
+              <span className="text-red-400 font-medium">
+                {violations.length}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Max Leverage</span>
+              <span className="text-blue-400 font-medium">
+                {limits.max_leverage || 'N/A'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">Position Limits</h3>
+          <div className="space-y-3">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Max Position Risk</span>
+              <span className="text-yellow-400 font-medium">
+                {((data.position_compliance?.max_position_risk || 0) * 100).toFixed(1)}%
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Current Exposure</span>
+              <span className="text-purple-400 font-medium">
+                {((data.position_compliance?.current_exposure || 0) * 100).toFixed(1)}%
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Compliance Score</span>
+              <span className="text-green-400 font-medium">
+                {((data.position_compliance?.compliance_score || 1.0) * 100).toFixed(0)}%
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">Daily Limits</h3>
+          <div className="space-y-3">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Max Daily Trades</span>
+              <span className="text-cyan-400 font-medium">
+                {data.daily_limits?.max_daily_trades || 'N/A'}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Today's Trades</span>
+              <span className="text-orange-400 font-medium">
+                {data.daily_limits?.current_trades || 0}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Limit Utilization</span>
+              <span className="text-blue-400 font-medium">
+                {data.daily_limits?.max_daily_trades ?
+                  `${((data.daily_limits.current_trades || 0) / data.daily_limits.max_daily_trades * 100).toFixed(1)}%` :
+                  'N/A'
+                }
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {violations.length > 0 && (
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">Compliance Violations</h3>
+          <div className="space-y-2 max-h-48 overflow-y-auto">
+            {violations.slice(0, 10).map((violation, index) => (
+              <div key={index} className="bg-red-900/20 border border-red-500/30 rounded p-3">
+                <div className="flex justify-between items-start">
+                  <span className="text-red-300">{violation.message || violation.type}</span>
+                  <span className="text-xs text-gray-400">
+                    {violation.timestamp ? new Date(violation.timestamp).toLocaleTimeString() : 'Recent'}
+                  </span>
+                </div>
+                {violation.severity && (
+                  <span className={`text-xs px-2 py-1 rounded mt-2 inline-block ${
+                    violation.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
+                    violation.severity === 'warning' ? 'bg-yellow-500/20 text-yellow-400' :
+                    'bg-blue-500/20 text-blue-400'
+                  }`}>
+                    {violation.severity.toUpperCase()}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
+const DrawdownPanel = React.memo(function DrawdownPanel({ data }) {
+  const rescueActive = data.rescue_active || false;
+  const currentDD = data.current_drawdown || 0;
+  const maxDD = data.max_drawdown || 0;
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className={`backdrop-blur-sm border rounded-lg p-6 ${
+          rescueActive ? 'bg-red-500/20 border-red-500/50' : 'bg-gray-800/50 border-gray-700'
+        }`}>
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+            <TrendingDown className="w-5 h-5 mr-2 text-red-400" />
+            Drawdown Status
+            {rescueActive && (
+              <span className="ml-2 px-2 py-1 bg-red-500/30 text-red-300 text-xs rounded">
+                RESCUE ACTIVE
+              </span>
+            )}
+          </h3>
+          <div className="space-y-4">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Current Drawdown</span>
+              <span className="text-red-400 font-bold">
+                {(currentDD * 100).toFixed(2)}%
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Max Drawdown</span>
+              <span className="text-red-500 font-bold">
+                {(maxDD * 100).toFixed(2)}%
+              </span>
+            </div>
+            <div className="w-full bg-gray-700 rounded-full h-3">
+              <div
+                className="bg-red-400 h-3 rounded-full transition-all duration-300"
+                style={{ width: `${Math.min(currentDD * 100 * 4, 100)}%` }}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">Recovery Analysis</h3>
+          <div className="space-y-3">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Recovery Progress</span>
+              <span className="text-green-400 font-medium">
+                {((data.recovery_progress?.recovery_ratio || 0) * 100).toFixed(1)}%
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Velocity Analysis</span>
+              <span className="text-blue-400 font-medium">
+                {data.velocity_analysis?.velocity_trend || 'Neutral'}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Rescue Triggers</span>
+              <span className="text-purple-400 font-medium">
+                {(data.rescue_triggers || []).length}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {(data.drawdown_history || []).length > 0 && (
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">Drawdown History</h3>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <RechartsLineChart data={data.drawdown_history?.slice(-20) || []}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <XAxis dataKey="timestamp" stroke="#9CA3AF" />
+                <YAxis stroke="#9CA3AF" />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: '#1F2937',
+                    border: '1px solid #374151',
+                    borderRadius: '0.5rem'
+                  }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="drawdown"
+                  stroke="#ef4444"
+                  strokeWidth={2}
+                  dot={false}
+                />
+              </RechartsLineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
+const ExecutionPanel = React.memo(function ExecutionPanel({ data }) {
+  const qualityScore = data.quality_score || 0;
+  const executionVote = data.execution_vote || 'ABSTAIN';
+
+  const getVoteColor = (vote) => {
+    switch (vote) {
+      case 'PROCEED': return 'text-green-400';
+      case 'CAUTION': return 'text-yellow-400';
+      case 'HALT': return 'text-red-400';
+      default: return 'text-gray-400';
+    }
+  };
+
+  const getVoteBg = (vote) => {
+    switch (vote) {
+      case 'PROCEED': return 'bg-green-500/20';
+      case 'CAUTION': return 'bg-yellow-500/20';
+      case 'HALT': return 'bg-red-500/20';
+      default: return 'bg-gray-500/20';
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className={`backdrop-blur-sm border rounded-lg p-6 ${getVoteBg(executionVote)} border-gray-700`}>
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+            <Target className="w-5 h-5 mr-2 text-blue-400" />
+            Execution Vote
+          </h3>
+          <div className="text-center">
+            <div className={`text-3xl font-bold ${getVoteColor(executionVote)}`}>
+              {executionVote}
+            </div>
+            <div className="text-sm text-gray-400 mt-2">Current recommendation</div>
+          </div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">Quality Score</h3>
+          <div className="text-center">
+            <div className="text-3xl font-bold text-blue-400">
+              {(qualityScore * 100).toFixed(1)}%
+            </div>
+            <div className="w-full bg-gray-700 rounded-full h-2 mt-4">
+              <div
+                className="bg-blue-400 h-2 rounded-full transition-all duration-300"
+                style={{ width: `${qualityScore * 100}%` }}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">Execution Metrics</h3>
+          <div className="space-y-3">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Fill Rate</span>
+              <span className="text-green-400 font-medium">
+                {((data.fill_rate_analysis?.current_fill_rate || 0) * 100).toFixed(1)}%
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Avg Slippage</span>
+              <span className="text-yellow-400 font-medium">
+                {((data.slippage_analysis?.average_slippage || 0) * 10000).toFixed(1)} pips
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Avg Latency</span>
+              <span className="text-purple-400 font-medium">
+                {data.latency_metrics?.average_latency || 0}ms
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {(data.execution_alerts || []).length > 0 && (
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">Execution Alerts</h3>
+          <div className="space-y-2 max-h-48 overflow-y-auto">
+            {(data.execution_alerts || []).slice(0, 5).map((alert, index) => (
+              <div key={index} className="bg-yellow-900/20 border border-yellow-500/30 rounded p-3">
+                <div className="flex justify-between items-start">
+                  <span className="text-yellow-300">{alert.message || alert.type}</span>
+                  <span className="text-xs text-gray-400">
+                    {alert.timestamp ? new Date(alert.timestamp).toLocaleTimeString() : 'Recent'}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
+const PortfolioRiskPanel = React.memo(function PortfolioRiskPanel({ data }) {
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+            <PieChartIcon className="w-5 h-5 mr-2 text-cyan-400" />
+            Portfolio Risk
+          </h3>
+          <div className="space-y-3">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Total Exposure</span>
+              <span className="text-cyan-400 font-medium">
+                {((data.exposure_analysis?.total_exposure || 0) * 100).toFixed(1)}%
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">VAR Analysis</span>
+              <span className="text-red-400 font-medium">
+                {((data.var_analysis?.current_var || 0) * 100).toFixed(2)}%
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Correlation Risk</span>
+              <span className="text-yellow-400 font-medium">
+                {(data.correlation_risk?.risk_score || 0).toFixed(2)}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">Diversification</h3>
+          <div className="space-y-3">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Diversification Score</span>
+              <span className="text-green-400 font-medium">
+                {((data.diversification_metrics?.diversification_score || 0) * 100).toFixed(1)}%
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Asset Classes</span>
+              <span className="text-blue-400 font-medium">
+                {data.diversification_metrics?.asset_class_count || 0}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Position Count</span>
+              <span className="text-purple-400 font-medium">
+                {data.position_risk?.active_positions || 0}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {data.correlation_matrix && Object.keys(data.correlation_matrix).length > 0 && (
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">Correlation Matrix</h3>
+          <div className="text-sm text-gray-400 text-center">
+            {Object.keys(data.correlation_matrix).length} pairs analyzed
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
+const DynamicRiskPanel = React.memo(function DynamicRiskPanel({ data }) {
+  const controlMode = data.control_mode || 'NORMAL';
+  const riskScale = data.risk_scale || 1.0;
+
+  const getModeColor = (mode) => {
+    switch (mode) {
+      case 'NORMAL': return 'text-green-400';
+      case 'PROTECTIVE': return 'text-yellow-400';
+      case 'AGGRESSIVE_REDUCTION': return 'text-red-400';
+      case 'EMERGENCY': return 'text-red-500';
+      default: return 'text-gray-400';
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+            <Activity className="w-5 h-5 mr-2 text-purple-400" />
+            Control Mode
+          </h3>
+          <div className="text-center">
+            <div className={`text-2xl font-bold ${getModeColor(controlMode)}`}>
+              {controlMode}
+            </div>
+            <div className="text-sm text-gray-400 mt-2">Current operational mode</div>
+          </div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">Risk Scaling</h3>
+          <div className="text-center">
+            <div className="text-3xl font-bold text-blue-400">
+              {riskScale.toFixed(2)}x
+            </div>
+            <div className="w-full bg-gray-700 rounded-full h-2 mt-4">
+              <div
+                className="bg-blue-400 h-2 rounded-full transition-all duration-300"
+                style={{ width: `${Math.min(riskScale * 50, 100)}%` }}
+              />
+            </div>
+            <div className="text-sm text-gray-400 mt-2">Position size multiplier</div>
+          </div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">System State</h3>
+          <div className="space-y-3">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Risk Level</span>
+              <span className={`font-medium ${getModeColor(data.risk_level)}`}>
+                {data.risk_level || 'NORMAL'}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Freeze Counter</span>
+              <span className="text-red-400 font-medium">
+                {data.freeze_counter || 0}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {(data.risk_adjustments || []).length > 0 && (
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">Recent Risk Adjustments</h3>
+          <div className="space-y-2 max-h-48 overflow-y-auto">
+            {(data.risk_adjustments || []).slice(0, 5).map((adjustment, index) => (
+              <div key={index} className="bg-blue-900/20 border border-blue-500/30 rounded p-3">
+                <div className="flex justify-between items-start">
+                  <span className="text-blue-300">
+                    {adjustment.reason || `Risk scale adjusted to ${adjustment.new_scale}`}
+                  </span>
+                  <span className="text-xs text-gray-400">
+                    {adjustment.timestamp ? new Date(adjustment.timestamp).toLocaleTimeString() : 'Recent'}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
+const RiskAlertsPanel = React.memo(function RiskAlertsPanel({ data }) {
+  const allAlerts = [
+    ...(data.anomaly_alerts || []).map(alert => ({ ...alert, source: 'Anomaly' })),
+    ...(data.compliance_alerts || []).map(alert => ({ ...alert, source: 'Compliance' })),
+    ...(data.drawdown_alerts || []).map(alert => ({ ...alert, source: 'Drawdown' })),
+    ...(data.execution_alerts || []).map(alert => ({ ...alert, source: 'Execution' })),
+    ...(data.portfolio_alerts || []).map(alert => ({ ...alert, source: 'Portfolio' })),
+    ...(data.risk_alerts || []).map(alert => ({ ...alert, source: 'Risk' })),
+    ...(data.system_alerts || []).map(alert => ({ ...alert, source: 'System' }))
+  ].sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
+
+  const criticalCount = allAlerts.filter(alert => alert.severity === 'critical').length;
+  const warningCount = allAlerts.filter(alert => alert.severity === 'warning').length;
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-4">
+          <div className="text-center">
+            <Bell className="w-8 h-8 text-gray-400 mx-auto mb-2" />
+            <div className="text-2xl font-bold text-white">{allAlerts.length}</div>
+            <div className="text-sm text-gray-400">Total Alerts</div>
+          </div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-4">
+          <div className="text-center">
+            <AlertTriangle className="w-8 h-8 text-red-400 mx-auto mb-2" />
+            <div className="text-2xl font-bold text-red-400">{criticalCount}</div>
+            <div className="text-sm text-gray-400">Critical</div>
+          </div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-4">
+          <div className="text-center">
+            <AlertCircle className="w-8 h-8 text-yellow-400 mx-auto mb-2" />
+            <div className="text-2xl font-bold text-yellow-400">{warningCount}</div>
+            <div className="text-sm text-gray-400">Warning</div>
+          </div>
+        </div>
+
+        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-4">
+          <div className="text-center">
+            <CheckCircle className="w-8 h-8 text-blue-400 mx-auto mb-2" />
+            <div className="text-2xl font-bold text-blue-400">{allAlerts.length - criticalCount - warningCount}</div>
+            <div className="text-sm text-gray-400">Info</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
+        <h3 className="text-lg font-semibold text-white mb-4">Recent Risk Alerts</h3>
+        <div className="space-y-2 max-h-96 overflow-y-auto">
+          {allAlerts.slice(0, 20).map((alert, index) => (
+            <div
+              key={index}
+              className={`border rounded p-4 ${
+                alert.severity === 'critical' ? 'bg-red-900/20 border-red-500/30' :
+                alert.severity === 'warning' ? 'bg-yellow-900/20 border-yellow-500/30' :
+                'bg-blue-900/20 border-blue-500/30'
+              }`}
+            >
+              <div className="flex justify-between items-start mb-2">
+                <div className="flex items-center space-x-2">
+                  <span className={`px-2 py-1 text-xs rounded ${
+                    alert.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
+                    alert.severity === 'warning' ? 'bg-yellow-500/20 text-yellow-400' :
+                    'bg-blue-500/20 text-blue-400'
+                  }`}>
+                    {alert.source}
+                  </span>
+                  <span className={`px-2 py-1 text-xs rounded ${
+                    alert.severity === 'critical' ? 'bg-red-500/30 text-red-300' :
+                    alert.severity === 'warning' ? 'bg-yellow-500/30 text-yellow-300' :
+                    'bg-blue-500/30 text-blue-300'
+                  }`}>
+                    {(alert.severity || 'info').toUpperCase()}
+                  </span>
+                </div>
+                <span className="text-xs text-gray-400">
+                  {alert.timestamp ? new Date(alert.timestamp).toLocaleString() : 'Recent'}
+                </span>
+              </div>
+              <div className={`${
+                alert.severity === 'critical' ? 'text-red-300' :
+                alert.severity === 'warning' ? 'text-yellow-300' :
+                'text-blue-300'
+              }`}>
+                {alert.message || alert.type || 'Risk alert triggered'}
+              </div>
+            </div>
+          ))}
+
+          {allAlerts.length === 0 && (
+            <div className="text-center text-gray-400 py-8">
+              <CheckCircle className="w-12 h-12 mx-auto mb-4 text-green-400" />
+              <div className="text-lg font-medium">No Active Risk Alerts</div>
+              <div className="text-sm">All risk systems are operating normally</div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// VOTING SYSTEM COMPONENTS v1.0
+// ═══════════════════════════════════════════════════════════════════
+
+const VotingTab = React.memo(function VotingTab() {
+  const [votingData, setVotingData] = useState({});
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [activeComponent, setActiveComponent] = useState('overview');
+
+  const fetchVotingData = useCallback(async () => {
+    if (isLoading) setIsLoading(true);
+    try {
+      const endpoints = [
+        '/api/voting/overview',
+        '/api/voting/committee',
+        '/api/voting/consensus',
+        '/api/voting/collusion',
+        '/api/voting/alignment',
+        '/api/voting/sampling',
+        '/api/voting/strategy',
+        '/api/voting/timeline'
+      ];
+
+      const responses = await Promise.all(
+        endpoints.map(endpoint => fetch(endpoint).then(res => res.json()))
+      );
+
+      const data = {
+        overview: responses[0].success ? responses[0] : {},
+        committee: responses[1].success ? responses[1] : {},
+        consensus: responses[2].success ? responses[2] : {},
+        collusion: responses[3].success ? responses[3] : {},
+        alignment: responses[4].success ? responses[4] : {},
+        sampling: responses[5].success ? responses[5] : {},
+        strategy: responses[6].success ? responses[6] : {},
+        timeline: responses[7].success ? responses[7] : {}
+      };
+
+      setVotingData(data);
+      setError(null);
+    } catch (err) {
+      setError(`Failed to fetch voting data: ${err.message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [isLoading]);
+
+  useEffect(() => {
+    fetchVotingData();
+    const interval = setInterval(fetchVotingData, 10000);
+    return () => clearInterval(interval);
+  }, [fetchVotingData]);
+
+  const componentTabs = [
+    { id: 'overview', name: 'Overview', icon: '📊' },
+    { id: 'committee', name: 'Committee', icon: '👥' },
+    { id: 'consensus', name: 'Consensus', icon: '🤝' },
+    { id: 'collusion', name: 'Collusion', icon: '🕵️' },
+    { id: 'alignment', name: 'Alignment', icon: '🕐' },
+    { id: 'sampling', name: 'Sampling', icon: '🎯' },
+    { id: 'strategy', name: 'Strategy', icon: '🏛️' },
+    { id: 'timeline', name: 'Timeline', icon: '⏱️' }
+  ];
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-red-400 text-center">
+          <div className="text-xl mb-2">⚠️</div>
+          <div>{error}</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-semibold text-white flex items-center gap-2">
+          <span className="w-6 h-6 text-blue-400">🗳️</span>
+          Voting System
+        </h2>
+        <button
+          onClick={() => fetchVotingData()}
+          disabled={isLoading}
+          className="px-3 py-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white text-sm rounded transition-colors flex items-center gap-2"
+        >
+          <span className={isLoading ? 'animate-spin' : ''}>🔄</span>
+          Refresh
+        </button>
+      </div>
+
+      <div className="bg-gray-800/50 rounded-lg border border-gray-700">
+        <div className="flex flex-wrap gap-1 p-4 border-b border-gray-700 bg-gray-800/30">
+          {componentTabs.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveComponent(tab.id)}
+              className={`px-3 py-2 text-sm font-medium rounded transition-colors flex items-center gap-2 ${
+                activeComponent === tab.id
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-gray-700/50 text-gray-300 hover:bg-gray-600/50'
+              }`}
+            >
+              <span className="text-xs">{tab.icon}</span>
+              {tab.name}
+            </button>
+          ))}
+        </div>
+
+        <div className="p-6">
+          {activeComponent === 'overview' && (
+            <VotingOverviewComponent data={votingData.overview} isLoading={isLoading} />
+          )}
+          {activeComponent === 'committee' && (
+            <VotingCommitteeComponent data={votingData.committee} isLoading={isLoading} />
+          )}
+          {activeComponent === 'consensus' && (
+            <VotingConsensusComponent data={votingData.consensus} isLoading={isLoading} />
+          )}
+          {activeComponent === 'collusion' && (
+            <VotingCollusionComponent data={votingData.collusion} isLoading={isLoading} />
+          )}
+          {activeComponent === 'alignment' && (
+            <VotingAlignmentComponent data={votingData.alignment} isLoading={isLoading} />
+          )}
+          {activeComponent === 'sampling' && (
+            <VotingSamplingComponent data={votingData.sampling} isLoading={isLoading} />
+          )}
+          {activeComponent === 'strategy' && (
+            <VotingStrategyComponent data={votingData.strategy} isLoading={isLoading} />
+          )}
+          {activeComponent === 'timeline' && (
+            <VotingTimelineComponent data={votingData.timeline} isLoading={isLoading} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+});
+
+// Voting Overview Component
+const VotingOverviewComponent = React.memo(function VotingOverviewComponent({ data, isLoading }) {
+  if (isLoading) {
+    return <div className="flex items-center justify-center h-32 text-blue-400">Loading voting overview...</div>;
+  }
+
+  const getHealthColor = (status) => {
+    switch (status) {
+      case 'healthy': return 'text-green-400';
+      case 'warning': return 'text-yellow-400';
+      case 'critical': return 'text-red-400';
+      default: return 'text-gray-400';
+    }
+  };
+
+  const getHealthIcon = (status) => {
+    switch (status) {
+      case 'healthy': return '✅';
+      case 'warning': return '⚠️';
+      case 'critical': return '🚨';
+      default: return '❓';
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Total Decisions</div>
+          <div className="text-2xl font-bold text-blue-400">{data.total_decisions || 0}</div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Success Rate</div>
+          <div className="text-2xl font-bold text-green-400">{((data.success_rate || 0) * 100).toFixed(1)}%</div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Active Components</div>
+          <div className="text-2xl font-bold text-purple-400">{data.components_active || 0}/6</div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Health Status</div>
+          <div className={`text-xl font-bold flex items-center gap-2 ${getHealthColor(data.health_status)}`}>
+            <span>{getHealthIcon(data.health_status)}</span>
+            {(data.health_status || 'unknown').charAt(0).toUpperCase() + (data.health_status || 'unknown').slice(1)}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span className="text-blue-400">🎯</span>
+            Current Consensus
+          </h3>
+          <div className="space-y-3">
+            <div className="flex justify-between items-center">
+              <span className="text-gray-300">Consensus Score</span>
+              <span className="text-blue-400 font-bold">{(data.current_consensus || 0).toFixed(3)}</span>
+            </div>
+            <div className="w-full bg-gray-600 rounded-full h-2">
+              <div
+                className="bg-gradient-to-r from-blue-500 to-blue-400 h-2 rounded-full transition-all duration-500"
+                style={{ width: `${(data.current_consensus || 0) * 100}%` }}
+              />
+            </div>
+            <div className="text-xs text-gray-400">
+              Higher scores indicate stronger committee agreement
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span className="text-green-400">⚡</span>
+            Performance
+          </h3>
+          <div className="space-y-3">
+            <div className="flex justify-between items-center">
+              <span className="text-gray-300">Avg Processing Time</span>
+              <span className="text-green-400 font-bold">{(data.processing_time_ms || 0).toFixed(1)}ms</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-300">Decision ID</span>
+              <span className="text-gray-400 font-mono text-sm truncate max-w-32">
+                {data.decision_id || 'none'}
+              </span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-300">Last Update</span>
+              <span className="text-gray-400 text-sm">
+                {data.last_update ? new Date(data.last_update).toLocaleTimeString() : 'N/A'}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+// Voting Committee Component
+const VotingCommitteeComponent = React.memo(function VotingCommitteeComponent({ data, isLoading }) {
+  if (isLoading) {
+    return <div className="flex items-center justify-center h-32 text-blue-400">Loading committee data...</div>;
+  }
+
+  const committee = data.committee || {};
+  const summary = committee.summary || {};
+  const analytics = committee.analytics || [];
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Total Members</div>
+          <div className="text-2xl font-bold text-blue-400">{summary.total_members || 0}</div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Active Members</div>
+          <div className="text-2xl font-bold text-green-400">{summary.active_members || 0}</div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Avg Confidence</div>
+          <div className="text-2xl font-bold text-purple-400">{((summary.avg_confidence || 0) * 100).toFixed(1)}%</div>
+        </div>
+      </div>
+
+      <div className="bg-gray-700/30 rounded-lg p-4">
+        <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+          <span className="text-blue-400">👥</span>
+          Member Analytics
+        </h3>
+        {analytics.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {analytics.map(member => (
+              <div key={member.member_id} className="bg-gray-600/30 rounded p-3">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="font-semibold text-white">{member.name}</span>
+                  <span className="text-xs bg-blue-600 text-white px-2 py-1 rounded">
+                    {member.specialization}
+                  </span>
+                </div>
+                <div className="space-y-1 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-gray-300">Performance</span>
+                    <span className="text-green-400">{(member.performance_score * 100).toFixed(1)}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-300">Reliability</span>
+                    <span className="text-blue-400">{(member.reliability * 100).toFixed(1)}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-300">Votes Cast</span>
+                    <span className="text-gray-400">{member.votes_cast}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-center text-gray-400 py-8">
+            <div className="text-4xl mb-2">👥</div>
+            <div className="text-lg">No Committee Members</div>
+            <div className="text-sm">Committee data not available</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
+
+// Voting Consensus Component
+const VotingConsensusComponent = React.memo(function VotingConsensusComponent({ data, isLoading }) {
+  if (isLoading) {
+    return <div className="flex items-center justify-center h-32 text-blue-400">Loading consensus data...</div>;
+  }
+
+  const consensus = data.consensus || {};
+  const breakdown = consensus.breakdown || {};
+  const analytics = consensus.analytics || {};
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Overall Score</div>
+          <div className="text-2xl font-bold text-blue-400">{(consensus.score || 0).toFixed(3)}</div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Agreement Level</div>
+          <div className="text-lg font-bold text-green-400 capitalize">{analytics.agreement_level || 'unknown'}</div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Trend</div>
+          <div className="text-lg font-bold text-purple-400 capitalize">{analytics.trend || 'stable'}</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span className="text-blue-400">📊</span>
+            Component Breakdown
+          </h3>
+          <div className="space-y-3">
+            {Object.entries(breakdown).map(([component, value]) => (
+              <div key={component}>
+                <div className="flex justify-between items-center mb-1">
+                  <span className="text-gray-300 capitalize">{component}</span>
+                  <span className="text-blue-400 font-bold">{(value || 0).toFixed(3)}</span>
+                </div>
+                <div className="w-full bg-gray-600 rounded-full h-2">
+                  <div
+                    className="bg-gradient-to-r from-blue-500 to-blue-400 h-2 rounded-full"
+                    style={{ width: `${(value || 0) * 100}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span className="text-green-400">🔍</span>
+            Analytics
+          </h3>
+          <div className="space-y-3">
+            <div className="flex justify-between items-center">
+              <span className="text-gray-300">Quality Score</span>
+              <span className="text-green-400 font-bold">{(analytics.quality || 0).toFixed(3)}</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-300">Stability</span>
+              <span className="text-blue-400 font-bold">{(analytics.stability || 0).toFixed(3)}</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-300">Reliability</span>
+              <span className="text-purple-400 font-bold">{(analytics.reliability || 0).toFixed(3)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+// Voting Collusion Component
+const VotingCollusionComponent = React.memo(function VotingCollusionComponent({ data, isLoading }) {
+  if (isLoading) {
+    return <div className="flex items-center justify-center h-32 text-blue-400">Loading collusion data...</div>;
+  }
+
+  const collusion = data.collusion || {};
+  const analysis = collusion.analysis || {};
+  const integrity = collusion.member_integrity || [];
+  const alerts = collusion.alerts || [];
+
+  const getRiskColor = (level) => {
+    switch (level) {
+      case 'low': return 'text-green-400';
+      case 'medium': return 'text-yellow-400';
+      case 'high': return 'text-red-400';
+      default: return 'text-gray-400';
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Threat Score</div>
+          <div className="text-2xl font-bold text-red-400">{(analysis.threat_score || 0).toFixed(3)}</div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Risk Level</div>
+          <div className={`text-lg font-bold capitalize ${getRiskColor(analysis.risk_level)}`}>
+            {analysis.risk_level || 'unknown'}
+          </div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Suspicious Pairs</div>
+          <div className="text-2xl font-bold text-orange-400">{analysis.suspicious_pairs_count || 0}</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span className="text-blue-400">🔐</span>
+            Member Integrity
+          </h3>
+          {integrity.length > 0 ? (
+            <div className="space-y-3">
+              {integrity.map(member => (
+                <div key={member.member_id} className="bg-gray-600/30 rounded p-3">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="font-semibold text-white">Expert {member.member_id + 1}</span>
+                    <span className={`text-sm font-bold ${member.coordination_detected ? 'text-red-400' : 'text-green-400'}`}>
+                      {member.coordination_detected ? '⚠️ FLAG' : '✅ CLEAR'}
+                    </span>
+                  </div>
+                  <div className="space-y-1 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-300">Integrity Score</span>
+                      <span className="text-green-400">{(member.integrity_score * 100).toFixed(1)}%</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-300">Independence</span>
+                      <span className="text-blue-400">{(member.independence_level * 100).toFixed(1)}%</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center text-gray-400 py-4">No integrity data available</div>
+          )}
+        </div>
+
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span className="text-red-400">🚨</span>
+            Security Alerts
+          </h3>
+          {alerts.length > 0 ? (
+            <div className="space-y-3">
+              {alerts.map((alert, index) => (
+                <div key={index} className="bg-red-900/20 border border-red-700/50 rounded p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-red-400 font-semibold uppercase text-xs">
+                      {alert.severity}
+                    </span>
+                    <span className="text-gray-400 text-xs">
+                      {new Date(alert.timestamp).toLocaleTimeString()}
+                    </span>
+                  </div>
+                  <div className="text-sm text-gray-300">{alert.message}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center text-gray-400 py-8">
+              <div className="text-4xl mb-2">🔐</div>
+              <div className="text-lg">No Security Alerts</div>
+              <div className="text-sm">All voting patterns appear normal</div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+});
+
+// Voting Alignment Component
+const VotingAlignmentComponent = React.memo(function VotingAlignmentComponent({ data, isLoading }) {
+  if (isLoading) {
+    return <div className="flex items-center justify-center h-32 text-blue-400">Loading alignment data...</div>;
+  }
+
+  const alignment = data.alignment || {};
+  const analysis = alignment.analysis || {};
+  const metrics = alignment.metrics || {};
+  const breakdown = alignment.horizon_breakdown || [];
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Quality Score</div>
+          <div className="text-2xl font-bold text-blue-400">{(analysis.alignment_quality || 0).toFixed(3)}</div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Temporal Coherence</div>
+          <div className="text-2xl font-bold text-green-400">{(analysis.temporal_coherence || 0).toFixed(3)}</div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Alignment Strength</div>
+          <div className="text-2xl font-bold text-purple-400">{(metrics.alignment_strength || 0).toFixed(3)}</div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Weight Variance</div>
+          <div className="text-2xl font-bold text-orange-400">{(metrics.weight_variance || 0).toFixed(3)}</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span className="text-blue-400">⏰</span>
+            Horizon Distribution
+          </h3>
+          <div className="space-y-3">
+            {Object.entries(analysis.horizon_distribution || {}).map(([horizon, weight]) => (
+              <div key={horizon}>
+                <div className="flex justify-between items-center mb-1">
+                  <span className="text-gray-300 capitalize">{horizon.replace('_', ' ')}</span>
+                  <span className="text-blue-400 font-bold">{(weight * 100).toFixed(1)}%</span>
+                </div>
+                <div className="w-full bg-gray-600 rounded-full h-2">
+                  <div
+                    className="bg-gradient-to-r from-blue-500 to-blue-400 h-2 rounded-full"
+                    style={{ width: `${weight * 100}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span className="text-green-400">📈</span>
+            Horizon Breakdown
+          </h3>
+          {breakdown.length > 0 ? (
+            <div className="space-y-3 max-h-64 overflow-y-auto">
+              {breakdown.map(horizon => (
+                <div key={horizon.horizon_minutes} className="bg-gray-600/30 rounded p-3">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="font-semibold text-white">{horizon.horizon_minutes}min</span>
+                    <span className="text-blue-400 font-bold">{(horizon.weight || 0).toFixed(3)}</span>
+                  </div>
+                  <div className="space-y-1 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-300">Contribution</span>
+                      <span className="text-green-400">{((horizon.contribution || 0) * 100).toFixed(1)}%</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-300">Stability</span>
+                      <span className="text-purple-400">{((horizon.stability || 0) * 100).toFixed(1)}%</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center text-gray-400 py-4">No horizon data available</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+});
+
+// Voting Sampling Component
+const VotingSamplingComponent = React.memo(function VotingSamplingComponent({ data, isLoading }) {
+  if (isLoading) {
+    return <div className="flex items-center justify-center h-32 text-blue-400">Loading sampling data...</div>;
+  }
+
+  const sampling = data.sampling || {};
+  const analysis = sampling.analysis || {};
+  const metrics = sampling.metrics || {};
+  const riskAssessment = sampling.risk_assessment || {};
+
+  const getRiskColor = (level) => {
+    switch (level) {
+      case 'low': return 'text-green-400';
+      case 'medium': return 'text-yellow-400';
+      case 'high': return 'text-red-400';
+      default: return 'text-gray-400';
+    }
+  };
+
+  const getRecommendationColor = (rec) => {
+    switch (rec) {
+      case 'proceed': return 'text-green-400';
+      case 'monitor': return 'text-yellow-400';
+      case 'caution': return 'text-red-400';
+      default: return 'text-gray-400';
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Uncertainty Level</div>
+          <div className="text-2xl font-bold text-red-400">{((analysis.uncertainty_level || 0) * 100).toFixed(1)}%</div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Robustness</div>
+          <div className="text-2xl font-bold text-green-400">{((analysis.robustness || 0) * 100).toFixed(1)}%</div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Sample Quality</div>
+          <div className="text-2xl font-bold text-blue-400">{((metrics.sample_quality || 0) * 100).toFixed(1)}%</div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Effective Samples</div>
+          <div className="text-2xl font-bold text-purple-400">{metrics.effective_samples || 0}</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span className="text-blue-400">📊</span>
+            Sampling Metrics
+          </h3>
+          <div className="space-y-3">
+            <div className="flex justify-between items-center">
+              <span className="text-gray-300">Total Samples</span>
+              <span className="text-blue-400 font-bold">{metrics.total_samples || 0}</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-300">Convergence Rate</span>
+              <span className="text-green-400 font-bold">{((metrics.convergence_rate || 0) * 100).toFixed(1)}%</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-300">Exploration Breadth</span>
+              <span className="text-purple-400 font-bold">{((metrics.exploration_breadth || 0) * 100).toFixed(1)}%</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-300">Sample Diversity</span>
+              <span className="text-orange-400 font-bold">{((analysis.sample_diversity || 0) * 100).toFixed(1)}%</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span className="text-red-400">⚠️</span>
+            Risk Assessment
+          </h3>
+          <div className="space-y-4">
+            <div className="bg-gray-600/30 rounded p-3">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-gray-300">Risk Level</span>
+                <span className={`font-bold capitalize ${getRiskColor(riskAssessment.risk_level)}`}>
+                  {riskAssessment.risk_level || 'unknown'}
+                </span>
+              </div>
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-gray-300">Recommendation</span>
+                <span className={`font-bold capitalize ${getRecommendationColor(riskAssessment.recommendation)}`}>
+                  {riskAssessment.recommendation || 'unknown'}
+                </span>
+              </div>
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-gray-300">Confidence Score</span>
+                <span className="text-blue-400 font-bold">
+                  {((riskAssessment.confidence_score || 0) * 100).toFixed(1)}%
+                </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-300">Decision Quality</span>
+                <span className="text-green-400 font-bold capitalize">
+                  {riskAssessment.decision_quality || 'unknown'}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+// Voting Strategy Component
+const VotingStrategyComponent = React.memo(function VotingStrategyComponent({ data, isLoading }) {
+  if (isLoading) {
+    return <div className="flex items-center justify-center h-32 text-blue-400">Loading strategy data...</div>;
+  }
+
+  const strategy = data.strategy || {};
+  const analysis = strategy.analysis || {};
+  const breakdown = strategy.breakdown || {};
+  const metrics = strategy.metrics || {};
+  const performance = strategy.performance || {};
+
+  const getGatingColor = (status) => {
+    switch (status) {
+      case 'passed': return 'text-green-400';
+      case 'blocked': return 'text-red-400';
+      default: return 'text-gray-400';
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Final Decision</div>
+          <div className="text-lg font-bold text-blue-400 capitalize">{analysis.final_decision || 'none'}</div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Confidence</div>
+          <div className="text-2xl font-bold text-green-400">{((analysis.confidence || 0) * 100).toFixed(1)}%</div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Signal Strength</div>
+          <div className="text-2xl font-bold text-purple-400">{((analysis.signal_strength || 0) * 100).toFixed(1)}%</div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Gating Status</div>
+          <div className={`text-lg font-bold capitalize ${getGatingColor(analysis.gating_status)}`}>
+            {analysis.gating_status || 'unknown'}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span className="text-blue-400">📡</span>
+            Signal Analysis
+          </h3>
+          <div className="space-y-3">
+            <div className="flex justify-between items-center">
+              <span className="text-gray-300">Primary Signal</span>
+              <span className="text-blue-400 font-bold capitalize">{breakdown.primary_signal || 'neutral'}</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-300">Signal Coherence</span>
+              <span className="text-green-400 font-bold">{((breakdown.signal_coherence || 0) * 100).toFixed(1)}%</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-300">Cross Validation</span>
+              <span className="text-purple-400 font-bold">{((breakdown.cross_validation || 0) * 100).toFixed(1)}%</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-300">Execution Readiness</span>
+              <span className="text-orange-400 font-bold">{((breakdown.execution_readiness || 0) * 100).toFixed(1)}%</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span className="text-green-400">📈</span>
+            Performance Metrics
+          </h3>
+          <div className="space-y-3">
+            <div className="flex justify-between items-center">
+              <span className="text-gray-300">Success Rate</span>
+              <span className="text-green-400 font-bold">{((metrics.arbitration_success_rate || 0) * 100).toFixed(1)}%</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-300">Signal Accuracy</span>
+              <span className="text-blue-400 font-bold">{((metrics.signal_accuracy || 0) * 100).toFixed(1)}%</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-300">Gating Efficiency</span>
+              <span className="text-purple-400 font-bold">{((metrics.gating_efficiency || 0) * 100).toFixed(1)}%</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-300">Avg Latency</span>
+              <span className="text-orange-400 font-bold">{metrics.decision_latency_ms || 0}ms</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-gray-700/30 rounded-lg p-4">
+        <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+          <span className="text-purple-400">📊</span>
+          Arbitration History
+        </h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
+          <div>
+            <div className="text-2xl font-bold text-blue-400">{performance.total_arbitrations || 0}</div>
+            <div className="text-sm text-gray-400">Total</div>
+          </div>
+          <div>
+            <div className="text-2xl font-bold text-green-400">{performance.successful_arbitrations || 0}</div>
+            <div className="text-sm text-gray-400">Successful</div>
+          </div>
+          <div>
+            <div className="text-2xl font-bold text-red-400">{performance.blocked_decisions || 0}</div>
+            <div className="text-sm text-gray-400">Blocked</div>
+          </div>
+          <div>
+            <div className="text-2xl font-bold text-purple-400">{((performance.avg_confidence || 0) * 100).toFixed(0)}%</div>
+            <div className="text-sm text-gray-400">Avg Confidence</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+// Voting Timeline Component
+const VotingTimelineComponent = React.memo(function VotingTimelineComponent({ data, isLoading }) {
+  if (isLoading) {
+    return <div className="flex items-center justify-center h-32 text-blue-400">Loading timeline data...</div>;
+  }
+
+  const timeline = data.timeline || {};
+  const analysis = timeline.analysis || {};
+  const breakdown = timeline.breakdown || [];
+  const stages = timeline.stages || [];
+
+  const getStatusColor = (status) => {
+    switch (status) {
+      case 'success': return 'text-green-400';
+      case 'error': return 'text-red-400';
+      case 'no_data': return 'text-yellow-400';
+      default: return 'text-gray-400';
+    }
+  };
+
+  const getStatusIcon = (status) => {
+    switch (status) {
+      case 'success': return '✅';
+      case 'error': return '❌';
+      case 'no_data': return '⚠️';
+      default: return '❓';
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Total Stages</div>
+          <div className="text-2xl font-bold text-blue-400">{analysis.total_stages || 0}</div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Successful</div>
+          <div className="text-2xl font-bold text-green-400">{analysis.successful_stages || 0}</div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Failed</div>
+          <div className="text-2xl font-bold text-red-400">{analysis.failed_stages || 0}</div>
+        </div>
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <div className="text-sm text-gray-400 mb-1">Avg Time</div>
+          <div className="text-2xl font-bold text-purple-400">{(analysis.avg_stage_time || 0).toFixed(1)}ms</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span className="text-blue-400">⏱️</span>
+            Current Pipeline
+          </h3>
+          <div className="space-y-3">
+            <div className="text-sm text-gray-400 mb-3">
+              Decision ID: <span className="font-mono text-white">{timeline.decision_id || 'none'}</span>
+            </div>
+            {stages.length > 0 ? (
+              stages.map((stage, index) => (
+                <div key={index} className="flex items-center justify-between bg-gray-600/30 rounded p-2">
+                  <div className="flex items-center gap-3">
+                    <span className="text-lg">{getStatusIcon(stage.status)}</span>
+                    <span className="text-white font-medium capitalize">{stage.stage}</span>
+                  </div>
+                  <div className="text-right">
+                    <div className={`text-sm font-bold ${getStatusColor(stage.status)}`}>
+                      {stage.status}
+                    </div>
+                    <div className="text-xs text-gray-400">
+                      {(stage.duration_ms || 0).toFixed(1)}ms
+                    </div>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="text-center text-gray-400 py-4">No pipeline data available</div>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-gray-700/30 rounded-lg p-4">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span className="text-green-400">📊</span>
+            Stage Performance
+          </h3>
+          {breakdown.length > 0 ? (
+            <div className="space-y-3">
+              {breakdown.map(stage => (
+                <div key={stage.stage} className="bg-gray-600/30 rounded p-3">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="font-semibold text-white capitalize">{stage.stage}</span>
+                    <span className={`text-sm font-bold ${getStatusColor(stage.status)}`}>
+                      {getStatusIcon(stage.status)}
+                    </span>
+                  </div>
+                  <div className="space-y-1 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-300">Duration</span>
+                      <span className="text-blue-400">{(stage.duration_ms || 0).toFixed(1)}ms</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-300">Success Rate</span>
+                      <span className="text-green-400">{((stage.success_rate || 0) * 100).toFixed(1)}%</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center text-gray-400 py-4">No performance data available</div>
+          )}
+        </div>
+      </div>
+
+      {analysis.bottleneck_stage && analysis.bottleneck_stage !== 'none' && (
+        <div className="bg-yellow-900/20 border border-yellow-700/50 rounded-lg p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-yellow-400 text-lg">⚠️</span>
+            <span className="text-yellow-400 font-semibold">Performance Alert</span>
+          </div>
+          <div className="text-gray-300">
+            Bottleneck detected in <span className="font-bold text-yellow-400 capitalize">{analysis.bottleneck_stage}</span> stage
+          </div>
+        </div>
+      )}
     </div>
   );
 });
@@ -3282,6 +5927,9 @@ const EnhancedTradingDashboard = () => {
               <TabButton icon={Brain} label="Training" active={activeTab === 'training'} onClick={() => setActiveTab('training')} disabled={systemStatus === 'TRADING'} />
               <TabButton icon={TrendingUp} label="Trading" active={activeTab === 'trading'} onClick={() => setActiveTab('trading')} disabled={systemStatus === 'TRAINING'} />
               <TabButton icon={BarChart2} label="Analytics" active={activeTab === 'analytics'} onClick={() => setActiveTab('analytics')} />
+              <TabButton icon={HardDrive} label="Memory" active={activeTab === 'memory'} onClick={() => setActiveTab('memory')} />
+              <TabButton icon={Shield} label="Risk" active={activeTab === 'risk'} onClick={() => setActiveTab('risk')} />
+              <TabButton icon={Vote} label="Voting" active={activeTab === 'voting'} onClick={() => setActiveTab('voting')} />
               <TabButton icon={Database} label="Logs" active={activeTab === 'logs'} onClick={() => setActiveTab('logs')} />
             </div>
 
@@ -3393,6 +6041,11 @@ const EnhancedTradingDashboard = () => {
 
             {activeTab === 'analytics' && <AnalyticsTab />}
 
+            {activeTab === 'memory' && <MemoryTab />}
+
+            {activeTab === 'risk' && <RiskTab />}
+            {activeTab === 'voting' && <VotingTab />}
+
             {activeTab === 'logs' && <LogsTab logs={logs} fetchLogs={fetchLogs} />}
           </div>
         </main>
@@ -3425,9 +6078,6 @@ const EnhancedTradingDashboard = () => {
   );
 };
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Root App
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const App = () => (
   <ErrorBoundary>

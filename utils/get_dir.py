@@ -24,7 +24,6 @@ _LAYER_W = dict(
     lhl=2.0,                        # Short form
     fractalregimeconfirmation=1.5,  # FractalRegimeConfirmation  
     frc=1.5,                        # Short form
-    marketthemedetector=1.0,        # MarketThemeDetector
     mtd=1.0,                        # Short form
     markerregimeswitcher=1.0,       # MarketRegimeSwitcher
     switcher=1.0,                   # Short form
