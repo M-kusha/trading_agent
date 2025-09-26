@@ -495,7 +495,7 @@ Strategy Arbiter v3.1 Initialization:
                 self.instruments = cands
                 return
 
-        self.instruments = ["XAU/USD", "EUR/USD"]
+        self.instruments = ["XAU_USD", "EUR_USD"]
 
     def _map_action_to_instrument_signals(self, action: np.ndarray) -> Dict[str, Dict[str, float]]:
         """Map a vector to {instrument: {'intensity','confidence'}}."""

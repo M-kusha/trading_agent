@@ -163,7 +163,7 @@ class PPOTrainingConfig(BaseModel):
     eval_freq: int = Field(default=5000, ge=1000, le=50000)
     num_envs: int = Field(default=1, ge=1, le=8)
     data_dir: str = Field(default="data/processed", description="Directory with CSV files for offline mode")
-    initial_balance: float = Field(default=10000.0, gt=0)
+    initial_balance: float = Field(default=3000.0, gt=0)
     pretrained_model: Optional[str] = Field(default=None, description="Path to pretrained model")
     auto_pretrained: bool = Field(default=False, description="Auto-load latest model if available")
     debug: bool = False
@@ -1878,7 +1878,7 @@ async def get_system_configuration():
                 "eval_freq": 5000,
                 "num_envs": 1,
                 "data_dir": "data/processed",
-                "initial_balance": 10000,
+                "initial_balance": 3000.0,
                 "pretrained_model": None,
                 "auto_pretrained": False,
                 "debug": False

@@ -619,10 +619,20 @@ class SmartInfoBus:
             self._policies: Dict[str, Dict[str, Any]] = defaultdict(dict)
             self._streams: Dict[str, Deque[Dict[str, Any]]] = defaultdict(lambda: deque(maxlen=10000))
 
+            # Default stream-like feeds (multi-writer, append-only)
+            # Note: keep 'vote' as a stream; 'expert_votes' is a canonical snapshot
+            # owned by the coordinator and must remain a state key to avoid BUS MISS
+            # in consumers that call get('expert_votes').
+
             def _single_writer_guard(key: str, value: Any, meta: Dict[str, Any]) -> Any:
                 try:
                     base_key = key.split(":", 1)[1] if ":" in key else key
                     if base_key not in self._critical_single_writer_keys:
+                        return None
+
+                    # If the key is configured as a stream, do not enforce single-writer
+                    pol = self._policies.get(key) or self._policies.get(base_key)
+                    if pol and pol.get("mode") == "stream":
                         return None
 
                     writer = str(meta.get("module", "unknown"))
@@ -678,33 +688,7 @@ class SmartInfoBus:
                                                     details=f"Features: {', '.join(self._get_enabled_features())}",
                                                     context="startup"))
 
-            # Seed defaults
-            try:
-                def conditional_seed(key: str, value: Any, thesis: str, confidence: float = 1.0, namespace: Optional[str] = None):
-                    existing_providers = self.get_providers(key) if namespace is None else self.get_providers(f"{namespace}:{key}")
-                    if not existing_providers:
-                        self.set(key, value, module='SmartInfoBus', thesis=thesis, confidence=confidence, namespace=namespace)
-
-                # Canonical, low-risk placeholders to avoid early "BUS MISS" during startup
-                conditional_seed('market_regime', 'unknown', thesis='Default market regime', confidence=0.5)
-                conditional_seed('environment_config', {}, thesis='Default environment config (placeholder)')
-                conditional_seed('execution_mode', 'sim', thesis='Default execution mode (placeholder)')
-                conditional_seed('order_queue', [], thesis='Default empty order queue')
-                conditional_seed('performance_data', {}, thesis='Default performance_data (placeholder)')
-                # risk_metrics has a designated owner (PortfolioRiskSystem) but we can seed an empty schema safely
-                conditional_seed('risk_metrics', {}, thesis='Default risk_metrics (placeholder)', confidence=0.2)
-                # Unified market outputs often arrive later; seed innocuous placeholders
-                conditional_seed('timestamps', [], thesis='Default timestamps (placeholder)')
-                conditional_seed('regime_prediction', {}, thesis='Default regime_prediction (placeholder)')
-                conditional_seed('time_risk_analysis', {}, thesis='Default time_risk_analysis (placeholder)')
-                # Common readers
-                conditional_seed('module_insights', {}, thesis='Default module_insights (placeholder)')
-                conditional_seed('multi_timeframe_data', {}, thesis='Default multi_timeframe_data (placeholder)')
-                conditional_seed('emergency_mode', False, thesis='Default emergency_mode (placeholder)')
-
-                self.logger.info("[OK] SmartInfoBus conditional seeding completed")
-            except Exception as e:
-                self.logger.warning(f"SmartInfoBus conditional seeding failed: {e}")
+            # No implicit seeding; providers are responsible for publishing their own keys.
 
     # ──────────────────────────────────────────────────────────────
     # Helper: namespaces, pause, read-only, throttling
@@ -1103,6 +1087,14 @@ class SmartInfoBus:
             "dependencies": dependencies, "processing_time_ms": processing_time_ms,
             "namespace": namespace
         }
+        # Prevent Environment from writing canonical provider-owned keys to avoid owner violations
+        try:
+            base_key = full_key.split(":", 1)[-1]
+            if module == "Environment" and base_key in {"market_data", "market_context", "step_idx", "environment_config"}:
+                return
+        except Exception:
+            pass
+
         value = self._apply_pre_set(full_key, value, meta)
 
         # Ownership guard: block non-owner writes to canonical keys (soft-fail)
@@ -1943,51 +1935,7 @@ class SmartInfoBus:
             self.logger.error(f"[CRASH] Failed to log event: {e}")
 
     # Bootstrap canonical owners (call once during orchestrator start or first get_instance)
-    def bootstrap_canonical_owners(self) -> None:
-        try:
-            self.declare_owner("order_queue", "PositionManager")
-            self.declare_owner("pnl_data", "Executor")
-            self.declare_owner("trade_data", "Executor")
-            self.declare_owner("risk_metrics", "PortfolioRiskSystem")
-            self.declare_owner("system_health", "HealthMonitor")
-            self.declare_owner("market_context", "MarketDataProvider")
-            # Market data canonical owners to avoid Environment/provider churn
-            try:
-                self.declare_owner("market_data", "MarketDataProvider")
-                self.declare_owner("multi_timeframe_data", "MarketDataProvider")
-                self.declare_owner("module_insights", "MarketDataProvider")
-                self.declare_owner("step_idx", "MarketDataProvider")
-            except Exception:
-                pass
-            self.declare_owner("committee_decision", "EnhancedVotingCommitteeCoordinator")
-            self.declare_owner("committee_confidence", "EnhancedVotingCommitteeCoordinator")
-            self.declare_owner("voting_consensus", "ConsensusDetector")
-            self.declare_owner("quality_metrics", "ExecutionQualityMonitor")
-            # Avoid provider churn on contested keys by assigning canonical owners
-            self.declare_owner("voting_member_proposal", "EnhancedVotingCommitteeCoordinator")
-            self.declare_owner("pattern_analysis", "PlaybookClusterer")
-            # Correct canonical owner: performance_metrics is produced by SessionManager
-            self.declare_owner("performance_metrics", "SessionManager")
-            # Ensure environment_config is owned by SessionManager in this setup
-            self.declare_owner("environment_config", "SessionManager")
-            # Unified market analytics
-            try:
-                self.declare_owner("market_regime", "UnifiedMarketModule")
-                self.declare_owner("timestamps", "UnifiedMarketModule")
-                self.declare_owner("regime_prediction", "UnifiedMarketModule")
-                self.declare_owner("time_risk_analysis", "UnifiedMarketModule")
-            except Exception:
-                pass
-            # Additional canonical owners to prevent provider flipping
-            self.declare_owner("mode_recommendations", "OpponentModeEnhancer")
-            self.declare_owner("member_confidences", "EnhancedThemeExpert")
-            # Treat expert_votes as a stream feed (no single writer)
-            try:
-                self.set_policy("expert_votes", mode="stream")
-            except Exception:
-                pass
-        except Exception:
-            pass
+    # NOTE: bootstrap_canonical_owners removed to avoid implicit ownership coupling.
 
 
     def _log_miss(self, key: str, module: str):
@@ -2593,7 +2541,6 @@ class InfoBusManager:
                 if cls._instance is None:
                     cls._instance = SmartInfoBus()
                     try:
-                        cls._instance.bootstrap_canonical_owners()
                         # Default policies for stream-like keys (prevents "provider changed" churn)
                         cls._instance.set_policy("thesis_stream", mode="stream")
                         cls._instance.set_policy("vote", mode="stream")

@@ -478,7 +478,7 @@ class InfoBusLiveDataConnector:
         collection_start = time.time()
         
         for symbol in self.instruments:
-            # Convert MT5 symbol to internal format (EURUSD -> EUR/USD)
+            # Convert MT5 symbol to internal format (EURUSD -> EUR_USD)
             symbol_internal = self._convert_symbol_format(symbol)
             data[symbol_internal] = {}
             

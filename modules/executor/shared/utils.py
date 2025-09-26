@@ -87,7 +87,7 @@ def resolve_symbol(
     """
     Resolve the runtime symbol (respect overrides, then broker defaults).
     mt5/metatrader -> 'EURUSD'
-    oanda/fxcm     -> 'EUR/USD'
+    oanda/fxcm     -> 'EUR_USD'
     else           -> canonical
     """
     if not inst:

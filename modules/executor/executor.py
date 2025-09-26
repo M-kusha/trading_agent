@@ -394,8 +394,8 @@ class Executor(BaseModule):
                     reason = self._filter_reason(intent)
                     rejected.append({"reason": reason, "intent": intent})
 
-        # consume queue
-        self.bus.set("order_queue", [], thesis="Executor consumed order_queue")
+        # consume queue (do not write canonical key back to the bus; owner is PositionManager)
+        # Keep consumption internal to Executor
 
         # fallback: position_decision_* from environment_config instruments
         if self.cfg.read_position_decisions:

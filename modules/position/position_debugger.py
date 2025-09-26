@@ -228,7 +228,7 @@ class PositionDebugger:
         Log a position decision with full context
         
         Args:
-            instrument: Trading pair (e.g., "EUR/USD")
+            instrument: Trading pair (e.g., "EUR_USD")
             decision: Decision type (open_long, open_short, etc.)
             intensity: Signal intensity (-1 to 1)
             size: Position size in EUR

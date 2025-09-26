@@ -662,8 +662,9 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                thesis=f"Session patterns: {self.current_session} session optimizations")
             sb('alignment_quality', results['alignment_quality'], module='TimeHorizonAligner',
                thesis=f"Alignment quality: {results['alignment_quality'].get('overall_quality', 0.5):.1%} effectiveness")
-            sb('performance_metrics', results['performance_metrics'], module='TimeHorizonAligner',
-               thesis=f"Performance metrics: Comprehensive alignment analytics")
+            # Publish under a non-canonical key to avoid colliding with SessionManager
+            sb('alignment_metrics', results['performance_metrics'], module='TimeHorizonAligner',
+               thesis=f"Alignment metrics: Comprehensive alignment analytics")
             sb('horizon_alignment', results['horizon_alignment'], module='TimeHorizonAligner',
                thesis='Combined horizon alignment bundle (distances, multipliers, regime, session)')
 

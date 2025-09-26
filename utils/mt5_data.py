@@ -344,14 +344,8 @@ class MT5DataCollector:
     def standardize_symbol_name(self, symbol: str) -> str:
         """Convert MT5 symbol name to standard format"""
         symbol_map = {
-            "EURUSD": "EUR/USD",
-            "XAUUSD": "XAU/USD", 
-            "GBPUSD": "GBP/USD",
-            "USDJPY": "USD/JPY",
-            "USDCHF": "USD/CHF",
-            "AUDUSD": "AUD/USD",
-            "USDCAD": "USD/CAD",
-            "NZDUSD": "NZD/USD",
+            "EURUSD": "EUR_USD",
+            "XAUUSD": "XAU_USD", 
         }
         return symbol_map.get(symbol, symbol)
     

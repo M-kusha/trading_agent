@@ -110,7 +110,7 @@ class BaseLiveAdapter:
     # Symbol / sizing utilities
     # ─────────────────────────────────────────────────────
     def resolve_symbol(self, instrument: str) -> str:
-        """Apply overrides like {'XAU/USD': 'XAUUSD'} before hitting the broker."""
+        """Apply overrides like {'XAU_USD': 'XAUUSD'} before hitting the broker."""
         ov = self.cfg.symbol_overrides or {}
         return ov.get(instrument, instrument).replace("/", "").replace("_", "")
 

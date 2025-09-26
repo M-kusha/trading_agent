@@ -447,7 +447,8 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
                 elif isinstance(perf.get('initial_balance'), (int, float)):
                     balance_val = float(perf['initial_balance']); fallback_sources['balance_fallback'] = 'performance_data.initial_balance'
             if balance_val is None:
-                balance_val = 10000.0; fallback_sources['balance_fallback'] = 'hard_default_10000'
+                # Align hard default with system config default (3,000)
+                balance_val = 3000.0; fallback_sources['balance_fallback'] = 'hard_default_3000'
 
             equity_val = (risk_data.get('equity') if isinstance(risk_data.get('equity'), (int, float)) else None)
             if equity_val is None and isinstance(top_equity, (int, float)):
@@ -605,10 +606,32 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
         return data
 
     def _get_safe_trading_defaults(self) -> Dict[str, Any]:
-        """Get safe defaults when trading data extraction fails"""
+        """Get safe defaults when trading data extraction fails.
+
+        Prefer environment_config/performance_data anchors if present; else fall back to 3000.
+        """
+        try:
+            env_cfg = self.smart_bus.get('environment_config', 'VisualizationInterface') or {}
+        except Exception:
+            env_cfg = {}
+        try:
+            perf = self.smart_bus.get('performance_data', 'VisualizationInterface') or {}
+        except Exception:
+            perf = {}
+
+        base_bal = None
+        if isinstance(env_cfg.get('initial_balance'), (int, float)):
+            base_bal = float(env_cfg['initial_balance'])
+        elif isinstance(perf.get('balance'), (int, float)):
+            base_bal = float(perf['balance'])
+        elif isinstance(perf.get('initial_balance'), (int, float)):
+            base_bal = float(perf['initial_balance'])
+        else:
+            base_bal = 3000.0
+
         return {
-            'balance': 10000.0,
-            'equity': 10000.0,
+            'balance': base_bal,
+            'equity': base_bal,
             'drawdown': 0.0,
             'max_drawdown': 0.0,
             'position_count': 0,
@@ -689,12 +712,26 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
             return self._get_minimal_record()
 
     def _get_minimal_record(self) -> Dict[str, Any]:
-        """Get minimal record when full record creation fails"""
+        """Get minimal record when full record creation fails (uses env/perf anchors)."""
+        try:
+            env_cfg = self.smart_bus.get('environment_config', 'VisualizationInterface') or {}
+            perf = self.smart_bus.get('performance_data', 'VisualizationInterface') or {}
+            if isinstance(env_cfg.get('initial_balance'), (int, float)):
+                bal = float(env_cfg['initial_balance'])
+            elif isinstance(perf.get('balance'), (int, float)):
+                bal = float(perf['balance'])
+            elif isinstance(perf.get('initial_balance'), (int, float)):
+                bal = float(perf['initial_balance'])
+            else:
+                bal = 3000.0
+        except Exception:
+            bal = 3000.0
+
         return {
             '_time': datetime.datetime.now().isoformat(),
             'timestamp': datetime.datetime.now().isoformat(),
             'step': len(self.records),
-            'balance': 10000.0,
+            'balance': bal,
             'status': 'minimal'
         }
 
@@ -745,8 +782,8 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
             self.viz_stats['total_records'] += 1
             self.viz_stats['data_points_collected'] += len(record)
             
-            # Debug output
-            if self.debug:
+            # Debug output: wait until non-fallback data is available
+            if self.debug and not record.get('_fallback_info'):
                 self._print_summary(record)
             
         except Exception as e:

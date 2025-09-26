@@ -247,6 +247,14 @@ class ModuleConfig:
         self.dynamic_config_bus_key = kwargs.get('dynamic_config_bus_key', 'config_update')
         self.stale_warn_s = kwargs.get('stale_warn_s', 60.0)
 
+        # Configuration timing fixes
+        self.config_wait_timeout_s = kwargs.get('config_wait_timeout_s', 10.0)
+        self.config_ready_grace_s = kwargs.get('config_ready_grace_s', 2.0)
+
+        # Circuit breaker recovery for critical modules
+        self.critical_module_recovery_time_s = kwargs.get('critical_module_recovery_time_s', 30.0)
+        self.auto_reset_critical_modules = kwargs.get('auto_reset_critical_modules', True)
+
         # Error handling
         self.max_retries = kwargs.get('max_retries', 3)
         self.error_escalation = kwargs.get('error_escalation', True)
@@ -1178,6 +1186,9 @@ class ModuleOrchestrator:
             async with self._async_execution_lock:
                 self.logger.debug(f"[ROCKET] STARTING EXECUTION: {execution_id}")
 
+                # Wait for configuration to be available before starting execution
+                await self._wait_for_configuration_readiness()
+
                 self._store_market_data(market_data, execution_id)
 
                 if time.time() - self.last_health_check > self.health_check_interval:
@@ -1259,6 +1270,18 @@ class ModuleOrchestrator:
             cb = self.circuit_breakers.get(module_name)
             if not cb:
                 return True
+
+            # Auto-reset critical modules after shorter recovery time
+            if (self.config.auto_reset_critical_modules and
+                module_name in self.critical_modules and
+                cb.get_state() == "OPEN"):
+
+                time_since_failure = time.time() - cb.last_failure_time
+                if time_since_failure > self.config.critical_module_recovery_time_s:
+                    self.logger.info(f"[RECOVERY] Auto-resetting critical module {module_name} after {time_since_failure:.1f}s")
+                    self.circuit_breakers[module_name] = CircuitBreakerState()
+                    return True
+
             return cb.should_allow_request(
                 self.config.recovery_time_s,
                 single_probe=getattr(self.config, "half_open_single_probe", True)
@@ -2218,11 +2241,46 @@ class ModuleOrchestrator:
             pass
         return preview
 
+    async def _wait_for_configuration_readiness(self) -> None:
+        """
+        Wait for configuration to be available on the bus before proceeding with execution.
+        This prevents race conditions where modules request config before it's published.
+        """
+        config_key = self.config.dynamic_config_bus_key
+        timeout_s = self.config.config_wait_timeout_s
+        grace_s = self.config.config_ready_grace_s
+
+        start_time = time.time()
+        config_available = False
+
+        while time.time() - start_time < timeout_s:
+            try:
+                config_data = self.smart_bus.get(config_key, "Orchestrator")
+                if config_data is not None:
+                    config_available = True
+                    self.logger.debug(f"[CONFIG] Configuration ready after {time.time() - start_time:.2f}s")
+                    break
+            except Exception as e:
+                self.logger.debug(f"[CONFIG] Configuration check failed: {e}")
+
+            await asyncio.sleep(0.1)  # Check every 100ms
+
+        if not config_available:
+            self.logger.warning(f"[CONFIG] Configuration not available after {timeout_s}s, proceeding anyway")
+        else:
+            # Add grace period for configuration to stabilize
+            if grace_s > 0:
+                await asyncio.sleep(grace_s)
+                self.logger.debug(f"[CONFIG] Grace period complete ({grace_s}s)")
+
     def _safe_bus_set(self, key: str, value: Any, *, module: str, thesis: str = "", confidence: float = 0.8):
         try:
+            # Guard: prevent Environment from writing canonical keys owned by MarketDataProvider/SessionManager
+            if module == "Environment" and str(key) in {"market_data", "market_context", "step_idx", "environment_config"}:
+                return
             self.smart_bus.set(key, value, module=module, thesis=thesis, confidence=confidence)
         except Exception as e:
-            self.logger.debug(f"Bus set failed for {key}: {e}")
+            self.logger.debug(f"Bus set failed for {module}:{key}: {e}")
 
     def _prepare_module_inputs(
         self,
@@ -2273,8 +2331,20 @@ class ModuleOrchestrator:
                     )
                     payload = {}
 
+            # Skip canonical-owner keys to prevent duplicate/owner violations.
+            # These are produced by dedicated modules (see SmartInfoBus.bootstrap_canonical_owners).
+            forbidden_keys = {
+                'market_data',
+                'market_context',
+                'step_idx',
+                'environment_config',
+            }
+
             for key, value in payload.items():
                 if not str(key).startswith('_'):
+                    if key in forbidden_keys:
+                        # Respect single-writer policy; Environment should not own these keys
+                        continue
                     self._safe_bus_set(
                         key,
                         value,

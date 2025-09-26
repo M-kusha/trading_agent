@@ -620,21 +620,8 @@ class UnifiedMarketModule(
             # Generate step_idx as incremental counter
             aggregated.setdefault('step_idx', int(time.time() * 1000) % 1000000)  # Simple step counter
 
-            # Generate prices from current market data
-            aggregated.setdefault('prices', {
-                'current': aggregated.get('current_price', 1.0),
-                'timestamp': datetime.datetime.utcnow().isoformat()
-            })
-
-            # Generate price_data from market data
-            aggregated.setdefault('price_data', {
-                'open': aggregated.get('open', 1.0),
-                'high': aggregated.get('high', 1.0),
-                'low': aggregated.get('low', 1.0),
-                'close': aggregated.get('close', 1.0),
-                'volume': aggregated.get('volume', 1000),
-                'timestamp': datetime.datetime.utcnow().isoformat()
-            })
+            # NOTE: prices and price_data are provided by MarketDataProvider, not UnifiedMarketModule
+            # Removed illegal publications to stop provider ownership conflicts
 
             # Fractal / Regime (legacy coverage)
             aggregated.setdefault('fractal_metrics', {})
@@ -1242,10 +1229,20 @@ class UnifiedMarketModule(
 
         
 
+        # Respect canonical owners: do not publish keys owned by other modules
+        forbidden_keys = {
+            'performance_metrics',   # SessionManager owns this
+            'market_context',        # MarketDataProvider owns this
+            'step_idx',              # MarketDataProvider owns this
+        }
+
         for key, value in updates:
-            if value is not None:
-                self.trace(f"Updating InfoBus: {key}", level=TraceLevel.TRACE)
-                smart_bus.set(key, value, module="UnifiedMarketModule", thesis=thesis[:200])
+            if value is None:
+                continue
+            if key in forbidden_keys:
+                continue
+            self.trace(f"Updating InfoBus: {key}", level=TraceLevel.TRACE)
+            smart_bus.set(key, value, module="UnifiedMarketModule", thesis=thesis[:200])
 
         # Publish dynamic per-symbol timeframe keys if present
         try:

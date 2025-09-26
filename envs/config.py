@@ -53,7 +53,7 @@ class TradingConfig:
     # Core Environment Parameters (fallbacks)
     # ===================================================================
     initial_balance: float = 3000.0
-    max_steps: int = 200
+    max_steps: int = 10000
     debug: bool = True
     init_seed: int = 42
     max_steps_per_episode: int = field(init=False)
@@ -144,7 +144,7 @@ class TradingConfig:
     # Data and Instruments (used as defaults/fallbacks)
     # ===================================================================
     data_dir: str = "data/processed"
-    instruments: List[str] = field(default_factory=lambda: ["EUR/USD", "XAU/USD"])
+    instruments: List[str] = field(default_factory=lambda: ["EUR_USD", "XAU_USD"])
     timeframes: List[str] = field(default_factory=lambda: ["H1", "H4", "D1"])
 
     # ===================================================================
@@ -522,7 +522,7 @@ class ConfigPresets:
             checkpoint_freq=2500,
             eval_freq=1000,
 
-            instruments=["EUR/USD"],
+            instruments=["EUR_USD"],
             timeframes=["H1", "H4", "D1"],
         )
 
@@ -569,7 +569,7 @@ class ConfigPresets:
             checkpoint_freq=5000,
             eval_freq=2500,
 
-            instruments=["EUR/USD", "XAU/USD"],
+            instruments=["EUR_USD", "XAU_USD"],
             timeframes=["H1", "H4", "D1"],
         )
 
@@ -616,7 +616,7 @@ class ConfigPresets:
             checkpoint_freq=10000,
             eval_freq=5000,
 
-            instruments=["EUR/USD", "XAU/USD"],
+            instruments=["EUR_USD", "XAU_USD"],
             timeframes=["H1", "H4", "D1"],
         )
 

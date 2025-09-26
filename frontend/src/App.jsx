@@ -3683,7 +3683,7 @@ const OverviewTab = React.memo(function OverviewTab({
   const fetchMt5Data = useCallback(async (symbolParam = selectedSymbol) => {
     const tfMap = { '1m': 'M1', '5m': 'M5', '15m': 'M15', '30m': 'M30', '1h': 'H1', '4h': 'H4', '1d': 'D1', '1w': 'D1' };
     const tfParam = tfMap[selectedTimeframe] || 'M5';
-    const symbol = (symbolParam === 'XAU/USD' ? 'XAUUSD' : symbolParam) || 'EURUSD';
+    const symbol = (symbolParam === 'XAU_USD' ? 'XAUUSD' : symbolParam) || 'EURUSD';
 
     const now = Date.now();
     const tfChanged = prevTfRef.current !== selectedTimeframe;
@@ -4023,8 +4023,8 @@ const OverviewTab = React.memo(function OverviewTab({
                   onChange={(e) => appDispatch({ type: 'SET_SYMBOL', payload: e.target.value })}
                   className="bg-gray-700 text-white px-3 py-1 rounded text-sm border border-gray-600 focus:border-green-400 focus:outline-none"
                 >
-                  <option value="EURUSD">EUR/USD</option>
-                  <option value="XAUUSD">XAU/USD</option>
+                  <option value="EURUSD">EUR_USD</option>
+                  <option value="XAUUSD">XAU_USD</option>
                 </select>
                 <div className="flex items-center space-x-1">
                   {['1m','5m','15m','30m','1h','4h','1d'].map(tf => (
@@ -5238,7 +5238,7 @@ const EnhancedTradingDashboard = () => {
     eval_freq: 5000,
     num_envs: 1,
     data_dir: 'data/processed',
-    initial_balance: 10000,
+    initial_balance: 3000,
     pretrained_model: null,
     auto_pretrained: false,
     debug: false

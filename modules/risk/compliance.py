@@ -80,8 +80,8 @@ class ComplianceModule(
 
     # Default allowed instruments
     DEFAULT_ALLOWED_INSTRUMENTS = {
-        "EUR/USD",
-        "XAU/USD",
+        "EUR_USD",
+        "XAU_USD",
     }
 
     # ── init & systems ───────────────────────────────────────

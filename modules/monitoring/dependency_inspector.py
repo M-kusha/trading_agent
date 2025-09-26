@@ -693,7 +693,7 @@ class DependencyInspector:
         Group keys that are likely the same instrument under different spellings.
         Watches prefixes: price_, indicators_, signal_.
         Returns:
-            { "price_": {"XAUUSD": ["price_XAU/USD", "price_XAUUSD", ...], ...}, ... }
+            { "price_": {"XAUUSD": ["price_XAU_USD", "price_XAUUSD", ...], ...}, ... }
         """
         prefixes = ("price_", "indicators_", "signal_")
         groups: Dict[str, Dict[str, List[str]]] = {p: defaultdict(list) for p in prefixes}

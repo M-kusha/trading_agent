@@ -31,7 +31,7 @@ from modules.utils.audit_utils import RotatingLogger, format_operator_message
 class MarketDataConfig:
     """Configuration for Offline Market Data Provider."""
     data_directory: str = "data/processed"
-    supported_symbols: List[str] = field(default_factory=lambda: ["XAU/USD", "EUR/USD"])
+    supported_symbols: List[str] = field(default_factory=lambda: ["XAU_USD", "EUR_USD"])
     supported_timeframes: List[str] = field(default_factory=lambda: ["H1", "H4", "D1"])
     primary_timeframe: str = "H4"       # Primary TF for advancing iterators
     update_frequency: float = 1.0       # seconds
@@ -197,7 +197,7 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
     def _find_file_for(self, symbol: str, timeframe: str, data_dir: str) -> Optional[str]:
         """Find a CSV file for a given symbol/timeframe using common naming patterns."""
         try:
-            sym_nosl = symbol.replace("/", "").upper()
+            sym_nosl = symbol.replace("/", "").replace("_", "").upper()
             tf = timeframe.upper()
             patterns = [
                 f"{sym_nosl}_{tf}_features.csv",
@@ -395,7 +395,9 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                         cur_bar = per_tf.get(tf, {}).get('current_bar')
                     except Exception:
                         cur_bar = None
-                    alias_key = f"market_data_{sym}_{tf}"
+                    # Replace slashes with underscores to avoid InfoBus key issues
+                    sym_clean = sym.replace('/', '_')
+                    alias_key = f"market_data_{sym_clean}_{tf}"
                     alias_map[alias_key] = cur_bar if isinstance(cur_bar, dict) else {}
 
             # Append required meta keys not presently in snapshot
@@ -438,7 +440,9 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             empty = self._empty_snapshot(error=str(e))
             for sym in self.cfg.supported_symbols:
                 for tf in self.cfg.supported_timeframes:
-                    empty[f"market_data_{sym}_{tf}"] = {}
+                    # Replace slashes with underscores to avoid InfoBus key issues
+                    sym_clean = sym.replace('/', '_')
+                    empty[f"market_data_{sym_clean}_{tf}"] = {}
             empty['universe'] = list(self.cfg.supported_symbols)
             empty['watched_instruments'] = list(self.cfg.supported_symbols)
             empty['provider_status'] = {

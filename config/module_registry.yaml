@@ -704,7 +704,7 @@ modules:
       - mode_thresholds
       - trading_mode
       - trading_mode_manager_initialization
-      - execution_mode
+      
     requires:
       - economic_calendar
       - market_context
@@ -769,6 +769,7 @@ modules:
       - system_performance
       - system_health
       - environment_config
+      - execution_mode
     requires: []
 
   MarketDataProvider:
@@ -815,6 +816,7 @@ modules:
     category: executor
     file_path: modules\executor\executor.py
     module_path: modules.executor.executor
+    critical: true
     provides:
       - positions
       - trades

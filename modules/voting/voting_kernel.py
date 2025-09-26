@@ -322,7 +322,8 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
 
             try:
                 self.smart_bus.set("decision_coordination", decision_coordination, module="VotingKernel", thesis="Decision coordination")
-                self.smart_bus.set("voting_consensus", voting_consensus, module="VotingKernel", thesis="Consensus snapshot")
+                # Avoid writing 'voting_consensus' (owner: ConsensusDetector). Publish a committee-local consensus instead.
+                self.smart_bus.set("committee_consensus", voting_consensus, module="VotingKernel", thesis="Committee consensus snapshot")
                 self.smart_bus.set("consensus_summary", consensus_summary, module="VotingKernel", thesis="Consensus summary")
                 self.smart_bus.set("voting_metrics", voting_metrics, module="VotingKernel", thesis="Voting metrics")
                 self.smart_bus.set("trade_vote_v2", trade_vote_v2, module="VotingKernel", thesis="Final vote bundle (v2)")

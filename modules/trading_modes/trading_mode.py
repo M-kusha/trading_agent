@@ -469,16 +469,8 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             # Update SmartInfoBus with comprehensive thesis (single-writer keys)
             await self._update_smartinfobus_comprehensive(results, thesis)
 
-            # Publish canonical performance_data for downstream consumers (single-writer)
-            try:
-                self.smart_bus.set(
-                    'performance_data',
-                    dict(performance_data or {}),
-                    module='TradingModeManager',
-                    thesis='Canonical performance_data snapshot'
-                )
-            except Exception:
-                pass
+            # NOTE: performance_data is provided by SessionManager, NOT TradingModeManager
+            # Removed illegal publication to stop provider ownership conflicts
 
             # Record performance metrics
             processing_time = int((time.time() - start_time) * 1000)
@@ -497,11 +489,8 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             self.error_count = 0
             self._post_health_status()
 
-            # Ensure contract: include performance_data in returned results
-            try:
-                results['performance_data'] = dict(performance_data or {})
-            except Exception:
-                results['performance_data'] = {}
+            # NOTE: performance_data is provided by SessionManager, NOT TradingModeManager
+            # Removed from return to stop provider ownership conflicts
 
             return results
 

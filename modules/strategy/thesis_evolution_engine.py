@@ -368,14 +368,14 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             ],
             'volatility_based': [
                 "Volatility expansion phase creates breakout potential across currency majors",
-                "Low volatility compression suggests imminent directional move in EUR/USD"
+                "Low volatility compression suggests imminent directional move in EUR_USD"
             ],
             'momentum': [
                 "Cross-market momentum alignment creates strong directional bias in USD/JPY",
                 "Acceleration patterns in commodity currencies suggest continuation trades"
             ],
             'pattern_recognition': [
-                "Technical confluence at 1.1000 EUR/USD creates high-probability reversal setup",
+                "Technical confluence at 1.1000 EUR_USD creates high-probability reversal setup",
                 "Flag pattern completion in GBP/USD suggests trend continuation opportunity"
             ]
         }
@@ -1279,15 +1279,8 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         """Mutate thesis instrument focus"""
         try:
             instrument_replacements = {
-                'EUR/USD': 'GBP/USD',
-                'GBP/USD': 'USD/JPY',
-                'USD/JPY': 'EUR/USD',
-                'Gold': 'Silver',
-                'Silver': 'Gold',
-                'USD': 'EUR',
-                'EUR': 'GBP',
-                'GBP': 'JPY',
-                'JPY': 'USD'
+                'EUR_USD': 'GBP_USD',
+
             }
             
             mutated = original_thesis

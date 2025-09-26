@@ -164,7 +164,7 @@ class PlaybookComponent(MemoryComponent):
         )
 
         # Price context
-        symbol = str(trade.get("symbol", "EUR/USD"))
+        symbol = str(trade.get("symbol", "EUR_USD"))
         if symbol in prices:
             current_price = float(prices[symbol])
             entry_price = float(trade.get("price", current_price))
@@ -367,7 +367,7 @@ class PlaybookComponent(MemoryComponent):
             "size": 1.0,
             "confidence": 0.5,
             "side": "hold",
-            "symbol": "EUR/USD",
+            "symbol": "EUR_USD",
             "price": 1.0,
         }
         return self._extract_trade_features(dummy_trade, market_context, prices)

@@ -800,7 +800,13 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
             if key in result:
                 updates.append((key, result[key]))
 
+        # Avoid writing keys with canonical owners in other modules
+        forbidden_keys = {
+            'pattern_analysis',  # PlaybookClusterer owns this
+        }
         for key, value in updates:
+            if key in forbidden_keys:
+                continue
             self.smart_bus.set(key, value, module="UnifiedMemory", thesis=f"Unified memory: {key}")
 
         if self.unified_config.debug:

@@ -895,7 +895,7 @@ class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
         trades: List[Dict[str, Any]] = []
         try:
             current_prices = simulation_data.get('current_prices', {})
-            instruments = list(current_prices.keys()) or ['EUR/USD', 'XAU/USD']
+            instruments = list(current_prices.keys()) or ['EUR_USD', 'XAU_USD']
 
             for idx, instrument in enumerate(instruments[:2]):  # Limit to 2 instruments
                 pair = self._get_action_pair(modified_actions, idx)
@@ -921,10 +921,8 @@ class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
             current_price = current_prices.get(instrument)
             if current_price is None:
                 fallback_prices = {
-                    'EUR/USD': 1.0850,
-                    'XAU/USD': 2000.0,
-                    'GBP/USD': 1.2650,
-                    'USD/JPY': 150.0
+                    'EUR_USD': 1.0850,
+                    'XAU_USD': 2000.0,
                 }
                 current_price = fallback_prices.get(instrument, 1.0)
 
@@ -1300,7 +1298,7 @@ class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
         try:
             trades: List[Dict[str, Any]] = []
             for step in range(self.horizon):
-                instruments = getattr(env, 'instruments', ['EUR/USD', 'XAU/USD'])
+                instruments = getattr(env, 'instruments', ['EUR_USD', 'XAU_USD'])
                 for i, instrument in enumerate(instruments):
                     if len(actions) > i * 2 + 1:
                         action_0 = float(actions[i * 2])

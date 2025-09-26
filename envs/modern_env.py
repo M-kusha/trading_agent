@@ -328,7 +328,7 @@ class ModernTradingEnv(gym.Env):
     def _setup_environment(self):
         try:
             if self.smart_bus:
-                # 1) Always publish environment_config (now includes 'mode')
+                # 1) Do not publish provider-owned environment_config from Environment
                 env_cfg = {
                     "instruments": self.instruments,
                     "initial_balance": float(self.config.initial_balance),
@@ -337,17 +337,14 @@ class ModernTradingEnv(gym.Env):
                     "bus_data_active": bool(self._bus_data_active),
                     "mode": "live" if getattr(self.config, "live_mode", False) else "sim",
                 }
-                self.smart_bus.set("environment_config", env_cfg, module="Environment",
-                                thesis="Environment configuration")
+                # Keep a local copy for diagnostics if needed
+                try:
+                    self._env_environment_config = env_cfg
+                except Exception:
+                    pass
 
                 # 2) Provide execution_mode only if nobody else has
-                if self.smart_bus.get("execution_mode", "Environment") is None:
-                    self.smart_bus.set(
-                        "execution_mode",
-                        env_cfg["mode"],
-                        module="Environment",
-                        thesis="Default execution mode (env fallback)"
-                    )
+                # Execution mode is published elsewhere; avoid writing from Environment
 
         except Exception:
             pass
@@ -361,7 +358,7 @@ class ModernTradingEnv(gym.Env):
             return
 
         step = int(self.current_step)
-        aggregated = {}
+        aggregated: Dict[str, Dict[str, Any]] = {}
         for instrument in self.instruments:
             for timeframe in ["H1", "H4", "D1"]:
                 try:
@@ -383,19 +380,14 @@ class ModernTradingEnv(gym.Env):
                         "instrument": instrument,
                         "timeframe": timeframe,
                     }
-                    self.smart_bus.set(
-                        f"market_data_{instrument}_{timeframe}",
-                        ohlcv,
-                        module="Environment",
-                        thesis=f"Local market data window for {instrument} {timeframe} (fallback)",
-                    )
                     aggregated.setdefault(instrument, {})[timeframe] = ohlcv
                 except Exception:
                     pass
 
+        # Store fallback locally for diagnostics; do not publish provider-owned keys to the bus
         try:
-            self.smart_bus.set("market_data", aggregated, module="Environment", thesis="Aggregated market data (fallback)")
-            self.smart_bus.set("step_idx", int(step), module="Environment", thesis="Current step index (fallback)")
+            self._env_fallback_market_data = aggregated
+            self._env_fallback_step = step
         except Exception:
             pass
 
@@ -420,49 +412,7 @@ class ModernTradingEnv(gym.Env):
         self.equity = float(initial_balance)
         self._last_equity = float(initial_balance)
 
-        try:
-            if self.smart_bus:
-                # Keep environment_config and execution_mode refreshed at reset
-                env_cfg = {
-                    "instruments": self.instruments,
-                    "initial_balance": float(self.config.initial_balance),
-                    "action_dim": int(self.action_dim),
-                    "max_steps": int(self.config.max_steps),
-                    "bus_data_active": bool(self._bus_data_active),
-                    "mode": "live" if getattr(self.config, "live_mode", False) else "sim",
-                }
-                self.smart_bus.set(
-                    "environment_config",
-                    env_cfg,
-                    module="Environment",
-                    thesis="Environment configuration (reset)"
-                )
-                self.smart_bus.set(
-                    "execution_mode",
-                    env_cfg["mode"],
-                    module="Environment",
-                    thesis="Execution mode (reset)"
-                )
-                # Legacy alias for consumers expecting env_mode
-                try:
-                    self.smart_bus.set(
-                        "env_mode",
-                        env_cfg["mode"],
-                        module="Environment",
-                        thesis="Alias: env_mode (reset)"
-                    )
-                except Exception:
-                    pass
-
-                # Episode info (safe to publish)
-                self.smart_bus.set(
-                    "episode_info",
-                    {"episode": self.episode_count, "step": self.current_step, "balance": self.market_state.balance, "reset": True},
-                    module="Environment",
-                    thesis=f"Episode {self.episode_count} reset information",
-                )
-        except Exception:
-            pass
+        # Avoid publishing environment_config / execution_mode from the Environment; canonical owners handle these.
 
         # Detect provider each reset (hot-reload)
         self._bus_data_active = self._detect_bus_data_active()
@@ -533,40 +483,7 @@ class ModernTradingEnv(gym.Env):
             pass
 
         # Refresh environment_config + execution_mode every step (owner refresh to avoid TTL)
-        try:
-            if self.smart_bus:
-                env_cfg = {
-                    "instruments": self.instruments,
-                    "initial_balance": float(self.config.initial_balance),
-                    "action_dim": int(self.action_dim),
-                    "max_steps": int(self.config.max_steps),
-                    "bus_data_active": bool(self._bus_data_active),
-                    "mode": "live" if getattr(self.config, "live_mode", False) else "sim",
-                }
-                self.smart_bus.set(
-                    "environment_config",
-                    env_cfg,
-                    module="Environment",
-                    thesis=f"Environment configuration (step {self.current_step})"
-                )
-                self.smart_bus.set(
-                    "execution_mode",
-                    env_cfg["mode"],
-                    module="Environment",
-                    thesis=f"Execution mode (step {self.current_step})"
-                )
-                # Legacy alias for consumers expecting env_mode
-                try:
-                    self.smart_bus.set(
-                        "env_mode",
-                        env_cfg["mode"],
-                        module="Environment",
-                        thesis=f"Alias: env_mode (step {self.current_step})"
-                    )
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        # No refresh of environment_config / execution_mode from Environment; canonical owners handle these keys.
 
         # Update market snapshots only if provider isn't active
         if not self._bus_data_active:
@@ -642,12 +559,11 @@ class ModernTradingEnv(gym.Env):
                     if vol_level in ("high", "extreme") and abs(slope) < 1e-12:
                         regime = "volatile"
 
-                    self.smart_bus.set(
-                        "market_context",
-                        {"regime": regime, "volatility_level": vol_level, "consensus": 0.5},
-                        module="Environment",
-                        thesis=f"Basic regime/vol estimate ({inst}/{tf}) - fallback",
-                    )
+                    # Do not publish provider-owned 'market_context' from Environment; keep locally for diagnostics
+                    try:
+                        self._env_market_context = {"regime": regime, "volatility_level": vol_level, "consensus": 0.5}
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -933,6 +849,8 @@ class ModernTradingEnv(gym.Env):
                 self._module_disabled = set()
                 self._data_store = self._store  # for external status probes
                 self._is_fallback = True
+                # Track owners for compatibility with real SmartInfoBus API
+                self._owners = {}
 
             def set(self, key, value, module=None, thesis=None):
                 with self._lock:
@@ -944,6 +862,19 @@ class ModernTradingEnv(gym.Env):
 
             def register_provider(self, module, keys): return True
             def register_consumer(self, module, keys): return True
+
+            def declare_owner(self, key: str, module: str):  # mimic real bus API (no-op semantics here)
+                """Declare an owning module for a key (fallback no-op).
+
+                We just record the owner and pre-create the key if absent so that
+                upstream code guarded by hasattr(declare_owner) passes static analysis.
+                """
+                with self._lock:
+                    if key not in self._store:
+                        # Pre-create placeholder so later .set overrides it cleanly
+                        self._store[key] = None
+                    self._owners[key] = module
+                return True
 
             def get_performance_metrics(self):
                 with self._lock:

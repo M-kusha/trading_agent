@@ -305,8 +305,22 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         pd_map = inputs.get("price_data")
         if isinstance(pd_map, dict):
             for _sym, entry in pd_map.items():
-                close = (entry or {}).get("close")
-                if isinstance(close, (int, float)):
+                close = None
+                if isinstance(entry, dict):
+                    close = entry.get("close")
+                    if close is None and isinstance(entry.get("price"), (int, float, np.floating)):
+                        close = entry.get("price")
+                elif isinstance(entry, (list, tuple, np.ndarray)):
+                    if entry:
+                        tail = entry[-1]
+                        if isinstance(tail, dict):
+                            close = tail.get("close")
+                        elif isinstance(tail, (int, float, np.floating)):
+                            close = tail
+                elif isinstance(entry, (int, float, np.floating)):
+                    close = entry
+
+                if isinstance(close, (int, float, np.floating)):
                     market_data["prices"].append(float(close))
 
         # 2) Fallbacks from Bus (in order of richness)

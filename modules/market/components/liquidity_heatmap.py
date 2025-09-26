@@ -267,8 +267,8 @@ class LiquidityHeatmapComponent(BaseMarketComponent):
         # Prices (prefer time-series if available)
         if 'prices' in market_data and isinstance(market_data['prices'], list):
             prices = [float(p) for p in market_data['prices'] if np.isfinite(p)]
-        elif 'EUR/USD' in market_data:
-            d = market_data['EUR/USD']
+        elif 'EUR_USD' in market_data:
+            d = market_data['EUR_USD']
             if isinstance(d, dict) and isinstance(d.get('close'), (list, tuple, np.ndarray)):
                 prices = [float(p) for p in d['close'] if np.isfinite(p)]
         # Try nested providers (multi_timeframe_data / historical_prices)
@@ -278,7 +278,7 @@ class LiquidityHeatmapComponent(BaseMarketComponent):
                 if not isinstance(nested, dict):
                     continue
                 # choose instrument and timeframe
-                inst_pref = ['EUR/USD', 'XAU/USD'] + list(nested.keys())
+                inst_pref = ['EUR_USD', 'XAU_USD'] + list(nested.keys())
                 tf_pref = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1']
                 chosen_inst = next((s for s in inst_pref if s in nested), None)
                 if not chosen_inst:

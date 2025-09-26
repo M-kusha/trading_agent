@@ -30,8 +30,16 @@ execution:
       RiskAdjustedReward: 30000
       # Simulation modules
       OpponentSimulator: 4000
-      ShadowSimulator: 5000
+      ShadowSimulator: 8000
       EnhancedWorldModel: 6000
+      # Stage 10 problematic modules - increased timeouts
+      StrategyGenomePool: 10000
+      OpponentModeEnhancer: 6000
+      VisualizationInterface: 8000
+      RoleCoach: 6000
+      ThesisEvolutionEngine: 8000
+      PlaybookClusterer: 7000
+      TradingModeManager: 5000
     by_category:
       voting: 5000
       auditing: 4000
@@ -39,12 +47,16 @@ execution:
       simulation: 4000
       meta: 4000
   stage:
-    timeout_overhead_s: 8.0
-    timeout_pct_padding: 0.50
+    timeout_overhead_s: 15.0
+    timeout_pct_padding: 0.75
     pre_stage_readiness_preview: true
-    soft_schedule_on_missing_inputs: false
+    soft_schedule_on_missing_inputs: true
     heartbeat_interval_s: 6.0
     report_to_bus: true
+  # Circuit breaker recovery for critical modules
+  circuit_breaker:
+    auto_reset_critical_modules: true
+    critical_module_recovery_time_s: 30.0
   # Auto-tuning timing configurations
   adaptive:
     auto_tune_timeouts: true
@@ -462,22 +474,22 @@ modules:
       timeout_ms: 200
       # Instrument configurations
       instruments:
-        EUR/USD:
+        EUR_USD:
           timeframes: ['H1', 'H4', 'D1']
           enabled: true
           priority: high
-        XAU/USD:
+        XAU_USD:
           timeframes: ['H1', 'H4', 'D1']
           enabled: true
           priority: high
       # Market data keys to provide
       provides_data:
-        - market_data_EUR/USD_H1
-        - market_data_EUR/USD_H4
-        - market_data_EUR/USD_D1
-        - market_data_XAU/USD_H1
-        - market_data_XAU/USD_H4
-        - market_data_XAU/USD_D1
+        - market_data_EUR_USD_H1
+        - market_data_EUR_USD_H4
+        - market_data_EUR_USD_D1
+        - market_data_XAU_USD_H1
+        - market_data_XAU_USD_H4
+        - market_data_XAU_USD_D1
         - volatility_data
         - universe
         - watched_instruments

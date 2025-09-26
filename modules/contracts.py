@@ -66,7 +66,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         file='risk/dynamic_risk_controller.py',
         provides=['risk_alerts', 'risk_analytics', 'risk_factors', 'risk_scaling',
                   'DynamicRiskController_voting_proposal', 'DynamicRiskController_confidence'],
-        # NOTE: 'position_data' does not currently have a canonical provider → see audit notes below.
+        # NOTE: 'position_data' is provided by PositionManager
         requires=['anomaly_detection', 'compliance', 'execution_quality', 'market_context', 'market_data',
                   'market_regime', 'performance_data', 'portfolio_risk', 'position_data', 'risk_data'],
         meta={'is_voting_member': True, 'thesis_required': True, 'health_monitoring': True,
@@ -276,18 +276,16 @@ CONTRACTS: Dict[str, ModuleContract] = {
         provides=[
             # canonical voting surfaces
             'agreement_score', 'consensus_direction', 'member_confidences', 'raw_proposals',
-            'strategy_arbiter_weights',
             # theme surfaces
             'theme_voting_proposal', 'theme_confidence',
-            # expert voting data
-            'expert_votes'
+            # standardized voting member keys (required by coordinator)
+            'EnhancedThemeExpert_voting_proposal', 'EnhancedThemeExpert_confidence'
         ],
         requires=['market_data', 'price_data', 'technical_indicators', 'market_regime', 'market_open'],
         meta={'is_voting_member': True, 'thesis_required': True, 'explainable': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'voting', 'version': '4.0.0',
               # optional richer surfaces (implemented in some branches)
-              'optional_provides': ['theme_analysis', 'EnhancedThemeExpert_confidence',
-                                    'EnhancedThemeExpert_voting_proposal']}
+              'optional_provides': ['theme_analysis']}
     ),
 
     'EnhancedSeasonalityRiskExpert': ModuleContract(
@@ -296,8 +294,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         # normalize to seasonality_*; include seasonal_* aliases for backward compatibility
         provides=['seasonality_risk_analysis', 'seasonal_voting_proposal', 'seasonal_confidence',
                   'seasonality_analysis', 'seasonality_voting_proposal', 'seasonality_confidence',
-                  'EnhancedSeasonalityRiskExpert_confidence', 'EnhancedSeasonalityRiskExpert_voting_proposal',
-                  'expert_votes'],
+                  'EnhancedSeasonalityRiskExpert_confidence', 'EnhancedSeasonalityRiskExpert_voting_proposal'],
         requires=['market_data', 'price_data', 'technical_indicators', 'market_regime', 'market_open'],
         meta={'is_voting_member': False, 'thesis_required': True, 'explainable': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'voting', 'version': '4.0.0'}
@@ -309,10 +306,20 @@ CONTRACTS: Dict[str, ModuleContract] = {
         # IMPORTANT: removed 'trade_vote' to keep VotingKernel the single writer of the final vote.
         provides=['committee_decision', 'committee_confidence', 'member_proposals', 'performance_feedback',
                   'time_of_day', 'votes', 'committee_votes', 'voting_summary', 'voting_weights',
-                  'strategy_arbiter_weights', 'committee_consensus', 'member_confidences_ordered'],
+                  'strategy_arbiter_weights', 'committee_consensus', 'member_confidences_ordered',
+                  'expert_votes', 'committee_members', 'proposal_vectors', 'signals'],
         requires=['emergency_mode', 'market_context', 'market_open', 'market_regime', 'portfolio_state',
                   'recent_trades', 'risk_data', 'risk_score', 'session_type', 'system_health',
-                  'theme_detection', 'volatility_data'],
+                  'theme_detection', 'volatility_data',
+                  # Individual voting proposals from all voting members
+                  'DynamicRiskController_voting_proposal', 'DynamicRiskController_confidence',
+                  'EnhancedAnomalyDetector_voting_proposal', 'EnhancedAnomalyDetector_confidence',
+                  'EnhancedSeasonalityRiskExpert_voting_proposal', 'EnhancedSeasonalityRiskExpert_confidence',
+                  'EnhancedThemeExpert_voting_proposal', 'EnhancedThemeExpert_confidence',
+                  'ExecutionQualityMonitor_voting_proposal', 'ExecutionQualityMonitor_confidence',
+                  'MetaAgent_voting_proposal', 'MetaAgent_confidence',
+                  'PortfolioRiskSystem_voting_proposal', 'PortfolioRiskSystem_confidence',
+                  'PPOAgent_voting_proposal', 'PPOAgent_confidence'],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
               'category': 'voting', 'version': '4.0.0'}
     ),
@@ -323,7 +330,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         provides=['confidence_consensus', 'consensus_components', 'consensus_detector_initialization',
                   'consensus_quality', 'consensus_recommendations', 'consensus_score', 'consensus_trends',
                   'directional_consensus', 'magnitude_consensus', 'member_contributions',
-                  'consensus_quality_metrics', 'voting_consensus'],
+                  'consensus_quality_metrics'],
         requires=['agreement_score', 'consensus_direction', 'market_context', 'market_regime', 'member_confidences',
                   'raw_proposals', 'volatility_data'],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
@@ -356,13 +363,14 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='StrategyArbiter',
         file='voting/strategy_arbiter.py',
         provides=['alpha_weights', 'arbiter_recommendations', 'decision_statistics', 'gate_decision',
-                  'instrument_signals', 'instruments', 'universe', 'watched_instruments',
+                  'instrument_signals', 'instruments',
                   'member_performance', 'member_weights', 'proposal_analysis',
                   'strategy_arbiter_initialization', 'strategy_weights', 'voting_quality',
                   # add canonical source for expert_performance for dependents
                   'expert_performance'],
         requires=['collusion_score', 'consensus_score', 'horizon_alignment', 'market_context', 'market_regime',
-                  'member_confidences', 'member_proposals', 'recent_trades', 'session_data', 'volatility_data'],
+                  'member_confidences', 'member_proposals', 'recent_trades', 'session_data', 'volatility_data',
+                  'universe', 'watched_instruments'],
         meta={'category': 'voting', 'version': '3.0.0'}
     ),
 
@@ -370,8 +378,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='VotingKernel',
         file='voting/voting_kernel.py',
         provides=['decision_coordination', 'voting_consensus', 'consensus_summary',
-                  'voting_metrics', 'decision_bundle', 'trade_vote_v2',
-                  'fragility', 'committee_members', 'signals', 'proposal_vectors'],
+                  'voting_metrics', 'decision_bundle', 'trade_vote_v2', 'fragility'],
         # keep the minimal, current implementation requires to avoid orchestration stalls
         requires=['market_data', 'price_data', 'technical_indicators', 'market_regime', 'portfolio_state'],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
@@ -407,8 +414,6 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='UnifiedMarketModule',
         file='market/market_module.py',
         provides=[
-            # Critical missing data keys that modules depend on
-            'market_context', 'prices', 'price_data', 'step_idx',
             # Fractal / Regime
             'fractal_metrics', 'market_regime', 'regime_data', 'regime_strength', 'timestamps', 'trend_direction',
             # Liquidity
@@ -416,9 +421,9 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'market_depth', 'session_data', 'spread_analysis', 'trading_sessions',
             # Theme
             'market_theme', 'theme_detection', 'theme_detector_health', 'theme_detector_status',
-            'theme_strength', 'theme_transition', 'theme_confidence',
+            'theme_strength', 'theme_transition',
             # Regime performance matrix
-            'backtesting_data', 'performance_metrics', 'regime_accuracy', 'regime_analysis', 'regime_matrix_analysis',
+            'backtesting_data', 'regime_accuracy', 'regime_analysis', 'regime_matrix_analysis',
             'regime_matrix_health', 'regime_matrix_status', 'regime_performance', 'regime_prediction',
             'stress_test_results',
             # Time-aware risk scaling
@@ -447,8 +452,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'technical_indicators', 'timestamp', 'trading_session', 'volatility', 'volatility_data',
             'volatility_level', 'volume_data', 'liquidity_data',
             # Specific instrument data
-            'market_data_EUR/USD_H1', 'market_data_EUR/USD_H4', 'market_data_EUR/USD_D1',
-            'market_data_XAU/USD_H1', 'market_data_XAU/USD_H4', 'market_data_XAU/USD_D1',
+            'market_data_EUR_USD_H1', 'market_data_EUR_USD_H4', 'market_data_EUR_USD_D1',
+            'market_data_XAU_USD_H1', 'market_data_XAU_USD_H4', 'market_data_XAU_USD_D1',
             'universe', 'watched_instruments'
         ],
         requires=[],
@@ -475,8 +480,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'performance_data',  # canonical owner selected
             'playbook_entries', 'playbook_memory', 'session_pnl_data', 'session_context', 'session_metrics',
             'system_alerts', 'session_health', 'system_performance',
-            'system_health',        # added alias surface used by some voters
-            'environment_config'    # fills gap for PM/Executor; may be moved to a dedicated Environment module
+            'environment_config', 'execution_mode'    # fills gap for PM/Executor; may be moved to a dedicated Environment module
         ],
         requires=[],
         meta={'thesis_required': True, 'health_monitoring': True, 'performance_tracking': True,

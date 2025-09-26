@@ -2221,14 +2221,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
 
     def step(self, **kwargs) -> Dict[str, Any]:
         """Legacy step interface for backward compatibility"""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        try:
-            result = loop.run_until_complete(self.process(**kwargs))
-            return result
-        finally:
-            loop.close()
+        return asyncio.run(self.process(**kwargs))
 
     def reset(self) -> None:
         """Enhanced reset with comprehensive state cleanup"""
@@ -2299,13 +2292,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
 
     def adjust_risk(self, stats: Dict[str, float]) -> None:
         """Legacy risk adjustment interface"""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        try:
-            _ = loop.run_until_complete(self.process(**stats))
-        finally:
-            loop.close()
+        asyncio.run(self.process(**stats))
 
     def calculate_risk_scale(self) -> float:
         """Legacy interface to get risk scale"""

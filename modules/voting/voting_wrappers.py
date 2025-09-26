@@ -530,25 +530,34 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
             if bool(self.config.get('publish_to_expert_votes_feed', True)):
                 try:
                     feed_key = self.config.get('expert_votes_bus_key', 'expert_votes')
-                    entry = {
-                        'expert': name,
-                        'vote': dict(proposal),
-                        'confidence': confidence,
-                        'timestamp': datetime.datetime.now().isoformat()
-                    }
-                    buf = self.smart_bus.get(feed_key, name) or []
-                    if not isinstance(buf, list):
-                        buf = []
-                    # de-duplicate same expert (keep most recent)
-                    buf = [e for e in buf if e.get('expert') != name]
-                    buf.append(entry)
+                    # Guard: if a canonical provider exists (e.g., Coordinator), skip optional per-expert writes
+                    try:
+                        providers = self.smart_bus.get_providers(feed_key) or []
+                    except Exception:
+                        providers = []
+                    if feed_key == 'expert_votes' and providers and (name not in providers):
+                        # Avoid owner/conflict warnings; coordinator will publish the snapshot
+                        pass
+                    else:
+                        entry = {
+                            'expert': name,
+                            'vote': dict(proposal),
+                            'confidence': confidence,
+                            'timestamp': datetime.datetime.now().isoformat()
+                        }
+                        buf = self.smart_bus.get(feed_key, name) or []
+                        if not isinstance(buf, list):
+                            buf = []
+                        # de-duplicate same expert (keep most recent)
+                        buf = [e for e in buf if e.get('expert') != name]
+                        buf.append(entry)
 
-                    # ring buffer cap
-                    cap = int(self.config.get('max_expert_votes_buffer', 200))
-                    if len(buf) > cap:
-                        buf = buf[-cap:]
+                        # ring buffer cap
+                        cap = int(self.config.get('max_expert_votes_buffer', 200))
+                        if len(buf) > cap:
+                            buf = buf[-cap:]
 
-                    self.smart_bus.set(feed_key, buf, module=name, thesis=f"{name} published normalized vote entry")
+                        self.smart_bus.set(feed_key, buf, module=name, thesis=f"{name} published normalized vote entry")
                 except Exception as e:
                     self.logger.warning(f"Soft-fail publishing to expert_votes feed: {e}")
 
@@ -1408,6 +1417,7 @@ _EVCC_INSTANCE = None  # process-lifetime singleton for coordinator reuse
     error_handling=True,
     hot_reload=True,
     timeout_ms=3000,
+    priority=-100,  # Negative priority = runs after voters (priority=0)
 ))
 class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, SmartInfoBusStateMixin):
     """PRODUCTION-GRADE Enhanced Voting Committee Coordinator v4.1 (hardened)"""
@@ -1478,14 +1488,24 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
             minimum_voters=self.minimum_voters
         ))
 
-        # Publish an initial empty expert_performance map to prevent early BUS MISS
+        # Publish initial empty snapshots to prevent early BUS MISS and declare ownership
         try:
+            try:
+                # Ensure canonical ownership; blocks other modules from writing this key
+                self.smart_bus.declare_owner('expert_votes', self.__class__.__name__)
+            except Exception:
+                pass
             self.smart_bus.set(
                 'expert_performance',
                 dict(self.committee_analytics.get('expert_performance', {})),
                 module=self.__class__.__name__,
                 thesis='Initialized empty expert performance map'
             )
+            # Initialize expert_votes snapshot for consumers
+            try:
+                self.smart_bus.set('expert_votes', [], module=self.__class__.__name__, thesis='Baseline expert votes initialized')
+            except Exception:
+                pass
             # Baseline committee votes collections
             self.smart_bus.set(
                 'committee_votes',
@@ -1632,7 +1652,6 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                 'voting_weights': voting_weights,
                 'time_of_day': time_of_day,
                 'performance_feedback': performance_feedback,
-                'member_confidences': member_confidences,
                 # canonical surfaces
                 'committee_members': committee_members,
                 'n_members': n_members,
@@ -1725,7 +1744,6 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                 'consensus_direction': 'neutral',
                 'agreement_score': 0.0,
                 'raw_proposals': {},
-                'member_confidences': {},
                 'member_confidences_ordered': [],
                 'member_confidences_map': {},
                 'committee_members': [],
@@ -2183,6 +2201,17 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                 module=self.__class__.__name__,
                 thesis=f"Committee confidence: {results['committee_confidence']:.1%}",
             )
+
+            # Canonical expert_votes snapshot (state key; coordinator-owned)
+            try:
+                self.smart_bus.set(
+                    'expert_votes',
+                    list(results.get('expert_votes', [])),
+                    module=self.__class__.__name__,
+                    thesis='Normalized expert votes snapshot'
+                )
+            except Exception:
+                pass
 
             # Publish committee_votes (simplified list)
             try:

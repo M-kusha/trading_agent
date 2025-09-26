@@ -257,16 +257,16 @@ class UnifiedDataExtractor:
         """Generate realistic synthetic data for testing."""
         self.trace("Generating synthetic data", level="WARNING")
         rng = np.random.default_rng(42)  # reproducible
-        instruments = ['EUR/USD', 'XAU/USD']
+        instruments = ['EUR_USD', 'XAU_USD']
         data: Dict[str, Any] = {}
 
         for instrument in instruments:
-            base_price = 1.1000 if instrument == 'EUR/USD' else 1950.0
+            base_price = 1.1000 if instrument == 'EUR_USD' else 1950.0
             n = 300
             # Geometric random walk
-            returns = rng.normal(0.0, 0.0008 if instrument == 'EUR/USD' else 0.0006, n)
+            returns = rng.normal(0.0, 0.0008 if instrument == 'EUR_USD' else 0.0006, n)
             prices = base_price * np.exp(np.cumsum(returns))
-            vol = rng.exponential(1200.0 if instrument == 'EUR/USD' else 900.0, n)
+            vol = rng.exponential(1200.0 if instrument == 'EUR_USD' else 900.0, n)
 
             bid = prices * (1.0 - 0.00005)
             ask = prices * (1.0 + 0.00005)

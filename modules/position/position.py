@@ -74,6 +74,10 @@ class IntegratedDebugger:
     """Lightweight decision debugger writing CSV/JSON + console banners."""
 
     def __init__(self, log_dir: str = "logs/debug", enable: bool = True):
+        # SmartInfoBus handle (injected later by PositionManager). Adding upfront
+        # silences static analysis complaining about missing attribute where
+        # _should_suppress_alerts accesses self.smart_bus.
+        self.smart_bus: Optional[Any] = None
         self.enabled = bool(enable)
         if not self.enabled:
             return
@@ -199,14 +203,16 @@ class IntegratedDebugger:
 
     def _should_suppress_alerts(self) -> bool:
         """Check if alerts should be suppressed during training/simulation mode."""
+        bus = getattr(self, "smart_bus", None)
+        if bus is None:
+            return False
         try:
-            env_cfg = self.smart_bus.get("environment_config", "PositionManager")
+            env_cfg = bus.get("environment_config", "PositionManager")
             if isinstance(env_cfg, dict):
                 mode = env_cfg.get("mode", "")
-                # Suppress alerts in simulation mode (training)
                 return mode == "sim"
         except Exception:
-            pass
+            return False
         return False
 
     def _alert_buy(self, instrument: str, snapshot: DebugSnapshot) -> None:
@@ -419,7 +425,7 @@ class PositionManager(
         self._instruments_forced = instruments is not None
 
         # set instruments early for BaseModule plumbing
-        self.instruments = instruments or ["XAU/USD", "EUR/USD"]
+        self.instruments = instruments or ["XAU_USD", "EUR_USD"]
         self.genome = genome or {}
         self.env = None
 
@@ -490,7 +496,7 @@ class PositionManager(
         instruments = kwargs.get("instruments", None)
         if instruments is not None:
             self._instruments_forced = True
-            self.instruments = instruments or ["XAU/USD", "EUR/USD"]
+            self.instruments = instruments or ["XAU_USD", "EUR_USD"]
 
         self.genome = kwargs.get("genome", None) or self.genome or {}
         self.env = kwargs.get("env", None) or self.env
@@ -515,6 +521,12 @@ class PositionManager(
 
     def _initialize_advanced_systems(self) -> None:
         self.smart_bus = InfoBusManager.get_instance()
+        # Propagate bus handle to debugger if available
+        try:
+            if hasattr(self, "debugger") and hasattr(self.debugger, "smart_bus"):
+                self.debugger.smart_bus = self.smart_bus
+        except Exception:
+            pass
 
         global _PM_SHARED_LOGGER
         if _PM_SHARED_LOGGER is None:
@@ -631,7 +643,7 @@ class PositionManager(
         Mirror Env/Executor positions snapshot (published by Executor) into PM.open_positions.
         Expected schema per instrument (example):
           positions = {
-            "EUR/USD": {
+            "EUR_USD": {
                "side": +1/-1,
                "units": 125000,
                "entry_price": 1.0831,
@@ -680,16 +692,39 @@ class PositionManager(
     # Env / balance alignment
     ####################################################################################################################
     def _sync_from_bus_env(self) -> None:
-        """Align PM config with the env's published environment_config (balance, instruments)."""
+        """Align PM config with the env's published environment_config (balance, instruments).
+
+        Core rule: Do not silently override configured initial_balance from a stale bus value.
+        Only accept an override if 'accept_env_balance_override' is explicitly enabled in config.
+        """
         try:
             env_cfg = self.smart_bus.get("environment_config", "PositionManager")
             if not isinstance(env_cfg, dict):
                 return
 
+            # Optional opt-in to accept bus overrides for initial balance
+            accept_override = bool(self.config.get("accept_env_balance_override", False))
+
             ib = env_cfg.get("initial_balance")
             if isinstance(ib, (int, float)) and ib > 0:
-                self.C.initial_balance = float(ib)
-                self.config["initial_balance"] = float(ib)
+                if accept_override:
+                    self.C.initial_balance = float(ib)
+                    self.config["initial_balance"] = float(ib)
+                else:
+                    # Warn on mismatch but keep configured value
+                    try:
+                        if abs(float(ib) - float(self.C.initial_balance)) / max(1.0, float(self.C.initial_balance)) > 0.05:
+                            self.logger.warning(
+                                format_operator_message(
+                                    "[WARN]",
+                                    "ENV_BALANCE_OVERRIDE_IGNORED",
+                                    configured=f"EUR {self.C.initial_balance:,.0f}",
+                                    bus_value=f"EUR {float(ib):,.0f}",
+                                    hint="Set accept_env_balance_override=true to allow"
+                                )
+                            )
+                    except Exception:
+                        pass
 
             env_insts = env_cfg.get("instruments")
             if isinstance(env_insts, list) and env_insts and not self._instruments_forced:
@@ -700,28 +735,50 @@ class PositionManager(
             pass
 
     def _read_balance_and_drawdown(self) -> Tuple[float, float]:
-        """Read balance & drawdown from env/optional executor snapshots."""
+        """Read balance & drawdown from env/optional executor snapshots.
+
+        Priority:
+          1) Configured initial_balance (authoritative per run)
+          2) market_state / portfolio_metrics live balances
+          3) environment_config.initial_balance IF explicitly allowed via accept_env_balance_override
+        """
         balance = float(self.C.initial_balance)
         drawdown = 0.0
 
         try:
-            env_cfg = self.smart_bus.get("environment_config", "PositionManager")
-            if isinstance(env_cfg, dict):
-                ib = env_cfg.get("initial_balance")
-                if isinstance(ib, (int, float)) and ib > 0:
-                    balance = float(ib)
-
+            # Live anchors first (if available)
             market_state = self.smart_bus.get("market_state", "PositionManager")
             if isinstance(market_state, dict):
-                balance = float(market_state.get("balance", balance))
-                drawdown = float(market_state.get("drawdown", drawdown))
+                try:
+                    balance = float(market_state.get("balance", balance))
+                except Exception:
+                    pass
+                try:
+                    drawdown = float(market_state.get("drawdown", drawdown))
+                except Exception:
+                    pass
 
             portfolio_metrics = self.smart_bus.get("portfolio_metrics", "PositionManager")
             if isinstance(portfolio_metrics, dict):
-                balance = float(portfolio_metrics.get("balance", balance))
-                drawdown = float(
-                    portfolio_metrics.get("current_drawdown", portfolio_metrics.get("drawdown", drawdown))
-                )
+                try:
+                    balance = float(portfolio_metrics.get("balance", balance))
+                except Exception:
+                    pass
+                try:
+                    drawdown = float(
+                        portfolio_metrics.get("current_drawdown", portfolio_metrics.get("drawdown", drawdown))
+                    )
+                except Exception:
+                    pass
+
+            # Only accept environment_config override if explicitly enabled
+            accept_override = bool(self.config.get("accept_env_balance_override", False))
+            if accept_override:
+                env_cfg = self.smart_bus.get("environment_config", "PositionManager")
+                if isinstance(env_cfg, dict):
+                    ib = env_cfg.get("initial_balance")
+                    if isinstance(ib, (int, float)) and ib > 0:
+                        balance = float(ib)
         except Exception:
             pass
 
@@ -1674,7 +1731,7 @@ class PositionManager(
                 "risk_factors": decision.risk_factors,
             }
 
-            # 1) Per-instrument (verbatim, e.g., "EUR/USD")
+            # 1) Per-instrument (verbatim, e.g., "EUR_USD")
             key_verbatim = f"position_decision_{instrument}"
             self.smart_bus.set(key_verbatim, payload, module="PositionManager", thesis=f"Decision for {instrument}")
 

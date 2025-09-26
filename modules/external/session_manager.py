@@ -145,6 +145,45 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
         self._update_session_labels()
         self.logger.info("[OK] Enhanced SessionManager initialized with improvements.")
         self.logger.debug(f"Configuration: session_duration={self.cfg.session_duration}s, performance_window={self.cfg.performance_window}")
+        # Seed canonical mode keys early to avoid initial BUS MISS
+        try:
+            # Prefer mixin bus if present; otherwise use global instance
+            bus = None
+            try:
+                bus = getattr(self, 'smart_bus', None)
+            except Exception:
+                bus = None
+            if bus is None:
+                try:
+                    from modules.utils.info_bus import InfoBusManager as _IBM
+                    bus = _IBM.get_instance() if _IBM else None
+                except Exception:
+                    bus = None
+
+            if bus is not None:
+                try:
+                    bus.declare_owner('execution_mode', 'SessionManager')
+                except Exception:
+                    pass
+                mode_value = 'sim'
+                try:
+                    # If env config already present, respect its mode
+                    env_cfg = bus.get('environment_config', 'SessionManager') or {}
+                    mv = str(env_cfg.get('mode', mode_value)).lower()
+                    if mv in ('sim', 'live'):
+                        mode_value = mv
+                except Exception:
+                    pass
+                try:
+                    bus.set('execution_mode', mode_value, module='SessionManager', thesis='Canonical execution mode (init)')
+                except Exception:
+                    pass
+                try:
+                    bus.set('env_mode', mode_value, module='SessionManager', thesis='Legacy alias: env_mode (init)')
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _update_session_labels(self, current_hour: Optional[int] = None) -> None:
         """Optimized session labels with explicit time parameter for testing."""
@@ -298,6 +337,7 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
             "system_health": session_data.system_health,
             "environment_config": {},
             "trading_result": session_data.trading_result,
+            "execution_mode": "sim",
         }
 
         # Build thesis with error context if present
@@ -592,6 +632,8 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
           - Otherwise return {} for PnL-related keys (never fabricate numbers).
         """
         t0 = self.time_helper.get_current_time()
+        # Pre-initialize to satisfy type checker and ensure availability in error path
+        env_cfg_out: Dict[str, Any] = {}
 
         try:
             # Optimized session updates with caching
@@ -636,8 +678,66 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                 system_health=system_health
             )
 
+            # Canonicalize environment_config using performance_data as authority for initial_balance
+            try:
+                env_cfg_out = dict(environment_config) if isinstance(environment_config, dict) else {}
+                pd_ib = None
+                try:
+                    if isinstance(performance_data, dict):
+                        if isinstance(performance_data.get('initial_balance'), (int, float)):
+                            pd_ib = float(performance_data['initial_balance'])
+                        elif isinstance(performance_data.get('starting_balance'), (int, float)):
+                            pd_ib = float(performance_data['starting_balance'])
+                except Exception:
+                    pd_ib = None
+                if pd_ib is not None:
+                    # Enforce authoritative initial balance from env/provider
+                    env_cfg_out['initial_balance'] = pd_ib
+                # Publish canonical environment_config (SessionManager is the owner)
+                try:
+                    # Reinforce ownership to avoid churn from any prior Environment attempts
+                    try:
+                        self.smart_bus.declare_owner('environment_config', 'SessionManager')
+                    except Exception:
+                        pass
+                    self.smart_bus.set(
+                        'environment_config',
+                        env_cfg_out,
+                        module='SessionManager',
+                        thesis='Canonical environment config (synced)'
+                    )
+                    mode_value = str(env_cfg_out.get('mode', 'sim')).lower()
+                    try:
+                        self.smart_bus.declare_owner('execution_mode', 'SessionManager')
+                    except Exception:
+                        pass
+                    self.smart_bus.set(
+                        'execution_mode',
+                        mode_value,
+                        module='SessionManager',
+                        thesis='Canonical execution mode'
+                    )
+                    try:
+                        self.smart_bus.set(
+                            'env_mode',
+                            mode_value,
+                            module='SessionManager',
+                            thesis='Legacy alias: env_mode'
+                        )
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            except Exception:
+                env_cfg_out = {}
+
             # Build final snapshot
             snapshot = self._build_snapshot(session_data)
+            # Include environment_config explicitly to avoid empty contract field
+            try:
+                snapshot["environment_config"] = env_cfg_out
+            except Exception:
+                snapshot["environment_config"] = {}
 
             # Update success metrics
             self._success += 1
@@ -702,4 +802,8 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
 
             # Build error snapshot
             payload = self._build_snapshot(session_data_error, error_message)
+            try:
+                payload["environment_config"] = env_cfg_out if isinstance(env_cfg_out, dict) else {}
+            except Exception:
+                payload["environment_config"] = {}
             return payload
