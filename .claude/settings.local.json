@@ -14,7 +14,10 @@
       "Bash(unix2dos:*)",
       "Bash(npm run lint)",
       "Bash(timeout:*)",
-      "Bash(sort:*)"
+      "Bash(sort:*)",
+      "Bash(curl:*)",
+      "Bash(tasklist:*)",
+      "Bash(Get-Process -Id 7812 -ErrorAction SilentlyContinue)"
     ],
     "deny": [],
     "ask": []

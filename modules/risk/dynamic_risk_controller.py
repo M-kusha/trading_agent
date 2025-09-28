@@ -183,6 +183,8 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
         self.current_mode = RiskControlMode.INITIALIZATION
         self.mode_start_time = datetime.datetime.now()
 
+        self._stop_event = threading.Event()
+
         # Enhanced state tracking
         self.current_risk_scale = float(self._cfg.base_risk_scale)
         self.risk_factors: Dict[str, float] = {
@@ -250,10 +252,10 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                     self._update_risk_health()
                     self._analyze_risk_effectiveness()
                     self._adapt_risk_parameters()
-                    time.sleep(max(1, int(self._cfg.health_check_interval_sec)))
+                    self._stop_event.wait(max(1, int(self._cfg.health_check_interval_sec)))
                 except Exception as e:
                     self.logger.error(f"Risk control monitoring error: {e}")
-                    time.sleep(2)
+                    self._stop_event.wait(2)
 
         self._monitoring_active = True
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)

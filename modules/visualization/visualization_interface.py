@@ -328,6 +328,9 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
             
             # Update SmartInfoBus with aggregated visualization data
             await self._update_smartinfobus_comprehensive(data_results)
+
+            # Also publish data synchronously as backup (critical for UI)
+            self._publish_infobus_data_sync(data_results)
             
             # Record performance metrics
             processing_time = (time.time() - start_time) * 1000
@@ -1007,11 +1010,41 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
             except Exception:
                 pass  # Don't let streaming errors affect trading
 
+    def _publish_infobus_data_sync(self, results: Dict[str, Any]):
+        """Synchronously publish critical data to InfoBus (backup method)"""
+        try:
+            thesis = f"Processed {results.get('records_processed', 0)} records, dashboard ready: {results.get('dashboard_ready', False)}"
+
+            # Always publish visualization data
+            viz_data = {
+                'total_records': len(self.records),
+                'performance_metrics': {k: list(v)[-10:] for k, v in self.performance_metrics.items()},
+                'recent_alerts': list(self.alert_history)[-5:],
+                'dashboard_ready': bool(self.dashboard_data),
+                'streaming_enabled': self.streaming_enabled,
+                'statistics': self.viz_stats.copy(),
+                'regime_analytics': dict(self.regime_analytics),
+                'session_analytics': dict(self.session_analytics),
+                'status': 'active'
+            }
+
+            self.smart_bus.set('visualization_data', viz_data,
+                             module='VisualizationInterface', thesis=thesis)
+
+            # Always publish dashboard data (even if empty)
+            self.smart_bus.set('dashboard_data', self.dashboard_data or {},
+                             module='VisualizationInterface', thesis=thesis)
+
+            self.logger.info(f"[INFOBUS] Published viz_data and dashboard_data: {len(viz_data)} items")
+
+        except Exception as e:
+            self.logger.error(f"[INFOBUS] Sync publish failed: {e}")
+
     async def _update_smartinfobus_comprehensive(self, results: Dict[str, Any]):
         """Update SmartInfoBus with comprehensive visualization data"""
         try:
             thesis = f"Processed {results.get('records_processed', 0)} records, dashboard ready: {results.get('dashboard_ready', False)}"
-            
+
             # Update visualization data
             self.smart_bus.set('visualization_data', {
                 'total_records': len(self.records),
@@ -1023,12 +1056,11 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
                 'regime_analytics': dict(self.regime_analytics),
                 'session_analytics': dict(self.session_analytics)
             }, module='VisualizationInterface', thesis=thesis)
-            
-            # Update dashboard data
-            if self.dashboard_data:
-                self.smart_bus.set('dashboard_data', self.dashboard_data, 
-                                 module='VisualizationInterface', thesis=thesis)
-            
+
+            # Update dashboard data (always publish, even if empty)
+            self.smart_bus.set('dashboard_data', self.dashboard_data or {},
+                             module='VisualizationInterface', thesis=thesis)
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
             self.logger.warning(f"SmartInfoBus update failed: {error_context}")

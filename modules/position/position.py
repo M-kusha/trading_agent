@@ -1055,7 +1055,7 @@ class PositionManager(
             # read-only mirrors (if Executor published them)
             "positions": copy.deepcopy(positions_snapshot),
             "pending_orders": copy.deepcopy(orders_created),
-            "position_data": copy.deepcopy(positions_snapshot),
+
             "trades": copy.deepcopy(trades_snapshot),
             "recent_trades": copy.deepcopy(trades_snapshot[-20:]),
             "current_pnl": float(current_pnl),

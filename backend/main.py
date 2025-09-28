@@ -746,7 +746,7 @@ async def start_live_trading(config: LiveTradingConfig):
         raise HTTPException(status_code=500, detail=error_msg)
 
 async def live_trading_loop(config: LiveTradingConfig, connector):
-    """Enhanced live trading loop with comprehensive monitoring"""
+    """Enhanced live trading loop with comprehensive monitoring and full module system"""
     try:
         # Help type checker know these are set
         assert state.live_env is not None
@@ -755,21 +755,42 @@ async def live_trading_loop(config: LiveTradingConfig, connector):
         step_count = 0
         last_balance_update = time.time()
         last_health_check = time.time()
-        
-        logger.info("Live trading loop started")
-        
+
+        # Initialize ModuleOrchestrator for live trading
+        orchestrator = None
+        try:
+            from modules.core.module_system import ModuleOrchestrator
+            orchestrator = ModuleOrchestrator.get_instance()
+            logger.info("ModuleOrchestrator initialized for live trading")
+        except Exception as e:
+            logger.warning(f"Failed to initialize ModuleOrchestrator: {e}")
+
+        logger.info("Live trading loop started with full module system")
+
         while state.system_status == "TRADING":
             loop_start = time.time()
-            
+
             try:
                 # Update market data
                 new_data = connector.get_historical_data(n_bars=1)
                 if new_data:
                     update_environment_data(new_data, config)
-                
+
+                # Run ModuleOrchestrator step if available (critical for live trading)
+                if orchestrator:
+                    try:
+                        # Execute all modules (memory, risk, voting, etc.)
+                        orchestrator.execute_step(step_count)
+
+                        # Sync module states to backend state
+                        state._sync_modules_from_orchestrator()
+
+                    except Exception as e:
+                        logger.warning(f"Module execution error: {e}")
+
                 # Get model prediction
                 action, _ = state.model.predict(obs, deterministic=True)
-                
+
                 # Execute trading step
                 obs, reward, terminated, truncated, info = state.live_env.step(action)
                 

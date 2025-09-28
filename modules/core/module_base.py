@@ -54,6 +54,7 @@ NAME_VALID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # ─────────────────────────────────────────────────────────────
 # Module Metadata
 # ─────────────────────────────────────────────────────────────
+
 @dataclass
 class ModuleMetadata:
     name: str
@@ -75,9 +76,10 @@ class ModuleMetadata:
     health_monitoring: bool = False
     performance_tracking: bool = False
     error_handling: bool = False
+    readiness_grace_s: float | None = None  # Optional per-module micro grace
 
     VALID_CATEGORIES = [
-        'auditing', 'core', 'executor','external', 'features', 'market', 'memory', 'meta',
+        'auditing', 'core', 'executor', 'external', 'features', 'market', 'memory', 'meta',
         'models', 'monitoring', 'position', 'reward', 'risk', 'simulation',
         'strategy', 'trading_modes', 'utils', 'visualization', 'voting', 'general'
     ]
@@ -121,6 +123,16 @@ class ModuleMetadata:
         if not VERSION_SEMVER_RE.match(self.version):
             errors.append(f"version must be semantic (e.g., 1.2.3), got {self.version!r}")
 
+        # Validate readiness_grace_s if set
+        rg = self.__dict__.get('readiness_grace_s', None)
+        if rg is not None:
+            try:
+                rgv = float(rg)
+                if rgv < 0 or rgv > 30:
+                    errors.append("readiness_grace_s must be within [0, 30] seconds if set")
+            except Exception:
+                errors.append("readiness_grace_s must be a number if set")
+
         if errors:
             raise ValueError(f"Module metadata validation failed for {self.name}: {errors}")
 
@@ -153,7 +165,8 @@ class ModuleMetadata:
             'thesis_required': self.thesis_required,
             'health_monitoring': self.health_monitoring,
             'performance_tracking': self.performance_tracking,
-            'error_handling': self.error_handling
+            'error_handling': self.error_handling,
+            'readiness_grace_s': self.readiness_grace_s,
         }
 
 
@@ -275,34 +288,34 @@ def _enhance_state_management(cls):
 
 
 def _enhance_validation_methods(cls):
-    if not hasattr(cls, 'validate_inputs'):
-        def validate_inputs(self, inputs: Dict[str, Any]) -> bool:
-            # key sanity (security hardening)
-            for k in inputs.keys():
-                if not isinstance(k, str) or len(k) > MAX_INPUT_KEY_LEN or k.startswith("__"):
-                    raise ValueError(f"invalid input key: {k!r}")
-            for req in self.__module_metadata__.requires:
-                if req not in inputs:
-                    raise ValueError(f"missing required input: {req}")
-                if inputs[req] is None:
-                    raise ValueError(f"required input {req} cannot be None")
-            return True
-        cls.validate_inputs = validate_inputs  # type: ignore[attr-defined]
+        if not hasattr(cls, 'validate_inputs'):
+            def validate_inputs(self, inputs: Dict[str, Any]) -> bool:
+                for k in inputs.keys():
+                    if not isinstance(k, str) or len(k) > MAX_INPUT_KEY_LEN or k.startswith("__"):
+                        raise ValueError(f"invalid input key: {k!r}")
+                for req in self.metadata.requires:
+                    if req not in inputs:
+                        raise ValueError(f"missing required input: {req}")
+                    if inputs[req] is None:
+                        raise ValueError(f"required input {req} cannot be None")
+                return True
+            cls.validate_inputs = validate_inputs  # type: ignore[attr-defined]
 
-    if not hasattr(cls, 'validate_outputs'):
-        def validate_outputs(self, outputs: Dict[str, Any]) -> bool:
-            md = self.__module_metadata__
-            for prov in md.provides:
-                if prov not in outputs:
-                    raise ValueError(f"missing required output: {prov}")
-            if getattr(md, 'thesis_required', False) and '_thesis' not in outputs:
-                raise ValueError("explainable modules must provide '_thesis'")
-            if '_confidence' in outputs:
-                c = outputs['_confidence']
-                if not isinstance(c, (int, float)) or not 0 <= c <= 1:
-                    raise ValueError(f"invalid confidence value: {c!r}")
-            return True
-        cls.validate_outputs = validate_outputs  # type: ignore[attr-defined]
+        if not hasattr(cls, 'validate_outputs'):
+            def validate_outputs(self, outputs: Dict[str, Any]) -> bool:
+                md = self.metadata
+                for prov in md.provides:
+                    if prov not in outputs:
+                        raise ValueError(f"missing required output: {prov}")
+                if getattr(md, 'thesis_required', False) and '_thesis' not in outputs:
+                    raise ValueError("explainable modules must provide '_thesis'")
+                if '_confidence' in outputs:
+                    c = outputs['_confidence']
+                    if not isinstance(c, (int, float)) or not 0 <= c <= 1:
+                        raise ValueError(f"invalid confidence value: {c!r}")
+                return True
+            cls.validate_outputs = validate_outputs  # type: ignore[attr-defined]
+
 
 
 def _enhance_explanation_capability(cls):
@@ -411,41 +424,47 @@ def provides(*fields: str):
 def with_timeout(timeout_ms: Optional[int] = None):
     def deco(func: Callable):
         async def _async(self, *args, **kwargs):
-            to = (timeout_ms or self.__module_metadata__.timeout_ms) / 1000.0
+            to = (timeout_ms or self.metadata.timeout_ms) / 1000.0
             try:
                 return await asyncio.wait_for(func(self, *args, **kwargs), timeout=to)
             except asyncio.TimeoutError as e:
-                # best-effort cleanup hook
                 try:
                     maybe = getattr(self, "cleanup_after_timeout", None)
                     if maybe:
                         if asyncio.iscoroutinefunction(maybe):
                             await maybe()
-                        else:
+                        elif callable(maybe):
                             maybe()
                 except Exception:
                     pass
                 raise e
 
         def _sync(self, *args, **kwargs):
-            start = time.time()
-            result = func(self, *args, **kwargs)
-            duration_ms = (time.time() - start) * 1000.0
-            to_ms = timeout_ms or self.__module_metadata__.timeout_ms
-            if duration_ms > to_ms and getattr(self, 'logger', None):
-                self.logger.warning(
-                    f"{self.__class__.__name__}.{func.__name__} took {duration_ms:.0f}ms (timeout: {to_ms}ms)"
-                )
-            return result
+            # Enforce hard timeout in sync path too
+            to_sec = float(timeout_ms or self.metadata.timeout_ms) / 1000.0
+            import concurrent.futures as _f
+            with _f.ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(lambda: func(self, *args, **kwargs))
+                try:
+                    return fut.result(timeout=to_sec)
+                except _f.TimeoutError:
+                    try:
+                        maybe = getattr(self, "cleanup_after_timeout", None)
+                        if callable(maybe):
+                            maybe()
+                    except Exception:
+                        pass
+                    raise TimeoutError(f"Timeout after {to_sec:.2f}s")
 
         return _async if asyncio.iscoroutinefunction(func) else _sync
     return deco
+
 
 
 def with_confidence_threshold(min_confidence: Optional[float] = None):
     def deco(func: Callable):
         async def _async(self, *args, **kwargs):
-            thr = float(min_confidence or getattr(self.__module_metadata__, 'min_confidence', 0.0))
+            thr = float(min_confidence or getattr(self.metadata, 'min_confidence', 0.0))
             if 'inputs' in kwargs and isinstance(kwargs['inputs'], dict):
                 ctx = kwargs['inputs']
             elif args and isinstance(args[0], dict):
@@ -454,15 +473,12 @@ def with_confidence_threshold(min_confidence: Optional[float] = None):
                 ctx = kwargs
             conf = float(ctx.get('confidence', 1.0))
             if conf < thr:
-                return {
-                    'skipped': True,
-                    'reason': f'confidence {conf:.2f} below threshold {thr:.2f}',
-                    '_thesis': f'Execution skipped due to low confidence ({conf:.1%} < {thr:.1%})'
-                }
+                from modules.core.exceptions import ExecutionSkipped
+                raise ExecutionSkipped(f'confidence {conf:.2f} below threshold {thr:.2f}')
             return await func(self, *args, **kwargs)
 
         def _sync(self, *args, **kwargs):
-            thr = float(min_confidence or getattr(self.__module_metadata__, 'min_confidence', 0.0))
+            thr = float(min_confidence or getattr(self.metadata, 'min_confidence', 0.0))
             if 'inputs' in kwargs and isinstance(kwargs['inputs'], dict):
                 ctx = kwargs['inputs']
             elif args and isinstance(args[0], dict):
@@ -471,15 +487,13 @@ def with_confidence_threshold(min_confidence: Optional[float] = None):
                 ctx = kwargs
             conf = float(ctx.get('confidence', 1.0))
             if conf < thr:
-                return {
-                    'skipped': True,
-                    'reason': f'confidence {conf:.2f} below threshold {thr:.2f}',
-                    '_thesis': f'Execution skipped due to low confidence ({conf:.1%} < {thr:.1%})'
-                }
+                from modules.core.exceptions import ExecutionSkipped
+                raise ExecutionSkipped(f'confidence {conf:.2f} below threshold {thr:.2f}')
             return func(self, *args, **kwargs)
 
         return _async if asyncio.iscoroutinefunction(func) else _sync
     return deco
+
 
 
 def with_retry(max_retries: Optional[int] = None):
@@ -986,13 +1000,12 @@ class BaseModule(ABC):
 
     # ───── DI resolution (best-effort, no hard coupling) ─────
     def _resolve_dependencies(self):
-        # Optionally auto-wire from InfoBus if running inside system
+        # Optionally auto-wire from InfoBus if running inside system.
+        # We intentionally do not guess our registry name here to avoid tight coupling.
         if 'circuit_breaker' not in self.dependencies:
             try:
                 from modules.utils.info_bus import InfoBusManager
-                bus = InfoBusManager.get_instance()
-                # Expect orchestrator to set: bus._circuit_breakers[name] → instance
-                # We don’t know our registry name here; leave for orchestrator to inject.
-                # This method intentionally does not guess to avoid coupling.
+                _ = InfoBusManager.get_instance()
             except Exception:
                 pass
+

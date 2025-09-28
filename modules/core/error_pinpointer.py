@@ -2,14 +2,14 @@
 # File: modules/core/error_pinpointer.py
 # [ROCKET] PRODUCTION-READY Error Analysis & Debugging System
 # NASA/MILITARY GRADE - ZERO ERROR TOLERANCE
-# 2025-08 ENHANCEMENTS:
+# 2025 ENHANCEMENTS:
 #   - Loop-safe async recovery worker (idempotent start/stop)
 #   - NumPy-optional stats (robust without np)
-#   - Pylance-friendly InfoBus/orchestrator duck-typing (getattr/callable checks)
-#   - Rate-limited error deduplication & correlation
-#   - Pluggable patterns & recovery actions; compiled-regex cache
-#   - Safe snapshots (bounded sizes), export utilities hardened
-#   - Decorators preserve metadata and support sync/async seamlessly
+#   - Pylance-friendly InfoBus/orchestrator duck-typing
+#   - Rate-limited error deduplication (true lightweight fast-path)
+#   - Pluggable recovery actions; compiled-regex cache
+#   - Safe snapshots (bounded), hardened export utilities
+#   - Decorators preserve metadata; sync/async supported
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 try:
-    import numpy as np
+    import numpy as np  # type: ignore
     NUMPY_AVAILABLE = True
 except Exception:
     np = None  # type: ignore
@@ -45,7 +45,7 @@ from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.info_bus import InfoBusManager  # type: ignore
 
 if TYPE_CHECKING:
-    from modules.core.module_system import ModuleOrchestrator
+    from modules.core.module_system import ModuleOrchestrator  # type: ignore
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -89,7 +89,7 @@ class ErrorContext:
     related_errors: List[str] = field(default_factory=list)
 
     # Analysis
-    severity: str = "unknown"  # critical, high, medium, low
+    severity: str = "unknown"  # critical, high, medium, low, duplicate
     category: str = "unknown"  # logic, data, timeout, dependency, resource
     suggested_fixes: List[str] = field(default_factory=list)
     reproduction_steps: List[str] = field(default_factory=list)
@@ -126,7 +126,7 @@ class ErrorContext:
 
 @dataclass
 class ErrorPattern:
-    """Pattern-based error recognition with recovery strategies"""
+    """Pattern-based error recognition with recovery strategies."""
     pattern_id: str
     error_pattern: str
     category: str
@@ -147,7 +147,10 @@ def _mean(values: List[float]) -> float:
     if not values:
         return 0.0
     if NUMPY_AVAILABLE and np is not None:
-        return float(np.mean(values))
+        try:
+            return float(np.mean(values))  # type: ignore[call-arg]
+        except Exception:
+            pass
     return sum(values) / len(values)
 
 
@@ -201,10 +204,10 @@ class ErrorPinpointer:
 
         # Async recovery infrastructure
         self._recovery_executor = None
-        self._recovery_queue: Optional[asyncio.Queue] = None
+        self._recovery_queue: Optional[asyncio.Queue] = None   # lazily created when loop is present
         self._recovery_task: Optional[asyncio.Task] = None
 
-        # Start recovery infra (idempotent)
+        # Start recovery infra (idempotent; queue created lazily)
         self._start_recovery_system()
 
         self.logger.info("[OK] ErrorPinpointer initialized")
@@ -226,10 +229,7 @@ class ErrorPinpointer:
                 thread_name_prefix="ErrorRecovery",
             )
 
-        if self._recovery_queue is None:
-            self._recovery_queue = asyncio.Queue(maxsize=self.cfg.recovery_queue_size)
-
-        # Start worker if an event loop is running
+        # Start worker if an event loop is running; queue is created lazily in _attempt_recovery
         try:
             loop = asyncio.get_running_loop()
             if self._recovery_task is None or self._recovery_task.done():
@@ -344,7 +344,7 @@ class ErrorPinpointer:
         return [
             ErrorPattern(
                 pattern_id="KEY_ERROR_INFOBUS",
-                error_pattern=r"KeyError.*'([^']+)'",
+                error_pattern=r"KeyError.*['\"]([^'\"]+)['\"]",
                 category="data",
                 severity="high",
                 description="Missing key in InfoBus data access",
@@ -494,7 +494,7 @@ class ErrorPinpointer:
                 severity="critical",
                 description="Circular dependency in module system",
                 common_causes=[
-                    "Module A requires output from Module B which requires Module A",
+                    "Mutual module data requirements",
                     "Recursive data dependencies",
                     "Improper module initialization order"
                 ],
@@ -533,13 +533,29 @@ class ErrorPinpointer:
             error_type = type(exception).__name__
             error_message = str(exception)
 
-            # Deduplication within window
+            # Deduplication within window (true lightweight fast-path)
             dedupe_key = f"{module_name}:{error_type}:{error_message[:80]}"
             now = time.time()
             last = self._last_seen.get(dedupe_key, 0.0)
-            if (now - last) < self.cfg.dedupe_window_sec:
-                # Still record lightweight context for history but skip heavy actions
+            deduped = (now - last) < self.cfg.dedupe_window_sec
+            if deduped:
                 self._last_seen[dedupe_key] = now
+                context = ErrorContext(
+                    error_type=error_type,
+                    error_message=error_message,
+                    module_name=module_name,
+                    function_name="unknown",
+                    file_path="unknown",
+                    line_number=0,
+                    timestamp=datetime.now(),
+                    severity="low",
+                    category="duplicate",
+                )
+                with self._history_lock:
+                    self.error_history.append(context)
+                    self.error_patterns[f"{error_type}:{module_name}"] += 1
+                    self.module_error_counts[module_name] += 1
+                return context
 
             # Traceback (use last frame where the exception occurred)
             tb = exception.__traceback__
@@ -566,7 +582,7 @@ class ErrorPinpointer:
                 timestamp=datetime.now(),
             )
 
-            # Code & System Context
+            # Code & System Context (bounded, best-effort)
             context.source_lines = self._extract_source_lines(file_path, line_number, self.cfg.snapshot_max_source_context)
             context.local_variables = self._extract_local_variables(frame, self.cfg.snapshot_max_locals)
             context.call_stack = self._extract_call_stack(exception.__traceback__)
@@ -592,8 +608,11 @@ class ErrorPinpointer:
             if context.recovery_actions and self._should_attempt_recovery(context):
                 try:
                     loop = asyncio.get_running_loop()
+                    # Ensure queue bound to *this* loop and worker running
                     if self._recovery_queue is None:
-                        self._start_recovery_system()
+                        self._recovery_queue = asyncio.Queue(maxsize=self.cfg.recovery_queue_size)
+                    if self._recovery_task is None or self._recovery_task.done():
+                        self._recovery_task = loop.create_task(self._recovery_worker(), name="ErrorRecoveryWorker")
                     loop.create_task(self._attempt_recovery(context))
                 except RuntimeError:
                     # No loop; fall back to sync recovery in thread pool
@@ -660,16 +679,20 @@ class ErrorPinpointer:
         recovery_key = f"{context.module_name}:{context.error_type}"
         self.recovery_attempts[recovery_key] += 1
 
-        # Ensure infra
-        if self._recovery_queue is None or (self._recovery_task and self._recovery_task.done()):
-            self._start_recovery_system()
+        # Ensure infra bound to the current loop
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.logger.warning("[WARN] No running loop; skipping async recovery enqueue")
+            return
+
+        if self._recovery_queue is None:
+            self._recovery_queue = asyncio.Queue(maxsize=self.cfg.recovery_queue_size)
+        if self._recovery_task is None or self._recovery_task.done():
+            self._recovery_task = loop.create_task(self._recovery_worker(), name="ErrorRecoveryWorker")
 
         # Enqueue (bounded)
         q = self._recovery_queue
-        if q is None:
-            self.logger.warning("[WARN] Recovery queue not initialized; skipping enqueue")
-            return
-
         try:
             await asyncio.wait_for(q.put({'context': context, 'timestamp': time.time()}), timeout=1.0)
             self.logger.info(f"📋 Queued recovery for {context.module_name}")
@@ -691,7 +714,7 @@ class ErrorPinpointer:
             self.logger.error(f"Sync recovery failed: {e}")
 
     def _execute_recovery_action_sync(self, action_type: str, params: Dict[str, Any], context: ErrorContext) -> bool:
-        """Sync execution for environments without a running loop."""
+        """Sync execution for environments without a running loop (best-effort subset)."""
         # Try custom handler first
         handler = self._custom_recovery_actions.get(action_type)
         if handler:
@@ -849,11 +872,16 @@ class ErrorPinpointer:
                     return health.get('status') != 'CRITICAL'
                 return True
 
+            if action_type == 'reorder_execution' and orc:
+                build = getattr(orc, 'build_execution_plan', None)
+                if callable(build):
+                    build()
+                return True
+
         except Exception as e:
             self.logger.error(f"Recovery action {action_type} failed: {e}")
 
         return False
-
 
     # ───────────────────────────────────────────────────────
     # Pattern Analysis & Suggestions
@@ -1063,22 +1091,33 @@ class ErrorPinpointer:
             if hasattr(orc, 'get_module_by_name'):
                 module = orc.get_module_by_name(module_name)
             elif hasattr(orc, 'modules'):
-                module = orc.modules.get(module_name)  # type: ignore[attr-defined]
+                module = getattr(orc, 'modules', {}).get(module_name)  # type: ignore[attr-defined]
 
             if not module:
                 return {}
 
-            state = {}
+            state: Dict[str, Any] = {}
             if hasattr(module, 'get_state'):
-                state = module.get_state() or {}
+                try:
+                    state = module.get_state() or {}
+                except Exception:
+                    state = {}
 
             if hasattr(orc, 'get_circuit_breaker_status'):
-                cb_status = orc.get_circuit_breaker_status()
-                if module_name in cb_status:
-                    state['circuit_breaker'] = cb_status[module_name]
+                try:
+                    cb_status = orc.get_circuit_breaker_status()
+                    if isinstance(cb_status, dict) and module_name in cb_status:
+                        state['circuit_breaker'] = cb_status[module_name]
+                except Exception:
+                    pass
 
-            if hasattr(orc, 'module_performance') and module_name in getattr(orc, 'module_performance', {}):
-                state['performance'] = orc.module_performance[module_name]
+            if hasattr(orc, 'module_performance'):
+                try:
+                    perf = getattr(orc, 'module_performance', {})
+                    if isinstance(perf, dict) and module_name in perf:
+                        state['performance'] = perf[module_name]
+                except Exception:
+                    pass
 
             return state
         except Exception:
@@ -1181,21 +1220,32 @@ class ErrorPinpointer:
                 guide += f"  {var} = {value}\n"
 
         if self.orchestrator:
-            guide += "\n🚦 ORCHESTRATOR STATUS:\n"
-            if hasattr(self.orchestrator, 'get_emergency_mode_status'):
-                emergency_status = self.orchestrator.get_emergency_mode_status()
-                if emergency_status.get('active'):
-                    guide += f"  [WARN] EMERGENCY MODE ACTIVE: {emergency_status.get('reason')}\n"
-            if hasattr(self.orchestrator, 'get_circuit_breaker_status'):
-                cb_status = self.orchestrator.get_circuit_breaker_status()
-                if context.module_name in cb_status:
-                    cb = cb_status[context.module_name]
-                    guide += f"  Circuit Breaker: {cb.get('state')} (failures: {cb.get('failure_count')})\n"
+            try:
+                open_breakers = 0
+                cbs = getattr(self.orchestrator, 'circuit_breakers', {})
+                if isinstance(cbs, dict):
+                    open_breakers = sum(1 for cb in cbs.values() if getattr(cb, 'state', 'CLOSED') == 'OPEN')
+                emergency = False
+                if hasattr(self.orchestrator, 'get_emergency_mode_status'):
+                    status = self.orchestrator.get_emergency_mode_status()
+                    emergency = bool(status.get('active')) if isinstance(status, dict) else bool(getattr(status, 'active', False))
+                guide += f"""
+🚦 ORCHESTRATOR STATUS
+{'─' * 30}
+- Emergency Mode: {'ACTIVE' if emergency else 'Inactive'}
+- Circuit Breakers Open: {open_breakers}
+- Total Modules: {len(getattr(self.orchestrator, 'modules', {}))}
+"""
+            except Exception:
+                pass
 
-        guide += "\n💻 QUICK ACTIONS:\n"
-        guide += "  1. Check module logs: error_pinpointer.get_module_error_log(module_name)\n"
-        guide += "  2. View error history: error_pinpointer.get_error_summary()\n"
-        guide += "  3. Check correlations: error_pinpointer.correlate_errors()\n"
+        guide += """
+
+💻 QUICK ACTIONS:
+  1. Check module logs: error_pinpointer.get_module_error_log(module_name)
+  2. View error history: error_pinpointer.get_error_summary()
+  3. Check correlations: error_pinpointer.correlate_errors()
+"""
         if self.orchestrator:
             guide += "  4. Reset module: orchestrator.reset_circuit_breaker(module_name)\n"
             guide += "  5. Disable module: orchestrator.disable_module(module_name)\n"
@@ -1218,7 +1268,7 @@ class ErrorPinpointer:
 
         error_counts: Dict[str, int] = {}
         module_errors: Dict[str, int] = {}
-        severity_counts: Dict[str, int] = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
+        severity_counts: Dict[str, int] = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0, 'duplicate': 0}
 
         for error in self.error_history:
             error_counts[error.error_type] = error_counts.get(error.error_type, 0) + 1
@@ -1381,10 +1431,6 @@ class ErrorPinpointer:
 
         self.logger.info(f"[STATS] Error report exported to {filepath}")
 
-    # ───────────────────────────────────────────────────────
-    # Maintenance
-    # ───────────────────────────────────────────────────────
-
     def get_debugging_guide(self, error_type: Optional[str] = None, module_name: Optional[str] = None) -> str:
         guide = f"""
 [SEARCH] SMARTINFOBUS DEBUGGING GUIDE
@@ -1432,12 +1478,19 @@ Target: {error_type or 'All'} errors in {module_name or 'All'} modules
 
         if self.orchestrator:
             try:
-                open_breakers = sum(1 for cb in getattr(self.orchestrator, 'circuit_breakers', {}).values() if getattr(cb, 'state', 'CLOSED') == 'OPEN')
+                open_breakers = 0
+                cbs = getattr(self.orchestrator, 'circuit_breakers', {})
+                if isinstance(cbs, dict):
+                    open_breakers = sum(1 for cb in cbs.values() if getattr(cb, 'state', 'CLOSED') == 'OPEN')
+                emergency = False
+                if hasattr(self.orchestrator, 'get_emergency_mode_status'):
+                    status = self.orchestrator.get_emergency_mode_status()
+                    emergency = bool(status.get('active')) if isinstance(status, dict) else bool(getattr(status, 'active', False))
                 guide += f"""
 
 🚦 SYSTEM STATUS
 {'─' * 30}
-- Emergency Mode: {'ACTIVE' if getattr(self.orchestrator.get_emergency_mode_status(), 'active', False) else 'Inactive'}
+- Emergency Mode: {'ACTIVE' if emergency else 'Inactive'}
 - Circuit Breakers Open: {open_breakers}
 - Total Modules: {len(getattr(self.orchestrator, 'modules', {}))}
 """

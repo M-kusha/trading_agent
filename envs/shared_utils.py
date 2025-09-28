@@ -1,38 +1,46 @@
+# envs/utils.py
 """
-Enhanced Utilities for Modern SmartInfoBus Trading Environment
-Zero-legacy, production-ready implementations (hardened)
+STRICT Utilities for the Modern SmartInfoBus Trading Environment
+
+- No fallbacks or silent degradation.
+- No hidden InfoBus writes or hard-coded keys.
+- Deterministic, thread-safe helpers with clear errors.
 """
 
 from __future__ import annotations
 
-import time
-import logging
-import threading
 import importlib
+import logging
 import platform
-from logging.handlers import RotatingFileHandler
-from functools import wraps, lru_cache
-from typing import Dict, Any, Optional, List, Tuple, Callable, Union
+import time
 from dataclasses import dataclass, field, asdict
+from functools import lru_cache, wraps
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
 
-# ---------- helpers
-
+# ─────────────────────────────────────────────────────────
+# Small helpers
+# ─────────────────────────────────────────────────────────
 def _now() -> float:
     return time.time()
+
 
 def _perf_ns() -> int:
     return time.perf_counter_ns()
 
+
 def _as_float_mb(bytes_val: int) -> float:
     return float(bytes_val) / (1024.0 * 1024.0)
 
+
 def _as_float_gb(bytes_val: int) -> float:
     return float(bytes_val) / (1024.0 * 1024.0 * 1024.0)
+
 
 def _safe_getattr(obj: Any, name: str, default: Any = None) -> Any:
     try:
@@ -41,11 +49,12 @@ def _safe_getattr(obj: Any, name: str, default: Any = None) -> Any:
         return default
 
 
-# ---------- system health model
-
+# ─────────────────────────────────────────────────────────
+# System health model
+# ─────────────────────────────────────────────────────────
 @dataclass
 class SystemHealth:
-    """System health status"""
+    """System health status (strict)."""
     smartinfobus_active: bool = False
     modules_active: int = 0
     memory_usage_mb: float = 0.0
@@ -54,7 +63,6 @@ class SystemHealth:
     last_update: float = 0.0
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
-    # Optional extras
     total_memory_mb: float = 0.0
     gpu_memory_mb: float = 0.0
     gpu_count: int = 0
@@ -69,235 +77,188 @@ class SystemHealth:
         return asdict(self)
 
 
-# ---------- decorators
+# ─────────────────────────────────────────────────────────
+# Strict import helper (no fallbacks)
+# ─────────────────────────────────────────────────────────
+@lru_cache(maxsize=128)
+def strict_import(module_name: str, attr: Optional[str] = None) -> Any:
+    """
+    Import a module (and optional attribute) strictly.
+    Raises ImportError with a clear message if anything is missing.
+    """
+    mod = importlib.import_module(module_name)
+    if attr is None:
+        return mod
+    try:
+        return getattr(mod, attr)
+    except AttributeError as e:
+        raise ImportError(f"Module '{module_name}' does not expose attribute '{attr}'.") from e
 
+
+# ─────────────────────────────────────────────────────────
+# Profiling decorator (no bus writes)
+# ─────────────────────────────────────────────────────────
 def profile_method(func: Callable):
     """
-    Performance profiling decorator for environment methods.
-
-    - Works for both sync and async callables
-    - Logs only if elapsed > threshold (default 100 ms, or self.profile_slow_ms if present)
-    - Stores metrics in SmartInfoBus if available
+    Performance profiling for env methods.
+    - Logs at DEBUG if elapsed > self.profile_slow_ms (default 100 ms).
+    - No external side-effects beyond logging.
     """
     is_coro = hasattr(func, "__await__") or getattr(func, "__is_coroutine__", False)
 
     @wraps(func)
     def _sync_wrapper(self, *args, **kwargs):
         threshold_ms = float(_safe_getattr(self, "profile_slow_ms", 100.0))
-        start_ns = _perf_ns()
+        t0 = _perf_ns()
         try:
             result = func(self, *args, **kwargs)
-            elapsed_ms = ( _perf_ns() - start_ns ) / 1_000_000.0
+            elapsed_ms = (_perf_ns() - t0) / 1_000_000.0
 
-            # Rate-limit spammy logs: once per 1s per function if slow
-            if elapsed_ms > threshold_ms and hasattr(self, "logger") and self.logger:
-                last_log_ts = getattr(self, f"__pm_last_{func.__name__}", 0.0)
-                now = _now()
-                if now - last_log_ts > 1.0:
-                    self.logger.debug(f"⏱️ {func.__name__} took {elapsed_ms:.1f}ms")
-                    setattr(self, f"__pm_last_{func.__name__}", now)
-
-            # Store perf metric (lightweight payload) if SmartInfoBus is available
-            sb = _safe_getattr(self, "smart_bus", None)
-            if sb:
-                try:
-                    sb.set(
-                        f"performance_{func.__name__}",
-                        {"duration_ms": float(elapsed_ms), "timestamp": _now()},
-                        module=_safe_getattr(self, "__class__", type("X", (), {})).__name__,
-                        thesis=f"Performance metric for {func.__name__}"
-                    )
-                except Exception:
-                    pass
-
+            if elapsed_ms > threshold_ms:
+                logger = _safe_getattr(self, "logger", None)
+                if isinstance(logger, logging.Logger):
+                    # rate-limit to 1 log/sec per function
+                    last_log_ts = float(_safe_getattr(self, f"__pm_last_{func.__name__}", 0.0))
+                    now = _now()
+                    if now - last_log_ts > 1.0:
+                        logger.debug("⏱️ %s took %.1f ms", func.__name__, elapsed_ms)
+                        setattr(self, f"__pm_last_{func.__name__}", now)
             return result
-        except Exception as e:
-            elapsed_ms = ( _perf_ns() - start_ns ) / 1_000_000.0
-            if hasattr(self, "logger") and self.logger:
-                self.logger.error(f"❌ {func.__name__} failed after {elapsed_ms:.1f}ms: {e}")
+        except Exception:
+            elapsed_ms = (_perf_ns() - t0) / 1_000_000.0
+            logger = _safe_getattr(self, "logger", None)
+            if isinstance(logger, logging.Logger):
+                logger.error("❌ %s failed after %.1f ms", func.__name__, elapsed_ms, exc_info=True)
             raise
 
     async def _async_wrapper(self, *args, **kwargs):
-        # Only used if wrapping an async function
         threshold_ms = float(_safe_getattr(args[0], "profile_slow_ms", 100.0))
-        start_ns = _perf_ns()
+        t0 = _perf_ns()
         try:
             result = await func(*args, **kwargs)
-            elapsed_ms = ( _perf_ns() - start_ns ) / 1_000_000.0
-            self = args[0]
-            if elapsed_ms > threshold_ms and hasattr(self, "logger") and self.logger:
-                last_log_ts = getattr(self, f"__pm_last_{func.__name__}", 0.0)
-                now = _now()
-                if now - last_log_ts > 1.0:
-                    self.logger.debug(f"⏱️ {func.__name__} took {elapsed_ms:.1f}ms")
-                    setattr(self, f"__pm_last_{func.__name__}", now)
+            elapsed_ms = (_perf_ns() - t0) / 1_000_000.0
 
-            sb = _safe_getattr(self, "smart_bus", None)
-            if sb:
-                try:
-                    sb.set(
-                        f"performance_{func.__name__}",
-                        {"duration_ms": float(elapsed_ms), "timestamp": _now()},
-                        module=_safe_getattr(self, "__class__", type("X", (), {})).__name__,
-                        thesis=f"Performance metric for {func.__name__}"
-                    )
-                except Exception:
-                    pass
+            if elapsed_ms > threshold_ms:
+                self = args[0]
+                logger = _safe_getattr(self, "logger", None)
+                if isinstance(logger, logging.Logger):
+                    last_log_ts = float(_safe_getattr(self, f"__pm_last_{func.__name__}", 0.0))
+                    now = _now()
+                    if now - last_log_ts > 1.0:
+                        logger.debug("⏱️ %s took %.1f ms", func.__name__, elapsed_ms)
+                        setattr(self, f"__pm_last_{func.__name__}", now)
             return result
-        except Exception as e:
-            elapsed_ms = ( _perf_ns() - start_ns ) / 1_000_000.0
+        except Exception:
+            elapsed_ms = (_perf_ns() - t0) / 1_000_000.0
             self = args[0]
-            if hasattr(self, "logger") and self.logger:
-                self.logger.error(f"❌ {func.__name__} failed after {elapsed_ms:.1f}ms: {e}")
+            logger = _safe_getattr(self, "logger", None)
+            if isinstance(logger, logging.Logger):
+                logger.error("❌ %s failed after %.1f ms", func.__name__, elapsed_ms, exc_info=True)
             raise
 
     return _async_wrapper if is_coro else _sync_wrapper
 
 
-# ---------- imports
-
-@lru_cache(maxsize=64)
-def _import_module(module_name: str):
-    return importlib.import_module(module_name)
-
-def safe_import(module_name: str, fallback=None):
-    """
-    Safely import modules or selected attributes with fallback.
-
-    Supports "pkg.module:AttrName" syntax.
-    Returns the module/attribute if available, otherwise `fallback`.
-    """
-    try:
-        if ":" in module_name:
-            mod_name, attr = module_name.split(":", 1)
-            mod = _import_module(mod_name)
-            return getattr(mod, attr)
-        else:
-            # Special-cased returns to keep compatibility with your code
-            if module_name == "modules.utils.info_bus":
-                try:
-                    mod = _import_module(module_name)
-                    return getattr(mod, "InfoBusManager", mod)
-                except Exception:
-                    return fallback
-            elif module_name == "modules.utils.audit_utils":
-                try:
-                    mod = _import_module(module_name)
-                    return getattr(mod, "RotatingLogger", mod)
-                except Exception:
-                    return fallback
-            elif module_name == "modules.core.module_system":
-                try:
-                    mod = _import_module(module_name)
-                    return getattr(mod, "ModuleOrchestrator", mod)
-                except Exception:
-                    return fallback
-            else:
-                return _import_module(module_name)
-    except Exception:
-        return fallback
-
-
-# ---------- logging
-
+# ─────────────────────────────────────────────────────────
+# Logging
+# ─────────────────────────────────────────────────────────
 def create_enhanced_logger(name: str, log_path: Optional[str] = None, level: int = logging.INFO) -> logging.Logger:
     """
-    Create enhanced logger with proper formatting and no duplicate handlers.
-    - Console handler (human-readable)
-    - Optional rotating file handler (safe on Windows & Linux)
+    Create a process-safe logger with console + optional rotating file handler.
+    No duplicate handlers, deterministic formatting.
     """
     logger = logging.getLogger(name)
-
-    if not logger.handlers:
-        logger.propagate = False
-
-        # Console
-        console_handler = logging.StreamHandler()
-        console_formatter = logging.Formatter(
-            '%(asctime)s | %(name)s | %(levelname)s | %(message)s',
-            datefmt='%H:%M:%S'
-        )
-        console_handler.setFormatter(console_formatter)
-        logger.addHandler(console_handler)
-
-        # File (rotating) if path provided
-        if log_path:
-            try:
-                path = Path(log_path)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                file_handler = RotatingFileHandler(path, maxBytes=5_000_000, backupCount=3, encoding="utf-8")
-                file_formatter = logging.Formatter(
-                    '%(asctime)s | %(name)s | %(levelname)s | %(funcName)s:%(lineno)d | %(message)s'
-                )
-                file_handler.setFormatter(file_formatter)
-                logger.addHandler(file_handler)
-            except Exception as e:
-                # Avoid raising; log to console
-                logger.warning(f"Could not create file handler: {e}")
-
+    if logger.handlers:
+        # Already configured; enforce level only
         logger.setLevel(level)
+        return logger
 
+    logger.propagate = False
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(logging.Formatter(
+        "%(asctime)s | %(name)s | %(levelname)s | %(message)s",
+        datefmt="%H:%M:%S",
+    ))
+    logger.addHandler(console_handler)
+
+    if log_path:
+        path = Path(log_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = RotatingFileHandler(path, maxBytes=5_000_000, backupCount=3, encoding="utf-8")
+        file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s | %(name)s | %(levelname)s | %(funcName)s:%(lineno)d | %(message)s"
+        ))
+        logger.addHandler(file_handler)
+
+    logger.setLevel(level)
     return logger
 
 
-# ---------- config validation
-
+# ─────────────────────────────────────────────────────────
+# Config validation (lightweight, strict messages)
+# ─────────────────────────────────────────────────────────
 def validate_trading_config(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
     """
-    Enhanced trading configuration validation.
-    Returns (ok, issues) where issues contains warnings (⚠️) and critical errors (❌).
+    Validate a TradingConfig-like dict.
+    Returns (ok, issues). No silent defaults.
     """
     issues: List[str] = []
 
-    # Required
-    for field in ['initial_balance', 'max_steps', 'instruments', 'max_drawdown']:
-        if config.get(field) in (None, "", []):
+    # Required core fields
+    for field in ("initial_balance", "max_steps", "instruments", "max_drawdown"):
+        if field not in config:
             issues.append(f"❌ Missing required field: {field}")
+        elif field == "instruments" and (not isinstance(config[field], (list, tuple)) or not config[field]):
+            issues.append("❌ 'instruments' must be a non-empty list")
+        elif field in ("initial_balance", "max_steps", "max_drawdown"):
+            try:
+                _ = float(config[field]) if field != "max_steps" else int(config[field])
+            except Exception:
+                issues.append(f"❌ Field '{field}' has invalid type/value")
 
-    # Types & sanity
-    if not isinstance(config.get('instruments', []), (list, tuple)) or not config.get('instruments'):
-        issues.append("❌ 'instruments' must be a non-empty list")
-    if isinstance(config.get('max_steps', None), (int, float)) and config['max_steps'] <= 0:
-        issues.append("❌ 'max_steps' must be > 0")
-    if isinstance(config.get('initial_balance', None), (int, float)) and config['initial_balance'] <= 0:
-        issues.append("❌ 'initial_balance' must be > 0")
+    # Guard rails
+    try:
+        md = float(config.get("max_drawdown", 0.0))
+        if md > 0.5:
+            issues.append("⚠️ Max drawdown > 50% is extremely risky")
+        elif md > 0.3:
+            issues.append("⚠️ Max drawdown > 30% is very risky")
+    except Exception:
+        pass
 
-    # Risk
-    md = float(config.get('max_drawdown', 0) or 0.0)
-    if md > 0.5:
-        issues.append("⚠️ Max drawdown > 50% is extremely risky")
-    elif md > 0.3:
-        issues.append("⚠️ Max drawdown > 30% is very risky")
+    try:
+        mpp = float(config.get("max_position_pct", 0.0))
+        if mpp > 0.3:
+            issues.append("⚠️ Position size > 30% per trade is very risky")
+        elif mpp > 0.15:
+            issues.append("⚠️ Position size > 15% per trade is risky")
+    except Exception:
+        pass
 
-    mpp = float(config.get('max_position_pct', 0) or 0.0)
-    if mpp > 0.3:
-        issues.append("⚠️ Position size > 30% per trade is very risky")
-    elif mpp > 0.15:
-        issues.append("⚠️ Position size > 15% per trade is risky")
+    try:
+        te = float(config.get("max_total_exposure", 0.0))
+        if te > 1.0:
+            issues.append("❌ Total exposure > 100% is invalid")
+        elif te > 0.5:
+            issues.append("⚠️ Total exposure > 50% is very risky")
+    except Exception:
+        pass
 
-    te = float(config.get('max_total_exposure', 0) or 0.0)
-    if te > 1.0:
-        issues.append("❌ Total exposure > 100% is invalid")
-    elif te > 0.5:
-        issues.append("⚠️ Total exposure > 50% is very risky")
+    # Episode length / logging
+    try:
+        ms = int(config.get("max_steps", 200))
+        if ms > 1000:
+            issues.append("⚠️ Very long episodes may be slow")
+    except Exception:
+        pass
 
-    # Live trading
-    if bool(config.get('live_mode', False)):
-        if not bool(config.get('info_bus_enabled', True)):
-            issues.append("⚠️ InfoBus strongly recommended for live trading")
-        if bool(config.get('debug', False)) and mpp > 0.05:
-            issues.append("⚠️ Large positions in live debug mode")
-        if float(config.get('initial_balance', 0) or 0.0) < 1000:
-            issues.append("⚠️ Very small balance for live trading")
-
-    # Performance/logging
-    lrl = int(config.get('log_rotation_lines', 2000) or 2000)
-    if lrl > 10000:
-        issues.append("⚠️ Very high log rotation may impact performance")
-
-    ms = int(config.get('max_steps', 200) or 200)
-    if ms > 1000:
-        issues.append("⚠️ Very long episodes may be slow")
+    try:
+        lrl = int(config.get("log_rotation_lines", 2000))
+        if lrl > 10000:
+            issues.append("⚠️ Very high log rotation may impact performance")
+    except Exception:
+        pass
 
     ok = not any(s.startswith("❌") for s in issues)
     if not issues:
@@ -305,54 +266,43 @@ def validate_trading_config(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
     return ok, issues
 
 
-# ---------- system status
-
+# ─────────────────────────────────────────────────────────
+# System status (strict dependencies)
+# ─────────────────────────────────────────────────────────
 def get_system_status() -> SystemHealth:
-    """Get comprehensive system status (psutil optional, torch optional)."""
+    """
+    Collect process/system metrics.
+    Requires `psutil`. GPU metrics are best-effort via torch if available.
+    """
     health = SystemHealth(last_update=_now())
 
-    # SmartInfoBus
-    try:
-        InfoBusManager = safe_import("modules.utils.info_bus")
-        if InfoBusManager and hasattr(InfoBusManager, 'get_instance'):
-            try:
-                smart_bus = InfoBusManager.get_instance()  # type: ignore[attr-defined]
-                health.smartinfobus_active = True
-                health.modules_active = len(getattr(smart_bus, '_data_store', {}))
-            except Exception as e:
-                health.add_error(f"SmartInfoBus error: {e}")
-    except Exception as e:
-        health.add_error(f"SmartInfoBus import failed: {e}")
-
-    # psutil metrics
+    # psutil is mandatory here
     try:
         import psutil  # type: ignore
-        process = psutil.Process()
-        with process.oneshot():
-            mem = process.memory_info().rss
-            health.memory_usage_mb = _as_float_mb(mem)
-
-        # Quick non-blocking sample for CPU (psutil may return float or list[float])
-        _cpu = psutil.cpu_percent(interval=0.05)
-        if isinstance(_cpu, (list, tuple)):
-            try:
-                # Average across cores if a list is returned
-                health.cpu_usage_percent = float(np.mean([float(x) for x in _cpu])) if _cpu else 0.0
-            except Exception:
-                health.cpu_usage_percent = 0.0
-        else:
-            health.cpu_usage_percent = float(_cpu)
-        health.disk_space_gb = _as_float_gb(psutil.disk_usage('.').free)
-
-        # System total memory
-        try:
-            health.total_memory_mb = _as_float_mb(psutil.virtual_memory().total)
-        except Exception:
-            pass
-    except ImportError:
-        health.add_warning("psutil not available for system monitoring")
     except Exception as e:
-        health.add_warning(f"System monitoring error: {e}")
+        raise RuntimeError("psutil is required for get_system_status()") from e
+
+    process = psutil.Process()
+    with process.oneshot():
+        mem = process.memory_info().rss
+        health.memory_usage_mb = _as_float_mb(mem)
+
+    # Single quick CPU sample
+    _cpu = psutil.cpu_percent(interval=0.05)
+    if isinstance(_cpu, (list, tuple)):
+        try:
+            health.cpu_usage_percent = float(np.mean([float(x) for x in _cpu])) if _cpu else 0.0
+        except Exception:
+            health.cpu_usage_percent = 0.0
+    else:
+        health.cpu_usage_percent = float(_cpu)
+
+    du = psutil.disk_usage(".")
+    health.disk_space_gb = _as_float_gb(du.free)
+    try:
+        health.total_memory_mb = _as_float_mb(psutil.virtual_memory().total)
+    except Exception:
+        pass
 
     # GPU (optional)
     try:
@@ -360,7 +310,7 @@ def get_system_status() -> SystemHealth:
         if torch.cuda.is_available():
             health.gpu_count = torch.cuda.device_count()
             try:
-                # sum of reserved memory across devices (best-effort)
+                # sum of reserved memory across devices
                 gpu_mem = 0.0
                 for i in range(health.gpu_count):
                     torch.cuda.set_device(i)
@@ -369,107 +319,31 @@ def get_system_status() -> SystemHealth:
             except Exception:
                 pass
     except Exception:
-        # no warnings if torch isn't present; keep silent
         pass
 
     return health
 
 
-# ---------- fallbacks
-
-def create_fallback_systems():
-    """Create fallback systems when SmartInfoBus is unavailable"""
-
-    class FallbackSmartBus:
-        """Minimal SmartInfoBus implementation (thread-safe)"""
-        def __init__(self):
-            self._data_store: Dict[str, Dict[str, Any]] = {}
-            self._module_disabled = set()
-            self._lock = threading.Lock()
-
-        def set(self, key: str, value: Any, module: Optional[str] = None, thesis: Optional[str] = None):
-            with self._lock:
-                self._data_store[key] = {
-                    'value': value,
-                    'module': module,
-                    'thesis': thesis,
-                    'timestamp': _now()
-                }
-
-        def get(self, key: str, module: Optional[str] = None):
-            with self._lock:
-                data = self._data_store.get(key)
-                return data['value'] if data else None
-
-        def keys(self) -> List[str]:
-            with self._lock:
-                return list(self._data_store.keys())
-
-        def register_provider(self, module: str, keys: List[str]):
-            # no-op but compatible
-            return True
-
-        def register_consumer(self, module: str, keys: List[str]):
-            # no-op but compatible
-            return True
-
-        def disable_module(self, module: str):
-            with self._lock:
-                self._module_disabled.add(module)
-
-        def enable_module(self, module: str):
-            with self._lock:
-                self._module_disabled.discard(module)
-
-        def get_performance_metrics(self):
-            with self._lock:
-                return {
-                    'data_keys': len(self._data_store),
-                    'disabled_modules': len(self._module_disabled),
-                    'active': True
-                }
-
-    class FallbackOrchestrator:
-        """Minimal orchestrator implementation (thread-safe, compatible)"""
-        def __init__(self):
-            self.modules: List[Any] = []
-            self.enabled: bool = False
-            self._lock = threading.Lock()
-
-        def initialize(self):
-            with self._lock:
-                self.enabled = True
-
-        def add_module(self, module: Any):
-            with self._lock:
-                self.modules.append(module)
-
-        async def execute_step(self, inputs: Dict):
-            # Async signature for compatibility; returns empty outputs
-            return {}
-
-    return FallbackSmartBus(), FallbackOrchestrator()
-
-
-# ---------- market data validation
-
+# ─────────────────────────────────────────────────────────
+# Market data validation
+# ─────────────────────────────────────────────────────────
 def validate_market_data(data_dict: Dict[str, Dict[str, pd.DataFrame]]) -> Tuple[bool, List[str]]:
     """
     Validate market data structure and quality.
-    Checks:
-      - presence of instruments/timeframes
-      - OHLC columns
-      - nulls / non-positive prices
-      - high >= low and OHLC within bounds
-      - monotonically increasing, unique index
+
+    Checks
+    - presence of instruments/timeframes
+    - OHLC columns
+    - NaNs / non-positive prices
+    - high >= low and OHLC inside [low, high]
+    - monotonic, unique index (best-effort)
     """
     issues: List[str] = []
 
     if not data_dict:
-        issues.append("❌ No market data provided")
-        return False, issues
+        return False, ["❌ No market data provided"]
 
-    required_columns = {'open', 'high', 'low', 'close'}
+    required_columns = {"open", "high", "low", "close"}
 
     for instrument, timeframes in data_dict.items():
         if not timeframes:
@@ -477,9 +351,8 @@ def validate_market_data(data_dict: Dict[str, Dict[str, pd.DataFrame]]) -> Tuple
             continue
 
         for timeframe, df in timeframes.items():
-            # Basic presence
-            if df is None or not isinstance(df, pd.DataFrame) or df.empty:
-                issues.append(f"⚠️ Empty or invalid DataFrame for {instrument}/{timeframe}")
+            if not isinstance(df, pd.DataFrame) or df.empty:
+                issues.append(f"❌ Empty or invalid DataFrame for {instrument}/{timeframe}")
                 continue
 
             # Index checks
@@ -490,187 +363,152 @@ def validate_market_data(data_dict: Dict[str, Dict[str, pd.DataFrame]]) -> Tuple
                     dup_count = int(df.index.duplicated().sum())
                     issues.append(f"⚠️ {dup_count} duplicate index entries in {instrument}/{timeframe}")
             except Exception:
-                # Don't fail if index is unusual
                 pass
 
-            # Required columns
+            # Columns
             missing_cols = required_columns - set(df.columns)
             if missing_cols:
                 issues.append(f"❌ Missing columns in {instrument}/{timeframe}: {missing_cols}")
+                continue
 
-            # Column quality
-            for col in ('open', 'high', 'low', 'close'):
-                if col in df.columns:
-                    # NaNs
-                    if bool(df[col].isnull().any()):
-                        null_count = int(df[col].isnull().sum())
-                        issues.append(f"⚠️ {null_count} null values in {instrument}/{timeframe}.{col}")
-                    # Non-positive
-                    try:
-                        non_pos = int((df[col] <= 0).sum())
-                        if non_pos > 0:
-                            issues.append(f"⚠️ {non_pos} non-positive values in {instrument}/{timeframe}.{col}")
-                    except Exception:
-                        pass
-
-            # OHLC logic
-            if all(c in df.columns for c in ('open', 'high', 'low', 'close')):
+            # Quality
+            for col in ("open", "high", "low", "close"):
+                series = df[col]
+                if series.isnull().any():
+                    issues.append(f"❌ NaNs in {instrument}/{timeframe}.{col}")
                 try:
-                    high_low_issues = int((df['high'] < df['low']).sum())
-                    if high_low_issues > 0:
-                        issues.append(f"❌ {high_low_issues} bars where high < low in {instrument}/{timeframe}")
-
-                    price_issues = int((
-                        (df['open'] > df['high']) |
-                        (df['open'] < df['low'])  |
-                        (df['close'] > df['high'])|
-                        (df['close'] < df['low'])
-                    ).sum())
-                    if price_issues > 0:
-                        issues.append(f"❌ {price_issues} OHLC logic violations in {instrument}/{timeframe}")
+                    if (series <= 0).any():
+                        issues.append(f"❌ Non-positive values in {instrument}/{timeframe}.{col}")
                 except Exception:
                     pass
 
+            try:
+                if (df["high"] < df["low"]).any():
+                    issues.append(f"❌ {instrument}/{timeframe}: high < low")
+                oob = (
+                    (df["open"] > df["high"]) | (df["open"] < df["low"]) |
+                    (df["close"] > df["high"]) | (df["close"] < df["low"])
+                )
+                if oob.any():
+                    issues.append(f"❌ {instrument}/{timeframe}: OHLC out-of-bounds in {int(oob.sum())} rows")
+            except Exception:
+                pass
+
     if not issues:
         issues.append("✅ Market data validation passed")
-
-    has_critical = any(i.startswith("❌") for i in issues)
-    return not has_critical, issues
+    return not any(i.startswith("❌") for i in issues), issues
 
 
-# ---------- performance tuning
-
+# ─────────────────────────────────────────────────────────
+# Performance tuning (no behavior changes)
+# ─────────────────────────────────────────────────────────
 def optimize_environment_performance(config: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Optimize environment configuration for performance without changing semantics.
-    Keeps keys you set; only tweaks/adds safe defaults.
+    Suggest minor runtime tweaks without changing semantics.
+    Returns a shallow copy with adjustments.
     """
-    optimized = dict(config)  # shallow copy
+    optimized = dict(config)
 
-    # Reduce logging overhead in production
-    if not optimized.get('debug', True):
-        optimized['log_rotation_lines'] = min(int(optimized.get('log_rotation_lines', 2000) or 2000), 1000)
-        optimized['info_bus_audit_level'] = optimized.get('info_bus_audit_level', 'WARNING')
+    # Logging
+    if not optimized.get("debug", True):
+        lrl = int(optimized.get("log_rotation_lines", 2000))
+        optimized["log_rotation_lines"] = min(lrl, 1000)
 
-    # OS-specific tuning
-    sys = platform.system()
-    if sys == "Windows":
-        # Windows process spawning can be expensive; keep it simple
-        optimized['num_envs'] = int(optimized.get('num_envs', 1))
-        optimized['enable_parallel_processing'] = bool(optimized.get('enable_parallel_processing', False))
+    # OS-specific parallelism hints
+    sys_name = platform.system()
+    if sys_name == "Windows":
+        optimized["num_envs"] = int(optimized.get("num_envs", 1))
+        optimized["enable_parallel_processing"] = bool(optimized.get("enable_parallel_processing", False))
     else:
-        # Non-Windows: allow parallelism but cap based on CPU count
         try:
-            import os
-            cpu = max(1, os.cpu_count() or 1)
-            default_envs = min(cpu, int(optimized.get('num_envs', 2)))
-            optimized['num_envs'] = default_envs
-            optimized['enable_parallel_processing'] = bool(optimized.get('enable_parallel_processing', default_envs > 1))
+            cpu = max(1, (importlib.import_module("os").cpu_count() or 1))
+            default_envs = min(cpu, int(optimized.get("num_envs", 2)))
+            optimized["num_envs"] = default_envs
+            optimized["enable_parallel_processing"] = default_envs > 1
         except Exception:
             pass
 
-    # Memory optimizations
-    if int(optimized.get('max_steps', 200) or 200) > 500:
-        optimized['max_history'] = int(optimized.get('max_history', 50))
-
-    # Live trading
-    if bool(optimized.get('live_mode', False)):
-        optimized['risk_check_frequency'] = int(optimized.get('risk_check_frequency', 1))
-        optimized['max_concurrent_alerts'] = int(optimized.get('max_concurrent_alerts', 5))
-        optimized['enable_shadow_sim'] = bool(optimized.get('enable_shadow_sim', False))
+    # Memory-friendly episodes
+    try:
+        if int(optimized.get("max_steps", 200)) > 500:
+            optimized["max_history"] = int(optimized.get("max_history", 50))
+    except Exception:
+        pass
 
     # Profiling threshold (used by @profile_method)
-    optimized['profile_slow_ms'] = float(optimized.get('profile_slow_ms', 100.0))
-
+    optimized["profile_slow_ms"] = float(optimized.get("profile_slow_ms", 100.0))
     return optimized
 
 
-# ---------- environment diagnostics
-
-def create_environment_diagnostics(env) -> Dict[str, Any]:
-    """Create comprehensive environment diagnostics (defensive)."""
-    diagnostics: Dict[str, Any] = {
-        'timestamp': _now(),
-        'environment_type': type(env).__name__,
-        'configuration': {},
-        'system_status': {},
-        'performance_metrics': {},
-        'health_status': 'unknown'
+# ─────────────────────────────────────────────────────────
+# Diagnostics snapshot (no external deps)
+# ─────────────────────────────────────────────────────────
+def create_environment_diagnostics(env: Any) -> Dict[str, Any]:
+    """
+    Collect non-invasive diagnostics from an environment instance.
+    No InfoBus imports; only introspection.
+    """
+    diag: Dict[str, Any] = {
+        "timestamp": _now(),
+        "environment_type": type(env).__name__,
+        "configuration": {},
+        "system_status": {},
+        "performance_metrics": {},
+        "health_status": "unknown",
     }
 
-    try:
-        # Config snapshot (works whether env.config is a dataclass or dict)
-        if hasattr(env, 'config'):
-            cfg = env.config
-            get_cfg = (cfg.get if isinstance(cfg, dict) else lambda k, d=None: getattr(cfg, k, d))
-            diagnostics['configuration'] = {
-                'instruments': get_cfg('instruments', []),
-                'max_steps': get_cfg('max_steps', None),
-                'live_mode': bool(get_cfg('live_mode', False)),
-                'info_bus_enabled': bool(get_cfg('info_bus_enabled', False))
-            }
+    # Config snapshot (best-effort)
+    cfg = _safe_getattr(env, "config", None)
+    if cfg is not None:
+        getter = (cfg.get if isinstance(cfg, dict) else lambda k, d=None: getattr(cfg, k, d))
+        diag["configuration"] = {
+            "instruments": getter("instruments", []),
+            "max_steps": getter("max_steps", None),
+            "live_mode": bool(getter("live_mode", False)),
+        }
 
-        # SmartInfoBus status
-        smart_bus = _safe_getattr(env, 'smart_bus', None)
-        if smart_bus:
-            try:
-                diagnostics['system_status']['smartinfobus'] = smart_bus.get_performance_metrics()
-            except Exception:
-                diagnostics['system_status']['smartinfobus'] = 'error'
+    # Modules (best-effort)
+    orch = _safe_getattr(env, "orchestrator", None)
+    if orch is not None:
+        try:
+            diag["system_status"]["modules"] = len(getattr(orch, "modules", []))
+        except Exception:
+            diag["system_status"]["modules"] = "error"
 
-        # Module system status
-        orchestrator = _safe_getattr(env, 'orchestrator', None)
-        if orchestrator:
-            try:
-                diagnostics['system_status']['modules'] = len(getattr(orchestrator, 'modules', []))
-            except Exception:
-                diagnostics['system_status']['modules'] = 'error'
+    # Environment metrics (best-effort)
+    ms = _safe_getattr(env, "market_state", None)
+    if ms is not None:
+        diag["performance_metrics"] = {
+            "current_step": _safe_getattr(ms, "current_step", 0),
+            "balance": float(_safe_getattr(ms, "balance", 0.0)),
+            "drawdown": float(_safe_getattr(ms, "current_drawdown", 0.0)),
+            "episode_count": int(_safe_getattr(env, "episode_count", 0)),
+        }
 
-        # Environment-specific metrics
-        market_state = _safe_getattr(env, 'market_state', None)
-        if market_state:
-            diagnostics['performance_metrics'] = {
-                'current_step': _safe_getattr(market_state, 'current_step', 0),
-                'balance': _safe_getattr(market_state, 'balance', 0.0),
-                'drawdown': _safe_getattr(market_state, 'current_drawdown', 0.0),
-                'episode_count': _safe_getattr(env, 'episode_count', 0)
-            }
+    # Logger level
+    logger = _safe_getattr(env, "logger", None)
+    if isinstance(logger, logging.Logger):
+        diag["system_status"]["logger_level"] = logging.getLevelName(logger.level)
 
-        # Logger level (useful for debugging)
-        logger = _safe_getattr(env, 'logger', None)
-        if isinstance(logger, logging.Logger):
-            diagnostics['system_status']['logger_level'] = logging.getLevelName(logger.level)
+    # Simple health heuristic
+    modules_val = diag["system_status"].get("modules", 0)
+    has_modules = isinstance(modules_val, int) and modules_val > 0
+    diag["health_status"] = "excellent" if has_modules else "good"
 
-        # Overall health assessment
-        has_smartinfobus = diagnostics['system_status'].get('smartinfobus') not in (None, 'error')
-        modules_val = diagnostics['system_status'].get('modules', 0)
-        has_modules = isinstance(modules_val, int) and modules_val > 0
-
-        if has_smartinfobus and has_modules:
-            diagnostics['health_status'] = 'excellent'
-        elif has_smartinfobus:
-            diagnostics['health_status'] = 'good'
-        else:
-            diagnostics['health_status'] = 'basic'
-
-    except Exception as e:
-        diagnostics['error'] = str(e)
-        diagnostics['health_status'] = 'error'
-
-    return diagnostics
+    return diag
 
 
-# ---------- public exports
-
+# ─────────────────────────────────────────────────────────
+# Public exports
+# ─────────────────────────────────────────────────────────
 __all__ = [
-    'SystemHealth',
-    'profile_method',
-    'safe_import',
-    'create_enhanced_logger',
-    'validate_trading_config',
-    'get_system_status',
-    'create_fallback_systems',
-    'validate_market_data',
-    'optimize_environment_performance',
-    'create_environment_diagnostics'
+    "SystemHealth",
+    "strict_import",
+    "profile_method",
+    "create_enhanced_logger",
+    "validate_trading_config",
+    "get_system_status",
+    "validate_market_data",
+    "optimize_environment_performance",
+    "create_environment_diagnostics",
 ]

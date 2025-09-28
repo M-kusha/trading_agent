@@ -508,6 +508,10 @@ class SmartInfoBus:
             self._data_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=self.config.max_history_versions))
             self._data_timestamps: Dict[str, float] = {}
 
+            # Cross-process persistence
+            self._persistence_file = "infobus_data.json"
+            self._persistence_lock = threading.Lock()
+
             # Locks
             self._access_lock = threading.RLock()
             self._write_lock = threading.Lock()
@@ -689,6 +693,96 @@ class SmartInfoBus:
                                                     context="startup"))
 
             # No implicit seeding; providers are responsible for publishing their own keys.
+
+            # Load persisted data on startup
+            self._load_persisted_data()
+
+    # ──────────────────────────────────────────────────────────────
+    # Cross-Process Persistence
+    # ──────────────────────────────────────────────────────────────
+    def _persist_data(self, key: str, value: Any) -> None:
+        """Persist key-value data to file for cross-process sharing."""
+        try:
+            with self._persistence_lock:
+                # Load existing persisted data
+                persisted_data = {}
+                if os.path.exists(self._persistence_file):
+                    try:
+                        with open(self._persistence_file, 'r') as f:
+                            persisted_data = json.load(f)
+                    except (json.JSONDecodeError, IOError):
+                        persisted_data = {}
+
+                # Update with new data (serialize to JSON-compatible format)
+                serializable_value = self._make_serializable(value)
+                persisted_data[key] = {
+                    'value': serializable_value,
+                    'timestamp': time.time(),
+                    'version': getattr(self._data_store.get(key), 'version', 1)
+                }
+
+                # Write back to file
+                with open(self._persistence_file, 'w') as f:
+                    json.dump(persisted_data, f, indent=2)
+
+        except Exception as e:
+            self.logger.warning(f"[PERSISTENCE] Failed to persist key '{key}': {e}")
+
+    def _load_persisted_data(self) -> None:
+        """Load persisted data from file on startup."""
+        try:
+            if os.path.exists(self._persistence_file):
+                with open(self._persistence_file, 'r') as f:
+                    persisted_data = json.load(f)
+
+                # Load persisted data into memory store if not already present
+                for key, data in persisted_data.items():
+                    if key not in self._data_store:
+                        try:
+                            # Create a minimal DataVersion for persisted data
+                            data_version = DataVersion(
+                                value=data['value'],
+                                version=data.get('version', 1),
+                                timestamp=data.get('timestamp', time.time()),
+                                source_module='Persistence',
+                                thesis='Loaded from cross-process persistence',
+                                confidence=1.0
+                            )
+                            self._data_store[key] = data_version
+                            self._data_timestamps[key] = data_version.timestamp
+                        except Exception as e:
+                            self.logger.warning(f"[PERSISTENCE] Failed to load persisted key '{key}': {e}")
+
+        except Exception as e:
+            self.logger.warning(f"[PERSISTENCE] Failed to load persisted data: {e}")
+
+    def _get_persisted_value(self, key: str) -> Any:
+        """Get value from persistent storage if not in memory."""
+        try:
+            if os.path.exists(self._persistence_file):
+                with open(self._persistence_file, 'r') as f:
+                    persisted_data = json.load(f)
+                    if key in persisted_data:
+                        return persisted_data[key]['value']
+        except Exception as e:
+            self.logger.warning(f"[PERSISTENCE] Failed to get persisted value for '{key}': {e}")
+        return None
+
+    def _make_serializable(self, value: Any) -> Any:
+        """Convert value to JSON-serializable format."""
+        if isinstance(value, (str, int, float, bool, type(None))):
+            return value
+        elif isinstance(value, (list, tuple)):
+            return [self._make_serializable(item) for item in value]
+        elif isinstance(value, dict):
+            return {k: self._make_serializable(v) for k, v in value.items()}
+        elif hasattr(value, '__dict__'):
+            return self._make_serializable(value.__dict__)
+        elif isinstance(value, np.ndarray):
+            return value.tolist()
+        else:
+            # For other types, convert to string representation
+            return str(value)
 
     # ──────────────────────────────────────────────────────────────
     # Helper: namespaces, pause, read-only, throttling
@@ -1226,6 +1320,9 @@ class SmartInfoBus:
             self._apply_post_set(full_key, data)
             self._check_pending_requests(full_key)
 
+            # Persist data for cross-process sharing
+            self._persist_data(full_key, stored_value)
+
             self.logger.debug(f"[OK] {module} set '{full_key}' v{version} (conf={confidence:0.2f})")
 
         except Exception as exc:
@@ -1283,6 +1380,22 @@ class SmartInfoBus:
 
                 data = self._data_store.get(full_key)
                 if not data:
+                    # Check for persisted data from other processes
+                    persisted_value = self._get_persisted_value(full_key)
+                    if persisted_value is not None:
+                        # Create a temporary DataVersion for the persisted data
+                        data = DataVersion(
+                            value=persisted_value,
+                            timestamp=time.time(),
+                            source_module='Persistence',
+                            thesis='Cross-process data',
+                            confidence=1.0,
+                            version=1
+                        )
+                        # Don't store in memory to avoid conflicts, just return the value
+                        self._apply_post_get(full_key, module, persisted_value, {"from_persistence": True})
+                        return persisted_value
+
                     with self._performance_lock:
                         self._cache_misses += 1
                     self._log_miss(full_key, module)

@@ -1184,9 +1184,7 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
                 f'{name}_voting_proposal': proposal,
                 f'{name}_confidence': confidence,
                 'seasonality_analysis': seasonality_analysis,
-                # expert_performance is committee-owned; keep only in-process returns if needed by orchestrator
-                # (not bus-published here)
-                'expert_performance': expert_performance,
+
                 # Provide local expert vote (gated) to satisfy contract and enable early consumers
                 'expert_votes': expert_votes_list,
                 '_thesis': thesis,
@@ -1495,12 +1493,7 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                 self.smart_bus.declare_owner('expert_votes', self.__class__.__name__)
             except Exception:
                 pass
-            self.smart_bus.set(
-                'expert_performance',
-                dict(self.committee_analytics.get('expert_performance', {})),
-                module=self.__class__.__name__,
-                thesis='Initialized empty expert performance map'
-            )
+
             # Initialize expert_votes snapshot for consumers
             try:
                 self.smart_bus.set('expert_votes', [], module=self.__class__.__name__, thesis='Baseline expert votes initialized')

@@ -280,7 +280,7 @@ class RiskAdjustedReward(
                         with self._safe_debug():
                             self.debug_manager.log_error("MONITORING_ERROR", e)
                 # cooperative wait; stops instantly on set()
-                self._stop_event.wait(30)
+                self._stop_event.wait(1)
 
         self._stop_event.clear()
         self._monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
@@ -310,8 +310,12 @@ class RiskAdjustedReward(
                 # Global timeout guard (3.11+: asyncio.timeout; otherwise sequential wait_for)
                 if hasattr(asyncio, "timeout"):
                     async with asyncio.timeout(budget_s):
+                        self.logger.info("process: before extract_reward_data")
                         with self._time_block("extract_reward_data"):
+                            start_extract = time.time()
                             reward_data = await self.data_extractor.extract_reward_data(**inputs)
+                            self.logger.info(f"extract_reward_data took {time.time() - start_extract} seconds")
+                        self.logger.info("process: after extract_reward_data")
 
                         if self.debug_manager.enabled:
                             with self._safe_debug():
@@ -321,30 +325,38 @@ class RiskAdjustedReward(
                             return await self._handle_no_data_fallback(reward_data)
 
                         # calc + memory sample
+                        self.logger.info("process: before calculate_enhanced_reward")
                         with self._memory_block("calc_enhanced_reward"), self._time_block("calc_enhanced_reward"):
+                            start_calc = time.time()
                             reward_result = await self.calculator.calculate_enhanced_reward(reward_data)
+                            self.logger.info(f"calculate_enhanced_reward took {time.time() - start_calc} seconds")
+                        self.logger.info("process: after calculate_enhanced_reward")
 
                         if self.debug_manager.enabled:
                             with self._safe_debug():
                                 self.debug_manager.log_calculation_result(reward_result)
 
+                        self.logger.info("process: before update_analytics")
                         with self._time_block("analytics.update"):
+                            start_analytics = time.time()
                             analytics_result = await self.analytics_engine.update_analytics(reward_result, reward_data)
+                            self.logger.info(f"update_analytics took {time.time() - start_analytics} seconds")
+                        self.logger.info("process: after update_analytics")
 
+                        self.logger.info("process: before update_adaptive_learning")
                         with self._time_block("adaptation.update"):
+                            start_adapt = time.time()
                             adaptation_result = await self.adaptation_manager.update_adaptive_learning(reward_result)
+                            self.logger.info(f"update_adaptive_learning took {time.time() - start_adapt} seconds")
+                        self.logger.info("process: after update_adaptive_learning")
                 else:
-                    # Compatibility path: recompute remaining budget between awaits
-                    end_time = start_time + budget_s
-
-                    def remaining() -> float:
-                        rem = end_time - time.time()
-                        return max(0.001, rem)
-
+                    # ... (compatibility path)
+                    self.logger.info("process: before extract_reward_data")
                     with self._time_block("extract_reward_data"):
-                        reward_data = await asyncio.wait_for(
-                            self.data_extractor.extract_reward_data(**inputs), timeout=remaining()
-                        )
+                        start_extract = time.time()
+                        reward_data = await self.data_extractor.extract_reward_data(**inputs)
+                        self.logger.info(f"extract_reward_data took {time.time() - start_extract} seconds")
+                    self.logger.info("process: after extract_reward_data")
 
                     if self.debug_manager.enabled:
                         with self._safe_debug():
@@ -353,34 +365,45 @@ class RiskAdjustedReward(
                     if not reward_data or reward_data.get("data_quality") == "invalid":
                         return await self._handle_no_data_fallback(reward_data)
 
+                    # calc + memory sample
+                    self.logger.info("process: before calculate_enhanced_reward")
                     with self._memory_block("calc_enhanced_reward"), self._time_block("calc_enhanced_reward"):
-                        reward_result = await asyncio.wait_for(
-                            self.calculator.calculate_enhanced_reward(reward_data), timeout=remaining()
-                        )
+                        start_calc = time.time()
+                        reward_result = await self.calculator.calculate_enhanced_reward(reward_data)
+                        self.logger.info(f"calculate_enhanced_reward took {time.time() - start_calc} seconds")
+                    self.logger.info("process: after calculate_enhanced_reward")
 
                     if self.debug_manager.enabled:
                         with self._safe_debug():
                             self.debug_manager.log_calculation_result(reward_result)
 
+                    self.logger.info("process: before update_analytics")
                     with self._time_block("analytics.update"):
-                        analytics_result = await asyncio.wait_for(
-                            self.analytics_engine.update_analytics(reward_result, reward_data), timeout=remaining()
-                        )
+                        start_analytics = time.time()
+                        analytics_result = await self.analytics_engine.update_analytics(reward_result, reward_data)
+                        self.logger.info(f"update_analytics took {time.time() - start_analytics} seconds")
+                    self.logger.info("process: after update_analytics")
 
+                    self.logger.info("process: before update_adaptive_learning")
                     with self._time_block("adaptation.update"):
-                        adaptation_result = await asyncio.wait_for(
-                            self.adaptation_manager.update_adaptive_learning(reward_result), timeout=remaining()
-                        )
+                        start_adapt = time.time()
+                        adaptation_result = await self.adaptation_manager.update_adaptive_learning(reward_result)
+                        self.logger.info(f"update_adaptive_learning took {time.time() - start_adapt} seconds")
+                    self.logger.info("process: after update_adaptive_learning")
 
                 result = {**reward_result, **analytics_result, **adaptation_result}
 
+                self.logger.info("process: before _generate_reward_thesis")
                 with self._time_block("thesis.generate"):
                     thesis = await self._generate_reward_thesis(reward_data, result)
+                self.logger.info("process: after _generate_reward_thesis")
 
                 output = self._prepare_output(result, thesis)
 
+                self.logger.info("process: before _update_smart_bus")
                 with self._time_block("bus.update"):
                     await self._update_smart_bus(result, thesis)
+                self.logger.info("process: after _update_smart_bus")
 
                 self._record_success((time.time() - start_time) * 1000.0)
 

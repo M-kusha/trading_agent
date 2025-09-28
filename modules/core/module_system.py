@@ -69,7 +69,17 @@ def _percentile_ms(samples: List[float], q: float) -> float:
         return 0.0
     # Guard against optional numpy for static type checkers
     if _np is not None:
-        return float(_np.percentile(samples, q * 100.0))
+        try:
+            # Use keyword args to avoid stub/signature issues; fall back gracefully.
+            return float(_np.percentile(a=samples, q=q * 100.0))  # type: ignore[arg-type]
+        except TypeError:
+            # Some environments/stubs may have a zero-arg wrapper; try quantile.
+            try:
+                return float(_np.quantile(a=samples, q=q))  # type: ignore[arg-type]
+            except Exception:
+                pass
+        except Exception:
+            pass
     xs = sorted(samples)
     k = max(0, min(len(xs) - 1, int(round((len(xs) - 1) * q))))
     return float(xs[k])
@@ -116,6 +126,11 @@ class CircuitBreakerState:
                 self.state = "CLOSED"
                 self.failure_count = 0
                 self._probe_inflight = False
+            elif self.state == "CLOSED":
+                # Gentle decay to avoid sticky trips on long runs
+                if self.failure_count > 0:
+                    self.failure_count = max(0, self.failure_count - 1)
+
 
     def record_failure(self):
         with self._lock:
@@ -247,6 +262,10 @@ class ModuleConfig:
         self.dynamic_config_bus_key = kwargs.get('dynamic_config_bus_key', 'config_update')
         self.stale_warn_s = kwargs.get('stale_warn_s', 60.0)
 
+        # ⬇️ NEW: scheduler toggles (so _apply_execution_configuration can assign these)
+        self.use_queue_scheduler = kwargs.get('use_queue_scheduler', False)
+        self.queue_concurrency = kwargs.get('queue_concurrency', self.max_parallel_modules)
+
         # Configuration timing fixes
         self.config_wait_timeout_s = kwargs.get('config_wait_timeout_s', 10.0)
         self.config_ready_grace_s = kwargs.get('config_ready_grace_s', 2.0)
@@ -293,7 +312,7 @@ class ModuleConfig:
             'modules/trading_modes',
             'modules/visualization',
             'modules/voting',
-            'modules/simulation',  # simulation modules (ShadowSimulator modernized)
+            'modules/simulation',
         ])
 
         self.legacy_modules = {
@@ -308,6 +327,9 @@ class ModuleConfig:
         self._config_watchers: List[Callable] = []
         self._config_file_path: Optional[Path] = None
         self._last_config_update = time.time()
+
+        self._validate_config()
+
 
         self._validate_config()
 
@@ -327,8 +349,11 @@ class ModuleConfig:
             errors.append("stage_timeout_overhead_s must be >= 0")
         if not 0.0 <= self.stage_timeout_pct_padding <= 1.0:
             errors.append("stage_timeout_pct_padding must be in [0,1]")
+        if self.queue_concurrency <= 0:
+            errors.append("queue_concurrency must be positive")
         if errors:
             raise ValueError(f"Configuration validation failed: {errors}")
+
 
     def update_config(self, updates: Dict[str, Any], notify: bool = True):
         with self._lock:
@@ -1179,6 +1204,10 @@ class ModuleOrchestrator:
             if self.emergency_mode:
                 return await self._execute_emergency_mode(market_data)
 
+        # ⬇️ NEW: alternate scheduler (queue) if enabled
+        if getattr(self.config, "use_queue_scheduler", False):
+            return await self._execute_step_queue(market_data)
+
         start_time = time.time()
         execution_id = f"exec_{int(start_time)}"
 
@@ -1265,6 +1294,7 @@ class ModuleOrchestrator:
 
             raise
 
+
     def _check_circuit_breaker(self, module_name: str) -> bool:
         with self._circuit_breaker_lock:
             cb = self.circuit_breakers.get(module_name)
@@ -1346,6 +1376,10 @@ class ModuleOrchestrator:
         metadata: ModuleMetadata,
         execution_id: str
     ) -> Optional[Dict[str, Any]]:
+        from modules.core.exceptions import ModuleTimeout
+        # Localized import for typing (avoids changing file-level imports)
+        from typing import Awaitable, Any as _Any, cast as _cast
+
         with self._circuit_breaker_lock:
             cb = self.circuit_breakers.setdefault(module_name, CircuitBreakerState())
             can_execute = cb.should_allow_request(
@@ -1354,59 +1388,50 @@ class ModuleOrchestrator:
             )
         if not can_execute:
             self.logger.warning(f"[FAST] Circuit breaker OPEN for {module_name}")
-            return {'error': 'Circuit breaker open', '_circuit_breaker': True}
+            return {'error': 'Circuit breaker open', '_circuit_breaker': True, 'status': 'SKIPPED'}
 
         start_t = time.perf_counter()
 
-        # Adaptive timeout prediction
         with self._perf_lock:
             perf = self.module_performance.get(module_name, {})
         pred_ms = _predict_timeout_ms(perf, metadata.timeout_ms, self.config) \
-                  if getattr(self.config, "auto_tune_timeouts", True) else metadata.timeout_ms
+                if getattr(self.config, "auto_tune_timeouts", True) else metadata.timeout_ms
         per_mod_timeout = max(0.1, pred_ms / 1000.0)
 
-        async def _run_entire_module() -> Dict[str, Any] | None:
+        async def _run_entire_module() -> Dict[str, Any]:
             # 1) Input validation
-            if hasattr(module, "validate_inputs"):
-                try:
-                    if inspect.iscoroutinefunction(module.validate_inputs):
-                        await module.validate_inputs(inputs)  # type: ignore
-                    else:
-                        loop = asyncio.get_running_loop()
-                        await loop.run_in_executor(None, module.validate_inputs, inputs)  # type: ignore
-                except Exception:
-                    raise
+            res = module.validate_inputs(inputs)
+            if inspect.isawaitable(res):
+                await _cast(Awaitable[_Any], res)
 
             # 2) Process
             result = await module.process(**inputs)
+            if not isinstance(result, dict):
+                raise TypeError(f"{module_name}.process must return dict, got {type(result).__name__}")
 
             # 3) Output validation
-            if isinstance(result, dict) and hasattr(module, "validate_outputs"):
-                if inspect.iscoroutinefunction(module.validate_outputs):
-                    await module.validate_outputs(result)  # type: ignore
-                else:
-                    loop = asyncio.get_running_loop()
-                    await loop.run_in_executor(None, module.validate_outputs, result)  # type: ignore
+            out = module.validate_outputs(result)
+            if inspect.isawaitable(out):
+                await _cast(Awaitable[_Any], out)
 
             # 4) Publish declared outputs to bus
-            if isinstance(result, dict):
-                for key in metadata.provides:
-                    if key in result:
-                        self._safe_bus_set(
-                            key,
-                            result[key],
-                            module=module_name,
-                            thesis=result.get("_thesis", f"{module_name} output"),
-                            confidence=result.get("_confidence", 0.8),
-                        )
+            for key in metadata.provides:
+                if key in result:
+                    self._safe_bus_set(
+                        key,
+                        result[key],
+                        module=module_name,
+                        thesis=result.get("_thesis", f"{module_name} output"),
+                        confidence=result.get("_confidence", 0.8),
+                    )
 
-            # 5) Optional hooks: confidence + voting
+            # 5) Optional hooks: confidence + voting (best-effort)
             bm = BaseModule
             if module.__class__.calculate_confidence is not bm.calculate_confidence:
                 try:
                     conf_res = module.calculate_confidence(result, **inputs)  # type: ignore
                     conf = await conf_res if asyncio.iscoroutine(conf_res) else conf_res
-                    if conf is not None and isinstance(result, dict):
+                    if conf is not None:
                         result["_confidence"] = float(conf)
                 except Exception as e:
                     self.logger.warning(f"{module_name}: confidence error – {e}")
@@ -1421,13 +1446,13 @@ class ModuleOrchestrator:
                             "vote",
                             ballot,
                             module=module_name,
-                            thesis=(result or {}).get("_thesis", ""),
-                            confidence=(result or {}).get("_confidence", 0.0),
+                            thesis=result.get("_thesis", ""),
+                            confidence=result.get("_confidence", 0.0),
                         )
                 except Exception as e:
                     self.logger.warning(f"{module_name}: voting error – {e}")
 
-            return result  # type: ignore
+            return result
 
         try:
             result = await asyncio.wait_for(_run_entire_module(), timeout=per_mod_timeout)
@@ -1442,12 +1467,14 @@ class ModuleOrchestrator:
             dur_ms = float(pred_ms)
             msg = f"Timeout after {dur_ms:.0f} ms (entire module)"
             self._handle_module_failure(module, module_name, cb, dur_ms, msg, execution_id, "TIME")
-            raise TimeoutError(msg)
+            raise ModuleTimeout(msg)
 
         except Exception as e:
             dur_ms = (time.perf_counter() - start_t) * 1000.0
             self._handle_module_failure(module, module_name, cb, dur_ms, str(e), execution_id, "CRASH")
             raise
+
+
 
     # ───── Emergency execution ─────
     async def _execute_emergency_mode(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -2027,6 +2054,8 @@ class ModuleOrchestrator:
             execution_id: str,
             preview_missing: Optional[Dict[str, List[str]]] = None
         ) -> Dict[str, Any]:
+        from modules.core.exceptions import InputsNotReady, ExecutionSkipped
+
         self.logger.debug(f"[SEARCH] Debug: Executing stage {stage_idx}: {module_names}")
         if not module_names:
             return {}
@@ -2036,10 +2065,7 @@ class ModuleOrchestrator:
         results: Dict[str, Any] = {}
         missing_inputs_by_module: Dict[str, List[str]] = {}
 
-        grace = float(getattr(self.config, "readiness_grace_s", 0.0))
-        retry_budget = grace if grace > 0 else 0.0
-
-        # Build tasks (or record inputs-not-ready), with micro grace for late providers
+        # Build tasks (or record inputs-not-ready), using per-module grace
         for module_name in module_names:
             module = self.modules[module_name]
             metadata = self.metadata[module_name]
@@ -2052,9 +2078,16 @@ class ModuleOrchestrator:
                     except Exception:
                         pass
                 else:
-                    self.logger.warning(f"[WARN] Warning: Skipping disabled module: {module_name}")
+                    self.logger.warning(f"[WARN] Skipping disabled module: {module_name}")
                     results[module_name] = {'error': 'Module disabled', 'status': 'SKIPPED'}
                     continue
+
+            # Per-module micro grace while waiting for late inputs
+            rg = getattr(metadata, 'readiness_grace_s', None)
+            if rg is not None:
+                grace_budget = float(rg)
+            else:
+                grace_budget = float(getattr(self.config, "readiness_grace_s", 0.0))
 
             start_grace = time.perf_counter()
             while True:
@@ -2067,33 +2100,17 @@ class ModuleOrchestrator:
                     tasks.append((module_name, task))
                     enriched.append((module_name, module, metadata))
                     break
-                except RuntimeError as e:
-                    # Inputs-not-ready path: retry briefly if within grace window
-                    if "Inputs not ready:" in str(e) and (time.perf_counter() - start_grace) < retry_budget:
+                except InputsNotReady as e:
+                    if (time.perf_counter() - start_grace) < grace_budget:
                         await asyncio.sleep(0.02)
                         continue
-                    msg = str(e)
-                    missing_keys = self._parse_missing_keys_from_error(msg)
-                    missing_inputs_by_module[module_name] = missing_keys
+                    missing_inputs_by_module[module_name] = e.missing
                     results[module_name] = {
                         'error': 'Inputs not ready',
-                        'missing': missing_keys,
+                        'missing': e.missing,
                         'status': 'INPUTS_NOT_READY'
                     }
-                    self._record_stage_missing(stage_idx, module_name, missing_keys)
-
-                    if self.config.soft_schedule_on_missing_inputs:
-                        try:
-                            partial_inputs = {'execution_id': execution_id}  # minimal
-                            task = asyncio.create_task(
-                                self._execute_module_safe(module, module_name, partial_inputs, metadata, execution_id),
-                                name=f"{execution_id}_{module_name}_soft"
-                            )
-                            tasks.append((module_name, task))
-                            enriched.append((module_name, module, metadata))
-                            results.pop(module_name, None)
-                        except Exception:
-                            pass
+                    self._record_stage_missing(stage_idx, module_name, e.missing)
                     break
                 except Exception as e:
                     results[module_name] = {'error': f'Prepare inputs failed: {e}', 'status': 'ERROR'}
@@ -2103,13 +2120,13 @@ class ModuleOrchestrator:
             self._publish_stage_report(stage_idx, execution_id, results, missing_inputs_by_module, timed_out=[])
             return results
 
-        # Deterministic stage timeout from predicted module budgets
+        # Deterministic stage timeout from predicted per-module budgets
         predicted = []
         with self._perf_lock:
             for name, _ in tasks:
                 perf = self.module_performance.get(name, {})
                 ms = _predict_timeout_ms(perf, self.metadata[name].timeout_ms, self.config) \
-                     if getattr(self.config, "auto_tune_timeouts", True) else self.metadata[name].timeout_ms
+                    if getattr(self.config, "auto_tune_timeouts", True) else self.metadata[name].timeout_ms
                 predicted.append(ms)
 
         stage_timeout = (max(predicted) / 1000.0) * (1.0 + float(self.config.stage_timeout_pct_padding)) \
@@ -2117,9 +2134,8 @@ class ModuleOrchestrator:
 
         # Execute with hard deadline
         timed_out_modules: List[str] = []
-        stage_start = time.perf_counter()
         try:
-            await asyncio.wait_for(
+            stage_results_list = await asyncio.wait_for(
                 asyncio.gather(*[t for _, t in tasks], return_exceptions=True),
                 timeout=stage_timeout
             )
@@ -2139,31 +2155,33 @@ class ModuleOrchestrator:
                                                     f"Stage {stage_idx} timeout (>{stage_timeout:.1f}s)", execution_id, "TIME")
                     except Exception:
                         pass
+            stage_results_list = []
 
-        # Collect results
-        for module_name, task in tasks:
-            try:
-                if task.done() and not task.cancelled():
-                    res = task.result()
-                    if isinstance(res, Exception):
-                        results[module_name] = {'error': str(res), 'status': 'ERROR'}
-                    else:
-                        if isinstance(res, dict) and 'error' in res:
-                            results[module_name] = {'error': res.get('error', 'Unknown error'), 'status': 'ERROR', **res}
-                        else:
-                            results[module_name] = res if isinstance(res, dict) else {'result': res}
-                            results[module_name]['status'] = 'SUCCESS'
+        # Collect results (using list from gather)
+        for (module_name, _task), res in zip(tasks, stage_results_list):
+            if isinstance(res, Exception):
+                if isinstance(res, ExecutionSkipped):
+                    results[module_name] = {'status': 'SKIPPED', 'reason': str(res)}
                 else:
-                    results[module_name] = {'error': 'Task canceled due to stage timeout', 'status': 'TIMEOUT'}
-            except Exception as e:
-                self.logger.error(f"Error collecting result from {module_name}: {e}")
-                results[module_name] = {'error': str(e), 'status': 'ERROR'}
+                    results[module_name] = {'error': str(res), 'status': 'ERROR'}
+                continue
+
+            if res is None:
+                results[module_name] = {'error': 'No result', 'status': 'ERROR'}
+                continue
+
+            if isinstance(res, dict) and 'error' in res and res.get('status') != 'SUCCESS':
+                results[module_name] = {'error': res.get('error', 'Unknown error'), 'status': res.get('status', 'ERROR'), **res}
+            else:
+                results[module_name] = (res if isinstance(res, dict) else {'result': res})
+                results[module_name]['status'] = 'SUCCESS'
+
+        # Results for tasks that were canceled due to stage timeout
+        for module_name in timed_out_modules:
+            if module_name not in results:
+                results[module_name] = {'error': 'Task canceled due to stage timeout', 'status': 'TIMEOUT'}
 
         self._publish_stage_report(stage_idx, execution_id, results, missing_inputs_by_module, timed_out=timed_out_modules)
-
-        stage_dur_ms = (time.perf_counter() - stage_start) * 1000.0
-        self._stage_stats[stage_idx].record(stage_dur_ms)
-
         return results
 
     def _parse_missing_keys_from_error(self, msg: str) -> List[str]:
@@ -2278,6 +2296,22 @@ class ModuleOrchestrator:
             # Guard: prevent Environment from writing canonical keys owned by MarketDataProvider/SessionManager
             if module == "Environment" and str(key) in {"market_data", "market_context", "step_idx", "environment_config"}:
                 return
+
+            # Lazy idempotence store
+            if not hasattr(self, "_last_bus_hashes"):
+                self._last_bus_hashes = {}
+
+            # Simple idempotence: skip if unchanged hash
+            try:
+                import hashlib
+                blob = f"{type(value).__name__}:{repr(value)[:10000]}|{thesis}|{confidence}".encode("utf-8", "ignore")
+                h = hashlib.sha1(blob).hexdigest()
+                if self._last_bus_hashes.get(key) == h:
+                    return
+                self._last_bus_hashes[key] = h
+            except Exception:
+                pass
+
             self.smart_bus.set(key, value, module=module, thesis=thesis, confidence=confidence)
         except Exception as e:
             self.logger.debug(f"Bus set failed for {module}:{key}: {e}")
@@ -2288,6 +2322,8 @@ class ModuleOrchestrator:
         metadata: ModuleMetadata,
         execution_id: str
     ) -> Dict[str, Any]:
+        from modules.core.exceptions import InputsNotReady
+
         inputs: Dict[str, Any] = {'execution_id': execution_id}
         missing: List[str] = []
 
@@ -2297,9 +2333,12 @@ class ModuleOrchestrator:
             data = self.smart_bus.get_with_metadata(required_key, module_name)
             if data:
                 inputs[required_key] = data.value
-                age = data.age_seconds()
-                if age > stale_warn_s:
-                    self.logger.warning(f"Stale data for {module_name}: {required_key} ({age:.1f}s old)")
+                try:
+                    age = data.age_seconds()
+                    if age > stale_warn_s:
+                        self.logger.warning(f"Stale data for {module_name}: {required_key} ({age:.1f}s old)")
+                except Exception:
+                    pass
             else:
                 value = self.smart_bus.get(required_key, module_name)
                 if value is not None:
@@ -2309,10 +2348,14 @@ class ModuleOrchestrator:
 
         if missing:
             for key in missing:
-                self.smart_bus.request_data(key, module_name)
-            raise RuntimeError(f"Inputs not ready: {missing}")
+                try:
+                    self.smart_bus.request_data(key, module_name)
+                except Exception:
+                    pass
+            raise InputsNotReady(missing)
 
         return inputs
+
 
     def _store_market_data(self, market_data: Dict[str, Any] | None, execution_id: str):
         try:
@@ -2385,6 +2428,7 @@ class ModuleOrchestrator:
             'module_count': len(results),
             'successful_modules': [],
             'failed_modules': [],
+            'skipped_modules': [],  # ⬅️ new
             'votes': {},
             'signals': {},
             'analysis': {},
@@ -2393,6 +2437,12 @@ class ModuleOrchestrator:
         }
 
         for module_name, result in results.items():
+            if isinstance(result, dict):
+                status = result.get('status')
+                if status == 'SKIPPED':
+                    aggregated['skipped_modules'].append(module_name)
+                    continue
+
             if isinstance(result, dict) and (result.get('status') == 'SUCCESS') and ('error' not in result):
                 aggregated['successful_modules'].append(module_name)
                 for key, value in result.items():
@@ -2406,11 +2456,10 @@ class ModuleOrchestrator:
                         aggregated['analysis'].setdefault(key, {})[module_name] = value
             else:
                 reason = 'Unknown error'
+                status = 'ERROR'
                 if isinstance(result, dict):
                     reason = result.get('error', reason)
-                    status = result.get('status', 'ERROR')
-                else:
-                    status = 'ERROR'
+                    status = result.get('status', status)
                 aggregated['failed_modules'].append({
                     'module': module_name,
                     'error': reason,
@@ -2443,6 +2492,7 @@ class ModuleOrchestrator:
         )
 
         return aggregated
+
 
     def _record_execution(
         self,
@@ -2592,18 +2642,27 @@ class ModuleOrchestrator:
                 self.config.stage_heartbeat_interval_s = stg.get('heartbeat_interval_s', self.config.stage_heartbeat_interval_s)
                 self.config.stage_report_to_bus = stg.get('report_to_bus', self.config.stage_report_to_bus)
 
-            # Optional: enable/disable adaptive features from exec config
+            # Optional: enable/disable adaptive features + global readiness grace
             if 'adaptive' in execution_config:
                 ad = execution_config['adaptive'] or {}
                 for k in ('auto_tune_timeouts', 'timeout_target_pctl', 'timeout_floor_ms',
-                          'timeout_ceiling_ms', 'readiness_grace_s', 'half_open_single_probe', 'stale_warn_s'):
+                        'timeout_ceiling_ms', 'readiness_grace_s', 'half_open_single_probe', 'stale_warn_s'):
                     if k in ad:
                         setattr(self.config, k, ad[k])
+
+            # ⬇️ NEW: scheduler toggle
+            if 'scheduler' in execution_config:
+                sched = execution_config['scheduler'] or {}
+                mode = str(sched.get('mode', '')).lower()
+                self.config.use_queue_scheduler = (mode == 'queue')
+                if 'concurrency' in sched:
+                    self.config.queue_concurrency = int(sched['concurrency'])
 
             self.logger.info("[OK] Applied execution configuration")
 
         except Exception as e:
             self.logger.error(f"Failed to apply execution configuration: {e}")
+
 
     def _apply_module_registry(self, module_registry: Dict[str, Any]):
         try:
@@ -2682,6 +2741,77 @@ class ModuleOrchestrator:
                         'reason': 'Module not found in current modules list. Please ensure it is registered.'
                     })
         return legacy_status
+    
+
+
+    def _compute_indegree_and_graph(self) -> tuple[Dict[str,int], Dict[str, set[str]]]:
+        indeg: Dict[str, int] = {}
+        graph: Dict[str, set[str]] = defaultdict(set)
+        for m in self.modules:
+            indeg[m] = 0
+        for consumer, deps in self.module_dependencies.items():
+            indeg[consumer] += len(deps)
+            for d in deps:
+                graph[d].add(consumer)
+        return indeg, graph
+
+    async def _execute_step_queue(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Queue-based scheduler: as soon as a module's deps resolve, schedule it.
+        """
+        from modules.core.exceptions import InputsNotReady, ExecutionSkipped, ModuleTimeout
+
+        start_time = time.time()
+        execution_id = f"exec_{int(start_time)}"
+        self._store_market_data(market_data, execution_id)
+
+        indeg, graph = self._compute_indegree_and_graph()
+        concurrency = int(getattr(self.config, "queue_concurrency", getattr(self.config, "max_parallel_modules", 10)))
+        sem = asyncio.Semaphore(max(1, concurrency))
+
+        results: Dict[str, Any] = {}
+        running: Dict[str, asyncio.Task] = {}
+
+        ready = [m for m, d in indeg.items() if d == 0]
+        ready.sort(key=lambda m: self.metadata[m].priority, reverse=True)
+
+        async def run_module(m: str):
+            async with sem:
+                try:
+                    inputs = self._prepare_module_inputs(m, self.metadata[m], execution_id)
+                    res = await self._execute_module_safe(self.modules[m], m, inputs, self.metadata[m], execution_id)
+                    results[m] = res if isinstance(res, dict) else {'result': res}
+                    results[m].setdefault('status', 'SUCCESS')
+                except InputsNotReady as e:
+                    results[m] = {'error': 'Inputs not ready', 'missing': e.missing, 'status': 'INPUTS_NOT_READY'}
+                except ExecutionSkipped as e:
+                    results[m] = {'status': 'SKIPPED', 'reason': str(e)}
+                except ModuleTimeout as e:
+                    results[m] = {'error': str(e), 'status': 'TIMEOUT'}
+                except Exception as e:
+                    results[m] = {'error': str(e), 'status': 'ERROR'}
+
+                # Unlock dependents
+                for c in graph.get(m, []):
+                    indeg[c] -= 1
+                    if indeg[c] == 0 and c not in running and c not in results:
+                        running[c] = asyncio.create_task(run_module(c))
+
+        # Prime initial ready set
+        for m in ready:
+            running[m] = asyncio.create_task(run_module(m))
+
+        # Wait for completion
+        if running:
+            await asyncio.gather(*running.values(), return_exceptions=False)
+
+        aggregated = self._aggregate_results(results, execution_id)
+        exec_time_ms = (time.time() - start_time) * 1000.0
+        self._record_execution(execution_id, exec_time_ms, results, aggregated)
+        summary = self._generate_execution_summary(execution_id, exec_time_ms, [results], aggregated)
+        self.logger.info(summary)
+        return aggregated
+
 
     # ───── Singleton API ─────
     @classmethod

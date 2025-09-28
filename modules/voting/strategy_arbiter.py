@@ -204,8 +204,7 @@ class StrategyArbiter(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
             # Publish instrument universe under common aliases to satisfy downstream readers
             inst_list = list(self.instruments)
             self.smart_bus.set("instruments", inst_list, module="StrategyArbiter", thesis="Universe of instruments")
-            self.smart_bus.set("universe", inst_list, module="StrategyArbiter", thesis="Instrument universe alias")
-            self.smart_bus.set("watched_instruments", inst_list, module="StrategyArbiter", thesis="Watched instruments alias")
+
             self.smart_bus.set("alpha_weights", self.weights.tolist(), module="StrategyArbiter", thesis="Initial alpha weights")
             self.smart_bus.set(
                 "blended_action",
@@ -1114,8 +1113,7 @@ Strategy Arbiter v3.1 Initialization:
             try:
                 inst_list = list(results.get("instruments", list(getattr(self, "instruments", []))))
                 s("instruments", inst_list, module="StrategyArbiter", thesis="Instrument universe (canonical)")
-                s("universe", inst_list, module="StrategyArbiter", thesis="Instrument universe alias")
-                s("watched_instruments", inst_list, module="StrategyArbiter", thesis="Watched instruments alias")
+
             except Exception:
                 pass
 
