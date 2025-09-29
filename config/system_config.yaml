@@ -1,51 +1,66 @@
 execution:
   max_workers: 4
   retry_attempts: 5
-  timeout: 60
-  # Stability configurations
+
+  # Provider stability
   provider_switch_delay_ms: 1000
   provider_stability_threshold: 5
-  # Orchestrator-specific execution settings
+
+  # Orchestrator timeouts
   timeouts:
+    # Fallback when no per-module/per-category override matches
     default_ms: 500
+
+    # Strong, explicit per-module overrides (win over category/default)
     by_module:
-      # Voting modules (complex consensus/coordination)
+      # Market analysis (heavy)
+      UnifiedMarketModule: 15000  # init + 54k bars
+      PositionManager: 5000
+
+      # Voting / coordination
       AlternativeRealitySampler: 6000
       DynamicRiskController: 6000
       TimeHorizonAligner: 6000
       CollusionAuditor: 6000
       EnhancedVotingCommitteeCoordinator: 8000
       StrategyArbiter: 5000
-      # Auditing modules (complex analysis)
+
+      # Auditing
       AuditingCoordinator: 5000
       TradeExplanationAuditor: 4000
       TradeThesisTracker: 4000
-      # Strategy modules (complex processing)
+
+      # Strategy
       BiasAuditor: 4000
       CurriculumPlannerPlus: 6000
-      ThesisEvolutionEngine: 5000
-      # Meta and analysis modules
-      MetaAgent: 5000
-      EnhancedAnomalyDetector: 8000
-      RiskAdjustedReward: 30000
-      # Simulation modules
-      OpponentSimulator: 4000
-      ShadowSimulator: 8000
-      EnhancedWorldModel: 6000
-      # Stage 10 problematic modules - increased timeouts
+      ThesisEvolutionEngine: 8000   # de-duplicated; keep higher
       StrategyGenomePool: 10000
       OpponentModeEnhancer: 6000
-      VisualizationInterface: 8000
-      RoleCoach: 6000
-      ThesisEvolutionEngine: 8000
       PlaybookClusterer: 7000
       TradingModeManager: 5000
+      VisualizationInterface: 8000
+      RoleCoach: 6000
+
+      # Meta / analysis
+      MetaAgent: 5000
+      EnhancedAnomalyDetector: 8000
+      EnhancedWorldModel: 6000
+
+      # Simulation
+      OpponentSimulator: 4000
+      ShadowSimulator: 8000
+
+      # Reward (expensive)
+      RiskAdjustedReward: 30000
+
+    # Coarse defaults by category (used when module not listed above)
     by_category:
       voting: 5000
       auditing: 4000
       strategy: 4000
       simulation: 4000
       meta: 4000
+
   stage:
     timeout_overhead_s: 15.0
     timeout_pct_padding: 0.75
@@ -53,26 +68,35 @@ execution:
     soft_schedule_on_missing_inputs: true
     heartbeat_interval_s: 6.0
     report_to_bus: true
-  # Circuit breaker recovery for critical modules
+
+  # Circuit breaker behavior for critical modules
   circuit_breaker:
     auto_reset_critical_modules: true
     critical_module_recovery_time_s: 30.0
-  # Auto-tuning timing configurations
+
+  # Auto-tuning settings
   adaptive:
     auto_tune_timeouts: true
     timeout_target_pctl: 0.95
-    timeout_floor_ms: 150
-    timeout_ceiling_ms: 10000
-    readiness_grace_s: 1.5
+    timeout_floor_ms: 2500
+    timeout_ceiling_ms: 30000   # raised to respect largest override
+    readiness_grace_s: 3.0      # aligned with logs
     half_open_single_probe: true
     stale_warn_s: 60.0
     dynamic_config_bus_key: "config_update"
 
+# Optional preflight policy (keeps your current warning non-blocking)
+preflight:
+  required_bus_keys:
+    - config_update
+  optional_bus_keys:
+    - system_health
+
 monitoring:
+  publish_interval_s: 60          # used by ConfigurationManager.get_monitoring_config()
   health_check_interval: 30
   log_level: WARNING
   metrics_interval: 60
-  # Memory optimization
   memory_warning_threshold: 80
   memory_cleanup_threshold: 85
   gc_frequency: 30
@@ -81,15 +105,11 @@ system:
   environment: production
   name: Trading Agent System
   version: 1.0.0
-  # Memory management
   max_memory_usage_mb: 12000
   enable_memory_cleanup: true
   log_rotation_size_mb: 100
 
-# Module-specific configurations
 modules:
-
-
   AdvancedFeatureEngine:
     config:
       feature_sets: ['technical', 'statistical', 'momentum', 'volatility']
@@ -120,7 +140,7 @@ modules:
       overlap_boost: 1.1
       timeout_ms: 150
 
-  # Risk Management Modules
+  # Risk Management
   RiskManager:
     config:
       risk_assessment_frequency: 60
@@ -205,7 +225,7 @@ modules:
       cluster_threshold: 0.8
       timeout_ms: 200
 
-  # Voting System Modules
+  # Voting
   StrategyArbiter:
     config:
       action_dim: 4
@@ -258,7 +278,6 @@ modules:
       confidence_weighting: true
       consensus_threshold: 0.6
       timeout_ms: 2000
-      # Provide missing data keys
       provides_data:
         - fragility
         - committee_members
@@ -273,7 +292,7 @@ modules:
       diversity_weight: 0.4
       timeout_ms: 3000
 
-  # Strategy Modules
+  # Strategy
   StrategyGenomePool:
     config:
       population_size: 50
@@ -340,7 +359,7 @@ modules:
       fitness_threshold: 0.8
       timeout_ms: 500
 
-  # Meta System Modules
+  # Meta
   MetaAgent:
     config:
       window: 20
@@ -377,7 +396,7 @@ modules:
       entropy_coeff: 0.01
       timeout_ms: 300
 
-  # Memory System
+  # Memory
   UnifiedMemory:
     config:
       # Legacy settings
@@ -388,7 +407,7 @@ modules:
       forgetting_rate: 0.001
       timeout_ms: 200
 
-      # Debug settings (optimized for performance)
+      # Debug settings (optimized)
       debug: false
       debug_level: "WARNING"
       debug_log_path: "logs/memory/unified_debug.log"
@@ -410,7 +429,7 @@ modules:
       parallel_processing: true
       cache_size: 5000
 
-      # Component enable flags (selective enabling)
+      # Component flags
       enable_replay: true
       enable_compression: false
       enable_mistakes: true
@@ -418,45 +437,45 @@ modules:
       enable_playbook: true
       enable_budget: false
 
-      # Performance settings (faster)
+      # Performance
       max_processing_time_ms: 200
       circuit_breaker_threshold: 3
       health_check_interval: 60
 
-      # Replay settings
+      # Replay
       replay_interval: 10
       replay_decay: 0.9
       sequence_len: 5
       replay_profit_threshold: 10.0
 
-      # Compression settings
+      # Compression
       n_components: 8
       compress_interval: 10
 
-      # Mistakes settings
+      # Mistakes
       n_clusters: 5
       danger_threshold: 0.7
       avoidance_sensitivity: 1.0
       mistake_profit_threshold: 10.0
 
-      # Neural settings
+      # Neural
       embed_dim: 32
       num_heads: 4
       memory_decay: 0.95
       importance_threshold: 0.3
 
-      # Playbook settings
+      # Playbook
       k_neighbors: 5
       similarity_threshold: 0.7
       pattern_memory_size: 50
 
-      # Budget settings
+      # Budget
       rebalance_interval: 50
       utilization_target: 0.8
       efficiency_weight: 0.7
       recency_weight: 0.3
 
-  # External Data Modules
+  # External Data
   SessionManager:
     config:
       session_duration: 3600
@@ -469,20 +488,18 @@ modules:
     config:
       update_frequency: 1.0
       data_sources: ['primary', 'backup']
-      cache_duration: 60
+      cache_duration: 10
       quality_threshold: 0.95
       timeout_ms: 200
-      # Instrument configurations
       instruments:
         EUR_USD:
           timeframes: ['H1', 'H4', 'D1']
           enabled: true
-          priority: high
+          priority: "high"
         XAU_USD:
           timeframes: ['H1', 'H4', 'D1']
           enabled: true
-          priority: high
-      # Market data keys to provide
+          priority: "high"
       provides_data:
         - market_data_EUR_USD_H1
         - market_data_EUR_USD_H4
@@ -494,7 +511,7 @@ modules:
         - universe
         - watched_instruments
 
-  # Execution System
+  # Execution
   Executor:
     config:
       execution_timeout: 5.0
@@ -502,15 +519,6 @@ modules:
       risk_checks: true
       slippage_tolerance: 0.001
       timeout_ms: 1000
-
-  # Position Management
-  PositionManager:
-    config:
-      max_positions: 10
-      position_size_limit: 0.1
-      rebalance_threshold: 0.05
-      liquidation_threshold: 0.95
-      timeout_ms: 300
 
   # Trading Modes
   TradingModeManager:
@@ -521,7 +529,7 @@ modules:
       default_mode: 'balanced'
       timeout_ms: 200
 
-  # Reward System
+  # Reward
   RiskAdjustedReward:
     config:
       risk_penalty_weight: 0.3
@@ -531,7 +539,7 @@ modules:
       timeout_ms: 30000
       max_processing_time_ms: 30000
 
-  # Auditing Modules
+  # Auditing
   AuditingCoordinator:
     config:
       audit_frequency: 100
@@ -556,7 +564,7 @@ modules:
       update_frequency: 10
       timeout_ms: 1500
 
-  # Features Modules
+  # Features
   MultiScaleFeatureEngine:
     config:
       scales: [1, 5, 15, 60]
@@ -565,7 +573,7 @@ modules:
       dropout_rate: 0.2
       timeout_ms: 300
 
-  # Missing Modules (from log warnings)
+  # News (optional)
   NewsSentimentModule:
     config:
       sentiment_threshold: 0.6
@@ -574,6 +582,7 @@ modules:
       language_models: ['sentiment_basic']
       timeout_ms: 500
 
+  # Unified Market
   UnifiedMarketModule:
     config:
       analysis_depth: 'comprehensive'
@@ -581,7 +590,6 @@ modules:
       liquidity_analysis: true
       theme_detection: true
       fractal_analysis: true
-      timeout_ms: 600
 
   PPOLagAgent:
     config:
@@ -639,7 +647,7 @@ modules:
       confidence_weighting: true
       timeout_ms: 800
 
-  # Additional voting modules from contracts
+  # Extra voting experts
   EnhancedSeasonalityRiskExpert:
     config:
       seasonal_analysis_depth: 'comprehensive'
@@ -647,7 +655,6 @@ modules:
       risk_seasonality_threshold: 0.6
       adaptive_weighting: true
       timeout_ms: 300
-      # Provide missing expert votes
       provides_data:
         - expert_votes
 
@@ -658,17 +665,5 @@ modules:
       confidence_weighting: true
       adaptation_speed: 0.1
       timeout_ms: 250
-      # Provide missing expert votes
       provides_data:
         - expert_votes
-
-  # Visualization modules
-  TradeMapVisualizer:
-    config:
-      chart_types: ['performance', 'trade_timeline', 'risk_heatmap']
-      update_frequency: 5.0
-      max_trade_history: 500
-      visualization_quality: 'high'
-      export_formats: ['png', 'svg', 'pdf']
-      timeout_ms: 400
-

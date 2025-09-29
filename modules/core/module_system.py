@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/core/module_system.py
-# SmartInfoBus Module System & Orchestrator (V1.4, "Navigator+")
+# SmartInfoBus Module System & Orchestrator (V1.5, "Navigator+ Startup")
 # - Deterministic stage orchestration with lifecycle telemetry
 # - Stage heartbeats & pre-stage readiness scans
 # - Explicit timeout attribution + inputs-not-ready reporting
@@ -9,6 +9,7 @@
 # - Adaptive per-module/stage timeouts (p95+EWMA)
 # - Dynamic configuration (async, thread fallback, bus-driven)
 # - Recursive module discovery
+# - NEW (V1.5): Preflight + warmup + autotune + self-test + startup gate
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -22,7 +23,10 @@ import yaml
 import weakref
 import os
 from pathlib import Path
-from typing import Dict, List, Set, Type, Optional, Any, Callable, Tuple
+from typing import (
+    Dict, Any, Optional, List, Tuple, DefaultDict, Set, Deque,
+    Callable, Iterable, Protocol, runtime_checkable, Type
+)
 from typing import get_origin, get_args
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
@@ -51,6 +55,13 @@ from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.core.error_pinpointer import ErrorPinpointer
 
 
+# ---- Added protocol for system integrity suite (static typing support) ----
+@runtime_checkable
+class SystemIntegritySuiteProto(Protocol):
+    def validate_and_audit(self, *, title: str = "System Audit", export_path: Optional[str] = None) -> Dict[str, Any]: ...
+    def attach_live_taps(self) -> None: ...
+    def start_heartbeat(self, interval_s: float = 30.0) -> None: ...
+
 # ─────────────────────────────────────────────────────────────
 # Helpers: math fallbacks + latency predictors
 # ─────────────────────────────────────────────────────────────
@@ -73,7 +84,6 @@ def _percentile_ms(samples: List[float], q: float) -> float:
             # Use keyword args to avoid stub/signature issues; fall back gracefully.
             return float(_np.percentile(a=samples, q=q * 100.0))  # type: ignore[arg-type]
         except TypeError:
-            # Some environments/stubs may have a zero-arg wrapper; try quantile.
             try:
                 return float(_np.quantile(a=samples, q=q))  # type: ignore[arg-type]
             except Exception:
@@ -116,6 +126,7 @@ class CircuitBreakerState:
         self.total_calls: int = 0
         self.last_success_time: float = 0.0
         self._probe_inflight: bool = False  # allow only a single probe in HALF_OPEN
+        
 
     def record_success(self):
         with self._lock:
@@ -141,6 +152,89 @@ class CircuitBreakerState:
             if self.state == "HALF_OPEN":
                 self.state = "OPEN"
                 self._probe_inflight = False
+
+
+# Replace these three methods in BaseModule
+
+    def breaker_allow(self) -> bool:
+        """
+        Adapter over different breaker shapes:
+        - CircuitBreakerState: should_allow_request(recovery_time, single_probe)
+        - Legacy/custom:       allow()
+        Falls back to True if no breaker is wired.
+        """
+        try:
+            b = getattr(self, "breaker", None)
+            if not b:
+                return True
+
+            # Preferred: CircuitBreakerState-style
+            should_allow = getattr(b, "should_allow_request", None)
+            if callable(should_allow):
+                # Pull settings from orchestrator config if available; else use sane defaults.
+                recovery = 60.0
+                single_probe = True
+                try:
+                    if getattr(self, "orchestrator", None) is not None:
+                        cfg = self.orchestrator.config  # type: ignore[attr-defined]
+                        recovery = float(getattr(cfg, "recovery_time_s", 60.0))
+                        single_probe = bool(getattr(cfg, "half_open_single_probe", True))
+                except Exception:
+                    pass
+                return bool(should_allow(recovery_time=recovery, single_probe=single_probe))
+
+            # Legacy/custom breaker shape
+            allow_fn = getattr(b, "allow", None)
+            if callable(allow_fn):
+                return bool(allow_fn())
+
+            # Unknown breaker shape; be permissive
+            return True
+        except Exception:
+            return True
+
+
+    def breaker_on_success(self) -> None:
+        """
+        Adapter over breaker success hook:
+        - CircuitBreakerState: record_success()
+        - Legacy/custom:       on_success()
+        """
+        try:
+            b = getattr(self, "breaker", None)
+            if not b:
+                return
+            rec = getattr(b, "record_success", None)
+            if callable(rec):
+                rec()
+                return
+            legacy = getattr(b, "on_success", None)
+            if callable(legacy):
+                legacy()
+        except Exception:
+            pass
+
+
+    def breaker_on_failure(self) -> None:
+        """
+        Adapter over breaker failure hook:
+        - CircuitBreakerState: record_failure()
+        - Legacy/custom:       on_failure()
+        """
+        try:
+            b = getattr(self, "breaker", None)
+            if not b:
+                return
+            rec = getattr(b, "record_failure", None)
+            if callable(rec):
+                rec()
+                return
+            legacy = getattr(b, "on_failure", None)
+            if callable(legacy):
+                legacy()
+        except Exception:
+            pass
+
 
     def should_allow_request(self, recovery_time: float, single_probe: bool = True) -> bool:
         with self._lock:
@@ -323,13 +417,36 @@ class ModuleConfig:
             ]
         }
 
+        # ── NEW (V1.5): startup + preflight + warmup + autotune + self-test ──
+        self.startup_gate_enabled = kwargs.get('startup_gate_enabled', True)
+        self.startup_max_wait_s = kwargs.get('startup_max_wait_s', 45.0)
+
+        # Preflight readiness
+        self.preflight_timeout_s = kwargs.get('preflight_timeout_s', 15.0)
+        self.preflight_poll_interval_s = kwargs.get('preflight_poll_interval_s', 0.10)
+        self.preflight_required_keys = kwargs.get('preflight_required_keys', [])
+        self.preflight_quorum = kwargs.get('preflight_quorum', 0.85)
+
+        # Warmup & autotune
+        self.warmup_enabled = kwargs.get('warmup_enabled', True)
+        self.warmup_reps = kwargs.get('warmup_reps', 1)
+        self.autotune_enabled = kwargs.get('autotune_enabled', True)
+        self.autotune_reps = kwargs.get('autotune_reps', 2)
+        self.autotune_padding_pct = kwargs.get('autotune_padding_pct', 0.35)
+
+        # Built-in self test (BIST)
+        self.self_test_enabled = kwargs.get('self_test_enabled', True)
+        self.self_test_fail_fast = kwargs.get('self_test_fail_fast', False)
+        self.self_test_timeout_s = kwargs.get('self_test_timeout_s', 1.0)
+
+        # System-ready publishing
+        self.system_ready_bus_key = kwargs.get('system_ready_bus_key', 'system_ready')
+        self.startup_report_to_bus = kwargs.get('startup_report_to_bus', True)
+
         # dynamic updates
         self._config_watchers: List[Callable] = []
         self._config_file_path: Optional[Path] = None
         self._last_config_update = time.time()
-
-        self._validate_config()
-
 
         self._validate_config()
 
@@ -446,7 +563,14 @@ class ModuleOrchestrator:
     - Health monitor integration
     - Stage heartbeats, readiness scans, and explicit timeout attribution
     - Adaptive timeout prediction; dynamic configs (file/bus)
+    - NEW: Preflight readiness + warmup + autotune + self-test gating
     """
+
+    # ---- Added attribute declarations for static analysis ----
+    integrity_suite: Optional[SystemIntegritySuiteProto] = None
+    execution_stages: List[List[str]] = []
+    execution_order: List[str] = []
+    circular_dependencies: List[List[str]] = []
 
     _instance: Optional['ModuleOrchestrator'] = None
     _registered_classes: Dict[str, Type[BaseModule]] = {}
@@ -516,6 +640,9 @@ class ModuleOrchestrator:
         self._pending_futures = weakref.WeakSet()
         self._create_executor()
 
+        # Integrity suite (lazy-initialized)
+        self._integrity_suite: Optional[Any] = None
+
         # Locks
         self.execution_lock = threading.RLock()
         self._async_execution_lock: Optional[asyncio.Lock] = None
@@ -541,8 +668,15 @@ class ModuleOrchestrator:
         from modules.core.persistence import StateManager
         self.state_manager = StateManager()
 
-        from modules.monitoring.dependency_visualizer import DependencyVisualizer
-        self.dependency_visualizer = DependencyVisualizer(self)
+        # Initialize SystemIntegritySuite for unified monitoring
+        from modules.monitoring.system_integrity_suite import SystemIntegritySuite
+        self.integrity_suite = SystemIntegritySuite(orchestrator=self)
+        self.integrity_suite.attach_live_taps()
+        self.integrity_suite.start_heartbeat()
+
+        # NEW (V1.5): startup gate state
+        self._startup_ready: bool = False
+        self._startup_report: Dict[str, Any] = {}
 
         self._initialized = False
         self._shutdown_requested = False
@@ -634,6 +768,21 @@ class ModuleOrchestrator:
             self._start_config_monitoring()
             self._start_stage_heartbeat()
             self._start_bus_config_listener()  # NEW: bus-driven dynamic config
+
+            # NEW (V1.5): schedule/bootstrap startup pipeline
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self.bootstrap_async())
+                self.logger.info("[OK] Startup bootstrap scheduled (preflight/warmup/autotune/self-test)")
+            except RuntimeError:
+                # No active loop, run synchronously
+                self.logger.info("[OK] Startup bootstrap running synchronously")
+                try:
+                    # Use dedicated loop to avoid interfering with caller
+                    asyncio.run(self.bootstrap_async())
+                except RuntimeError:
+                    # Fallback: ignore if environment forbids loop creation (rare)
+                    pass
 
             # Persist initial snapshot
             try:
@@ -1129,7 +1278,8 @@ class ModuleOrchestrator:
                                     self._apply_module_registry(mod_reg)
                                 self.build_execution_plan()
                                 self.logger.info("[OK] Applied config from bus")
-                                # Optionally clear: self.smart_bus.set(bus_key, None, module="Orchestrator")
+                                # Clear the key to avoid re-applying forever since bus is persistent
+                                self.smart_bus.set(bus_key, None, module="Orchestrator")
                     except Exception:
                         pass
                     time.sleep(2.0)
@@ -1218,6 +1368,9 @@ class ModuleOrchestrator:
                 # Wait for configuration to be available before starting execution
                 await self._wait_for_configuration_readiness()
 
+                # NEW (V1.5): startup readiness gate
+                await self._wait_for_system_ready_gate()
+
                 self._store_market_data(market_data, execution_id)
 
                 if time.time() - self.last_health_check > self.health_check_interval:
@@ -1246,11 +1399,7 @@ class ModuleOrchestrator:
                         self.stage_timings[f"stage_{stage_idx}"].append(stage_dur)
                         self._stage_stats[stage_idx].record(stage_dur)
 
-                        if hasattr(self, 'dependency_visualizer'):
-                            self.dependency_visualizer.update_performance_metrics(
-                                f"stage_{stage_idx}",
-                                {"avg_latency_ms": stage_dur, "error_rate": 0.0, "success_rate": 1.0}
-                            )
+                        # (metrics are recorded locally and via _emit_stage_heartbeat)
 
                         if self._check_critical_failures(stage_result):
                             self.logger.error(f"Critical failures in stage {stage_idx}")
@@ -1377,7 +1526,6 @@ class ModuleOrchestrator:
         execution_id: str
     ) -> Optional[Dict[str, Any]]:
         from modules.core.exceptions import ModuleTimeout
-        # Localized import for typing (avoids changing file-level imports)
         from typing import Awaitable, Any as _Any, cast as _cast
 
         with self._circuit_breaker_lock:
@@ -1459,22 +1607,25 @@ class ModuleOrchestrator:
 
             dur_ms = (time.perf_counter() - start_t) * 1000.0
             module.record_execution(dur_ms, True)
-            cb.record_success()
+            with self._circuit_breaker_lock:
+                cb.record_success()
             self._update_perf_stats(module_name, dur_ms)
             return result
 
         except asyncio.TimeoutError:
             dur_ms = float(pred_ms)
             msg = f"Timeout after {dur_ms:.0f} ms (entire module)"
+            with self._circuit_breaker_lock:
+                cb = self.circuit_breakers.setdefault(module_name, CircuitBreakerState())
             self._handle_module_failure(module, module_name, cb, dur_ms, msg, execution_id, "TIME")
             raise ModuleTimeout(msg)
 
         except Exception as e:
             dur_ms = (time.perf_counter() - start_t) * 1000.0
+            with self._circuit_breaker_lock:
+                cb = self.circuit_breakers.setdefault(module_name, CircuitBreakerState())
             self._handle_module_failure(module, module_name, cb, dur_ms, str(e), execution_id, "CRASH")
             raise
-
-
 
     # ───── Emergency execution ─────
     async def _execute_emergency_mode(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -1529,14 +1680,358 @@ class ModuleOrchestrator:
             'emergency_reason': self.emergency_mode_reason
         }
 
+    # ───── Startup bootstrap: preflight → warmup → autotune → self-test → ready gate ─────
+    async def bootstrap_async(self) -> None:
+        """
+        Run at init to make the system smart about:
+         - preflight readiness: keys/providers present (and values if feasible)
+         - warmup: nudge providers & optional module warmup hooks
+         - autotune: infer per-module timeout from observed p95 (with padding)
+         - self-test: optional module-level quick checks
+         - publish system_ready gate
+        """
+        t0 = time.time()
+        report: Dict[str, Any] = {
+            "started_at": t0,
+            "preflight": {},
+            "warmup": {},
+            "autotune": {},
+            "self_test": {},
+            "completed": False,
+        }
+
+        try:
+            preflight = await self._preflight_readiness_check()
+            report["preflight"] = preflight
+
+            if self.config.warmup_enabled:
+                warm = await self._warmup_modules()
+                report["warmup"] = warm
+
+            if self.config.autotune_enabled:
+                tune = await self._autotune_timeouts()
+                report["autotune"] = tune
+
+            if self.config.self_test_enabled:
+                st = await self._self_test_run()
+                report["self_test"] = st
+
+            self._startup_ready = True
+            report["completed"] = True
+            report["ready_at"] = time.time()
+            report["duration_s"] = report["ready_at"] - t0
+
+            if self.config.startup_report_to_bus:
+                self._safe_bus_set(
+                    "startup_report",
+                    report,
+                    module="Orchestrator",
+                    thesis="Startup pipeline completed",
+                    confidence=0.9
+                )
+            # advertise system_ready
+            self._safe_bus_set(
+                self.config.system_ready_bus_key,
+                {"ready": True, "timestamp": time.time()},
+                module="Orchestrator",
+                thesis="System is ready",
+                confidence=0.95
+            )
+        except Exception as e:
+            report["error"] = str(e)
+            report["completed"] = False
+            if self.config.startup_report_to_bus:
+                self._safe_bus_set(
+                    "startup_report",
+                    report,
+                    module="Orchestrator",
+                    thesis="Startup pipeline failed",
+                    confidence=0.5
+                )
+            self.logger.error(f"Startup bootstrap failed: {e}")
+
+        self._startup_report = report
+
+    async def _wait_for_system_ready_gate(self) -> None:
+        """
+        If startup gate enabled, block execute_step until:
+        - bootstrap_async set _startup_ready, OR
+        - bus shows system_ready key, OR
+        - max wait exceeded (then proceed with warning).
+        """
+        if not getattr(self.config, "startup_gate_enabled", True):
+            return
+
+        key = getattr(self.config, "system_ready_bus_key", "system_ready")
+        max_wait = float(getattr(self.config, "startup_max_wait_s", 45.0))
+        t0 = time.time()
+        while True:
+            if self._startup_ready:
+                return
+            try:
+                r = self.smart_bus.get(key, "Orchestrator")
+                if isinstance(r, dict) and r.get("ready"):
+                    return
+            except Exception:
+                pass
+            if (time.time() - t0) >= max_wait:
+                self.logger.warning("[STARTUP] System-ready gate exceeded max wait; proceeding anyway.")
+                return
+            await asyncio.sleep(0.05)
+
+    def _evaluate_preflight_targets(self) -> Tuple[Set[str], Dict[str, List[str]]]:
+        """
+        Compute set of keys we expect to be available and which modules depend on them.
+        Returns:
+           (required_keys, consumers_by_key)
+        """
+        required: Set[str] = set(self.config.preflight_required_keys or [])
+        consumers: Dict[str, List[str]] = defaultdict(list)
+        for mod, md in self.metadata.items():
+            for req in md.requires:
+                required.add(req)
+                consumers[req].append(mod)
+        return required, consumers
+
+    async def _preflight_readiness_check(self) -> Dict[str, Any]:
+        """
+        Wait until a quorum of required keys are present (value not None) or timeout.
+        Also verifies each required key has at least one provider registered.
+        """
+        timeout_s = float(self.config.preflight_timeout_s)
+        poll = max(0.02, float(self.config.preflight_poll_interval_s))
+        quorum = float(self.config.preflight_quorum)
+
+        need_keys, consumers = self._evaluate_preflight_targets()
+        providers_by_key: Dict[str, Set[str]] = {k: self.smart_bus.get_providers(k) for k in need_keys}
+
+        missing_providers = {k: v for k, v in providers_by_key.items() if not v}
+        if missing_providers:
+            self.logger.warning(f"[PREFLIGHT] Missing providers for keys: {list(missing_providers.keys())[:8]}")
+
+        # Proactively request needed keys to nudge producers
+        for k in need_keys:
+            try:
+                self.smart_bus.request_data(k, "Orchestrator")
+            except Exception:
+                pass
+
+        t0 = time.time()
+        seen: Set[str] = set()
+        while (time.time() - t0) < timeout_s:
+            ready = 0
+            for k in need_keys:
+                try:
+                    md = self.smart_bus.get_with_metadata(k, "Orchestrator")
+                    if md is not None and md.value is not None:
+                        ready += 1
+                        seen.add(k)
+                except Exception:
+                    pass
+            ratio = (ready / max(1, len(need_keys)))
+            if ratio >= quorum:
+                break
+            await asyncio.sleep(poll)
+
+        result = {
+            "required_keys": sorted(list(need_keys)),
+            "providers_by_key": {k: v for k, v in providers_by_key.items()},
+            "available_ratio": (len(seen) / max(1, len(need_keys))),
+            "available_keys": sorted(list(seen)),
+            "missing_keys": sorted(list(need_keys - seen)),
+            "missing_providers": sorted(list(missing_providers.keys())),
+            "timeout_s": timeout_s,
+            "met_quorum": (len(seen) / max(1, len(need_keys))) >= quorum
+        }
+
+        # Publish a small preflight report
+        if self.config.startup_report_to_bus:
+            self._safe_bus_set(
+                "preflight_report",
+                result,
+                module="Orchestrator",
+                thesis="Preflight readiness snapshot",
+                confidence=0.8
+            )
+        return result
+
+    async def _warmup_modules(self) -> Dict[str, Any]:
+        """
+        Best-effort warmup:
+         - trigger bus requests for each module's required keys
+         - call optional module.warmup() or initialize_async_resources()
+        """
+        reps = max(1, int(self.config.warmup_reps))
+        details: Dict[str, Any] = {"attempts": reps, "modules": {}, "errors": {}}
+
+        for name, md in self.metadata.items():
+            # Nudge required keys
+            for k in md.requires:
+                try:
+                    self.smart_bus.request_data(k, name)
+                except Exception:
+                    pass
+
+        for i in range(reps):
+            for name, mod in self.modules.items():
+                info: Dict[str, Any] = details["modules"].setdefault(name, {"warmup_calls": 0})
+                try:
+                    if hasattr(mod, "warmup") and callable(getattr(mod, "warmup")):
+                        maybe = mod.warmup()
+                        if inspect.iscoroutine(maybe):
+                            await asyncio.wait_for(maybe, timeout=1.0)
+                        info["warmup_calls"] += 1
+                    else:
+                        # try opening async resources quickly
+                        maybe = mod.initialize_async_resources()
+                        if inspect.iscoroutinefunction(mod.initialize_async_resources) or inspect.iscoroutine(maybe):
+                            try:
+                                await asyncio.wait_for(maybe, timeout=1.0)  # type: ignore
+                            except Exception:
+                                pass
+                        info["warmup_calls"] += 1
+                except Exception as e:
+                    details["errors"][name] = str(e)
+
+        if self.config.startup_report_to_bus:
+            self._safe_bus_set(
+                "warmup_report",
+                details,
+                module="Orchestrator",
+                thesis="Warmup result",
+                confidence=0.7
+            )
+        return details
+
+    async def _autotune_timeouts(self) -> Dict[str, Any]:
+        """
+        Use existing perf stats or quick probe hooks to estimate per-module timeout.
+        Strategy:
+          - If module exposes .probe() (async or sync), call it a few times and measure.
+          - Else, rely on recent_times window if any.
+          - Apply padding (config.autotune_padding_pct) and clamp by [timeout_floor_ms, timeout_ceiling_ms].
+        """
+        reps = max(1, int(self.config.autotune_reps))
+        pad = float(self.config.autotune_padding_pct)
+        result: Dict[str, Any] = {"probed": {}, "updated": {}}
+
+        for name, mod in self.modules.items():
+            md = self.metadata[name]
+            samples: List[float] = []
+
+            # Gather existing perf samples if any
+            with self._perf_lock:
+                perf = self.module_performance.get(name, {})
+                recent = list(perf.get("recent_times", []))
+
+            if recent:
+                samples.extend([float(x) for x in recent])
+
+            # Try probe() if available
+            if hasattr(mod, "probe") and callable(getattr(mod, "probe")):
+                for _ in range(reps):
+                    t0 = time.perf_counter()
+                    try:
+                        maybe = mod.probe()
+                        if inspect.iscoroutine(maybe):
+                            await asyncio.wait_for(maybe, timeout=self.config.self_test_timeout_s)
+                        else:
+                            # run sync probe in a thread to enforce timeout
+                            loop = asyncio.get_running_loop()
+                            await asyncio.wait_for(loop.run_in_executor(None, lambda: maybe), timeout=self.config.self_test_timeout_s)
+                        dur = (time.perf_counter() - t0) * 1000.0
+                        samples.append(dur)
+                    except Exception:
+                        # ignore probe errors; stick to existing stats
+                        pass
+
+            if samples:
+                # p95 + padding
+                p95 = _percentile_ms(samples, 0.95)
+                suggested = int((1.0 + pad) * p95)
+                new_ms = int(min(max(suggested, self.config.timeout_floor_ms), self.config.timeout_ceiling_ms))
+                if new_ms != md.timeout_ms:
+                    md.timeout_ms = new_ms  # type: ignore[attr-defined]
+                    result["updated"][name] = {"timeout_ms": new_ms, "basis": f"p95={p95:.1f}ms pad={pad:.2f}", "samples": min(len(samples), 5)}
+                result["probed"][name] = {"p95_ms": p95, "n": len(samples)}
+            else:
+                result["probed"][name] = {"p95_ms": None, "n": 0}
+
+        if self.config.startup_report_to_bus:
+            self._safe_bus_set(
+                "autotune_report",
+                result,
+                module="Orchestrator",
+                thesis="Autotune timeouts result",
+                confidence=0.75
+            )
+        return result
+
+    async def _self_test_run(self) -> Dict[str, Any]:
+        """
+        Optional per-module self-test:
+          - if module has self_test()/run_self_test() use it with timeout
+          - else validate simple invariants: providers exist for all requires
+        """
+        fail_fast = bool(self.config.self_test_fail_fast)
+        timeout_s = float(self.config.self_test_timeout_s)
+        out: Dict[str, Any] = {"passed": [], "failed": {}}
+
+        for name, mod in self.modules.items():
+            try:
+                if hasattr(mod, "self_test") and callable(getattr(mod, "self_test")):
+                    coro = mod.self_test()
+                    if inspect.iscoroutine(coro):
+                        await asyncio.wait_for(coro, timeout=timeout_s)
+                    else:
+                        loop = asyncio.get_running_loop()
+                        await asyncio.wait_for(loop.run_in_executor(None, lambda: coro), timeout=timeout_s)
+                    out["passed"].append(name)
+                    continue
+                if hasattr(mod, "run_self_test") and callable(getattr(mod, "run_self_test")):
+                    coro = mod.run_self_test()
+                    if inspect.iscoroutine(coro):
+                        await asyncio.wait_for(coro, timeout=timeout_s)
+                    else:
+                        loop = asyncio.get_running_loop()
+                        await asyncio.wait_for(loop.run_in_executor(None, lambda: coro), timeout=timeout_s)
+                    out["passed"].append(name)
+                    continue
+
+                # Fallback invariant: providers exist for all requires
+                md = self.metadata[name]
+                missing = [k for k in md.requires if not self.smart_bus.get_providers(k)]
+                if missing:
+                    msg = f"Missing providers for: {missing}"
+                    out["failed"][name] = msg
+                    if fail_fast and md.critical:
+                        raise RuntimeError(f"[SELFTEST] Critical module failed invariants: {name}: {msg}")
+                else:
+                    out["passed"].append(name)
+            except Exception as e:
+                out["failed"][name] = str(e)
+                if fail_fast and self.metadata[name].critical:
+                    raise
+
+        if self.config.startup_report_to_bus:
+            self._safe_bus_set(
+                "selftest_report",
+                out,
+                module="Orchestrator",
+                thesis="Self-test result",
+                confidence=0.75
+            )
+        return out
+
+    def get_startup_report(self) -> Dict[str, Any]:
+        return dict(self._startup_report or {})
+
     # ───── Utilities ─────
     def get_module_by_name(self, name: str) -> Optional[BaseModule]:
         return self.modules.get(name)
 
     def get_dependency_graph(self) -> Dict[str, Any]:
-        if hasattr(self, 'dependency_visualizer'):
-            return self.dependency_visualizer.get_graph_data()
-        return {
+        graph = {
             'nodes': list(self.modules.keys()),
             'edges': [
                 {'from': module, 'to': dep}
@@ -1544,6 +2039,19 @@ class ModuleOrchestrator:
                 for dep in deps
             ]
         }
+        suite = self._get_integrity_suite()
+        if suite is not None:
+            try:
+                result = suite.validate_and_audit(title="Dependency Graph Snapshot")
+                graph['integration'] = result.get('validation', {})
+                graph['audit'] = result.get('audit', {}).get('summary', {})
+            except Exception:
+                pass
+        return graph
+
+    def _get_integrity_suite(self):  # type: ignore[no-untyped-def]
+        # Use the integrity suite that was initialized in __init__
+        return getattr(self, 'integrity_suite', None)
 
     def _cb_can_execute_peek(self, cb: CircuitBreakerState) -> bool:
         state = cb.get_state()
@@ -1574,6 +2082,15 @@ class ModuleOrchestrator:
                 self.logger.info(f"[FAST] Circuit breaker reset for {module_name}")
                 return True
         return False
+
+    # Singleton access
+    @classmethod
+    def get_instance(cls) -> 'ModuleOrchestrator':
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls()
+        assert cls._instance is not None
+        return cls._instance
 
     def can_exit_emergency_mode(self) -> bool:
         if not self.emergency_mode:
@@ -1669,12 +2186,10 @@ class ModuleOrchestrator:
             for py_file in path.rglob("*.py"):
                 if py_file.name.startswith("_"):
                     continue
-                # support nested packages: build module import path from relative path
                 try:
                     rel = py_file.with_suffix("").relative_to(Path("."))
                     module_name = ".".join(rel.parts)
                 except Exception:
-                    # fallback to legacy behavior
                     module_name = f"{path_str.replace('/', '.')}.{py_file.stem}"
                 try:
                     mod = importlib.import_module(module_name)
@@ -1706,7 +2221,6 @@ class ModuleOrchestrator:
 
         self.logger.info(f"Module discovery complete: {len(self.modules)} modules registered")
 
-    # ---------------------- Config normalization ----------------------
     @staticmethod
     def _extract_config_dataclass_type(module_class: Type[BaseModule]) -> Optional[Type[Any]]:
         try:
@@ -1802,6 +2316,7 @@ class ModuleOrchestrator:
         except Exception as e:
             self.logger.error(f"Failed to register {name}: {e}")
 
+    # ---------------------- Planning & staging ----------------------
     def _stages_respect_dependencies(self, stages: List[List[str]]) -> bool:
         pos: Dict[str, int] = {}
         for i, stage in enumerate(stages):
@@ -1846,7 +2361,6 @@ class ModuleOrchestrator:
 
         return manual
 
-    # ───── Planning ─────
     def build_execution_plan(self):
         try:
             self.module_dependencies = defaultdict(set)
@@ -1864,25 +2378,13 @@ class ModuleOrchestrator:
             base_stages = self._build_parallel_stages()
 
             manual = getattr(self, "execution_stages_config", None)
-            chosen_stages: Optional[List[List[str]]] = None
+            chosen_stages: List[List[str]] = base_stages
             if isinstance(manual, list) and manual and isinstance(manual[0], list):
                 normalized = self._normalize_and_validate_manual_stages(manual)
                 if normalized:
                     chosen_stages = normalized
                 else:
                     self.logger.warning("Ignoring manual parallel_stages due to validation failure")
-
-            if chosen_stages is None:
-                chosen_stages = base_stages
-                if hasattr(self, 'dependency_visualizer') and self.dependency_visualizer:
-                    try:
-                        optimized = self.dependency_visualizer.optimize_execution_stages()
-                        if optimized and self._stages_respect_dependencies(optimized):
-                            chosen_stages = optimized
-                        elif optimized:
-                            self.logger.warning("Optimizer produced invalid stage ordering; keeping base plan")
-                    except Exception as e:
-                        self.logger.warning(f"Optimizer error; keeping base plan: {e}")
 
             self.execution_stages = chosen_stages
             self._log_execution_plan()
@@ -2356,7 +2858,6 @@ class ModuleOrchestrator:
 
         return inputs
 
-
     def _store_market_data(self, market_data: Dict[str, Any] | None, execution_id: str):
         try:
             payload = market_data or {}
@@ -2386,7 +2887,6 @@ class ModuleOrchestrator:
             for key, value in payload.items():
                 if not str(key).startswith('_'):
                     if key in forbidden_keys:
-                        # Respect single-writer policy; Environment should not own these keys
                         continue
                     self._safe_bus_set(
                         key,
@@ -2428,7 +2928,7 @@ class ModuleOrchestrator:
             'module_count': len(results),
             'successful_modules': [],
             'failed_modules': [],
-            'skipped_modules': [],  # ⬅️ new
+            'skipped_modules': [],
             'votes': {},
             'signals': {},
             'analysis': {},
@@ -2492,7 +2992,6 @@ class ModuleOrchestrator:
         )
 
         return aggregated
-
 
     def _record_execution(
         self,
@@ -2642,7 +3141,6 @@ class ModuleOrchestrator:
                 self.config.stage_heartbeat_interval_s = stg.get('heartbeat_interval_s', self.config.stage_heartbeat_interval_s)
                 self.config.stage_report_to_bus = stg.get('report_to_bus', self.config.stage_report_to_bus)
 
-            # Optional: enable/disable adaptive features + global readiness grace
             if 'adaptive' in execution_config:
                 ad = execution_config['adaptive'] or {}
                 for k in ('auto_tune_timeouts', 'timeout_target_pctl', 'timeout_floor_ms',
@@ -2650,7 +3148,6 @@ class ModuleOrchestrator:
                     if k in ad:
                         setattr(self.config, k, ad[k])
 
-            # ⬇️ NEW: scheduler toggle
             if 'scheduler' in execution_config:
                 sched = execution_config['scheduler'] or {}
                 mode = str(sched.get('mode', '')).lower()
@@ -2660,9 +3157,16 @@ class ModuleOrchestrator:
 
             self.logger.info("[OK] Applied execution configuration")
 
+            # Publish config readiness signal to InfoBus
+            try:
+                config_key = getattr(self.config, 'dynamic_config_bus_key', 'config_update')
+                self.smart_bus.set(config_key, {"ready": True, "timestamp": time.time()}, module="Orchestrator")
+                self.logger.debug(f"[CONFIG] Published config readiness signal to '{config_key}'")
+            except Exception as pub_e:
+                self.logger.warning(f"[CONFIG] Failed to publish config readiness: {pub_e}")
+
         except Exception as e:
             self.logger.error(f"Failed to apply execution configuration: {e}")
-
 
     def _apply_module_registry(self, module_registry: Dict[str, Any]):
         try:
@@ -2741,8 +3245,6 @@ class ModuleOrchestrator:
                         'reason': 'Module not found in current modules list. Please ensure it is registered.'
                     })
         return legacy_status
-    
-
 
     def _compute_indegree_and_graph(self) -> tuple[Dict[str,int], Dict[str, set[str]]]:
         indeg: Dict[str, int] = {}
@@ -2808,52 +3310,18 @@ class ModuleOrchestrator:
         aggregated = self._aggregate_results(results, execution_id)
         exec_time_ms = (time.time() - start_time) * 1000.0
         self._record_execution(execution_id, exec_time_ms, results, aggregated)
-        summary = self._generate_execution_summary(execution_id, exec_time_ms, [results], aggregated)
+        aggregated = self._aggregate_results(results, execution_id)
+        exec_time_ms = (time.time() - start_time) * 1000.0
+        self._record_execution(execution_id, exec_time_ms, results, aggregated)
+
+        if len(aggregated.get('successful_modules', [])) > len(aggregated.get('failed_modules', [])):
+            self.consecutive_system_failures = 0
+            self.last_successful_execution = time.time()
+        else:
+            self.consecutive_system_failures += 1
+
+        summary = self._generate_execution_summary(
+            execution_id, exec_time_ms, [results], aggregated
+        )
         self.logger.info(summary)
         return aggregated
-
-
-    # ───── Singleton API ─────
-    @classmethod
-    def get_instance(cls) -> 'ModuleOrchestrator':
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = cls()
-        return cls._instance
-
-    @classmethod
-    def register_class(cls, module_class: Type[BaseModule]) -> None:
-        """
-        Idempotent registration that prefers the @module metadata name over the
-        Python class name and avoids duplicate instance construction.
-        """
-        try:
-            meta = getattr(module_class, "__module_metadata__", None)
-            module_name = meta.name if meta and getattr(meta, "name", None) else module_class.__name__
-        except Exception:
-            module_name = module_class.__name__
-
-        with cls._lock:
-            existing = cls._registered_classes.get(module_name)
-
-            if existing is None:
-                cls._registered_classes[module_name] = module_class
-                if cls._instance and module_name not in cls._instance.modules:
-                    cls._instance.register_module(module_name, module_class)
-                return
-
-            if existing is module_class:
-                if cls._instance and module_name not in cls._instance.modules:
-                    cls._instance.register_module(module_name, module_class)
-                return
-
-            if cls._instance:
-                try:
-                    cls._instance.logger.warning(
-                        f"register_class: name conflict for '{module_name}', "
-                        f"keeping {existing} and ignoring {module_class}"
-                    )
-                except Exception:
-                    pass
-            return

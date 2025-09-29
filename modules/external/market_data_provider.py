@@ -25,6 +25,7 @@ import pandas as pd
 from modules.core.module_base import BaseModule, module
 from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.info_bus import SmartInfoBus
 
 
 @dataclass
@@ -34,8 +35,8 @@ class MarketDataConfig:
     supported_symbols: List[str] = field(default_factory=lambda: ["XAU_USD", "EUR_USD"])
     supported_timeframes: List[str] = field(default_factory=lambda: ["H1", "H4", "D1"])
     primary_timeframe: str = "H4"       # Primary TF for advancing iterators
-    update_frequency: float = 1.0       # seconds
-    buffer_size: int = 10000
+    update_frequency: float = 0.5       # seconds - increased frequency
+    buffer_size: int = 5000
     enable_technical_indicators: bool = True
 
 
@@ -44,7 +45,7 @@ class MarketDataConfig:
     description="Offline market data provider that emits only real data from disk. No mock/simulated values.",
     error_handling=True,
     hot_reload=True,
-    timeout_ms=3000,
+    timeout_ms=5000,
     critical=True,  # Ensure provider always runs (even in emergency mode)
 ))
 class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
@@ -85,7 +86,10 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         self._update_count: int = 0
         self._success: int = 0
         self._fail: int = 0
-        self._proc_times: deque = deque(maxlen=200)
+        self._proc_times: deque = deque(maxlen=100)
+
+        # Initialize SmartInfoBus connection
+        self.smart_bus = SmartInfoBus()
 
         # Only now let BaseModule wire things and call _initialize()
         super().__init__(config=asdict(self.cfg))
@@ -229,10 +233,10 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 "stochastic": 0.0,
             }
             self.price_buffers[symbol] = {
-                "close": deque(maxlen=200),
-                "high": deque(maxlen=200),
-                "low": deque(maxlen=200),
-                "volume": deque(maxlen=200),
+                "close": deque(maxlen=100),
+                "high": deque(maxlen=100),
+                "low": deque(maxlen=100),
+                "volume": deque(maxlen=100),
             }
 
     def _setup_initial_conditions(self) -> None:
@@ -366,6 +370,7 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         """
         t0 = time.time()
         errors: Dict[str, str] = {}
+        self.logger.info(f"[DEBUG] PROCESS METHOD CALLED - update_count: {self._update_count}")
         try:
             now = time.time()
             if now - self._last_update_ts >= self.cfg.update_frequency:
@@ -418,6 +423,7 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             }
 
             # Publish aliases to bus (still useful for legacy listeners); tolerate errors
+            self.logger.info(f"[DEBUG] Publishing {len(alias_map)} alias keys to InfoBus: {list(alias_map.keys())}")
             for k, v in alias_map.items():
                 try:
                     self.smart_bus.set(
@@ -427,11 +433,15 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                         thesis=f'Alias publish {k}',
                         confidence=0.8,
                     )
-                except Exception:
+                    self.logger.info(f"[DEBUG] Published {k} to InfoBus successfully")
+                except Exception as e:
+                    self.logger.warning(f"[WARN] Failed to publish {k} to InfoBus: {e}")
                     pass
 
             self._success += 1
             self._proc_times.append((time.time() - t0) * 1000.0)
+            self.logger.info(f"[DEBUG] RETURNING SNAPSHOT with keys: {list(snapshot.keys())}")
+            self.logger.info(f"[DEBUG] Core data keys: market_data={bool('market_data' in snapshot)}, price_data={bool('price_data' in snapshot)}, historical_prices={bool('historical_prices' in snapshot)}")
             return snapshot
         except Exception as e:
             self._fail += 1

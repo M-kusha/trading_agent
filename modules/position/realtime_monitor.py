@@ -408,19 +408,97 @@ class RealtimeMonitor:
     
     def print_final_summary(self):
         """Print final summary when stopping"""
-        
+
         print("\n" + "="*80)
         print("📊 FINAL TRADING SUMMARY")
         print("="*80)
-        
+
         for instrument, stats in self.stats.items():
             print(f"\n{instrument}:")
             print(f"  Buys: {stats['total_buys']} (€{stats['buy_volume']:,.2f})")
             print(f"  Sells: {stats['total_sells']} (€{stats['sell_volume']:,.2f})")
             print(f"  Holds: {stats['total_holds']}")
-            
+
             if stats['win_count'] + stats['loss_count'] > 0:
                 win_rate = stats['win_count'] / (stats['win_count'] + stats['loss_count']) * 100
                 print(f"  Win Rate: {win_rate:.1f}%")
-        
+
         print("\n" + "="*80)
+
+    def get_health_status(self) -> Dict[str, Any]:
+        """
+        Returns health status compatible with HealthMonitor.
+        Reports on monitor's operational health and signal tracking.
+        """
+        try:
+            with self._lock:
+                total_signals = len(self.signal_history)
+                active_count = len(self.active_signals)
+
+                # Calculate aggregate stats
+                total_buys = sum(s['total_buys'] for s in self.stats.values())
+                total_sells = sum(s['total_sells'] for s in self.stats.values())
+                total_trades = total_buys + total_sells
+
+                win_count = sum(s['win_count'] for s in self.stats.values())
+                loss_count = sum(s['loss_count'] for s in self.stats.values())
+                total_pnl = sum(s['total_pnl'] for s in self.stats.values())
+
+            # Determine health status
+            status = 'OK'
+            is_healthy = True
+            issues = []
+
+            # Check if monitor is running
+            if not self._running:
+                status = 'DEGRADED'
+                is_healthy = False
+                issues.append("Monitor not running")
+
+            # Check if monitoring thread is alive
+            if self._running and (not self._monitor_thread or not self._monitor_thread.is_alive()):
+                status = 'DEGRADED'
+                is_healthy = False
+                issues.append("Monitor thread not alive")
+
+            # Check if any signals are being tracked
+            if self._running and total_signals == 0:
+                status = 'WARNING'
+                issues.append("No signals tracked yet")
+
+            # Calculate win rate if trades exist
+            win_rate = None
+            if win_count + loss_count > 0:
+                win_rate = win_count / (win_count + loss_count)
+
+            return {
+                'status': status,
+                'module': 'RealtimeMonitor',
+                'version': '1.0',
+                'is_healthy': is_healthy,
+                'monitoring_active': self._running,
+                'thread_alive': bool(self._monitor_thread and self._monitor_thread.is_alive()),
+                'total_signals': total_signals,
+                'active_signals': active_count,
+                'total_trades': total_trades,
+                'win_rate': win_rate,
+                'total_pnl': total_pnl,
+                'instruments_tracked': len(self.stats),
+                'issues': issues if issues else None,
+                'performance': {
+                    'buys': total_buys,
+                    'sells': total_sells,
+                    'wins': win_count,
+                    'losses': loss_count,
+                    'signals_in_history': total_signals
+                }
+            }
+        except Exception as e:
+            return {
+                'status': 'ERROR',
+                'module': 'RealtimeMonitor',
+                'version': '1.0',
+                'is_healthy': False,
+                'error': str(e),
+                'last_error': str(e)
+            }

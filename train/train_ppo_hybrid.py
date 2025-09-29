@@ -90,7 +90,7 @@ except Exception:
 # Optional dependency inspector (typed Any to avoid arg-type issues)
 DependencyInspector_Cls: Any = None
 try:
-    from modules.monitoring.dependency_inspector import DependencyInspector as _DependencyInspector  # type: ignore
+    from modules.monitoring.system_integrity_suite import DependencyInspector as _DependencyInspector  # type: ignore
     DependencyInspector_Cls = _DependencyInspector
 except Exception:
     DependencyInspector_Cls = None

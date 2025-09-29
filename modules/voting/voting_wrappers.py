@@ -702,6 +702,83 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
             'emergency_mode': self.market_context.get('emergency_mode', False)
         }
 
+    def get_health_status(self) -> Dict[str, Any]:
+        """
+        Custom health status for voting experts.
+        Returns detailed health information about expert performance and state.
+        """
+        try:
+            # Get base health from BaseModule
+            base_health = super().get_health_status()
+
+            # Calculate expert-specific metrics
+            total_actions = self.expert_analytics.get('total_actions', 0)
+            successful_actions = self.expert_analytics.get('successful_actions', 0)
+            success_rate = successful_actions / max(total_actions, 1)
+
+            # Determine health status
+            status = base_health.get('status', 'OK')
+            is_healthy = base_health.get('is_healthy', True)
+            issues = []
+
+            # Check circuit breaker state
+            cb_state = self.circuit_breaker.get('state', 'CLOSED')
+            if cb_state == 'OPEN':
+                status = 'DEGRADED'
+                is_healthy = False
+                issues.append(f"Circuit breaker OPEN ({self.circuit_breaker.get('failure_count', 0)} failures)")
+            elif cb_state == 'HALF_OPEN':
+                status = 'WARNING'
+                issues.append("Circuit breaker in HALF_OPEN state (recovery testing)")
+
+            # Check success rate
+            if total_actions > 10 and success_rate < 0.5:
+                status = 'DEGRADED'
+                is_healthy = False
+                issues.append(f"Low success rate: {success_rate:.1%}")
+            elif total_actions > 10 and success_rate < 0.7:
+                if status == 'OK':
+                    status = 'WARNING'
+                issues.append(f"Suboptimal success rate: {success_rate:.1%}")
+
+            # Check emergency mode
+            if self.market_context.get('emergency_mode', False):
+                if status == 'OK':
+                    status = 'WARNING'
+                issues.append("Operating in emergency mode")
+
+            # Enhanced health info
+            return {
+                **base_health,
+                'status': status,
+                'is_healthy': is_healthy,
+                'total_actions': total_actions,
+                'successful_actions': successful_actions,
+                'success_rate': success_rate,
+                'avg_confidence': self.expert_analytics.get('avg_confidence', 0.5),
+                'circuit_breaker_state': cb_state,
+                'circuit_breaker_failures': self.circuit_breaker.get('failure_count', 0),
+                'emergency_activations': self.expert_analytics.get('emergency_activations', 0),
+                'market_regime': self.market_context.get('regime', 'unknown'),
+                'market_open': self.market_context.get('market_open', True),
+                'issues': issues if issues else None,
+                'performance': {
+                    **base_health.get('performance', {}),
+                    'action_history_size': len(self.action_history),
+                    'confidence_history_size': len(self.confidence_history),
+                    'market_regimes_tracked': len(self.expert_analytics.get('market_regime_performance', {}))
+                }
+            }
+        except Exception as e:
+            return {
+                'status': 'ERROR',
+                'module': self.__class__.__name__,
+                'version': self.metadata.version,
+                'is_healthy': False,
+                'error': str(e),
+                'last_error': str(e)
+            }
+
     def reset(self):
         """Enhanced reset with comprehensive state cleanup"""
         super().reset()
@@ -2296,3 +2373,79 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
             return float(results.get('committee_confidence', 0.3))
         except Exception:
             return 0.2
+
+    def get_health_status(self) -> Dict[str, Any]:
+        """
+        Custom health status for voting committee coordinator.
+        Returns detailed health information about committee operations.
+        """
+        try:
+            # Get base health from BaseModule
+            base_health = super().get_health_status()
+
+            # Calculate committee-specific metrics
+            total_decisions = self.committee_analytics.get('total_decisions', 0)
+            consensus_decisions = self.committee_analytics.get('consensus_decisions', 0)
+            avg_confidence = self.committee_analytics.get('average_confidence', 0.5)
+            consensus_rate = consensus_decisions / max(total_decisions, 1)
+
+            # Determine health status
+            status = base_health.get('status', 'OK')
+            is_healthy = base_health.get('is_healthy', True)
+            issues = []
+
+            # Check if any experts are registered
+            expert_count = len(self.expert_registry)
+            if expert_count == 0:
+                status = 'DEGRADED'
+                is_healthy = False
+                issues.append("No experts registered in committee")
+            elif expert_count < 3:
+                if status == 'OK':
+                    status = 'WARNING'
+                issues.append(f"Low expert count: {expert_count} experts")
+
+            # Check consensus rate
+            if total_decisions > 10 and consensus_rate < 0.3:
+                if status == 'OK':
+                    status = 'WARNING'
+                issues.append(f"Low consensus rate: {consensus_rate:.1%}")
+
+            # Check average confidence
+            if total_decisions > 5 and avg_confidence < 0.3:
+                status = 'DEGRADED'
+                is_healthy = False
+                issues.append(f"Low average confidence: {avg_confidence:.1%}")
+            elif total_decisions > 5 and avg_confidence < 0.5:
+                if status == 'OK':
+                    status = 'WARNING'
+                issues.append(f"Suboptimal average confidence: {avg_confidence:.1%}")
+
+            return {
+                **base_health,
+                'status': status,
+                'is_healthy': is_healthy,
+                'expert_count': expert_count,
+                'total_decisions': total_decisions,
+                'consensus_decisions': consensus_decisions,
+                'consensus_rate': consensus_rate,
+                'average_confidence': avg_confidence,
+                'voting_history_size': len(self.voting_history),
+                'last_member_check': getattr(self, '_last_member_check', 0),
+                'issues': issues if issues else None,
+                'performance': {
+                    **base_health.get('performance', {}),
+                    'experts_registered': expert_count,
+                    'decisions_made': total_decisions,
+                    'consensus_achieved': consensus_decisions
+                }
+            }
+        except Exception as e:
+            return {
+                'status': 'ERROR',
+                'module': self.__class__.__name__,
+                'version': self.metadata.version,
+                'is_healthy': False,
+                'error': str(e),
+                'last_error': str(e)
+            }

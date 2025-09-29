@@ -514,6 +514,96 @@ class BaseMarketComponent(ABC):
             'circuit_failures': self._cb_failures
         }
 
+    def get_health_status(self) -> Dict[str, Any]:
+        """
+        Returns health status compatible with HealthMonitor.
+        Reports on component's operational health and circuit breaker state.
+        """
+        try:
+            metrics = self.get_metrics()
+
+            # Determine health status
+            status = 'OK'
+            is_healthy = True
+            issues = []
+
+            # Check if component is enabled
+            if not self.config.get('enabled', True):
+                status = 'DISABLED'
+                is_healthy = False
+                issues.append("Component is disabled")
+
+            # Check if component is initialized
+            if not self._initialized:
+                status = 'ERROR'
+                is_healthy = False
+                issues.append("Component not initialized")
+
+            # Check circuit breaker state
+            if self._cb_state == 'open':
+                status = 'DEGRADED'
+                is_healthy = False
+                issues.append(f"Circuit breaker open ({self._cb_failures} failures)")
+            elif self._cb_state == 'half_open':
+                status = 'WARNING'
+                issues.append("Circuit breaker in half-open state (recovery probing)")
+
+            # Check error rate
+            success_rate = metrics['success_rate']
+            if success_rate < 0.5 and self._execution_count > 5:
+                status = 'DEGRADED'
+                is_healthy = False
+                issues.append(f"Low success rate: {success_rate:.1%}")
+            elif success_rate < 0.8 and self._execution_count > 5:
+                if status == 'OK':
+                    status = 'WARNING'
+                issues.append(f"Suboptimal success rate: {success_rate:.1%}")
+
+            # Check timeout rate
+            if self._timeout_count > 0 and self._execution_count > 0:
+                timeout_rate = self._timeout_count / self._execution_count
+                if timeout_rate > 0.2:
+                    if status == 'OK':
+                        status = 'WARNING'
+                    issues.append(f"High timeout rate: {timeout_rate:.1%}")
+
+            # Check if there's a recent error
+            if self._last_error and status != 'DEGRADED':
+                if status == 'OK':
+                    status = 'WARNING'
+
+            return {
+                'status': status,
+                'module': self.name,
+                'version': '1.0',
+                'is_healthy': is_healthy,
+                'initialized': self._initialized,
+                'enabled': self.config.get('enabled', True),
+                'execution_count': self._execution_count,
+                'success_count': self._success_count,
+                'failure_count': self._failure_count,
+                'timeout_count': self._timeout_count,
+                'success_rate': success_rate,
+                'circuit_state': self._cb_state,
+                'circuit_failures': self._cb_failures,
+                'last_error': self._last_error,
+                'issues': issues if issues else None,
+                'performance': {
+                    'avg_time_ms': metrics['average_execution_time_ms'],
+                    'total_executions': self._execution_count,
+                    'cache_size': len(self._cache)
+                }
+            }
+        except Exception as e:
+            return {
+                'status': 'ERROR',
+                'module': self.name,
+                'version': '1.0',
+                'is_healthy': False,
+                'error': str(e),
+                'last_error': str(e)
+            }
+
     # ---------------------------------------------------------------------
     # Utilities
     # ---------------------------------------------------------------------

@@ -1067,6 +1067,20 @@ class PositionManager(
             # PM-owned keys
             "instrument_signals": copy.deepcopy(instrument_signals),
             "order_queue": copy.deepcopy(order_queue),
+            "position_data": {
+                "decisions": position_decisions,
+                "health": pos_health,
+                "portfolio_state": {
+                    "health_score": float(self._portfolio_health_score),
+                    "exposure_ratio": float(self._total_exposure_ratio),
+                    "open_positions": int(len(positions_snapshot)),
+                    "decision_quality": float(self._decision_quality_score),
+                },
+                "positions": copy.deepcopy(positions_snapshot),
+                "balance": float(balance),
+                "equity": float(equity),
+                "current_pnl": float(current_pnl),
+            },
             "_thesis": thesis or "",
             "thesis": thesis or "",
             "processing_time_ms": float(processing_ms),

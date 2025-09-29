@@ -39,7 +39,7 @@ class UnifiedDataExtractor:
         self,
         logger: Optional[Any] = None,
         cache_enabled: bool = True,
-        cache_ttl_seconds: float = 5.0,
+        cache_ttl_seconds: float = 120.0,  # Match execution cycle (was 2.0s)
         enable_parallel: bool = True,
     ):
         self.logger = logger

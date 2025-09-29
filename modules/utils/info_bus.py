@@ -18,6 +18,8 @@ import threading
 import uuid
 import psutil
 import gzip
+import tempfile
+import shutil
 from typing import Dict, Any, List, Optional, Set, Callable, Tuple, TypedDict
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -214,19 +216,6 @@ class DataVersion:
             self.creation_stack_trace = self._capture_stack_trace()
         self._assess_data_quality()
 
-    def _calculate_validation_hash(self):
-        try:
-            data_str = json.dumps({
-                'value': str(self.value)[:1000],
-                'timestamp': self.timestamp,
-                'source_module': self.source_module,
-                'version': self.version,
-                'confidence': self.confidence
-            }, sort_keys=True)
-            self.validation_hash = hashlib.sha256(data_str.encode()).hexdigest()[:16]
-        except Exception:
-            h = f"{self.timestamp}{self.source_module}{self.version}{self.confidence}"
-            self.validation_hash = hashlib.md5(h.encode()).hexdigest()[:16]
 
     def _capture_stack_trace(self) -> str:
         try:
@@ -258,19 +247,34 @@ class DataVersion:
     def age_seconds(self) -> float:
         return time.time() - self.timestamp
 
-    def validate_integrity(self) -> bool:
-        original_hash = self.validation_hash
+# ─────────────────────────────────────────────────────────────
+# In class DataVersion (modules/utils/info_bus.py)
+# ─────────────────────────────────────────────────────────────
+    def _compute_validation_hash(self) -> str:
         try:
-            self.validation_hash = ""
-            self._calculate_validation_hash()
-            computed = self.validation_hash
-            self.validation_hash = original_hash
-            ok = (computed == original_hash)
+            data_str = json.dumps({
+                'value': str(self.value)[:1000],
+                'timestamp': self.timestamp,
+                'source_module': self.source_module,
+                'version': self.version,
+                'confidence': self.confidence
+            }, sort_keys=True)
+            return hashlib.sha256(data_str.encode()).hexdigest()[:16]
+        except Exception:
+            h = f"{self.timestamp}{self.source_module}{self.version}{self.confidence}"
+            return hashlib.md5(h.encode()).hexdigest()[:16]
+
+    def _calculate_validation_hash(self):
+        self.validation_hash = self._compute_validation_hash()
+
+    def validate_integrity(self) -> bool:
+        try:
+            computed = self._compute_validation_hash()
+            ok = (computed == self.validation_hash)
             if not ok:
                 self.anomaly_flags.append("integrity_failure")
             return ok
         except Exception:
-            self.validation_hash = original_hash
             self.anomaly_flags.append("validation_error")
             return False
 
@@ -701,39 +705,46 @@ class SmartInfoBus:
     # Cross-Process Persistence
     # ──────────────────────────────────────────────────────────────
     def _persist_data(self, key: str, value: Any) -> None:
-        """Persist key-value data to file for cross-process sharing."""
+        """Persist key-value data to file for cross-process sharing (opt-in, debounced)."""
+        # Backward-compatible config gates (won't fail if attrs are missing)
+        if not getattr(self.config, 'persistence_enabled', False):
+            return
         try:
             with self._persistence_lock:
-                # Load existing persisted data
-                persisted_data = {}
-                if os.path.exists(self._persistence_file):
-                    try:
-                        with open(self._persistence_file, 'r') as f:
-                            persisted_data = json.load(f)
-                    except (json.JSONDecodeError, IOError):
-                        persisted_data = {}
+                # Debounce writes
+                if not hasattr(self, "_last_persist_write"):
+                    self._last_persist_write = 0.0
+                now = time.time()
+                interval = float(getattr(self.config, 'persist_write_interval_seconds', 2.0))
+                if now - self._last_persist_write < interval:
+                    return
+
+                # Read existing persisted data safely (fallbacks + repair)
+                persisted_data: Dict[str, Any] = self._safe_read_json_file(self._persistence_file)
 
                 # Update with new data (serialize to JSON-compatible format)
                 serializable_value = self._make_serializable(value)
+                version = getattr(self._data_store.get(key), 'version', 1)
                 persisted_data[key] = {
                     'value': serializable_value,
-                    'timestamp': time.time(),
-                    'version': getattr(self._data_store.get(key), 'version', 1)
+                    'timestamp': now,
+                    'version': version
                 }
 
-                # Write back to file
-                with open(self._persistence_file, 'w') as f:
-                    json.dump(persisted_data, f, indent=2)
+                # Atomic write with backup to avoid partial/corrupt files
+                self._atomic_write_json(self._persistence_file, persisted_data)
+
+                self._last_persist_write = now
 
         except Exception as e:
             self.logger.warning(f"[PERSISTENCE] Failed to persist key '{key}': {e}")
+
 
     def _load_persisted_data(self) -> None:
         """Load persisted data from file on startup."""
         try:
             if os.path.exists(self._persistence_file):
-                with open(self._persistence_file, 'r') as f:
-                    persisted_data = json.load(f)
+                persisted_data = self._safe_read_json_file(self._persistence_file)
 
                 # Load persisted data into memory store if not already present
                 for key, data in persisted_data.items():
@@ -760,10 +771,9 @@ class SmartInfoBus:
         """Get value from persistent storage if not in memory."""
         try:
             if os.path.exists(self._persistence_file):
-                with open(self._persistence_file, 'r') as f:
-                    persisted_data = json.load(f)
-                    if key in persisted_data:
-                        return persisted_data[key]['value']
+                persisted_data = self._safe_read_json_file(self._persistence_file)
+                if key in persisted_data:
+                    return persisted_data[key]['value']
         except Exception as e:
             self.logger.warning(f"[PERSISTENCE] Failed to get persisted value for '{key}': {e}")
         return None
@@ -783,6 +793,112 @@ class SmartInfoBus:
         else:
             # For other types, convert to string representation
             return str(value)
+
+    #
+    # Persistence hardening helpers
+    #
+    def _safe_read_json_file(self, path: str) -> Dict[str, Any]:
+        """Robust JSON file reader with fallback/repair.
+        - Returns parsed dict, or {} on failure.
+        - Tries main file, then .bak, then salvage truncated content.
+        """
+        # Fast path
+        try:
+            with open(path, 'r') as f:
+                return json.load(f)
+        except Exception as e1:
+            # Try backup
+            bak = f"{path}.bak"
+            try:
+                if os.path.exists(bak):
+                    with open(bak, 'r') as fb:
+                        data = json.load(fb)
+                        self.logger.warning(f"[PERSISTENCE] Using backup for '{os.path.basename(path)}'")
+                        return data
+            except Exception:
+                pass
+
+            # Try salvage
+            try:
+                with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                repaired = self._salvage_truncated_json(content)
+                if repaired is not None:
+                    # Backup corrupt file (best effort) and write repaired
+                    try:
+                        shutil.copy2(path, f"{path}.corrupt")
+                    except Exception:
+                        pass
+                    self._atomic_write_json(path, repaired)
+                    return repaired
+            except Exception:
+                pass
+
+            self.logger.warning(f"[PERSISTENCE] Failed to read JSON '{path}': {e1}")
+            return {}
+
+    def _salvage_truncated_json(self, content: str) -> Optional[Dict[str, Any]]:
+        """Attempt to salvage a truncated top-level JSON object by
+        truncating at the last position where braces balance.
+        Returns dict on success, else None.
+        """
+        try:
+            return json.loads(content)
+        except Exception:
+            pass
+
+        depth = 0
+        in_str = False
+        esc = False
+        last_balanced = -1
+        for i, ch in enumerate(content):
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == '\\':
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+            else:
+                if ch == '"':
+                    in_str = True
+                elif ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth = max(0, depth - 1)
+                    if depth == 0:
+                        last_balanced = i
+        if last_balanced >= 0:
+            snippet = content[: last_balanced + 1]
+            try:
+                return json.loads(snippet)
+            except Exception:
+                return None
+        return None
+
+    def _atomic_write_json(self, path: str, data: Dict[str, Any]) -> None:
+        """Write JSON atomically with .bak backup of previous file."""
+        directory = os.path.dirname(os.path.abspath(path)) or '.'
+        os.makedirs(directory, exist_ok=True)
+        payload = json.dumps(data, indent=2)
+        fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + '.', suffix='.tmp', dir=directory)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            if os.path.exists(path):
+                try:
+                    shutil.copy2(path, f"{path}.bak")
+                except Exception:
+                    pass
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+            raise
 
     # ──────────────────────────────────────────────────────────────
     # Helper: namespaces, pause, read-only, throttling
@@ -1730,16 +1846,17 @@ class SmartInfoBus:
     def is_module_enabled(self, module: str) -> bool:
         try:
             with self._circuit_breaker_lock:
-                br = self._circuit_breakers[module]
+                br = self._circuit_breakers.get(module, CircuitBreakerState())
                 ok = br.should_allow_request(self.config.recovery_time_seconds, self.config.circuit_breaker_threshold)
-                if ok and module in self._module_disabled:
+                if ok:
                     self._module_disabled.discard(module)
-                elif not ok:
+                else:
                     self._module_disabled.add(module)
                 return ok
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to check module status for {module}: {e}")
             return True
+
 
     def reset_module_failures(self, module: str):
         try:
@@ -1752,57 +1869,89 @@ class SmartInfoBus:
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to reset failures for {module}: {e}")
 
+# ─────────────────────────────────────────────────────────────
+# In class SmartInfoBus (modules/utils/info_bus.py)
+# ─────────────────────────────────────────────────────────────
     def get_module_health(self, module: str) -> Dict[str, Any]:
         try:
+            # Snapshot breaker state first (no nested locking into is_module_enabled)
             with self._circuit_breaker_lock:
-                br = self._circuit_breakers[module]
-                enabled = self.is_module_enabled(module)
+                br = self._circuit_breakers.get(module, CircuitBreakerState())
+
+            enabled = self.is_module_enabled(module)
+
+            # Read perf stats
             with self._performance_lock:
                 lat = list(self._latency_history.get(module, []))
                 ap = dict(self._access_patterns.get(module, {}))
+
+            # Read registry info
             with self._registry_lock:
                 provides = [k for k, ps in self._providers.items() if module in ps]
                 consumes = [k for k, cs in self._consumers.items() if module in cs]
+
             avg = float(np.mean(lat)) if lat else 0.0
             return {
-                'enabled': enabled, 'circuit_breaker_state': br.state,
-                'failures': br.failure_count, 'successful_calls': br.successful_calls,
-                'total_calls': br.total_calls, 'failure_rate': br.failure_rate,
-                'consecutive_failures': br.consecutive_failures, 'consecutive_successes': br.consecutive_successes,
-                'last_failure_time': br.last_failure_time, 'last_success_time': br.last_success_time,
-                'avg_latency_ms': avg, 'max_latency_ms': (max(lat) if lat else 0), 'total_executions': len(lat),
-                'provides': provides, 'consumes': consumes, 'access_patterns': ap,
-                'health_score': br.get_health_score(), 'predicted_next_failure': br.predict_next_failure(),
+                'enabled': enabled,
+                'circuit_breaker_state': br.state,
+                'failures': br.failure_count,
+                'successful_calls': br.successful_calls,
+                'total_calls': br.total_calls,
+                'failure_rate': br.failure_rate,
+                'consecutive_failures': br.consecutive_failures,
+                'consecutive_successes': br.consecutive_successes,
+                'last_failure_time': br.last_failure_time,
+                'last_success_time': br.last_success_time,
+                'avg_latency_ms': avg,
+                'max_latency_ms': (max(lat) if lat else 0),
+                'total_executions': len(lat),
+                'provides': provides,
+                'consumes': consumes,
+                'access_patterns': ap,
+                'health_score': br.get_health_score(),
+                'predicted_next_failure': br.predict_next_failure(),
                 'circuit_breaker_details': br.to_dict()
             }
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to get health for {module}: {e}")
             return {'error': str(e)}
 
+
     def get_performance_metrics(self) -> Dict[str, Any]:
         try:
-            with self._performance_lock:
-                total = self._cache_hits + self._cache_misses
-                hit_rate = self._cache_hits / max(total, 1)
+            # Canonical lock order: access -> registry -> performance -> circuit -> event -> request
             with self._access_lock:
                 active_keys = len(self._data_store)
                 total_versions = sum(len(h) for h in self._data_history.values())
-            with self._circuit_breaker_lock:
-                disabled = list(self._module_disabled)
-                total_fail = sum(b.failure_count for b in self._circuit_breakers.values())
-            with self._request_lock:
-                pend = len(self._pending_requests)
 
-            module_lat = {}
+            with self._registry_lock:
+                pass  # reserved for coupled reads if needed
+
             with self._performance_lock:
+                total = self._cache_hits + self._cache_misses
+                hit_rate = self._cache_hits / max(total, 1)
+
+                module_lat = {}
                 for m, timings in self._latency_history.items():
                     if timings:
                         module_lat[m] = {
                             'avg_ms': float(np.mean(timings)),
-                            'max_ms': max(timings), 'min_ms': min(timings),
+                            'max_ms': max(timings),
+                            'min_ms': min(timings),
                             'p95_ms': float(np.percentile(timings, 95) if len(timings) > 10 else max(timings)),
                             'count': len(timings)
                         }
+
+            with self._circuit_breaker_lock:
+                disabled = list(self._module_disabled)
+                total_fail = sum(b.failure_count for b in self._circuit_breakers.values())
+
+            with self._event_lock:
+                pass  # reserved
+
+            with self._request_lock:
+                pend = len(self._pending_requests)
+
             return {
                 'cache_hit_rate': hit_rate,
                 'total_requests': int(total),
@@ -1821,6 +1970,7 @@ class SmartInfoBus:
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to get performance metrics: {e}")
             return {'error': str(e)}
+
 
     def export_metrics_text(self) -> str:
         """Simple text exposition, Prometheus-style (no server)."""
@@ -2288,26 +2438,26 @@ class SmartInfoBus:
                         include_events: bool = False, include_metrics: bool = True,
                         compress: bool = False) -> Dict[str, Any]:
         """
-        [FIXED] Concurrency-safe snapshotting.
-        Holds locks for minimal duration to copy data, then releases before serialization.
+        Concurrency-safe snapshotting with consistent lock order.
+        Holds locks briefly to copy, then serializes unlocked.
         """
         try:
-            # Step 1: Acquire all necessary locks and quickly copy data structures
-            with self._access_lock, self._performance_lock, self._registry_lock, self._circuit_breaker_lock, self._event_lock:
+            # Step 1: Acquire locks in canonical order and copy minimal state
+            with self._access_lock, self._registry_lock, self._performance_lock, self._circuit_breaker_lock, self._event_lock:
                 data_state = copy.deepcopy({k: dv.to_dict(include_value=include_values) for k, dv in self._data_store.items()})
                 history = {k: [ver.to_dict(include_value=False) for ver in list(hist)[-5:]]
-                           for k, hist in self._data_history.items()} if include_history else {}
+                        for k, hist in self._data_history.items()} if include_history else {}
                 providers = copy.deepcopy(self._providers)
                 consumers = copy.deepcopy(self._consumers)
                 circuit_breakers = copy.deepcopy(self._circuit_breakers)
                 disabled_modules = copy.deepcopy(self._module_disabled)
                 events_tail = list(self._event_log)[-1500:] if include_events else []
 
-            # Step 2: Release locks. Build the final snapshot object from copies.
+            # Step 2: Build snapshot object unlocked
             snap = {
                 "meta": {"generated_at": datetime.now(timezone.utc).isoformat(),
-                         "python": sys.version.split()[0], "platform": sys.platform,
-                         "pid": os.getpid(), "features": self._get_enabled_features()},
+                        "python": sys.version.split()[0], "platform": sys.platform,
+                        "pid": os.getpid(), "features": self._get_enabled_features()},
                 "config": self.config.to_dict(),
                 "data": data_state,
                 "history_tail": history,
@@ -2322,7 +2472,7 @@ class SmartInfoBus:
                 snap["metrics"] = self.get_performance_metrics()
                 snap["cache_stats"] = self.get_cache_stats()
 
-            # Step 3: Write to file (unlocked)
+            # Step 3: Write to file if requested
             if filepath:
                 if compress or filepath.endswith(".gz"):
                     with gzip.open(filepath, "wt", encoding="utf-8") as f:
@@ -2335,6 +2485,7 @@ class SmartInfoBus:
         except Exception as e:
             self.logger.error(f"[CRASH] export_snapshot failed: {e}")
             raise
+
 
     def import_snapshot(self, data_or_path: Any, *, replace_existing: bool = False, apply_values: bool = True) -> int:
         try:

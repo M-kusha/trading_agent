@@ -33,7 +33,8 @@ from collections import defaultdict
 from yaml.loader import SafeLoader
 
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
-
+_INCLUDE_MAX_DEPTH = 32
+_MAX_INCLUDE_BYTES = 5 * 1024 * 1024  # 5 MB guard for includes
 # ─────────────────────────────────────────────────────────────
 # YAML helpers: deep-merge, env interpolation, custom tags
 # ─────────────────────────────────────────────────────────────
@@ -103,23 +104,57 @@ def _safe_read_yaml_with_loader(path: Path) -> Any:
     raise last_exc or RuntimeError(f"YAML load failed for {path}")
 
 def _yaml_include(loader: _EnvLoader, node):
-    """!include path/to/file.yaml (relative to the including file)."""
+    """!include path/to/file.yaml (relative to the including file).
+    - Enforces includes stay under config/ if that root exists.
+    - Only allows .yaml/.yml.
+    - Guards against cyclic includes and excessive depth.
+    - Rejects very large files by size.
+    """
     base = Path(getattr(loader, 'name', '.') or '.').parent
-    path = Path(loader.construct_scalar(node))
-    target = path if path.is_absolute() else (base / path)
-    target = target.resolve()
+    raw = loader.construct_scalar(node)
+    path = Path(raw)
 
-    # Optional guard: force includes to stay within config/ root for safety
-    try:
-        config_root = Path('config').resolve()
-        if str(target)[:len(str(config_root))] != str(config_root):
+    # Resolve target
+    target = (path if path.is_absolute() else (base / path)).resolve(strict=True)
+
+    # Enforce config/ root if present
+    config_root = Path('config').resolve()
+    if config_root.exists():
+        try:
+            target.relative_to(config_root)
+        except ValueError:
             raise ValueError(f"Blocked include outside config root: {target}")
-    except Exception:
-        # If config/ does not exist in current layout, skip guard
-        pass
 
-    data = _safe_read_yaml_with_loader(target)
+    # Only YAML files
+    if target.suffix.lower() not in {'.yaml', '.yml'}:
+        raise ValueError(f"Blocked include with non-YAML extension: {target}")
+
+    # Size guard
+    try:
+        if target.stat().st_size > _MAX_INCLUDE_BYTES:
+            raise ValueError(f"Blocked include larger than {_MAX_INCLUDE_BYTES} bytes: {target}")
+    except FileNotFoundError:
+        raise
+
+    # Cycle/Depth protection (per-loader stack)
+    stack = getattr(loader, "_include_stack", None)
+    if stack is None:
+        stack = []
+        setattr(loader, "_include_stack", stack)
+
+    if target in stack:
+        raise ValueError(f"Cyclic include detected: {' -> '.join(map(str, stack + [target]))}")
+    if len(stack) >= _INCLUDE_MAX_DEPTH:
+        raise ValueError(f"Max include depth {_INCLUDE_MAX_DEPTH} exceeded at {target}")
+
+    stack.append(target)
+    try:
+        data = _safe_read_yaml_with_loader(target)
+    finally:
+        stack.pop()
+
     return data
+
 
 def _yaml_env(loader: _EnvLoader, node):
     """!env VAR[:default] — returns environment variable or default."""
@@ -160,6 +195,7 @@ class ConfigurationManager:
 
     _instance: Optional['ConfigurationManager'] = None
     _lock = threading.Lock()
+    
 
     # keys that look like secrets and should be redacted when logging
     _SECRET_KEYS = {'password', 'passwd', 'token', 'api_key', 'secret', 'bearer', 'client_secret'}
@@ -179,7 +215,7 @@ class ConfigurationManager:
         # Loaded configurations
         self.configs: Dict[str, Dict[str, Any]] = {}
         self.module_configs: Dict[str, Dict[str, Any]] = {}
-
+        self._state_lock = threading.RLock()
         # Module specifications
         self.module_specs: Dict[str, ModuleConfigSpec] = {}
 
@@ -218,7 +254,8 @@ class ConfigurationManager:
 
         # Initialize
         self._initialize_module_specs()
-        self._load_all_configurations()
+        self._load_all_configurations(broadcast="initial_load")
+
         self._start_monitoring()
 
         self.logger.info(
@@ -1384,12 +1421,15 @@ class ConfigurationManager:
             self.logger.error(f"Failed to load configuration {name}: {e}")
             self.configs[name] = {}
 
-    def _load_all_configurations(self):
-        """Load all configuration files with overlays and env interpolation."""
+    def _load_all_configurations(self, *, broadcast: Optional[str] = None):
+        """Load base + overlays, interpolate env, rebuild module configs.
+        If `broadcast` is provided, publish a config_update with that reason.
+        """
         # Base files
         self._load_configuration_file('system', self.config_paths['system'])
-        # Overlays: config/system_config.local.yaml (optional)
+        # Optional overlays
         self._load_configuration_file('system_local', self.config_paths['system_local'], optional=True)
+
         # Overlays: config/system_config.d/*.yaml
         merged_dir = {}
         if self.config_paths['system_dir'].exists():
@@ -1415,15 +1455,17 @@ class ConfigurationManager:
         # Build module-specific configurations
         self._build_module_configurations()
 
-        # Record snapshot hash
+        # Record snapshot hashes
         self._hash_and_snapshot('system', system_final)
         if 'risk' in self.configs:
             self._hash_and_snapshot('risk', self.configs['risk'])
         if 'explainability' in self.configs:
             self._hash_and_snapshot('explainability', self.configs['explainability'])
 
-        # Publish initial config update to bus
-        self._publish_config_update("initial_load")
+        # Optionally broadcast
+        if broadcast:
+            self._publish_config_update(broadcast)
+
 
     def _hash_and_snapshot(self, name: str, payload: Dict[str, Any]):
         try:
@@ -1471,30 +1513,33 @@ class ConfigurationManager:
 
     def _build_module_configurations(self):
         """Build module-specific configurations from loaded YAML files + runtime overrides."""
-        built: Dict[str, Dict[str, Any]] = {}
-        for module_name, spec in self.module_specs.items():
-            try:
-                module_config = self._extract_module_config(spec)
-                # Runtime overrides (e.g., tests or interactive changes)
-                if module_name in self._module_runtime_overrides:
-                    module_config = _deep_merge(module_config, self._module_runtime_overrides[module_name])
-                built[module_name] = module_config
-                self.logger.debug(f"Built configuration for {module_name}: {len(module_config)} keys")
-            except Exception as e:
-                self.logger.error(f"Failed to build config for {module_name}: {e}")
-                built[module_name] = spec.default_config.copy()
-        # Diff & notify watchers
-        old = self.module_configs
-        self.module_configs = built
-        for module_name, callbacks in self.module_watchers.items():
-            old_cfg = old.get(module_name, {})
-            new_cfg = built.get(module_name, {})
-            if old_cfg != new_cfg:
-                for cb in callbacks:
-                    try:
-                        cb(module_name, self._redacted(old_cfg), self._redacted(new_cfg))
-                    except Exception as e:
-                        self.logger.error(f"Error in module watcher for {module_name}: {e}")
+        with self._state_lock:
+            built: Dict[str, Dict[str, Any]] = {}
+            for module_name, spec in self.module_specs.items():
+                try:
+                    module_config = self._extract_module_config(spec)
+                    # Runtime overrides (e.g., tests or interactive changes)
+                    if module_name in self._module_runtime_overrides:
+                        module_config = _deep_merge(module_config, self._module_runtime_overrides[module_name])
+                    built[module_name] = module_config
+                    self.logger.debug(f"Built configuration for {module_name}: {len(module_config)} keys")
+                except Exception as e:
+                    self.logger.error(f"Failed to build config for {module_name}: {e}")
+                    built[module_name] = spec.default_config.copy()
+
+            # Diff & notify watchers
+            old = self.module_configs
+            self.module_configs = built
+            for module_name, callbacks in self.module_watchers.items():
+                old_cfg = old.get(module_name, {})
+                new_cfg = built.get(module_name, {})
+                if old_cfg != new_cfg:
+                    for cb in callbacks:
+                        try:
+                            cb(module_name, self._redacted(old_cfg), self._redacted(new_cfg))
+                        except Exception as e:
+                            self.logger.error(f"Error in module watcher for {module_name}: {e}")
+
 
     def _extract_module_config(self, spec: ModuleConfigSpec) -> Dict[str, Any]:
         """Extract configuration for a specific module."""
@@ -1667,17 +1712,20 @@ class ConfigurationManager:
         """Apply in-memory overrides for a module (not persisted)."""
         if not isinstance(overrides, dict):
             raise TypeError("overrides must be a dict")
-        self._module_runtime_overrides[module_name] = _deep_merge(
-            self._module_runtime_overrides.get(module_name, {}), overrides
-        )
-        self._build_module_configurations()
+        with self._state_lock:
+            self._module_runtime_overrides[module_name] = _deep_merge(
+                self._module_runtime_overrides.get(module_name, {}), overrides
+            )
+            self._build_module_configurations()
 
     def clear_runtime_overrides(self, module_name: Optional[str] = None):
-        if module_name is None:
-            self._module_runtime_overrides.clear()
-        else:
-            self._module_runtime_overrides.pop(module_name, None)
-        self._build_module_configurations()
+        with self._state_lock:
+            if module_name is None:
+                self._module_runtime_overrides.clear()
+            else:
+                self._module_runtime_overrides.pop(module_name, None)
+            self._build_module_configurations()
+
 
     def add_config_watcher(self, callback: Callable[[str, Dict[str, Any], Dict[str, Any]], None]):
         """Add a configuration change watcher: (name, old, new)."""
@@ -1776,44 +1824,49 @@ class ConfigurationManager:
 
     def _reload_changed_files(self, names: set):
         """Reload a set of changed config files and notify watchers."""
-        old_all = {k: copy.deepcopy(v) for k, v in self.configs.items()}
+        with self._state_lock:
+            old_all = {k: copy.deepcopy(v) for k, v in self.configs.items()}
 
-        # Reload targeted names (minimal work; full rebuild follows)
-        for name in names:
-            if name == 'system':
-                self._load_configuration_file('system', self.config_paths['system'], optional=True)
-            elif name == 'system_local':
-                self._load_configuration_file('system_local', self.config_paths['system_local'], optional=True)
-            elif name.startswith('system_dir::'):
-                fname = name.split('::', 1)[1]
-                p = self.config_paths['system_dir'] / fname
-                self._load_configuration_file(name, p, optional=True)
-            elif name == 'risk':
-                self._load_configuration_file('risk', self.config_paths['risk'], optional=True)
-            elif name == 'explainability':
-                self._load_configuration_file('explainability', self.config_paths['explainability'], optional=True)
+            # Reload targeted names (minimal work; full rebuild follows)
+            for name in names:
+                try:
+                    if name == 'system':
+                        self._load_configuration_file('system', self.config_paths['system'], optional=True)
+                    elif name == 'system_local':
+                        self._load_configuration_file('system_local', self.config_paths['system_local'], optional=True)
+                    elif name.startswith('system_dir::'):
+                        fname = name.split('::', 1)[1]
+                        p = self.config_paths['system_dir'] / fname
+                        self._load_configuration_file(name, p, optional=True)
+                    elif name == 'risk':
+                        self._load_configuration_file('risk', self.config_paths['risk'], optional=True)
+                    elif name == 'explainability':
+                        self._load_configuration_file('explainability', self.config_paths['explainability'], optional=True)
+                except Exception as e:
+                    self.logger.warning(f"Reload of {name} failed: {e}")
 
-        # Rebuild system aggregate and modules
-        self._load_all_configurations()  # handles merges + module rebuilds internally
+            # Rebuild system aggregate and modules (no broadcast here)
+            self._load_all_configurations(broadcast=None)
 
-        # Notify top-level watchers on changed roots
-        for cb in self.config_watchers:
+            # Notify top-level watchers on changed roots
+            for cb in self.config_watchers:
+                try:
+                    for root in ('system', 'risk', 'explainability'):
+                        old_cfg = old_all.get(root, {})
+                        new_cfg = self.configs.get(root, {})
+                        if old_cfg != new_cfg:
+                            cb(root, self._redacted(old_cfg), self._redacted(new_cfg))
+                except Exception as e:
+                    self.logger.error(f"Error in config watcher: {e}")
+
+            self.logger.info("Successfully reloaded configuration bundle")
+
+            # Announce the change over the bus once, with correct reason
             try:
-                for root in ('system', 'risk', 'explainability'):
-                    old_cfg = old_all.get(root, {})
-                    new_cfg = self.configs.get(root, {})
-                    if old_cfg != new_cfg:
-                        cb(root, self._redacted(old_cfg), self._redacted(new_cfg))
+                self._publish_config_update("reload", changed=sorted(names))
             except Exception as e:
-                self.logger.error(f"Error in config watcher: {e}")
+                self.logger.debug(f"Failed to publish config_update after reload: {e}")
 
-        self.logger.info("Successfully reloaded configuration bundle")
-
-        # NEW: announce the change over the bus so the Orchestrator can hot-apply
-        try:
-            self._publish_config_update("reload", changed=sorted(names))
-        except Exception as e:
-            self.logger.debug(f"Failed to publish config_update after reload: {e}")
 
     # ─────────────────────────────────────────────────────────
     # Utilities
@@ -1843,3 +1896,11 @@ class ConfigurationManager:
             self.stop_monitoring()
         except Exception:
             pass
+
+    def shutdown(self):
+        """Graceful shutdown: stop file monitoring thread."""
+        try:
+            self.stop_monitoring()
+        except Exception as e:
+            self.logger.debug(f"Shutdown encountered a non-fatal issue: {e}")
+

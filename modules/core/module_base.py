@@ -1,12 +1,14 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/core/module_base.py
-# SmartInfoBus Module Base (V1.1)
+# SmartInfoBus Module Base (V1.2, "Navigator+ Startup")
 # - Single-source-of-truth circuit breaking (delegates via DI)
 # - Memory-safe deques (no list slicing leaks)
 # - Input sanitization + consistent errors + exception chaining
 # - Async lifecycle hooks + timeout cleanup
-# - Dependency Injection hooks (breaker, metrics, etc.)
-# - Minimal/no-op fallbacks so tests/dev don’t choke
+# - Dependency Injection hooks (breaker, metrics, bus, orchestrator)
+# - No-op warmup/probe/self-test defaults for startup pipeline
+# - Tolerant state compatibility checks (major version gating)
+# - Rotating logger caching per (name:pid)
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -211,13 +213,16 @@ def module(**kwargs):
         # best-effort registration (no hard dependency)
         try:
             from modules.core.module_system import ModuleOrchestrator
-            ModuleOrchestrator.register_class(cls)
+            # Some environments expose a register_class helper; ignore if absent.
+            if hasattr(ModuleOrchestrator, "register_class"):
+                ModuleOrchestrator.register_class(cls)  # type: ignore[attr-defined]
         except (ImportError, AttributeError):
             pass
         except Exception:
             # avoid killing import-time on unexpected envs
             pass
 
+        # soft-register with InfoBus so discovery knows providers/consumers early
         try:
             from modules.utils.info_bus import InfoBusManager
             bus = InfoBusManager.get_instance()
@@ -288,34 +293,33 @@ def _enhance_state_management(cls):
 
 
 def _enhance_validation_methods(cls):
-        if not hasattr(cls, 'validate_inputs'):
-            def validate_inputs(self, inputs: Dict[str, Any]) -> bool:
-                for k in inputs.keys():
-                    if not isinstance(k, str) or len(k) > MAX_INPUT_KEY_LEN or k.startswith("__"):
-                        raise ValueError(f"invalid input key: {k!r}")
-                for req in self.metadata.requires:
-                    if req not in inputs:
-                        raise ValueError(f"missing required input: {req}")
-                    if inputs[req] is None:
-                        raise ValueError(f"required input {req} cannot be None")
-                return True
-            cls.validate_inputs = validate_inputs  # type: ignore[attr-defined]
+    if not hasattr(cls, 'validate_inputs'):
+        def validate_inputs(self, inputs: Dict[str, Any]) -> bool:
+            for k in inputs.keys():
+                if not isinstance(k, str) or len(k) > MAX_INPUT_KEY_LEN or k.startswith("__"):
+                    raise ValueError(f"invalid input key: {k!r}")
+            for req in self.metadata.requires:
+                if req not in inputs:
+                    raise ValueError(f"missing required input: {req}")
+                if inputs[req] is None:
+                    raise ValueError(f"required input {req} cannot be None")
+            return True
+        cls.validate_inputs = validate_inputs  # type: ignore[attr-defined]
 
-        if not hasattr(cls, 'validate_outputs'):
-            def validate_outputs(self, outputs: Dict[str, Any]) -> bool:
-                md = self.metadata
-                for prov in md.provides:
-                    if prov not in outputs:
-                        raise ValueError(f"missing required output: {prov}")
-                if getattr(md, 'thesis_required', False) and '_thesis' not in outputs:
-                    raise ValueError("explainable modules must provide '_thesis'")
-                if '_confidence' in outputs:
-                    c = outputs['_confidence']
-                    if not isinstance(c, (int, float)) or not 0 <= c <= 1:
-                        raise ValueError(f"invalid confidence value: {c!r}")
-                return True
-            cls.validate_outputs = validate_outputs  # type: ignore[attr-defined]
-
+    if not hasattr(cls, 'validate_outputs'):
+        def validate_outputs(self, outputs: Dict[str, Any]) -> bool:
+            md = self.metadata
+            for prov in md.provides:
+                if prov not in outputs:
+                    raise ValueError(f"missing required output: {prov}")
+            if getattr(md, 'thesis_required', False) and '_thesis' not in outputs:
+                raise ValueError("explainable modules must provide '_thesis'")
+            if '_confidence' in outputs:
+                c = outputs['_confidence']
+                if not isinstance(c, (int, float)) or not 0 <= c <= 1:
+                    raise ValueError(f"invalid confidence value: {c!r}")
+            return True
+        cls.validate_outputs = validate_outputs  # type: ignore[attr-defined]
 
 
 def _enhance_explanation_capability(cls):
@@ -460,7 +464,6 @@ def with_timeout(timeout_ms: Optional[int] = None):
     return deco
 
 
-
 def with_confidence_threshold(min_confidence: Optional[float] = None):
     def deco(func: Callable):
         async def _async(self, *args, **kwargs):
@@ -495,7 +498,6 @@ def with_confidence_threshold(min_confidence: Optional[float] = None):
     return deco
 
 
-
 def with_retry(max_retries: Optional[int] = None):
     def deco(func: Callable):
         async def _async(self, *args, **kwargs):
@@ -519,6 +521,7 @@ def with_retry(max_retries: Optional[int] = None):
                         raise last_exc
             # should never reach
             raise RuntimeError("unreachable")
+
         def _sync(self, *args, **kwargs):
             retries = int(max_retries or self.__module_metadata__.max_retries)
             last_exc: Optional[BaseException] = None
@@ -552,7 +555,8 @@ class BaseModule(ABC):
     - No local circuit breaker; delegates to injected breaker (DI) to avoid duplication.
     - Safe, bounded state (deques) + explicit sanitization/validation.
     - Async lifecycle hooks (__aenter__/__aexit__) and timeout cleanup.
-    - Pluggable dependencies: {"circuit_breaker": <obj>, "metrics": <obj>, ...}
+    - Pluggable dependencies: {"circuit_breaker": <obj>, "metrics": <obj>, "bus": <bus>, "orchestrator": <obj>}
+    - Startup pipeline friendly: warmup(), probe(), self_test() provided as fast no-ops by default.
     """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None, dependencies: Optional[Dict[str, Any]] = None):
@@ -567,8 +571,14 @@ class BaseModule(ABC):
         self.logger = self._setup_logger()
 
         # observability helpers (optional DI)
-        self.metrics = self.dependencies.get("metrics")  # e.g., Prometheus/OpenTelemetry registry
-        self.breaker = self.dependencies.get("circuit_breaker")  # central breaker instance (optional)
+        self.metrics: Any = self.dependencies.get("metrics")  # e.g., Prometheus/OpenTelemetry registry
+        self.breaker: Any = self.dependencies.get("circuit_breaker")  # central breaker instance (optional)
+        self.bus: Any = self.dependencies.get("bus")
+        self.orchestrator: Any = self.dependencies.get("orchestrator")
+        self.metrics: Any = self.dependencies.get("metrics")
+        self.breaker: Any = self.dependencies.get("circuit_breaker")  # <-- annotate as Any
+        self.bus: Any = self.dependencies.get("bus")  # <-- annotate as Any
+        self.orchestrator: Any = self.dependencies.get("orchestrator")  # <-- annotate as Any
 
         # compute helpers (cache numpy vs pure python)
         self._mean: Callable[[List[float]], float]
@@ -610,7 +620,11 @@ class BaseModule(ABC):
         self.error_pinpointer = None
         try:
             from modules.core.error_pinpointer import ErrorPinpointer
-            self.error_pinpointer = ErrorPinpointer()
+            # Prefer orchestrator-aware pinpointer if available
+            if self.orchestrator is not None:
+                self.error_pinpointer = ErrorPinpointer(self.orchestrator)
+            else:
+                self.error_pinpointer = ErrorPinpointer()
         except Exception:
             pass
 
@@ -681,7 +695,6 @@ class BaseModule(ABC):
 
     def get_config(self, key: str, default: Any = None) -> Any:
         return self.config.get(key, default)
-    
 
     # ───── logger ─────
     def _setup_logger(self) -> logging.Logger:
@@ -702,7 +715,6 @@ class BaseModule(ABC):
                 logger.addHandler(handler)
             logger.propagate = False
             return logger
-
 
     @staticmethod
     def _get_rotating_logger_cached(name: str) -> Any:
@@ -808,6 +820,23 @@ class BaseModule(ABC):
         except Exception:
             return "Explanation unavailable."
 
+    # Startup pipeline hooks (warmup/autotune probe/self-test) — safe no-ops by default
+    async def warmup(self) -> None:
+        """Optionally override to pre-load models, prime caches, or open resources."""
+        return None
+
+    async def probe(self) -> None:
+        """Optionally override to perform a quick representative operation for autotune."""
+        return None
+
+    async def self_test(self) -> None:
+        """Optionally override to validate critical invariants; should be fast (<1s)."""
+        return None
+
+    # Back-compat alias some modules may implement
+    async def run_self_test(self) -> None:
+        return await self.self_test()
+
     # ───── state persistence ─────
     def get_state(self) -> Dict[str, Any]:
         state = {
@@ -855,7 +884,7 @@ class BaseModule(ABC):
             except Exception:
                 return True
         # Otherwise tolerate custom module snapshots to avoid dropping state.
-        # Apply a best‑effort major version check using an optional 'version' key if present.
+        # Apply a best-effort major version check using an optional 'version' key if present.
         try:
             saved_major = int(str(state.get('version', self.metadata.version)).split('.')[0])
             current_major = int(self.metadata.version.split('.')[0])
@@ -1000,12 +1029,43 @@ class BaseModule(ABC):
 
     # ───── DI resolution (best-effort, no hard coupling) ─────
     def _resolve_dependencies(self):
-        # Optionally auto-wire from InfoBus if running inside system.
-        # We intentionally do not guess our registry name here to avoid tight coupling.
-        if 'circuit_breaker' not in self.dependencies:
+        """
+        Light-touch autowiring:
+         - bus: modules.utils.info_bus.InfoBusManager instance (if available)
+         - orchestrator: modules.core.module_system.ModuleOrchestrator.get_instance() (if available)
+         - circuit_breaker: if orchestrator is available, try to adopt central breaker for this module
+         - error pinpointer: prefer orchestrator-aware instance
+        """
+        # Bus
+        if not getattr(self, 'bus', None):
             try:
                 from modules.utils.info_bus import InfoBusManager
-                _ = InfoBusManager.get_instance()
+                self.bus = InfoBusManager.get_instance()
+            except Exception:
+                self.bus = None
+
+        # Orchestrator
+        if not getattr(self, 'orchestrator', None):
+            try:
+                from modules.core.module_system import ModuleOrchestrator
+                self.orchestrator = ModuleOrchestrator.get_instance()
+            except Exception:
+                self.orchestrator = None
+
+        # Circuit breaker from orchestrator registry
+        if not getattr(self, 'breaker', None) and self.orchestrator is not None:
+            try:
+                name = self.__class__.__name__
+                cb = self.orchestrator.circuit_breakers.get(name)
+                if cb:
+                    self.breaker = cb
             except Exception:
                 pass
 
+        # Error pinpointer with orchestrator context if possible
+        if self.error_pinpointer is None:
+            try:
+                from modules.core.error_pinpointer import ErrorPinpointer
+                self.error_pinpointer = ErrorPinpointer(self.orchestrator) if self.orchestrator else ErrorPinpointer()
+            except Exception:
+                self.error_pinpointer = None

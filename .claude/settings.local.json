@@ -1,23 +1,9 @@
 {
   "permissions": {
     "allow": [
+      "Bash(rg:*)",
       "Bash(python:*)",
-      "Bash(find:*)",
-      "Bash(grep:*)",
-      "Bash(git checkout:*)",
-      "Bash(npm run build:*)",
-      "Bash(npx eslint:*)",
-      "Bash(sed:*)",
-      "Bash(cp:*)",
-      "Bash(xxd:*)",
-      "Bash(dos2unix:*)",
-      "Bash(unix2dos:*)",
-      "Bash(npm run lint)",
-      "Bash(timeout:*)",
-      "Bash(sort:*)",
-      "Bash(curl:*)",
-      "Bash(tasklist:*)",
-      "Bash(Get-Process -Id 7812 -ErrorAction SilentlyContinue)"
+      "Bash(find:*)"
     ],
     "deny": [],
     "ask": []

@@ -46,16 +46,16 @@ from .debug.visualizer import DebugVisualizer
 class MarketConfig:
     """Unified configuration for all market components"""
 
-    # Component enable flags
+    # Component enable flags (re-enabled after fixing cache TTL issue)
     enable_fractal: bool = True
-    enable_liquidity: bool = True
-    enable_theme: bool = True
-    enable_regime_matrix: bool = True
+    enable_liquidity: bool = True   # RE-ENABLED: Cache fix resolves 54k bar processing
+    enable_theme: bool = True       # RE-ENABLED: Will use cached data
+    enable_regime_matrix: bool = True  # RE-ENABLED: Performance optimized
     enable_time_risk: bool = True
 
     # Execution strategy
     parallel_execution: bool = True
-    component_timeout_ms: float = 3000
+    component_timeout_ms: float = 1500
     # Optional per-component overrides (name -> ms)
     per_component_timeouts_ms: Dict[str, int] = field(default_factory=dict)
     # Optional cap on parallel workers
@@ -134,7 +134,7 @@ class MarketConfig:
         description="Unified market analysis orchestrating fractal, liquidity, theme, regime, and time-risk components",
         error_handling=True,
         hot_reload=True,
-        timeout_ms=8000,
+        timeout_ms=10000,
     )
 )
 class UnifiedMarketModule(

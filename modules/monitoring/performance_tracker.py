@@ -31,14 +31,8 @@ from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import format_operator_message, RotatingLogger
 from modules.utils.system_utilities import EnglishExplainer
 
-# ConfigurationManager is optional; we fall back to sane defaults if unavailable
-try:
-    from modules.core.configuration_manager import ConfigurationManager
-except Exception:  # pragma: no cover
-    ConfigurationManager = None  # type: ignore
-
-if TYPE_CHECKING:
-    from modules.core.module_system import ModuleOrchestrator
+from modules.core.configuration_manager import ConfigurationManager
+from modules.core.module_system import ModuleOrchestrator
 
 
 # ─────────────────────────────────────────────────────────────
@@ -768,3 +762,73 @@ class PerformanceTracker:
                 self._publisher_thread.join(timeout=1.0)
         except Exception:
             pass
+
+    # ─────────────────────────────────────────────────────────────
+    # Health monitoring interface (for HealthMonitor integration)
+    # ─────────────────────────────────────────────────────────────
+    def get_health_status(self) -> Dict[str, Any]:
+        """
+        Returns health status compatible with HealthMonitor.
+        Reports on tracker's own operational health.
+        """
+        try:
+            # Get recent dashboard data
+            dashboard = self.get_realtime_dashboard_data()
+
+            # Calculate tracker's own metrics
+            with self._lock:
+                total_metrics = len(self.metrics)
+                module_count = len(self.module_metrics)
+
+            # Determine status based on tracker's operational metrics
+            current_error_rate = dashboard.get('current_error_rate', 0.0)
+            current_throughput = dashboard.get('current_throughput', 0.0)
+
+            status = 'OK'
+            is_healthy = True
+            issues = []
+
+            # Check if tracker is experiencing issues
+            if current_error_rate > 0.10:
+                status = 'DEGRADED'
+                is_healthy = False
+                issues.append(f"High system error rate: {current_error_rate:.1%}")
+
+            # Check if tracker thread is alive
+            if not self._publisher_thread or not self._publisher_thread.is_alive():
+                status = 'DEGRADED'
+                is_healthy = False
+                issues.append("Publisher thread not running")
+
+            # Check if tracking any modules
+            if module_count == 0:
+                status = 'WARNING'
+                issues.append("No modules being tracked")
+
+            return {
+                'status': status,
+                'module': 'PerformanceTracker',
+                'version': '2.3',
+                'is_healthy': is_healthy,
+                'metrics_tracked': total_metrics,
+                'modules_tracked': module_count,
+                'current_throughput': current_throughput,
+                'current_error_rate': current_error_rate,
+                'current_avg_time_ms': dashboard.get('current_avg_time', 0.0),
+                'publisher_active': bool(self._publisher_thread and self._publisher_thread.is_alive()),
+                'issues': issues if issues else None,
+                'performance': {
+                    'total_metrics': total_metrics,
+                    'modules_tracked': module_count,
+                    'bus_publishing': self._subscribed
+                }
+            }
+        except Exception as e:
+            return {
+                'status': 'ERROR',
+                'module': 'PerformanceTracker',
+                'version': '2.3',
+                'is_healthy': False,
+                'error': str(e),
+                'last_error': str(e)
+            }
