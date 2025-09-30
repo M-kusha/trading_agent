@@ -256,6 +256,9 @@ Collusion Auditor v3.1 Initialization:
             if self.is_disabled:
                 return self._generate_disabled_response()
 
+            # FIX #2: Read kernel's decision_id for coordination
+            decision_id = self.smart_bus.get('kernel_decision_id', 'CollusionAuditor')
+            
             voting_data = await self._get_comprehensive_voting_data()
             # Trivial-case fast path: if fewer than 2 votes/members, avoid heavy analysis
             votes = voting_data.get("votes") or []
@@ -273,7 +276,8 @@ Collusion Auditor v3.1 Initialization:
                     "quality_metrics": {"overall_effectiveness": 0.5},
                     "health_metrics": self._get_health_metrics(),
                     "collusion_auditor_initialization": self._get_collusion_init_view(),
-                    "decision_id": voting_data.get("decision_id"),
+                    "decision_id": decision_id,  # FIX: Use kernel's decision_id instead of stale bus data
+                    "collusion_decision_id": decision_id,  # FIX: Contract-required namespaced decision_id
                     "tick_ts": voting_data.get("tick_ts") or dt.datetime.now().isoformat(),
                     "_thesis": thesis,
                 }
@@ -308,7 +312,8 @@ Collusion Auditor v3.1 Initialization:
                 "health_metrics": self._get_health_metrics(),
                 # contract heartbeat: include initialization view in results
                 "collusion_auditor_initialization": self._get_collusion_init_view(),
-                "decision_id": voting_data.get("decision_id"),
+                "decision_id": decision_id,  # FIX: Use kernel's decision_id instead of stale bus data
+                "collusion_decision_id": decision_id,  # FIX: Contract-required namespaced decision_id
                 "tick_ts": voting_data.get("tick_ts") or dt.datetime.now().isoformat(),
                 "_thesis": thesis,
             }
@@ -1339,6 +1344,37 @@ Collusion Auditor v3.1 Initialization:
                 results["audit_recommendations"],
                 module="CollusionAuditor",
                 thesis=f"Audit recommendations: {len(results['audit_recommendations'])} actionable insights",
+            )
+            
+            # FIX #2: Publish decision_id for kernel coordination
+            if results.get("decision_id"):
+                self.smart_bus.set(
+                    "collusion_decision_id",
+                    results["decision_id"],
+                    module="CollusionAuditor",
+                    thesis=f"Collusion decision ID: {results['decision_id']}"
+                )
+            
+            # FIX: Publish namespaced keys for VotingKernel coordination (REAL DATA, NO FALLBACKS)
+            self.smart_bus.set(
+                "collusion_suspicious_pairs",
+                results["suspicious_pairs"],
+                module="CollusionAuditor",
+                thesis=f"Namespaced suspicious pairs for VotingKernel: {len(results['suspicious_pairs'])} pairs"
+            )
+            
+            # Calculate pair penalties from suspicious pairs
+            pair_penalties = {}
+            for pair in results.get("suspicious_pairs", []):
+                if isinstance(pair, dict):
+                    pair_id = f"{pair.get('member_a', 'unknown')}_{pair.get('member_b', 'unknown')}"
+                    pair_penalties[pair_id] = pair.get("penalty", 0.0)
+            
+            self.smart_bus.set(
+                "collusion_pair_penalties",
+                pair_penalties,
+                module="CollusionAuditor",
+                thesis=f"Pair penalties for VotingKernel: {len(pair_penalties)} penalties applied"
             )
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "smartinfobus_update")

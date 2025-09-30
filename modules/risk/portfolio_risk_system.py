@@ -545,6 +545,13 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             # Required keys only (per contract)
             position_data = self.smart_bus.get("position_data", "PortfolioRiskSystem") or {}
             positions = position_data.get("positions", [])
+            # Accept both dict-of-dict and list-of-dict schemas
+            if isinstance(positions, dict):
+                try:
+                    positions = [{"instrument": inst, **(p or {})} for inst, p in positions.items()]
+                except Exception:
+                    # As a last resort, flatten to empty list to avoid type errors
+                    positions = []
 
             market_data = self.smart_bus.get("market_data", "PortfolioRiskSystem") or {}
             prices = market_data.get("prices", {})

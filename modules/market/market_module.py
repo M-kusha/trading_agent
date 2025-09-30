@@ -651,7 +651,9 @@ class UnifiedMarketModule(
                 aggregated.setdefault('theme_detector_status', status)
             aggregated.setdefault('theme_strength', float(aggregated.get('theme_strength', 0.0)))
             aggregated.setdefault('theme_transition', float(aggregated.get('theme_transition', 0.0)))
-            aggregated.setdefault('theme_confidence', float(aggregated.get('theme_confidence', 0.0)))
+            # REMOVED: theme_confidence to avoid conflict with EnhancedThemeExpert's canonical theme_confidence
+            # EnhancedThemeExpert is the specialized voting expert that owns theme_confidence
+            # UnifiedMarketModule provides raw theme_strength and theme_transition instead
 
             # Regime performance matrix
             aggregated.setdefault('backtesting_data', aggregated.get('backtesting_data', {}))
@@ -1100,8 +1102,8 @@ class UnifiedMarketModule(
 
         if "theme" in health and health["theme"]["status"] == "SUCCESS":
             theme = aggregated.get("market_theme", -1)
-            confidence = aggregated.get("theme_confidence", 0.0)
-            thesis_parts.append(f"[THEME] Theme ID: {theme} (confidence: {confidence:.2%})")
+            strength = aggregated.get("theme_strength", 0.0)
+            thesis_parts.append(f"[THEME] Theme ID: {theme} (strength: {strength:.2%})")
 
         if "regime" in health and health["regime"]["status"] == "SUCCESS":
             accuracy = aggregated.get("regime_accuracy", {}).get("value", 0.0)
@@ -1200,7 +1202,7 @@ class UnifiedMarketModule(
             ("theme_detector_status", aggregated.get("theme_detector_status")),
             ("theme_strength", aggregated.get("theme_strength")),
             ("theme_transition", aggregated.get("theme_transition")),
-            ("theme_confidence", aggregated.get("theme_confidence")),
+            # REMOVED: theme_confidence - owned by EnhancedThemeExpert
 
             # Regime performance matrix
             ("backtesting_data", aggregated.get("backtesting_data")),

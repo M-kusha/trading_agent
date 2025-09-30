@@ -204,8 +204,9 @@ CONTRACTS: Dict[str, ModuleContract] = {
     'PlaybookClusterer': ModuleContract(
         name='PlaybookClusterer',
         file='strategy/playbook_clusterer.py',
+        # FIX: Renamed pattern_analysis → playbook_patterns to avoid conflict with UnifiedMemory's canonical pattern_analysis
         provides=['cluster_analysis', 'cluster_effectiveness', 'cluster_recommendations', 'cluster_weights',
-                  'clustering_health', 'clustering_thesis', 'playbook_clusterer_initialization'],
+                  'clustering_health', 'clustering_thesis', 'playbook_clusterer_initialization', 'playbook_patterns'],
         requires=['market_context', 'market_data', 'market_regime', 'playbook_memory', 'recent_trades',
                   'session_metrics', 'trading_performance', 'volatility_data'],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
@@ -304,10 +305,12 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='EnhancedVotingCommitteeCoordinator',
         file='voting/voting_wrappers.py',
         # IMPORTANT: removed 'trade_vote' to keep VotingKernel the single writer of the final vote.
+        # FIX: Removed horizon_alignment to avoid conflict with TimeHorizonAligner's canonical horizon_alignment
+        # FIX: Added committee_decision_id for coordination
         provides=['committee_decision', 'committee_confidence', 'member_proposals', 'performance_feedback',
                   'time_of_day', 'votes', 'committee_votes', 'voting_summary', 'voting_weights',
                   'strategy_arbiter_weights', 'committee_consensus', 'member_confidences_ordered',
-                  'expert_votes', 'committee_members', 'proposal_vectors', 'signals'],
+                  'expert_votes', 'committee_members', 'proposal_vectors', 'signals', 'committee_decision_id'],
         requires=['emergency_mode', 'market_context', 'market_open', 'market_regime', 'portfolio_state',
                   'recent_trades', 'risk_data', 'risk_score', 'session_type', 'system_health',
                   'theme_detection', 'volatility_data',
@@ -327,10 +330,11 @@ CONTRACTS: Dict[str, ModuleContract] = {
     'ConsensusDetector': ModuleContract(
         name='ConsensusDetector',
         file='voting/consensus_detector.py',
+        # FIX: Added consensus_decision_id to track coordination with VotingKernel
         provides=['confidence_consensus', 'consensus_components', 'consensus_detector_initialization',
                   'consensus_quality', 'consensus_recommendations', 'consensus_score', 'consensus_trends',
                   'directional_consensus', 'magnitude_consensus', 'member_contributions',
-                  'consensus_quality_metrics'],
+                  'consensus_quality_metrics', 'consensus_decision_id'],
         requires=['agreement_score', 'consensus_direction', 'market_context', 'market_regime', 'member_confidences',
                   'raw_proposals', 'volatility_data'],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
@@ -340,9 +344,10 @@ CONTRACTS: Dict[str, ModuleContract] = {
     'AlternativeRealitySampler': ModuleContract(
         name='AlternativeRealitySampler',
         file='voting/alternative_reality_sampler.py',
+        # FIX: Added sampling_decision_id and sampling_fragility to track coordination
         provides=['alternative_reality_sampler_initialization', 'alternative_samples', 'confidence_bounds',
                   'diversity_score', 'effective_samples', 'sampling_recommendations', 'sampling_stats',
-                  'sampling_uncertainty'],
+                  'sampling_uncertainty', 'sampling_decision_id', 'sampling_fragility'],
         requires=['agreement_score', 'consensus_direction', 'market_context', 'market_regime', 'recent_trades',
                   'session_metrics', 'strategy_arbiter_weights', 'volatility_data', 'votes', 'voting_summary'],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
@@ -352,8 +357,9 @@ CONTRACTS: Dict[str, ModuleContract] = {
     'TimeHorizonAligner': ModuleContract(
         name='TimeHorizonAligner',
         file='voting/time_horizon_aligner.py',
+        # FIX: Added horizon_decision_id and horizon_alignment_meta for coordination
         provides=['aligned_weights', 'horizon_distances', 'horizon_multipliers', 'horizon_alignment',
-                  'alignment_quality', 'adaptation_status'],
+                  'alignment_quality', 'adaptation_status', 'horizon_decision_id', 'horizon_alignment_meta'],
         requires=['voting_weights', 'market_regime', 'session_type', 'volatility_data', 'market_context'],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
               'category': 'voting', 'version': '3.0.0'}
@@ -362,12 +368,13 @@ CONTRACTS: Dict[str, ModuleContract] = {
     'StrategyArbiter': ModuleContract(
         name='StrategyArbiter',
         file='voting/strategy_arbiter.py',
+        # FIX: Added arbiter_decision_id for coordination
         provides=['alpha_weights', 'arbiter_recommendations', 'decision_statistics', 'gate_decision',
                   'instrument_signals', 'instruments',
                   'member_performance', 'member_weights', 'proposal_analysis',
                   'strategy_arbiter_initialization', 'strategy_weights', 'voting_quality',
                   # add canonical source for expert_performance for dependents
-                  'expert_performance'],
+                  'expert_performance', 'arbiter_decision_id'],
         requires=['collusion_score', 'consensus_score', 'horizon_alignment', 'market_context', 'market_regime',
                   'member_confidences', 'member_proposals', 'recent_trades', 'session_data', 'volatility_data',
                   'universe', 'watched_instruments'],
@@ -377,8 +384,10 @@ CONTRACTS: Dict[str, ModuleContract] = {
     'VotingKernel': ModuleContract(
         name='VotingKernel',
         file='voting/voting_kernel.py',
+        # FIX: Added decision_id and tick_ts as canonical publications for zero-wiring discoverability
         provides=['decision_coordination', 'voting_consensus', 'consensus_summary',
-                  'voting_metrics', 'decision_bundle', 'trade_vote_v2', 'fragility'],
+                  'voting_metrics', 'decision_bundle', 'trade_vote_v2', 'fragility',
+                  'decision_id', 'tick_ts', 'kernel_decision_id', 'kernel_tick_ts'],
         # keep the minimal, current implementation requires to avoid orchestration stalls
         requires=['market_data', 'price_data', 'technical_indicators', 'market_regime', 'portfolio_state'],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
@@ -399,9 +408,10 @@ CONTRACTS: Dict[str, ModuleContract] = {
     'CollusionAuditor': ModuleContract(
         name='CollusionAuditor',
         file='voting/collusion_auditor.py',
+        # FIX: Added collusion_decision_id for coordination
         provides=['audit_recommendations', 'behavioral_profiles', 'collusion_alerts', 'collusion_auditor_initialization',
                   'collusion_score', 'coordination_events', 'detection_statistics', 'member_independence_scores',
-                  'suspicious_pairs'],
+                  'suspicious_pairs', 'collusion_decision_id'],
         requires=['agreement_score', 'consensus_direction', 'market_context', 'market_regime', 'member_confidences',
                   'raw_proposals', 'recent_trades', 'strategy_arbiter_weights', 'volatility_data', 'votes',
                   'voting_summary'],
@@ -479,7 +489,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'market_open', 'memory_usage', 'mistakes', 'module_performance', 'performance_metrics',
             'performance_data',  # canonical owner selected
             'playbook_entries', 'playbook_memory', 'session_pnl_data', 'session_context', 'session_metrics',
-            'system_alerts', 'session_health', 'system_performance',
+            'system_alerts', 'session_health', 'system_performance', 'system_health',  # FIX #3: Added system_health
             'environment_config', 'execution_mode'    # fills gap for PM/Executor; may be moved to a dedicated Environment module
         ],
         requires=[],
@@ -491,7 +501,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
     'PositionManager': ModuleContract(
         name='PositionManager',
         file='position/position.py',
-        provides=['position_decisions', 'position_health', 'portfolio_state', 'order_queue', 'position_data'],
+        # FIX: Renamed position_data → position_manager_data to avoid conflict with Executor's canonical position_data
+        provides=['position_decisions', 'position_health', 'portfolio_state', 'order_queue', 'position_manager_data'],
         requires=['environment_config', 'indicators', 'liquidity_capabilities', 'liquidity_score',
                   'market_conditions', 'market_context', 'market_data', 'market_liquidity',
                   'market_regime', 'price_data', 'prices', 'technical_indicators',
@@ -504,10 +515,11 @@ CONTRACTS: Dict[str, ModuleContract] = {
     'Executor': ModuleContract(
         name='Executor',
         file='executor/executor.py',
+        # FIX: Added position_data as canonical provider (actual executed positions)
         provides=['positions', 'trades', 'recent_trades',
                   'order_data', 'execution_data', 'execution_reports',
                   'portfolio_metrics', 'trading_result', 'current_pnl',
-                  'trade_data', 'market_state',
+                  'trade_data', 'market_state', 'position_data',
                   'current_positions', 'pnl_data',
                   'live_adapter_status', 'pending_orders', 'account_state'],
         requires=['order_queue', 'prices', 'price_data', 'environment_config', 'step_idx', 'execution_mode'],

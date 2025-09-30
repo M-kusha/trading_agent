@@ -78,7 +78,7 @@ execution:
   adaptive:
     auto_tune_timeouts: true
     timeout_target_pctl: 0.95
-    timeout_floor_ms: 2500
+    timeout_floor_ms: 4500
     timeout_ceiling_ms: 30000   # raised to respect largest override
     readiness_grace_s: 3.0      # aligned with logs
     half_open_single_probe: true
@@ -407,21 +407,21 @@ modules:
       forgetting_rate: 0.001
       timeout_ms: 200
 
-      # Debug settings (optimized)
-      debug: false
-      debug_level: "WARNING"
+      # Debug settings (enabled for detailed debugging)
+      debug: true
+      debug_level: "DEBUG"
       debug_log_path: "logs/memory/unified_debug.log"
-      enable_combined_log: false
-      enable_trace_log: false
-      trace_file_path: null
-      enable_debug_log: false
-      debug_file_path: null
-      enable_info_log: false
-      info_file_path: null
+      enable_combined_log: true
+      enable_trace_log: true
+      trace_file_path: "logs/memory/unified_trace.log"
+      enable_debug_log: true
+      debug_file_path: "logs/memory/unified_debug_only.log"
+      enable_info_log: true
+      info_file_path: "logs/memory/unified_info.log"
       enable_warning_log: true
-      warning_file_path: null
+      warning_file_path: "logs/memory/unified_warning.log"
       enable_error_log: true
-      error_file_path: null
+      error_file_path: "logs/memory/unified_error.log"
 
       # Core settings (optimized)
       max_memory_size: 5000

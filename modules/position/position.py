@@ -1067,7 +1067,10 @@ class PositionManager(
             # PM-owned keys
             "instrument_signals": copy.deepcopy(instrument_signals),
             "order_queue": copy.deepcopy(order_queue),
-            "position_data": {
+            # RENAMED: position_data -> position_manager_data to avoid conflict with Executor's position_data
+            # Executor owns canonical position_data (actual executed positions)
+            # PM owns decision data (what PM decided to do)
+            "position_manager_data": {
                 "decisions": position_decisions,
                 "health": pos_health,
                 "portfolio_state": {

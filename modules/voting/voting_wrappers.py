@@ -1643,6 +1643,16 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
         """Process committee voting with enhanced coordination (contract-compliant)."""
         start_time = time.time()
         try:
+            # FIX #2: Read kernel's decision_id for coordination
+            decision_id = self.smart_bus.get('kernel_decision_id', self.__class__.__name__)
+            if not decision_id:
+                # Fallback if kernel hasn't seeded it yet (bootstrap case)
+                self._decision_counter += 1
+                decision_id = f"{datetime.datetime.now().isoformat()}#{self._decision_counter}"
+                self.logger.debug(f"[COMMITTEE] Generated local decision_id: {decision_id}")
+            else:
+                self.logger.debug(f"[COMMITTEE] Using kernel decision_id: {decision_id}")
+            
             # 1) Collect inputs
             expert_votes = await self._collect_expert_votes()
             expert_weights = await self._calculate_expert_weights(expert_votes)
@@ -1669,10 +1679,8 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
 
             proposal_vectors: List[List[float]] = [_vectorize(v) for v in expert_votes]
 
-            # decision id (monotonic per instance)
-            self._decision_counter += 1
-            decision_id = f"{datetime.datetime.now().isoformat()}#{self._decision_counter}"
-
+            # Note: decision_id already read from kernel at start of method
+            
             # 3) Build declared outputs
             voting_summary = {
                 'action': decision.get('action', 'abstain'),
@@ -1729,7 +1737,7 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                 'member_confidences_map': member_confidences_map,
                 'proposal_vectors': proposal_vectors,
                 'decision_id': decision_id,
-                'horizon_alignment': horizon_alignment,
+                # REMOVED: horizon_alignment from bus publication to avoid conflict with TimeHorizonAligner
                 'signals': signals,
             }, thesis)
 
@@ -1773,8 +1781,11 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                 'voting_weights': voting_weights,
                 'time_of_day': time_of_day,
                 'performance_feedback': performance_feedback,
-                'horizon_alignment': horizon_alignment,
+                # REMOVED: horizon_alignment to avoid conflict with TimeHorizonAligner's canonical horizon_alignment
+                # TimeHorizonAligner is the specialized module that owns horizon_alignment
+                # Committee computes a hint internally but doesn't publish it to avoid provider conflicts
                 'decision_id': decision_id,
+                'committee_decision_id': decision_id,  # FIX: Contract-required namespaced decision_id
                 'signals': signals,
                 # Canonical trade_vote publication for downstream consumers
                 'trade_vote': {
@@ -2326,6 +2337,29 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                     except Exception:
                         pass
 
+            # FIX #1: Publish NAMESPACED keys for VotingKernel coordination
+            try:
+                self.smart_bus.set(
+                    'committee_decision_id',
+                    results.get('decision_id'),
+                    module=self.__class__.__name__,
+                    thesis=f'Committee decision ID for kernel coordination: {results.get("decision_id")}'
+                )
+                self.smart_bus.set(
+                    'committee_proposal_vectors',
+                    results.get('proposal_vectors', []),
+                    module=self.__class__.__name__,
+                    thesis=f'Numeric proposal vectors from {len(results.get("proposal_vectors", []))} members'
+                )
+                self.smart_bus.set(
+                    'committee_member_confidences',
+                    results.get('member_confidences_ordered', []),
+                    module=self.__class__.__name__,
+                    thesis=f'Member confidence scores for {len(results.get("member_confidences_ordered", []))} voters'
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to publish namespaced committee keys: {e}")
+
             # Intentionally avoid publishing trade_vote/trade_vote_v2 here to prevent provider churn
 
             # Avoid publishing decision bundle; VotingKernel is the canonical bundle publisher
@@ -2395,7 +2429,7 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
             issues = []
 
             # Check if any experts are registered
-            expert_count = len(self.expert_registry)
+            expert_count = len(self._discover_voters())
             if expert_count == 0:
                 status = 'DEGRADED'
                 is_healthy = False

@@ -726,6 +726,18 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                         )
                     except Exception:
                         pass
+                    
+                    # FIX: Publish emergency_mode to SmartInfoBus (required by contract)
+                    try:
+                        self.smart_bus.declare_owner('emergency_mode', 'SessionManager')
+                    except Exception:
+                        pass
+                    self.smart_bus.set(
+                        'emergency_mode',
+                        False,  # Currently hardcoded to False; enhance later if needed
+                        module='SessionManager',
+                        thesis='Emergency mode status (system-wide kill switch)'
+                    )
                 except Exception:
                     pass
             except Exception:

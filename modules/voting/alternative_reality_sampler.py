@@ -216,6 +216,9 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
                 return self._generate_disabled_response()
 
             try:
+                # FIX #2: Read kernel's decision_id for coordination
+                decision_id = self.smart_bus.get('kernel_decision_id', 'AlternativeRealitySampler')
+                
                 voting_data = await self._get_comprehensive_voting_data()
                 # Soft budget/trivial-case fast path: skip heavy sampling when committee is trivial
                 members = voting_data.get('strategy_arbiter_weights') or voting_data.get('voting_weights') or {}
@@ -231,7 +234,9 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
                         "confidence_bounds": {"lower": 0.0, "upper": 0.0},
                         "sampling_recommendations": ["insufficient_voters: neutral handling"],
                         "alternative_reality_sampler_initialization": self._get_ars_init_view(),
-                        "decision_id": voting_data.get("decision_id"),
+                        "decision_id": decision_id,  # FIX: Use kernel's decision_id instead of stale bus data
+                        "sampling_decision_id": decision_id,  # FIX: Contract-required namespaced decision_id
+                        "sampling_fragility": 0.5,  # FIX: Contract-required (neutral fragility for minimal sampling)
                         "tick_ts": voting_data.get("tick_ts") or now,
                         "_thesis": "Alternative sampling skipped (single/no voter); fast-path applied",
                     }
@@ -240,6 +245,11 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
                         self.smart_bus.set("sampling_uncertainty", 0.5, module="AlternativeRealitySampler", thesis="ARS sampling uncertainty")
                         self.smart_bus.set("uncertainty", 0.5, module="AlternativeRealitySampler", thesis="ARS uncertainty alias")
                         self.smart_bus.set("effective_samples", 0, module="AlternativeRealitySampler", thesis="ARS effective samples")
+                        # FIX: Publish namespaced key for VotingKernel coordination (REAL DATA, NO FALLBACKS)
+                        self.smart_bus.set("sampling_effective_samples", 0, module="AlternativeRealitySampler", thesis="Namespaced effective samples for VotingKernel: 0")
+                        # FIX #2: Publish decision_id for coordination
+                        if decision_id:
+                            self.smart_bus.set("sampling_decision_id", decision_id, module="AlternativeRealitySampler", thesis=f"Sampling decision ID: {decision_id}")
                     return minimal
                 await self._update_sampling_parameters_comprehensive(voting_data)
                 effectiveness = await self._analyze_sampling_effectiveness_comprehensive(voting_data)
@@ -254,10 +264,13 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
 
                 samples = await self.sample_comprehensive(base_w, voting_data)
 
+                # Precompute diversity and fragility consistently
+                div = float(self.sampling_stats.get("diversity_score", 0.0))
+
                 results = {
                     "alternative_samples": samples.tolist(),
                     "sampling_uncertainty": self.sampling_stats.get("avg_uncertainty", 0.5),
-                    "diversity_score": self.sampling_stats.get("diversity_score", 0.0),
+                    "diversity_score": div,
                     "sampling_stats": self._get_comprehensive_sampling_stats(),
                     "effective_samples": self.sampling_stats.get("effective_samples", 0),
                     "confidence_bounds": self._calculate_confidence_bounds(),
@@ -265,7 +278,9 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
                         effectiveness, quality
                     ),
                     "alternative_reality_sampler_initialization": self._get_ars_init_view(),
-                    "decision_id": voting_data.get("decision_id"),
+                    "decision_id": decision_id,  # FIX: Use kernel's decision_id instead of stale bus data
+                    "sampling_decision_id": decision_id,  # FIX: Contract-required namespaced decision_id
+                    "sampling_fragility": max(0.0, min(1.0, 1.0 - div)),  # FIX: Contract-required fragility
                     "tick_ts": voting_data.get("tick_ts") or dt.datetime.now().isoformat(),
                 }
 
@@ -283,7 +298,13 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
                     # Alias for downstream consumers
                     self.smart_bus.set("uncertainty", unc, module="AlternativeRealitySampler", thesis="ARS uncertainty alias")
                     self.smart_bus.set("effective_samples", eff, module="AlternativeRealitySampler", thesis="ARS effective samples")
-                    self.smart_bus.set("fragility", fragility, module="AlternativeRealitySampler", thesis="ARS fragility estimate")
+                    # FIX #4: Use namespaced key to avoid conflict with VotingKernel's canonical 'fragility'
+                    self.smart_bus.set("sampling_fragility", fragility, module="AlternativeRealitySampler", thesis="ARS fragility estimate")
+                    # FIX: Publish namespaced key for VotingKernel coordination (REAL DATA, NO FALLBACKS)
+                    self.smart_bus.set("sampling_effective_samples", eff, module="AlternativeRealitySampler", thesis=f"Namespaced effective samples for VotingKernel: {eff}")
+                    # FIX #2: Publish decision_id for coordination
+                    if decision_id:
+                        self.smart_bus.set("sampling_decision_id", decision_id, module="AlternativeRealitySampler", thesis=f"Sampling decision ID: {decision_id}")
                 except Exception:
                     pass
 
@@ -604,18 +625,36 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
 
     # ── reporting / bounds ──────────────────────────────────
     def _calculate_confidence_bounds(self) -> Dict[str, Any]:
+        """
+        Compute per-dimension confidence bounds for the last sampled weights.
+
+        Returns a dictionary with keys ``lower`` and ``upper`` containing the
+        5th and 95th percentiles respectively, along with a ``confidence_level``
+        that reflects the tightness of the interval.  A wider band results in
+        a lower confidence level.  When insufficient sample history is
+        available, empty lists are returned to clearly signal a lack of data.
+
+        Using the shorter key names ``lower`` and ``upper`` ensures
+        consistency with other parts of the module that use these keys in
+        fast‑path responses.
+        """
         with self._lock:
-            s = getattr(self, "last_samples", None)
-        if s is None or s.shape[0] < 3:
-            return {"lower_bound": [], "upper_bound": [], "confidence_level": 0.0}
-        lo = np.percentile(s, 5, axis=0)
-        hi = np.percentile(s, 95, axis=0)
-        width = float(np.mean(hi - lo))
-        level = float(max(0.0, min(1.0, 1.0 - width * 2)))
+            samples = getattr(self, "last_samples", None)
+        # If no samples have been recorded or too few to compute meaningful percentiles,
+        # return empty bounds and a zero confidence level.
+        if samples is None or samples.shape[0] < 3:
+            return {"lower": [], "upper": [], "confidence_level": 0.0}
+        # Compute lower and upper percentiles across the sample dimensions
+        lower = np.percentile(samples, 5, axis=0)
+        upper = np.percentile(samples, 95, axis=0)
+        # The average width of the percentile band provides a simple heuristic
+        # for confidence: narrower bands imply higher confidence.
+        width = float(np.mean(upper - lower))
+        confidence_level = float(max(0.0, min(1.0, 1.0 - width * 2)))
         return {
-            "lower_bound": lo.tolist(),
-            "upper_bound": hi.tolist(),
-            "confidence_level": level,
+            "lower": lower.tolist(),
+            "upper": upper.tolist(),
+            "confidence_level": confidence_level,
             "bound_width": width,
             "percentiles": {"lower": 5, "upper": 95},
         }
@@ -820,22 +859,39 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         updates = {"weight_changes": {}, "activation_changes": {}, "overall_improvement": 0.0}
         sp = dict(eff.get("strategy_performance", {}))
         tot = 0.0
+        # Track total change in weights to compute an overall improvement metric.  Use a
+        # temporary dict to preserve original weights for difference calculation.
+        original_weights: Dict[str, float] = {n: float(cfg["weight"]) for n, cfg in self.sampling_strategies.items()}
         for name, cfg in self.sampling_strategies.items():
             w0 = float(cfg["weight"])
             p = float(sp.get(name, 0.5))
+            # Adjust weights based on strategy performance
             if p > 0.7:
                 w1 = min(0.5, w0 * 1.1)
             elif p < 0.3:
                 w1 = max(0.05, w0 * 0.9)
             else:
                 w1 = w0
+            # Record changes that exceed a small epsilon to avoid noise
             if abs(w1 - w0) > 0.01:
-                updates["weight_changes"][name] = {"old_weight": w0, "new_weight": w1, "performance": p}
+                updates["weight_changes"][name] = {
+                    "old_weight": w0,
+                    "new_weight": w1,
+                    "performance": p,
+                }
             cfg["weight"] = w1
             tot += w1
         if tot > 0:
+            # Normalize weights so they sum to one
             for cfg in self.sampling_strategies.values():
                 cfg["weight"] = float(cfg["weight"] / tot)
+        # Compute an overall improvement metric as the sum of absolute differences between
+        # original and updated weights.  This provides a sense of how much the
+        # strategy distribution changed during this update cycle.
+        improvement_sum = 0.0
+        for name, cfg in self.sampling_strategies.items():
+            improvement_sum += abs(cfg["weight"] - original_weights.get(name, 0.0))
+        updates["overall_improvement"] = float(improvement_sum)
         return updates
 
     async def _calculate_comprehensive_quality_metrics(self) -> Dict[str, Any]:
@@ -847,10 +903,13 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
         if len(self.effectiveness_history) > 0:
             q["coverage_efficiency"] = float(self.effectiveness_history[-1].get("exploration_efficiency", 0.0))
         q["uncertainty_accuracy"] = float(self.sampling_stats.get("avg_uncertainty", 0.5))
+        # Compute how often sampling adaptations lead to effective samples.  Use a
+        # denominator of at least one to avoid division by zero when there
+        # have been no sigma adaptations yet.  Cast to float for clarity.
         adapt = int(self.sampling_stats.get("sigma_adaptations", 0))
-        q["adaptation_success_rate"] = float(
-            min(1.0, self.sampling_stats.get("effective_samples", 0) / max(adapt or 1, 1))
-        )
+        denom = adapt if adapt > 0 else 1
+        eff_samples = self.sampling_stats.get("effective_samples", 0)
+        q["adaptation_success_rate"] = float(min(1.0, float(eff_samples) / float(denom)))
         q["exploration_completeness"] = float(min(1.0, len(self.sampling_history) / 50.0))
         vals = [
             q["sample_diversity"],
@@ -950,6 +1009,9 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             "sampling_recommendations": ["Investigate AlternativeRealitySampler errors"],
             "health_metrics": {"status": "error", "error_context": str(ctx)},
             "alternative_reality_sampler_initialization": self._get_ars_init_view(),
+            "decision_id": "error",  # FIX: Contract-required
+            "sampling_decision_id": "error",  # FIX: Contract-required
+            "sampling_fragility": 1.0,  # FIX: Contract-required (high fragility on error)
             "_thesis": f"AlternativeRealitySampler error: {ctx}",
         }
 
@@ -964,6 +1026,9 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
             "sampling_recommendations": ["Restart AlternativeRealitySampler system"],
             "health_metrics": {"status": "disabled", "reason": "circuit_breaker_triggered"},
             "alternative_reality_sampler_initialization": self._get_ars_init_view(),
+            "decision_id": "disabled",  # FIX: Contract-required
+            "sampling_decision_id": "disabled",  # FIX: Contract-required
+            "sampling_fragility": 1.0,  # FIX: Contract-required (high fragility when disabled)
             "_thesis": "AlternativeRealitySampler disabled via circuit breaker",
         }
 

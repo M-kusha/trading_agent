@@ -272,6 +272,9 @@ Strategy Arbiter v3.1 Initialization:
                 if self.is_disabled:
                     return self._generate_disabled_response()
 
+                # FIX #2: Read kernel's decision_id for coordination
+                decision_id = self.smart_bus.get('kernel_decision_id', 'StrategyArbiter')
+                
                 # 1) Data & market state
                 market_data = await self._get_comprehensive_market_data()
                 await self._update_market_state_comprehensive(market_data)
@@ -344,7 +347,8 @@ Strategy Arbiter v3.1 Initialization:
                     "instruments": inst_list,
                     "universe": inst_list,
                     "watched_instruments": inst_list,
-                    "decision_id": market_data.get("decision_id"),
+                    "decision_id": decision_id or market_data.get("decision_id"),  # FIX #2: Use kernel's decision_id
+                    "arbiter_decision_id": decision_id or market_data.get("decision_id"),  # FIX: Contract-required namespaced decision_id
                     "tick_ts": market_data.get("tick_ts") or dt.datetime.utcnow().isoformat(),
                     "_thesis": thesis,
                     "strategy_arbiter_initialization": init_payload,
@@ -1142,6 +1146,28 @@ Strategy Arbiter v3.1 Initialization:
                 )
             except Exception:
                 pass
+            # FIX #2: Publish decision_id for kernel coordination
+            if results.get("decision_id"):
+                s("arbiter_decision_id", results["decision_id"], module="StrategyArbiter",
+                  thesis=f"Arbiter decision ID: {results['decision_id']}")
+            
+            # FIX: Publish namespaced keys for VotingKernel coordination (REAL DATA, NO FALLBACKS)
+            s("arbiter_instrument_signals", results.get("instrument_signals", {}), module="StrategyArbiter",
+              thesis=f"Namespaced instrument signals for VotingKernel: {len(results.get('instrument_signals', {}))} instruments")
+            
+            gate_decision_data = results.get("gate_decision", {})
+            s("arbiter_gate_decision", gate_decision_data, module="StrategyArbiter",
+              thesis=f"Namespaced gate decision for VotingKernel: {gate_decision_data.get('decision', 'unknown')}")
+            
+            # Extract gate breakdown from gate decision
+            gate_breakdown = {
+                "decision": gate_decision_data.get("decision", "unknown"),
+                "criteria_met": gate_decision_data.get("criteria_met", 0),
+                "total_criteria": gate_decision_data.get("total_criteria", 5),
+                "pass_rate": gate_decision_data.get("criteria_met", 0) / max(gate_decision_data.get("total_criteria", 5), 1)
+            }
+            s("arbiter_gate_breakdown", gate_breakdown, module="StrategyArbiter",
+              thesis=f"Gate decision breakdown for VotingKernel: {gate_breakdown['criteria_met']}/{gate_breakdown['total_criteria']} criteria met")
         except Exception as e:
             ctx = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
             self.logger.error(f"SmartInfoBus update failed: {ctx}")

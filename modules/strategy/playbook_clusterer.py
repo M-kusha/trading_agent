@@ -342,7 +342,7 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                 'clustering_health': self._get_clustering_health_metrics(),
                 'cluster_recommendations': self._generate_intelligent_cluster_recommendations(cluster_analysis),
                 'cluster_effectiveness': self._get_cluster_effectiveness_summary(),
-                'pattern_analysis': self._get_pattern_analysis_summary(),
+                'playbook_patterns': self._get_pattern_analysis_summary(),  # FIX: Renamed from pattern_analysis to avoid conflict
                 'clustering_thesis': thesis,
                 '_thesis': thesis,
                 'playbook_clusterer_initialization': self._get_pc_init_view()
@@ -1960,9 +1960,9 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             self.smart_bus.set('cluster_effectiveness', results['cluster_effectiveness'],
                              module='PlaybookClusterer', thesis=eff_thesis)
             
-            # Pattern analysis
-            pattern_thesis = f"Pattern analysis: {results['pattern_analysis'].get('clustering_history_length', 0)} historical events"
-            self.smart_bus.set('pattern_analysis', results['pattern_analysis'],
+            # Pattern analysis (renamed to avoid conflict with UnifiedMemory's canonical pattern_analysis)
+            pattern_thesis = f"Playbook patterns: {results['playbook_patterns'].get('clustering_history_length', 0)} historical events"
+            self.smart_bus.set('playbook_patterns', results['playbook_patterns'],
                              module='PlaybookClusterer', thesis=pattern_thesis)
             
         except Exception as e:
@@ -1998,7 +1998,7 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             'clustering_health': {'status': 'error', 'error_context': str(error_context)},
             'cluster_recommendations': ["Investigate clustering system errors"],
             'cluster_effectiveness': {'error': str(error_context)},
-            'pattern_analysis': {'error': str(error_context)},
+            'playbook_patterns': {'error': str(error_context)},  # FIX: Renamed from pattern_analysis
             'clustering_thesis': f"Clustering error: {error_context}",
             '_thesis': f"Clustering error: {error_context}",
             'playbook_clusterer_initialization': self._get_pc_init_view()
@@ -2043,7 +2043,7 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             'clustering_health': {'status': 'disabled', 'reason': 'circuit_breaker_triggered'},
             'cluster_recommendations': ["Restart playbook clustering system"],
             'cluster_effectiveness': {'status': 'disabled'},
-            'pattern_analysis': {'status': 'disabled'},
+            'playbook_patterns': {'status': 'disabled'},  # FIX: Renamed from pattern_analysis
             'clustering_thesis': 'Clustering system disabled due to errors',
             '_thesis': 'Clustering system disabled due to errors',
             'playbook_clusterer_initialization': self._get_pc_init_view()

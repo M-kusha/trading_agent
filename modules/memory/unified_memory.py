@@ -592,9 +592,15 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
             await self.memory_store.add_batch(batch)
             self._total_memories_processed += len(batch)
             if self.unified_config.debug:
+                # FIX: Pass sample memory entry with actual data instead of just batch stats
+                sample_entry = batch[0] if batch else {}
                 self.debug_logger.log_memory_operation("STORE_BATCH", {
                     "count": len(batch),
                     "total_stored": self.memory_store.size(),
+                    "timestamp": sample_entry.get("timestamp"),
+                    "pnl": sample_entry.get("pnl"),
+                    "importance": sample_entry.get("importance"),
+                    "metadata": sample_entry.get("metadata"),
                 })
 
 

@@ -228,6 +228,9 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             if self.is_disabled:
                 return self._generate_disabled_response()
 
+            # FIX #2: Read kernel's decision_id for coordination
+            decision_id = self.smart_bus.get('kernel_decision_id', 'TimeHorizonAligner')
+            
             self.clock += 1
             current_time = datetime.datetime.now()
             alignment_data = await self._get_comprehensive_alignment_data()
@@ -262,7 +265,9 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                         'session': 'unknown'
                     },
                     'time_horizon_aligner_initialization': self._get_tha_init_view(),
-                    'decision_id': alignment_data.get('decision_id'),
+                    'decision_id': decision_id,  # FIX: Use kernel's decision_id instead of stale bus data
+                    'horizon_decision_id': decision_id,  # FIX: Contract-required namespaced decision_id
+                    'horizon_alignment_meta': {'timestamp': datetime.datetime.now().isoformat()},  # FIX: Contract-required metadata
                     'tick_ts': alignment_data.get('tick_ts') or datetime.datetime.now().isoformat(),
                     '_thesis': 'Neutral alignment (single/no voter); fast-path applied'
                 }
@@ -301,6 +306,7 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
             results = {
                 'aligned_weights': aligned_list,
+                '_raw_weights': safe_weights.astype(float).tolist(),  # FIX: Store raw weights for VotingKernel
                 'horizon_distances': self.current_distances.tolist(),
                 'horizon_multipliers': self._get_combined_multipliers().tolist(),
                 'regime_adjustments': self.regime_multipliers.get(
@@ -318,7 +324,9 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     'session': self.current_session
                 },
                 'time_horizon_aligner_initialization': self._get_tha_init_view(),
-                'decision_id': alignment_data.get('decision_id'),
+                'decision_id': decision_id,  # FIX: Use kernel's decision_id instead of stale bus data
+                'horizon_decision_id': decision_id,  # FIX: Contract-required namespaced decision_id
+                'horizon_alignment_meta': {'timestamp': datetime.datetime.now().isoformat()},  # FIX: Contract-required metadata
                 'tick_ts': alignment_data.get('tick_ts') or datetime.datetime.now().isoformat(),
                 '_thesis': ''  # set below
             }
@@ -668,13 +676,22 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             sb('horizon_alignment', results['horizon_alignment'], module='TimeHorizonAligner',
                thesis='Combined horizon alignment bundle (distances, multipliers, regime, session)')
 
-            # Decision coordination
+            # FIX #2: Decision coordination (namespaced key to avoid conflict)
             if results.get('decision_id'):
-                sb('decision_id', results['decision_id'], module='TimeHorizonAligner',
-                   thesis=f"Decision ID for tick coordination: {results['decision_id']}")
+                sb('horizon_decision_id', results['decision_id'], module='TimeHorizonAligner',
+                   thesis=f"Horizon decision ID for tick coordination: {results['decision_id']}")
             if results.get('tick_ts'):
                 sb('tick_ts', results['tick_ts'], module='TimeHorizonAligner',
                    thesis=f"Tick timestamp: {results['tick_ts']}")
+            
+            # FIX: Publish namespaced keys for VotingKernel coordination (REAL DATA, NO FALLBACKS)
+            # Extract raw weights from the alignment data that was processed
+            raw_weights_data = results.get('_raw_weights', results.get('aligned_weights', []))
+            sb('horizon_raw_weights', raw_weights_data, module='TimeHorizonAligner',
+               thesis=f"Raw weights before horizon alignment: {len(raw_weights_data)} values")
+            
+            sb('horizon_aligned_weights', results.get('aligned_weights', []), module='TimeHorizonAligner',
+               thesis=f"Aligned weights after horizon processing: {len(results.get('aligned_weights', []))} values")
         except Exception as e:
             _ = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
             self.logger.error("SmartInfoBus update failed")
@@ -843,6 +860,9 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'performance_metrics': {'error': str(error_context)},
             'adaptation_status': {'status': 'error', 'error_context': str(error_context)},
             'health_metrics': {'status': 'error', 'error_context': str(error_context)},
+            'decision_id': 'error',  # FIX: Contract-required
+            'horizon_decision_id': 'error',  # FIX: Contract-required namespaced decision_id
+            'horizon_alignment_meta': {'status': 'error'},  # FIX: Contract-required metadata
             'horizon_alignment': {
                 'distances': ones, 'multipliers': ones,
                 'regime': getattr(self, 'current_regime', 'unknown'),

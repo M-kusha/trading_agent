@@ -165,6 +165,8 @@ modules:
       - member_confidences
       - raw_proposals
       - volatility_data
+      - voting_summary
+      - votes
 
   CorrelatedRiskController:
     category: risk
@@ -272,15 +274,20 @@ modules:
       - voting_summary
       - voting_weights
     requires:
+      - agreement_score
+      - consensus_direction
       - emergency_mode
       - market_context
       - market_open
       - market_regime
+      - member_confidences
       - portfolio_state
+      - raw_proposals
       - recent_trades
       - risk_data
       - risk_score
       - session_type
+      - strategy_arbiter_weights
       - system_health
       - theme_detection
       - volatility_data

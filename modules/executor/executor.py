@@ -327,6 +327,26 @@ class Executor(BaseModule):
             default={"provider": self.cfg.live_broker, "connected": False}
         )
 
+        # Build normalized position_data list (legacy/risk-friendly schema)
+        pos_list: List[Dict[str, Any]] = []
+        try:
+            for inst, p in (positions_after or {}).items():
+                notional = float(p.get("notional_eur", 0.0) or 0.0)
+                units = float(p.get("units", 0.0) or 0.0)
+                entry_price = float(p.get("entry_price", 0.0) or 0.0)
+                size = abs(notional) if abs(notional) > 0 else (abs(units * entry_price) if (units and entry_price) else abs(units))
+                entry: Dict[str, Any] = {"instrument": inst, "size": float(size)}
+                for k, v in p.items():
+                    if k != "instrument":
+                        entry[k] = v
+                pos_list.append(entry)
+        except Exception:
+            # Fall back to a basic projection if anything goes wrong
+            try:
+                pos_list = [{"instrument": inst, **(p or {})} for inst, p in (positions_after or {}).items()]
+            except Exception:
+                pos_list = []
+
         # also include raw balance/equity at top-level for strict readers
         return {
             # core snapshots
@@ -346,6 +366,9 @@ class Executor(BaseModule):
             # rollups for downstream consumers
             "trade_data": trade_data,
             "market_state": market_state,
+
+            # FIX: Contract-required position_data (canonical publisher) — normalized list schema
+            "position_data": {"positions": pos_list, "count": len(pos_list)},
 
             # helpful aliases (explicitly returned to satisfy strict orchestrators)
             "current_positions": current_positions,

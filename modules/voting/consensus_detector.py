@@ -1,5 +1,5 @@
 """
-🤝 Enhanced Consensus Detector with SmartInfoBus Integration v3.1
+🤝 Enhanced Consensus Detector with SmartInfoBus Integration v3.2 - AUDIT FIXED
 Production-grade consensus analysis and agreement measurement for voting committees.
 """
 
@@ -97,12 +97,13 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
             }
         )
 
-        # Quality metrics
-        self.quality_metrics: Dict[str, float] = {
+        # Quality metrics - FIX #10: consensus_quality_metrics is now primary
+        self.consensus_quality_metrics: Dict[str, float] = {
             "coherence": 0.5, "stability": 0.5, "diversity": 0.5,
             "reliability": 0.5, "predictive_accuracy": 0.5,
             "temporal_consistency": 0.5, "overall_effectiveness": 0.5,
         }
+        self.quality_metrics: Dict[str, float] = self.consensus_quality_metrics  # alias for backward compat
 
         # Intelligence knobs
         self.consensus_intelligence: Dict[str, Any] = {
@@ -145,6 +146,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
         self.error_count: int = 0
         self.circuit_breaker_threshold: int = 5
         self.is_disabled: bool = False
+        self.last_failure_time: float = 0.0  # FIX #15: for circuit breaker persistence
 
         # Concurrency guard
         self._process_lock: asyncio.Lock = asyncio.Lock()
@@ -162,7 +164,7 @@ class ConsensusDetector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
 
         # Initialization thesis + early BUS publish
         self._generate_initialization_thesis()
-        version = getattr(self.metadata, "version", "3.1.0") if self.metadata else "3.1.0"
+        version = getattr(self.metadata, "version", "3.2.0") if self.metadata else "3.1.0"
         self.logger.info(
             format_operator_message(
                 icon="🤝",
@@ -286,6 +288,9 @@ Consensus Detector v3.1 Initialization:
                 if self.is_disabled:
                     return self._generate_disabled_response()
 
+                # FIX #2: Read kernel's decision_id for coordination
+                decision_id = self.smart_bus.get('kernel_decision_id', 'ConsensusDetector')
+                
                 voting_data = await self._get_comprehensive_voting_data()
                 await self._update_consensus_parameters_comprehensive(voting_data)
                 consensus_analysis = await self._perform_comprehensive_consensus_analysis(voting_data)
@@ -325,6 +330,8 @@ Consensus Detector v3.1 Initialization:
                             },
                         })
                     ),
+                    "decision_id": decision_id,  # FIX #2: Include decision_id for coordination
+                    "consensus_decision_id": decision_id,  # FIX: Contract-required namespaced decision_id
                     "_thesis": thesis,
                 }
 
@@ -983,19 +990,19 @@ Consensus Detector v3.1 Initialization:
                 mu = float(np.mean(vals))
                 std = float(np.std(vals))
                 coherence = float(np.clip(1.0 - (std / max(mu, 1e-6)), 0.0, 1.0))
-                self.quality_metrics["coherence"] = coherence
+                self.consensus_quality_metrics["coherence"] = coherence
                 q_parts.append(coherence)
 
             # stability
             if len(self.consensus_history) >= int(self.consensus_intelligence["stability_window"]):
                 recent = [float(e.get("consensus", 0.5)) for e in list(self.consensus_history)[-int(self.consensus_intelligence["stability_window"]):]]
                 stability = float(np.clip(1.0 - float(np.std(recent)), 0.0, 1.0))
-                self.quality_metrics["stability"] = stability
+                self.consensus_quality_metrics["stability"] = stability
                 q_parts.append(stability)
 
             # diversity
             diversity = await self._input_diversity(actions)
-            self.quality_metrics["diversity"] = diversity
+            self.consensus_quality_metrics["diversity"] = diversity
             q_parts.append(diversity)
 
             # reliability (confidence level + dispersion)
@@ -1003,19 +1010,19 @@ Consensus Detector v3.1 Initialization:
                 avg_c = float(np.mean(confidences))
                 disp = float(np.std(confidences))
                 reliability = float(np.clip((avg_c + (1.0 - disp)) / 2.0, 0.0, 1.0))
-                self.quality_metrics["reliability"] = reliability
+                self.consensus_quality_metrics["reliability"] = reliability
                 q_parts.append(reliability)
 
             # predictive accuracy (history)
             if len(self.prediction_history) >= 3:
                 pa = await self._prediction_accuracy()
-                self.quality_metrics["predictive_accuracy"] = pa
+                self.consensus_quality_metrics["predictive_accuracy"] = pa
                 q_parts.append(pa)
 
             # temporal consistency (autocorr proxy)
             if len(self.consensus_history) >= 5:
                 tc = await self._temporal_consistency_score()
-                self.quality_metrics["temporal_consistency"] = tc
+                self.consensus_quality_metrics["temporal_consistency"] = tc
                 q_parts.append(tc)
 
             overall = float(np.mean(q_parts)) if q_parts else 0.5
@@ -1034,7 +1041,7 @@ Consensus Detector v3.1 Initialization:
                 ],
                 dtype=np.float32,
             )
-            self.quality_metrics["overall_effectiveness"] = float(np.dot(weights, values))
+            self.consensus_quality_metrics["overall_effectiveness"] = float(np.dot(weights, values))
             return self.consensus_quality
         except Exception:
             return 0.5
@@ -1454,6 +1461,11 @@ Consensus Detector v3.1 Initialization:
             thesis=f"Quality metrics: {len(results['quality_metrics'])} dimensions")
             s("consensus_recommendations", results["consensus_recommendations"], module="ConsensusDetector",
             thesis=f"Recommendations: {len(results['consensus_recommendations'])}")
+            
+            # FIX #2: Publish decision_id for kernel coordination
+            if results.get("decision_id"):
+                s("consensus_decision_id", results["decision_id"], module="ConsensusDetector",
+                  thesis=f"Consensus decision ID: {results['decision_id']}")
         except Exception as e:
             ctx = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
             self.logger.error(f"SmartInfoBus update failed: {ctx}")
