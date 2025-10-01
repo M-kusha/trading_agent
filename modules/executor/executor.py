@@ -81,7 +81,23 @@ class Executor(BaseModule):
                 _cfg_ib = env_cfg.get("initial_balance", None)
             except Exception:
                 _cfg_ib = None
-        self.balance: float = float(10_000 if _cfg_ib is None else _cfg_ib)
+        # Additional fallbacks: try existing market_state/portfolio_metrics before defaulting
+        if _cfg_ib is None:
+            try:
+                ms = self.bus.get("market_state", "Executor", default=None)
+                if isinstance(ms, dict):
+                    _cfg_ib = ms.get("balance", None)
+            except Exception:
+                pass
+        if _cfg_ib is None:
+            try:
+                pm = self.bus.get("portfolio_metrics", "Executor", default=None)
+                if isinstance(pm, dict):
+                    _cfg_ib = pm.get("balance", None)
+            except Exception:
+                pass
+        # Final fallback aligns with environment default (envs/config.py: initial_balance=3000.0)
+        self.balance: float = float(3000.0 if _cfg_ib is None else _cfg_ib)
         self.equity: float = float(self.balance)
         self._last_equity: float = float(self.equity)
         self.positions: Dict[str, PositionSnap] = {}

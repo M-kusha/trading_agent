@@ -82,8 +82,8 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         
         # Advanced evolution tracking
         self.evolution_history = deque(maxlen=100)
-        self.thesis_genealogy = defaultdict(list)
-        self.successful_mutations = []
+        self.thesis_genealogy = defaultdict(lambda: deque(maxlen=50))  # FIX: prevent memory leak
+        self.successful_mutations = deque(maxlen=100)  # FIX: prevent memory leak
         self.failed_experiments = []
         
         # Enhanced analytics system
@@ -1663,6 +1663,12 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             self.smart_bus.set('evolution_history', results.get('evolution_history', []), module='ThesisEvolutionEngine', thesis='Evolution history update')
             self.smart_bus.set('thesis_recommendations', results.get('thesis_recommendations', []), module='ThesisEvolutionEngine', thesis='Recommendations update')
             self.smart_bus.set('market_thesis', thesis, module='ThesisEvolutionEngine', thesis='Thesis evolution summary')
+            # Ensure best_thesis is published (TradingModeManager requires this input)
+            best_thesis = results.get('best_thesis')
+            if best_thesis is None:
+                # Provide a safe default to satisfy contract; downstream can ignore/override
+                best_thesis = 'neutral'
+            self.smart_bus.set('best_thesis', best_thesis, module='ThesisEvolutionEngine', thesis='Best performing thesis')
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "smartinfobus_update")
             self.logger.error(f"SmartInfoBus update failed: {error_context}")

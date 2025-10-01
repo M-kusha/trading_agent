@@ -17,11 +17,25 @@ from collections import deque, defaultdict
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 
+# Import beautiful visualizer
+try:
+    from train.training_visualizer import BeautifulTrainingVisualizer as _BeautifulTrainingVisualizer
+    VISUALIZER_AVAILABLE = True
+    BeautifulTrainingVisualizer: Any = _BeautifulTrainingVisualizer
+except Exception:
+    VISUALIZER_AVAILABLE = False
+    # Fallback class to avoid None type errors
+    class _FallbackVisualizer:
+        def __init__(self, **kwargs): pass
+        def render_complete_display(self, *args, **kwargs): pass
+    BeautifulTrainingVisualizer = _FallbackVisualizer
+
 # ───────────────────────────────────────────────────────────────────
 # Resolve dependencies without type-identity collisions
 # Use "*_Cls" variables typed as Any to hold class refs (real or fallback)
 # ───────────────────────────────────────────────────────────────────
 from typing import Any
+from modules.utils.metrics_utils import sanitize_metrics
 
 SMARTINFOBUS_AVAILABLE = False
 MONITORING_AVAILABLE = False
@@ -173,11 +187,22 @@ class ModernEnhancedTrainingCallback(BaseCallback):
     """
 
     def __init__(self, total_timesteps: int, config: Any,
-                 metrics_broadcaster: Any = None, verbose: int = 1):
+                 metrics_broadcaster: Any = None, verbose: int = 1,
+                 use_beautiful_display: bool = True):
         super().__init__(verbose)
         self.total_timesteps = int(total_timesteps)
         self.config = config
         self.metrics_broadcaster = metrics_broadcaster
+        self.use_beautiful_display = use_beautiful_display and VISUALIZER_AVAILABLE
+
+        # Initialize beautiful visualizer
+        self.visualizer = None
+        if self.use_beautiful_display:
+            try:
+                self.visualizer = BeautifulTrainingVisualizer(config=config, terminal_width=120)
+            except Exception as e:
+                print(f"[WARN] Failed to initialize visualizer: {e}")
+                self.use_beautiful_display = False
 
         # Runtime state
         self.start_time: datetime = datetime.now()
@@ -187,6 +212,7 @@ class ModernEnhancedTrainingCallback(BaseCallback):
         self.episode_count: int = 0
         self.consecutive_failures: int = 0
         self.circuit_breaker_state = {"active": False, "failures": 0}
+        self.display_update_counter: int = 0
 
         # Rolling windows
         self.episode_rewards: Deque[float] = deque(maxlen=2000)
@@ -240,6 +266,7 @@ class ModernEnhancedTrainingCallback(BaseCallback):
         print(f"[STATS] Total timesteps: {total_timesteps:,}")
         print(f"🔗 SmartInfoBus v4.0: {'ENABLED' if SMARTINFOBUS_AVAILABLE else 'FALLBACK'}")
         print(f"[CHART] Monitoring: {'ENHANCED' if MONITORING_AVAILABLE else 'BASIC'}")
+        print(f"🎨 Beautiful Display: {'ENABLED' if self.use_beautiful_display else 'DISABLED'}")
         print(f"[CHART] Mode: {mode_str}")
         print("─" * 60)
 
@@ -285,7 +312,9 @@ class ModernEnhancedTrainingCallback(BaseCallback):
         try:
             # Throttled progress print
             now = datetime.now()
-            if (now - self.last_print_time).total_seconds() >= 10 or self.n_calls % 1000 == 0:
+            # Update display every 2 seconds for beautiful display, 10 seconds for basic
+            update_interval = 2 if self.use_beautiful_display else 10
+            if (now - self.last_print_time).total_seconds() >= update_interval:
                 self._print_enhanced_progress()
                 self.last_print_time = now
 
@@ -395,6 +424,25 @@ class ModernEnhancedTrainingCallback(BaseCallback):
 
     # ── Telemetry helpers ───────────────────────────────────────────
     def _print_enhanced_progress(self):
+        """Display beautiful training progress (or fallback to basic display)"""
+        # Use beautiful visualizer if available
+        if self.use_beautiful_display and self.visualizer:
+            try:
+                metrics = self._collect_enhanced_metrics()
+                self.visualizer.render_complete_display(self.smart_bus, metrics)
+            except Exception as e:
+                # Fallback to basic display on error
+                print(f"\n[WARN] Visualizer error: {e}")
+                import traceback
+                traceback.print_exc()
+                self.use_beautiful_display = False
+                self._print_basic_progress()
+        else:
+            # Fallback to basic progress display
+            self._print_basic_progress()
+
+    def _print_basic_progress(self):
+        """Basic text-based progress display (fallback)"""
         elapsed = (datetime.now() - self.start_time).total_seconds()
         progress = (self.n_calls / max(self.total_timesteps, 1)) * 100.0
 
@@ -437,7 +485,8 @@ class ModernEnhancedTrainingCallback(BaseCallback):
             "episode_reward_mean": float(np.mean(self.episode_rewards)) if self.episode_rewards else 0.0,
             "episode_reward_std": float(np.std(self.episode_rewards)) if self.episode_rewards else 0.0,
             "episode_reward_recent": float(np.mean(list(self.episode_rewards)[-10:])) if len(self.episode_rewards) >= 10 else 0.0,
-            "best_episode_reward": self.best_reward,
+            # Sanitize best reward to avoid -Infinity in JSON/logs
+            "best_episode_reward": (None if self.best_reward == -float("inf") else float(self.best_reward)),
             "current_episode_reward": self.current_episode_reward,
             "consecutive_failures": self.consecutive_failures,
             "circuit_breaker_active": self.circuit_breaker_state["active"],
@@ -452,7 +501,8 @@ class ModernEnhancedTrainingCallback(BaseCallback):
         # Model metrics (best-effort)
         m.update(self._extract_model_metrics())
 
-        return m
+        return sanitize_metrics(m)
+
 
     def _extract_environment_metrics(self) -> Dict[str, Any]:
         try:
@@ -623,7 +673,7 @@ class ModernEnhancedTrainingCallback(BaseCallback):
 
             if ep_rew > self.best_reward:
                 self.best_reward = ep_rew
-                print(f"\n[PARTY] NEW BEST REWARD: {ep_rew:.2f} (Episode {self.episode_count})")
+                # Disabled console output - using beautiful visualizer
                 try:
                     self.smart_bus.set(
                         "training_new_best",
@@ -634,10 +684,7 @@ class ModernEnhancedTrainingCallback(BaseCallback):
                 except Exception:
                     pass
 
-            if self.episode_count % 10 == 0:
-                recent = list(self.episode_rewards)[-10:]
-                avg10 = sum(recent) / len(recent)
-                print(f"\n[STATS] Episode {self.episode_count}: Reward={ep_rew:.2f}, Avg(10)={avg10:.2f}, Best={self.best_reward:.2f}")
+            # Episode stats disabled - using beautiful visualizer
 
             self.current_episode_reward = 0.0
             self.consecutive_failures = 0
@@ -688,8 +735,10 @@ class ModernEnhancedTrainingCallback(BaseCallback):
         if self.n_calls % 1000 == 0:
             try:
                 os.makedirs("logs/training", exist_ok=True)
+                # Sanitize combined payload before writing to avoid NaN/Inf in JSON
+                payload = {**sanitize_metrics(metrics), "snapshot": snap}
                 with open(f"logs/training/enhanced_metrics_{datetime.now():%Y%m%d}.jsonl", "a") as f:
-                    f.write(json.dumps({**metrics, "snapshot": snap}, default=str) + "\n")
+                    f.write(json.dumps(payload, default=str) + "\n")
             except Exception:
                 pass
 

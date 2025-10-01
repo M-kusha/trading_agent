@@ -24,6 +24,7 @@ from collections import deque, defaultdict
 from modules.core.module_base import BaseModule, module
 from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
 from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.utils.session_utils import normalize_session_name, classify_session
 from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
@@ -441,7 +442,20 @@ class ShadowSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMix
             # Derived context
             mc = data['market_context']
             data['regime']           = mc.get('regime', 'unknown')
-            data['session']          = mc.get('session', 'unknown')
+            # Prefer canonical session from session_data/current_session; else market_context; else infer
+            sess_src = None
+            try:
+                sess_data = self.smart_bus.get('session_data', 'ShadowSimulator') or {}
+                if isinstance(sess_data, dict):
+                    sess_src = sess_data.get('current_session') or sess_data.get('session_canonical')
+            except Exception:
+                sess_src = None
+            if not sess_src:
+                sess_src = mc.get('session')
+            if not isinstance(sess_src, str) or not sess_src or sess_src.lower() == 'unknown':
+                now = datetime.datetime.utcnow()
+                sess_src = classify_session(hour=now.hour, weekend=(now.weekday() in (5,6)))
+            data['session'] = normalize_session_name(str(sess_src))
             data['volatility_level'] = mc.get('volatility_level', 'medium')
 
             # Extract volatility (optional)

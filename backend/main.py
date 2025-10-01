@@ -1609,7 +1609,7 @@ async def startup_event():
         "logs", "logs/training", "logs/risk", "logs/simulation",
         "logs/strategy", "logs/position", "logs/tensorboard",
         "logs/evaluation", "logs/monitoring",
-        "checkpoints", "models", "models/best", "data", "data/processed",
+        "models", "models/best", "data", "data/processed",
         "metrics"
     ]
     for dir_path in directories:

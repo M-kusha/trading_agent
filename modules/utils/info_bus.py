@@ -89,7 +89,7 @@ class InfoBusConfig:
 
     # Data management
     max_data_age_seconds: int = 600  # 10 minutes
-    max_history_versions: int = 2000
+    max_history_versions: int = 50   # Reduced from 2000 to prevent memory accumulation
     cleanup_interval_seconds: int = 45
     integrity_validation: bool = True
     auto_cleanup: bool = True
@@ -534,12 +534,12 @@ class SmartInfoBus:
             self._consumers: Dict[str, Set[str]] = defaultdict(set)
             self._module_graph: Dict[str, Set[str]] = defaultdict(set)
 
-            # Perf stats
+            # Perf stats (reduced sizes to prevent memory accumulation)
             self._access_patterns = defaultdict(lambda: defaultdict(int))
-            self._latency_history = defaultdict(lambda: deque(maxlen=5000))
+            self._latency_history = defaultdict(lambda: deque(maxlen=500))      # Reduced from 5000
             self._cache_hits = 0
             self._cache_misses = 0
-            self._operation_timings = defaultdict(lambda: deque(maxlen=2000))
+            self._operation_timings = defaultdict(lambda: deque(maxlen=500))    # Reduced from 2000
             self._memory_usage_history = deque(maxlen=200)
             self._cpu_usage_history = deque(maxlen=200)
             self._predictive_metrics = {}
@@ -552,10 +552,10 @@ class SmartInfoBus:
             self._circuit_breakers: Dict[str, CircuitBreakerState] = defaultdict(CircuitBreakerState)
             self._module_disabled: Set[str] = set()
 
-            # Requests & waiters
-            self._pending_requests: List[DataRequest] = []
-            self._request_history: deque = deque(maxlen=10000)
-            self._waiters: Dict[str, List[Tuple[threading.Event, Optional[Callable[[Any], bool]], Dict[str, Any]]]] = defaultdict(list)
+            # Requests & waiters (BOUNDED to prevent memory leaks)
+            self._pending_requests: deque = deque(maxlen=1000)  # Was unbounded List
+            self._request_history: deque = deque(maxlen=1000)   # Reduced from 10000
+            self._waiters: Dict[str, deque] = defaultdict(lambda: deque(maxlen=100))  # Was unbounded List
 
             # Quality / Validation
             self._validation_enabled = self.config.validation_enabled
@@ -589,10 +589,10 @@ class SmartInfoBus:
             self._cleanup_interval = 60
             self._thread_pool = ThreadPoolExecutor(max_workers=self.config.background_thread_count, thread_name_prefix="InfoBus")
 
-            # Async task management
-            self._pending_tasks: Set[asyncio.Task[Any]] = set()
+            # Async task management (BOUNDED to prevent accumulation)
+            self._pending_tasks: Set["asyncio.Task[Any]"] = set()  # Track async tasks
             # [FIXED] Corrected type hint from asyncio.Future to concurrent.futures.Future
-            self._pending_async_ops: List[Future[Any]] = []
+            self._pending_async_ops: deque = deque(maxlen=500)  # Was unbounded List
             self._shutdown_event = asyncio.Event()
             # [FIXED] Changed from asyncio.Lock to a thread-safe RLock
             self._async_lock = threading.RLock()
@@ -625,7 +625,7 @@ class SmartInfoBus:
             # Ownership registry and policies (lightweight, in-memory)
             self._owners: Dict[str, str] = {}
             self._policies: Dict[str, Dict[str, Any]] = defaultdict(dict)
-            self._streams: Dict[str, Deque[Dict[str, Any]]] = defaultdict(lambda: deque(maxlen=10000))
+            self._streams: Dict[str, Deque[Dict[str, Any]]] = defaultdict(lambda: deque(maxlen=1000))  # Reduced from 10000
 
             # Default stream-like feeds (multi-writer, append-only)
             # Note: keep 'vote' as a stream; 'expert_votes' is a canonical snapshot
@@ -672,7 +672,7 @@ class SmartInfoBus:
             self.register_pre_set_hook(_single_writer_guard)
 
             # Rate-limiting
-            self._rate_counters: DefaultDict[str, Deque[float]] = defaultdict(lambda: deque(maxlen=10000))
+            self._rate_counters: DefaultDict[str, Deque[float]] = defaultdict(lambda: deque(maxlen=1000))  # Reduced from 10000
 
             # Transactions
             self._tx_local = threading.local()
@@ -2264,8 +2264,12 @@ class SmartInfoBus:
 
                         fulfilled.append(i)
 
+                # Convert to list for indexed removal, then back to deque
+                req_list = list(self._pending_requests)
                 for i in reversed(fulfilled):
-                    self._pending_requests.pop(i)
+                    req_list.pop(i)
+                self._pending_requests.clear()
+                self._pending_requests.extend(req_list)
 
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to check pending requests: {e}")
@@ -2317,7 +2321,8 @@ class SmartInfoBus:
                         active.append(req)
                     else:
                         expired += 1
-                self._pending_requests = active
+                self._pending_requests.clear()
+                self._pending_requests.extend(active)
                 if expired > 0:
                     self.logger.debug(f"🕒 Removed {expired} expired requests")
         except Exception as e:

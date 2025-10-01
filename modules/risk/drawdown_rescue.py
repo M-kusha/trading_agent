@@ -26,6 +26,7 @@ from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
+from modules.utils.circuit_breaker_utils import migrate_dict_breaker
 
 
 # ─────────────────────────────────────────────────────────────
@@ -101,6 +102,8 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
 
         # Initialize low-level systems BEFORE BaseModule may call _initialize()
         self._initialize_advanced_systems()
+        # Debug flag for conditional logging in methods
+        self.debug: bool = bool(getattr(self, "debug", False))
 
         # Circuit breaker & health state
         self.circuit_breaker = {
@@ -631,6 +634,37 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
 
             # Context thresholds
             context_thresholds = self._calculate_context_adjusted_thresholds(market_context)
+
+            # ═══════════════════════════════════════════════════════════════════
+            # TRADING MODE MANAGER INTEGRATION
+            # Use mode's drawdown_limit as reference threshold
+            # ═══════════════════════════════════════════════════════════════════
+            try:
+                mode_config = self.smart_bus.get('mode_config', 'DrawdownRescue') or {}
+                trading_mode = self.smart_bus.get('trading_mode', 'DrawdownRescue') or 'normal'
+                mode_drawdown_limit = float(mode_config.get('drawdown_limit', 0.10))
+
+                # Adjust our thresholds based on mode's limits
+                if 'critical_threshold' in context_thresholds:
+                    # Mode's limit becomes our critical threshold
+                    context_thresholds['critical_threshold'] = mode_drawdown_limit
+                    context_thresholds['warning_threshold'] = mode_drawdown_limit * 0.8
+                    context_thresholds['alert_threshold'] = mode_drawdown_limit * 0.6
+
+                    if self.debug and self.current_dd > mode_drawdown_limit * 0.5:
+                        self.logger.info(format_operator_message(
+                            icon="🎛️",
+                            message="Trading mode drawdown limit integrated",
+                            mode=trading_mode,
+                            mode_limit=f"{mode_drawdown_limit:.1%}",
+                            current_dd=f"{self.current_dd:.1%}",
+                            proximity=f"{(self.current_dd / mode_drawdown_limit):.1%}"
+                        ))
+
+            except Exception as e:
+                if self.debug:
+                    self.logger.warning(f"Trading mode integration failed in drawdown rescue: {e}")
+            # ═══════════════════════════════════════════════════════════════════
 
             # Severity
             severity_assessment = self._assess_drawdown_severity(velocity_metrics, context_thresholds)

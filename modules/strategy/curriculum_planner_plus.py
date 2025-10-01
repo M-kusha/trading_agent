@@ -58,7 +58,7 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         
         # Core curriculum state
         self.episode_history = deque(maxlen=self.window)
-        self.performance_metrics = defaultdict(list)
+        self.performance_metrics = defaultdict(lambda: deque(maxlen=100))  # FIX: prevent memory leak
         self.curriculum_stages = self._initialize_progressive_curriculum()
         self.current_stage = 0
         self.stage_progress = 0.0

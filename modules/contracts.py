@@ -534,10 +534,20 @@ CONTRACTS: Dict[str, ModuleContract] = {
         # removed 'performance_data' to avoid duplicate writer with SessionManager
         provides=['decision_factors', 'mode_config', 'mode_effectiveness', 'mode_stats', 'mode_thresholds',
                   'trading_mode', 'trading_mode_manager_initialization'],
-        requires=['economic_calendar', 'market_context', 'market_regime', 'positions', 'recent_trades', 'risk_metrics',
-                  'session_metrics', 'strategy_performance', 'trading_performance', 'volatility_data', 'votes'],
+        requires=[
+            # Original required keys
+            'economic_calendar', 'market_context', 'market_regime', 'positions', 'recent_trades', 'risk_metrics',
+            'session_metrics', 'strategy_performance', 'trading_performance', 'volatility_data', 'votes',
+            # Enhanced integrations (optional but beneficial)
+            'execution_quality', 'risk_alerts', 'anomaly_detection', 'portfolio_risk', 'drawdown_risk',
+            'risk_scaling', 'anomaly_score', 'consensus_score', 'consensus_quality', 'committee_confidence',
+            'committee_decision', 'collusion_score', 'member_confidences', 'market_predictions',
+            'shadow_predictions', 'theme_detection', 'liquidity_score', 'regime_prediction',
+            'prediction_confidence', 'bias_analysis', 'adaptation_recommendations', 'market_thesis'
+            # Note: 'best_thesis' removed from required - it's optional with fallback logic in code
+        ],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
-              'category': 'trading_modes', 'version': '3.0.0'}
+              'category': 'trading_modes', 'version': '3.1.0'}
     ),
 
     # ═══════════════════════════════ REWARD ══════════════════════════════════

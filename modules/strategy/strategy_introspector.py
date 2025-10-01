@@ -660,15 +660,27 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
         else:
             metrics['profit_factor'] = 1.0 if profits else 0.0
         
-        # Maximum drawdown
+        # Maximum drawdown (fixed to handle negative peaks properly)
         cumulative_pnl = np.cumsum(pnls)
         peak = cumulative_pnl[0]
         max_drawdown = 0.0
         for value in cumulative_pnl:
             peak = max(peak, value)
-            drawdown = (peak - value) / abs(peak) if peak != 0 else 0
+            # Proper drawdown calculation that handles negative peaks
+            # When peak > 0: standard drawdown = (peak - value) / peak
+            # When peak <= 0: we measure absolute distance as percentage of initial capital (assumed 10000)
+            if peak > 0:
+                drawdown = (peak - value) / peak if value < peak else 0.0
+            elif peak == 0:
+                drawdown = 0.0
+            else:
+                # For negative peaks, cap drawdown at 1.0 (100%)
+                # This prevents unrealistic >100% drawdowns from negative compounding
+                drawdown = min(1.0, abs(value - peak) / 10000.0)
             max_drawdown = max(max_drawdown, drawdown)
-        metrics['max_drawdown'] = max_drawdown
+        
+        # Ensure drawdown doesn't exceed 100% (which is account wipeout)
+        metrics['max_drawdown'] = min(max_drawdown, 1.0)
         
         # Consistency score
         if len(pnls) >= 5:
@@ -1323,12 +1335,20 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             
             # Log significant performance issues
             max_drawdown = performance_analysis.get('max_drawdown', 0.0)
+            # Ensure drawdown is within valid range [0.0, 1.0]
+            max_drawdown = max(0.0, min(1.0, max_drawdown))
+            
             if max_drawdown > 0.1:
+                severity = "CRITICAL" if max_drawdown > 0.5 else "HIGH" if max_drawdown > 0.3 else "MODERATE"
+                drawdown_info = {
+                    "drawdown": f"{max_drawdown:.1%}",
+                    "severity": severity,
+                    "action": "immediate_review_required" if max_drawdown > 0.5 else "review_recommended"
+                }
                 self.logger.error(format_operator_message(
                     icon="📉",
                     message="High drawdown detected",
-                    drawdown=f"{max_drawdown:.1%}",
-                    action="immediate_review_required"
+                    **drawdown_info
                 ))
             
             # Log interesting behavioral patterns

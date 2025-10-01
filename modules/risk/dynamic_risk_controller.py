@@ -118,9 +118,12 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
             self._risk_quality = 0.5
             # Provide a SmartInfoBus reference for early _initialize bus writes
             self.smart_bus = InfoBusManager.get_instance()
+            # Debug flag for conditional logging
+            self.debug: bool = bool(getattr(self, "debug", False))
         except Exception:
             # Best-effort defaults; _initialize is guarded with try/except
-            pass
+            if not hasattr(self, "debug"):
+                self.debug = False
 
         # Preserve our typed config before BaseModule init
         original_cfg = self._cfg
@@ -928,6 +931,58 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
             factor_results["liquidity"] = await self._update_liquidity_factor_async(risk_data)
             factor_results["news_sentiment"] = await self._update_news_sentiment_factor_async(risk_data)
             factor_results["portfolio_concentration"] = await self._update_portfolio_concentration_factor_async(risk_data)
+
+            # ═══════════════════════════════════════════════════════════════════
+            # TRADING MODE MANAGER INTEGRATION
+            # Adjust risk factors based on trading mode and decision factors
+            # ═══════════════════════════════════════════════════════════════════
+            try:
+                mode_config = self.smart_bus.get('mode_config', 'DynamicRiskController') or {}
+                decision_factors = self.smart_bus.get('decision_factors', 'DynamicRiskController') or {}
+                trading_mode = self.smart_bus.get('trading_mode', 'DynamicRiskController') or 'normal'
+
+                mode_risk_score = float(decision_factors.get('risk_score', 0.5))
+                mode_drawdown_limit = float(mode_config.get('drawdown_limit', 0.10))
+
+                # If TradingModeManager sees low risk (risk_score < 0.5), tighten our limits
+                if mode_risk_score < 0.5:
+                    tightening_factor = 0.7 + (mode_risk_score * 0.6)  # 0.7 to 1.0
+                    for factor_name in ['drawdown', 'volatility', 'losing_streak']:
+                        if factor_name in self.risk_factors:
+                            self.risk_factors[factor_name] *= tightening_factor
+
+                    if self.debug:
+                        self.logger.info(format_operator_message(
+                            icon="🎛️",
+                            message="Trading mode risk tightening applied",
+                            mode=trading_mode,
+                            mode_risk_score=f"{mode_risk_score:.2f}",
+                            tightening=f"{tightening_factor:.2f}x",
+                            affected_factors=['drawdown', 'volatility', 'losing_streak']
+                        ))
+
+                # Use mode's drawdown_limit to influence our drawdown factor
+                if 'drawdown' in self.risk_factors:
+                    current_dd = float(risk_data.get('drawdown', 0.0))
+                    if current_dd > mode_drawdown_limit * 0.8:  # Approaching mode limit
+                        proximity = current_dd / mode_drawdown_limit
+                        penalty = max(0.5, 1.0 - (proximity - 0.8) * 2.0)
+                        self.risk_factors['drawdown'] *= penalty
+
+                        if self.debug:
+                            self.logger.info(format_operator_message(
+                                icon="⚠️",
+                                message="Mode drawdown limit proximity penalty",
+                                mode=trading_mode,
+                                current_dd=f"{current_dd:.1%}",
+                                mode_limit=f"{mode_drawdown_limit:.1%}",
+                                penalty=f"{penalty:.2f}x"
+                            ))
+
+            except Exception as e:
+                if self.debug:
+                    self.logger.warning(f"Trading mode integration failed in risk adjustment: {e}")
+            # ═══════════════════════════════════════════════════════════════════
 
             # Calculate preliminary risk scale
             preliminary_scale = await self._calculate_preliminary_risk_scale_async()

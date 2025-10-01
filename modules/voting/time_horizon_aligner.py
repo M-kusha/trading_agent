@@ -22,6 +22,7 @@ from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.health_monitor import HealthMonitor
 from modules.monitoring.performance_tracker import PerformanceTracker
+from modules.utils.session_utils import normalize_session_name
 
 
 @module(**module_args(
@@ -74,12 +75,13 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'unknown': np.ones_like(self.horizons)
         }
 
-        # session patterns (includes 'overlap')
+        # session patterns (includes 'overlap'); add 'closed' canonical
         self.session_patterns = {
             'american': np.ones_like(self.horizons),
             'european': np.ones_like(self.horizons),
             'asian': np.ones_like(self.horizons),
-            'rollover': np.ones_like(self.horizons),
+            'closed': np.ones_like(self.horizons),
+            'rollover': np.ones_like(self.horizons),  # legacy alias
             'weekend': np.ones_like(self.horizons),
             'overlap': np.ones_like(self.horizons),
             'unknown': np.ones_like(self.horizons)
@@ -346,16 +348,7 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
     # ----------------------- MARKET/SESSION STATE ----------------------
     def _normalize_session(self, s: Optional[str]) -> str:
-        s = (s or 'unknown').lower()
-        mapping = {
-            'us': 'american', 'americas': 'american', 'ny': 'american', 'new_york': 'american',
-            'eu': 'european', 'london': 'european', 'europe': 'european',
-            'asia': 'asian', 'apac': 'asian', 'tokyo': 'asian',
-            'overlap': 'overlap', 'london_newyork_overlap': 'overlap', 'ny_london_overlap': 'overlap',
-            'roll': 'rollover', 'rollover': 'rollover',
-            'weekend': 'weekend'
-        }
-        return mapping.get(s, s if s in mapping.values() else 'unknown')
+        return normalize_session_name(s)
 
     def _safe_session_vector(self, session: Optional[str] = None) -> np.ndarray:
         key = self._normalize_session(session or self.current_session)

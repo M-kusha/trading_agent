@@ -125,7 +125,7 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
         
         # Enhanced tracking systems
         self.clustering_history = deque(maxlen=100)
-        self.performance_tracking = defaultdict(list)
+        self.performance_tracking = defaultdict(lambda: deque(maxlen=100))  # FIX: prevent memory leak
         self._last_fit_meta = {}
         self._last_recall_meta = {}
         
@@ -1498,7 +1498,7 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                 
                 # Track usage patterns
                 if not hasattr(self, '_cluster_usage_history'):
-                    self._cluster_usage_history = defaultdict(list)
+                    self._cluster_usage_history = defaultdict(lambda: deque(maxlen=100))  # FIX: prevent memory leak
                 
                 try:
                     log_w = np.log(weights + 1e-8)
@@ -1513,9 +1513,7 @@ class PlaybookClusterer(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
                     'market_regime': self.smart_bus.get('market_regime', 'PlaybookClusterer') or 'unknown'
                 })
                 
-                # Trim history to prevent memory growth
-                if len(self._cluster_usage_history[cluster_id]) > 100:
-                    self._cluster_usage_history[cluster_id] = self._cluster_usage_history[cluster_id][-100:]
+                # History automatically trimmed by deque maxlen=100
             
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "cluster_usage_tracking")

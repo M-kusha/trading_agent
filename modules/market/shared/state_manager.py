@@ -68,8 +68,7 @@ class StateManager:
         # Checkpoint management
         self._checkpoints: Dict[str, Dict[str, Any]] = {}
         base_dir = Path(checkpoint_dir) if checkpoint_dir else Path("state/market/checkpoints")
-        self._checkpoint_dir = base_dir
-        self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self._checkpoint_dir = base_dir  # Lazy creation on first write
         self._checkpoint_format = checkpoint_format.lower()
         self._compression = bool(compression)
 
@@ -307,6 +306,8 @@ class StateManager:
         return self._checkpoint_dir / f"{name}{suf}"
 
     def _save_checkpoint_to_disk(self, name: str, checkpoint: Dict[str, Any]):
+        # Ensure directory exists lazily to avoid creating empty folders when unused
+        self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
         path = self._checkpoint_path(name)
         try:
             if self._checkpoint_format == "pickle":

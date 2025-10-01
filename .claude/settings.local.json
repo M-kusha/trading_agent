@@ -3,7 +3,11 @@
     "allow": [
       "Bash(rg:*)",
       "Bash(python:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(cp:*)",
+      "Bash(awk:*)",
+      "WebSearch",
+      "Bash(del test_visualizer.py)"
     ],
     "deny": [],
     "ask": []

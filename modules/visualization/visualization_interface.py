@@ -1180,14 +1180,8 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
                 if src:
                     fb_tag = f" [fallback:{src}]"
 
-            print(
-                f"[VizInterface] Step {record.get('step', 0)} | "
-                f"Balance: ${balance:.2f}{fb_tag} | "
-                f"P&L: ${pnl:+.2f} | "
-                f"DD: {drawdown:.1%} | "
-                f"Pos: {positions} | "
-                f"Regime: {regime}"
-            )
+            # Disabled - using beautiful visualizer instead
+            pass
 
         except Exception as e:
             self.logger.warning(f"Summary printing failed: {e}")

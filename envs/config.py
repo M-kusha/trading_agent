@@ -53,7 +53,7 @@ class TradingConfig:
     # Core Environment Parameters (fallbacks)
     # ===================================================================
     initial_balance: float = 3000.0
-    max_steps: int = 10000
+    max_steps: int = 100000  # increase default episode length to reduce frequent resets
     debug: bool = True
     init_seed: int = 42
     max_steps_per_episode: int = field(init=False)
@@ -77,6 +77,10 @@ class TradingConfig:
     # so decision modules (e.g., PositionManager) can enqueue orders before the
     # env collects intents. Keeps bus-first async behavior, but reduces empty cycles.
     orchestrator_sync_wait_ms: float = 25.0
+    # Limit the number of concurrent orchestrator executions scheduled by the env
+    orchestrator_max_inflight: int = 1
+    # Only schedule orchestrator once every N env steps (1 = every step)
+    orchestrator_step_interval: int = 1
 
     # Bus-first policy toggles (single source of truth = modules via SmartInfoBus)
     bus_first: bool = True
@@ -294,6 +298,15 @@ class TradingConfig:
         self.orchestrator_init_timeout = max(0.0, float(self.orchestrator_init_timeout))
         # Clamp small sync wait (non-blocking feel). Set 0 to fully disable waiting.
         self.orchestrator_sync_wait_ms = max(0.0, float(self.orchestrator_sync_wait_ms))
+        # Backpressure / pacing
+        try:
+            self.orchestrator_max_inflight = max(1, int(self.orchestrator_max_inflight))
+        except Exception:
+            self.orchestrator_max_inflight = 1
+        try:
+            self.orchestrator_step_interval = max(1, int(self.orchestrator_step_interval))
+        except Exception:
+            self.orchestrator_step_interval = 1
         self.risk_check_frequency = max(1, int(self.risk_check_frequency))
         self.risk_alert_cooldown = max(0, int(self.risk_alert_cooldown))
         self.max_concurrent_alerts = max(1, int(self.max_concurrent_alerts))
@@ -303,7 +316,7 @@ class TradingConfig:
 
         # Ensure directories exist
         all_dirs = [
-            self.log_dir, self.checkpoint_dir, self.model_dir,
+            self.log_dir, self.model_dir,
             self.tensorboard_dir, self.data_dir, self.info_bus_log_dir,
             self.audit_log_dir, self.operator_log_dir
         ]
@@ -313,7 +326,7 @@ class TradingConfig:
         # Create module-specific log directories
         module_log_dirs = [
             "logs/trading", "logs/risk", "logs/strategy", "logs/memory",
-            "logs/voting", "logs/market", "logs/position", "logs/features", "logs/meta"
+            "logs/voting", "logs/position", "logs/features", "logs/meta"
         ]
         for directory in module_log_dirs:
             _ensure_dir(directory)

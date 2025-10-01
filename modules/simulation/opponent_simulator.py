@@ -396,8 +396,13 @@ class OpponentSimulator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateM
 
             # Normalize convenient fields we use elsewhere
             mc = data['market_context'] or {}
+            from modules.utils.session_utils import normalize_session_name, classify_session
             data['regime']           = mc.get('regime') or (data['regime_data'] or {}).get('regime', 'unknown')
-            data['session']          = mc.get('session') or (data['session_data'] or {}).get('session', 'unknown')
+            sess_src = mc.get('session') or (data['session_data'] or {}).get('current_session') or (data['session_data'] or {}).get('session')
+            if not isinstance(sess_src, str) or not sess_src or sess_src.lower() == 'unknown':
+                now = datetime.datetime.utcnow()
+                sess_src = classify_session(hour=now.hour, weekend=(now.weekday() in (5,6)))
+            data['session'] = normalize_session_name(str(sess_src))
             data['volatility_level'] = mc.get('volatility_level', 'medium')
 
             # Track current volatility for reports

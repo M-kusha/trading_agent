@@ -13,6 +13,7 @@ from collections.abc import Mapping as AbcMapping, Sequence as AbcSequence
 from typing import cast
 
 import numpy as np
+from modules.utils.session_utils import normalize_session_name
 
 
 Number = Union[int, float, np.number]
@@ -52,10 +53,10 @@ class UnifiedFeatureExtractor:
             "unknown": np.array([0.33, 0.33, 0.33], dtype=np.float32),
         }
 
+        # Canonical session one-hot (asian, european, american, closed)
         self.session_map: Dict[str, np.ndarray] = {
             "asian": np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
             "european": np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32),
-            "us": np.array([0.0, 0.0, 1.0, 0.0], dtype=np.float32),
             "american": np.array([0.0, 0.0, 1.0, 0.0], dtype=np.float32),
             "closed": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
             "unknown": np.array([0.25, 0.25, 0.25, 0.25], dtype=np.float32),
@@ -147,8 +148,9 @@ class UnifiedFeatureExtractor:
             vol_val = float(vol) if isinstance(vol, (int, float, np.number)) else 0.5
         feats.append(vol_val)
 
-        # Session (4)
-        session = str(market_context.get("session", "unknown")).lower()
+        # Session (4) – prefer canonical keys
+        raw_session = market_context.get("current_session") or market_context.get("session_canonical") or market_context.get("session")
+        session = normalize_session_name(str(raw_session) if raw_session is not None else "unknown")
         feats.extend(self.session_map.get(session, self.session_map["unknown"]))
 
         # Risk metrics (2)
@@ -278,7 +280,7 @@ class UnifiedFeatureExtractor:
         # Market features (10)
         names.extend(["regime_trending", "regime_volatile", "regime_ranging"])  # 3
         names.append("volatility")  # 1 -> 4
-        names.extend(["session_asian", "session_european", "session_us", "session_closed"])  # +4 -> 8
+        names.extend(["session_asian", "session_european", "session_american", "session_closed"])  # +4 -> 8
         names.extend(["drawdown_pct", "exposure_pct"])  # +2 -> 10
 
         # Trade features (10)

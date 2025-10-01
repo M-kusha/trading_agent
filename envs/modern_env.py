@@ -113,6 +113,15 @@ class ModernTradingEnv(gym.Env):
         self._pend_lock = threading.Lock()
         self._bus_ready = threading.Event()
         self._orch_ready = threading.Event()
+        # Backpressure controls (defaults guarded via config where available)
+        try:
+            self._orch_inflight_limit = int(getattr(self.config, "orchestrator_max_inflight", 1) or 1)
+        except Exception:
+            self._orch_inflight_limit = 1
+        try:
+            self._orch_step_interval = int(getattr(self.config, "orchestrator_step_interval", 1) or 1)
+        except Exception:
+            self._orch_step_interval = 1
 
         # Bring systems up
         self._initialize_systems()
@@ -123,6 +132,15 @@ class ModernTradingEnv(gym.Env):
         self.data = copy.deepcopy(data_dict)
         self.instruments: List[str] = list(self.data.keys())
         self._validate_data()
+
+        # Track minimum available data length across all instruments/timeframes
+        try:
+            self._min_data_len = min(
+                (len(df) for inst in self.instruments for df in self.data[inst].values()),
+                default=0,
+            )
+        except Exception:
+            self._min_data_len = 0
 
         if not self.instruments:
             raise ValueError("No instruments provided to ModernTradingEnv")
@@ -404,6 +422,15 @@ class ModernTradingEnv(gym.Env):
         self.episode_metrics = EpisodeMetrics()
         self.data = copy.deepcopy(self.orig_data)
 
+        # Recompute minimum data length on each reset (in case of hot-reload)
+        try:
+            self._min_data_len = min(
+                (len(df) for inst in self.instruments for df in self.data[inst].values()),
+                default=0,
+            )
+        except Exception:
+            self._min_data_len = 0
+
         initial_balance = float(self.config.initial_balance)
         self.market_state = MarketState(balance=initial_balance, peak_balance=initial_balance, current_step=self._select_starting_step(), current_drawdown=0.0)
         self.current_step = int(self.market_state.current_step)
@@ -465,6 +492,23 @@ class ModernTradingEnv(gym.Env):
         }
         return obs, info
 
+    def _cleanup_pending_futures(self):
+        """Remove completed futures from tracking to prevent memory accumulation"""
+        try:
+            with self._pend_lock:
+                # Remove completed futures
+                completed = {f for f in self._pending_futures if f.done()}
+                self._pending_futures -= completed
+
+                # Warn if accumulating
+                pending_count = len(self._pending_futures)
+                if pending_count > 10:
+                    self.logger.warning(
+                        f"[PERF] Pending futures accumulating: {pending_count} futures still pending"
+                    )
+        except Exception as e:
+            self.logger.error(f"Failed to cleanup pending futures: {e}")
+
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         # normalize action
         if not isinstance(action, np.ndarray):
@@ -473,6 +517,10 @@ class ModernTradingEnv(gym.Env):
 
         self.current_step += 1
         self.market_state.current_step = int(self.current_step)
+
+        # Cleanup pending futures every 5 steps to prevent accumulation
+        if self.current_step % 5 == 0:
+            self._cleanup_pending_futures()
 
         # publish action & legacy alias
         try:
@@ -567,15 +615,33 @@ class ModernTradingEnv(gym.Env):
             except Exception:
                 pass
 
-        # Non-blocking orchestrator execution
+        # Non-blocking orchestrator execution (with simple backpressure)
         if self.orchestrator_enabled and self.orchestrator and hasattr(self.orchestrator, "execute_step"):
-            self._run_orchestrator_step({})
             try:
-                wait_ms = float(getattr(self.config, "orchestrator_sync_wait_ms", 0.0) or 0.0)
-                if wait_ms > 0:
-                    time.sleep(min(wait_ms, 200.0) / 1000.0)
+                interval = int(getattr(self.config, "orchestrator_step_interval", self._orch_step_interval) or self._orch_step_interval)
             except Exception:
-                pass
+                interval = self._orch_step_interval
+
+            should_fire_this_step = (interval <= 1) or (self.current_step % max(1, interval) == 0)
+
+            can_schedule = False
+            if should_fire_this_step:
+                try:
+                    with self._pend_lock:
+                        inflight = len(self._pending_futures)
+                    limit = max(1, int(getattr(self.config, "orchestrator_max_inflight", self._orch_inflight_limit) or self._orch_inflight_limit))
+                    can_schedule = inflight < limit
+                except Exception:
+                    can_schedule = True  # be permissive if check fails
+
+            if can_schedule:
+                self._run_orchestrator_step({})
+                try:
+                    wait_ms = float(getattr(self.config, "orchestrator_sync_wait_ms", 0.0) or 0.0)
+                    if wait_ms > 0:
+                        time.sleep(min(wait_ms, 200.0) / 1000.0)
+                except Exception:
+                    pass
 
         # Reward shaping (bus-first)
         reward: Optional[float] = None
@@ -832,6 +898,12 @@ class ModernTradingEnv(gym.Env):
         # 3) Apply limits and step bounds
         if self.market_state.current_drawdown > dd_limit:
             return True, False
+        # Respect dataset boundary to avoid premature resets when max_steps is large
+        try:
+            if self._min_data_len and int(self.current_step) >= int(self._min_data_len) - 1:
+                return False, True
+        except Exception:
+            pass
         if int(self.current_step) >= int(self.config.max_steps):
             return False, True
         if self.market_state.balance <= 0:

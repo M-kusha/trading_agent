@@ -112,6 +112,8 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             operator_mode=True,
             plain_english=True
         )
+        # Debug flag for conditional logging (type-safe for linters)
+        self.debug: bool = bool(getattr(self, "debug", False))
         # - Minimal state referenced by _initialize
         self.current_mode = ExecutionMode.TRAINING if self.training_mode else ExecutionMode.NORMAL
         self.mode_start_time = datetime.datetime.now()
@@ -316,6 +318,50 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
 
             # Update market context
             context_result = await self._update_market_context_async(execution_data)
+
+            # ═══════════════════════════════════════════════════════════════════
+            # TRADING MODE MANAGER INTEGRATION
+            # Adjust quality thresholds based on trading mode
+            # ═══════════════════════════════════════════════════════════════════
+            try:
+                mode_config = self.smart_bus.get('mode_config', 'ExecutionQualityMonitor') or {}
+                trading_mode = self.smart_bus.get('trading_mode', 'ExecutionQualityMonitor') or 'normal'
+                mode_effectiveness = self.smart_bus.get('mode_effectiveness', 'ExecutionQualityMonitor') or 0.5
+
+                # In safe mode or low effectiveness, tighten quality requirements
+                if trading_mode == 'safe' or mode_effectiveness < 0.4:
+                    tightening_factor = 0.8  # Stricter thresholds
+                    self._adaptive_params['dynamic_threshold_scaling'] = tightening_factor
+
+                    if self.debug:
+                        self.logger.info(format_operator_message(
+                            icon="🎛️",
+                            message="Trading mode quality tightening",
+                            mode=trading_mode,
+                            effectiveness=f"{mode_effectiveness:.2f}",
+                            threshold_scaling=f"{tightening_factor:.2f}x"
+                        ))
+
+                # In aggressive/extreme mode with good effectiveness, relax slightly
+                elif trading_mode in ['aggressive', 'extreme'] and mode_effectiveness > 0.7:
+                    relaxing_factor = 1.15  # Slightly looser thresholds
+                    self._adaptive_params['dynamic_threshold_scaling'] = relaxing_factor
+
+                    if self.debug:
+                        self.logger.info(format_operator_message(
+                            icon="🎛️",
+                            message="Trading mode quality relaxation",
+                            mode=trading_mode,
+                            effectiveness=f"{mode_effectiveness:.2f}",
+                            threshold_scaling=f"{relaxing_factor:.2f}x"
+                        ))
+                else:
+                    self._adaptive_params['dynamic_threshold_scaling'] = 1.0
+
+            except Exception as e:
+                if self.debug:
+                    self.logger.warning(f"Trading mode integration failed in execution quality: {e}")
+            # ═══════════════════════════════════════════════════════════════════
 
             # Process executions comprehensively
             processing_result = await self._process_executions_comprehensive(execution_data)
@@ -995,7 +1041,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             base_limit *= 0.8
 
         # Adjust for session
-        if self.market_session in ['asian', 'rollover']:
+        if self.market_session in ['asian', 'rollover', 'closed']:
             base_limit *= 1.3  # Less liquidity
 
         return float(base_limit * self._adaptive_params['dynamic_threshold_scaling'])
@@ -1007,7 +1053,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         # Adjust for session
         if self.market_session == 'asian':
             base_limit *= 1.5  # Higher latency expected
-        elif self.market_session == 'rollover':
+        elif self.market_session in ('rollover', 'closed'):
             base_limit *= 1.3
 
         # Adjust for volatility
@@ -1034,7 +1080,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             base_threshold *= 3.0
 
         # Adjust for session
-        if self.market_session in ['asian', 'rollover']:
+        if self.market_session in ['asian', 'rollover', 'closed']:
             base_threshold *= 1.5
 
         return float(base_threshold)
@@ -1113,7 +1159,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             base_rate -= 0.02
 
         # Adjust for session
-        if self.market_session in ['asian', 'rollover']:
+        if self.market_session in ['asian', 'rollover', 'closed']:
             base_rate -= 0.03  # Lower liquidity sessions
 
         return float(max(0.8, base_rate))  # Never go below 80%
@@ -1192,7 +1238,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             elif self.volatility_regime == 'extreme':
                 base_slippage *= 3.0
 
-            if self.market_session in ['asian', 'rollover']:
+            if self.market_session in ['asian', 'rollover', 'closed']:
                 base_slippage *= 1.3
 
             # Generate with realistic distribution

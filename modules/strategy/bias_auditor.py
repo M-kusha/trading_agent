@@ -401,13 +401,49 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
         """Advanced greed bias detection with win-streak analysis"""
         try:
             recent_trades = trading_data.get('recent_trades', [])
-            positions = trading_data.get('positions', [])
+            positions_raw = trading_data.get('positions', []) or []
             factors = []
             
+            # Normalize positions (robust to dict keyed by symbol, list of dicts, or mixed types)
+            pos_list: List[Dict[str, Any]] = []
+            if isinstance(positions_raw, dict):
+                for v in positions_raw.values():
+                    if isinstance(v, dict):
+                        pos_list.append(v)
+            elif isinstance(positions_raw, list):
+                for v in positions_raw:
+                    if isinstance(v, dict):
+                        pos_list.append(v)
+
+            def _to_float_safe(x: Any) -> float:
+                try:
+                    if isinstance(x, (int, float, np.generic)):
+                        return float(x)
+                    if isinstance(x, str):
+                        s = x.strip()
+                        return float(s) if s else 0.0
+                except Exception:
+                    return 0.0
+                return 0.0
+
+            def _pos_exposure_value(p: Dict[str, Any]) -> float:
+                # Prefer explicit notionals/exposure, else fall back to size/units, else derive units*price
+                for key in (
+                    'notional', 'notional_eur', 'notional_usd', 'notional_value', 'exposure',
+                    'size', 'units', 'quantity', 'qty', 'volume', 'amount'
+                ):
+                    if key in p:
+                        return _to_float_safe(p.get(key))
+                units = _to_float_safe(p.get('units', p.get('size', 0)))
+                price = _to_float_safe(p.get('price', p.get('entry_price', 0)))
+                if units and price:
+                    return units * price
+                return units
+
             # Pattern 1: Position size escalation after wins
             recent_wins = [t for t in recent_trades[-5:] if t.get('pnl', 0) > 0]
             if len(recent_wins) >= 3:
-                total_exposure = sum(abs(p.get('size', 0)) for p in positions)
+                total_exposure = float(sum(abs(_pos_exposure_value(p)) for p in pos_list))
                 if total_exposure > 2.0:  # Over-leveraged
                     win_streak = len(recent_wins)
                     factors.append('position_size_inflation')

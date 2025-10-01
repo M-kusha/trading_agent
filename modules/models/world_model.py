@@ -853,12 +853,29 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
 
             # Defensive normalization: some upstream modules may still publish scalar regime/volatility values
             regime_data = regime_data_raw if isinstance(regime_data_raw, dict) else {}
-            vol_adj     = vol_adj_raw if isinstance(vol_adj_raw, dict) else {}
+            # Accept both dict and scalar (float) for volatility_adjustment; normalize to dict
+            if isinstance(vol_adj_raw, dict):
+                vol_adj = vol_adj_raw
+            elif isinstance(vol_adj_raw, (int, float)):
+                vol_adj = {"scale": float(vol_adj_raw)}
+                # Avoid spamming logs every tick; log once if seen scalar form
+                if not getattr(self, "_vol_adj_scalar_logged", False):
+                    try:
+                        self.logger.debug(
+                            f"[context_guard] volatility_adjustment scalar ({vol_adj_raw}); normalized -> {{'scale': {float(vol_adj_raw):.3f}}}"
+                        )
+                    except Exception:
+                        pass
+                    setattr(self, "_vol_adj_scalar_logged", True)
+            else:
+                vol_adj = {}
+                if vol_adj_raw is not None:
+                    self.logger.debug(
+                        f"[context_guard] volatility_adjustment non-dict ({type(vol_adj_raw).__name__}); coerced -> {{}}"
+                    )
             market_cond = market_cond_raw if isinstance(market_cond_raw, dict) else {}
             if regime_data_raw is not None and not isinstance(regime_data_raw, dict):
                 self.logger.debug(f"[context_guard] regime_data non-dict ({type(regime_data_raw).__name__}); coerced -> {{}}")
-            if vol_adj_raw is not None and not isinstance(vol_adj_raw, dict):
-                self.logger.debug(f"[context_guard] volatility_adjustment non-dict ({type(vol_adj_raw).__name__}); coerced -> {{}}")
             if market_cond_raw is not None and not isinstance(market_cond_raw, dict):
                 self.logger.debug(f"[context_guard] market_conditions non-dict ({type(market_cond_raw).__name__}); coerced -> {{}}")
 
@@ -879,8 +896,8 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 or market_context.get('session', 'unknown')
             )
             volatility_level = (
-                vol_adj.get('volatility_regime')
-                or market_context.get('volatility_level', 'medium')
+                str(vol_adj.get('volatility_regime')) if vol_adj.get('volatility_regime') is not None
+                else market_context.get('volatility_level', 'medium')
             )
             stress_level = (
                 market_cond.get('stress_level')

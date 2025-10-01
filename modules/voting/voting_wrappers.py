@@ -30,6 +30,7 @@ from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.health_monitor import HealthMonitor
 from modules.monitoring.performance_tracker import PerformanceTracker
+from modules.utils.session_utils import normalize_session_name
 
 
 class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusVotingMixin, SmartInfoBusStateMixin):
@@ -391,7 +392,8 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
         """Apply market context-specific adjustments"""
         try:
             regime = self.market_context.get('regime', 'unknown')
-            session = self.market_context.get('session', 'unknown')
+            session_raw = self.market_context.get('session', self.market_context.get('session_type', 'unknown'))
+            session = normalize_session_name(str(session_raw))
             volatility = self.market_context.get('volatility_level', 'medium')
 
             regime_multipliers = {
@@ -400,7 +402,7 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
             }
             session_multipliers = {
                 'american': 1.1, 'european': 1.0, 'asian': 0.9,
-                'rollover': 0.4, 'weekend': 0.2, 'unknown': 0.8
+                'closed': 0.4, 'rollover': 0.4, 'weekend': 0.2, 'unknown': 0.8
             }
             volatility_multipliers = {
                 'extreme': 0.5, 'high': 0.7, 'medium': 1.0, 'low': 1.2, 'very_low': 1.3
@@ -1138,7 +1140,8 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
             'american': {'signals': 0, 'success': 0, 'avg_factor': 1.0},
             'european': {'signals': 0, 'success': 0, 'avg_factor': 1.0},
             'asian': {'signals': 0, 'success': 0, 'avg_factor': 1.0},
-            'rollover': {'signals': 0, 'success': 0, 'avg_factor': 1.0}
+            'rollover': {'signals': 0, 'success': 0, 'avg_factor': 1.0},
+            'closed': {'signals': 0, 'success': 0, 'avg_factor': 1.0}
         }
 
         self.logger.info(format_operator_message(
@@ -1334,7 +1337,8 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
             if not math.isfinite(self.current_seasonality_factor):
                 self.current_seasonality_factor = 1.0
 
-            current_session = str(market_data.get('session_type', 'unknown'))
+            session_src = market_data.get('current_session') or market_data.get('session_canonical') or market_data.get('session_type')
+            current_session = normalize_session_name(str(session_src) if session_src is not None else 'unknown')
 
             if self.current_seasonality_factor > 1.2:
                 proposal = {
@@ -1383,7 +1387,8 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
             deviation = abs(self.current_seasonality_factor - 1.0)
             base = 0.5 + deviation * self.seasonality_sensitivity
 
-            session = str(market_data.get('session_type', 'unknown'))
+            session_src = market_data.get('current_session') or market_data.get('session_canonical') or market_data.get('session_type')
+            session = normalize_session_name(str(session_src) if session_src is not None else 'unknown')
             perf = self.session_performance.get(session, {})
             if perf.get('signals', 0) > 5:
                 sr = perf.get('success', 0) / perf['signals']
@@ -1401,7 +1406,7 @@ class EnhancedSeasonalityRiskExpert(EnhancedVotingExpertBase):
         """Apply session-specific seasonality adjustments"""
         try:
             session_multipliers = {
-                'american': 1.0, 'european': 0.9, 'asian': 0.8, 'rollover': 0.3, 'unknown': 0.7
+                'american': 1.0, 'european': 0.9, 'asian': 0.8, 'closed': 0.3, 'rollover': 0.3, 'unknown': 0.7
             }
             mult = session_multipliers.get(session, 0.7)
             perf = self.session_performance.get(session, {})
@@ -2483,3 +2488,4 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                 'error': str(e),
                 'last_error': str(e)
             }
+

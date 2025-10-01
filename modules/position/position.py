@@ -216,26 +216,12 @@ class IntegratedDebugger:
         return False
 
     def _alert_buy(self, instrument: str, snapshot: DebugSnapshot) -> None:
-        # Suppress alerts during training/simulation mode
-        if self._should_suppress_alerts():
-            return
-        print(f"\n{'<'*30}")
-        print(f"BUY SIGNAL - {instrument}")
-        print(f"Size: EUR {snapshot.size_eur:,.2f}")
-        print(f"Confidence: {snapshot.confidence:.1%}")
-        print(f"Reason: {snapshot.plain_english_reason}")
-        print(f"{'<'*30}\n")
+        # Console alerts disabled - use beautiful visualizer instead
+        return
 
     def _alert_sell(self, instrument: str, snapshot: DebugSnapshot) -> None:
-        # Suppress alerts during training/simulation mode
-        if self._should_suppress_alerts():
-            return
-        print(f"\n{'>'*30}")
-        print(f"SELL SIGNAL - {instrument}")
-        print(f"Size: EUR {snapshot.size_eur:,.2f}")
-        print(f"Confidence: {snapshot.confidence:.1%}")
-        print(f"Reason: {snapshot.plain_english_reason}")
-        print(f"{'>'*30}\n")
+        # Console alerts disabled - use beautiful visualizer instead
+        return
 
     def log_decision(
         self,
@@ -304,19 +290,8 @@ class IntegratedDebugger:
 
     def print_summary(self) -> None:
         """Print aggregated decision statistics if debugger enabled."""
-        if not self.enabled:
-            return
-        print("\n" + "=" * 60)
-        print("TRADING DEBUG SUMMARY")
-        print("=" * 60)
-        print(f"Total Decisions: {self.stats['total_decisions']}")
-        print(f"  - Buy Signals: {self.stats['buy_decisions']}")
-        print(f"  - Sell Decisions: {self.stats['sell_decisions']}")
-        print(f"  - Hold Decisions: {self.stats['hold_decisions']}")
-        rate = self.stats["executed"] / max(1, self.stats["total_decisions"]) * 100.0
-        print(f"Execution Rate: {rate:.1f}%")
-        print(f"Logs: {self.log_dir}")
-        print("=" * 60 + "\n")
+        # Disabled - using beautiful visualizer instead
+        return
 
 
 ####################################################################################################################
@@ -415,11 +390,8 @@ class PositionManager(
         debug_log_dir: str = "logs/debug",
         **kwargs: Any,
     ):
-        # Integrated debugger
+        # Integrated debugger (silent mode)
         self.debugger = IntegratedDebugger(log_dir=debug_log_dir, enable=enable_debug)
-        if enable_debug:
-            print(f"\nDEBUG MODE ACTIVE - Logging to {debug_log_dir}")
-            print("Tracking BUY/SELL signals with plain English explanations\n")
 
         # whether caller hard-forced instruments
         self._instruments_forced = instruments is not None
@@ -2006,6 +1978,33 @@ class PositionManager(
         risk_tolerance = float(self._adaptive_params.get("risk_tolerance", 1.0))
         adjusted_size *= risk_tolerance
 
+        # ═══════════════════════════════════════════════════════════════════
+        # TRADING MODE MANAGER INTEGRATION
+        # Apply risk_multiplier from TradingModeManager (0.5x → 2.0x)
+        # ═══════════════════════════════════════════════════════════════════
+        try:
+            mode_config = self.smart_bus.get('mode_config', 'PositionManager') or {}
+            risk_multiplier = float(mode_config.get('risk_multiplier', 1.0))
+            trading_mode = self.smart_bus.get('trading_mode', 'PositionManager') or 'normal'
+
+            # Apply mode risk multiplier
+            adjusted_size *= risk_multiplier
+
+            if self.debug and risk_multiplier != 1.0:
+                self.logger.info(format_operator_message(
+                    icon="🎛️",
+                    message="Trading mode risk adjustment applied",
+                    mode=trading_mode,
+                    multiplier=f"{risk_multiplier:.2f}x",
+                    size_before=f"{base_size * health_multiplier * risk_tolerance:.2f}",
+                    size_after=f"{adjusted_size:.2f}"
+                ))
+        except Exception as e:
+            # Graceful fallback - don't break sizing if mode manager unavailable
+            if self.debug:
+                self.logger.warning(f"Trading mode integration failed, using default multiplier: {e}")
+        # ═══════════════════════════════════════════════════════════════════
+
         if correlation is not None:
             corr_penalty = 1.0 - min(abs(float(correlation)) * 0.3, 0.5)
             adjusted_size *= corr_penalty
@@ -2575,10 +2574,7 @@ class PositionManager(
         return {inst: {"intensity": 0.0, "decision": "hold", "confidence": 0.0} for inst in self.instruments}
 
     def __del__(self):
-        """Cleanup and print debug summary on deletion."""
-        try:
-            if hasattr(self, "debugger") and isinstance(self.debugger, IntegratedDebugger):
-                self.debugger.print_summary()
-        except Exception:
-            pass
+        """Cleanup - debug summary disabled."""
+        # Summary printing disabled - using beautiful visualizer instead
+        pass
 

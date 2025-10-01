@@ -12,10 +12,11 @@ import threading
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Awaitable, Sequence, cast, Tuple
 import numpy as np
 from sklearn.preprocessing import StandardScaler
+from modules.utils.metrics_utils import sanitize_metrics
 
 from modules.core.module_base import BaseModule, module
 from modules.contracts import module_args
@@ -53,27 +54,27 @@ from .debug.memory_logger import MemoryDebugLogger
 class UnifiedMemoryConfig:
     """Unified configuration for all memory subsystems"""
     # Debug master switches
-    debug: bool = True
-    debug_level: str = "DEBUG"  # "TRACE"|"DEBUG"|"INFO"|"WARNING"|"ERROR"
+    debug: bool = False
+    debug_level: str = "INFO"  # "TRACE"|"DEBUG"|"INFO"|"WARNING"|"ERROR"
 
     # Combined debug file (legacy default)
     debug_log_path: str = "logs/memory/unified_debug.log"
-    enable_combined_log: bool = True
+    enable_combined_log: bool = False
 
     # Per-level file toggles + paths (None = derive from debug_log_path)
-    enable_trace_log: bool = True
+    enable_trace_log: bool = False
     trace_file_path: Optional[str] = None
 
-    enable_debug_log: bool = True
+    enable_debug_log: bool = False
     debug_file_path: Optional[str] = None
 
-    enable_info_log: bool = True
+    enable_info_log: bool = False
     info_file_path: Optional[str] = None
 
-    enable_warning_log: bool = True
+    enable_warning_log: bool = False
     warning_file_path: Optional[str] = None
 
-    enable_error_log: bool = True
+    enable_error_log: bool = False
     error_file_path: Optional[str] = None
 
     # Core settings
@@ -346,9 +347,9 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         self._health_status = "healthy"
         self._last_health_check = time.time()
 
-        # Performance metrics
-        self._processing_times: List[float] = []
-        self._component_performance: Dict[str, List[float]] = defaultdict(list)
+        # Performance metrics (FIX: use deques with maxlen to prevent memory leak)
+        self._processing_times: deque = deque(maxlen=100)
+        self._component_performance: Dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
         self._cache_stats = {"hits": 0, "misses": 0}
 
         # Start monitoring thread
@@ -364,6 +365,10 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         self._component_states = {
             name: {"status": "ready", "last_run": 0, "errors": 0} for name in self.components.keys()
         }
+
+        # Training metrics (bounded history to prevent memory growth)
+        self._training_metrics_history: deque = deque(maxlen=100)
+        self._training_metrics_current: Dict[str, Any] = {}
 
     def _count_enabled_components(self) -> int:
         """Count enabled components"""
@@ -461,6 +466,24 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
 
             # 4. Merge results
             unified_result = self._merge_results(component_results)
+
+            # 4b. Ingest optional training metrics (from bus or inputs) and expose consolidated progress
+            try:
+                tm = inputs.get("training_metrics") or self.smart_bus.get("enhanced_performance", "UnifiedMemory")
+                if isinstance(tm, dict) and tm:
+                    safe_tm = sanitize_metrics(tm)
+                    self._training_metrics_current = safe_tm
+                    self._training_metrics_history.append({
+                        **{k: v for k, v in safe_tm.items() if k in ("step", "episode_reward_mean", "steps_per_second", "system_health_score", "env_balance", "circuit_breaker_active")},
+                        "timestamp": safe_tm.get("timestamp", datetime.now().isoformat()),
+                    })
+                    unified_result["training_progress"] = {
+                        "current": self._training_metrics_current,
+                        "history": list(self._training_metrics_history),
+                    }
+            except Exception:
+                # Non-fatal; training metrics are optional
+                pass
 
             # 5. Apply budget optimization
             if "budget" in component_results:
@@ -755,6 +778,8 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         }
         return merged
 
+    
+
     def _apply_budget_optimization(self, result: Dict[str, Any], budget_result: Dict[str, Any]) -> Dict[str, Any]:
         """Apply budget optimization to results"""
         if "memory_allocation" in budget_result:
@@ -802,6 +827,8 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
             "pattern_memory",
             "playbook_quality",
             "memory_analytics",
+            # Training progress (optional consolidated view)
+            "training_progress",
         ]:
             if key in result:
                 updates.append((key, result[key]))
@@ -843,7 +870,7 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                 parts.append(f"Playbook: {playbook.get('patterns_identified', 0)} patterns")
 
             if self._processing_times:
-                avg_time = np.mean(self._processing_times[-10:])
+                avg_time = np.mean(list(self._processing_times)[-10:])
                 parts.append(f"Performance: {avg_time:.1f}ms avg")
 
             parts.append(f"Health: {self._health_status}")
@@ -856,7 +883,7 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         performance: Dict[str, Any] = {}
         for name in results.keys():
             if name in self._component_performance:
-                recent_times = self._component_performance[name][-10:]
+                recent_times = list(self._component_performance[name])[-10:]
                 performance[name] = {
                     "avg_time_ms": float(np.mean(recent_times)) if recent_times else 0.0,
                     "max_time_ms": float(max(recent_times)) if recent_times else 0.0,
@@ -1036,8 +1063,7 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
     def _record_success(self, processing_time: float) -> None:
         """Record successful processing"""
         self._processing_times.append(processing_time)
-        if len(self._processing_times) > 100:
-            self._processing_times.pop(0)
+        # maxlen=100 automatically removes old entries
 
         # Reset circuit breaker on success
         if self.circuit_breaker["state"] == "HALF_OPEN":
@@ -1072,9 +1098,8 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
     def _update_performance_metrics(self) -> None:
         """Update performance metrics"""
         try:
-            for name in list(self._component_performance.keys()):
-                if len(self._component_performance[name]) > 100:
-                    self._component_performance[name] = self._component_performance[name][-100:]
+            # Component performance deques auto-trim with maxlen=100
+            pass
         except Exception as e:
             self.logger.error(f"Performance update failed: {e}")
 

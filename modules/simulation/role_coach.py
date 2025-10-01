@@ -17,6 +17,7 @@ from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
 from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
 from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.session_utils import infer_market_session
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
 
@@ -294,8 +295,11 @@ class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             # Priority: explicit 'session_data' & 'regime_data' override 'market_context'
             activity['regime'] = regime_data.get('market_regime',
                                  market_context.get('regime', 'unknown'))
-            activity['session'] = session_data.get('session',
-                                  market_context.get('session', 'unknown'))
+            # Session: prefer explicit session_data/session; else market_context; else inference
+            session_val = session_data.get('session', market_context.get('session', 'unknown'))
+            if not isinstance(session_val, str) or session_val.lower() == 'unknown' or not session_val:
+                session_val = infer_market_session()
+            activity['session'] = session_val
             activity['volatility_level'] = (
                 market_context.get('volatility_level', 'medium')
             )
@@ -316,6 +320,8 @@ class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             }
 
         return activity
+
+    
 
     def _analyze_trade_timing(self, trades: List[Dict[str, Any]]) -> Dict[str, Any]:
         try:

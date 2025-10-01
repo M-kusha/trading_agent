@@ -118,7 +118,7 @@ class AuditEvent:
     correlation_id: Optional[str] = None
 
     # Details
-    severity: str = "DEBUG"       # DEBUG, INFO, WARNING, ERROR, CRITICAL
+    severity: str = "DEBUG"       # TRACE, DEBUG, INFO, WARNING, ERROR, CRITICAL
     category: str = "general"    # general, security, performance, business
 
     # Payload
@@ -172,7 +172,7 @@ class AuditEvent:
 class AuditConfiguration:
     """Audit logger configuration."""
     enabled: bool = True
-    log_level: str = "Debug"
+    log_level: str = "TRACE"
     max_file_size_mb: int = 100
     max_files: int = 10
     rotation_interval_hours: int = 24
@@ -215,7 +215,7 @@ class RotatingLogger:
       • NEW: banner/header deduplication across rapid re-inits
     """
 
-    _LEVELS = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
+    _LEVELS = {"TRACE": -1, "DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
     # Track last banner time to suppress spammy re-inits per logger name
     _last_banner_at: Dict[str, float] = {}
 
@@ -626,6 +626,7 @@ class RotatingLogger:
 
     def _format_operator_entry(self, level: str, message: str, entry: Dict[str, Any]) -> str:
         emoji_map = {
+            "TRACE": "[TRACE]",
             "DEBUG": "[SEARCH]",
             "INFO": "[LOG]",
             "WARNING": "[WARN]",
@@ -788,6 +789,7 @@ class RotatingLogger:
             self._write_line(formatted_line)
 
     # Public API
+    def trace(self, message: str, **kwargs): self._log("TRACE", message, **kwargs)
     def debug(self, message: str, **kwargs): self._log("DEBUG", message, **kwargs)
     def info(self, message: str, **kwargs): self._log("INFO", message, **kwargs)
     def warning(self, message: str, **kwargs): self._log("WARNING", message, **kwargs)
@@ -955,6 +957,7 @@ class PlainEnglishFormatter:
 
     def __init__(self):
         self.templates = {
+            "TRACE": "[TRACE] Trace: {message} at {time}",
             "DEBUG": "[SEARCH] Debug: {message} at {time}",
             "INFO": "[LOG] {message} at {time}",
             "WARNING": "[WARN] Warning: {message} at {time}",
@@ -1148,7 +1151,7 @@ class AuditSystem:
             module_name=module,
             operator_message=f"Decision: {decision} (confidence: {confidence:.1%})",
             category="business",
-            severity="INFO" if confidence > 0.7 else "WARNING",
+            severity="DEBUG" if confidence > 0.7 else "WARNING",
             data={"decision": decision, "thesis": thesis, "confidence": confidence, "duration_ms": duration_ms},
             smart_bus_key=f"decision_{module}_{int(time.time())}",
             thesis=thesis,
@@ -1367,7 +1370,7 @@ def format_operator_message(icon: str, message: str, **context) -> str:
         parts.append(f"[{context['context']}]")
     return " ".join(parts)
 
-def create_audit_event(event_type: str, module_name: str, message: str, severity: str = "INFO", **data) -> AuditEvent:
+def create_audit_event(event_type: str, module_name: str, message: str, severity: str = "DEBUG", **data) -> AuditEvent:
     smart_bus_key = None
     if event_type.startswith("trade"):
         smart_bus_key = f"trade_event_{module_name}_{int(time.time())}"
@@ -1389,7 +1392,7 @@ def setup_production_logging(system_name: str, enable_smart_bus: bool = True, en
         log_dir="logs/application",
         max_lines=50_000,
         config=AuditConfiguration(
-            log_level="INFO",
+            log_level="TRACE",
             audit_trail_required=True,
             retention_days=2555,
             info_bus_integration=enable_smart_bus,
@@ -1403,7 +1406,7 @@ def setup_production_logging(system_name: str, enable_smart_bus: bool = True, en
         log_dir="logs/audit",
         max_lines=100_000,
         config=AuditConfiguration(
-            log_level="INFO",
+            log_level="TRACE",
             audit_trail_required=True,
             immutable_logs=True,
             encryption_enabled=False,
@@ -1425,7 +1428,7 @@ def setup_production_logging(system_name: str, enable_smart_bus: bool = True, en
             event_type="system_startup",
             module_name="LoggingSystem",
             message=f"Production logging system initialized for {system_name}",
-            severity="INFO",
+            severity="DEBUG",
             system_name=system_name,
             logging_configuration="production",
             features={"smart_bus_enabled": enable_smart_bus, "plain_english_enabled": enable_plain_english},
@@ -1482,7 +1485,7 @@ class RiskLogger(RotatingLogger):
         super().__init__(name=f"{name}Risk", log_dir="logs/risk", max_lines=50_000, plain_english=True, info_bus_aware=True)
 
     def log_risk_alert(self, alert_type: str, message: str, severity: str = "WARNING", metrics: Optional[Dict[str, float]] = None):
-        emoji_map = {"INFO": "[STATS]", "WARNING": "[WARN]", "ERROR": "[ALERT]", "CRITICAL": "🔥"}
+        emoji_map = {"TRACE": "[TRACE]", "DEBUG": "[SEARCH]", "INFO": "[STATS]", "WARNING": "[WARN]", "ERROR": "[ALERT]", "CRITICAL": "🔥"}
         emoji = emoji_map.get(severity, "[WARN]")
         self._log(severity, f"{emoji} RISK ALERT - {alert_type}: {message}", alert_type=alert_type, metrics=metrics or {})
 
@@ -1587,7 +1590,7 @@ class AuditTracker:
         event_type: str,
         module: str,
         data: Optional[Dict[str, Any]] = None,
-        severity: str = "info",
+        severity: str = "debug",
         message: Optional[str] = None,
     ) -> None:
         """Generic event recorder to match legacy usage.
@@ -1595,7 +1598,7 @@ class AuditTracker:
         Maps to AuditSystem by emitting an AuditEvent through the audit logger.
         """
         try:
-            sev = str(severity or "INFO").upper()
+            sev = str(severity or "DEBUG").upper()
             evt = AuditEvent(
                 event_type=event_type,
                 module_name=module,

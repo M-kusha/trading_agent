@@ -226,9 +226,9 @@ class MemoryDebugLogger:
             elif level == "ERROR" and self.enable_error_file:
                 self._write_to_file(self.error_path, entry)
 
-            # Console echo for DEBUG/TRACE
-            if self.current_level <= self.levels["DEBUG"]:
-                self._print_colored(timestamp, level, message, component, data)
+            # Console echo disabled - use beautiful visualizer instead
+            # if self.current_level <= self.levels["DEBUG"]:
+            #     self._print_colored(timestamp, level, message, component, data)
 
             self.log_counts[level] = self.log_counts.get(level, 0) + 1
 

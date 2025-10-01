@@ -293,6 +293,13 @@ class TradeThesisTracker(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         if performances:
             self.best_thesis = max(performances, key=lambda x: x[1])[0]
             self.worst_thesis = min(performances, key=lambda x: x[1])[0]
+            # Publish best_thesis for downstream consumers that require it (e.g., TradingModeManager)
+            try:
+                from modules.utils.info_bus import InfoBusManager  # local import to avoid cycles
+                bus = InfoBusManager.get_instance()
+                bus.set('best_thesis', self.best_thesis, module='TradeThesisTracker', thesis='Updated best thesis')
+            except Exception:
+                pass
     
     def _generate_thesis_analysis(self) -> Dict[str, Any]:
         """Generate comprehensive thesis analysis"""

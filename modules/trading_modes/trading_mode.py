@@ -24,6 +24,7 @@ from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
+from modules.utils.circuit_breaker_utils import CircuitBreaker, create_standard_breaker
 
 
 # ─────────────────────────────────────────────────────────────
@@ -123,9 +124,15 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         self._cfg = TradingModeManagerConfig(**merged)
         self.config = cfg_dict
 
-        # breaker state
-        self._breaker_state = "CLOSED"   # CLOSED | OPEN | HALF_OPEN
-        self._last_failure_ts: float = 0.0
+        # Circuit breaker (unified implementation)
+        self.circuit_breaker = create_standard_breaker(
+            name="TradingModeManager",
+            threshold=self._cfg.breaker_open_threshold,
+            open_base_timeout=self._cfg.breaker_cooldown_sec / 4,  # 15s base
+            open_max_timeout=self._cfg.breaker_cooldown_sec,  # 60s max
+            window_seconds=30.0,
+            failure_rate_threshold=0.5
+        )
         self._recent_failures: deque[bool] = deque(maxlen=self._cfg.breaker_error_window)
 
         # Initialize systems
@@ -322,7 +329,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 'initialized': True,
                 'auto_mode': self.auto_mode,
                 'current_mode': self.current_mode,
-                'breaker_state': self._breaker_state,
+                'breaker_state': self.circuit_breaker.get_state(),
                 'ts': datetime.datetime.now().isoformat()
             }
             self.smart_bus.set(self._cfg.status_key, status, module='TradingModeManager',
@@ -413,11 +420,22 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         """
         start_time = time.time()
         try:
+            # Log process entry
+            self.logger.info(format_operator_message(
+                icon="🔄",
+                message="Processing trading mode decision",
+                current_mode=self.current_mode,
+                persistence=f"{self.mode_persistence}/{self.min_persistence}",
+                auto_mode="enabled" if self.auto_mode else "disabled",
+                breaker_state=self.circuit_breaker.get_state()
+            ))
+
             # Circuit breaker check
-            if self.is_disabled or self._breaker_state == "OPEN":
-                if (time.time() - self._last_failure_ts) >= self._cfg.breaker_cooldown_sec:
-                    self._breaker_state = "HALF_OPEN"
-                return self._generate_disabled_response() if self.is_disabled else self._generate_breaker_response()
+            if self.is_disabled:
+                return self._generate_disabled_response()
+
+            if not self.circuit_breaker.allow_request():
+                return self._generate_breaker_response()
 
             # Get comprehensive market data from SmartInfoBus
             market_data = await self._get_comprehensive_market_data()
@@ -479,11 +497,9 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             # Update mode statistics book-keeping
             self._update_mode_performance_metrics()
 
-            # breaker: success path
+            # Circuit breaker: record success
+            self.circuit_breaker.record_success()
             self._recent_failures.append(False)
-            if self._breaker_state == "HALF_OPEN":
-                # close after a good cycle
-                self._breaker_state = "CLOSED"
 
             # Reset error count on successful processing
             self.error_count = 0
@@ -495,11 +511,9 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             return results
 
         except Exception as e:
-            # error path
+            # Circuit breaker: record failure
+            self.circuit_breaker.record_failure()
             self._recent_failures.append(True)
-            self._last_failure_ts = time.time()
-            if list(self._recent_failures).count(True) >= self._cfg.breaker_open_threshold:
-                self._breaker_state = "OPEN"
 
             return await self._handle_processing_error(e, start_time)
 
@@ -508,7 +522,8 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
     async def _get_comprehensive_market_data(self) -> Dict[str, Any]:
         """Get comprehensive market data using modern SmartInfoBus patterns"""
         try:
-            return {
+            data = {
+                # Original data sources
                 'recent_trades': self.smart_bus.get('recent_trades', 'TradingModeManager') or [],
                 'risk_metrics': self.smart_bus.get('risk_metrics', 'TradingModeManager') or {},
                 'votes': self.smart_bus.get('votes', 'TradingModeManager') or [],
@@ -519,8 +534,54 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 'trading_performance': self.smart_bus.get('trading_performance', 'TradingModeManager') or {},
                 'market_regime': self.smart_bus.get('market_regime', 'TradingModeManager') or 'unknown',
                 'volatility_data': self.smart_bus.get('volatility_data', 'TradingModeManager') or {},
-                'economic_calendar': self.smart_bus.get('economic_calendar', 'TradingModeManager') or {}
+                'economic_calendar': self.smart_bus.get('economic_calendar', 'TradingModeManager') or {},
+
+                # Risk module integrations
+                'execution_quality': self.smart_bus.get('execution_quality', 'TradingModeManager') or {},
+                'risk_alerts': self.smart_bus.get('risk_alerts', 'TradingModeManager') or [],
+                'anomaly_detection': self.smart_bus.get('anomaly_detection', 'TradingModeManager') or {},
+                'portfolio_risk': self.smart_bus.get('portfolio_risk', 'TradingModeManager') or {},
+                'drawdown_risk': self.smart_bus.get('drawdown_risk', 'TradingModeManager') or {},
+                'risk_scaling': self.smart_bus.get('risk_scaling', 'TradingModeManager') or {},
+                'anomaly_score': self.smart_bus.get('anomaly_score', 'TradingModeManager') or 0.0,
+
+                # Voting & consensus integrations
+                'consensus_score': self.smart_bus.get('consensus_score', 'TradingModeManager') or 0.5,
+                'consensus_quality': self.smart_bus.get('consensus_quality', 'TradingModeManager') or {},
+                'committee_confidence': self.smart_bus.get('committee_confidence', 'TradingModeManager') or 0.5,
+                'committee_decision': self.smart_bus.get('committee_decision', 'TradingModeManager') or {},
+                'collusion_score': self.smart_bus.get('collusion_score', 'TradingModeManager') or 0.0,
+                'member_confidences': self.smart_bus.get('member_confidences', 'TradingModeManager') or {},
+
+                # Market intelligence integrations
+                'market_predictions': self.smart_bus.get('market_predictions', 'TradingModeManager') or {},
+                'shadow_predictions': self.smart_bus.get('shadow_predictions', 'TradingModeManager') or {},
+                'theme_detection': self.smart_bus.get('theme_detection', 'TradingModeManager') or {},
+                'liquidity_score': self.smart_bus.get('liquidity_score', 'TradingModeManager') or 0.5,
+                'regime_prediction': self.smart_bus.get('regime_prediction', 'TradingModeManager') or {},
+                'market_predictions_confidence': self.smart_bus.get('prediction_confidence', 'TradingModeManager') or 0.5,
+
+                # Strategy integrations
+                'bias_analysis': self.smart_bus.get('bias_analysis', 'TradingModeManager') or {},
+                'adaptation_recommendations': self.smart_bus.get('adaptation_recommendations', 'TradingModeManager') or [],
+                'market_thesis': self.smart_bus.get('market_thesis', 'TradingModeManager') or {},
+                'best_thesis': self.smart_bus.get('best_thesis', 'TradingModeManager') or {},
             }
+
+            # Log data retrieval summary
+            available_keys = sum(1 for v in data.values() if v not in [None, {}, [], 0.0, 0.5, 'unknown'])
+            if self.debug:
+                self.logger.info(format_operator_message(
+                    icon="📥",
+                    message="Market data retrieved from SmartInfoBus",
+                    available_keys=f"{available_keys}/{len(data)}",
+                    has_consensus=bool(data.get('consensus_score') and data['consensus_score'] != 0.5),
+                    has_predictions=bool(data.get('market_predictions')),
+                    has_risk_alerts=len(data.get('risk_alerts', [])),
+                    regime=data.get('market_regime')
+                ))
+
+            return data
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "TradingModeManager")
             self.logger.warning(f"Market data retrieval incomplete: {error_context}")
@@ -537,7 +598,9 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             market_context = market_data.get('market_context', {}) or {}
             self.market_regime = market_data.get('market_regime', 'unknown') or market_context.get('regime', 'unknown')
             self.volatility_regime = market_context.get('volatility_level', 'medium')
-            self.market_session = market_context.get('session', market_context.get('trading_session', 'unknown'))
+            from modules.utils.session_utils import normalize_session_name
+            session_raw = market_context.get('session', market_context.get('trading_session', 'unknown'))
+            self.market_session = normalize_session_name(str(session_raw))
 
             # Detect significant changes
             regime_changed = self.market_regime != old_regime and old_regime != 'unknown'
@@ -791,6 +854,19 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             else:
                 performance_data['sharpe'] = 0.0
 
+            # Log performance extraction if debug enabled
+            if self.debug:
+                self.logger.info(format_operator_message(
+                    icon="📈",
+                    message="Performance data extracted",
+                    win_rate=f"{performance_data.get('win_rate', 0.0):.1%}",
+                    avg_pnl=f"€{performance_data.get('avg_pnl', 0.0):.2f}",
+                    drawdown=f"{performance_data.get('drawdown', 0.0):.1%}",
+                    total_trades=performance_data.get('total_trades', 0),
+                    sharpe=f"{performance_data.get('sharpe', 0.0):.2f}",
+                    profit_factor=f"{performance_data.get('profit_factor', 1.0):.2f}"
+                ))
+
             return performance_data
 
         except Exception as e:
@@ -1008,6 +1084,20 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     'change_analysis': change_analysis
                 }
             })
+
+            # Log decision analysis
+            self.logger.info(format_operator_message(
+                icon="🎯",
+                message="Mode decision analysis completed",
+                current_mode=self.current_mode,
+                recommended=recommended_mode,
+                confidence=f"{confidence:.2f}",
+                should_change=change_analysis['should_change'],
+                urgency=change_analysis.get('urgency', 'normal'),
+                top_mode_scores={k: f"{v:.2f}" for k, v in list(sorted(mode_scores.items(), key=lambda x: x[1], reverse=True))[:3]},
+                risk_level=risk_assessment.get('level', 'unknown')
+            ))
+
             return decision
 
         except Exception as e:
@@ -1083,6 +1173,60 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             self.decision_factors['session_score'] = session_score
             self.decision_factors['trend_score'] = float(performance_data.get('trend_consistency', 0.5))
             self.decision_factors['stability_score'] = self._calculate_stability_score(performance_data)
+
+            # Integrate additional data sources
+            # Use real consensus score from ConsensusDetector if available
+            if 'consensus_score' in market_data and market_data['consensus_score'] != 0.5:
+                real_consensus = float(market_data['consensus_score'])
+                self.decision_factors['consensus_score'] = (
+                    0.7 * real_consensus +  # Weight real consensus higher
+                    0.3 * self.decision_factors['consensus_score']
+                )
+
+            # Adjust risk score based on anomaly detection
+            if 'anomaly_score' in market_data:
+                anomaly_data = market_data.get('anomaly_score', 0.0)
+                # Handle both dict and float formats
+                if isinstance(anomaly_data, dict):
+                    anomaly_score = float(anomaly_data.get('score', 0.0)) if 'score' in anomaly_data else 0.0
+                else:
+                    anomaly_score = float(anomaly_data) if anomaly_data else 0.0
+
+                if anomaly_score > 0.7:  # High anomaly detected
+                    self.decision_factors['risk_score'] *= 0.7  # Reduce risk score
+                    self.decision_factors['stability_score'] *= 0.6
+
+            # Incorporate risk alerts
+            risk_alerts = market_data.get('risk_alerts', [])
+            if isinstance(risk_alerts, list) and len(risk_alerts) > 0:
+                alert_severity = min(len(risk_alerts) / 5.0, 1.0)  # Max out at 5 alerts
+                self.decision_factors['risk_score'] *= (1.0 - 0.3 * alert_severity)
+
+            # Use market predictions for trend score
+            predictions = market_data.get('market_predictions', {})
+            if isinstance(predictions, dict) and predictions:
+                pred_confidence = float(market_data.get('market_predictions_confidence', 0.5))
+                if pred_confidence > 0.6:
+                    # Blend prediction confidence into trend score
+                    self.decision_factors['trend_score'] = (
+                        0.6 * self.decision_factors['trend_score'] +
+                        0.4 * pred_confidence
+                    )
+
+            # Log factor calculations
+            if self.debug:
+                self.logger.info(format_operator_message(
+                    icon="📊",
+                    message="Decision factors calculated",
+                    performance=f"{self.decision_factors['performance_score']:.2f}",
+                    risk=f"{self.decision_factors['risk_score']:.2f}",
+                    consensus=f"{self.decision_factors['consensus_score']:.2f}",
+                    market_context=f"{self.decision_factors['market_context_score']:.2f}",
+                    stability=f"{self.decision_factors['stability_score']:.2f}",
+                    trend=f"{self.decision_factors['trend_score']:.2f}",
+                    used_real_consensus=bool('consensus_score' in market_data and market_data['consensus_score'] != 0.5),
+                    risk_alerts_count=len(risk_alerts) if isinstance(risk_alerts, list) else 0
+                ))
 
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "decision_factors_calculation")
@@ -1355,7 +1499,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         session = self.market_session
         high_risk_regimes = ['volatile', 'uncertain', 'unknown']
         high_risk_volatility = ['high', 'extreme']
-        low_liquidity_sessions = ['weekend', 'holiday', 'rollover']
+        low_liquidity_sessions = ['weekend', 'holiday', 'rollover', 'closed']
         if (regime in high_risk_regimes and volatility_regime in high_risk_volatility) or session in low_liquidity_sessions:
             level = 'extreme'
         elif regime in high_risk_regimes or volatility_regime in high_risk_volatility:
@@ -1591,6 +1735,33 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             else:
                 # increase persistence if no change
                 self.mode_persistence += 1
+
+                # Log why mode change was rejected
+                recommended = decision.get('recommended_mode', old_mode)
+                reasons = decision.get('reasoning', [])
+                rejection_reason = "unknown"
+
+                if not decision.get('should_change'):
+                    change_analysis = decision.get('analysis_details', {}).get('change_analysis', {})
+                    if not change_analysis.get('improvement_significant'):
+                        rejection_reason = f"improvement not significant ({change_analysis.get('improvement', 0.0):.1%})"
+                    elif not change_analysis.get('confidence_met'):
+                        rejection_reason = f"confidence too low ({decision.get('confidence', 0.0):.2f})"
+                    elif not change_analysis.get('urgency_sufficient'):
+                        rejection_reason = f"urgency not sufficient ({change_analysis.get('urgency', 'normal')})"
+                    else:
+                        rejection_reason = "general criteria not met"
+
+                if recommended != old_mode:
+                    self.logger.info(format_operator_message(
+                        icon="🔒",
+                        message="Mode change rejected",
+                        current_mode=old_mode,
+                        recommended=recommended,
+                        reason=rejection_reason,
+                        confidence=f"{decision.get('confidence', 0.0):.2f}",
+                        persistence=f"{self.mode_persistence}/{self.min_persistence}"
+                    ))
 
             # Decision trace
             self.decision_trace.append({
@@ -1874,7 +2045,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'status': 'disabled' if self.is_disabled else 'healthy',
             'error_count': int(self.error_count),
             'circuit_breaker_threshold': int(self.circuit_breaker_threshold),
-            'breaker_state': self._breaker_state,
+            'breaker_state': self.circuit_breaker.get_state(),
             'current_mode': self.current_mode,
             'auto_mode_enabled': bool(self.auto_mode),
             'mode_persistence': int(self.mode_persistence),
@@ -1971,7 +2142,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'mode_thresholds': self._safe_thresholds_copy(),
             'market_context': self._get_market_context_summary(),
             'mode_recommendations': ["Breaker OPEN: skipping decision cycle until cooldown"],
-            'health_metrics': {**self._get_health_metrics(), 'breaker_state': self._breaker_state},
+            'health_metrics': {**self._get_health_metrics(), 'breaker_state': self.circuit_breaker.get_state()},
             '_thesis': 'Circuit breaker OPEN due to repeated failures; cooldown in effect.',
             'trading_mode_manager_initialization': self._get_tmm_init_view()
         }
@@ -2196,7 +2367,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 • System Uptime: {self.mode_stats.get('total_uptime', 0)} periods
 
 [TOOL] HEALTH & STATUS
-• Errors: {self.error_count}/{self.circuit_breaker_threshold} | Breaker: {self._breaker_state}
+• Errors: {self.error_count}/{self.circuit_breaker_threshold} | Breaker: {self.circuit_breaker.get_state()}
 • Status: {'[ALERT] DISABLED' if self.is_disabled else '[OK] OPERATIONAL'}
 • Session Duration: {self._get_health_metrics().get('session_duration_hours', 0.0):.1f} hours
         """

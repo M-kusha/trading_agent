@@ -12,6 +12,7 @@ import datetime
 from typing import Dict, Any, List, Optional, Set, Tuple
 from dataclasses import dataclass, asdict, field
 import numpy as np
+from modules.utils.session_utils import normalize_session_name
 
 from modules.contracts import module_args
 from modules.core.module_base import BaseModule, module
@@ -611,7 +612,7 @@ class UnifiedMarketModule(
             aggregated.setdefault('market_context', {
                 'regime': aggregated.get('market_regime', 'unknown'),
                 'volatility_level': aggregated.get('volatility_level', 'medium'),
-                'session': aggregated.get('session_data', {}).get('current_session', 'unknown'),
+                'session': normalize_session_name(aggregated.get('session_data', {}).get('current_session', 'unknown')),
                 'theme': aggregated.get('market_theme', 0),
                 'liquidity_score': aggregated.get('liquidity_score', 0.5),
                 'timestamp': datetime.datetime.utcnow().isoformat()

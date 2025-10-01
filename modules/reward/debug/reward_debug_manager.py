@@ -99,8 +99,8 @@ class RewardDebugManager:
         self.key_error_counts: Dict[str, int] = defaultdict(int)
 
         # Performance tracking
-        # Rolling history per operation name
-        self.operation_timings: Dict[str, List[float]] = defaultdict(list)
+        # Rolling history per operation name (FIX: use deque with maxlen to prevent memory leak)
+        self.operation_timings: Dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
         # Per-process breakdown (overwritten each process)
         self.calculation_breakdown: Dict[str, float] = {}
 
@@ -664,7 +664,7 @@ class RewardDebugManager:
         with self._lock:
             success_rate = (self.successful_processes / max(1, self.total_processes))
             op_summaries = {
-                name: self._summarize_timings(samples)
+                name: self._summarize_timings(list(samples))
                 for name, samples in self.operation_timings.items()
                 if samples
             }

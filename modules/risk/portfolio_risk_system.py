@@ -132,6 +132,8 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 operator_mode=True,
                 plain_english=True,
             )
+            # Debug flag (set default to False for type safety)
+            self.debug: bool = bool(getattr(self, "debug", False))
         except Exception:
             # As a last resort, ensure attributes exist to avoid attribute errors
             if not hasattr(self, "smart_bus"):
@@ -145,6 +147,8 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                     def error(self, *a, **k):
                         pass
                 self.logger = _Dummy()
+            if not hasattr(self, "debug"):
+                self.debug = False
 
         # Minimal risk state used by _initialize bus writes
         self.current_mode = getattr(self, "current_mode", RiskMode.INITIALIZATION)
@@ -1089,6 +1093,40 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
 
             if self.bootstrap_mode:
                 adjusted_limit *= 1.3
+
+            # ═══════════════════════════════════════════════════════════════════
+            # TRADING MODE MANAGER INTEGRATION
+            # Apply max_exposure from trading mode to position limits
+            # ═══════════════════════════════════════════════════════════════════
+            try:
+                mode_config = self.smart_bus.get('mode_config', 'PortfolioRiskSystem') or {}
+                trading_mode = self.smart_bus.get('trading_mode', 'PortfolioRiskSystem') or 'normal'
+                max_exposure_from_mode = float(mode_config.get('max_exposure', 0.6))
+
+                # Mode's max_exposure applies to total portfolio, translate to per-position limit
+                # Assuming max 3-5 concurrent positions, divide exposure across them
+                estimated_concurrent_positions = 3.0
+                mode_position_limit = max_exposure_from_mode / estimated_concurrent_positions
+
+                # Use the more conservative limit between our calculation and mode's limit
+                if mode_position_limit < adjusted_limit:
+                    old_adjusted = adjusted_limit
+                    adjusted_limit = mode_position_limit
+
+                    if self.debug:
+                        self.logger.info(format_operator_message(
+                            icon="🎛️",
+                            message="Trading mode exposure limit applied",
+                            mode=trading_mode,
+                            mode_max_exposure=f"{max_exposure_from_mode:.1%}",
+                            old_position_limit=f"{old_adjusted:.1%}",
+                            new_position_limit=f"{adjusted_limit:.1%}"
+                        ))
+
+            except Exception as e:
+                if self.debug:
+                    self.logger.warning(f"Trading mode integration failed in position limits: {e}")
+            # ═══════════════════════════════════════════════════════════════════
 
             final_limit = float(np.clip(adjusted_limit, self._cfg.min_position_pct, self._cfg.max_position_pct))
             old_limits = self.position_limits.copy()

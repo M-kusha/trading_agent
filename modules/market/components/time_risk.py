@@ -11,6 +11,7 @@ import datetime
 import pandas as pd
 
 from ..shared.base_component import BaseMarketComponent
+from modules.utils.session_utils import normalize_session_name, classify_session
 
 
 class TimeRiskComponent(BaseMarketComponent):
@@ -113,12 +114,11 @@ class TimeRiskComponent(BaseMarketComponent):
         self._session_risk_multipliers = {
             'asian': float(self.config['asian_multiplier']),
             'european': float(self.config['european_multiplier']),
-            'us': float(self.config['us_multiplier']),
-            'closed': float(self.config['closed_multiplier']),
+            'american': float(self.config['us_multiplier']),
             'rollover': float(self.config['closed_multiplier']) * float(self.config['rollover_multiplier']),
         }
         self._session_performance: Dict[str, Dict[str, Any]] = {}
-        for session in ('asian', 'european', 'us', 'closed', 'rollover'):
+        for session in ('asian', 'european', 'american', 'rollover'):
             self._session_performance[session] = {
                 'count': 0,
                 'total_factor': 0.0,
@@ -175,7 +175,7 @@ class TimeRiskComponent(BaseMarketComponent):
         volatility = await self._extract_volatility_data(market_data, shared_context)
 
         # Current session using UTC hour + rollover + weekend
-        session = self._get_session(hour, weekend)
+        session = classify_session(hour=hour, weekend=weekend)
 
         return {
             'timestamp': timestamp,
@@ -222,22 +222,8 @@ class TimeRiskComponent(BaseMarketComponent):
     # Sessions
     # -------------------------------------------------------------------------
     def _get_session(self, hour: int, weekend: bool) -> str:
-        """Determine session: asian/european/us/rollover/closed using UTC hours."""
-        # Rollover first (thin liquidity, spreads widen)
-        if self._in_window(hour, self.config['rollover_start'], self.config['rollover_end']) and not weekend:
-            return 'rollover'
-
-        if weekend:
-            return 'closed'
-
-        if 0 <= hour < int(self.config['asian_end']):
-            return 'asian'
-        elif int(self.config['asian_end']) <= hour < int(self.config['euro_end']):
-            return 'european'
-        elif int(self.config['euro_end']) <= hour < int(self.config['us_end']):
-            return 'us'
-        else:
-            return 'closed'
+        """Backward-compat wrapper; use classify_session."""
+        return classify_session(hour=hour, weekend=weekend)
 
     @staticmethod
     def _in_window(h: int, start: int, end: int) -> bool:
@@ -466,7 +452,7 @@ class TimeRiskComponent(BaseMarketComponent):
         vol_risk = float(vol_percentile) / 100.0
 
         # Session baseline risk
-        session_risk_map = {'asian': 0.30, 'european': 0.20, 'us': 0.25, 'rollover': 0.35, 'closed': 0.10}
+        session_risk_map = {'asian': 0.30, 'european': 0.20, 'american': 0.25, 'closed': 0.35}
         session_risk = float(session_risk_map.get(session, 0.20))
 
         combined = 0.40 * factor_risk + 0.40 * vol_risk + 0.20 * session_risk
@@ -589,6 +575,26 @@ class TimeRiskComponent(BaseMarketComponent):
             mult *= 0.95
         elif sr < 0.60:
             mult *= 1.05
+
+        # ═══════════════════════════════════════════════════════════════════
+        # TRADING MODE MANAGER INTEGRATION
+        # Blend mode's session_score into session multipliers
+        # ═══════════════════════════════════════════════════════════════════
+        try:
+            from modules.utils.info_bus import InfoBusManager
+            bus = InfoBusManager.get_instance()
+            decision_factors = bus.get('decision_factors', 'TimeRiskComponent') or {}
+            trading_mode = bus.get('trading_mode', 'TimeRiskComponent') or 'normal'
+            session_score = float(decision_factors.get('session_score', 0.5))
+
+            # If TradingModeManager gives low session score, reduce our multiplier
+            if session_score < 0.5:
+                mode_penalty = 0.7 + (session_score * 0.6)  # 0.7 to 1.0
+                mult *= mode_penalty
+        except Exception:
+            pass  # Graceful fallback
+        # ═══════════════════════════════════════════════════════════════════
+
         self._session_risk_multipliers[session] = float(np.clip(mult, 0.3, 2.0))
 
     # -------------------------------------------------------------------------

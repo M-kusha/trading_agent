@@ -115,17 +115,26 @@ def _predict_timeout_ms(perf: Dict[str, Any], default_ms: float, cfg: 'ModuleCon
 # ─────────────────────────────────────────────────────────────
 @dataclass
 class CircuitBreakerState:
-    """Thread-safe circuit breaker state per module."""
+    """Thread-safe circuit breaker state per module with configurable threshold."""
 
-    def __init__(self):
+    def __init__(self, failure_threshold: int = 3):
         self._lock = threading.RLock()
         self.failure_count: int = 0
+        self.failure_threshold: int = failure_threshold  # Configurable threshold
         self.last_failure_time: float = 0.0
         self.state: str = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
         self.successful_calls: int = 0
         self.total_calls: int = 0
         self.last_success_time: float = 0.0
         self._probe_inflight: bool = False  # allow only a single probe in HALF_OPEN
+
+        # Failure categorization
+        self.failure_types: Dict[str, int] = {
+            'timeout': 0,
+            'crash': 0,
+            'validation': 0,
+            'dependency': 0
+        }
         
 
     def record_success(self):
@@ -143,15 +152,24 @@ class CircuitBreakerState:
                     self.failure_count = max(0, self.failure_count - 1)
 
 
-    def record_failure(self):
+    def record_failure(self, failure_type: str = 'crash'):
         with self._lock:
             self.failure_count += 1
             self.total_calls += 1
             self.last_failure_time = time.time()
+
+            # Track failure type
+            if failure_type in self.failure_types:
+                self.failure_types[failure_type] += 1
+
             # If probing failed, go back to OPEN and free probe flag
             if self.state == "HALF_OPEN":
                 self.state = "OPEN"
                 self._probe_inflight = False
+
+            # Trip breaker if threshold exceeded (only for crash/validation, not timeout)
+            if failure_type != 'timeout' and self.failure_count >= self.failure_threshold:
+                self.state = "OPEN"
 
 
 # Replace these three methods in BaseModule
@@ -813,11 +831,27 @@ class ModuleOrchestrator:
             raise
 
     def _initialize_circuit_breakers(self):
+        """Initialize circuit breakers with adaptive thresholds based on module criticality"""
         with self._circuit_breaker_lock:
+            # Get thresholds from config
+            thresholds = getattr(self.config, 'circuit_breaker_thresholds', {})
+            critical_threshold = int(thresholds.get('critical_modules', 10))
+            voting_threshold = int(thresholds.get('voting_modules', 5))
+            default_threshold = int(thresholds.get('default', 3))
+
             for module_name in self.modules:
-                self.circuit_breakers[module_name] = CircuitBreakerState()
-                self.logger.info(f"[FAST] Initialized circuit breaker for {module_name}")
-        self.logger.info(f"[FAST] Initialized {len(self.circuit_breakers)} circuit breakers")
+                # Determine threshold based on module role
+                if module_name in self.critical_modules:
+                    threshold = critical_threshold
+                elif module_name in self.voting_members:
+                    threshold = voting_threshold
+                else:
+                    threshold = default_threshold
+
+                self.circuit_breakers[module_name] = CircuitBreakerState(failure_threshold=threshold)
+                self.logger.info(f"[FAST] Initialized circuit breaker for {module_name} (threshold={threshold})")
+
+        self.logger.info(f"[FAST] Initialized {len(self.circuit_breakers)} circuit breakers with adaptive thresholds")
 
     def _initialize_emergency_monitoring(self):
         self.emergency_mode = False
@@ -923,10 +957,22 @@ class ModuleOrchestrator:
         self.smart_bus.record_module_failure(module_name, error_msg)
         module.record_execution(dur_ms, False, error_msg)
 
-        cb.record_failure()
-        if cb.failure_count >= self.config.circuit_breaker_threshold:
-            cb.trip()
-            self.logger.error(f"[FAST] Circuit breaker TRIPPED for {module_name}")
+        # Map tag to failure_type for categorization
+        failure_type_map = {
+            'TIME': 'timeout',
+            'TIMEOUT': 'timeout',
+            'CRASH': 'crash',
+            'VALIDATION': 'validation',
+            'DEPENDENCY': 'dependency'
+        }
+        failure_type = failure_type_map.get(tag, 'crash')
+
+        # Record failure with type categorization
+        cb.record_failure(failure_type=failure_type)
+
+        # Only trip breaker if threshold exceeded (crash/validation only)
+        if cb.state == "OPEN":
+            self.logger.error(f"[FAST] Circuit breaker TRIPPED for {module_name} (failures={cb.failure_count}, threshold={cb.failure_threshold}, type={failure_type})")
 
         with self._perf_lock:
             perf = self.module_performance.setdefault(

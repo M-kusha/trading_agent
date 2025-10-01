@@ -82,8 +82,26 @@ execution:
     timeout_ceiling_ms: 30000   # raised to respect largest override
     readiness_grace_s: 3.0      # aligned with logs
     half_open_single_probe: true
-    stale_warn_s: 60.0
+    stale_warn_s: 300.0         # increased to 5min due to orchestrator slowdown (10s->33s per execution)
     dynamic_config_bus_key: "config_update"
+
+  # Circuit breaker thresholds by module criticality
+  circuit_breaker_thresholds:
+    critical_modules: 10         # Critical modules (Executor, MarketDataProvider) get 10 failures
+    voting_modules: 5            # Voting members get 5 failures
+    default: 3                   # Others get 3 failures
+
+  # External Data Sources Configuration
+  MarketDataProvider:
+    config:
+      data_directory: "data/processed"
+      supported_symbols: ["XAU_USD", "EUR_USD"]
+      supported_timeframes: ["H1", "H4", "D1"]
+      primary_timeframe: "H4"
+      update_frequency: 0.0  # Always update on every call - no throttling to prevent stale data
+      buffer_size: 5000
+      enable_technical_indicators: true
+      timeout_ms: 5000  # Generous timeout for data loading and processing
 
 # Optional preflight policy (keeps your current warning non-blocking)
 preflight:
@@ -518,7 +536,7 @@ modules:
       order_validation: true
       risk_checks: true
       slippage_tolerance: 0.001
-      timeout_ms: 1000
+      timeout_ms: 5000  # Increased from 1000ms to prevent circuit breaker trips during data processing
 
   # Trading Modes
   TradingModeManager:
