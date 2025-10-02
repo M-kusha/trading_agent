@@ -954,18 +954,23 @@ class ModuleOrchestrator:
             self.logger.error(f"[FAIL] {module_name} failed ({tag}) after {dur_ms:.1f}ms: {error_msg}")
         except Exception:
             pass
-        self.smart_bus.record_module_failure(module_name, error_msg)
-        module.record_execution(dur_ms, False, error_msg)
-
-        # Map tag to failure_type for categorization
+        # Determine failure type before notifying bus
         failure_type_map = {
             'TIME': 'timeout',
             'TIMEOUT': 'timeout',
             'CRASH': 'crash',
             'VALIDATION': 'validation',
-            'DEPENDENCY': 'dependency'
+            'DEPENDENCY': 'dependency',
         }
         failure_type = failure_type_map.get(tag, 'crash')
+
+        # Only escalate non-timeout failures to the InfoBus circuit breaker.
+        # Timeouts are tracked in the orchestrator breaker but should not trip the
+        # global bus-level breaker which is shared across modules.
+        if failure_type != 'timeout':
+            self.smart_bus.record_module_failure(module_name, error_msg)
+
+        module.record_execution(dur_ms, False, error_msg)
 
         # Record failure with type categorization
         cb.record_failure(failure_type=failure_type)
@@ -2520,7 +2525,7 @@ class ModuleOrchestrator:
         available = sorted(
             (m for m, d in in_degree.items() if d == 0),
             key=lambda m: self.metadata[m].priority,
-            reverse=True
+            reverse=False  # FIX: Lower priority numbers should run first (e.g., -100 before -150)
         )
 
         result: List[str] = []
@@ -2533,7 +2538,7 @@ class ModuleOrchestrator:
                     pri = self.metadata[consumer].priority
                     inserted = False
                     for i, ex in enumerate(available):
-                        if self.metadata[ex].priority < pri:
+                        if self.metadata[ex].priority > pri:  # FIX: Changed from < to > for reverse=False
                             available.insert(i, consumer)
                             inserted = True
                             break
@@ -2543,7 +2548,7 @@ class ModuleOrchestrator:
         remaining = set(self.modules) - set(result)
         if remaining:
             self.logger.warning(f"Orphaned modules: {remaining}")
-            result.extend(sorted(remaining, key=lambda m: self.metadata[m].priority, reverse=True))
+            result.extend(sorted(remaining, key=lambda m: self.metadata[m].priority, reverse=False))  # FIX: Consistent sort order
         return result
 
     def _build_parallel_stages(self) -> List[List[str]]:
@@ -2562,7 +2567,7 @@ class ModuleOrchestrator:
                 stage = sorted(
                     list(remaining)[:self.config.max_parallel_modules],
                     key=lambda m: self.metadata[m].priority,
-                    reverse=True
+                    reverse=False  # FIX: Lower priority numbers should run first
                 )
                 self.logger.warning(f"Forced stage: {stage}")
 

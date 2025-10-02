@@ -124,7 +124,8 @@ class SafeBus:
             return default
         m = module or self._module
         try:
-            return self.bus.get(key, m, default)  # (key, module, default)
+            # Use named argument to avoid binding the default as max_age
+            return self.bus.get(key, m, default=default)  # (key, module, default=...)
         except TypeError:
             try:
                 v = self.bus.get(key, m)         # (key, module)

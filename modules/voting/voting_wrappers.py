@@ -1505,7 +1505,6 @@ _EVCC_INSTANCE = None  # process-lifetime singleton for coordinator reuse
     error_handling=True,
     hot_reload=True,
     timeout_ms=3000,
-    priority=-100,  # Negative priority = runs after voters (priority=0)
 ))
 class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, SmartInfoBusStateMixin):
     """PRODUCTION-GRADE Enhanced Voting Committee Coordinator v4.1 (hardened)"""

@@ -83,7 +83,14 @@ def _bootstrap_debug_logging() -> None:
             bus = InfoBusManager.get_instance()
             # Update config and internal logger
             try:
-                bus.config.update({"debug_mode": True, "log_level": "DEBUG"})
+                # Make the bus more tolerant to transient module errors by
+                # raising the circuit breaker threshold and shortening recovery.
+                bus.config.update({
+                    "debug_mode": True,
+                    "log_level": "DEBUG",
+                    "circuit_breaker_threshold": 5,
+                    "recovery_time_seconds": 30,
+                })
             except Exception:
                 pass
             try:

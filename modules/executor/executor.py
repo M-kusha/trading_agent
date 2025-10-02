@@ -270,6 +270,8 @@ class Executor(BaseModule):
             self.debugger.begin("publish_bus")
             self._publish_all(exec_fills=fills, accepted=accepted, rejected=rejected, step_pnl=step_pnl)
             self.debugger.end("publish_bus")
+            # Prune consumed orders to avoid duplicate_id churn
+            self._prune_order_queue()
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
@@ -287,6 +289,27 @@ class Executor(BaseModule):
             except Exception:
                 pass
             raise
+
+        # Debug: log fills (throttled preview)
+        try:
+            if getattr(self.cfg, "debug_enabled", False) and getattr(self.cfg, "trace_logging", False):
+                limit = max(0, int(getattr(self.cfg, "log_fill_preview", 3)))
+                for f in fills[:limit]:
+                    self.logger.debug(
+                        format_operator_message(
+                            icon="[EXEC]",
+                            message="Fill",
+                            instrument=f.get("instrument"),
+                            action=f.get("action"),
+                            side=f.get("side"),
+                            units=f.get("units"),
+                            price=f.get("price"),
+                            notional=f.get("notional_eur"),
+                            origin=f.get("origin_id"),
+                        )
+                    )
+        except Exception:
+            pass
 
         # debugger report
         try:
@@ -465,7 +488,61 @@ class Executor(BaseModule):
                     else:
                         rejected.append({"reason": self._filter_reason(intent), "intent": intent})
 
+        # Debug summary of intents
+        try:
+            preview_ok = [{k: i.get(k) for k in ("instrument", "action", "intensity", "confidence", "size_eur", "units")} for i in accepted[:3]]
+            preview_bad = []
+            for r in rejected[:3]:
+                node = r.get("intent") or r.get("raw") or {}
+                preview_bad.append({
+                    "reason": r.get("reason"),
+                    "instrument": node.get("instrument"),
+                    "action": node.get("action") or node.get("intent"),
+                    "intensity": node.get("intensity"),
+                    "confidence": node.get("confidence"),
+                })
+            self.logger.debug(
+                format_operator_message(
+                    icon="[EXEC]",
+                    message="Collected intents",
+                    order_queue=q_count,
+                    decisions=dec_count,
+                    accepted=len(accepted),
+                    rejected=len(rejected),
+                    sample_ok=preview_ok,
+                    sample_rejected=preview_bad,
+                )
+            )
+        except Exception:
+            pass
+
         return accepted, rejected, q_count, dec_count
+
+    def _prune_order_queue(self) -> None:
+        """Remove already-seen order IDs from the shared order_queue to prevent duplicate churn."""
+        try:
+            q = self.bus.get("order_queue", "Executor", default=[]) or []
+            if not isinstance(q, list) or not q:
+                return
+            filtered: List[Dict[str, Any]] = []
+            for item in q:
+                oid = None
+                try:
+                    if isinstance(item, dict):
+                        oid = item.get("id")
+                except Exception:
+                    oid = None
+                if oid and oid in self._seen_ids:
+                    continue
+                filtered.append(item)
+            if len(filtered) != len(q):
+                try:
+                    # Best-effort pruning; tolerate owner discipline if enforced
+                    self.bus.set("order_queue", filtered, thesis="Executor pruned consumed orders")
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _normalize_order_item(self, item: Any) -> Optional[Dict[str, Any]]:
         try:

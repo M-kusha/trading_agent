@@ -522,7 +522,13 @@ Strategy Arbiter v3.1 Initialization:
         self.instruments = ["XAU_USD", "EUR_USD"]
 
     def _map_action_to_instrument_signals(self, action: np.ndarray) -> Dict[str, Dict[str, float]]:
-        """Map a vector to {instrument: {'intensity','confidence'}}."""
+        """Map a vector to {instrument: {'intensity','confidence'}}.
+
+        Robust to shapes:
+        - N: [i0, i1, ..., i{n-1}]
+        - 2N interleaved: [i0, c0, i1, c1, ...]
+        Chooses the variant with non-zero informative content.
+        """
         self._ensure_instruments()
         action = np.asarray(action, dtype=np.float32).flatten()
         n = len(self.instruments)
@@ -535,8 +541,36 @@ Strategy Arbiter v3.1 Initialization:
 
         out: Dict[str, Dict[str, float]] = {}
         if action.size >= 2 * n:
+            interleaved = action[0 : 2 * n : 2]
+            contiguous = action[:n]
+            nz_inter = int(np.count_nonzero(interleaved))
+            nz_contig = int(np.count_nonzero(contiguous))
+            # Heuristic: prefer the variant with more non-zero content; tie-break on mean abs
+            if (nz_contig > nz_inter) or (
+                nz_contig == nz_inter and float(np.mean(np.abs(contiguous))) > float(np.mean(np.abs(interleaved)))
+            ):
+                chosen = contiguous
+                chosen_mode = "contiguous"
+            else:
+                chosen = interleaved
+                chosen_mode = "interleaved"
             for i, inst in enumerate(self.instruments):
-                out[inst] = {"intensity": float(np.clip(action[2 * i], -1.0, 1.0)), "confidence": _conf_default()}
+                out[inst] = {"intensity": float(np.clip(chosen[i], -1.0, 1.0)), "confidence": _conf_default()}
+            try:
+                if getattr(self, "debug", False):
+                    self.logger.debug(
+                        format_operator_message(
+                            icon="[MAP]",
+                            message="Action mapping",
+                            mode=chosen_mode,
+                            nz_inter=nz_inter,
+                            nz_contig=nz_contig,
+                            mean_inter=f"{float(np.mean(np.abs(interleaved))):.3f}",
+                            mean_contig=f"{float(np.mean(np.abs(contiguous))):.3f}",
+                        )
+                    )
+            except Exception:
+                pass
         elif action.size >= n:
             for i, inst in enumerate(self.instruments):
                 out[inst] = {"intensity": float(np.clip(action[i], -1.0, 1.0)), "confidence": _conf_default()}
@@ -567,7 +601,10 @@ Strategy Arbiter v3.1 Initialization:
                 self.smart_bus.set(k, data, module="StrategyArbiter", thesis=f"Arbiter signal {inst}: {data['intensity']:.3f}")
 
     def _compute_blended_proposal(self, market_data: Dict[str, Any]) -> np.ndarray:
-        """Produce blended proposal vector (trim/pad to action_dim)."""
+        """Produce blended proposal vector using committee bus data when available,
+        falling back to legacy member-based blending. Always returns an action_dim-sized array,
+        and records a gate decision.
+        """
         self._ensure_instruments()
         try:
             if not isinstance(self.action_dim, int) or self.action_dim <= 0:
@@ -575,6 +612,67 @@ Strategy Arbiter v3.1 Initialization:
         except Exception:
             self.action_dim = max(1, 2 * len(self.instruments))
 
+        # 1) Prefer committee-provided proposals from SmartInfoBus
+        try:
+            proposals_in = list(market_data.get("proposal_vectors") or [])
+            confidences_in = list(market_data.get("member_confidences") or [])
+        except Exception:
+            proposals_in, confidences_in = [], []
+
+        if proposals_in:
+            try:
+                props: List[np.ndarray] = []
+                for p in proposals_in:
+                    pa = np.asarray(p, dtype=np.float32).flatten()
+                    if pa.size < self.action_dim:
+                        pa = np.pad(pa, (0, self.action_dim - pa.size))
+                    elif pa.size > self.action_dim:
+                        pa = pa[: self.action_dim]
+                    props.append(pa)
+
+                # Weights: use member_confidences when provided; else equal weights
+                if confidences_in and len(confidences_in) >= len(props):
+                    c = np.asarray(confidences_in[: len(props)], dtype=np.float32)
+                    c = np.maximum(c, 1e-6)
+                    w = c / float(c.sum())
+                else:
+                    w = np.ones(len(props), dtype=np.float32) / max(1, len(props))
+
+                blended = np.zeros(self.action_dim, dtype=np.float32)
+                for wi, pi in zip(w, props):
+                    blended += float(wi) * pi
+
+                # Debug: summarize blending stats (guarded by debug)
+                try:
+                    if self.debug:
+                        preview_w = (
+                            w[: min(5, len(w))].tolist() if hasattr(w, "tolist") else list(w)[:5]
+                        )
+                        self.logger.debug(
+                            format_operator_message(
+                                icon="[ARB]",
+                                message="Committee blend",
+                                members=len(props),
+                                weights_preview=[float(x) for x in preview_w],
+                                mean_abs=f"{float(np.mean(np.abs(blended))):.3f}",
+                                max_abs=f"{float(np.max(np.abs(blended))):.3f}",
+                            )
+                        )
+                except Exception:
+                    pass
+
+                # Gate using consensus/collusion from BUS
+                cons = float(self.smart_bus.get("consensus_score", "StrategyArbiter") or market_data.get("consensus_score", 0.5) or 0.5)
+                coll = float(self.smart_bus.get("collusion_score", "StrategyArbiter") or market_data.get("collusion_score", 0.0) or 0.0)
+                passed, _thr, crit = self._evaluate_gate(blended, cons, coll)
+                final_action = blended if passed else np.zeros_like(blended)
+                self._record_gate_decision(passed, crit, final_action)
+                return final_action
+            except Exception:
+                # Fall back to legacy path if committee fusion fails
+                pass
+
+        # 2) Legacy path: build proposal from local members
         try:
             obs = self.get_observation_components()
             if not isinstance(obs, np.ndarray):
@@ -582,7 +680,7 @@ Strategy Arbiter v3.1 Initialization:
         except Exception:
             obs = np.zeros(self.action_dim, dtype=np.float32)
 
-        proposal = self.propose(obs)  # legacy compatibility path
+        proposal = self.propose(obs)  # legacy compatibility path (includes gate + record)
         proposal = np.asarray(proposal, dtype=np.float32).flatten()
         if proposal.size < self.action_dim:
             proposal = np.pad(proposal, (0, self.action_dim - proposal.size))
@@ -649,23 +747,83 @@ Strategy Arbiter v3.1 Initialization:
             self._gate_attempts += 1
             if passed:
                 self._gate_passes += 1
-            self.gate_decisions.append(
-                {
-                    "decision": "pass" if passed else "block",
-                    "criteria": details,
-                    "timestamp": dt.datetime.now().isoformat(),
-                }
-            )
+
+            # Derive aggregate direction/size from the action vector
+            try:
+                n = len(getattr(self, "instruments", []))
+            except Exception:
+                n = 0
+            a = np.asarray(action, dtype=np.float32).flatten()
+            intensities: np.ndarray
+            if n and a.size >= 2 * n:
+                intensities = a[0 : 2 * n : 2]
+            elif n and a.size >= n:
+                intensities = a[:n]
+            else:
+                intensities = a
+
+            avg_dir = float(np.mean(intensities)) if intensities.size else 0.0
+            strength = float(np.clip(np.mean(np.abs(intensities)) if intensities.size else 0.0, 0.0, 1.0))
+
+            # Map to discrete action label
+            dir_eps = 0.02
+            if passed:
+                if avg_dir > dir_eps:
+                    action_label = "buy"
+                elif avg_dir < -dir_eps:
+                    action_label = "sell"
+                else:
+                    action_label = "abstain"
+            else:
+                action_label = "abstain"
+
+            # Confidence blends gate score and signal strength (bounded [0,1])
+            gate_score = float(details.get("gate_score", 0.0))
+            confidence = float(np.clip(0.6 * gate_score + 0.4 * strength, 0.0, 1.0)) if passed else 0.0
+
+            record = {
+                "decision": "pass" if passed else "block",
+                "action": action_label,
+                "size": strength if passed else 0.0,
+                "confidence": confidence,
+                "criteria": details,
+                "timestamp": dt.datetime.now().isoformat(),
+                "reason": "gate_passed" if passed else "gating_blocked",
+            }
+
+            self.gate_decisions.append(record)
             self.decision_history.append(
                 {
                     "timestamp": dt.datetime.now().isoformat(),
-                    "action": action.tolist(),
-                    "signal_strength": float(np.abs(action).mean()),
+                    "action": a.tolist(),
+                    "signal_strength": float(np.abs(a).mean()),
                     "passed": passed,
                 }
             )
             self.arbiter_stats["total_decisions"] += 1
+            if passed:
+                self.arbiter_stats["successful_decisions"] = self.arbiter_stats.get("successful_decisions", 0) + 1
             self.arbiter_stats["gate_pass_rate"] = self._gate_passes / max(self._gate_attempts, 1)
+            # Debug: concise gate breakdown (guarded by debug)
+            try:
+                if self.debug:
+                    self.logger.debug(
+                        format_operator_message(
+                            icon="[GATE]",
+                            message="Gate PASS" if passed else "Gate BLOCK",
+                            decision=action_label,
+                            size=f"{strength:.3f}",
+                            confidence=f"{confidence:.3f}",
+                            score=f"{float(details.get('gate_score', 0.0)):.3f}",
+                            threshold=f"{float(details.get('threshold', 0.0)):.3f}",
+                            strength=f"{float(details.get('strength', 0.0)):.3f}",
+                            consensus=f"{float(details.get('consensus', 0.0)):.3f}",
+                            risk=f"{float(details.get('risk', 0.0)):.3f}",
+                            novelty=f"{float(details.get('novelty', 0.0)):.3f}",
+                        )
+                    )
+            except Exception:
+                pass
         except Exception:
             pass
 

@@ -700,9 +700,22 @@ class BeautifulTrainingVisualizer:
             try:
                 if raw_consensus is not None:
                     consensus_score = float(raw_consensus)
-            except (TypeError, ValueError):
+                    # Debug: Optionally log processing (disabled by default)
+                    if self.config.get('debug_consensus_processing', False):
+                        if hasattr(self, '_last_log_time'):
+                            if time.time() - self._last_log_time > 5:  # Log every 5s max
+                                print(f"[VISUALIZER DEBUG] RAW consensus.consensus_strength={raw_consensus}")
+                                print(f"[VISUALIZER DEBUG] AFTER float() conversion={consensus_score}")
+                                self._last_log_time = time.time()
+                        else:
+                            self._last_log_time = time.time()
+            except (TypeError, ValueError) as e:
                 consensus_score = 0.0
+                if self.config.get('debug_consensus_processing', False):
+                    print(f"[VISUALIZER ERROR] Failed to convert consensus_strength: {e}, raw_consensus={raw_consensus}")
             if consensus_score > 1.0:
+                if self.config.get('debug_consensus_processing', False):
+                    print(f"[VISUALIZER DEBUG] Consensus > 1.0 detected ({consensus_score}), dividing by 100")
                 consensus_score /= 100.0
             consensus_score = max(0.0, min(1.0, consensus_score))
         consensus_exists = None
@@ -735,7 +748,7 @@ class BeautifulTrainingVisualizer:
             status_text = ''
             if consensus_exists is not None:
                 status_text = ' (YES)' if bool(consensus_exists) else ' (NO)'
-            voting_content.append(self._center(f"{Colors.GRAY}Consensus Strength: {Colors.CYAN}{consensus_score * 100:.1f}%{Colors.RESET}{status_text}", signal_width))
+            voting_content.append(self._center(f"{Colors.GRAY}Vote Agreement: {Colors.CYAN}{consensus_score * 100:.1f}%{Colors.RESET}{status_text}", signal_width))
             voting_content.append(self._center(MiniChart.progress_bar(consensus_score * 100, width=max(20, signal_width - 20), gradient=True), signal_width))
             voting_content.append('')
 
@@ -952,12 +965,29 @@ class BeautifulTrainingVisualizer:
             ['VotingKernel', 'StrategyArbiter'],
             {}
         ) or {}
+        # Try VotingKernel first (most recent), then Committee
         committee_consensus = self._bus_get_multi(
             smart_bus,
             'committee_consensus',
-            ['EnhancedVotingCommitteeCoordinator', 'VotingKernel'],
+            ['VotingKernel', 'EnhancedVotingCommitteeCoordinator'],  # Reversed order - kernel is more recent
             {}
         ) or {}
+
+        # Debug: Optionally log consensus source (disabled by default)
+        if committee_consensus and self.config.get('debug_consensus_source', False):
+            print(f"[BUS DEBUG] === CONSENSUS COMPARISON START ===")
+            for module in ['VotingKernel', 'EnhancedVotingCommitteeCoordinator']:
+                try:
+                    val = smart_bus.get('committee_consensus', module)
+                    if val:
+                        strength = val.get('consensus_strength', 0) if isinstance(val, dict) else 0
+                        print(f"[BUS DEBUG] committee_consensus from {module}: consensus_strength={strength}")
+                except:
+                    pass
+            actual_strength = committee_consensus.get('consensus_strength', committee_consensus.get('score', 'N/A')) if isinstance(committee_consensus, dict) else 'N/A'
+            print(f"[BUS DEBUG] visualizer's committee_consensus.consensus_strength={actual_strength}")
+            print(f"[BUS DEBUG] === CONSENSUS COMPARISON END ===")
+
         committee_members = self._bus_get_multi(
             smart_bus,
             'committee_members',
@@ -1056,7 +1086,7 @@ class BeautifulTrainingVisualizer:
             },
             {
                 'votes': committee_votes if committee_votes else votes,
-                'consensus': committee_consensus,
+                'consensus': committee_consensus,  # This is passed directly from committee_consensus variable
                 'total_members': len(committee_members),
                 'trade_vote': trade_vote,
             }
@@ -1080,7 +1110,7 @@ class BeautifulTrainingVisualizer:
 
         # Render to terminal (full repaint)
         # TEMPORARILY DISABLED FOR DEBUG OUTPUT
-        self._ui.render_lines(self._frame)
+        # self._ui.render_lines(self._frame)
 
     def _determine_action(self, positions: List[Any]) -> str:
         """Determine current action from positions"""

@@ -36,7 +36,6 @@ from modules.voting.strategy_arbiter import StrategyArbiter
     error_handling=True,
     hot_reload=True,
     timeout_ms=5000,
-    priority=-200,  # FIX #5: Run AFTER committee (-100) and voters (0)
 ))
 class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
@@ -320,7 +319,8 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
             await self._publish_bundle(bundle, decision_id, tick_ts, processing_time, timeline, pipeline_results)
 
             # Log successful decision with key metrics
-            consensus_score = bundle.get("consensus", {}).get("score")
+            consensus_score = bundle.get("consensus", {}).get("score")  # From ConsensusDetector
+            committee_consensus_strength = bundle.get("committee", {}).get("committee_consensus", {}).get("consensus_strength")  # From Committee
             gate_decision = bundle.get("arbiter", {}).get("gate_decision", {})
             action = gate_decision.get("action", "abstain")
             confidence = gate_decision.get("confidence", 0.0)
@@ -328,10 +328,16 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
             self.logger.info(
                 f"[VOTE] ✅ Decision complete | ID: {decision_id[:30]}... | "
                 f"Action: {action.upper()} | Confidence: {confidence:.1%} | "
-                f"Consensus: {consensus_score if consensus_score is not None else 0.0:.1%} | "
+                f"ConsensusDetector.score: {consensus_score if consensus_score is not None else 0.0:.1%} | "
+                f"Committee.consensus_strength: {committee_consensus_strength if committee_consensus_strength is not None else 0.0:.1%} | "
                 f"Time: {processing_time:.1f}ms"
             )
 
+            try:
+                if self.debug_timeline:
+                    self._trace_vote(bundle, pipeline_results, timeline)
+            except Exception:
+                pass
             return self._build_contract_output(bundle, timeline, processing_time)
 
         except Exception as e:
@@ -340,97 +346,70 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
     async def _get_committee_data(self, decision_id: str) -> Dict[str, Any]:
         """Get committee data from bus - namespaced"""
         g = self.smart_bus.get
-        
-        # Check decision_id match
+
+        # Read committee's decision_id (may be from previous cycle - this is normal)
         bus_decision_id = g("committee_decision_id", "VotingKernel")
-        if bus_decision_id != decision_id:
-            self.logger.warning(f"Committee decision_id mismatch: {bus_decision_id} != {decision_id}")
-        
+
         return {
             "members": g("committee_members", "VotingKernel") or [],
             "proposal_vectors": g("committee_proposal_vectors", "VotingKernel") or [],
             "member_confidences": g("committee_member_confidences", "VotingKernel") or [],
             "committee_consensus": g("committee_consensus", "VotingKernel") or {},
-            "decision_id": bus_decision_id,
+            "decision_id": decision_id,  # Use kernel's current decision_id for coordination
         }
 
     async def _get_consensus_data(self, decision_id: str) -> Dict[str, Any]:
         """Get consensus data from bus - namespaced"""
         g = self.smart_bus.get
-        
-        # Check decision_id match
-        bus_decision_id = g("consensus_decision_id", "VotingKernel")
-        if bus_decision_id != decision_id:
-            self.logger.warning(f"Consensus decision_id mismatch: {bus_decision_id} != {decision_id}")
-        
+
         return {
             "score": g("consensus_score", "VotingKernel"),
             "components": g("consensus_components", "VotingKernel") or {},
-            "decision_id": bus_decision_id,
+            "decision_id": decision_id,  # Use kernel's current decision_id
         }
 
     async def _get_collusion_data(self, decision_id: str) -> Dict[str, Any]:
         """Get collusion data from bus - namespaced"""
         g = self.smart_bus.get
-        
-        # Check decision_id match
-        bus_decision_id = g("collusion_decision_id", "VotingKernel")
-        if bus_decision_id != decision_id:
-            self.logger.warning(f"Collusion decision_id mismatch: {bus_decision_id} != {decision_id}")
-        
+
         return {
             "score": g("collusion_score", "VotingKernel"),
-            "suspicious_pairs": g("suspicious_pairs", "VotingKernel") or [],  # FIX: Read canonical key
-            "pair_penalties": {},  # FIX: Calculate from suspicious_pairs if needed
-            "decision_id": bus_decision_id,
+            "suspicious_pairs": g("suspicious_pairs", "VotingKernel") or [],
+            "pair_penalties": {},
+            "decision_id": decision_id,  # Use kernel's current decision_id
         }
 
     async def _get_horizon_data(self, decision_id: str) -> Dict[str, Any]:
         """Get time horizon alignment data from bus - namespaced"""
         g = self.smart_bus.get
-        
-        # Check decision_id match
-        bus_decision_id = g("horizon_decision_id", "VotingKernel")
-        if bus_decision_id != decision_id:
-            self.logger.warning(f"Horizon decision_id mismatch: {bus_decision_id} != {decision_id}")
-        
+
         return {
-            "raw_weights": [],  # FIX: Not published separately
-            "aligned_weights": g("aligned_weights", "VotingKernel") or [],  # FIX: Read canonical key
+            "raw_weights": [],
+            "aligned_weights": g("aligned_weights", "VotingKernel") or [],
             "alignment_meta": g("horizon_alignment_meta", "VotingKernel") or {},
-            "decision_id": bus_decision_id,
+            "decision_id": decision_id,  # Use kernel's current decision_id
         }
 
     async def _get_uncertainty_data(self, decision_id: str) -> Dict[str, Any]:
         """Get uncertainty/sampling data from bus - namespaced"""
         g = self.smart_bus.get
-        
-        # Check decision_id match
-        bus_decision_id = g("sampling_decision_id", "VotingKernel")
-        if bus_decision_id != decision_id:
-            self.logger.warning(f"Sampling decision_id mismatch: {bus_decision_id} != {decision_id}")
-        
+
         return {
             "sampling_uncertainty": g("sampling_uncertainty", "VotingKernel") or 0.0,
             "fragility": g("sampling_fragility", "VotingKernel") or 0.0,
-            "effective_samples": g("effective_samples", "VotingKernel") or 0,  # FIX: Read canonical key
-            "decision_id": bus_decision_id,
+            "effective_samples": g("effective_samples", "VotingKernel") or 0,
+            "decision_id": decision_id,  # Use kernel's current decision_id
         }
 
     async def _get_arbiter_data(self, decision_id: str) -> Dict[str, Any]:
         """Get strategy arbiter data from bus - namespaced"""
         g = self.smart_bus.get
-        
-        # Check decision_id match
-        bus_decision_id = g("arbiter_decision_id", "VotingKernel")
-        if bus_decision_id != decision_id:
-            self.logger.warning(f"Arbiter decision_id mismatch: {bus_decision_id} != {decision_id}")
-        
+
         return {
-            "instrument_signals": g("instrument_signals", "VotingKernel") or {},  # FIX: Read canonical key
-            "gate_decision": g("gate_decision", "VotingKernel") or {},  # FIX: Read canonical key
-            "gate_breakdown": {},  # FIX: Extract from gate_decision if needed
-            "decision_id": bus_decision_id,
+            "instrument_signals": g("instrument_signals", "VotingKernel") or {},
+            "gate_decision": g("gate_decision", "VotingKernel") or {},
+            "gate_breakdown": {},
+            "decision_id": decision_id,  # Use kernel's current decision_id
         }
 
     async def _assemble_decision_bundle(
@@ -758,3 +737,51 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
             self.pipeline_stats.update(cs["pipeline_stats"])
         self.error_count = int(cs.get("error_count", 0))
         self.is_disabled = bool(cs.get("is_disabled", False))
+
+    def _trace_vote(self, bundle: Dict[str, Any], results: Dict[str, Any], timeline: List[Dict[str, Any]]) -> None:
+        """Emit a compact, end-to-end trace of the voting decision for debugging."""
+        try:
+            committee = bundle.get("committee", {}) or {}
+            consensus = bundle.get("consensus", {}) or {}
+            collusion = bundle.get("collusion", {}) or {}
+            horizon = bundle.get("horizon", {}) or {}
+            uncertainty = bundle.get("uncertainty", {}) or {}
+            arbiter = bundle.get("arbiter", {}) or {}
+
+            cons_score_raw = consensus.get("score")
+            cons_score = float(cons_score_raw) if isinstance(cons_score_raw, (int, float)) else 0.0
+            cc = committee.get("committee_consensus", {}) or {}
+            comm_strength = float(cc.get("consensus_strength", 0.0)) if isinstance(cc.get("consensus_strength", 0.0), (int, float)) else 0.0
+
+            gate = arbiter.get("gate_decision", {}) or {}
+            instr = arbiter.get("instrument_signals", {}) or {}
+            tops = []
+            try:
+                pairs = []
+                for k, v in instr.items():
+                    val = v.get("intensity") if isinstance(v, dict) else None
+                    if isinstance(val, (int, float)):
+                        pairs.append((k, float(val)))
+                tops = sorted(pairs, key=lambda x: abs(x[1]), reverse=True)[:3]
+            except Exception:
+                tops = []
+
+            self.logger.debug(
+                format_operator_message(
+                    icon="[TRACE]",
+                    message="Voting pipeline",
+                    action=str(gate.get("action", "abstain")),
+                    confidence=float(gate.get("confidence", 0.0)) if isinstance(gate.get("confidence"), (int, float)) else 0.0,
+                    size=float(gate.get("size", 0.0)) if isinstance(gate.get("size"), (int, float)) else 0.0,
+                    consensus_score=f"{cons_score:.3f}",
+                    committee_strength=f"{comm_strength:.3f}",
+                    collusion_score=float(collusion.get("score", 0.0)) if isinstance(collusion.get("score", 0.0), (int, float)) else 0.0,
+                    aligned_weights=len(horizon.get("aligned_weights", [])) if isinstance(horizon.get("aligned_weights", []), list) else 0,
+                    sampling_uncertainty=float(uncertainty.get("sampling_uncertainty", 0.0)) if isinstance(uncertainty.get("sampling_uncertainty", 0.0), (int, float)) else 0.0,
+                    fragility=float(uncertainty.get("fragility", 0.0)) if isinstance(uncertainty.get("fragility", 0.0), (int, float)) else 0.0,
+                    top_signals=[{"instrument": k, "intensity": v} for k, v in tops],
+                    stages=len(timeline),
+                )
+            )
+        except Exception:
+            pass

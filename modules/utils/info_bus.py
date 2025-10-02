@@ -378,6 +378,10 @@ class CircuitBreakerState:
     consecutive_successes: int = 0
     failure_history: deque = field(default_factory=lambda: deque(maxlen=100))
     success_history: deque = field(default_factory=lambda: deque(maxlen=100))
+    # Diagnostics
+    last_error: str = ""
+    last_error_time: float = 0.0
+    last_open_reason: str | None = None  # why we moved to OPEN (threshold/rate/probe)
 
     def record_success(self):
         self.successful_calls += 1
@@ -427,8 +431,12 @@ class CircuitBreakerState:
     def should_allow_request(self, recovery_time: float, failure_threshold: int = 5) -> bool:
         now = time.time()
         if self.state == "CLOSED":
-            if (self.consecutive_failures >= failure_threshold or
-                    (self.failure_rate > 0.5 and self.total_calls > 10)):
+            if self.consecutive_failures >= failure_threshold:
+                self.last_open_reason = "consecutive_failures_threshold"
+                self.trip()
+                return False
+            if (self.failure_rate > 0.5 and self.total_calls > 10):
+                self.last_open_reason = "failure_rate_threshold"
                 self.trip()
                 return False
             return True
@@ -445,6 +453,8 @@ class CircuitBreakerState:
             return True
         trials = getattr(self, "_half_open_trials", 0)
         if trials >= 3:
+            # Hit probe limit without enough successes
+            self.last_open_reason = self.last_open_reason or "half_open_probe_limit"
             return False
         setattr(self, "_half_open_trials", trials + 1)
         return True
@@ -480,7 +490,10 @@ class CircuitBreakerState:
             'last_failure_time': self.last_failure_time,
             'last_success_time': self.last_success_time,
             'health_score': self.get_health_score(),
-            'predicted_next_failure': self.predict_next_failure()
+            'predicted_next_failure': self.predict_next_failure(),
+            'last_error': (self.last_error[:200] if isinstance(self.last_error, str) else str(self.last_error)),
+            'last_error_time': self.last_error_time,
+            'open_reason': self.last_open_reason,
         }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1528,7 +1541,20 @@ class SmartInfoBus:
                     return default
 
                 age_seconds = data.age_seconds()
-                max_age_check = max_age or self.config.max_data_age_seconds
+                # Defensive: callers sometimes pass default as positional 3rd arg, which binds to max_age.
+                # Ensure max_age_check is numeric; otherwise fall back to configured max age and warn once.
+                if isinstance(max_age, (int, float)):
+                    max_age_check = float(max_age)
+                else:
+                    max_age_check = float(self.config.max_data_age_seconds)
+                    if max_age is not None and not isinstance(max_age, (int, float)):
+                        try:
+                            self.logger.warning(
+                                f"[BUS][GET] Non-numeric max_age for key '{full_key}' from {module};"
+                                f" using default {max_age_check}s (got type {type(max_age).__name__})"
+                            )
+                        except Exception:
+                            pass
                 if age_seconds > max_age_check:
                     self._emit('stale_data_warning', {'key': full_key, 'age': age_seconds, 'module': module, 'max_age': max_age_check})
                     self.logger.warning(f"Stale data: {full_key} is {age_seconds:.1f}s old (max: {max_age_check}s)")

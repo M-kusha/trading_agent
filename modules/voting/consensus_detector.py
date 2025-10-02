@@ -352,32 +352,46 @@ Consensus Detector v3.1 Initialization:
         """Pull everything we may need from the bus with safe fallbacks (schema v1-aware)."""
         try:
             g = self.smart_bus.get
+            
+            # FIX: Read from modules that PUBLISH voting data, not from self!
+            # Committee publishes the actual voting data
+            source_modules = ["EnhancedVotingCommitteeCoordinator", "VotingKernel"]
+            
+            # Helper to try multiple modules
+            def get_from_sources(key: str, default=None):
+                for module in source_modules:
+                    val = g(key, module)
+                    if val is not None:
+                        return val
+                return default
+            
             # Prefer the canonical committee surfaces; keep legacy fallbacks.
             member_confs = (
-                g("member_confidences_ordered", "ConsensusDetector")
-                or g("member_confidences", "ConsensusDetector")
+                get_from_sources("member_confidences_ordered")
+                or get_from_sources("member_confidences")
                 or []
             )
+            
             return {
                 # Canonical numeric vectors for analytics (preferred)
-                "proposal_vectors": g("proposal_vectors", "ConsensusDetector") or [],
+                "proposal_vectors": get_from_sources("proposal_vectors") or [],
                 # Legacy / UI-friendly fallbacks
-                "raw_proposals": g("raw_proposals", "ConsensusDetector") or [],
-                "votes": g("votes", "ConsensusDetector") or [],
+                "raw_proposals": get_from_sources("raw_proposals") or [],
+                "votes": get_from_sources("votes") or get_from_sources("committee_votes") or [],
                 # Confidences (aligned to proposal_vectors order when present)
                 "member_confidences": member_confs,
                 # Context
-                "voting_summary": g("voting_summary", "ConsensusDetector") or {},
-                "alpha_weights": g("alpha_weights", "ConsensusDetector") or [],
-                "blended_action": g("blended_action", "ConsensusDetector") or [],
-                "market_context": g("market_context", "ConsensusDetector") or {},
-                "agreement_score": g("agreement_score", "ConsensusDetector") or 0.5,
-                "consensus_direction": g("consensus_direction", "ConsensusDetector") or "neutral",
-                "market_regime": g("market_regime", "ConsensusDetector") or "unknown",
-                "volatility_data": g("volatility_data", "ConsensusDetector") or {},
-                # Pass-through orchestration tags (set by the committee)
-                "decision_id": g("decision_id", "ConsensusDetector"),
-                "tick_ts": g("tick_ts", "ConsensusDetector"),
+                "voting_summary": get_from_sources("voting_summary") or {},
+                "alpha_weights": get_from_sources("alpha_weights") or [],
+                "blended_action": get_from_sources("blended_action") or [],
+                "market_context": get_from_sources("market_context") or g("market_conditions", "UnifiedMarketModule") or {},
+                "agreement_score": get_from_sources("agreement_score") or 0.5,
+                "consensus_direction": get_from_sources("consensus_direction") or "neutral",
+                "market_regime": get_from_sources("market_regime") or g("market_regime", "UnifiedMarketModule") or "unknown",
+                "volatility_data": get_from_sources("volatility_data") or g("volatility_level", "UnifiedMarketModule") or {},
+                # Pass-through orchestration tags (set by the kernel)
+                "decision_id": g("kernel_decision_id", "VotingKernel") or g("decision_id", "VotingKernel"),
+                "tick_ts": g("kernel_tick_ts", "VotingKernel") or g("tick_ts", "VotingKernel"),
             }
         except Exception as e:
             ctx = self.error_pinpointer.analyze_error(e, "ConsensusDetector")

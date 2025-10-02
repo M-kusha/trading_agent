@@ -1632,6 +1632,29 @@ class PositionManager(
                 except Exception:
                     pass
 
+            # Per-instrument mapping debug (source + values)
+            try:
+                if self.debug and inst_dict:
+                    src = inst_dict.get("intensity_source", "none")
+                    iv = inst_dict.get("intensity", 0.0)
+                    vol_v = inst_dict.get("volatility", self.C.min_volatility)
+                    tr = inst_dict.get("trend_strength", 0.0)
+                    mo = inst_dict.get("momentum", 0.0)
+                    self.logger.debug(
+                        format_operator_message(
+                            icon="[MAP]",
+                            message="Signal mapping",
+                            instrument=inst,
+                            source=str(src),
+                            intensity=f"{float(iv if isinstance(iv, (int, float)) else 0.0):.3f}",
+                            volatility=f"{float(vol_v if isinstance(vol_v, (int, float)) else self.C.min_volatility):.4f}",
+                            trend=f"{float(tr if isinstance(tr, (int, float)) else 0.0):.3f}",
+                            momentum=f"{float(mo if isinstance(mo, (int, float)) else 0.0):.3f}",
+                        )
+                    )
+            except Exception:
+                pass
+
             out[inst] = inst_dict
             have_any = have_any or bool(inst_dict)
 
@@ -2246,6 +2269,24 @@ class PositionManager(
             "current_exposure": context.current_exposure,
             "drawdown": context.drawdown,
         }
+        # Integrated debug log
+        try:
+            if self.debug:
+                self.logger.debug(
+                    format_operator_message(
+                        icon="[POS]",
+                        message="Decision",
+                        instrument=instrument,
+                        decision=result.decision.value,
+                        intensity=f"{result.intensity:.3f}",
+                        size_eur=f"{result.size:.2f}",
+                        confidence=f"{result.confidence:.3f}",
+                        signal_strength=f"{signal_strength:.3f}",
+                        volatility=f"{context.volatility:.4f}",
+                    )
+                )
+        except Exception:
+            pass
         self.debugger.log_decision(
             instrument=instrument,
             decision=result.decision.value,

@@ -751,8 +751,24 @@ class SystemIntegritySuite:
             self.logger.info(_fmt("📝", "BUS SET", key=key, provider=provider, version=version))
 
     def _on_module_disabled(self, evt: Dict[str, Any]) -> None:
-        self.logger.error(_fmt("🚫", "MODULE DISABLED", module=evt.get("module"),
-                               failures=evt.get("failures"), consecutive=evt.get("consecutive_failures")))
+        try:
+            cb = evt.get("circuit_breaker_state", {}) or {}
+            reason = evt.get("reason") or cb.get("open_reason")
+            last_error = cb.get("last_error") or evt.get("error")
+            self.logger.error(_fmt(
+                "🚫",
+                "MODULE DISABLED",
+                module=evt.get("module"),
+                failures=evt.get("failures"),
+                consecutive=evt.get("consecutive_failures"),
+                failure_rate=f"{float(evt.get('failure_rate', 0.0)):.1%}" if evt.get('failure_rate') is not None else None,
+                reason=reason,
+                last_error=(str(last_error)[:160] if last_error else None),
+            ))
+        except Exception:
+            # Fallback to minimal message
+            self.logger.error(_fmt("🚫", "MODULE DISABLED", module=evt.get("module"),
+                                   failures=evt.get("failures"), consecutive=evt.get("consecutive_failures")))
 
     def _on_module_enabled(self, evt: Dict[str, Any]) -> None:
         self.logger.info(_fmt("✅", "MODULE ENABLED", module=evt.get("module")))
