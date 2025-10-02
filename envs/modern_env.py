@@ -135,11 +135,30 @@ class ModernTradingEnv(gym.Env):
 
         # Track minimum available data length across all instruments/timeframes
         try:
-            self._min_data_len = min(
-                (len(df) for inst in self.instruments for df in self.data[inst].values()),
-                default=0,
-            )
-        except Exception:
+            # Build diagnostic mapping for troubleshooting
+            data_lengths = {}
+            for inst in self.instruments:
+                for tf, df in self.data[inst].items():
+                    data_lengths[f"{inst}/{tf}"] = len(df)
+
+            self._min_data_len = min(data_lengths.values()) if data_lengths else 0
+
+            # Log data inventory for diagnostics
+            if data_lengths:
+                self.logger.info(f"📊 DATA_INVENTORY: {len(self.instruments)} instruments")
+                for key, length in sorted(data_lengths.items()):
+                    self.logger.info(f"  - {key}: {length:,} bars")
+                self.logger.info(f"  ➜ Minimum length: {self._min_data_len:,} bars")
+
+                # Warn if data is critically short
+                if self._min_data_len < 50:
+                    self.logger.warning(
+                        f"⚠️ CRITICAL: Minimum data length is only {self._min_data_len} bars! "
+                        f"Episodes will end after ~{self._min_data_len - 1} steps. "
+                        f"This severely limits training effectiveness."
+                    )
+        except Exception as e:
+            self.logger.error(f"Failed to compute data lengths: {e}")
             self._min_data_len = 0
 
         if not self.instruments:
@@ -173,6 +192,23 @@ class ModernTradingEnv(gym.Env):
         # Only publish local market windows if provider is NOT active
         if not self._bus_data_active:
             self._store_market_data_local()
+
+        # CRITICAL FIX: If data is too short for meaningful training, raise an error
+        # This prevents silent failures where episodes end after just a few steps
+        min_required_bars = int(getattr(self.config, "min_required_data_bars", 50))
+        if self._min_data_len < min_required_bars:
+            raise ValueError(
+                f"⚠️ INSUFFICIENT DATA: Minimum data length is {self._min_data_len} bars, "
+                f"but at least {min_required_bars} bars are required for meaningful training. "
+                f"\n\nPossible causes:"
+                f"\n  1. CSV files in data/processed/ have very few rows"
+                f"\n  2. MarketDataProvider is publishing small windows instead of full history"
+                f"\n  3. Data files are corrupted or improperly formatted"
+                f"\n\nSolutions:"
+                f"\n  1. Check your data files and ensure they have sufficient historical data"
+                f"\n  2. Set config.min_required_data_bars to a lower value (not recommended)"
+                f"\n  3. Disable bus data: set prefer_bus_data=False in config"
+            )
 
         modules = len(self.orchestrator.modules) if (self.orchestrator and hasattr(self.orchestrator, "modules")) else 0
         self.logger.info(f"🚀 MODERN_ENV_INITIALIZED: {len(self.instruments)} instruments, {modules} modules - Bus-first")
@@ -643,6 +679,15 @@ class ModernTradingEnv(gym.Env):
                 except Exception:
                     pass
 
+        else:
+            # Orchestrator not enabled; optionally throttle step speed for stability
+            try:
+                ss_ms = float(getattr(self.config, "step_sleep_ms", 0.0) or 0.0)
+                if ss_ms > 0:
+                    time.sleep(min(200.0, ss_ms) / 1000.0)
+            except Exception:
+                pass
+
         # Reward shaping (bus-first)
         reward: Optional[float] = None
         try:
@@ -698,6 +743,21 @@ class ModernTradingEnv(gym.Env):
             "terminated": terminated,
             "truncated": truncated,
         }
+        # Emit a brief end-of-episode note to help diagnose fast resets
+        if terminated or truncated:
+            try:
+                reason = "unknown"
+                if int(self.current_step) >= int(self.config.max_steps):
+                    reason = "max_steps"
+                elif self._min_data_len and int(self.current_step) >= int(self._min_data_len) - 1:
+                    reason = "data_end"
+                elif float(self.market_state.balance) <= 0.0:
+                    reason = "bankrupt"
+                else:
+                    reason = "drawdown_or_limit"
+                self.logger.info(f"[EPISODE_END] episode={self.episode_count} steps={self.current_step} reason={reason}")
+            except Exception:
+                pass
         return obs, float(reward), terminated, truncated, info
 
     # ──────────────────────────────────────────────────────────────

@@ -484,6 +484,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                     "module": "ExecutionQualityMonitor",
                     "topic": "execution_quality",
                     "vote": "halt",
+                    "action": "halt",
                     "confidence": 0.1,
                     "sizing_multiplier": 0.0,
                     "reasoning": "Error state - halting.",
@@ -1633,6 +1634,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             "module": "ExecutionQualityMonitor",
             "topic": "execution_quality",
             "vote": vote.value,
+            "action": vote.value,  # Standard action field for committee compatibility
             "confidence": float(confidence),
             "sizing_multiplier": float(sizing),
             "reasoning": reasoning,

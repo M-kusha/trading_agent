@@ -2080,8 +2080,17 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
             # Bound confidence
             confidence = float(max(0.0, min(1.0, confidence)))
 
+            # Map posture to standard action field for committee compatibility
+            action_map = {
+                "halt": "reduce_risk",
+                "reduce": "reduce_risk",
+                "increase": "increase_risk",
+                "maintain": "hold"
+            }
+
             payload = {
                 "member": "DynamicRiskController",
+                "action": action_map.get(posture, "hold"),  # Standard action field for committee
                 "type": "risk_posture",
                 "posture": posture,
                 "target_scale": float(np.clip(target_scale, self._cfg.min_risk_scale, self._cfg.max_risk_scale)),

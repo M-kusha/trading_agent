@@ -1106,6 +1106,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
         # --- Voting additions (fallback) ---
         fallback_vote = {
             'member': 'PPOAgent',
+            'action': 'flat',  # Standard action field for committee compatibility
             'proposal': {'direction': 'flat', 'magnitude': 0.0, 'horizon': 'intraday'},
             'confidence': 0.2,
             'rationale': thesis,
@@ -1222,6 +1223,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
         # --- Voting additions (error fallback) ---
         vote_payload = {
             'member': 'PPOAgent',
+            'action': 'flat',  # Standard action field for committee compatibility
             'proposal': {'direction': 'flat', 'magnitude': 0.0, 'horizon': 'intraday'},
             'confidence': 0.1,
             'rationale': thesis,
@@ -1537,6 +1539,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
 
             payload = {
                 'member': 'PPOAgent',
+                'action': direction,  # Standard action field for committee compatibility
                 'proposal': {
                     'direction': direction,         # 'long' | 'short' | 'flat'
                     'magnitude': float(magnitude),  # 0..1
@@ -1561,6 +1564,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             self.logger.error(f"PPO vote() failed: {e}")
             return {
                 'member': 'PPOAgent',
+                'action': 'flat',  # Standard action field for committee compatibility
                 'proposal': {'direction': 'flat', 'magnitude': 0.0, 'horizon': 'intraday'},
                 'confidence': 0.1,
                 'rationale': f'Vote fallback due to error: {e}',

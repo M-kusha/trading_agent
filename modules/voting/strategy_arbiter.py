@@ -279,6 +279,27 @@ Strategy Arbiter v3.1 Initialization:
                 market_data = await self._get_comprehensive_market_data()
                 await self._update_market_state_comprehensive(market_data)
 
+                # Debug: Print received proposals
+                # proposal_vectors = market_data.get('proposal_vectors', [])
+                # member_proposals = market_data.get('member_proposals', [])
+                # member_confidences = market_data.get('member_confidences', [])
+
+                # print(f"\n{'='*80}")
+                # print(f"STRATEGY ARBITER - Received Proposals")
+                # print(f"{'='*80}")
+                # print(f"Proposal vectors received: {len(proposal_vectors)}")
+                # print(f"Member proposals received: {len(member_proposals)}")
+                # print(f"Member confidences received: {len(member_confidences)}")
+                # if proposal_vectors:
+                #     print(f"\nProposal vectors content:")
+                #     for i, pv in enumerate(proposal_vectors[:10], 1):  # Show first 10
+                #         print(f"  {i}. {pv}")
+                # if member_confidences:
+                #     print(f"\nMember confidences:")
+                #     for i, mc in enumerate(member_confidences[:10], 1):  # Show first 10
+                #         print(f"  {i}. {mc:.3f}")
+                # print(f"{'='*80}\n")
+
                 # 2) Blended proposal + signals
                 blended_proposal = self._compute_blended_proposal(market_data)
                 signals = self._map_action_to_instrument_signals(blended_proposal)
@@ -700,7 +721,10 @@ Strategy Arbiter v3.1 Initialization:
             cons = self.smart_bus.get("consensus_score", "StrategyArbiter") or 0.5
             coll = self.smart_bus.get("collusion_score", "StrategyArbiter") or 0.0
             passed, threshold, crit = self._evaluate_gate(action, float(cons), float(coll))
-            final_action = action if passed else action * 0.25
+            if passed:
+                final_action = action
+            else:
+                final_action = np.zeros_like(action)
 
             self._record_gate_decision(passed, crit, final_action)
             return final_action
@@ -1676,6 +1700,40 @@ Strategy Arbiter v3.1 Initialization:
         self.performance_tracker.record_metric(
             "StrategyArbiter", "process_time_ms", (time.time() - start_time) * 1000.0, False
         )
+        # Ensure all contract-required outputs are present even on error
+        try:
+            init_payload = getattr(self, "_init_payload", None)
+            if not init_payload and hasattr(self, "smart_bus"):
+                init_payload = self.smart_bus.get("strategy_arbiter_initialization", "StrategyArbiter") or {}
+        except Exception:
+            init_payload = {}
+
+        try:
+            member_names: List[str] = []
+            for i, m in enumerate(self.members):
+                nm = None
+                try:
+                    nm = getattr(m, "name", None) or getattr(m, "module_name", None)
+                except Exception:
+                    nm = None
+                member_names.append(nm if isinstance(nm, str) and nm else f"member_{i}")
+            weights_list = self.weights.tolist()
+            strategy_weights = {
+                "by_member": {member_names[i]: float(weights_list[i]) for i in range(min(len(member_names), len(weights_list)))},
+                "members": member_names,
+                "weights": weights_list,
+                "timestamp": dt.datetime.utcnow().isoformat(),
+            }
+        except Exception:
+            strategy_weights = {"by_member": {}, "members": [], "weights": [], "timestamp": dt.datetime.utcnow().isoformat()}
+
+        try:
+            arbiter_decision_id = None
+            if hasattr(self, "smart_bus"):
+                arbiter_decision_id = self.smart_bus.get('kernel_decision_id', 'StrategyArbiter')
+        except Exception:
+            arbiter_decision_id = None
+
         return {
             "blended_action": [],
             "alpha_weights": [],
@@ -1689,6 +1747,9 @@ Strategy Arbiter v3.1 Initialization:
             "health_metrics": {"status": "error", "error_context": str(ctx)},
             "instrument_signals": {},
             "instruments": list(getattr(self, "instruments", [])),
+            "strategy_weights": strategy_weights,
+            "strategy_arbiter_initialization": init_payload,
+            "arbiter_decision_id": arbiter_decision_id,
             "expert_performance": {"_metadata": {"error": str(ctx), "timestamp": dt.datetime.utcnow().isoformat()}},
             "_thesis": f"StrategyArbiter error: {ctx}",
         }
@@ -1710,6 +1771,40 @@ Strategy Arbiter v3.1 Initialization:
         }
 
     def _generate_disabled_response(self) -> Dict[str, Any]:
+        # Ensure all contract-required outputs are present even when disabled
+        try:
+            init_payload = getattr(self, "_init_payload", None)
+            if not init_payload and hasattr(self, "smart_bus"):
+                init_payload = self.smart_bus.get("strategy_arbiter_initialization", "StrategyArbiter") or {}
+        except Exception:
+            init_payload = {}
+
+        try:
+            member_names: List[str] = []
+            for i, m in enumerate(self.members):
+                nm = None
+                try:
+                    nm = getattr(m, "name", None) or getattr(m, "module_name", None)
+                except Exception:
+                    nm = None
+                member_names.append(nm if isinstance(nm, str) and nm else f"member_{i}")
+            weights_list = self.weights.tolist()
+            strategy_weights = {
+                "by_member": {member_names[i]: float(weights_list[i]) for i in range(min(len(member_names), len(weights_list)))},
+                "members": member_names,
+                "weights": weights_list,
+                "timestamp": dt.datetime.utcnow().isoformat(),
+            }
+        except Exception:
+            strategy_weights = {"by_member": {}, "members": [], "weights": [], "timestamp": dt.datetime.utcnow().isoformat()}
+
+        try:
+            arbiter_decision_id = None
+            if hasattr(self, "smart_bus"):
+                arbiter_decision_id = self.smart_bus.get('kernel_decision_id', 'StrategyArbiter')
+        except Exception:
+            arbiter_decision_id = None
+
         return {
             "blended_action": [],
             "alpha_weights": [],
@@ -1725,6 +1820,9 @@ Strategy Arbiter v3.1 Initialization:
             "instruments": list(getattr(self, "instruments", [])),
             "universe": list(getattr(self, "instruments", [])),
             "watched_instruments": list(getattr(self, "instruments", [])),
+            "strategy_weights": strategy_weights,
+            "strategy_arbiter_initialization": init_payload,
+            "arbiter_decision_id": arbiter_decision_id,
             "expert_performance": {"_metadata": {"status": "disabled", "timestamp": dt.datetime.utcnow().isoformat()}},
             "_thesis": "StrategyArbiter disabled due to circuit breaker",
         }

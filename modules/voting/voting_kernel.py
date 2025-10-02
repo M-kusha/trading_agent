@@ -565,7 +565,16 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
         
         # Publish fragility (standalone surface)
         uncertainty_data = pipeline_results.get("uncertainty", {})
-        fragility_value = float(uncertainty_data.get("fragility", 0.0) or 0.0)
+        raw_fragility = uncertainty_data.get("fragility")
+        if isinstance(raw_fragility, (int, float)):
+            fragility_value = float(raw_fragility)
+        elif isinstance(raw_fragility, str):
+            try:
+                fragility_value = float(raw_fragility)
+            except ValueError:
+                fragility_value = 0.0
+        else:
+            fragility_value = 0.0
         self.smart_bus.set("kernel_fragility", fragility_value, 
                           module="VotingKernel", thesis=f"Voting fragility {fragility_value:.3f}")
         

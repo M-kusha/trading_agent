@@ -144,12 +144,18 @@ class FileDataProvider:
                 continue
             try:
                 p = os.path.join(data_dir, file)
-                base = file.replace(".csv", "").replace("_features", "")
+                # Robust filename parsing: instrument = everything except last segment if last is a timeframe code
+                base = file[:-4] if file.lower().endswith('.csv') else file
+                base = base.replace("_features", "")
                 parts = base.split("_")
-                if len(parts) >= 2:
-                    instrument, timeframe = parts[0], parts[1]
+                tf_candidates = {"M1","M5","M15","M30","H1","H2","H4","H8","D1","W1","MN1"}
+                if len(parts) >= 2 and parts[-1].upper() in tf_candidates:
+                    timeframe = parts[-1].upper()
+                    instrument = "_".join(parts[:-1])
                 else:
-                    instrument, timeframe = base.replace("_", "/"), "H1"
+                    # No recognizable timeframe suffix; default to H1
+                    instrument = "_".join(parts)
+                    timeframe = "H1"
                 df = pd.read_csv(p)
                 req = {"open", "high", "low", "close"}
                 if not req.issubset(df.columns):
@@ -183,6 +189,8 @@ class OrchestratorDataProvider:
         instruments = getattr(config, "instruments", []) or []
         timeframes = getattr(config, "timeframes", None) or ["H1", "H4", "D1"]
         missing = []
+        # Treat very short bus series as unusable for training; fall back to files for those
+        min_bus_len = 100  # threshold to avoid 3-5 step episodes when bus publishes tiny windows
 
         for inst in instruments:
             for tf in timeframes:
@@ -192,16 +200,21 @@ class OrchestratorDataProvider:
                     blob = bus.get(key, module="TrainingScript")
                 except Exception:
                     blob = None
+                # Validate presence and minimal length
                 if not blob:
                     missing.append((inst, tf))
                     continue
                 try:
+                    close_arr = np.asarray(blob.get("close", []))
+                    if close_arr.size < min_bus_len:
+                        missing.append((inst, tf))
+                        continue
                     df = pd.DataFrame({
                         "open":  np.asarray(blob["open"], dtype=np.float32),
                         "high":  np.asarray(blob["high"], dtype=np.float32),
                         "low":   np.asarray(blob["low"],  dtype=np.float32),
-                        "close": np.asarray(blob["close"],dtype=np.float32),
-                        "volume": np.asarray(blob.get("volume", np.ones(len(blob["close"]))), dtype=np.float32),
+                        "close": np.asarray(blob["close"], dtype=np.float32),
+                        "volume": np.asarray(blob.get("volume", np.ones(close_arr.size)), dtype=np.float32),
                     })
                     data.setdefault(inst, {})[tf] = df
                 except Exception:

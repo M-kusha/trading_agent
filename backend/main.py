@@ -3921,18 +3921,26 @@ async def voting_strategy():
         trade_vote_v2 = bus.get('trade_vote_v2', 'VotingKernel', default={}) or {}
         signals = bus.get('signals', 'VotingKernel', default={}) or {}
 
+        decision_value = str(trade_vote_v2.get('decision', 'none') or 'none').lower()
+        if decision_value in ('pass', 'passed', 'approve'):
+            gating_status_default = 'passed'
+        elif decision_value in ('block', 'blocked', 'reject'):
+            gating_status_default = 'blocked'
+        else:
+            gating_status_default = decision_value
+
         # Strategy analysis from InfoBus
         strategy_analysis = bus.get('strategy_analysis', 'VotingKernel', default={
             "final_decision": trade_vote_v2.get('decision', 'none'),
             "confidence": trade_vote_v2.get('confidence', 0.0),
             "signal_strength": signals.get('strength', 0.0),
-            "gating_status": "passed" if trade_vote_v2.get('decision') != 'none' else "blocked",
+            "gating_status": gating_status_default,
             "arbitration_quality": 0.0
         }) or {
             "final_decision": trade_vote_v2.get('decision', 'none'),
             "confidence": trade_vote_v2.get('confidence', 0.0),
             "signal_strength": signals.get('strength', 0.0),
-            "gating_status": "passed" if trade_vote_v2.get('decision') != 'none' else "blocked",
+            "gating_status": gating_status_default,
             "arbitration_quality": 0.0
         }
 

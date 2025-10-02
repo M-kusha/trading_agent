@@ -1205,7 +1205,19 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             # Use market predictions for trend score
             predictions = market_data.get('market_predictions', {})
             if isinstance(predictions, dict) and predictions:
-                pred_confidence = float(market_data.get('market_predictions_confidence', 0.5))
+                # Handle prediction_confidence as either dict or float
+                pred_conf_raw = market_data.get('market_predictions_confidence', 0.5)
+                if isinstance(pred_conf_raw, dict):
+                    # Extract numeric confidence from dict (try multiple keys)
+                    pred_confidence = float(
+                        pred_conf_raw.get('current_confidence') or
+                        pred_conf_raw.get('prediction_confidence') or
+                        pred_conf_raw.get('confidence') or
+                        0.5
+                    )
+                else:
+                    pred_confidence = float(pred_conf_raw) if pred_conf_raw is not None else 0.5
+                
                 if pred_confidence > 0.6:
                     # Blend prediction confidence into trend score
                     self.decision_factors['trend_score'] = (

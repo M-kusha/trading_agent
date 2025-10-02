@@ -1235,8 +1235,9 @@ class UnifiedMarketModule(
         # Respect canonical owners: do not publish keys owned by other modules
         forbidden_keys = {
             'performance_metrics',   # SessionManager owns this
-            'market_context',        # MarketDataProvider owns this
             'step_idx',              # MarketDataProvider owns this
+            # NOTE: market_context is published by UnifiedMarketModule since it computes regime/volatility
+            # MarketDataProvider only creates a basic placeholder without regime data
         }
 
         for key, value in updates:

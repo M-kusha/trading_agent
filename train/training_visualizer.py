@@ -541,8 +541,8 @@ class BeautifulTrainingVisualizer:
         self._add("")
 
     def _render_performance_metrics(self, data: Dict[str, Any]) -> None:
-        balance = float(data.get('balance', 3000))
-        initial = float(data.get('initial_balance', 3000))
+        balance = float(data.get('balance') or 3000)
+        initial = float(data.get('initial_balance') or 3000)
         pnl = balance - initial
         pnl_pct = ((balance / initial) - 1) * 100 if initial > 0 else 0.0
 
@@ -569,9 +569,9 @@ class BeautifulTrainingVisualizer:
             f"{Colors.GRAY}24h: {Colors.RESET}{MiniChart.sparkline(list(self.pnl_history)[-min(24, col_width-6):], width=max(10, col_width-6))}",
         ]
 
-        drawdown = float(data.get('drawdown', 0))
-        max_dd = float(data.get('max_drawdown', 0))
-        sharpe = float(data.get('sharpe_ratio', 0))
+        drawdown = float(data.get('drawdown') or 0)
+        max_dd = float(data.get('max_drawdown') or 0)
+        sharpe = float(data.get('sharpe_ratio') or 0)
 
         risk_color = Colors.BUY_GREEN if abs(drawdown) < 5 else Colors.ORANGE if abs(drawdown) < 10 else Colors.SELL_RED
         risk_content = [
@@ -581,9 +581,9 @@ class BeautifulTrainingVisualizer:
             "",
         ]
 
-        current_reward = float(data.get('current_reward', 0))
-        best_reward = float(data.get('best_reward', 0))
-        avg_reward = float(data.get('avg_reward', 0))
+        current_reward = float(data.get('current_reward') or 0)
+        best_reward = float(data.get('best_reward') or 0)
+        avg_reward = float(data.get('avg_reward') or 0)
 
         self.reward_history.append(current_reward)
 
@@ -609,72 +609,157 @@ class BeautifulTrainingVisualizer:
 
         self._add("")
 
-    def _render_trading_signals(self, decision_data: Dict[str, Any], voting_data: Dict[str, Any]) -> None:
-        action = str(decision_data.get('current_action', 'ANALYZING'))
-        confidence = float(decision_data.get('confidence', 0))
-        risk_level = str(decision_data.get('risk_level', 'MEDIUM'))
 
-        if 'BUY' in action.upper():
+    def _render_trading_signals(self, decision_data: Dict[str, Any], voting_data: Dict[str, Any]) -> None:
+        trade_vote = decision_data.get('trade_vote') or {}
+        action_source = trade_vote.get('action') or trade_vote.get('decision') or decision_data.get('current_action', 'ANALYZING')
+        action = str(action_source).upper()
+
+        if 'BUY' in action:
             action_display = f"{Colors.BUY_GREEN}{Icons.UP} BUY SIGNAL{Colors.RESET}"
             self.action_history.append('BUY')
-        elif 'SELL' in action.upper():
+        elif 'SELL' in action:
             action_display = f"{Colors.SELL_RED}{Icons.DOWN} SELL SIGNAL{Colors.RESET}"
             self.action_history.append('SELL')
         else:
             action_display = f"{Colors.GOLD}{Icons.NEUTRAL} HOLD{Colors.RESET}"
             self.action_history.append('HOLD')
 
-        risk_colors = {'LOW': Colors.BUY_GREEN, 'MEDIUM': Colors.GOLD, 'HIGH': Colors.SELL_RED}
-        risk_display = f"{risk_colors.get(risk_level.upper(), Colors.GRAY)}{risk_level}{Colors.RESET}"
+        confidence_raw = decision_data.get('confidence')
+        if confidence_raw is None and isinstance(trade_vote, dict):
+            confidence_raw = trade_vote.get('confidence')
+        if confidence_raw is None and isinstance(voting_data.get('consensus'), dict):
+            consensus_payload = voting_data['consensus']
+            confidence_raw = consensus_payload.get('consensus_strength', consensus_payload.get('score'))
+        try:
+            confidence = float(confidence_raw) if confidence_raw is not None else 0.0
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if confidence > 1.0:
+            confidence /= 100.0
+        confidence = max(0.0, min(1.0, confidence))
 
-        votes = voting_data.get('votes', [])
+        risk_level = str(decision_data.get('risk_level', 'MEDIUM') or 'MEDIUM').upper()
+        risk_score_value = decision_data.get('risk_score')
+        if risk_score_value is None and isinstance(trade_vote, dict):
+            risk_score_value = trade_vote.get('risk_score')
+        session_risk = decision_data.get('session_risk') or {}
+        if risk_score_value is None and isinstance(session_risk, dict):
+            risk_score_value = session_risk.get('risk_score', session_risk.get('composite_score'))
+        dynamic_risk = decision_data.get('dynamic_risk') or {}
+        if risk_score_value is None and isinstance(dynamic_risk, dict):
+            risk_score_value = dynamic_risk.get('current_risk_scale')
+        try:
+            risk_score = float(risk_score_value) if risk_score_value is not None else None
+        except (TypeError, ValueError):
+            risk_score = None
+
+        risk_color_map = {
+            'LOW': Colors.BUY_GREEN,
+            'NORMAL': Colors.GOLD,
+            'MEDIUM': Colors.GOLD,
+            'MODERATE': Colors.GOLD,
+            'ELEVATED': Colors.ORANGE,
+            'HIGH': Colors.SELL_RED,
+            'CRITICAL': Colors.SELL_RED,
+            'EMERGENCY': Colors.SELL_RED,
+        }
+        risk_color = risk_color_map.get(risk_level, Colors.GOLD)
+        risk_pct = None
+        if risk_score is not None:
+            risk_pct = risk_score * 100.0 if abs(risk_score) <= 1.0 else risk_score
+            risk_pct = max(0.0, min(200.0, risk_pct))
+        risk_line = f"{Colors.GRAY}Risk Level:{Colors.RESET} {risk_color}{risk_level}{Colors.RESET}"
+        if risk_pct is not None:
+            risk_line += f" {Colors.GRAY}({risk_pct:.1f}%){Colors.RESET}"
+
+        votes = voting_data.get('votes') or []
+        if not votes and isinstance(trade_vote, dict) and trade_vote:
+            votes = [{
+                'action': trade_vote.get('action', trade_vote.get('decision', 'HOLD')),
+                'confidence': trade_vote.get('confidence', 0.0),
+            }]
+        total_members = int(voting_data.get('total_members') or 0)
         vote_counts = {'BUY': 0, 'SELL': 0, 'HOLD': 0}
-        for v in votes:
-            decision = str(v.get('decision', v.get('action', 'HOLD'))).upper()
-            vote_counts[decision] = vote_counts.get(decision, 0) + 1
-        total_votes = max(1, sum(vote_counts.values()))
+        for vote in votes:
+            raw_action = str(vote.get('decision', vote.get('action', 'HOLD'))).upper()
+            if raw_action.startswith('BUY') or raw_action.startswith('LONG'):
+                vote_counts['BUY'] += 1
+            elif raw_action.startswith('SELL') or raw_action.startswith('SHORT'):
+                vote_counts['SELL'] += 1
+            else:
+                vote_counts['HOLD'] += 1
+        total_votes = sum(vote_counts.values())
+        base_total = total_members if total_members > 0 else total_votes
+        base_total = max(1, base_total)
+
+        consensus = voting_data.get('consensus', {})
+        consensus_score = 0.0
+        if isinstance(consensus, dict) and consensus:
+            raw_consensus = consensus.get('consensus_strength', consensus.get('score'))
+            try:
+                if raw_consensus is not None:
+                    consensus_score = float(raw_consensus)
+            except (TypeError, ValueError):
+                consensus_score = 0.0
+            if consensus_score > 1.0:
+                consensus_score /= 100.0
+            consensus_score = max(0.0, min(1.0, consensus_score))
+        consensus_exists = None
+        if isinstance(consensus, dict):
+            consensus_exists = consensus.get('consensus_exists')
 
         gutter = 2
         signal_width = max(40, (self.terminal_width - gutter) // 2)
 
         signal_content = [
-            "",
+            '',
             self._center(action_display, signal_width),
-            "",
+            '',
             self._center(f"{Colors.GRAY}Confidence{Colors.RESET}", signal_width),
             self._center(MiniChart.progress_bar(confidence * 100, width=max(20, signal_width - 20), gradient=True), signal_width),
-            "",
-            self._center(f"{Colors.GRAY}Risk Level: {risk_display}{Colors.RESET}", signal_width),
-            "",
+            self._center(f"{Colors.GRAY}{confidence * 100:.1f}% CONFIDENCE{Colors.RESET}", signal_width),
+            '',
+            self._center(risk_line, signal_width),
         ]
+        if risk_pct is not None:
+            signal_content.append(self._center(MiniChart.progress_bar(min(100.0, risk_pct), width=max(20, signal_width - 20), gradient=False), signal_width))
+        signal_content.append('')
 
         voting_content = [
-            "",
+            '',
             self._center(f"{Colors.GRAY}Committee Consensus{Colors.RESET}", signal_width),
-            "",
+            '',
         ]
+        if consensus_score > 0.0:
+            status_text = ''
+            if consensus_exists is not None:
+                status_text = ' (YES)' if bool(consensus_exists) else ' (NO)'
+            voting_content.append(self._center(f"{Colors.GRAY}Consensus Strength: {Colors.CYAN}{consensus_score * 100:.1f}%{Colors.RESET}{status_text}", signal_width))
+            voting_content.append(self._center(MiniChart.progress_bar(consensus_score * 100, width=max(20, signal_width - 20), gradient=True), signal_width))
+            voting_content.append('')
 
         for action_type in ['BUY', 'SELL', 'HOLD']:
-            count = vote_counts[action_type]
-            pct = (count / total_votes) * 100.0
+            count = vote_counts.get(action_type, 0)
+            pct = (count / base_total) * 100.0
             color = Colors.BUY_GREEN if action_type == 'BUY' else Colors.SELL_RED if action_type == 'SELL' else Colors.GOLD
-            bar = MiniChart.progress_bar(pct, width=max(10, signal_width - 20), show_percentage=False, gradient=False)
-            voting_content.append(f"  {color}{action_type:5}{Colors.RESET} {bar} {Colors.GRAY}{count}/{total_votes}{Colors.RESET}")
+            bar = MiniChart.progress_bar(pct, width=max(12, signal_width - 24), show_percentage=False, gradient=False)
+            voting_content.append(f"  {color}{action_type:5}{Colors.RESET} {bar} {Colors.GRAY}{count}/{base_total}{Colors.RESET} {Colors.GRAY}{pct:5.1f}%{Colors.RESET}")
+        voting_content.append('')
+        voting_content.append(f"  {Colors.GRAY}Total Votes:{Colors.RESET} {total_votes}/{base_total}")
 
-        voting_content.extend(["", ""])
-
-        signal_card = self._card("TRADING SIGNAL", signal_content, signal_width, Colors.CYAN)
-        voting_card = self._card("VOTING ANALYSIS", voting_content, signal_width, Colors.PURPLE)
+        signal_card = self._card('TRADING SIGNAL', signal_content, signal_width, Colors.CYAN)
+        voting_card = self._card('VOTING ANALYSIS', voting_content, signal_width, Colors.PURPLE)
 
         for i in range(max(len(signal_card), len(voting_card))):
-            line = ""
-            line += signal_card[i] if i < len(signal_card) else " " * signal_width
-            line += " " * gutter
-            line += voting_card[i] if i < len(voting_card) else " " * signal_width
+            line = ''
+            line += signal_card[i] if i < len(signal_card) else ' ' * signal_width
+            line += ' ' * gutter
+            line += voting_card[i] if i < len(voting_card) else ' ' * signal_width
             self._add(line)
 
-        self._add("")
-
+        self._add('')
+        self._add('')
     def _render_module_status(self, modules_data: Dict[str, Any]) -> None:
         modules = modules_data.get('modules', {})
         if not modules:
@@ -687,6 +772,7 @@ class BeautifulTrainingVisualizer:
                 'MemoryCore': {'status': 'healthy', 'health_score': 91},
             }
 
+        self._add('')
         self._add(f"{Colors.GRAY}{'─' * self.terminal_width}{Colors.RESET}")
         self._add(self._center(f"{Colors.ELECTRIC_BLUE}SYSTEM HEALTH MONITOR{Colors.RESET}"))
         self._add("")
@@ -702,7 +788,7 @@ class BeautifulTrainingVisualizer:
                     continue
                 name = names[i + j]
                 info = modules[name]
-                health = float(info.get('health_score', 0))
+                health = float(info.get('health_score') or 0)
                 status = str(info.get('status', 'unknown'))
 
                 if status.lower() in ['healthy', 'active', 'online']:
@@ -713,12 +799,15 @@ class BeautifulTrainingVisualizer:
                     indicator = f"{Colors.SELL_RED}{Icons.ERROR}{Colors.RESET}"
 
                 bar = MiniChart.progress_bar(health, width=10, show_percentage=False, gradient=True)
+                percent_text = f"{health:5.1f}%"
                 display_name = name if _visible_width(name) <= 15 else name[:15]
-                module_str = f"{indicator} {Colors.WHITE}{display_name:<15}{Colors.RESET} {bar}"
+                module_str = f"{indicator} {Colors.WHITE}{display_name:<15}{Colors.RESET} {bar} {Colors.GRAY}{percent_text}{Colors.RESET}"
                 row += _ansi_safe_truncate(module_str.ljust(col_width), col_width)
             self._add(row)
 
         self._add("")
+        self._add('')
+        self._add('')
 
     def _render_market_analysis(self, market_data: Dict[str, Any]) -> None:
         regime = str(market_data.get('regime', 'trending')).upper()
@@ -765,9 +854,9 @@ class BeautifulTrainingVisualizer:
         self.last_update = now
         avg_fps = sum(self.fps_counter) / len(self.fps_counter) if self.fps_counter else 0.0
 
-        steps_per_sec = float(stats.get('steps_per_second', 0))
-        latency_p50 = float(stats.get('latency_p50', 0))
-        latency_p95 = float(stats.get('latency_p95', 0))
+        steps_per_sec = float(stats.get('steps_per_second') or 0)
+        latency_p50 = float(stats.get('latency_p50') or 0)
+        latency_p95 = float(stats.get('latency_p95') or 0)
 
         self._add(f"{Colors.DARK_GRAY}{'═' * self.terminal_width}{Colors.RESET}")
 
@@ -816,6 +905,17 @@ class BeautifulTrainingVisualizer:
 
     # ─── Main Render Method ───
 
+    def _bus_get_multi(self, smart_bus: Any, key: str, modules: List[str], default: Any) -> Any:
+        """Attempt to fetch a bus key from specific module namespaces before falling back."""
+        for module_name in modules:
+            try:
+                value = smart_bus.get(key, module=module_name, default=None)  # type: ignore[attr-defined]
+                if value is not None:
+                    return value
+            except Exception:
+                continue
+        return default
+
     def render_complete_display(self, smart_bus: Any, training_metrics: Dict[str, Any]) -> None:
         """Render the complete professional trading dashboard"""
         # FPS limiter
@@ -834,8 +934,54 @@ class BeautifulTrainingVisualizer:
         market_overview = self._safe_bus_get(smart_bus, 'market_overview', {}) or {}
         account_state = self._safe_bus_get(smart_bus, 'account_state', {}) or {}
         positions = self._safe_bus_get(smart_bus, 'positions', []) or []
-        votes = self._safe_bus_get(smart_bus, 'votes', []) or []
-        committee_votes = self._safe_bus_get(smart_bus, 'committee_votes', []) or []
+        votes = self._bus_get_multi(
+            smart_bus,
+            'votes',
+            ['EnhancedVotingCommitteeCoordinator', 'VotingKernel', 'StrategyArbiter'],
+            []
+        ) or []
+        committee_votes = self._bus_get_multi(
+            smart_bus,
+            'committee_votes',
+            ['EnhancedVotingCommitteeCoordinator', 'VotingKernel'],
+            []
+        ) or []
+        trade_vote = self._bus_get_multi(
+            smart_bus,
+            'trade_vote_v2',
+            ['VotingKernel', 'StrategyArbiter'],
+            {}
+        ) or {}
+        committee_consensus = self._bus_get_multi(
+            smart_bus,
+            'committee_consensus',
+            ['EnhancedVotingCommitteeCoordinator', 'VotingKernel'],
+            {}
+        ) or {}
+        committee_members = self._bus_get_multi(
+            smart_bus,
+            'committee_members',
+            ['EnhancedVotingCommitteeCoordinator', 'VotingKernel'],
+            []
+        ) or []
+        session_risk_snapshot = self._bus_get_multi(
+            smart_bus,
+            'session_risk',
+            ['MarketModule', 'DynamicRiskController', 'TradingModeManager'],
+            {}
+        ) or {}
+        dynamic_risk_snapshot = self._bus_get_multi(
+            smart_bus,
+            'risk_scaling',
+            ['DynamicRiskController'],
+            {}
+        ) or {}
+        committee_confidence = self._bus_get_multi(
+            smart_bus,
+            'committee_confidence',
+            ['EnhancedVotingCommitteeCoordinator', 'VotingKernel'],
+            None
+        )
         trading_performance = self._safe_bus_get(smart_bus, 'trading_performance', {}) or {}
 
         # Build dashboard sections
@@ -857,14 +1003,62 @@ class BeautifulTrainingVisualizer:
             'avg_reward': training_metrics.get('episode_reward_mean', 0),
         })
 
+        confidence_value = None
+        if committee_confidence is not None:
+            try:
+                confidence_value = float(committee_confidence)
+            except (TypeError, ValueError):
+                confidence_value = None
+        if confidence_value is None:
+            tv_conf = trade_vote.get('confidence') if isinstance(trade_vote, dict) else None
+            try:
+                if tv_conf is not None:
+                    confidence_value = float(tv_conf)
+            except (TypeError, ValueError):
+                confidence_value = None
+        if confidence_value is None:
+            consensus_strength = None
+            if isinstance(committee_consensus, dict):
+                consensus_strength = committee_consensus.get('consensus_strength', committee_consensus.get('score'))
+            try:
+                if consensus_strength is not None:
+                    confidence_value = float(consensus_strength)
+            except (TypeError, ValueError):
+                confidence_value = None
+        risk_level_value = session_risk_snapshot.get('risk_level') if isinstance(session_risk_snapshot, dict) else None
+        if not risk_level_value:
+            risk_level_value = session_risk_snapshot.get('state') if isinstance(session_risk_snapshot, dict) else None
+        if not risk_level_value:
+            risk_level_value = dynamic_risk_snapshot.get('current_mode') if isinstance(dynamic_risk_snapshot, dict) else None
+        if not risk_level_value:
+            risk_level_value = training_metrics.get('risk_level', 'MEDIUM')
+        risk_score_value = session_risk_snapshot.get('risk_score') if isinstance(session_risk_snapshot, dict) else None
+        if risk_score_value is None and isinstance(session_risk_snapshot, dict):
+            risk_score_value = session_risk_snapshot.get('composite_score')
+        if risk_score_value is None and isinstance(dynamic_risk_snapshot, dict):
+            risk_score_value = dynamic_risk_snapshot.get('current_risk_scale')
+        try:
+            risk_score_value = float(risk_score_value) if risk_score_value is not None else None
+        except (TypeError, ValueError):
+            risk_score_value = None
+        if confidence_value is None:
+            confidence_value = training_metrics.get('decision_confidence', 0.75)
+
         self._render_trading_signals(
             {
                 'current_action': self._determine_action(positions),
-                'confidence': training_metrics.get('decision_confidence', 0.75),
-                'risk_level': training_metrics.get('risk_level', 'MEDIUM'),
+                'confidence': confidence_value,
+                'risk_level': risk_level_value,
+                'risk_score': risk_score_value,
+                'trade_vote': trade_vote,
+                'session_risk': session_risk_snapshot,
+                'dynamic_risk': dynamic_risk_snapshot,
             },
             {
                 'votes': committee_votes if committee_votes else votes,
+                'consensus': committee_consensus,
+                'total_members': len(committee_members),
+                'trade_vote': trade_vote,
             }
         )
 
@@ -885,6 +1079,7 @@ class BeautifulTrainingVisualizer:
             self._frame = self._frame[:self.terminal_height]
 
         # Render to terminal (full repaint)
+        # TEMPORARILY DISABLED FOR DEBUG OUTPUT
         self._ui.render_lines(self._frame)
 
     def _determine_action(self, positions: List[Any]) -> str:
@@ -899,28 +1094,83 @@ class BeautifulTrainingVisualizer:
     def _extract_module_health(self, smart_bus: Any) -> Dict[str, Any]:
         """Extract module health data from bus"""
         modules: Dict[str, Any] = {}
+
+        module_entries: Optional[Dict[str, Any]] = None
+
+        # Primary consolidated snapshot
+        health_snapshot = self._safe_bus_get(smart_bus, 'system_health', {})
+        if isinstance(health_snapshot, dict):
+            snapshot_modules = health_snapshot.get('modules')
+            if isinstance(snapshot_modules, dict):
+                if isinstance(snapshot_modules.get('module_details'), dict):
+                    module_entries = snapshot_modules['module_details']
+                else:
+                    module_entries = snapshot_modules
+
+        # Namespace fallback
+        if module_entries is None:
+            modules_namespace = self._safe_bus_get(smart_bus, 'health/modules', {})
+            if isinstance(modules_namespace, dict):
+                if isinstance(modules_namespace.get('module_details'), dict):
+                    module_entries = modules_namespace['module_details']
+                else:
+                    module_entries = modules_namespace
+
+        if isinstance(module_entries, dict):
+            for name, payload in module_entries.items():
+                if not isinstance(payload, dict):
+                    continue
+                status_value = payload.get('status', payload.get('state', 'unknown'))
+                status = str(status_value or 'unknown')
+
+                raw_score = payload.get('score', payload.get('health_score', payload.get('healthScore')))
+                score = 0.0
+                try:
+                    if raw_score is not None:
+                        score = float(raw_score)
+                except Exception:
+                    score = 0.0
+                if score <= 1.0:
+                    score *= 100.0
+
+                modules[name] = {
+                    'status': status,
+                    'health_score': max(0.0, min(100.0, score))
+                }
+
+        if modules:
+            return modules
+
+        # Legacy per-module keys (compatibility)
         patterns = [
             'DynamicRiskController', 'MetaAgent', 'EnhancedAnomalyDetector',
             'PositionManager', 'ModuleOrchestrator', 'HealthMonitor',
         ]
 
         for name in patterns:
-            status = self._safe_bus_get(smart_bus, f'{name}_status', None)
-            health = self._safe_bus_get(smart_bus, f'{name}_health', None)
+            status = self._bus_get_multi(smart_bus, f'{name}_status', [name, 'HealthMonitor'], None)
+            health = self._bus_get_multi(smart_bus, f'{name}_health', [name, 'HealthMonitor'], None)
             if status is not None or health is not None:
                 score = 85.0
                 try:
-                    if isinstance(health, dict) and 'score' in health:
-                        score = float(health['score'])
+                    raw = None
+                    if isinstance(health, dict):
+                        raw = health.get('score', health.get('health_score'))
                     elif isinstance(health, (int, float)):
-                        score = float(health)
+                        raw = health
+                    if raw is not None:
+                        score = float(raw)
                 except Exception:
-                    pass
+                    score = 85.0
+                if score <= 1.0:
+                    score *= 100.0
                 modules[name] = {
                     'status': status or 'healthy',
-                    'health_score': min(100.0, max(0.0, score))
+                    'health_score': max(0.0, min(100.0, score))
                 }
+
         return modules
+
 
 # Export
 __all__ = ['BeautifulTrainingVisualizer', 'Colors', 'Icons', 'BoxChars', 'TerminalUI', 'MiniChart']

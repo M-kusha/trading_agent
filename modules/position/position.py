@@ -416,7 +416,8 @@ class PositionManager(
 
         # runtime toggles
         self.enable_legacy_bus_signal_probe: bool = bool(self.config.get("enable_legacy_bus_signal_probe", False))
-        self.use_bus_instrument_signals: bool = bool(self.config.get("use_bus_instrument_signals", False))
+        raw_bus_signal_flag = self.config.get("use_bus_instrument_signals")
+        self.use_bus_instrument_signals: bool = True if raw_bus_signal_flag is None else bool(raw_bus_signal_flag)
         self.debug: bool = bool(self.config.get("debug", False) or self.config.get("debug_decisions", False))
 
         self._initialize_advanced_systems()
@@ -462,7 +463,8 @@ class PositionManager(
         self.default_max_pct = self.C.max_position_pct
 
         self.enable_legacy_bus_signal_probe = bool(self.config.get("enable_legacy_bus_signal_probe", False))
-        self.use_bus_instrument_signals = bool(self.config.get("use_bus_instrument_signals", False))
+        raw_bus_signal_flag = self.config.get("use_bus_instrument_signals")
+        self.use_bus_instrument_signals = True if raw_bus_signal_flag is None else bool(raw_bus_signal_flag)
         self.debug = bool(self.config.get("debug", False) or self.config.get("debug_decisions", False))
 
         instruments = kwargs.get("instruments", None)
@@ -1413,6 +1415,8 @@ class PositionManager(
 
         signals_map = (
             inputs.get("instrument_signals")
+            or inputs.get("kernel_instrument_signals")
+            or inputs.get("arbiter_instrument_signals")
             or inputs.get("signals")
             or inputs.get("alpha_signals")
             or inputs.get("action_signals")
@@ -1541,7 +1545,12 @@ class PositionManager(
 
         bus_signals = {}
         if self.use_bus_instrument_signals:
-            bus_signals = self.smart_bus.get("instrument_signals", "PositionManager") or {}
+            signal_keys = ("instrument_signals", "kernel_instrument_signals", "arbiter_instrument_signals", "position_manager_instrument_signals")
+            for key in signal_keys:
+                candidate = self.smart_bus.get(key, "PositionManager")
+                if isinstance(candidate, dict) and candidate:
+                    bus_signals = candidate
+                    break
 
         def variants(inst: str) -> List[str]:
             core = inst.replace("/", "").replace("_", "")

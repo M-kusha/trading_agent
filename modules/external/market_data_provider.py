@@ -964,18 +964,12 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         vol_level = "high" if any(v.get("volatility", 0.0) > 0.02 for v in vol_data.values()) else \
                     ("medium" if any(v.get("volatility", 0.0) > 0.01 for v in vol_data.values()) else "low")
 
-        # Market context & ts
+        # Timestamp
         self.current_timestamp = max(
             (v["timestamp"] for v in self.current_bars.values()),
             default=datetime.datetime.utcnow(),
         )
         ts_iso = self._to_iso_ts(self.current_timestamp)
-
-        market_context = {
-            "volatility_hint": vol_level,
-            "market_hours": self._is_market_hours(),
-            "session_human": self.trading_session,
-        }
 
         indicators_map = {s: {k: float(v) for k, v in d.items()} for s, d in self.technical_indicators.items()}
 
@@ -993,7 +987,6 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             "learning_status": {},
             "macro_data": {},
             "market_conditions": {},
-            "market_context": market_context,
             "market_data": market_data,
             "market_liquidity": liquidity_data,  # legacy mirror
             "module_insights": {
@@ -1062,11 +1055,6 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             "learning_status": {},
             "macro_data": {},
             "market_conditions": {},
-            "market_context": {
-                "volatility_hint": "low",
-                "market_hours": self._is_market_hours(),
-                "session_human": self.trading_session,
-            },
             "market_data": {},
             "market_liquidity": {},
             "module_insights": {

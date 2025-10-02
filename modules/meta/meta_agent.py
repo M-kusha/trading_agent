@@ -118,6 +118,8 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
                 "module": "MetaAgent",
                 "topic": "automation_control",
                 "vote": "abstain",
+                "action": "abstain",  # Standard action field
+                "orig_vote": "abstain",
                 "confidence": float(self.system_confidence),
                 "sizing_multiplier": 0.0,
                 "reasoning": "Initialization phase",
@@ -396,6 +398,7 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
                     "module": "MetaAgent",
                     "topic": "automation_control",
                     "vote": "abstain",
+                    "action": "abstain",  # Standard action field for committee compatibility
                     "confidence": float(self.system_confidence),
                     "sizing_multiplier": 0.0,
                     "reasoning": "No meta data",
@@ -565,6 +568,7 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
             "module": "MetaAgent",
             "topic": "automation_control",
             "vote": vote,
+            "action": vote,  # Standard action field for committee compatibility
             "confidence": conf,
             "sizing_multiplier": sizing,
             "reasoning": (
@@ -587,10 +591,12 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
         """Write proposal and confidence to SmartInfoBus with the coordinator's keys."""
         try:
             # Ensure plain-python types
+            vote_value = str(proposal.get("vote", "abstain"))
             proposal_safe = {
                 "module": "MetaAgent",
                 "topic": str(proposal.get("topic", "automation_control")),
-                "vote": str(proposal.get("vote", "abstain")),
+                "vote": vote_value,
+                "action": vote_value,  # Standard action field for committee compatibility
                 "confidence": float(proposal.get("confidence", confidence)),
                 "sizing_multiplier": float(proposal.get("sizing_multiplier", 0.0)),
                 "reasoning": str(proposal.get("reasoning", "")),

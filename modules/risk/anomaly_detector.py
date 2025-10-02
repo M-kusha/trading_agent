@@ -208,6 +208,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                     "module": "EnhancedAnomalyDetector",
                     "topic": "anomaly_risk",
                     "vote": "abstain",
+                    "action": "abstain",  # Standard action field for committee compatibility
                     "confidence": 0.5,
                     "sizing_multiplier": 0.75,
                     "reasoning": "Baseline anomaly vote at initialization",
@@ -468,6 +469,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                     "module": "EnhancedAnomalyDetector",
                     "topic": "anomaly_risk",
                     "vote": "abstain",
+                    "action": "abstain",  # Standard action field for committee compatibility
                     "confidence": 0.5,
                     "sizing_multiplier": 0.75,
                     "reasoning": "Vote generation failed in error path; abstaining.",
@@ -509,6 +511,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
                     "module": "EnhancedAnomalyDetector",
                     "topic": "anomaly_risk",
                     "vote": "abstain",
+                    "action": "abstain",  # Standard action field for committee compatibility
                     "confidence": 0.5,
                     "sizing_multiplier": 0.75,
                     "reasoning": "No vote generated; abstaining.",
@@ -1832,6 +1835,7 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
             "module": "EnhancedAnomalyDetector",
             "topic": "anomaly_risk",
             "vote": vote.value,
+            "action": vote.value,  # Standard action field for committee compatibility
             "confidence": float(conf),
             "sizing_multiplier": float(sizing),
             "reasoning": reason,

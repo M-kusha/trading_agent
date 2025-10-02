@@ -273,6 +273,18 @@ class ModernEnhancedTrainingCallback(BaseCallback):
         self._tb_ready = False  # set at _on_training_start
 
     # ── SB3 hooks ───────────────────────────────────────────────────
+    def _bus_get_multi(self, key: str, modules: List[str], default: Any) -> Any:
+        if not SMARTINFOBUS_AVAILABLE:
+            return default
+        for module_name in modules:
+            try:
+                value = self.smart_bus.get(key, module=module_name, default=None)
+                if value is not None:
+                    return value
+            except Exception:
+                continue
+        return default
+
     def _on_training_start(self) -> None:
         self.start_time = datetime.now()
         self._tb_ready = bool(getattr(self.model, "logger", None))
@@ -500,6 +512,56 @@ class ModernEnhancedTrainingCallback(BaseCallback):
 
         # Model metrics (best-effort)
         m.update(self._extract_model_metrics())
+
+        # Get risk and confidence from InfoBus
+        try:
+            session_risk = self._bus_get_multi(
+                'session_risk',
+                ['MarketModule', 'DynamicRiskController', 'TradingModeManager'],
+                None,
+            )
+            if isinstance(session_risk, dict):
+                risk_level = session_risk.get('risk_level', session_risk.get('state'))
+                if risk_level:
+                    m['risk_level'] = risk_level
+                risk_score = session_risk.get('risk_score', session_risk.get('composite_score'))
+                if risk_score is not None:
+                    try:
+                        m['risk_score'] = float(risk_score)
+                    except (TypeError, ValueError):
+                        pass
+
+            dynamic_risk = self._bus_get_multi('risk_scaling', ['DynamicRiskController'], None)
+            if 'risk_level' not in m and isinstance(dynamic_risk, dict):
+                m['risk_level'] = dynamic_risk.get('current_mode')
+            if 'risk_score' not in m and isinstance(dynamic_risk, dict):
+                risk_scale = dynamic_risk.get('current_risk_scale')
+                if risk_scale is not None:
+                    try:
+                        m['risk_score'] = float(risk_scale)
+                    except (TypeError, ValueError):
+                        pass
+
+            committee_confidence = self._bus_get_multi(
+                'committee_confidence',
+                ['EnhancedVotingCommitteeCoordinator', 'VotingKernel'],
+                None,
+            )
+            if committee_confidence is None:
+                trade_vote_snapshot = self._bus_get_multi('trade_vote_v2', ['VotingKernel', 'StrategyArbiter'], None)
+                if isinstance(trade_vote_snapshot, dict):
+                    committee_confidence = trade_vote_snapshot.get('confidence')
+            if committee_confidence is None:
+                consensus_snapshot = self._bus_get_multi('committee_consensus', ['EnhancedVotingCommitteeCoordinator', 'VotingKernel'], None)
+                if isinstance(consensus_snapshot, dict):
+                    committee_confidence = consensus_snapshot.get('consensus_strength', consensus_snapshot.get('score'))
+            if committee_confidence is not None:
+                try:
+                    m['decision_confidence'] = float(committee_confidence)
+                except (TypeError, ValueError):
+                    pass
+        except Exception:
+            pass
 
         return sanitize_metrics(m)
 

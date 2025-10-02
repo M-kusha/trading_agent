@@ -2111,8 +2111,17 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             }
             confidence = await self.calculate_confidence(conf_input)
 
+            # Map posture to standard action field for committee compatibility
+            action_map = {
+                "halt": "reduce_risk",
+                "reduce": "reduce_risk",
+                "increase": "increase_risk",
+                "maintain": "hold"
+            }
+
             payload = {
                 "member": "PortfolioRiskSystem",
+                "action": action_map.get(posture, "hold"),  # Standard action field for committee
                 "type": "risk_posture",
                 "posture": posture,
                 "target_risk_adjustment": float(target_adj),

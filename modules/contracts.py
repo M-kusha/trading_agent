@@ -440,7 +440,9 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'risk_scaling_factor', 'session_risk', 'time_risk_health', 'time_risk_status',
             'time_risk_analysis', 'volatility_adjustment',
             # Unified extras
-            'unified_market_analysis', 'market_analysis_thesis'
+            'unified_market_analysis', 'market_analysis_thesis',
+            # Market context (canonical owner - contains regime/volatility from analysis)
+            'market_context'
         ],
         requires=['bid_ask_data', 'historical_prices', 'macro_data', 'market_data',
                   'multi_timeframe_data', 'technical_indicators',
@@ -456,7 +458,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         provides=[
             'alerts', 'bid_ask_data', 'economic_calendar', 'environment',
             'historical_prices', 'indicators', 'input1', 'input2', 'learning_context', 'learning_status',
-            'macro_data', 'market_conditions', 'market_context', 'market_data', 'market_liquidity',
+            'macro_data', 'market_conditions', 'market_data', 'market_liquidity',
             'module_insights', 'multi_timeframe_data', 'ohlcv_data', 'price_data', 'prices',
             'session_type', 'step_data', 'step_idx', 'strategy_status', 'symbols',
             'technical_indicators', 'timestamp', 'trading_session', 'volatility', 'volatility_data',

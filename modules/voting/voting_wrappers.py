@@ -186,6 +186,11 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
                 'health_metrics': self._get_health_metrics()
             }
 
+            # Debug: Print individual expert voting decision
+            expert_name = self.__class__.__name__
+            action = voting_proposal.get('action', 'unknown')
+            # print(f"[VOTE] {expert_name:40s} | Action: {action:10s} | Confidence: {confidence:.3f}")
+
             # Update SmartInfoBus
             await self._update_smartinfobus_comprehensive(results, thesis)
 
@@ -520,6 +525,9 @@ class EnhancedVotingExpertBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBu
             name = self.__class__.__name__
             proposal = results['voting_proposal']
             confidence = float(results['confidence'])
+
+            # Debug: Confirm vote publishing
+            # print(f"[BUS PUBLISH] {name:40s} publishing vote to InfoBus")
 
             # Existing per-expert publications
             self.smart_bus.set(f'{name}_voting_proposal', proposal, module=name, thesis=thesis, confidence=confidence)
@@ -1475,13 +1483,13 @@ def create_enhanced_voting_experts(config: Dict[str, Any]) -> List[EnhancedVotin
                 expert_config = config.get(cls.__name__, {})
                 instance = cast(EnhancedVotingExpertBase, cls(config=expert_config))
                 experts.append(instance)
-                print(f"[OK] Created {cls.__name__}")
+                # print(f"[OK] Created {cls.__name__}")
             except Exception as e:
                 print(f"[FAIL] Failed to create {cls.__name__}: {e}")
-        print(f"[OK] Successfully created {len(experts)} enhanced voting experts")
+        # print(f"[OK] Successfully created {len(experts)} enhanced voting experts")
         return experts
     except Exception as e:
-        print(f"[FAIL] Enhanced voting expert creation failed: {e}")
+        # print(f"[FAIL] Enhanced voting expert creation failed: {e}")
         return []
 
 
@@ -1530,7 +1538,7 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
         self.voter_flag_name = str(self.config.get('voter_flag_name', 'is_voting_member'))
         self.voters_from_config = list(self.config.get('voters', []))  # optional static list of module names
         self.ingest_minimum = int(self.config.get('ingest_minimum', self.minimum_voters))
-        self.ignore_actions = set(self.config.get('ignore_actions', ['abstain', None]))
+        self.ignore_actions = set(self.config.get('ignore_actions', ['abstain', None, 'unknown']))
         self.enable_fallback_discovery = bool(self.config.get('enable_fallback_discovery', True))
         self.max_votes_per_tick = int(self.config.get('max_votes_per_tick', 128))
 
@@ -1625,21 +1633,39 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
         except Exception:
             return None
 
-    # Helper to map action strings to a sign (+1 long, -1 short, 0 neutral)
+    # Helper to map action strings to a sign (+1 long/bullish, -1 short/bearish, 0 neutral)
     def _action_sign(self, action: str) -> float:
         if not action:
             return 0.0
         a = action.strip().lower()
-        # broad mapping: treat names with "long" as +, "short" as -
-        if a.startswith('long') or 'long_' in a:
+
+        # Directional actions (clear bullish/bearish)
+        if a.startswith('long') or 'long_' in a or a == 'buy':
             return 1.0
-        if a.startswith('short') or 'short_' in a:
+        if a.startswith('short') or 'short_' in a or a == 'sell':
             return -1.0
-        # some domain actions:
+
+        # Risk management actions
+        if a in ('reduce_risk', 'halt', 'emergency_stop', 'stop', 'reduce'):
+            return -1.0  # Risk reduction is bearish/defensive
+        if a in ('increase_risk', 'increase', 'aggressive'):
+            return 1.0  # Risk increase is bullish/aggressive
+
+        # Neutral/cautious actions
+        if a in ('hold', 'maintain', 'caution', 'abstain', 'wait', 'flat', 'neutral'):
+            return 0.0
+
+        # Positive/proceed actions (slight bullish bias)
+        if a in ('proceed', 'continue', 'confirm'):
+            return 0.5  # Slightly bullish but not full commitment
+
+        # Thematic actions
         if a in ('trend_following', 'seasonal_long_bias', 'long_risk_assets', 'safe_haven_rotation'):
             return 1.0
-        if a in ('seasonal_short_bias',):
+        if a in ('seasonal_short_bias', 'short_risk_assets'):
             return -1.0
+
+        # Default: neutral if action not recognized
         return 0.0
 
     # ---------------- MAIN PROCESSING ----------------
@@ -1969,18 +1995,23 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                 and self.discovery_mode in ("registry_only", "feed_then_registry")
             )
             if need_more:
+                # print(f"[COMMITTEE] Need more votes, attempting fallback for {len(voters)} voters...")
                 for name in voters:
                     if name in by_expert:
                         continue
                     try:
                         # try canonical + alt key pairs; only query confidence if proposal exists
                         for prop_key, conf_key in self._voter_key_pairs(name):
+                            # print(f"[COMMITTEE] Trying to read {name}: prop_key={prop_key}, conf_key={conf_key}")
                             proposal = self.smart_bus.get(prop_key, self.__class__.__name__, default=None)
                             if proposal is None:
+                                # print(f"[COMMITTEE]   -> {name} proposal MISS on key {prop_key}")
                                 continue  # avoid an extra MISS on confidence
                             confidence = self.smart_bus.get(conf_key, self.__class__.__name__, default=None)
                             if confidence is None:
+                                # print(f"[COMMITTEE]   -> {name} confidence MISS on key {conf_key}")
                                 continue
+                            # print(f"[COMMITTEE]   -> {name} vote FOUND! action={proposal.get('action', 'unknown')}, conf={confidence}")
                             raw = {
                                 "expert": name,
                                 "vote": dict(proposal) if isinstance(proposal, dict) else {},
@@ -1997,12 +2028,43 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                 expert_votes = list(by_expert.values())
 
             # --- 3) If any non-abstain present, drop abstains (keeps committee decisive)
+            # print(f"[COMMITTEE] Before filtering: {len(expert_votes)} votes")
+            for v in expert_votes:
+                action = v.get("vote", {}).get("action")
+                # print(f"[COMMITTEE]   -> {v.get('expert')}: action='{action}' | ignored={action in self.ignore_actions}")
+
             if any((v.get("vote", {}).get("action") not in self.ignore_actions) for v in expert_votes):
+                before_count = len(expert_votes)
                 expert_votes = [v for v in expert_votes if v.get("vote", {}).get("action") not in self.ignore_actions]
+                # print(f"[COMMITTEE] After filtering: {len(expert_votes)} votes (removed {before_count - len(expert_votes)})")
 
             # --- 4) cap
             if len(expert_votes) > self.max_votes_per_tick:
                 expert_votes = expert_votes[-self.max_votes_per_tick:]
+
+            # # Debug: Print detailed voting information
+            # voting_experts = [v.get('expert', 'unknown') for v in expert_votes]
+            # non_voting_experts = [v for v in voters if v not in voting_experts]
+
+            # print(f"\n{'='*80}")
+            # print(f"VOTING DEBUG - Expert Vote Collection")
+            # print(f"{'='*80}")
+            # print(f"Discovered voters: {voters}")
+            # print(f"Total discovered: {len(voters)}")
+            # print(f"Votes collected: {len(expert_votes)}")
+            # print(f"\nVOTING EXPERTS ({len(voting_experts)}):")
+            # for i, v in enumerate(expert_votes, 1):
+            #     expert = v.get('expert', 'unknown')
+            #     action = v.get('vote', {}).get('action', 'unknown')
+            #     confidence = v.get('confidence', 0.0)
+            #     print(f"  {i}. {expert:40s} | Action: {action:10s} | Confidence: {confidence:.3f}")
+
+            # if non_voting_experts:
+            #     print(f"\nNON-VOTING EXPERTS ({len(non_voting_experts)}):")
+            #     for i, expert in enumerate(non_voting_experts, 1):
+            #         # print(f"  {i}. {expert:40s} | Status: NO VOTE RECEIVED")
+
+            # # print(f"{'='*80}\n")
 
             self.logger.info(format_operator_message(
                 icon="[VOTES]",

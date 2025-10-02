@@ -64,6 +64,10 @@ class TradingConfig:
     # Primary timeframe (used mainly for local fallback data windows)
     primary_timeframe: str = "H1"
 
+    # Minimum data bars required (prevents 4-step episodes from tiny datasets)
+    # Set to 50 to ensure at least 50 timesteps per episode
+    min_required_data_bars: int = 50
+
     # ===================================================================
     # InfoBus & Orchestrator
     # ===================================================================
@@ -81,6 +85,10 @@ class TradingConfig:
     orchestrator_max_inflight: int = 1
     # Only schedule orchestrator once every N env steps (1 = every step)
     orchestrator_step_interval: int = 1
+
+    # Optional general step throttle (ms) applied even when orchestrator is disabled
+    # or when no orchestrator scheduling occurs on a given step. Default 0 (no delay).
+    step_sleep_ms: float = 0.0
 
     # Bus-first policy toggles (single source of truth = modules via SmartInfoBus)
     bus_first: bool = True
