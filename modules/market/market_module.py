@@ -609,10 +609,36 @@ class UnifiedMarketModule(
         try:
             # Critical missing data keys that many modules depend on
             # Generate market_context from current aggregated data
+            # FIX: Properly infer session if not available from components
+            session_name = None
+            session_data = aggregated.get('session_data', {})
+            if isinstance(session_data, dict):
+                session_name = session_data.get('current_session')
+
+            # Fallback: infer from time_risk_analysis or current time
+            if not session_name or session_name == 'unknown':
+                time_risk = aggregated.get('time_risk_analysis', {})
+                if isinstance(time_risk, dict):
+                    sess_abbr = time_risk.get('session')
+                    # Map abbreviated sessions to full names
+                    if sess_abbr == 'AS':
+                        session_name = 'asian'
+                    elif sess_abbr == 'EU':
+                        session_name = 'european'
+                    elif sess_abbr == 'US':
+                        session_name = 'american'
+                    elif sess_abbr == 'OFF':
+                        session_name = 'closed'
+
+            # Final fallback: infer from current UTC time
+            if not session_name or session_name == 'unknown':
+                from modules.utils.session_utils import infer_market_session
+                session_name = infer_market_session()
+
             aggregated.setdefault('market_context', {
                 'regime': aggregated.get('market_regime', 'unknown'),
                 'volatility_level': aggregated.get('volatility_level', 'medium'),
-                'session': normalize_session_name(aggregated.get('session_data', {}).get('current_session', 'unknown')),
+                'session': normalize_session_name(session_name),
                 'theme': aggregated.get('market_theme', 0),
                 'liquidity_score': aggregated.get('liquidity_score', 0.5),
                 'timestamp': datetime.datetime.utcnow().isoformat()

@@ -790,10 +790,52 @@ class PositionManager(
             self._flush_logs()
         return order
 
+    def _check_voting_consensus(self) -> bool:
+        """
+        Check if voting system has produced valid consensus before allowing orders.
+        Prevents unchecked trades from bypassing the voting committee.
+        """
+        try:
+            # Check for VotingKernel consensus
+            consensus = self.smart_bus.get("committee_consensus", "PositionManager")
+            if isinstance(consensus, dict):
+                # Check if consensus exists and has minimum strength
+                consensus_exists = consensus.get("consensus_exists")
+                consensus_strength = consensus.get("consensus_strength", 0.0)
+
+                # Accept if consensus exists OR if strength is above threshold
+                if consensus_exists or (isinstance(consensus_strength, (int, float)) and float(consensus_strength) > 0.3):
+                    return True
+
+            # Fallback: Check for trade_vote_v2 from VotingKernel
+            trade_vote = self.smart_bus.get("trade_vote_v2", "PositionManager")
+            if isinstance(trade_vote, dict) and trade_vote.get("action"):
+                return True
+
+            # No valid consensus found
+            return False
+        except Exception:
+            # On error, be conservative and block orders
+            return False
+
     def _enqueue_orders(self, orders: List[Dict[str, Any]]) -> None:
-        """Append orders to shared 'order_queue' on the bus."""
+        """Append orders to shared 'order_queue' on the bus, but only if voting consensus exists."""
         if not orders:
             return
+
+        # CRITICAL FIX: Check voting consensus before enqueueing orders
+        if not self._check_voting_consensus():
+            if self.debug:
+                self.logger.warning(
+                    format_operator_message(
+                        "[GATE]",
+                        "ORDERS_BLOCKED_NO_CONSENSUS",
+                        count=len(orders),
+                        reason="Voting system has not produced consensus - blocking orders to prevent unchecked trades"
+                    )
+                )
+            return
+
         try:
             existing = self.smart_bus.get("order_queue", "PositionManager")
             if not isinstance(existing, list):
@@ -807,7 +849,7 @@ class PositionManager(
                 "order_queue",
                 existing,
                 module="PositionManager",
-                thesis=f"Enqueued {len(orders)} order(s) for Env/Executor execution",
+                thesis=f"Enqueued {len(orders)} order(s) for Env/Executor execution (voting consensus verified)",
             )
         except Exception as e:
             self.logger.error(f"Failed to enqueue orders: {e}")

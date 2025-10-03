@@ -97,7 +97,8 @@ class Executor(BaseModule):
             except Exception:
                 pass
         # Final fallback aligns with environment default (envs/config.py: initial_balance=3000.0)
-        self.balance: float = float(3000.0 if _cfg_ib is None else _cfg_ib)
+        self.initial_balance: float = float(3000.0 if _cfg_ib is None else _cfg_ib)
+        self.balance: float = float(self.initial_balance)
         self.equity: float = float(self.balance)
         self._last_equity: float = float(self.equity)
         self.positions: Dict[str, PositionSnap] = {}
@@ -212,7 +213,11 @@ class Executor(BaseModule):
             if mode == "live" and self.adapter:
                 pos_snap = self.adapter.sync_positions()
             else:
-                pos_snap = {k: v.as_bus() for k, v in self.positions.items()}
+                # Pass current price to as_bus() for proper display
+                pos_snap = {}
+                for k, v in self.positions.items():
+                    current_price = self._sim_price(k, v.side)
+                    pos_snap[k] = v.as_bus(last_price=current_price)
 
         return {
             "balance": float(self.balance),
@@ -264,7 +269,11 @@ class Executor(BaseModule):
                 self.debugger.begin("execute_sim")
                 fills, step_pnl, realized_step, unreal_after = self._execute_sim(accepted, want_breakdown=True)
                 self.debugger.end("execute_sim")
-                positions_after = {k: v.as_bus() for k, v in self.positions.items()}
+                # Pass current price to as_bus() for proper display
+                positions_after = {}
+                for k, v in self.positions.items():
+                    current_price = self._sim_price(k, v.side)
+                    positions_after[k] = v.as_bus(last_price=current_price)
 
             # publish to bus
             self.debugger.begin("publish_bus")
@@ -423,7 +432,12 @@ class Executor(BaseModule):
 
             # baselines
             "pending_orders": order_data.get("accepted", []),
-            "account_state": {"balance": float(self.balance), "equity": float(self.equity), "step": int(self.step_idx)},
+            "account_state": {
+                "balance": float(self.balance),
+                "equity": float(self.equity),
+                "initial_balance": float(self.initial_balance),
+                "step": int(self.step_idx)
+            },
 
             # housekeeping
             "order_queue": [],
@@ -680,7 +694,12 @@ class Executor(BaseModule):
 
                 if add_units > 0:
                     notional = add_units * price
-                    self.positions[inst] = PositionSnap(inst, side_from_action, add_units, price, notional_eur=notional)
+                    self.positions[inst] = PositionSnap(
+                        inst, side_from_action, add_units, price,
+                        notional_eur=notional,
+                        open_time=time.time(),
+                        entry_step=self.step_idx
+                    )
                     fill = TradeFill(
                         id=f"fill-{uuid.uuid4().hex[:10]}",
                         ts=time.time(),
@@ -702,7 +721,12 @@ class Executor(BaseModule):
                     continue
                 if inst not in self.positions:
                     notional = add_units * price
-                    self.positions[inst] = PositionSnap(inst, +1, add_units, price, notional_eur=notional)
+                    self.positions[inst] = PositionSnap(
+                        inst, +1, add_units, price,
+                        notional_eur=notional,
+                        open_time=time.time(),
+                        entry_step=self.step_idx
+                    )
                     fill = TradeFill(
                         id=f"fill-{uuid.uuid4().hex[:10]}",
                         ts=time.time(),
@@ -821,7 +845,7 @@ class Executor(BaseModule):
         # apply realized → balance
         self.balance += realized_step
 
-        # mark-to-market
+        # mark-to-market: calculate unrealized P&L
         unreal = 0.0
         for inst, p in self.positions.items():
             px = self._sim_price(inst, p.side)
@@ -829,10 +853,15 @@ class Executor(BaseModule):
                 continue
             unreal += (px - p.entry_price) * p.side * p.units
 
-        equity_now = self.balance + unreal
+        # For simulation/training: mark-to-market balance (accumulate all P&L)
+        # Balance accumulates both realized and unrealized P&L
+        equity_now = float(self.balance + unreal)
         step_pnl = float(equity_now - self._last_equity)
-        self._last_equity = equity_now
+
+        # Update balance to reflect total account value (mark-to-market)
+        self.balance = equity_now
         self.equity = equity_now
+        self._last_equity = equity_now
 
         if want_breakdown:
             return fills, step_pnl, float(realized_step), float(unreal)
@@ -938,8 +967,10 @@ class Executor(BaseModule):
         if mode == "live" and self.adapter:
             pos_snap = self.adapter.sync_positions()
         else:
+            # Pass current price to as_bus() for proper display
             for inst, p in self.positions.items():
-                pos_snap[inst] = p.as_bus()
+                current_price = self._sim_price(inst, p.side)
+                pos_snap[inst] = p.as_bus(last_price=current_price)
 
         trade_ledger = list(self.trades)
         recent = trade_ledger[-50:] if trade_ledger else []
@@ -961,6 +992,10 @@ class Executor(BaseModule):
         self.bus.set("order_data", order_data, thesis="Orders seen this step (executor)")
         self.bus.set("execution_data", execution_data, thesis="Fills this step (executor)")
         self.bus.set("execution_reports", exec_fills, thesis="Fills alias (executor)")
+
+        # CRITICAL: Also publish current step fills for memory system
+        # Memory needs access to ALL fills including opens (not just closes with pnl)
+        self.bus.set("current_fills", exec_fills, thesis="Current step fills (executor)")
         # Alias for readers expecting 'trade_data'
         try:
             self.bus.set("trade_data", trade_ledger, thesis="alias: trade_data (executor)")
@@ -978,7 +1013,12 @@ class Executor(BaseModule):
         # Baselines for downstream consumers
         try:
             self.bus.set("pending_orders", order_data.get("accepted", []), thesis="Orders pending execution (baseline)")
-            self.bus.set("account_state", {"balance": float(self.balance), "equity": float(self.equity), "step": int(self.step_idx)}, thesis="Account state (executor)")
+            self.bus.set("account_state", {
+                "balance": float(self.balance),
+                "equity": float(self.equity),
+                "initial_balance": float(self.initial_balance),
+                "step": int(self.step_idx)
+            }, thesis="Account state (executor)")
         except Exception:
             pass
 

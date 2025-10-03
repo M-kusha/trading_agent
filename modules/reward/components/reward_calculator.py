@@ -70,18 +70,23 @@ class RewardCalculator:
         # Calculate denominator (never zero)
         denom = baseline_balance if (baseline_balance and baseline_balance > 0) else max(1e-9, balance_now)
 
-        # Calculate base PnL
-        realised_pnl = self._calculate_realised_pnl(trades)
-        base_component = realised_pnl / denom
+        # Calculate base PnL - use balance change (includes realized + unrealized)
+        # This is correct for mark-to-market accounting where balance includes all P&L
+        total_pnl = balance_now - (baseline_balance if baseline_balance else balance_now)
+
+        # Also calculate realized-only PnL from trades for metrics/debugging
+        realised_pnl_from_trades = self._calculate_realised_pnl(trades)
+
+        base_component = total_pnl / denom
 
         # Initialize components
         components = self._initialize_components(
-            reward_data, realised_pnl, base_component,
+            reward_data, total_pnl, base_component,
             balance_now, baseline_balance
         )
 
-        # Start with PnL as base reward
-        reward = realised_pnl
+        # Start with total P&L as base reward (realized + unrealized)
+        reward = total_pnl
 
         # Apply penalties
         penalties = await self._calculate_penalties(reward_data, components)
@@ -90,7 +95,7 @@ class RewardCalculator:
             components.update(penalties)
 
         # Apply bonuses
-        bonuses = await self._calculate_bonuses(reward_data, trades, realised_pnl, components)
+        bonuses = await self._calculate_bonuses(reward_data, trades, realised_pnl_from_trades, components)
         if bonuses:
             reward += sum(bonuses.values())
             components.update(bonuses)
@@ -106,7 +111,7 @@ class RewardCalculator:
         components['method'] = 'enhanced_async_calculation'
 
         # Update state
-        await self._update_calculation_state(trades, realised_pnl, final_reward)
+        await self._update_calculation_state(trades, realised_pnl_from_trades, final_reward)
 
         # Log if significant
         if abs(final_reward) > 0.2 or self.calculation_count % 10 == 1:
@@ -167,17 +172,31 @@ class RewardCalculator:
         }
 
     def _calculate_realised_pnl(self, trades: List[Dict[str, Any]]) -> float:
-        """Calculate total realised PnL from trades"""
+        """Calculate total realised PnL from trades.
+
+        Accepts multiple common field names to be robust across executors:
+        - 'pnl' (direct)
+        - 'realized_pnl' / 'realised_pnl' (executor fill schema)
+        - fallback: 0.0 if none present
+        """
         if not trades:
             return 0.0
         total_pnl = 0.0
         for trade in trades:
-            if isinstance(trade, dict) and 'pnl' in trade:
-                try:
-                    total_pnl += float(trade['pnl'])
-                except Exception:
-                    # skip malformed pnl
-                    continue
+            if not isinstance(trade, dict):
+                continue
+            val = None
+            for key in ("pnl", "realized_pnl", "realised_pnl", "realized", "realised"):
+                v = trade.get(key)
+                if isinstance(v, (int, float)):
+                    val = float(v)
+                    break
+            if val is None:
+                continue
+            try:
+                total_pnl += float(val)
+            except Exception:
+                continue
         return float(total_pnl)
 
     def _extract_drawdown(self, reward_data: Dict[str, Any]) -> float:

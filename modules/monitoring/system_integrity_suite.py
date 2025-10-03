@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import ast
@@ -46,6 +45,8 @@ class LoggerProto(Protocol):
     def info(self, *args: Any, **kwargs: Any) -> None: ...
     def warning(self, *args: Any, **kwargs: Any) -> None: ...
     def error(self, *args: Any, **kwargs: Any) -> None: ...
+    # Optional in some codebases
+    def debug(self, *args: Any, **kwargs: Any) -> None: ...  # type: ignore[override]
 
 def _fmt_op(icon: str, message: str, **ctx: Any) -> str:
     if not ctx:
@@ -62,6 +63,8 @@ class _FallbackLogger:
         print(f"[WARN] {self._name} | {msg}")
     def error(self, msg: str, *args: Any, **kwargs: Any) -> None:
         print(f"[ERROR] {self._name} | {msg}")
+    def debug(self, msg: str, *args: Any, **kwargs: Any) -> None:
+        print(f"[DEBUG] {self._name} | {msg}")
 
 # Prefer project logger if available
 try:
@@ -115,10 +118,14 @@ class SuiteConfig:
     # Heartbeat & lifecycle thresholds
     heartbeat_interval_seconds: float = 5.0
     stale_age_warn_seconds: float = 60.0
+    stale_age_critical_seconds: float = 180.0  # escalate after this
     resolution_warn_seconds: float = 15.0  # SLA before first FRESH on watchlist keys
-    # Logging
+    # Logging / Debug
     operator_mode: bool = True
     plain_english: bool = True
+    debug: bool = True                              # <── master debug switch
+    debug_ring_size: int = 500                       # recent events ring buffer
+    log_on_every_event: bool = True                 # chatty trace if True
     # Discovery roots
     modules_root: str = "modules"
     # Visualization defaults
@@ -274,14 +281,16 @@ class SystemIntegritySuite:
       - Single-pass dependency audit (orphans, duplicates, danglers, stale)
       - Module graph validation (duplicate/missing writers, cycles)
       - Visualization (if networkx/matplotlib available)
+      - Enhanced debug telemetry (ring buffer, stale root-cause, module hotspots)
 
     Integrations expected (overridable on __init__):
       • bus: InfoBus-like object with .subscribe/.unsubscribe/.get_data_freshness_report()
              and best-effort _providers/_consumers snapshots.
-      • logger: RotatingLogger-like with info/warning/error.
+      • logger: RotatingLogger-like with info/warning/error(/debug).
       • orchestrator: optional; if present, used for module list + metadata.
     """
 
+    # ── Construction ──────────────────────────────────────────
     def __init__(
         self,
         *,
@@ -290,7 +299,13 @@ class SystemIntegritySuite:
         logger: Optional[LoggerProto] = None,
         orchestrator: Any = None,
     ) -> None:
-        self.cfg = config or SuiteConfig()
+        # Allow env overrides for quick toggling
+        env_debug = os.getenv("SIS_DEBUG")
+        cfg = config or SuiteConfig()
+        if env_debug is not None:
+            cfg.debug = env_debug.lower() in {"1", "true", "yes", "on"}
+        self.cfg = cfg
+
         self.bus = bus or _get_bus()
         self.logger = logger or LoggerClass(
             name="SystemIntegrity",
@@ -307,10 +322,17 @@ class SystemIntegritySuite:
         self._recent_flaps: Deque[Tuple[float, str, int]] = deque(maxlen=200)
         self._provider_changes: Deque[Tuple[float, str, str, str]] = deque(maxlen=200)
 
+        # Debug telemetry
+        self._events: Deque[Dict[str, Any]] = deque(maxlen=self.cfg.debug_ring_size)
+        self._stale_index: Dict[str, Dict[str, Any]] = {}
+        self._miss_index: Dict[str, Dict[str, Any]] = {}
+        self._module_stats: DefaultDict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+
         # Live taps & heartbeat
         self._live_attached = False
         self._monitor_stop = threading.Event()
         self._monitor_thread: Optional[threading.Thread] = None
+        self._heartbeat_interval = self.cfg.heartbeat_interval_seconds
 
         # Defaults for taps (safe even if attach_live_taps not called yet)
         self._show_values = False
@@ -324,10 +346,55 @@ class SystemIntegritySuite:
             "pending_orders", "account_state", "market_state", "market_context"
         }
 
-        self.logger.info(_fmt("🧭", "SystemIntegritySuite initialized"))
+        self._d("Debug enabled")  # initial debug note
+        self._i("🧭", "SystemIntegritySuite initialized")
+
+    # ── Internal logging helpers ──────────────────────────────
+    def _d(self, message: str, **ctx: Any) -> None:
+        if self.cfg.debug:
+            try:
+                if hasattr(self.logger, "debug"):
+                    self.logger.debug(_fmt("🔎", message, **ctx))  # type: ignore[attr-defined]
+                else:
+                    self.logger.info(_fmt("🔎", message, **ctx))
+            except Exception:
+                pass
+
+    def _i(self, icon: str, message: str, **ctx: Any) -> None:
+        try:
+            self.logger.info(_fmt(icon, message, **ctx))
+        except Exception:
+            pass
+
+    def _w(self, icon: str, message: str, **ctx: Any) -> None:
+        try:
+            self.logger.warning(_fmt(icon, message, **ctx))
+        except Exception:
+            pass
+
+    def _e(self, icon: str, message: str, **ctx: Any) -> None:
+        try:
+            self.logger.error(_fmt(icon, message, **ctx))
+        except Exception:
+            pass
+
+    def _record_event(self, etype: str, **fields: Any) -> None:
+        if not (self.cfg.debug or self.cfg.log_on_every_event):
+            return
+        evt = {"ts": time.time(), "type": etype, **{k: v for k, v in fields.items() if v is not None}}
+        with self._lock:
+            self._events.append(evt)
+
+    # ── Public debug toggles ──────────────────────────────────
+    def enable_debug(self) -> None:
+        self.cfg.debug = True
+        self._d("Debug toggled ON by runtime")
+
+    def disable_debug(self) -> None:
+        self._d("Debug toggled OFF by runtime")
+        self.cfg.debug = False
 
     # ── Lifecycle monitor: live taps ──────────────────────────
-
     def attach_live_taps(
         self,
         *,
@@ -352,9 +419,9 @@ class SystemIntegritySuite:
             self.bus.subscribe("module_disabled", self._on_module_disabled)
             self.bus.subscribe("module_enabled", self._on_module_enabled)
             self._live_attached = True
-            self.logger.info(_fmt("🔌", "Live taps attached", show_values=show_values, problems_only=problems_only))
+            self._i("🔌", "Live taps attached", show_values=show_values, problems_only=problems_only)
         except Exception as e:
-            self.logger.error(f"Failed to attach live taps: {e}")
+            self._e("💥", f"Failed to attach live taps: {e}")
 
     def detach_live_taps(self) -> None:
         if not self._live_attached:
@@ -372,33 +439,31 @@ class SystemIntegritySuite:
             except Exception:
                 pass
         self._live_attached = False
-        self.logger.info(_fmt("🧹", "Live taps detached"))
+        self._i("🧹", "Live taps detached")
 
     # ── Heartbeat ─────────────────────────────────────────────
-
     def start_heartbeat(self, interval_s: float = 30.0) -> None:
         if self._monitor_thread and self._monitor_thread.is_alive():
             return
-        self._heartbeat_interval = interval_s  # Store for use in _monitor_loop
+        self._heartbeat_interval = max(1.0, float(interval_s))
         self._monitor_stop.clear()
         self._monitor_thread = threading.Thread(target=self._monitor_loop, name="IntegrityHeartbeat", daemon=True)
         self._monitor_thread.start()
-        self.logger.info(_fmt("⏱️", "Heartbeat loop started", interval=f"{self.cfg.heartbeat_interval_seconds}s"))
+        self._i("⏱️", "Heartbeat loop started", interval=f"{self._heartbeat_interval:.1f}s")
 
     def stop_heartbeat(self) -> None:
         self._monitor_stop.set()
         if self._monitor_thread and self._monitor_thread.is_alive():
             self._monitor_thread.join(timeout=2.0)
-        self.logger.info(_fmt("⏹️", "Heartbeat loop stopped"))
+        self._i("⏹️", "Heartbeat loop stopped")
 
     def _monitor_loop(self) -> None:
-        # Use the interval passed to start_heartbeat, or fall back to config
-        interval = max(1.0, getattr(self, '_heartbeat_interval', self.cfg.heartbeat_interval_seconds))
+        interval = self._heartbeat_interval
         while not self._monitor_stop.is_set():
             try:
                 self._heartbeat_once()
             except Exception as e:
-                self.logger.error(f"[HEARTBEAT] Error: {e}")
+                self._e("💥", f"[HEARTBEAT] Error: {e}")
             self._monitor_stop.wait(interval)
 
     def _heartbeat_once(self) -> None:
@@ -420,21 +485,31 @@ class SystemIntegritySuite:
                 self._mark_fresh(key, provider, version, now)
             else:
                 self._mark_stale(key, provider, version, now)
+                # Detailed root-cause trace for stale detected by heartbeat
+                consumers = sorted(list(consumers_map.get(key, [])))
+                self._note_stale(
+                    key=key,
+                    cause="heartbeat_age",
+                    provider=provider,
+                    version=version,
+                    age=age,
+                    consumers=consumers,
+                    requester=None,
+                )
 
         # Missing (consumed but no provider and not in freshness)
         for key, consumers in consumers_map.items():
             if key not in providers_map or not providers_map[key]:
                 if key not in freshness:
                     self._mark_missing(key, "/".join(sorted(consumers)) if consumers else None, now)
+                    self._note_missing(key=key, requester_hint=None, consumers=sorted(consumers))
 
         # Summary
         snap = self._lifecycle_snapshot()
-        self.logger.info(
-            _fmt("💓", "Heartbeat",
+        self._i("💓", "Heartbeat",
                  missing=len(snap["unresolved"]),
                  stale=len(snap["stale"]),
                  fresh=len(snap["fresh"]))
-        )
 
         # SLA for watchlist
         overdue: List[Tuple[str, float]] = []
@@ -446,11 +521,19 @@ class SystemIntegritySuite:
                     if age >= self.cfg.resolution_warn_seconds:
                         overdue.append((key, age))
         for key, age in overdue:
-            self.logger.warning(_fmt("⏰", "Watchlist SLA breach", key=key, age=f"{age:.1f}s",
-                                     threshold=f"{self.cfg.resolution_warn_seconds:.1f}s"))
+            self._w("⏰", "Watchlist SLA breach", key=key, age=f"{age:.1f}s",
+                    threshold=f"{self.cfg.resolution_warn_seconds:.1f}s")
+
+        # Escalate critically stale items
+        criticals = self._collect_critically_stale(now)
+        for entry in criticals[:10]:
+            self._w("🐢", "Critically stale key",
+                    key=entry["key"], age=f"{entry['age']:.1f}s",
+                    provider=entry.get("provider") or "unknown",
+                    consumers=",".join(entry.get("consumers", [])) or "-",
+                    last_requesters=",".join(list(entry.get("last_requesters", []))[:4]) or "-")
 
     # ── One-shot audit & validation ───────────────────────────
-
     def validate_and_audit(self, *, title: str = "System Audit", export_path: Optional[str] = None) -> Dict[str, Any]:
         """
         1) Dependency audit (orphans/dups/danglers/stale + lifecycle snapshot)
@@ -467,13 +550,12 @@ class SystemIntegritySuite:
                 Path(export_path).parent.mkdir(parents=True, exist_ok=True)
                 with open(export_path, "w", encoding="utf-8") as f:
                     json.dump(result, f, indent=2)
-                self.logger.info(_fmt("📄", "Audit+Validation exported", path=export_path))
+                self._i("📄", "Audit+Validation exported", path=export_path)
             except Exception as e:
-                self.logger.error(f"Failed to export report: {e}")
+                self._e("💥", f"Failed to export report: {e}")
         return result
 
     # ── Visualization (optional) ──────────────────────────────
-
     def visualize(self, output_path: Optional[str] = None) -> None:
         """
         Generate a dependency graph of providers→consumers using networkx/matplotlib if available.
@@ -499,12 +581,11 @@ class SystemIntegritySuite:
             _plt.axis('off')
             _plt.savefig(output_path, dpi=300, bbox_inches='tight')
             _plt.close()
-            self.logger.info(_fmt("🗺️", "Visualization generated", path=output_path, nodes=len(G.nodes), edges=len(G.edges)))
+            self._i("🗺️", "Visualization generated", path=output_path, nodes=len(G.nodes), edges=len(G.edges))
         else:
-            self.logger.warning("Visualization skipped (networkx/matplotlib not available)")
+            self._w("🖼️", "Visualization skipped (networkx/matplotlib not available)")
 
     # ── Internal: dependency audit ────────────────────────────
-
     def _scan_dependencies(self, *, title: str) -> Dict[str, Any]:
         t0 = time.time()
         freshness, providers_map, consumers_map = self._snapshot_bus()
@@ -559,14 +640,13 @@ class SystemIntegritySuite:
         }
 
         # Log concise summary
-        self.logger.info(_fmt("📋", "Dependency audit",
-                              orphans=len(orphans), dups=len(dups),
-                              danglers=len(danglers), stale=len(stale),
-                              elapsed=f"{elapsed_ms}ms"))
+        self._i("📋", "Dependency audit",
+                orphans=len(orphans), dups=len(dups),
+                danglers=len(danglers), stale=len(stale),
+                elapsed=f"{elapsed_ms}ms")
         return results
 
     # ── Internal: module validation ───────────────────────────
-
     def _validate_modules(self) -> ValidationReport:
         """
         Validates module dependency graph for:
@@ -675,12 +755,12 @@ class SystemIntegritySuite:
         score -= 0.5 * min(5, len(report.cycles))
         report.integration_score = max(0.0, min(100.0, score))
 
-        self.logger.info(_fmt("🧪", "Validation",
-                              total=report.total_modules,
-                              dup_writers=len(report.duplicate_writers),
-                              missing=len(report.missing_writers),
-                              cycles=len(report.cycles),
-                              score=f"{report.integration_score:.1f}%"))
+        self._i("🧪", "Validation",
+                total=report.total_modules,
+                dup_writers=len(report.duplicate_writers),
+                missing=len(report.missing_writers),
+                cycles=len(report.cycles),
+                score=f"{report.integration_score:.1f}%")
         # Publish a tiny summary on the bus if available
         try:
             self.bus.set("validation/summary", {
@@ -696,7 +776,6 @@ class SystemIntegritySuite:
         return report
 
     # ── Helpers: lifecycle events ─────────────────────────────
-
     def _should_ignore(self, key: Any) -> bool:
         try:
             s = str(key or "")
@@ -715,8 +794,12 @@ class SystemIntegritySuite:
         key = evt.get("key")
         if self._should_ignore(key): return
         now = time.time()
-        self._mark_missing(str(key), evt.get("module"), now)
-        self.logger.warning(_fmt("❌", "BUS MISS", key=key, requester=evt.get("module")))
+        requester = evt.get("module")
+        self._mark_missing(str(key), requester, now)
+        self._note_missing(key=str(key), requester_hint=requester, consumers=None)
+        if requester:
+            self._module_stats[requester]["miss"] += 1
+        self._w("❌", "BUS MISS", key=key, requester=requester)
 
     def _on_get_ok(self, evt: Dict[str, Any]) -> None:
         key = evt.get("key")
@@ -724,11 +807,18 @@ class SystemIntegritySuite:
         now = time.time()
         provider = evt.get("source_module") or evt.get("provider")
         version = evt.get("version")
+        requester = evt.get("module")
+        age = float(evt.get("age_seconds", 0.0) or 0.0)
         self._mark_fresh(str(key), provider, version, now)
-        if not self._problems_only:
-            self.logger.info(_fmt("📦", "BUS GET", key=key, provider=provider,
-                                  age=f"{evt.get('age_seconds', 0):.2f}s",
-                                  preview=self._preview(evt.get("preview")) if self._show_values else "hidden"))
+        if provider:
+            self._module_stats[provider]["set_served"] += 1
+        if requester:
+            self._module_stats[requester]["get_ok"] += 1
+        self._record_event("get_ok", key=key, provider=provider, requester=requester, version=version, age=age)
+        if not self._problems_only and (self.cfg.debug or self.cfg.log_on_every_event):
+            self._i("📦", "BUS GET", key=key, provider=provider,
+                    age=f"{age:.2f}s",
+                    preview=self._preview(evt.get("preview")) if self._show_values else "hidden")
 
     def _on_get_blocked(self, evt: Dict[str, Any]) -> None:
         key = evt.get("key")
@@ -736,9 +826,26 @@ class SystemIntegritySuite:
         now = time.time()
         provider = evt.get("source_module") or evt.get("provider")
         version = evt.get("version")
+        requester = evt.get("module")
+        reason = evt.get("reason")
+        age = float(evt.get("age_seconds", 0.0) or 0.0)
         self._mark_stale(str(key), provider, version, now)
-        self.logger.warning(_fmt("⛔", "BUS GET BLOCKED", key=key, requester=evt.get("module"),
-                                 provider=provider, reason=evt.get("reason")))
+        self._note_stale(
+            key=str(key),
+            cause="get_blocked",
+            provider=provider,
+            version=version,
+            age=age,
+            consumers=None,
+            requester=requester,
+            reason=reason,
+        )
+        if requester:
+            self._module_stats[requester]["get_blocked"] += 1
+        if provider:
+            self._module_stats[provider]["served_stale"] += 1
+        self._w("⛔", "BUS GET BLOCKED", key=key, requester=requester,
+                provider=provider, reason=reason, age=f"{age:.2f}s")
 
     def _on_set(self, evt: Dict[str, Any]) -> None:
         key = evt.get("key")
@@ -747,34 +854,41 @@ class SystemIntegritySuite:
         provider = evt.get("module")
         version = evt.get("version")
         self._mark_fresh(str(key), provider, version, now)
-        if not self._problems_only:
-            self.logger.info(_fmt("📝", "BUS SET", key=key, provider=provider, version=version))
+        if provider:
+            self._module_stats[provider]["set"] += 1
+        self._record_event("set", key=key, provider=provider, version=version)
+        if not self._problems_only and (self.cfg.debug or self.cfg.log_on_every_event):
+            self._i("📝", "BUS SET", key=key, provider=provider, version=version)
 
     def _on_module_disabled(self, evt: Dict[str, Any]) -> None:
         try:
             cb = evt.get("circuit_breaker_state", {}) or {}
             reason = evt.get("reason") or cb.get("open_reason")
             last_error = cb.get("last_error") or evt.get("error")
-            self.logger.error(_fmt(
-                "🚫",
+            module = evt.get("module")
+            if module:
+                self._module_stats[module]["disabled"] += 1
+            self._e("🚫",
                 "MODULE DISABLED",
-                module=evt.get("module"),
+                module=module,
                 failures=evt.get("failures"),
                 consecutive=evt.get("consecutive_failures"),
                 failure_rate=f"{float(evt.get('failure_rate', 0.0)):.1%}" if evt.get('failure_rate') is not None else None,
                 reason=reason,
                 last_error=(str(last_error)[:160] if last_error else None),
-            ))
+            )
         except Exception:
             # Fallback to minimal message
-            self.logger.error(_fmt("🚫", "MODULE DISABLED", module=evt.get("module"),
-                                   failures=evt.get("failures"), consecutive=evt.get("consecutive_failures")))
+            self._e("🚫", "MODULE DISABLED", module=evt.get("module"),
+                    failures=evt.get("failures"), consecutive=evt.get("consecutive_failures"))
 
     def _on_module_enabled(self, evt: Dict[str, Any]) -> None:
-        self.logger.info(_fmt("✅", "MODULE ENABLED", module=evt.get("module")))
+        module = evt.get("module")
+        if module:
+            self._module_stats[module]["enabled"] += 1
+        self._i("✅", "MODULE ENABLED", module=module)
 
     # ── Helpers: lifecycle transitions ────────────────────────
-
     def _get_lc(self, key: str) -> KeyLifecycle:
         with self._lock:
             return self._lifecycle.setdefault(key, KeyLifecycle())
@@ -789,7 +903,7 @@ class SystemIntegritySuite:
             if provider and provider != lc.last_provider and lc.last_provider is not None:
                 lc.provider_changes += 1
                 self._provider_changes.append((now, key, lc.last_provider, provider))
-                self.logger.info(_fmt("🔁", "Provider changed", key=key, old=lc.last_provider, new=provider))
+                self._i("🔁", "Provider changed", key=key, old=lc.last_provider, new=provider)
             if provider:
                 lc.last_provider = provider
             try:
@@ -817,18 +931,21 @@ class SystemIntegritySuite:
         lc = self._get_lc(key)
         lc.miss_count += 1
         self._transition(key, "MISSING", now, None, None)
+        self._record_event("miss", key=key, requester=requester_hint)
         if lc.miss_count == 1:
-            self.logger.warning(_fmt("🕵️", "Tracking missing key", key=key, requester=requester_hint or "unknown"))
+            self._w("🕵️", "Tracking missing key", key=key, requester=requester_hint or "unknown")
 
     def _mark_stale(self, key: str, provider: Optional[str], version: Any, now: float) -> None:
         lc = self._get_lc(key)
         lc.blocked_count += 1
         self._transition(key, "STALE", now, provider, version)
+        self._record_event("stale", key=key, provider=provider, version=version)
 
     def _mark_fresh(self, key: str, provider: Optional[str], version: Any, now: float) -> None:
         lc = self._get_lc(key)
         lc.set_count += 1
         self._transition(key, "FRESH", now, provider, version)
+        self._record_event("fresh", key=key, provider=provider, version=version)
 
     def _lifecycle_snapshot(self) -> Dict[str, Any]:
         with self._lock:
@@ -867,7 +984,6 @@ class SystemIntegritySuite:
             }
 
     # ── Helpers: data snapshots & discovery ───────────────────
-
     def _snapshot_bus(self) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Set[str]], Dict[str, Set[str]]]:
         """
         Return (freshness, providers_map, consumers_map) with multiple fallbacks:
@@ -987,23 +1103,34 @@ class SystemIntegritySuite:
         return names
 
     # ── Diagnostics: quick debug snapshot ─────────────────────
-
     def debug_dump(self) -> Dict[str, Any]:
         """One-shot, human-readable snapshot counts; prints to logger and returns the data."""
         fr, pm, cm = self._snapshot_bus()
-        data = {
+        
+        # Top hotspots (modules causing/experiencing issues)
+        miss_hot = sorted(((m, s.get("miss", 0)) for m, s in self._module_stats.items()), key=lambda x: x[1], reverse=True)[:5]
+        block_hot = sorted(((m, s.get("get_blocked", 0)) for m, s in self._module_stats.items()), key=lambda x: x[1], reverse=True)[:5]
+        stale_served = sorted(((m, s.get("served_stale", 0)) for m, s in self._module_stats.items()), key=lambda x: x[1], reverse=True)[:5]
+        
+        data: Dict[str, Any] = {
             "freshness_keys": len(fr),
             "provider_keys": len(pm),
             "consumer_keys": len(cm),
             "providers_total": sum(len(v) for v in pm.values()),
             "consumers_total": sum(len(v) for v in cm.values()),
             "tracked_lifecycle": len(self._lifecycle),
+            "events_buffer_size": len(self._events),
+            "hotspots": {
+                "miss_requesters": [h for h in miss_hot if h[1] > 0],
+                "blocked_requesters": [h for h in block_hot if h[1] > 0],
+                "stale_providers": [h for h in stale_served if h[1] > 0],
+            }
         }
-        self.logger.info(_fmt("🔎", "Debug dump", **data))
+
+        self._i("🔎", "Debug dump", **data)
         return data
 
     # ── Health monitoring interface (for HealthMonitor integration) ──
-
     def get_health_status(self) -> Dict[str, Any]:
         """
         Returns health status compatible with HealthMonitor.
@@ -1048,7 +1175,6 @@ class SystemIntegritySuite:
 
             # Check for watchlist violations
             watchlist_violations = 0
-            now = time.time()
             with self._lock:
                 for key in self.watchlist:
                     lc = self._lifecycle.get(key)
@@ -1059,10 +1185,13 @@ class SystemIntegritySuite:
                 status = 'WARNING'
                 issues.append(f"{watchlist_violations}/{len(self.watchlist)} watchlist keys not fresh")
 
+            # Top offenders summary
+            hotspots = self.debug_dump().get("hotspots", {}) if self.cfg.debug else None
+
             return {
                 'status': status,
                 'module': 'SystemIntegritySuite',
-                'version': '1.0',
+                'version': '1.1',
                 'is_healthy': is_healthy,
                 'tracked_keys': total_tracked,
                 'unresolved_keys': unresolved_count,
@@ -1080,17 +1209,174 @@ class SystemIntegritySuite:
                     'lifecycle_tracked': total_tracked,
                     'recent_flaps': len(self._recent_flaps),
                     'provider_changes': len(self._provider_changes)
-                }
+                },
+                'hotspots': hotspots
             }
         except Exception as e:
             return {
                 'status': 'ERROR',
                 'module': 'SystemIntegritySuite',
-                'version': '1.0',
+                'version': '1.1',
                 'is_healthy': False,
                 'error': str(e),
                 'last_error': str(e)
             }
+
+    # ── Enhanced debug analytics (stale & miss RCA) ───────────
+    def _note_stale(
+        self,
+        *,
+        key: str,
+        cause: str,                      # 'heartbeat_age' | 'get_blocked'
+        provider: Optional[str],
+        version: Any,
+        age: Optional[float],
+        consumers: Optional[List[str]],
+        requester: Optional[str],
+        reason: Optional[str] = None,
+    ) -> None:
+        now = time.time()
+        with self._lock:
+            rec = self._stale_index.setdefault(key, {
+                "key": key,
+                "first_ts": now,
+                "last_ts": now,
+                "count": 0,
+                "provider": provider,
+                "last_version": version,
+                "last_age": age,
+                "causes": set(),
+                "consumers": set(consumers or []),
+                "last_requesters": set(),
+                "reasons": set(),
+            })
+            rec["last_ts"] = now
+            rec["count"] += 1
+            rec["provider"] = provider or rec.get("provider")
+            rec["last_version"] = version if version is not None else rec.get("last_version")
+            if age is not None:
+                rec["last_age"] = age
+            if consumers:
+                rec["consumers"].update(consumers)
+            if requester:
+                rec["last_requesters"].add(requester)
+            if reason:
+                rec["reasons"].add(str(reason))
+            rec["causes"].add(cause)
+
+        self._record_event("stale_trace", key=key, cause=cause, provider=provider,
+                           requester=requester, age=age, reason=reason)
+
+        # Optional chatty debug line
+        if self.cfg.debug:
+            self._d("Stale trace",
+                    key=key, cause=cause, provider=provider or "unknown",
+                    requester=requester or "-", age=f"{age:.2f}" if age is not None else "NA",
+                    reasons="|".join(rec["reasons"]) if rec.get("reasons") else "-")
+
+    def _note_missing(self, *, key: str, requester_hint: Optional[str], consumers: Optional[List[str]]) -> None:
+        now = time.time()
+        with self._lock:
+            rec = self._miss_index.setdefault(key, {
+                "key": key,
+                "first_ts": now,
+                "last_ts": now,
+                "count": 0,
+                "requesters": set(),
+                "consumers": set(consumers or []),
+            })
+            rec["last_ts"] = now
+            rec["count"] += 1
+            if requester_hint:
+                rec["requesters"].add(requester_hint)
+            if consumers:
+                rec["consumers"].update(consumers)
+        self._record_event("miss_trace", key=key, requester=requester_hint)
+
+    def get_stale_report(self, *, top_n: Optional[int] = None) -> Dict[str, Any]:
+        with self._lock:
+            items = []
+            now = time.time()
+            for key, rec in self._stale_index.items():
+                age = float(rec.get("last_age") or 0.0)
+                items.append({
+                    "key": key,
+                    "events": rec["count"],
+                    "provider": rec.get("provider"),
+                    "last_version": rec.get("last_version"),
+                    "last_age_s": age,
+                    "first_seen_ago_s": now - float(rec["first_ts"]),
+                    "last_seen_ago_s": now - float(rec["last_ts"]),
+                    "causes": sorted(list(rec.get("causes", []))),
+                    "consumers": sorted(list(rec.get("consumers", []))),
+                    "last_requesters": sorted(list(rec.get("last_requesters", []))),
+                    "reasons": sorted(list(rec.get("reasons", []))),
+                    "critical": age >= self.cfg.stale_age_critical_seconds if age else False,
+                })
+            items.sort(key=lambda x: (x["critical"], x["events"], x["last_age_s"]), reverse=True)
+            if top_n is not None:
+                items = items[:top_n]
+
+            # Group by provider and by requester (hotspots)
+            by_provider: DefaultDict[str, int] = defaultdict(int)
+            by_requester: DefaultDict[str, int] = defaultdict(int)
+            for it in items:
+                prov = it.get("provider") or "unknown"
+                by_provider[prov] += 1
+                for r in it.get("last_requesters", []) or []:
+                    by_requester[r] += 1
+
+            summary = {
+                "total_stale_keys": len(self._stale_index),
+                "critically_stale_keys": len([1 for rec in items if rec.get("critical")]),
+                "top_providers": sorted(by_provider.items(), key=lambda x: x[1], reverse=True)[:10],
+                "top_requesters": sorted(by_requester.items(), key=lambda x: x[1], reverse=True)[:10],
+                "items": items,
+            }
+            return summary
+
+    def export_debug(self, path: str) -> None:
+        """Export events, stale RCA, misses, and module stats for offline forensics."""
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            out = {
+                "generated_at": time.time(),
+                "events": list(self._events),
+                "stale_report": self.get_stale_report(),
+                "miss_index": {
+                    k: {
+                        "count": v["count"],
+                        "first_ts": v["first_ts"],
+                        "last_ts": v["last_ts"],
+                        "requesters": sorted(list(v.get("requesters", []))),
+                        "consumers": sorted(list(v.get("consumers", []))),
+                    }
+                    for k, v in self._miss_index.items()
+                },
+                "module_stats": {m: dict(stats) for m, stats in self._module_stats.items()},
+            }
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(out, f, indent=2)
+            self._i("🧾", "Debug export written", path=path,
+                    events=len(out["events"]), stale=len(out["stale_report"]["items"]))
+        except Exception as e:
+            self._e("💥", f"Failed to export debug: {e}")
+
+    def _collect_critically_stale(self, now: float) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        with self._lock:
+            for key, rec in self._stale_index.items():
+                age = float(rec.get("last_age") or 0.0)
+                if age and age >= self.cfg.stale_age_critical_seconds:
+                    out.append({
+                        "key": key,
+                        "age": age,
+                        "provider": rec.get("provider"),
+                        "consumers": sorted(list(rec.get("consumers", []))),
+                        "last_requesters": sorted(list(rec.get("last_requesters", []))),
+                    })
+        out.sort(key=lambda x: x["age"], reverse=True)
+        return out
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1106,15 +1392,21 @@ if __name__ == "__main__":
         bus = _get_bus()
 
     suite = SystemIntegritySuite(bus=bus)
+    # Example: toggle debug quickly via env SIS_DEBUG=1
     suite.attach_live_taps(ignore_pattern=None, problems_only=False, show_values=False)
-    suite.start_heartbeat()
+    suite.start_heartbeat(interval_s=suite.cfg.heartbeat_interval_seconds)
     try:
         time.sleep(1.0)  # let providers register if system is booting
         out = suite.validate_and_audit(export_path="logs/integrity/audit_validation.json")
         print("AUDIT SUMMARY:", json.dumps(out["audit"]["summary"], indent=2))
         print("VALIDATION:", json.dumps(out["validation"], indent=2))
         print("DEBUG:", suite.debug_dump())
+        # Export richer debug bundle
+        suite.export_debug("logs/integrity/debug_bundle.json")
         suite.visualize()  # requires networkx + matplotlib
+        # Optional: print top stale root causes
+        if suite.cfg.debug:
+            print("STALE REPORT:", json.dumps(suite.get_stale_report(top_n=20), indent=2))
     finally:
         time.sleep(1.0)
         suite.stop_heartbeat()

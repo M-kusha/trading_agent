@@ -53,11 +53,22 @@ class PositionSnap:
         u = abs(_sf(self.units))
         ep = _sf(self.entry_price)
         notional = _sf(self.notional_eur) or (u * ep)
-        lp = _sf(last_price) if last_price is not None else 0.0
+        lp = _sf(last_price) if last_price is not None else ep  # default to entry if no current price
 
         upnl = 0.0
         if lp > 0.0 and ep > 0.0 and u > 0.0:
             upnl = (lp - ep) * s * u
+
+        # Determine position type/action
+        if s > 0:
+            pos_type = "BUY"
+            action = "LONG"
+        else:
+            pos_type = "SELL"
+            action = "SHORT"
+
+        # Calculate lot size (assuming standard forex contract size)
+        lot_size = u / 100000.0 if u > 0 else 0.0
 
         out: Dict[str, Any] = {
             "instrument": self.instrument,
@@ -67,9 +78,25 @@ class PositionSnap:
             "notional_eur": float(notional),
             "unrealized_pnl": float(upnl),
             "unrealized_pnl_eur": float(upnl),  # alias some modules expect
-            "open_time": _iso(self.open_time),
+            "open_time": _iso(self.open_time) if self.open_time else time.time(),
             "peak_unrealized": float(_sf(self.peak_unrealized)),
+
+            # Additional fields for visualizer and monitoring
+            "type": pos_type,
+            "action": action,
+            "current_price": float(lp),
+            "price": float(lp),  # alias
+            "pnl": float(upnl),  # alias for unrealized_pnl
+            "profit": float(upnl),  # alias
+            "lot_size": float(lot_size),
+            "volume": float(lot_size),  # alias
+            "lots": float(lot_size),  # alias
+            "id": self.entry_step if self.entry_step is not None else hash(self.instrument) % 10000,
+            "ticket": self.entry_step if self.entry_step is not None else hash(self.instrument) % 10000,
+            "open_price": float(ep),  # alias
+            "entry_time": _iso(self.open_time) if self.open_time else time.time(),
         }
+
         if self.entry_step is not None:
             out["entry_step"] = int(self.entry_step)
 

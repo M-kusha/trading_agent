@@ -440,6 +440,19 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             # Get comprehensive market data from SmartInfoBus
             market_data = await self._get_comprehensive_market_data()
 
+            # CRITICAL FIX: Merge inputs with market_data (inputs may contain trade data from environment)
+            # Priority: inputs override bus data (fresher data from current step)
+            if inputs:
+                # Merge trade-related keys from inputs
+                merged_count = 0
+                for key in ['trades', 'recent_trades', 'current_fills', 'portfolio_metrics', 'positions', 'balance', 'equity']:
+                    if key in inputs and inputs[key] is not None:
+                        market_data[key] = inputs[key]
+                        merged_count += 1
+
+                if self.debug and merged_count > 0:
+                    self.logger.debug(f"Merged {merged_count} keys from inputs into market_data")
+
             # Update market context awareness
             await self._update_market_context_comprehensive(market_data)
 
@@ -523,9 +536,12 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         """Get comprehensive market data using modern SmartInfoBus patterns"""
         try:
             data = {
-                # Original data sources
+                # Original data sources (with fallbacks for trade data)
                 'recent_trades': self.smart_bus.get('recent_trades', 'TradingModeManager') or [],
+                'trades': self.smart_bus.get('trades', 'TradingModeManager') or [],
+                'current_fills': self.smart_bus.get('current_fills', 'TradingModeManager') or [],
                 'risk_metrics': self.smart_bus.get('risk_metrics', 'TradingModeManager') or {},
+                'portfolio_metrics': self.smart_bus.get('portfolio_metrics', 'TradingModeManager') or {},
                 'votes': self.smart_bus.get('votes', 'TradingModeManager') or [],
                 'positions': self.smart_bus.get('positions', 'TradingModeManager') or [],
                 'market_context': self.smart_bus.get('market_context', 'TradingModeManager') or {},
@@ -707,17 +723,91 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         """Extract comprehensive performance data with enhanced analytics"""
         try:
             performance_data: Dict[str, Any] = {}
-            # Trades
+            # Trades - try multiple sources for robustness
             recent_trades = market_data.get('recent_trades', []) or []
+
+            # Debug: Log what sources are available
+            if self.debug:
+                sources_available = {
+                    'recent_trades': len(recent_trades) if isinstance(recent_trades, list) else 'not_list',
+                    'trades': len(market_data.get('trades', [])) if isinstance(market_data.get('trades'), list) else 'not_list',
+                    'current_fills': len(market_data.get('current_fills', [])) if isinstance(market_data.get('current_fills'), list) else 'not_list',
+                }
+                self.logger.debug(f"Trade sources available: {sources_available}")
+
+            # Fallback: if recent_trades empty, try other sources
+            if not recent_trades:
+                # Try full trade ledger
+                all_trades = market_data.get('trades', []) or []
+                if all_trades:
+                    # Take last 50 trades as "recent"
+                    recent_trades = all_trades[-50:] if len(all_trades) > 50 else all_trades
+                    if self.debug and recent_trades:
+                        self.logger.debug(f"Using {len(recent_trades)} trades from full ledger")
+
+                # Try current_fills (for very recent trades)
+                if not recent_trades:
+                    current_fills = market_data.get('current_fills', []) or []
+                    if current_fills:
+                        recent_trades = current_fills
+                        if self.debug:
+                            self.logger.debug(f"Using {len(recent_trades)} trades from current_fills")
+
             performance_data['recent_trades'] = recent_trades
             performance_data['trade_count'] = len(recent_trades)
+            performance_data['total_trades'] = len(recent_trades)  # Alias for logging compatibility
+
+            # Debug: Log final trade count
+            if self.debug:
+                self.logger.debug(f"Final trade count for performance calculation: {len(recent_trades)}")
 
             if recent_trades:
-                pnls = [float(trade.get('pnl', 0) or 0) for trade in recent_trades]
+                # Extract realized P&L from trades
+                realized_pnls = [float(trade.get('pnl', 0) or trade.get('realized_pnl', 0) or 0) for trade in recent_trades]
+
+                # CRITICAL FIX: Also get unrealized P&L from open positions
+                # Trades show realized_pnl=0.0 for position opens, but positions have unrealized_pnl
+                unrealized_pnl = 0.0
+                positions = market_data.get('positions', []) or []
+
+                # Handle positions as list or dict
+                if isinstance(positions, dict):
+                    positions = list(positions.values()) if positions else []
+
+                if isinstance(positions, list):
+                    for pos in positions:
+                        if isinstance(pos, dict):
+                            # Try multiple field names for unrealized P&L
+                            upnl = pos.get('unrealized_pnl') or pos.get('unrealized_pnl_eur') or pos.get('pnl') or 0.0
+                            try:
+                                unrealized_pnl += float(upnl)
+                            except (ValueError, TypeError):
+                                pass
+
+                # Combine realized and unrealized P&L for total performance
+                total_pnl = sum(realized_pnls) + unrealized_pnl
+
+                # For per-trade metrics, use realized P&L (but report total P&L separately)
+                pnls = realized_pnls
+
+                # Debug: Log PnL breakdown
+                if self.debug:
+                    pnl_summary = {
+                        'trade_count': len(pnls),
+                        'realized_pnl': sum(realized_pnls),
+                        'unrealized_pnl': unrealized_pnl,
+                        'total_pnl': total_pnl,
+                        'position_count': len(positions) if isinstance(positions, list) else 0,
+                        'sample_realized': realized_pnls[:3] if len(realized_pnls) <= 3 else realized_pnls[:2] + ['...'],
+                    }
+                    self.logger.debug(f"PnL breakdown: {pnl_summary}")
+
                 wins = sum(1 for p in pnls if p > 0)
                 performance_data['win_rate'] = wins / max(1, len(pnls))
-                performance_data['total_pnl'] = float(sum(pnls))
-                performance_data['avg_pnl'] = float(np.mean(pnls))
+                performance_data['total_pnl'] = float(total_pnl)  # Use combined P&L
+                performance_data['realized_pnl'] = float(sum(realized_pnls))
+                performance_data['unrealized_pnl'] = float(unrealized_pnl)
+                performance_data['avg_pnl'] = float(total_pnl / max(1, len(pnls)))
                 performance_data['pnl_std'] = float(np.std(pnls)) if len(pnls) > 1 else 0.0
                 performance_data['max_win'] = float(max(pnls))
                 performance_data['max_loss'] = float(min(pnls))
@@ -736,9 +826,18 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     'recent_trend': 0.0, 'trend_consistency': 0.5
                 })
 
-            # Risk metrics
+            # Risk metrics (with fallback to portfolio_metrics for balance/equity)
             risk_metrics = market_data.get('risk_metrics', {}) or {}
-            performance_data['current_balance'] = float(risk_metrics.get('balance', risk_metrics.get('equity', 10000)) or 10000.0)
+            portfolio_metrics = market_data.get('portfolio_metrics', {}) or {}
+
+            # Try multiple sources for balance/equity
+            balance = risk_metrics.get('balance') or risk_metrics.get('equity')
+            if not balance:
+                balance = portfolio_metrics.get('equity') or portfolio_metrics.get('balance')
+            if not balance:
+                balance = 10000.0  # Default fallback
+
+            performance_data['current_balance'] = float(balance)
             performance_data['drawdown'] = max(0.0, float(risk_metrics.get('current_drawdown', 0.0) or 0.0))
             performance_data['max_drawdown'] = max(0.0, float(risk_metrics.get('max_drawdown', 0.0) or 0.0))
             performance_data['risk_score'] = float(risk_metrics.get('risk_score', 0.5) or 0.5)
@@ -860,6 +959,9 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     icon="📈",
                     message="Performance data extracted",
                     win_rate=f"{performance_data.get('win_rate', 0.0):.1%}",
+                    total_pnl=f"€{performance_data.get('total_pnl', 0.0):.2f}",
+                    realized_pnl=f"€{performance_data.get('realized_pnl', 0.0):.2f}",
+                    unrealized_pnl=f"€{performance_data.get('unrealized_pnl', 0.0):.2f}",
                     avg_pnl=f"€{performance_data.get('avg_pnl', 0.0):.2f}",
                     drawdown=f"{performance_data.get('drawdown', 0.0):.1%}",
                     total_trades=performance_data.get('total_trades', 0),

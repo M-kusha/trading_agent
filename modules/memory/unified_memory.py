@@ -530,8 +530,23 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
 
         self._cache_stats["misses"] += 1
 
+        # Get trades from multiple sources for robustness
+        trades = self.smart_bus.get("trades", "UnifiedMemory") or []
+
+        # Also try current_fills and recent_trades as fallbacks
+        if not trades:
+            trades = self.smart_bus.get("current_fills", "UnifiedMemory") or []
+        if not trades:
+            trades = self.smart_bus.get("recent_trades", "UnifiedMemory") or []
+
+        # Get position data to track unrealized P&L
+        positions = self.smart_bus.get("position_data", "UnifiedMemory") or {}
+        if isinstance(positions, dict):
+            positions = positions.get("positions", [])
+
         context: Dict[str, Any] = {
-            "trades": self.smart_bus.get("trades", "UnifiedMemory") or [],
+            "trades": trades,
+            "positions": positions,  # Add positions to context
             "actions": self.smart_bus.get("actions", "UnifiedMemory") or [],
             "market_context": self.smart_bus.get("market_context", "UnifiedMemory") or {},
             "market_data": self.smart_bus.get("market_data", "UnifiedMemory") or {},
@@ -574,18 +589,33 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
             if not isinstance(trade, dict):
                 invalid_type += 1
                 continue
-            if "pnl" not in trade:       # ← this is the strict filter
+
+            # Accept trades with any P&L field (pnl, realized_pnl, unrealized_pnl)
+            # This allows storing both trade fills and position snapshots
+            has_pnl = any(k in trade for k in ["pnl", "realized_pnl", "realised_pnl", "unrealized_pnl"])
+            if not has_pnl:
                 missing_pnl += 1
                 continue
 
             try:
+                # Extract P&L from multiple possible fields
+                pnl_value = 0.0
+                # Priority: pnl > realized_pnl > unrealized_pnl
+                for pnl_key in ["pnl", "realized_pnl", "realised_pnl", "unrealized_pnl", "unrealized_pnl_eur"]:
+                    if pnl_key in trade:
+                        try:
+                            pnl_value = float(trade[pnl_key])
+                            break
+                        except (ValueError, TypeError):
+                            continue
+
                 entry = {
                     "timestamp": time.time(),
                     "features": self.feature_extractor.extract_trade_features(
                         trade, context.get("market_context", {})
                     ),
                     "action": self.utils.extract_action(trade),
-                    "pnl": float(trade.get("pnl", 0.0)),
+                    "pnl": pnl_value,
                     "context": context["market_context"],
                     "metadata": {
                         "regime": context["market_context"].get("regime"),

@@ -264,6 +264,9 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             "risk_adaptation_confidence": 0.5,
         }
 
+        # Position entry limit tracking (to avoid false violations from dynamic limit changes)
+        self._position_entry_limits: Dict[str, float] = {}
+
         # Start monitoring after all state is initialized
         self._start_monitoring()
 
@@ -1158,11 +1161,31 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 )
                 self.limit_violations += 1
 
+            # Track position limits at entry time to avoid false violations from dynamic limit changes
+            if not hasattr(self, '_position_entry_limits'):
+                self._position_entry_limits: Dict[str, float] = {}
+
             for instrument, position in self.current_positions.items():
-                limit = float(self.position_limits.get(instrument, self._cfg.max_position_pct))
-                if abs(position) > limit:
-                    violations.append(f"{instrument} position {abs(position):.1%} > limit {limit:.1%}")
-                    self.limit_violations += 1
+                current_limit = float(self.position_limits.get(instrument, self._cfg.max_position_pct))
+
+                # Check if this is a new position or existing position
+                if abs(position) > 0.001:  # Position exists
+                    # Use the higher of: entry limit (if known) or current limit
+                    # This prevents false violations when limits decrease after position entry
+                    if instrument in self._position_entry_limits:
+                        effective_limit = max(self._position_entry_limits[instrument], current_limit)
+                    else:
+                        # First time seeing this position - record current limit as entry limit
+                        self._position_entry_limits[instrument] = current_limit
+                        effective_limit = current_limit
+
+                    # Only flag violation if position exceeds the effective limit
+                    if abs(position) > effective_limit:
+                        violations.append(f"{instrument} position {abs(position):.1%} > limit {effective_limit:.1%}")
+                        self.limit_violations += 1
+                else:
+                    # Position closed - remove entry limit tracking
+                    self._position_entry_limits.pop(instrument, None)
 
             if self.current_var > 0.05:
                 violations.append(f"Portfolio VaR {self.current_var:.1%} > 5% limit")
@@ -1893,6 +1916,9 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             "volatility_tolerance": 1.0,
             "risk_adaptation_confidence": 0.5,
         }
+
+        # Clear position entry limit tracking
+        self._position_entry_limits = {}
 
         self.logger.info("[RELOAD] Enhanced Portfolio Risk System reset - all state cleared")
 

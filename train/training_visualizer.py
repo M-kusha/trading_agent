@@ -701,7 +701,8 @@ class BeautifulTrainingVisualizer:
                 if raw_consensus is not None:
                     consensus_score = float(raw_consensus)
                     # Debug: Optionally log processing (disabled by default)
-                    if self.config.get('debug_consensus_processing', False):
+                    debug_consensus_processing = getattr(self.config, 'debug_consensus_processing', False) if self.config else False
+                    if debug_consensus_processing:
                         if hasattr(self, '_last_log_time'):
                             if time.time() - self._last_log_time > 5:  # Log every 5s max
                                 print(f"[VISUALIZER DEBUG] RAW consensus.consensus_strength={raw_consensus}")
@@ -711,10 +712,12 @@ class BeautifulTrainingVisualizer:
                             self._last_log_time = time.time()
             except (TypeError, ValueError) as e:
                 consensus_score = 0.0
-                if self.config.get('debug_consensus_processing', False):
+                debug_consensus_processing = getattr(self.config, 'debug_consensus_processing', False) if self.config else False
+                if debug_consensus_processing:
                     print(f"[VISUALIZER ERROR] Failed to convert consensus_strength: {e}, raw_consensus={raw_consensus}")
             if consensus_score > 1.0:
-                if self.config.get('debug_consensus_processing', False):
+                debug_consensus_processing = getattr(self.config, 'debug_consensus_processing', False) if self.config else False
+                if debug_consensus_processing:
                     print(f"[VISUALIZER DEBUG] Consensus > 1.0 detected ({consensus_score}), dividing by 100")
                 consensus_score /= 100.0
             consensus_score = max(0.0, min(1.0, consensus_score))
@@ -773,51 +776,167 @@ class BeautifulTrainingVisualizer:
 
         self._add('')
         self._add('')
-    def _render_module_status(self, modules_data: Dict[str, Any]) -> None:
-        modules = modules_data.get('modules', {})
-        if not modules:
-            modules = {
-                'RiskController': {'status': 'healthy', 'health_score': 92},
-                'StrategyEngine': {'status': 'healthy', 'health_score': 88},
-                'MarketAnalyzer': {'status': 'healthy', 'health_score': 90},
-                'VotingSystem': {'status': 'healthy', 'health_score': 87},
-                'ExecutionEngine': {'status': 'healthy', 'health_score': 95},
-                'MemoryCore': {'status': 'healthy', 'health_score': 91},
-            }
+    def _render_positions(self, positions_data: Dict[str, Any]) -> None:
+        """Render open positions with detailed P&L information"""
+        positions = positions_data.get('positions', [])
+        account_state = positions_data.get('account_state', {})
+
+        # Ensure positions is a list
+        if not isinstance(positions, list):
+            if isinstance(positions, dict):
+                # Convert dict to list of positions
+                positions = list(positions.values()) if positions else []
+            else:
+                positions = []
 
         self._add('')
         self._add(f"{Colors.GRAY}{'─' * self.terminal_width}{Colors.RESET}")
-        self._add(self._center(f"{Colors.ELECTRIC_BLUE}SYSTEM HEALTH MONITOR{Colors.RESET}"))
+        self._add(self._center(f"{Colors.ELECTRIC_BLUE}OPEN POSITIONS{Colors.RESET}"))
         self._add("")
 
-        items_per_row = max(2, min(4, self.terminal_width // 28))
-        col_width = max(24, self.terminal_width // items_per_row)
-        names = list(modules.keys())
+        if not positions:
+            # No open positions
+            self._add(self._center(f"{Colors.GRAY}No open positions{Colors.RESET}"))
+            self._add("")
+            self._add('')
+            self._add('')
+            return
 
-        for i in range(0, len(names), items_per_row):
-            row = ""
-            for j in range(items_per_row):
-                if i + j >= len(names):
-                    continue
-                name = names[i + j]
-                info = modules[name]
-                health = float(info.get('health_score') or 0)
-                status = str(info.get('status', 'unknown'))
+        # Position table header
+        header_parts = [
+            f"{Colors.BOLD}{Colors.WHITE}ID{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.WHITE}Type{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.WHITE}Entry{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.WHITE}Current{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.WHITE}Lot{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.WHITE}P&L{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.WHITE}P&L %{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.WHITE}Duration{Colors.RESET}",
+        ]
 
-                if status.lower() in ['healthy', 'active', 'online']:
-                    indicator = f"{Colors.BUY_GREEN}{Icons.SUCCESS}{Colors.RESET}"
-                elif status.lower() in ['warning', 'degraded']:
-                    indicator = f"{Colors.ORANGE}{Icons.WARNING}{Colors.RESET}"
-                else:
-                    indicator = f"{Colors.SELL_RED}{Icons.ERROR}{Colors.RESET}"
+        # Calculate column widths based on terminal width
+        available_width = self.terminal_width - 8  # margins
+        col_widths = {
+            'id': max(6, int(available_width * 0.08)),
+            'type': max(8, int(available_width * 0.10)),
+            'entry': max(10, int(available_width * 0.12)),
+            'current': max(10, int(available_width * 0.12)),
+            'lot': max(8, int(available_width * 0.10)),
+            'pnl': max(12, int(available_width * 0.18)),
+            'pnl_pct': max(10, int(available_width * 0.12)),
+            'duration': max(10, int(available_width * 0.18)),
+        }
 
-                bar = MiniChart.progress_bar(health, width=10, show_percentage=False, gradient=True)
-                percent_text = f"{health:5.1f}%"
-                display_name = name if _visible_width(name) <= 15 else name[:15]
-                module_str = f"{indicator} {Colors.WHITE}{display_name:<15}{Colors.RESET} {bar} {Colors.GRAY}{percent_text}{Colors.RESET}"
-                row += _ansi_safe_truncate(module_str.ljust(col_width), col_width)
-            self._add(row)
+        # Build header row
+        header_row = (
+            f"  {header_parts[0]:<{col_widths['id']}} "
+            f"{header_parts[1]:<{col_widths['type']}} "
+            f"{header_parts[2]:>{col_widths['entry']}} "
+            f"{header_parts[3]:>{col_widths['current']}} "
+            f"{header_parts[4]:>{col_widths['lot']}} "
+            f"{header_parts[5]:>{col_widths['pnl']}} "
+            f"{header_parts[6]:>{col_widths['pnl_pct']}} "
+            f"{header_parts[7]:>{col_widths['duration']}}"
+        )
+        self._add(_ansi_safe_truncate(header_row, self.terminal_width))
+        self._add(f"  {Colors.DARK_GRAY}{BoxChars.H * (self.terminal_width - 4)}{Colors.RESET}")
 
+        # Render each position
+        total_pnl = 0.0
+        for idx, pos in enumerate(positions[:10]):  # Limit to 10 positions for display
+            if not isinstance(pos, dict):
+                continue
+
+            # Extract position data
+            pos_id = str(pos.get('id', pos.get('ticket', idx + 1)))
+            pos_type = str(pos.get('type', pos.get('action', 'HOLD'))).upper()
+            entry_price = float(pos.get('entry_price', pos.get('open_price', 0)))
+            current_price = float(pos.get('current_price', pos.get('price', entry_price)))
+            lot_size = float(pos.get('lot_size', pos.get('volume', pos.get('lots', 0.01))))
+
+            # Calculate P&L
+            pnl = float(pos.get('pnl', pos.get('profit', 0)))
+            if pnl == 0 and entry_price > 0 and current_price > 0:
+                # Calculate if not provided
+                if 'BUY' in pos_type or 'LONG' in pos_type:
+                    pnl = (current_price - entry_price) * lot_size * 100000  # Rough forex calculation
+                elif 'SELL' in pos_type or 'SHORT' in pos_type:
+                    pnl = (entry_price - current_price) * lot_size * 100000
+
+            total_pnl += pnl
+
+            # Calculate P&L percentage
+            pnl_pct = 0.0
+            if entry_price > 0:
+                pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                if 'SELL' in pos_type or 'SHORT' in pos_type:
+                    pnl_pct = -pnl_pct
+
+            # Duration
+            open_time = pos.get('open_time', pos.get('entry_time'))
+            duration_str = "N/A"
+            if open_time:
+                try:
+                    if isinstance(open_time, (int, float)):
+                        elapsed = time.time() - open_time
+                        if elapsed < 60:
+                            duration_str = f"{int(elapsed)}s"
+                        elif elapsed < 3600:
+                            duration_str = f"{int(elapsed // 60)}m"
+                        else:
+                            duration_str = f"{int(elapsed // 3600)}h {int((elapsed % 3600) // 60)}m"
+                except Exception:
+                    duration_str = "N/A"
+
+            # Color coding
+            if 'BUY' in pos_type or 'LONG' in pos_type:
+                type_color = Colors.BUY_GREEN
+                type_icon = Icons.UP
+            elif 'SELL' in pos_type or 'SHORT' in pos_type:
+                type_color = Colors.SELL_RED
+                type_icon = Icons.DOWN
+            else:
+                type_color = Colors.GOLD
+                type_icon = Icons.NEUTRAL
+
+            pnl_color = Colors.PROFIT_GREEN if pnl >= 0 else Colors.LOSS_RED
+            pnl_sign = "+" if pnl >= 0 else ""
+            pnl_pct_sign = "+" if pnl_pct >= 0 else ""
+
+            # Build position row
+            pos_row = (
+                f"  {Colors.GRAY}#{pos_id:<{col_widths['id'] - 1}}{Colors.RESET} "
+                f"{type_color}{type_icon} {pos_type:<{col_widths['type'] - 2}}{Colors.RESET} "
+                f"{Colors.WHITE}{entry_price:>{col_widths['entry'] - 1}.5f}{Colors.RESET} "
+                f"{Colors.CYAN}{current_price:>{col_widths['current'] - 1}.5f}{Colors.RESET} "
+                f"{Colors.GOLD}{lot_size:>{col_widths['lot'] - 1}.2f}{Colors.RESET} "
+                f"{pnl_color}{pnl_sign}${pnl:>{col_widths['pnl'] - 3}.2f}{Colors.RESET} "
+                f"{pnl_color}{pnl_pct_sign}{pnl_pct:>{col_widths['pnl_pct'] - 2}.2f}%{Colors.RESET} "
+                f"{Colors.GRAY}{duration_str:>{col_widths['duration']}}{Colors.RESET}"
+            )
+            self._add(_ansi_safe_truncate(pos_row, self.terminal_width))
+
+        # Summary footer
+        self._add(f"  {Colors.DARK_GRAY}{BoxChars.H * (self.terminal_width - 4)}{Colors.RESET}")
+
+        total_color = Colors.PROFIT_GREEN if total_pnl >= 0 else Colors.LOSS_RED
+        total_sign = "+" if total_pnl >= 0 else ""
+        summary_line = (
+            f"  {Colors.BOLD}{Colors.WHITE}Total Positions: {Colors.CYAN}{len(positions)}{Colors.RESET}  "
+            f"{Colors.GRAY}│{Colors.RESET}  "
+            f"{Colors.BOLD}{Colors.WHITE}Total P&L: {total_color}{total_sign}${total_pnl:.2f}{Colors.RESET}"
+        )
+
+        # Add win rate if available
+        closed_positions = positions_data.get('closed_positions', [])
+        if closed_positions:
+            wins = sum(1 for p in closed_positions if isinstance(p, dict) and float(p.get('pnl', p.get('profit', 0))) > 0)
+            total_closed = len(closed_positions)
+            win_rate = (wins / total_closed * 100) if total_closed > 0 else 0
+            win_color = Colors.BUY_GREEN if win_rate >= 50 else Colors.ORANGE if win_rate >= 30 else Colors.SELL_RED
+            summary_line += f"  {Colors.GRAY}│{Colors.RESET}  {Colors.BOLD}{Colors.WHITE}Win Rate: {win_color}{win_rate:.1f}%{Colors.RESET}"
+
+        self._add(summary_line)
         self._add("")
         self._add('')
         self._add('')
@@ -974,7 +1093,8 @@ class BeautifulTrainingVisualizer:
         ) or {}
 
         # Debug: Optionally log consensus source (disabled by default)
-        if committee_consensus and self.config.get('debug_consensus_source', False):
+        debug_consensus_source = getattr(self.config, 'debug_consensus_source', False) if self.config else False
+        if committee_consensus and debug_consensus_source:
             print(f"[BUS DEBUG] === CONSENSUS COMPARISON START ===")
             for module in ['VotingKernel', 'EnhancedVotingCommitteeCoordinator']:
                 try:
@@ -1022,14 +1142,17 @@ class BeautifulTrainingVisualizer:
             'episode': training_metrics.get('episodes', 0),
         })
 
+        # In simulation mode, balance is mark-to-market (includes all P&L)
+        current_balance = account_state.get('balance', 3000)
+
         self._render_performance_metrics({
-            'balance': account_state.get('balance', 3000),
+            'balance': current_balance,
             'initial_balance': account_state.get('initial_balance', 3000),
             'drawdown': training_metrics.get('env_drawdown', 0),
             'max_drawdown': account_state.get('max_drawdown', 0),
             'sharpe_ratio': trading_performance.get('sharpe_ratio', 0),
             'current_reward': training_metrics.get('current_episode_reward', 0),
-            'best_reward': training_metrics.get('best_episode_reward', 0),
+            'best_reward': training_metrics.get('best_reward', 0),
             'avg_reward': training_metrics.get('episode_reward_mean', 0),
         })
 
@@ -1092,8 +1215,13 @@ class BeautifulTrainingVisualizer:
             }
         )
 
-        self._render_module_status({
-            'modules': self._extract_module_health(smart_bus)
+        # Fetch closed positions for win rate calculation
+        closed_positions = self._safe_bus_get(smart_bus, 'closed_positions', []) or []
+
+        self._render_positions({
+            'positions': positions,
+            'account_state': account_state,
+            'closed_positions': closed_positions
         })
 
         self._render_market_analysis(market_overview)
@@ -1110,7 +1238,7 @@ class BeautifulTrainingVisualizer:
 
         # Render to terminal (full repaint)
         # TEMPORARILY DISABLED FOR DEBUG OUTPUT
-        # self._ui.render_lines(self._frame)
+        self._ui.render_lines(self._frame)
 
     def _determine_action(self, positions: List[Any]) -> str:
         """Determine current action from positions"""
@@ -1120,86 +1248,6 @@ class BeautifulTrainingVisualizer:
         if isinstance(latest, dict):
             return str(latest.get('action', 'HOLD')).upper()
         return "HOLD"
-
-    def _extract_module_health(self, smart_bus: Any) -> Dict[str, Any]:
-        """Extract module health data from bus"""
-        modules: Dict[str, Any] = {}
-
-        module_entries: Optional[Dict[str, Any]] = None
-
-        # Primary consolidated snapshot
-        health_snapshot = self._safe_bus_get(smart_bus, 'system_health', {})
-        if isinstance(health_snapshot, dict):
-            snapshot_modules = health_snapshot.get('modules')
-            if isinstance(snapshot_modules, dict):
-                if isinstance(snapshot_modules.get('module_details'), dict):
-                    module_entries = snapshot_modules['module_details']
-                else:
-                    module_entries = snapshot_modules
-
-        # Namespace fallback
-        if module_entries is None:
-            modules_namespace = self._safe_bus_get(smart_bus, 'health/modules', {})
-            if isinstance(modules_namespace, dict):
-                if isinstance(modules_namespace.get('module_details'), dict):
-                    module_entries = modules_namespace['module_details']
-                else:
-                    module_entries = modules_namespace
-
-        if isinstance(module_entries, dict):
-            for name, payload in module_entries.items():
-                if not isinstance(payload, dict):
-                    continue
-                status_value = payload.get('status', payload.get('state', 'unknown'))
-                status = str(status_value or 'unknown')
-
-                raw_score = payload.get('score', payload.get('health_score', payload.get('healthScore')))
-                score = 0.0
-                try:
-                    if raw_score is not None:
-                        score = float(raw_score)
-                except Exception:
-                    score = 0.0
-                if score <= 1.0:
-                    score *= 100.0
-
-                modules[name] = {
-                    'status': status,
-                    'health_score': max(0.0, min(100.0, score))
-                }
-
-        if modules:
-            return modules
-
-        # Legacy per-module keys (compatibility)
-        patterns = [
-            'DynamicRiskController', 'MetaAgent', 'EnhancedAnomalyDetector',
-            'PositionManager', 'ModuleOrchestrator', 'HealthMonitor',
-        ]
-
-        for name in patterns:
-            status = self._bus_get_multi(smart_bus, f'{name}_status', [name, 'HealthMonitor'], None)
-            health = self._bus_get_multi(smart_bus, f'{name}_health', [name, 'HealthMonitor'], None)
-            if status is not None or health is not None:
-                score = 85.0
-                try:
-                    raw = None
-                    if isinstance(health, dict):
-                        raw = health.get('score', health.get('health_score'))
-                    elif isinstance(health, (int, float)):
-                        raw = health
-                    if raw is not None:
-                        score = float(raw)
-                except Exception:
-                    score = 85.0
-                if score <= 1.0:
-                    score *= 100.0
-                modules[name] = {
-                    'status': status or 'healthy',
-                    'health_score': max(0.0, min(100.0, score))
-                }
-
-        return modules
 
 
 # Export
