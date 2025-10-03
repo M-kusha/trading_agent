@@ -5608,11 +5608,13 @@ const EnhancedTradingDashboard = () => {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const backendHttp = import.meta.env.VITE_BACKEND_URL;
     let wsUrl;
-    if (backendHttp && typeof backendHttp === 'string') {
+    // Only use VITE_BACKEND_URL in development mode (when it's explicitly set)
+    if (backendHttp && typeof backendHttp === 'string' && import.meta.env.DEV) {
       const http = backendHttp.endsWith('/') ? backendHttp.slice(0, -1) : backendHttp;
       const scheme = http.startsWith('https:') ? 'wss:' : 'ws:';
       wsUrl = `${scheme}//${http.replace(/^https?:\/\//, '')}/ws`;
     } else {
+      // In production or when VITE_BACKEND_URL is not set, use the current host
       wsUrl = `${wsProtocol}//${window.location.host}/ws`;
     }
 

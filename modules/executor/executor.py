@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import time, uuid, math
+import datetime as dt
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional, Tuple, Set
 
@@ -20,6 +21,7 @@ from .shared.utils import SafeBus, round_to_step, resolve_symbol
 from .debug.debugger import ExecutorDebugManager
 from .adapters.base_adapter import BaseLiveAdapter, LiveAdapterConfig
 from .adapters.mt5_adapter import MT5Adapter
+from .unified_logger import UnifiedExecutorLogger, ExecutionCycleEntry
 
 
 @dataclass
@@ -116,6 +118,9 @@ class Executor(BaseModule):
         dbg_cfg: Dict[str, Any] = {**(self.cfg.debug_config or {}), "enabled": bool(self.cfg.debug_enabled)}
         self.debugger = ExecutorDebugManager(self.bus, config=dbg_cfg)
 
+        # unified logger
+        self.unified_logger = UnifiedExecutorLogger(self.logger)
+
         # seed bus with empty snapshots
         self._publish_all(exec_fills=[], accepted=[], rejected=[], step_pnl=0.0, realized_step=0.0, unrealized=0.0, reason="startup")
 
@@ -144,8 +149,16 @@ class Executor(BaseModule):
                 self.debugger.disable()
 
     # adapter bring-up
-    def _ensure_adapter(self) -> None:
-        if self.cfg.execution_mode == "live":
+    def _ensure_adapter(self, mode: Optional[str] = None) -> None:
+        """
+        Ensure live adapter is created and connected if needed.
+
+        Args:
+            mode: Target execution mode ('live' or 'sim'). If None, uses self.cfg.execution_mode.
+                  When called from _resolve_mode(), pass the resolved mode to avoid circular calls.
+        """
+        target_mode = mode if mode is not None else self.cfg.execution_mode
+        if target_mode == "live":
             if (self.adapter is None) or (not self.adapter.is_connected()):
                 lac = LiveAdapterConfig(
                     broker=self.cfg.live_broker,
@@ -183,19 +196,41 @@ class Executor(BaseModule):
         self.bus.set("live_adapter_status", st, thesis="executor live adapter status")
 
     def _resolve_mode(self) -> str:
+        """Determine execution mode with strong preference for environment_config=live.
+
+        Precedence:
+        1) If environment_config.mode == 'live' -> force 'live' (primary signal when live trading is started)
+        2) Else, use bus 'execution_mode' if set to a valid value
+        3) Else, fall back to static config default
+        Always ensure live adapter is connected before returning 'live'; otherwise fall back to 'sim'.
+        """
         if not self.cfg.allow_runtime_switch:
             return self.cfg.execution_mode
+
+        # Read environment config first (authoritative when live trading loop starts)
+        envc = self.bus.get("environment_config", "Executor", default={}) or {}
+        env_mode = str(envc.get("mode", "")).lower()
+
+        # Then check explicit bus override
         em = self.bus.get("execution_mode", "Executor", default=None)
-        if isinstance(em, str) and em.lower() in ("sim", "live"):
-            target = em.lower()
+        em_mode = str(em).lower() if isinstance(em, str) else None
+
+        if env_mode == "live":
+            target = "live"
+        elif em_mode in ("sim", "live"):
+            target = em_mode
         else:
-            envc = self.bus.get("environment_config", "Executor", default={}) or {}
-            target = str(envc.get("mode", self.cfg.execution_mode)).lower()
-            if target not in ("sim", "live"):
-                target = self.cfg.execution_mode
+            target = self.cfg.execution_mode
+
+        # Strong override: if the live adapter is already connected, prefer live
+        # regardless of a stray execution_mode value elsewhere on the bus.
+        if self.adapter and self.adapter.is_connected():
+            target = "live"
+
         if target == "live":
             if not self.adapter or not self.adapter.is_connected():
-                self._ensure_adapter()
+                # Pass target mode to avoid checking static cfg.execution_mode
+                self._ensure_adapter(mode=target)
                 if not (self.adapter and self.adapter.is_connected()):
                     return "sim"
         return target
@@ -353,6 +388,27 @@ class Executor(BaseModule):
         except Exception as e:
             self.debugger.record_error(f"debug_publish_error: {e}")
 
+        # unified logger report
+        try:
+            if self.cfg.debug_enabled:
+                self._log_unified_cycle(
+                    mode=mode,
+                    q_count=q_count,
+                    dec_count=dec_count,
+                    accepted=accepted,
+                    rejected=rejected,
+                    fills=fills,
+                    positions_after=positions_after,
+                    balance_before=balance_before,
+                    equity_before=equity_before,
+                    realized_step=realized_step,
+                    unreal_after=unreal_after,
+                    step_pnl=step_pnl,
+                    processing_ms=(time.time() - t0) * 1000.0,
+                )
+        except Exception as e:
+            self.logger.warning(f"Unified logger failed: {e}")
+
         # REQUIRED outputs for orchestrator contract (return payload)
         recent = self.trades[-50:] if self.trades else []
         order_data = {"accepted": accepted, "rejected": rejected, "step": int(self.step_idx)}
@@ -504,30 +560,10 @@ class Executor(BaseModule):
                     else:
                         rejected.append({"reason": self._filter_reason(intent), "intent": intent})
 
-        # Debug summary of intents
+        # Debug summary of intents (compact version - full details in unified logger)
         try:
-            preview_ok = [{k: i.get(k) for k in ("instrument", "action", "intensity", "confidence", "size_eur", "units")} for i in accepted[:3]]
-            preview_bad = []
-            for r in rejected[:3]:
-                node = r.get("intent") or r.get("raw") or {}
-                preview_bad.append({
-                    "reason": r.get("reason"),
-                    "instrument": node.get("instrument"),
-                    "action": node.get("action") or node.get("intent"),
-                    "intensity": node.get("intensity"),
-                    "confidence": node.get("confidence"),
-                })
             self.logger.debug(
-                format_operator_message(
-                    icon="[EXEC]",
-                    message="Collected intents",
-                    order_queue=q_count,
-                    decisions=dec_count,
-                    accepted=len(accepted),
-                    rejected=len(rejected),
-                    sample_ok=preview_ok,
-                    sample_rejected=preview_bad,
-                )
+                f"[EXEC] Collected: queue={q_count} decisions={dec_count} accepted={len(accepted)} rejected={len(rejected)}"
             )
         except Exception:
             pass
@@ -884,6 +920,10 @@ class Executor(BaseModule):
 
         acct_before = self.adapter.get_account_info()
         eq_before = float(acct_before.get("equity", 0.0) or 0.0)
+        try:
+            self.logger.info(f"[LIVE] Execute intents: n={len(intents)} | equity_before={eq_before:.2f}")
+        except Exception:
+            pass
 
         for intent in intents:
             inst_src = intent["instrument"]
@@ -899,13 +939,31 @@ class Executor(BaseModule):
             lots = max(units / self.adapter.cfg.contract_size, 0.0)
             lots = round_to_step(lots, self.adapter.cfg.lot_step)
             lots = max(lots, self.adapter.cfg.min_lot) if lots > 0 else 0.0
+            # If the order carries positive size (units/size_eur) but rounding drove lots to 0,
+            # enforce the broker min lot so we don't silently drop accepted intents.
+            if lots <= 0 and (units > 0 or size_eur > 0):
+                try:
+                    self.logger.info(
+                        f"[LIVE] Enforce min lot: computed_lots=0 -> min_lot={self.adapter.cfg.min_lot:.4f} for {inst}"
+                    )
+                except Exception:
+                    pass
+                lots = self.adapter.cfg.min_lot
 
             origin_id = intent.get("id", "")
 
             if action in ("open_long", "open_short", "scale_up"):
                 if lots <= 0:
+                    try:
+                        self.logger.info(f"[LIVE] Skip order: non-positive lots ({lots:.4f}) for {inst}")
+                    except Exception:
+                        pass
                     continue
                 r = self.adapter.market_order(inst, side, lots)
+                try:
+                    self.logger.info(f"[LIVE] market_order result: {r}")
+                except Exception:
+                    pass
                 if r.get("ok"):
                     px = float(r.get("price", price_hint) or price_hint)
                     fill = TradeFill(
@@ -925,8 +983,16 @@ class Executor(BaseModule):
                     self.trades.append(fill); fills.append(fill)
             elif action == "scale_down":
                 if lots <= 0:
+                    try:
+                        self.logger.info(f"[LIVE] Skip reduce: non-positive lots ({lots:.4f}) for {inst}")
+                    except Exception:
+                        pass
                     continue
                 r = self.adapter.reduce_position(inst, lots, -1 if side > 0 else +1)
+                try:
+                    self.logger.info(f"[LIVE] reduce_position result: {r}")
+                except Exception:
+                    pass
                 if r.get("ok"):
                     px = float(r.get("price", price_hint) or price_hint)
                     fill = TradeFill(
@@ -945,7 +1011,11 @@ class Executor(BaseModule):
                     ).as_bus()
                     self.trades.append(fill); fills.append(fill)
             elif action in ("close", "emergency_close"):
-                self.adapter.close_position(inst)
+                r = self.adapter.close_position(inst)
+                try:
+                    self.logger.info(f"[LIVE] close_position result: {r}")
+                except Exception:
+                    pass
 
         acct_after = self.adapter.get_account_info()
         eq_after = float(acct_after.get("equity", eq_before) or eq_before)
@@ -955,6 +1025,12 @@ class Executor(BaseModule):
         self.equity = float(eq_after)
         self._last_equity = float(eq_after)
 
+        try:
+            self.logger.info(
+                f"[LIVE] Done: equity_after={eq_after:.2f} (Δ={step_pnl:.2f}), fills={len(fills)}"
+            )
+        except Exception:
+            pass
         return fills, step_pnl
 
 
@@ -1075,6 +1151,7 @@ class Executor(BaseModule):
         except Exception as e:
             self.debugger.record_error(f"position_data_alias_error: {e}")
 
+        # Simple snapshot log (keep for quick reference)
         self.logger.info(
             format_operator_message(
                 "[EXECUTOR]", "SNAPSHOT",
@@ -1090,3 +1167,90 @@ class Executor(BaseModule):
                 reason=reason or "ok",
             )
         )
+
+    def _log_unified_cycle(
+        self,
+        mode: str,
+        q_count: int,
+        dec_count: int,
+        accepted: List[Dict[str, Any]],
+        rejected: List[Dict[str, Any]],
+        fills: List[Dict[str, Any]],
+        positions_after: Dict[str, Any],
+        balance_before: float,
+        equity_before: float,
+        realized_step: float,
+        unreal_after: float,
+        step_pnl: float,
+        processing_ms: float,
+    ) -> None:
+        """Generate unified execution cycle log"""
+        from collections import Counter, defaultdict
+
+        # Detect position changes
+        positions_before = {k: v for k, v in self.positions.items()}
+        positions_opened = []
+        positions_closed = []
+        positions_modified = []
+
+        # Positions that existed before
+        before_keys = set(positions_before.keys())
+        after_keys = set(positions_after.keys())
+
+        positions_opened = list(after_keys - before_keys)
+        positions_closed = list(before_keys - after_keys)
+        positions_modified = [k for k in (after_keys & before_keys)
+                            if positions_after.get(k, {}).get('units') != positions_before.get(k, PositionSnap('', 0, 0, 0)).units]
+
+        # Rejection reasons
+        rejection_reasons = Counter([r.get('reason', 'unknown') for r in rejected])
+
+        # Fills by instrument
+        fills_by_instrument = Counter([f.get('instrument', 'N/A') for f in fills])
+
+        # Total notional
+        total_notional = sum(abs(float(f.get('notional_eur', 0.0))) for f in fills)
+
+        # Detect issues
+        issues = []
+        if accepted and not fills:
+            issues.append("accepted_but_no_fills")
+        if float(step_pnl) > 0 and float(self.equity) < float(equity_before):
+            issues.append("pnl_positive_but_equity_down")
+        if float(step_pnl) < 0 and float(self.equity) > float(equity_before):
+            issues.append("pnl_negative_but_equity_up")
+
+        # Build entry
+        entry = ExecutionCycleEntry(
+            step=self.step_idx,
+            mode=mode,
+            timestamp=dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+            orders_received=q_count + dec_count,
+            orders_accepted=len(accepted),
+            orders_rejected=len(rejected),
+            rejected_reasons=dict(rejection_reasons),
+            fills_count=len(fills),
+            fills_by_instrument=dict(fills_by_instrument),
+            total_notional=total_notional,
+            positions_before={},  # Simplified for now
+            positions_after=positions_after,
+            positions_opened=positions_opened,
+            positions_closed=positions_closed,
+            positions_modified=positions_modified,
+            balance_before=balance_before,
+            balance_after=float(self.balance),
+            equity_before=equity_before,
+            equity_after=float(self.equity),
+            realized_pnl=realized_step,
+            unrealized_pnl=unreal_after,
+            step_pnl=step_pnl,
+            trades_this_step=[f for f in fills if f.get('realized_pnl', 0.0) != 0],
+            execution_time_ms=processing_ms,
+            issues=issues,
+            accepted_details=accepted[:10],
+            rejected_details=rejected[:10],
+            fill_details=fills[:20],
+        )
+
+        # Log it
+        self.unified_logger.log_execution_cycle(entry)

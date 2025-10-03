@@ -2423,6 +2423,37 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                     module=self.__class__.__name__,
                     thesis=f'Member confidence scores for {len(results.get("member_confidences_ordered", []))} voters'
                 )
+                # FIX: Publish member analytics for backend UI
+                member_analytics = []
+                for member in results.get('committee_members', []):
+                    if isinstance(member, str):
+                        # Simple member name, create basic analytics
+                        perf = self.committee_analytics.get('expert_performance', {}).get(member, 0.5)
+                        member_analytics.append({
+                            'member_id': member,
+                            'name': member,
+                            'specialization': 'general',
+                            'performance_score': float(perf),
+                            'reliability': float(perf),
+                            'votes_cast': self.committee_analytics.get('total_decisions', 0),
+                        })
+                    elif isinstance(member, dict):
+                        # Already structured member data
+                        member_analytics.append(member)
+
+                self.smart_bus.set(
+                    'member_analytics',
+                    member_analytics,
+                    module=self.__class__.__name__,
+                    thesis=f'Committee member analytics for {len(member_analytics)} members'
+                )
+                # Publish committee analytics summary
+                self.smart_bus.set(
+                    'committee_analytics',
+                    self.committee_analytics.copy(),
+                    module=self.__class__.__name__,
+                    thesis='Committee performance analytics'
+                )
             except Exception as e:
                 self.logger.warning(f"Failed to publish namespaced committee keys: {e}")
 

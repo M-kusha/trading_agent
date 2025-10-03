@@ -418,13 +418,16 @@ class ExecutorDebugManager:
         if self._should_log("DEBUG"):
             self._bus_set(self.cfg.report_key_text, self._make_report_line(node, metrics_payload), "Executor text report")
 
-        # file logs
+        # file logs - Only log to JSONL, not to main log (unified logger handles that)
         try:
-            self.logger.info(
-                f"[EXECDBG] step={step} mode={mode}/{env_mode or 'n/a'} ok={len(accepted or [])} "
-                f"rej={len(rejected or [])} fills={len(fills or [])} dPnL={float(step_pnl or 0.0):.2f} "
-                f"issues={len(issues)}"
-            )
+            # Compact debug line (only if level is TRACE or DEBUG)
+            if self._should_log("DEBUG"):
+                self.logger.debug(
+                    f"[EXECDBG] step={step} mode={mode}/{env_mode or 'n/a'} ok={len(accepted or [])} "
+                    f"rej={len(rejected or [])} fills={len(fills or [])} dPnL={float(step_pnl or 0.0):.2f} "
+                    f"issues={len(issues)}"
+                )
+            # Always write JSONL for forensics
             if self.cfg.file_logging:
                 path = os.path.join(self.cfg.jsonl_dir, "steps.jsonl")
                 with open(path, "a", encoding="utf-8") as fp:

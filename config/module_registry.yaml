@@ -513,7 +513,7 @@ modules:
   PositionManager:
     category: position
     file_path: modules\position\position_logic.py
-    module_path: modules.position.position
+    module_path: modules.position.position_logic
     provides:
     - order_queue
     - portfolio_state

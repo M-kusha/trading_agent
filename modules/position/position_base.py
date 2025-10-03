@@ -39,6 +39,10 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from envs.config import TradingConfig
 from modules.utils.audit_utils import RotatingLogger, format_operator_message, AuditConfiguration
 
+# Debug system
+from .position_debug import PositionDebugSystem, DebugLevel
+from .position_logger import UnifiedPositionLogger
+
 # ===============================
 # Debug / decision scaffolding
 # ===============================
@@ -80,227 +84,6 @@ class DebugSnapshot:
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
-class IntegratedDebugger:
-    """Lightweight decision debugger writing CSV/JSON + console banners."""
-
-    def __init__(self, log_dir: str = "logs/debug", enable: bool = True):
-        self.smart_bus: Optional[Any] = None
-        self.enabled = bool(enable)
-        if not self.enabled:
-            return
-
-        self.log_dir = Path(log_dir)
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        (self.log_dir / "trade_signals").mkdir(exist_ok=True)
-
-        timestamp = _dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        self.decision_file = self.log_dir / f"decisions_{timestamp}.csv"
-        self.summary_file = self.log_dir / f"summary_{timestamp}.txt"
-        self.buy_signals_file = self.log_dir / "trade_signals" / f"buy_signals_{timestamp}.json"
-        self.sell_signals_file = self.log_dir / "trade_signals" / f"sell_signals_{timestamp}.json"
-
-        self.stats = {
-            "total_decisions": 0,
-            "buy_decisions": 0,
-            "sell_decisions": 0,
-            "hold_decisions": 0,
-            "executed": 0,
-            "blocked": 0,
-        }
-
-        with open(self.decision_file, "w") as f:
-            f.write(
-                "timestamp,instrument,action,is_buying,size_eur,confidence,"
-                "signal_strength,volatility,portfolio_health,risk_score,"
-                "executed,reason\n"
-            )
-
-        self.buy_signals: List[Dict[str, Any]] = []
-        self.sell_signals: List[Dict[str, Any]] = []
-
-    # ---------- helpers
-
-    def _parse_action(self, decision: str, intensity: float) -> Tuple[str, bool]:
-        d = (decision or "").lower()
-        if "open_long" in d:
-            return "BUY", True
-        if "open_short" in d:
-            return "SELL", False
-        if "scale_up" in d:
-            return "SCALE_UP", intensity > 0
-        if "scale_down" in d:
-            return "SCALE_DOWN", False
-        if "emergency_close" in d:
-            return "EMERGENCY_EXIT", False
-        if "close" in d:
-            return "CLOSE_POSITION", False
-        return "HOLD", False
-
-    def _calculate_risk_score(self, context: Dict[str, Any]) -> float:
-        drawdown = float(context.get("drawdown", 0.0) or 0.0)
-        exposure = float(context.get("current_exposure", 0.0) or 0.0)
-        volatility = float(context.get("volatility", 0.02) or 0.02)
-        risk = (drawdown * 0.4 + exposure * 0.3 + min(volatility / 0.05, 1.0) * 0.3)
-        return float(min(risk, 1.0))
-
-    def _generate_reason(
-        self,
-        action: str,
-        is_buying: bool,
-        instrument: str,
-        signal_strength: float,
-        confidence: float,
-        rationale: Dict[str, Any],
-    ) -> str:
-        stage = rationale.get("stage", "unknown")
-        factors = rationale.get("factors", [])
-        if action == "BUY":
-            reason = f"Opening LONG on {instrument}: bullish {signal_strength:.2f} | conf {confidence:.1%}"
-        elif action == "SELL":
-            reason = f"Opening SHORT on {instrument}: bearish {signal_strength:.2f} | conf {confidence:.1%}"
-        elif action == "CLOSE_POSITION":
-            reason = f"Closing {instrument}: {'risk rule' if 'risk' in stage else 'take profit/cut loss'}"
-        elif action == "EMERGENCY_EXIT":
-            reason = f"EMERGENCY EXIT {instrument}: critical risk"
-        elif action == "SCALE_UP":
-            reason = f"Scaling up {instrument}: signal {signal_strength:.2f}"
-        elif action == "SCALE_DOWN":
-            reason = f"Scaling down {instrument}: opposing or risk"
-        else:
-            reason = f"Holding {instrument}: waiting for stronger signals"
-        if factors:
-            reason += f" | {factors[0]}"
-        return reason
-
-    def _write_to_csv(self, snapshot: DebugSnapshot) -> None:
-        if not self.enabled:
-            return
-        try:
-            with open(self.decision_file, "a") as f:
-                f.write(
-                    f"{snapshot.timestamp},{snapshot.instrument},{snapshot.action},"
-                    f"{snapshot.is_buying},{snapshot.size_eur:.2f},{snapshot.confidence:.3f},"
-                    f"{snapshot.signal_strength:.3f},{snapshot.volatility:.4f},"
-                    f"{snapshot.portfolio_health:.3f},{snapshot.risk_score:.3f},"
-                    f"{snapshot.will_execute},\"{snapshot.plain_english_reason}\"\n"
-                )
-        except Exception:
-            pass
-
-    def _write_to_summary(self, snapshot: DebugSnapshot) -> None:
-        if not self.enabled:
-            return
-        try:
-            with open(self.summary_file, "a") as f:
-                f.write(f"\n{'='*60}\n")
-                f.write(f"Time: {snapshot.timestamp}\n")
-                f.write(f"Instrument: {snapshot.instrument}\n")
-                f.write(f"Action: {snapshot.action}\n")
-                f.write(f"Size: EUR {snapshot.size_eur:,.2f}\n")
-                f.write(f"Confidence: {snapshot.confidence:.1%}\n")
-                f.write(f"Reason: {snapshot.plain_english_reason}\n")
-                f.write(f"Status: {'EXECUTED' if snapshot.will_execute else 'BLOCKED'}\n")
-        except Exception:
-            pass
-
-    def _save_signals(self) -> None:
-        if not self.enabled:
-            return
-        try:
-            if self.buy_signals:
-                with open(self.buy_signals_file, "w") as f:
-                    json.dump(self.buy_signals, f, indent=2)
-            if self.sell_signals:
-                with open(self.sell_signals_file, "w") as f:
-                    json.dump(self.sell_signals, f, indent=2)
-        except Exception:
-            pass
-
-    def _should_suppress_alerts(self) -> bool:
-        bus = getattr(self, "smart_bus", None)
-        if bus is None:
-            return False
-        try:
-            env_cfg = bus.get("environment_config", "PositionManager")
-            if isinstance(env_cfg, dict):
-                return env_cfg.get("mode", "") == "sim"
-        except Exception:
-            return False
-        return False
-
-    def _alert_buy(self, instrument: str, snapshot: DebugSnapshot) -> None:
-        return  # console banners disabled
-
-    def _alert_sell(self, instrument: str, snapshot: DebugSnapshot) -> None:
-        return  # console banners disabled
-
-    # ---------- public
-
-    def log_decision(
-        self,
-        instrument: str,
-        decision: str,
-        intensity: float,
-        size: float,
-        confidence: float,
-        context: Dict[str, Any],
-        rationale: Dict[str, Any],
-        portfolio_health: float,
-    ) -> Optional[DebugSnapshot]:
-        if not self.enabled:
-            return None
-        try:
-            action, is_buying = self._parse_action(decision, intensity)
-            signal_strength = abs(float(intensity))
-            volatility = float(context.get("volatility", 0.0) or 0.0)
-            volatility = float(max(volatility, 1e-6))  # clamp for logs
-            risk_score = self._calculate_risk_score(context)
-            plain_english = self._generate_reason(action, is_buying, instrument, signal_strength, confidence, rationale)
-
-            will_execute = (size or 0.0) > 0 and (confidence or 0.0) > 0.3
-            blocked_reason = None if will_execute else "Size or confidence too low"
-
-            snapshot = DebugSnapshot(
-                timestamp=_dt.datetime.utcnow().isoformat() + "Z",
-                instrument=instrument,
-                action=action,
-                is_buying=is_buying,
-                size_eur=float(size or 0.0),
-                confidence=float(np.clip(confidence or 0.0, 0.0, 1.0)),
-                signal_strength=signal_strength,
-                volatility=volatility,
-                portfolio_health=float(np.clip(portfolio_health, 0.0, 1.0)),
-                risk_score=risk_score,
-                plain_english_reason=plain_english,
-                will_execute=bool(will_execute),
-                execution_blocked_reason=blocked_reason,
-            )
-
-            self.stats["total_decisions"] += 1
-            if is_buying and action in ("BUY", "SCALE_UP"):
-                self.stats["buy_decisions"] += 1
-                self.buy_signals.append(snapshot.to_dict())
-                self._alert_buy(instrument, snapshot)
-            elif action in ("SELL", "CLOSE_POSITION", "EMERGENCY_EXIT", "SCALE_DOWN"):
-                self.stats["sell_decisions"] += 1
-                self.sell_signals.append(snapshot.to_dict())
-                if not (action == "EMERGENCY_EXIT" and snapshot.size_eur <= 0.0):
-                    self._alert_sell(instrument, snapshot)
-            else:
-                self.stats["hold_decisions"] += 1
-
-            if will_execute:
-                self.stats["executed"] += 1
-            else:
-                self.stats["blocked"] += 1
-
-            self._write_to_csv(snapshot)
-            self._write_to_summary(snapshot)
-            self._save_signals()
-            return snapshot
-        except Exception:
-            return None
-
 # ===============================
 # Async helper
 # ===============================
@@ -329,6 +112,7 @@ class SignalContext:
     current_exposure: float = 0.0
     drawdown: float = 0.0
     balance: float = 1000.0
+    current_price: float = 0.0
     step_idx: int = 0
     timestamp: str = ""
 
@@ -406,8 +190,16 @@ class PositionManagerBase(
         debug_log_dir: str = "logs/debug",
         **kwargs: Any,
     ):
-        # Static infra
-        self.debugger = IntegratedDebugger(log_dir=debug_log_dir, enable=enable_debug)
+        # Static infra - Initialize unified debug system
+        # Only use debugger for CSV/JSON forensics, not for console/log output
+        debug_verbosity = DebugLevel.CRITICAL  # Only log critical errors
+        self.debugger = PositionDebugSystem(
+            log_dir=debug_log_dir,
+            enable=enable_debug,
+            verbosity=debug_verbosity,
+            console_output=False,  # Disabled - only log to files
+            file_output=enable_debug,  # CSV/JSON output only
+        )
 
         self._instruments_forced = instruments is not None
         self.instruments = instruments or ["XAU_USD", "EUR_USD"]
@@ -516,8 +308,6 @@ class PositionManagerBase(
     # ---------- systems
     def _initialize_advanced_systems(self) -> None:
         self.smart_bus = InfoBusManager.get_instance()
-        if hasattr(self, "debugger"):
-            self.debugger.smart_bus = self.smart_bus
 
         global _PM_SHARED_LOGGER
         if _PM_SHARED_LOGGER is None:
@@ -540,13 +330,24 @@ class PositionManagerBase(
             )
         self.logger = _PM_SHARED_LOGGER
 
+        # ⇩ ensure the debugger mirrors into the shared logger (it may have been created earlier)
+        try:
+            if hasattr(self, "debugger") and self.debugger:
+                attach_fn = getattr(self.debugger, "attach_shared_logger", None)
+                if callable(attach_fn):
+                    self.debugger.attach_shared_logger(self.logger)
+        except Exception:
+            pass
+
         self.error_pinpointer = ErrorPinpointer()
         self.error_handler = create_error_handler("PositionManager", self.error_pinpointer)
         self.english_explainer = EnglishExplainer()
         self.system_utilities = SystemUtilities()
         self.performance_tracker = PerformanceTracker()
 
-        # Circuit-breaker state
+        # Initialize unified logger
+        self.unified_logger = UnifiedPositionLogger(self.logger, self.smart_bus)
+
         self.circuit_breaker = {
             "failures": 0,
             "last_failure": 0,
@@ -554,11 +355,9 @@ class PositionManagerBase(
             "threshold": self.Cval("position_circuit_breaker_threshold", 5),
         }
 
-        # Profit tracking for trailing TP
         self._profit_tracker = ProfitTracker()
-
-        # Scale-up cooldown bookkeeping
         self._scale_cooldown_until: Dict[str, float] = defaultdict(float)
+
 
     def _start_monitoring(self) -> None:
         if getattr(self, "_monitoring_active", False):
@@ -759,7 +558,8 @@ class PositionManagerBase(
             "rationale": rationale,
         }
         if self.debug:
-            self.logger.info(format_operator_message("ORDER", "ORDER_BUILT", **order))
+            # Use unified logger for clean order build logs
+            self.unified_logger.log_order_build(instrument, order)
             self._flush_logs()
         return order
 
@@ -802,14 +602,27 @@ class PositionManagerBase(
                 safe = [o for o in orders if bool(o.get("reduce_only"))]
                 blocked = len(orders) - len(safe)
                 if blocked > 0 and self.debug:
-                    self.logger.warning(
-                        format_operator_message(
-                            "[GATE]",
-                            "ORDERS_BLOCKED_NO_CONSENSUS",
-                            count=blocked,
-                            reason="Voting system has not produced consensus - blocking non-safety orders",
+                    # Get consensus details for warning
+                    try:
+                        consensus = self.smart_bus.get("committee_consensus", "PositionManager")
+                        strength = 0.0
+                        if isinstance(consensus, dict):
+                            strength = float(consensus.get("consensus_strength", 0.0) or 0.0)
+
+                        self.logger.warning(
+                            f"⚠️  CONSENSUS GATE: Blocked {blocked} order(s) | "
+                            f"Consensus: {strength:.1%} (threshold: 30%) | "
+                            f"Only safety orders allowed"
                         )
-                    )
+                    except:
+                        self.logger.warning(
+                            format_operator_message(
+                                "[GATE]",
+                                "ORDERS_BLOCKED_NO_CONSENSUS",
+                                count=blocked,
+                                reason="Voting system has not produced consensus - blocking non-safety orders",
+                            )
+                        )
                 orders = safe if allow_safety else []
                 if not orders:
                     return
@@ -891,6 +704,10 @@ class PositionManagerBase(
             thesis = await self._generate_position_thesis(market_data, decisions)
             metrics = self._read_env_metrics()
 
+            # Flush unified logger at end of processing
+            if self.debug:
+                self._flush_logs()
+
             # history bookkeeping
             self._decision_history.append(
                 {
@@ -964,20 +781,6 @@ class PositionManagerBase(
             )
             orders.append(order)
 
-            if self.debug:
-                self.logger.info(
-                    format_operator_message(
-                        "SIGNAL",
-                        "ORDER_ENQUEUED_PREVIEW",
-                        instrument=inst,
-                        decision=dr.decision.value,
-                        size_eur=f"{dr.size:.2f}",
-                        reduce_only=str(reduce_only),
-                        confidence=f"{dr.confidence:.3f}",
-                    )
-                )
-        if orders and self.debug:
-            self._flush_logs()
         return orders
 
     def _contract_payload(
@@ -1296,15 +1099,26 @@ class PositionManagerBase(
 
         def variants(inst: str) -> List[str]:
             core = inst.replace("/", "").replace("_", "")
-            return [
+            # Generate a rich set of aliases to tolerate naming mismatches across modules
+            aliases = [
                 inst,
                 inst.replace("/", ""),
                 inst.replace("/", "_"),
+                inst.replace("_", "/"),
+                inst.replace("_", ""),
                 inst.upper(),
                 inst.lower(),
                 core.upper(),
                 core.lower(),
             ]
+            # Deduplicate while preserving order
+            seen: set[str] = set()
+            out: List[str] = []
+            for a in aliases:
+                if a not in seen:
+                    out.append(a)
+                    seen.add(a)
+            return out
 
         def pick(src: Dict[str, Any], inst: str):
             if not isinstance(src, dict):
@@ -1381,17 +1195,14 @@ class PositionManagerBase(
                     vol_v = inst_dict.get("volatility", self.Cval("min_volatility", 0.015))
                     tr = inst_dict.get("trend_strength", 0.0)
                     mo = inst_dict.get("momentum", 0.0)
-                    self.logger.debug(
-                        format_operator_message(
-                            icon="[MAP]",
-                            message="Signal mapping",
-                            instrument=inst,
-                            source=str(src),
-                            intensity=f"{float(iv if isinstance(iv, (int, float)) else 0.0):.3f}",
-                            volatility=f"{float(vol_v if isinstance(vol_v, (int, float)) else self.Cval('min_volatility', 0.015)):.4f}",
-                            trend=f"{float(tr if isinstance(tr, (int, float)) else 0.0):.3f}",
-                            momentum=f"{float(mo if isinstance(mo, (int, float)) else 0.0):.3f}",
-                        )
+                    # Use unified logger for clean signal mapping
+                    self.unified_logger.log_signal_mapping(
+                        instrument=inst,
+                        source=str(src),
+                        intensity=float(iv if isinstance(iv, (int, float)) else 0.0),
+                        volatility=float(vol_v if isinstance(vol_v, (int, float)) else self.Cval('min_volatility', 0.015)),
+                        trend=float(tr if isinstance(tr, (int, float)) else 0.0),
+                        momentum=float(mo if isinstance(mo, (int, float)) else 0.0),
                     )
                 except Exception:
                     pass
@@ -1465,6 +1276,13 @@ class PositionManagerBase(
                 lg.flush()
         except Exception:
             pass
+        try:
+            dbg = getattr(self, "debugger", None)
+            if dbg and hasattr(dbg, "flush"):
+                dbg.flush()
+        except Exception:
+            pass
+
 
     # ---------- health / adaptation
     def _update_position_health(self) -> None:

@@ -6,6 +6,7 @@ import math
 from typing import Any, Dict, List, Optional, cast
 
 from .base_adapter import BaseLiveAdapter, LiveAdapterConfig
+from modules.utils.audit_utils import RotatingLogger
 
 # Treat MetaTrader5 as `Any` so Pylance/pyright doesn't complain about attrs.
 try:
@@ -32,6 +33,20 @@ class MT5Adapter(BaseLiveAdapter):
     Only *_impl methods below talk to MT5 directly.
     """
 
+    def __init__(self, cfg: LiveAdapterConfig):
+        super().__init__(cfg)
+        try:
+            self.log = RotatingLogger("MT5Adapter", log_path="logs/executor/mt5_adapter.log", operator_mode=True)
+        except Exception:
+            class _Dummy:
+                def info(self, *a, **k):
+                    pass
+                def warning(self, *a, **k):
+                    pass
+                def error(self, *a, **k):
+                    pass
+            self.log = _Dummy()
+
     # ─────────────────────────────────────────────────────
     # Connection
     # ─────────────────────────────────────────────────────
@@ -39,9 +54,58 @@ class MT5Adapter(BaseLiveAdapter):
         if not _MT5:
             return False
         try:
-            # If you need login(credentials), do it here before initialize().
-            ok = mt5.initialize()
-            return bool(ok)
+            # Load credentials from environment or config
+            from live.mt5_credentials import MT5Credentials
+
+            # Attempt to connect with credentials and retry logic
+            max_retries = 5
+            retry_delay = 3.0
+
+            for attempt in range(max_retries):
+                try:
+                    # Shutdown any existing connection first
+                    try:
+                        mt5.shutdown()
+                    except:
+                        pass
+
+                    # Initialize with credentials
+                    ok = mt5.initialize(
+                        login=MT5Credentials.ACCOUNT,
+                        password=MT5Credentials.PASSWORD,
+                        server=MT5Credentials.SERVER,
+                        timeout=60000
+                    )
+
+                    if ok:
+                        # Verify connection
+                        account_info = mt5.account_info()
+                        if account_info:
+                            try:
+                                self.log.info(f"[MT5] Connected: login={getattr(account_info,'login',None)} balance={getattr(account_info,'balance',0.0):.2f}")
+                            except Exception:
+                                pass
+                            return True
+
+                    # Failed, wait before retry
+                    if attempt < max_retries - 1:
+                        try:
+                            self.log.warning(f"[MT5] initialize/login failed, retrying ({attempt+1}/{max_retries})")
+                        except Exception:
+                            pass
+                        time.sleep(retry_delay * (attempt + 1))
+
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                    else:
+                        try:
+                            self.log.error(f"[MT5] Connect error: {e}")
+                        except Exception:
+                            pass
+                        raise
+
+            return False
         except Exception:
             return False
 
@@ -80,7 +144,14 @@ class MT5Adapter(BaseLiveAdapter):
             info = mt5.symbol_info(symbol)
             if info and getattr(info, "visible", False):
                 return True
-            return bool(mt5.symbol_select(symbol, True))
+            ok = bool(mt5.symbol_select(symbol, True))
+            if not ok:
+                try:
+                    last_err = mt5.last_error() if hasattr(mt5, 'last_error') else (None, None)
+                    self.log.warning(f"[MT5] symbol_select failed: {symbol}; last_error={last_err}")
+                except Exception:
+                    pass
+            return ok
         except Exception:
             return False
 
@@ -93,10 +164,18 @@ class MT5Adapter(BaseLiveAdapter):
             return {"bid": 0.0, "ask": 0.0, "mid": 0.0, "ts": float(time.time())}
         try:
             if not self._ensure_symbol(instrument):
+                try:
+                    self.log.warning(f"[MT5] No prices: symbol not available: {instrument}")
+                except Exception:
+                    pass
                 return {"bid": 0.0, "ask": 0.0, "mid": 0.0, "ts": float(time.time())}
 
             tick = mt5.symbol_info_tick(instrument)
             if not tick:
+                try:
+                    self.log.warning(f"[MT5] symbol_info_tick returned None for {instrument}")
+                except Exception:
+                    pass
                 return {"bid": 0.0, "ask": 0.0, "mid": 0.0, "ts": float(time.time())}
 
             bid = _sf(getattr(tick, "bid", 0.0))
@@ -130,6 +209,10 @@ class MT5Adapter(BaseLiveAdapter):
 
     def _send_deal(self, sym: str, side: int, lots: float, filling_mode: Optional[int] = None) -> Dict[str, Any]:
         if not self._ensure_symbol(sym):
+            try:
+                self.log.warning(f"[MT5] send_deal blocked: symbol not available: {sym}")
+            except Exception:
+                pass
             return {"ok": False, "error": "symbol_not_available"}
         try:
             t = mt5.ORDER_TYPE_BUY if side > 0 else mt5.ORDER_TYPE_SELL
@@ -144,8 +227,17 @@ class MT5Adapter(BaseLiveAdapter):
                 "type_filling": filling_mode if filling_mode is not None else self._pick_filling_mode(sym),
                 "type_time": mt5.ORDER_TIME_GTC,
             }
+            try:
+                self.log.info(f"[MT5] order_send: sym={sym} side={side} lots={lots:.4f} filling={req['type_filling']}")
+            except Exception:
+                pass
             r = mt5.order_send(req)
             if r is None:
+                try:
+                    last_err = mt5.last_error() if hasattr(mt5, 'last_error') else (None, None)
+                    self.log.error(f"[MT5] order_send returned None; last_error={last_err}")
+                except Exception:
+                    pass
                 return {"ok": False, "error": "order_send_none"}
 
             ret_ok = getattr(mt5, "TRADE_RETCODE_DONE", 10009)
@@ -154,6 +246,10 @@ class MT5Adapter(BaseLiveAdapter):
             ret_invalid_fill = getattr(mt5, "TRADE_RETCODE_INVALID_FILL", 10030)
 
             if r.retcode in (ret_ok, ret_placed, ret_partial):
+                try:
+                    self.log.info(f"[MT5] order_send OK: retcode={r.retcode} price={_sf(getattr(r,'price',0.0)):.5f} ticket={getattr(r,'order',getattr(r,'deal',0))}")
+                except Exception:
+                    pass
                 return {
                     "ok": True,
                     "price": _sf(getattr(r, "price", 0.0)),
@@ -168,6 +264,10 @@ class MT5Adapter(BaseLiveAdapter):
                       else getattr(mt5, "ORDER_FILLING_IOC", 1)
                 r2 = mt5.order_send({**req, "type_filling": alt})
                 if r2 and r2.retcode in (ret_ok, ret_placed, ret_partial):
+                    try:
+                        self.log.info(f"[MT5] order_send retry OK: retcode={r2.retcode} price={_sf(getattr(r2,'price',0.0)):.5f} ticket={getattr(r2,'order',getattr(r2,'deal',0))}")
+                    except Exception:
+                        pass
                     return {
                         "ok": True,
                         "price": _sf(getattr(r2, "price", 0.0)),
@@ -176,8 +276,17 @@ class MT5Adapter(BaseLiveAdapter):
                         "ticket": getattr(r2, "order", getattr(r2, "deal", 0)),
                     }
 
+            try:
+                last_err = mt5.last_error() if hasattr(mt5, 'last_error') else (None, None)
+                self.log.error(f"[MT5] order_send failed: retcode={getattr(r,'retcode','unknown')} last_error={last_err}")
+            except Exception:
+                pass
             return {"ok": False, "error": f"retcode={getattr(r, 'retcode', 'unknown')}"}
         except Exception as e:
+            try:
+                self.log.error(f"[MT5] order_send exception: {e}")
+            except Exception:
+                pass
             return {"ok": False, "error": str(e)}
 
     # ─────────────────────────────────────────────────────
@@ -235,6 +344,10 @@ class MT5Adapter(BaseLiveAdapter):
             ps = list(mt5.positions_get() or [])
             if not ps:
                 return {}
+            try:
+                self.log.info(f"[MT5] sync_positions: {len(ps)} raw positions")
+            except Exception:
+                pass
 
             # group by symbol
             by_sym: Dict[str, List[Any]] = {}

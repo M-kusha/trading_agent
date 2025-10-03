@@ -676,11 +676,55 @@ async def start_live_trading(config: LiveTradingConfig):
     try:
         if not state.mt5_connected:
             raise HTTPException(status_code=400, detail="MT5 not connected")
-        
+
         if state.trading_task and not state.trading_task.done():
             raise HTTPException(status_code=400, detail="Trading already active")
-        
-        # Load PPO model
+
+        # STEP 1: Set environment config on InfoBus BEFORE loading anything
+        # This ensures modules that initialize will see the correct mode
+        try:
+            from modules.utils.info_bus import InfoBusManager
+            bus = InfoBusManager.get_instance()
+
+            # Create environment config with live mode
+            # IMPORTANT: Normalize instrument symbols for module interoperability.
+            # - Live connector expects MT5 symbols like 'EURUSD'.
+            # - Downstream modules commonly use 'EUR/USD' (and some publish with 'EUR_USD').
+            #   Using 'EUR/USD' here ensures PositionManager variants can match both
+            #   price_data (published as 'EUR/USD') and voting signals (often 'EUR_USD').
+            def _norm_inst(s: str) -> str:
+                try:
+                    s = str(s)
+                    if "/" in s:
+                        # Already slash-form
+                        return s
+                    if "_" in s:
+                        # Convert underscore to slash
+                        return s.replace("_", "/")
+                    if len(s) == 6:
+                        return s[:3] + "/" + s[3:]
+                except Exception:
+                    pass
+                return s
+            normalized_instruments = [_norm_inst(s) for s in (config.instruments or [])]
+
+            environment_config = {
+                "instruments": normalized_instruments,
+                "initial_balance": state.performance_metrics["current_balance"],
+                "mode": "live",  # CRITICAL: Set to live mode
+                "max_steps": 100000,
+                "bus_data_active": True,
+            }
+
+            # Publish environment_config and execution_mode FIRST
+            bus.set("environment_config", environment_config, module="Backend", thesis="live trading environment configuration")
+            bus.set("execution_mode", "live", module="Backend", thesis="live trading mode enabled")
+            logger.info(f"[LIVE MODE] Set environment config on InfoBus: {environment_config}")
+        except Exception as e:
+            logger.error(f"Failed to set environment config on InfoBus: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to configure live mode: {e}")
+
+        # STEP 2: Load PPO model
         model_path = "models/ppo_trading_model.zip"
         if not os.path.exists(model_path):
             # Try alternative paths
@@ -691,10 +735,10 @@ async def start_live_trading(config: LiveTradingConfig):
                     break
             else:
                 raise HTTPException(status_code=404, detail="PPO model not found")
-        
+
         logger.info(f"Starting live trading system with model: {model_path}")
-        
-        # Import trading components
+
+        # STEP 3: Import trading components
         from stable_baselines3 import PPO
         from envs.env import EnhancedTradingEnv, TradingConfig
         # Adapt to available connector class name
@@ -702,15 +746,15 @@ async def start_live_trading(config: LiveTradingConfig):
             from live.live_connector import LiveDataConnector  # type: ignore
         except Exception:
             from live.live_connector import InfoBusLiveDataConnector as LiveDataConnector  # type: ignore
-        
-        # Create live data connector
+
+        # STEP 4: Create live data connector
         connector = LiveDataConnector(
             instruments=config.instruments,
             timeframes=config.timeframes
         )
         connector.connect()
-        
-        # Get historical data
+
+        # STEP 5: Get historical data
         # Support connectors that expose InfoBus-specific method name
         if hasattr(connector, 'get_historical_data'):
             hist_data = connector.get_historical_data(n_bars=1000)  # type: ignore
@@ -720,8 +764,8 @@ async def start_live_trading(config: LiveTradingConfig):
             raise HTTPException(status_code=500, detail="Connector does not support historical data retrieval")
         if not hist_data:
             raise HTTPException(status_code=500, detail="Failed to retrieve historical data")
-        
-        # Create trading environment
+
+        # STEP 6: Create trading environment
         env_config = TradingConfig(
             initial_balance=state.performance_metrics["current_balance"],
             live_mode=True,
@@ -729,13 +773,13 @@ async def start_live_trading(config: LiveTradingConfig):
             max_position_pct=config.max_position_size,
             max_total_exposure=config.max_total_exposure,
         )
-        
+
         state.live_env = EnhancedTradingEnv(hist_data, env_config)
         state.model = PPO.load(model_path, device="cpu")
         state.model_loaded = True
         state.trading_config = config
-        
-        # Start trading loop
+
+        # STEP 7: Start trading loop (will initialize orchestrator inside)
         state.trading_task = asyncio.create_task(
             live_trading_loop(config, connector)
         )
@@ -745,7 +789,7 @@ async def start_live_trading(config: LiveTradingConfig):
         logger.info("Live trading started successfully")
 
         return {"success": True, "message": "Live trading started", "session_id": state.current_session_id}
-        
+
     except Exception as e:
         error_msg = f"Failed to start live trading: {str(e)}"
         state.add_error(error_msg, "trading")
@@ -764,10 +808,13 @@ async def live_trading_loop(config: LiveTradingConfig, connector):
         last_health_check = time.time()
 
         # Initialize ModuleOrchestrator for live trading
+        # Environment config should already be set by start_live_trading()
         orchestrator = None
         try:
             from modules.core.module_system import ModuleOrchestrator
             orchestrator = ModuleOrchestrator.get_instance()
+            # Run synchronous initialize() in executor to avoid blocking event loop
+            await asyncio.get_event_loop().run_in_executor(None, orchestrator.initialize)
             logger.info("ModuleOrchestrator initialized for live trading")
         except Exception as e:
             logger.warning(f"Failed to initialize ModuleOrchestrator: {e}")
@@ -787,7 +834,9 @@ async def live_trading_loop(config: LiveTradingConfig, connector):
                 if orchestrator:
                     try:
                         # Execute all modules (memory, risk, voting, etc.)
-                        orchestrator.execute_step(step_count)
+                        # Prepare market_data dict from new_data or create minimal dict
+                        market_data = new_data if new_data else {}
+                        await orchestrator.execute_step(market_data)
 
                         # Sync module states to backend state
                         state._sync_modules_from_orchestrator()
@@ -842,6 +891,15 @@ async def live_trading_loop(config: LiveTradingConfig, connector):
         logger.error(error_msg)
         state.system_status = "ERROR"
     finally:
+        # Reset execution mode to SIM on InfoBus when loop exits
+        try:
+            from modules.utils.info_bus import InfoBusManager
+            bus = InfoBusManager.get_instance()
+            bus.set("execution_mode", "sim", module="Backend", thesis="live trading loop ended")
+            logger.info("Execution mode reset to SIM on InfoBus (loop cleanup)")
+        except Exception as e:
+            logger.error(f"Failed to reset execution mode on InfoBus: {e}")
+
         connector.disconnect()
         logger.info("Live trading loop ended")
 
@@ -1266,6 +1324,9 @@ async def broadcast_system_state():
             }
         }
         
+        # Sanitize before sending to prevent numpy type errors
+        system_state = sanitize_for_json(system_state)
+        
         # Send to all connected clients via common helper (with locking)
         await _send_to_all_websockets(system_state)
 
@@ -1460,6 +1521,8 @@ async def broadcast_modules_update():
             }
         }
 
+        # Sanitize before sending to prevent numpy type errors
+        message = sanitize_for_json(message)
         await _send_to_all_websockets(message)
     except Exception as e:
         logger.error(f"Error broadcasting modules update: {e}")
@@ -1591,11 +1654,20 @@ async def emergency_stop():
                 await state.trading_task
             except asyncio.CancelledError:
                 pass
-        
+
+        # Reset execution mode to SIM on InfoBus
+        try:
+            from modules.utils.info_bus import InfoBusManager
+            bus = InfoBusManager.get_instance()
+            bus.set("execution_mode", "sim", module="Backend", thesis="emergency stop, back to simulation")
+            logger.info("Execution mode reset to SIM on InfoBus")
+        except Exception as e:
+            logger.error(f"Failed to reset execution mode on InfoBus: {e}")
+
         state.system_status = "EMERGENCY_STOPPED"
         state.add_alert("Emergency stop completed", "warning", "emergency")
         logger.warning("[STOP] Emergency stop completed")
-        
+
         return {"success": True, "message": "Emergency stop executed"}
         
     except Exception as e:
@@ -1621,9 +1693,30 @@ async def startup_event():
     ]
     for dir_path in directories:
         Path(dir_path).mkdir(parents=True, exist_ok=True)
-    
+
     # Force DEBUG-level verbosity for better diagnostics
     _bootstrap_debug_logging()
+
+    # Initialize InfoBus with STANDBY mode (simulation by default)
+    # This prevents modules from initializing in wrong mode
+    try:
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+
+        # Set default simulation mode
+        default_env_config = {
+            "instruments": [],
+            "initial_balance": 3000.0,
+            "mode": "sim",  # STANDBY mode = simulation
+            "max_steps": 100000,
+            "bus_data_active": False,
+        }
+
+        bus.set("environment_config", default_env_config, module="Backend", thesis="backend startup - standby mode (sim)")
+        bus.set("execution_mode", "sim", module="Backend", thesis="backend startup - standby mode")
+        logger.info("[INIT] InfoBus initialized in STANDBY mode (simulation)")
+    except Exception as e:
+        logger.error(f"Failed to initialize InfoBus in standby mode: {e}")
 
     # Start training metrics WebSocket server
     asyncio.create_task(training_metrics_server.start())
@@ -1817,6 +1910,16 @@ async def trading_stop():
             await state.trading_task
         except asyncio.CancelledError:
             pass
+
+        # Reset execution mode to SIM on InfoBus
+        try:
+            from modules.utils.info_bus import InfoBusManager
+            bus = InfoBusManager.get_instance()
+            bus.set("execution_mode", "sim", module="Backend", thesis="live trading stopped, back to simulation")
+            logger.info("Execution mode reset to SIM on InfoBus")
+        except Exception as e:
+            logger.error(f"Failed to reset execution mode on InfoBus: {e}")
+
         state.system_status = "IDLE"
         state.add_alert("Trading stopped by user", "info", "trading")
         await broadcast_system_state()
@@ -2002,6 +2105,34 @@ async def get_trading_symbols():
     except Exception as e:
         logger.error(f"Error getting trading symbols: {e}")
         return HTTPException(status_code=500, detail=f"Failed to get symbols: {str(e)}")
+
+def sanitize_for_json(obj: Any) -> Any:
+    """
+    Recursively convert numpy types and other non-JSON-serializable objects to Python native types.
+    This fixes FastAPI JSON encoder errors with numpy.bool, numpy.int64, etc.
+    """
+    if isinstance(obj, (np.bool_, bool)):
+        return bool(obj)
+    elif isinstance(obj, (np.integer,)):
+        return int(obj)
+    elif isinstance(obj, (np.floating,)):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {k: sanitize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [sanitize_for_json(item) for item in obj]
+    elif isinstance(obj, set):
+        return [sanitize_for_json(item) for item in obj]
+    elif hasattr(obj, '__dict__'):
+        # Handle objects with __dict__ (pydantic models, etc.)
+        try:
+            return sanitize_for_json(obj.__dict__)
+        except:
+            return str(obj)
+    else:
+        return obj
 
 def calculate_module_health(module: Dict[str, Any], live_data: Dict[str, Any], registry_info: Dict[str, Any]) -> int:
     """Calculate module health score (0-100) based on multiple factors"""
@@ -2208,7 +2339,8 @@ async def list_modules():
         try:
             from modules.utils.info_bus import InfoBusManager
             bus = InfoBusManager.get_instance()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"InfoBus not available: {e}")
             bus = None
 
         # Load module registry for additional metadata
@@ -2218,90 +2350,110 @@ async def list_modules():
             with open('config/module_registry.yaml', 'r') as f:
                 registry_data = yaml.safe_load(f)
                 module_registry = registry_data.get('modules', {})
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to load module registry: {e}")
             pass
 
         for name, module in state.module_states.items():
-            # Get registry info for this module
-            registry_info = module_registry.get(name, {})
+            try:
+                # Get registry info for this module
+                registry_info = module_registry.get(name, {})
 
-            # Get live data from InfoBus
-            live_data = {}
-            if bus:
-                try:
-                    # Get all data this module provides
-                    provides = registry_info.get('provides', [])
-                    for key in provides:
-                        value = bus.get(key, name, default=None)
-                        if value is not None:
-                            live_data[key] = value
-                except Exception:
-                    pass
+                # Get live data from InfoBus
+                live_data = {}
+                if bus:
+                    try:
+                        # Get all data this module provides
+                        provides = registry_info.get('provides', [])
+                        for key in provides:
+                            value = bus.get(key, name, default=None)
+                            if value is not None:
+                                live_data[key] = value
+                    except Exception as e:
+                        logger.debug(f"Failed to get live data for {name}: {e}")
+                        pass
 
-            # Calculate health score (0-100)
-            health_score = calculate_module_health(module, live_data, registry_info)
+                # Calculate health score (0-100)
+                health_score = calculate_module_health(module, live_data, registry_info)
 
-            # Extract rich insights from live data
-            insights = extract_module_insights(name, live_data, module.get("category", "unknown"))
+                # Extract rich insights from live data
+                insights = extract_module_insights(name, live_data, module.get("category", "unknown"))
 
-            # Determine real-time status
-            real_status = determine_real_status(module, live_data, insights)
+                # Determine real-time status
+                real_status = determine_real_status(module, live_data, insights)
 
-            # Enhanced module data
-            module_data = {
-                "name": name,
-                "enabled": module.get("enabled", False),
-                "status": real_status,
-                "category": module.get("category", "unknown"),
-                "last_update": module.get("last_update", "never"),
-                "file_path": registry_info.get("file_path", ""),
-                "provides": registry_info.get("provides", []),
-                "requires": registry_info.get("requires", []),
-                "live_data": live_data,
-                "insights": insights,
-                "health_score": health_score,
-                "health_status": get_health_status(health_score),
-                "metrics": {k: v for k, v in module.items()
-                          if k not in ["enabled", "status", "last_update", "errors", "category"]},
-                "error_count": len(module.get("errors", [])),
-                "errors": module.get("errors", [])[-5:],  # Last 5 errors
-                "has_errors": len(module.get("errors", [])) > 0,
-                "data_richness": len(live_data),
-                "provides_count": len(registry_info.get("provides", [])),
-                "requires_count": len(registry_info.get("requires", []))
-            }
-            modules_data.append(module_data)
+                # Enhanced module data
+                module_data = {
+                    "name": name,
+                    "enabled": module.get("enabled", False),
+                    "status": real_status,
+                    "category": module.get("category", "unknown"),
+                    "last_update": module.get("last_update", "never"),
+                    "file_path": registry_info.get("file_path", ""),
+                    "provides": registry_info.get("provides", []),
+                    "requires": registry_info.get("requires", []),
+                    "live_data": live_data,
+                    "insights": insights,
+                    "health_score": health_score,
+                    "health_status": get_health_status(health_score),
+                    "metrics": {k: v for k, v in module.items()
+                              if k not in ["enabled", "status", "last_update", "errors", "category"]},
+                    "error_count": len(module.get("errors", [])),
+                    "errors": module.get("errors", [])[-5:],  # Last 5 errors
+                    "has_errors": len(module.get("errors", [])) > 0,
+                    "data_richness": len(live_data),
+                    "provides_count": len(registry_info.get("provides", [])),
+                    "requires_count": len(registry_info.get("requires", []))
+                }
+                modules_data.append(module_data)
+            except Exception as e:
+                logger.error(f"Error processing module {name}: {e}", exc_info=True)
+                # Continue with other modules
+                continue
 
         # Sort by category then name
         modules_data.sort(key=lambda x: (x["category"], x["name"]))
 
+        # Calculate category statistics
+        categories = {}
+        for module in modules_data:
+            cat = module["category"]
+            if cat not in categories:
+                categories[cat] = {"total": 0, "enabled": 0, "with_data": 0, "with_errors": 0}
+            categories[cat]["total"] += 1
+            if module["enabled"]:
+                categories[cat]["enabled"] += 1
+            if module["data_richness"] > 0:
+                categories[cat]["with_data"] += 1
+            if module["has_errors"]:
+                categories[cat]["with_errors"] += 1
+
+        # Sanitize all data to prevent numpy type JSON serialization errors
+        response_data = {
+            "modules": modules_data,
+            "total_modules": len(modules_data),
+            "enabled_modules": sum(1 for m in modules_data if m["enabled"]),
+            "categories": categories,
+            "modules_with_data": sum(1 for m in modules_data if m["data_richness"] > 0),
+            "modules_with_errors": sum(1 for m in modules_data if m["has_errors"]),
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        return sanitize_for_json(response_data)
+
     except Exception as e:
-        logger.error(f"Error listing modules: {e}")
-        modules_data = []
-
-    # Calculate category statistics
-    categories = {}
-    for module in modules_data:
-        cat = module["category"]
-        if cat not in categories:
-            categories[cat] = {"total": 0, "enabled": 0, "with_data": 0, "with_errors": 0}
-        categories[cat]["total"] += 1
-        if module["enabled"]:
-            categories[cat]["enabled"] += 1
-        if module["data_richness"] > 0:
-            categories[cat]["with_data"] += 1
-        if module["has_errors"]:
-            categories[cat]["with_errors"] += 1
-
-    return {
-        "modules": modules_data,
-        "total_modules": len(modules_data),
-        "enabled_modules": sum(1 for m in modules_data if m["enabled"]),
-        "categories": categories,
-        "modules_with_data": sum(1 for m in modules_data if m["data_richness"] > 0),
-        "modules_with_errors": sum(1 for m in modules_data if m["has_errors"]),
-        "timestamp": datetime.now().isoformat(),
-    }
+        logger.error(f"Critical error in list_modules endpoint: {e}", exc_info=True)
+        # Return a minimal valid response instead of crashing
+        return {
+            "modules": [],
+            "total_modules": 0,
+            "enabled_modules": 0,
+            "categories": {},
+            "modules_with_data": 0,
+            "modules_with_errors": 0,
+            "timestamp": datetime.now().isoformat(),
+            "error": str(e)
+        }
 
 @app.get("/api/reports/health")
 async def health_report():
@@ -3626,7 +3778,9 @@ async def voting_overview():
         # Core voting metrics
         voting_metrics = bus.get('voting_metrics', 'VotingKernel', default={}) or {}
         decision_coordination = bus.get('decision_coordination', 'VotingKernel', default={}) or {}
-        consensus_summary = bus.get('consensus_summary', 'VotingKernel', default={}) or {}
+        # FIX: consensus_summary doesn't exist, use consensus_score and consensus_components
+        consensus_score = bus.get('consensus_score', 'VotingKernel', default=0.0) or 0.0
+        consensus_components = bus.get('consensus_components', 'VotingKernel', default={}) or {}
         pipeline_stats = bus.get('pipeline_stats', 'VotingKernel', default={}) or {}
 
         # Calculate health status based on metrics
@@ -3662,7 +3816,7 @@ async def voting_overview():
             "success_rate": success_rate,
             "components_active": components_active,
             "health_status": health_status,
-            "current_consensus": consensus_summary.get('score', 0.0),
+            "current_consensus": consensus_score,
             "processing_time_ms": voting_metrics.get('avg_processing_time_ms', 0.0),
             "decision_id": decision_coordination.get('decision_id', 'none'),
             "last_update": datetime.now().isoformat()

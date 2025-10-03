@@ -479,11 +479,11 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
         
         return errors
 
-    async def _publish_bundle(self, bundle: Dict[str, Any], decision_id: str, 
-                            tick_ts: str, processing_time: float, 
+    async def _publish_bundle(self, bundle: Dict[str, Any], decision_id: str,
+                            tick_ts: str, processing_time: float,
                             timeline: List[Dict], pipeline_results: Dict[str, Any]):
         """Publish bundle and surfaces with namespaced keys"""
-        
+
         # Publish main bundle
         self.smart_bus.set(
             "kernel_decision_bundle",
@@ -491,7 +491,7 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
             module="VotingKernel",
             thesis=f"Unified voting decision {decision_id} ({processing_time:.1f}ms)"
         )
-        
+
         # Publish coordination data
         decision_coordination = {
             "decision_id": decision_id,
@@ -508,19 +508,46 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
                                module="VotingKernel", thesis="Decision coordination (mirror)")
         except Exception:
             pass
-        
+
         # Publish consensus_score (float) - owned by ConsensusDetector, kernel just mirrors
         consensus_data = pipeline_results.get("consensus", {})
         if "score" in consensus_data:
-            self.smart_bus.set("kernel_consensus_score", consensus_data["score"], 
+            self.smart_bus.set("kernel_consensus_score", consensus_data["score"],
                              module="VotingKernel", thesis="Consensus score (kernel mirror)")
-        
+
         # Publish committee_consensus (dict) - owned by Committee, kernel mirrors
         committee_data = pipeline_results.get("committee", {})
         if "committee_consensus" in committee_data:
-            self.smart_bus.set("kernel_committee_consensus", committee_data["committee_consensus"], 
+            self.smart_bus.set("kernel_committee_consensus", committee_data["committee_consensus"],
                              module="VotingKernel", thesis="Committee consensus (kernel mirror)")
-        
+
+        # FIX: Republish committee data under VotingKernel namespace for backend access
+        if committee_data.get("members"):
+            self.smart_bus.set("committee_members", committee_data["members"],
+                             module="VotingKernel", thesis=f"Committee members ({len(committee_data['members'])} voters)")
+        if "proposal_vectors" in committee_data:
+            self.smart_bus.set("proposal_vectors", committee_data.get("proposal_vectors", []),
+                             module="VotingKernel", thesis="Committee proposal vectors")
+        if "member_confidences" in committee_data:
+            self.smart_bus.set("member_confidences_ordered", committee_data.get("member_confidences", []),
+                             module="VotingKernel", thesis="Committee member confidences")
+
+        # Republish member analytics and committee analytics from Committee module
+        member_analytics = self.smart_bus.get('member_analytics', 'EnhancedVotingCommittee', default=[]) or []
+        if member_analytics:
+            self.smart_bus.set("member_analytics", member_analytics,
+                             module="VotingKernel", thesis=f"Committee member analytics ({len(member_analytics)} members)")
+
+        committee_analytics = self.smart_bus.get('committee_analytics', 'EnhancedVotingCommittee', default={}) or {}
+        if committee_analytics:
+            self.smart_bus.set("committee_analytics", committee_analytics,
+                             module="VotingKernel", thesis="Committee performance analytics")
+
+        committee_votes = self.smart_bus.get('committee_votes', 'EnhancedVotingCommittee', default=[]) or []
+        if committee_votes:
+            self.smart_bus.set("committee_votes", committee_votes,
+                             module="VotingKernel", thesis=f"Committee votes ({len(committee_votes)} votes)")
+
         # Publish metrics
         voting_metrics = {
             "processing_time_ms": processing_time,
@@ -530,20 +557,64 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
             "failed_ticks": self.pipeline_stats.get("failed_ticks", 0),
             "schema_violations": self.pipeline_stats.get("schema_violations", 0),
         }
-        self.smart_bus.set("kernel_voting_metrics", voting_metrics, 
+        self.smart_bus.set("kernel_voting_metrics", voting_metrics,
                           module="VotingKernel", thesis="Voting metrics")
-        
+        # Also publish under canonical key for backend
+        self.smart_bus.set("voting_metrics", voting_metrics,
+                          module="VotingKernel", thesis="Voting metrics (canonical)")
+
+        # Publish pipeline stats for backend timeline endpoint
+        self.smart_bus.set("pipeline_stats", dict(self.pipeline_stats),
+                          module="VotingKernel", thesis="Pipeline statistics")
+
         # Publish arbiter outputs
         arbiter_data = pipeline_results.get("arbiter", {})
         if "instrument_signals" in arbiter_data:
-            self.smart_bus.set("kernel_instrument_signals", arbiter_data["instrument_signals"], 
+            self.smart_bus.set("kernel_instrument_signals", arbiter_data["instrument_signals"],
                              module="VotingKernel", thesis="Instrument signals from arbiter")
+            # Also publish for backend
+            self.smart_bus.set("instrument_signals", arbiter_data["instrument_signals"],
+                             module="VotingKernel", thesis="Instrument signals (canonical)")
         if "gate_decision" in arbiter_data:
-            self.smart_bus.set("kernel_gate_decision", arbiter_data["gate_decision"], 
+            self.smart_bus.set("kernel_gate_decision", arbiter_data["gate_decision"],
                              module="VotingKernel", thesis="Gate decision from arbiter")
-        
-        # Publish fragility (standalone surface)
+            # Also publish for backend
+            self.smart_bus.set("gate_decision", arbiter_data["gate_decision"],
+                             module="VotingKernel", thesis="Gate decision (canonical)")
+
+        # Publish consensus components for backend
+        if "components" in consensus_data:
+            self.smart_bus.set("consensus_components", consensus_data["components"],
+                             module="VotingKernel", thesis="Consensus components breakdown")
+
+        # Publish collusion data for backend
+        collusion_data = pipeline_results.get("collusion", {})
+        if "score" in collusion_data:
+            self.smart_bus.set("collusion_score", collusion_data["score"],
+                             module="VotingKernel", thesis="Collusion detection score")
+        if "suspicious_pairs" in collusion_data:
+            self.smart_bus.set("suspicious_pairs", collusion_data.get("suspicious_pairs", []),
+                             module="VotingKernel", thesis="Suspicious voting pairs")
+
+        # Publish horizon data for backend
+        horizon_data = pipeline_results.get("horizon", {})
+        if "aligned_weights" in horizon_data:
+            self.smart_bus.set("aligned_weights", horizon_data["aligned_weights"],
+                             module="VotingKernel", thesis="Time-aligned voting weights")
+        if "alignment_meta" in horizon_data:
+            self.smart_bus.set("horizon_alignment_meta", horizon_data.get("alignment_meta", {}),
+                             module="VotingKernel", thesis="Horizon alignment metadata")
+
+        # Publish sampling data for backend
         uncertainty_data = pipeline_results.get("uncertainty", {})
+        if "sampling_uncertainty" in uncertainty_data:
+            self.smart_bus.set("sampling_uncertainty", uncertainty_data["sampling_uncertainty"],
+                             module="VotingKernel", thesis="Sampling uncertainty metric")
+        if "effective_samples" in uncertainty_data:
+            self.smart_bus.set("effective_samples", uncertainty_data.get("effective_samples", 0),
+                             module="VotingKernel", thesis="Effective sample count")
+
+        # Publish fragility (standalone surface)
         raw_fragility = uncertainty_data.get("fragility")
         if isinstance(raw_fragility, (int, float)):
             fragility_value = float(raw_fragility)
@@ -554,9 +625,11 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
                 fragility_value = 0.0
         else:
             fragility_value = 0.0
-        self.smart_bus.set("kernel_fragility", fragility_value, 
+        self.smart_bus.set("kernel_fragility", fragility_value,
                           module="VotingKernel", thesis=f"Voting fragility {fragility_value:.3f}")
-        
+        self.smart_bus.set("sampling_fragility", fragility_value,
+                          module="VotingKernel", thesis=f"Sampling fragility (canonical)")
+
         # Publish timeline if debug enabled
         if self.debug_timeline:
             self.smart_bus.set(
@@ -565,6 +638,9 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
                 module="VotingKernel",
                 thesis=f"Pipeline timeline for {decision_id}"
             )
+            # Also publish timeline for backend
+            self.smart_bus.set("pipeline_timeline", timeline,
+                             module="VotingKernel", thesis="Pipeline stage timeline")
 
     def _build_contract_output(self, bundle: Dict[str, Any], 
                                timeline: List[Dict], 

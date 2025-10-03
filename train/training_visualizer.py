@@ -1238,7 +1238,7 @@ class BeautifulTrainingVisualizer:
 
         # Render to terminal (full repaint)
         # TEMPORARILY DISABLED FOR DEBUG OUTPUT
-        self._ui.render_lines(self._frame)
+        # self._ui.render_lines(self._frame)
 
     def _determine_action(self, positions: List[Any]) -> str:
         """Determine current action from positions"""

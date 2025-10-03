@@ -22,6 +22,7 @@ from .position_base import (
     PositionDecisionResult,
     SignalContext,
 )
+from .position_logger import UnifiedPositionLogger, PositionLogEntry
 
 
 @module(
@@ -54,17 +55,9 @@ class PositionManager(PositionManagerBase):
         portfolio_health = self._assess_portfolio_health()
         market_regime = self._assess_market_regime(market_data)
 
-        if self.debug:
-            self.logger.info(
-                format_operator_message(
-                    "[STATS]",
-                    "PORTFOLIO_ASSESSMENT",
-                    health_score=f"{portfolio_health['overall_health']:.3f}",
-                    market_regime=market_regime,
-                    exposure_ratio=f"{portfolio_health['exposure_ratio']:.2%}",
-                    consecutive_losses=self.consecutive_losses,
-                )
-            )
+        # Log portfolio stats with unified logger
+        if self.debug and hasattr(self, 'unified_logger'):
+            self.unified_logger.log_portfolio_stats(portfolio_health)
 
         # Per-instrument decisions
         for instrument in self.instruments:
@@ -80,20 +73,6 @@ class PositionManager(PositionManagerBase):
             dr = self._make_position_decision(ctx)
             decisions[instrument] = dr
             self.last_decisions[instrument] = dr
-
-            if self.debug and dr.decision != PositionDecision.HOLD:
-                self.logger.info(
-                    format_operator_message(
-                        "[MONEY]",
-                        "POSITION_DECISION",
-                        instrument=instrument,
-                        decision=dr.decision.value,
-                        intensity=f"{dr.intensity:.3f}",
-                        size=f"EUR {dr.size:.0f}",
-                        confidence=f"{dr.confidence:.3f}",
-                        rationale=dr.rationale.get("stage", "unknown"),
-                    )
-                )
 
         if self.debug:
             self._flush_logs()
@@ -277,43 +256,103 @@ class PositionManager(PositionManagerBase):
         intensity = float(np.clip(intensity, 0.0, 1.0))
         confidence = float(np.clip(confidence, 0.0, 1.0))
 
-        # Debug write-through
+        # Ensure risk_factors is populated
+        if not risk_factors:
+            risk_factors = self._assess_risk_factors(context)
+
+        # Calculate risk score for unified logging
+        risk_score = sum(risk_factors.values()) / max(len(risk_factors), 1) if risk_factors else 0.0
+
+        # Get current price from context or market data
+        current_price = 0.0
+        try:
+            # Try to get price from context first
+            if hasattr(context, 'current_price') and context.current_price:
+                current_price = context.current_price
+            else:
+                # Fall back to market data or smart bus
+                inst_data = {}
+                try:
+                    market_data = self.smart_bus.get("price_data", "PositionManager") or {}
+                    inst_data = market_data.get(instrument, {})
+                    current_price = float(inst_data.get("last", inst_data.get("close", 0.0)))
+                except:
+                    pass
+        except:
+            pass
+
+        # Unified logging for non-HOLD decisions
+        if self.debug and decision != PositionDecision.HOLD and hasattr(self, 'unified_logger'):
+            try:
+                # Get voting signals
+                voting_signals = self.unified_logger.get_voting_signals()
+
+                # Create log entry
+                log_entry = PositionLogEntry(
+                    instrument=instrument,
+                    decision=decision.value,
+                    intensity=intensity,
+                    size_eur=float(size),
+                    confidence=confidence,
+                    signal_strength=abs(context.market_intensity),
+                    volatility=context.volatility,
+                    trend_strength=context.trend_strength,
+                    current_price=current_price,
+                    portfolio_health=self._portfolio_health_score,
+                    exposure_ratio=context.current_exposure,
+                    balance=context.balance,
+                    drawdown=context.drawdown,
+                    risk_score=risk_score,
+                    committee_consensus=voting_signals.get('committee_consensus'),
+                    trade_vote=voting_signals.get('trade_vote'),
+                    consensus_strength=voting_signals.get('consensus_strength'),
+                    stage=rationale.get("stage", "unknown"),
+                    factors=rationale.get("factors", []),
+                    risk_factors=risk_factors,
+                    will_execute=True,
+                    blocked_reason=None
+                )
+
+                # Log the unified decision summary
+                self.unified_logger.log_decision_summary(log_entry)
+
+            except Exception as e:
+                # Fallback to simple log if unified logger fails
+                self.logger.warning(f"Unified logger failed for {instrument}: {e}")
+                self.logger.info(
+                    format_operator_message(
+                        icon="[DECISION]",
+                        message=decision.value,
+                        instrument=instrument,
+                        size_eur=f"{size:.2f}",
+                        confidence=f"{confidence:.1%}",
+                    )
+                )
+
+        # Integrated debugger (CSV/JSON) - Only log to CSV for forensics, not to console/file
+        # The unified logger above handles all human-readable output
         debug_ctx = {
             "volatility": context.volatility,
             "current_exposure": context.current_exposure,
             "drawdown": context.drawdown,
+            "balance": context.balance,
         }
 
-        # Human-readable debug log
-        try:
-            if self.debug:
-                self.logger.debug(
-                    format_operator_message(
-                        icon="[POS]",
-                        message="Decision",
-                        instrument=instrument,
-                        decision=decision.value,
-                        intensity=f"{intensity:.3f}",
-                        size_eur=f"{size:.2f}",
-                        confidence=f"{confidence:.3f}",
-                        signal_strength=f"{abs(context.market_intensity):.3f}",
-                        volatility=f"{context.volatility:.4f}",
-                    )
+        # Only log to CSV if debugger is enabled
+        if hasattr(self, 'debugger') and self.debugger.enabled and decision != PositionDecision.HOLD:
+            try:
+                self.debugger.log_decision(
+                    instrument=instrument,
+                    decision=decision.value,
+                    intensity=intensity,
+                    size=size,
+                    confidence=confidence,
+                    context=debug_ctx,
+                    rationale=rationale,
+                    portfolio_health=self._portfolio_health_score,
                 )
-        except Exception:
-            pass
-
-        # Integrated debugger (CSV/JSON)
-        self.debugger.log_decision(
-            instrument=instrument,
-            decision=decision.value,
-            intensity=intensity,
-            size=size,
-            confidence=confidence,
-            context=debug_ctx,
-            rationale=rationale,
-            portfolio_health=self._portfolio_health_score,
-        )
+            except Exception:
+                pass
 
         return PositionDecisionResult(
             decision=decision,
@@ -321,7 +360,7 @@ class PositionManager(PositionManagerBase):
             size=float(size),
             confidence=confidence,
             rationale=rationale,
-            risk_factors=risk_factors if risk_factors else self._assess_risk_factors(context),
+            risk_factors=risk_factors,
             context=context,
         )
 
@@ -373,6 +412,18 @@ class PositionManager(PositionManagerBase):
         dd_val = float(portfolio_health.get("drawdown", 0.0))
         exposure_ratio = float(portfolio_health.get("exposure_ratio", 0.0))
 
+        # Get current price
+        current_price = 0.0
+        try:
+            price_data = self.smart_bus.get("price_data", "PositionManager") or {}
+            inst_price = price_data.get(instrument, {})
+            if isinstance(inst_price, dict):
+                current_price = float(inst_price.get("last", inst_price.get("close", 0.0)))
+            elif isinstance(inst_price, (int, float)):
+                current_price = float(inst_price)
+        except:
+            pass
+
         return SignalContext(
             instrument=instrument,
             market_intensity=market_intensity,
@@ -388,6 +439,7 @@ class PositionManager(PositionManagerBase):
             current_exposure=exposure_ratio,
             drawdown=dd_val,
             balance=balance_val,
+            current_price=current_price,
             step_idx=0,
             timestamp=self._utc_stamp(),
         )
