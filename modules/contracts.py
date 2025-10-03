@@ -502,7 +502,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
     # ═════════════════════════════ EXECUTION / POSITION ══════════════════════
     'PositionManager': ModuleContract(
         name='PositionManager',
-        file='position/position.py',
+        file='position/position_logic.py',
         # FIX: Renamed position_data → position_manager_data to avoid conflict with Executor's canonical position_data
         provides=['position_decisions', 'position_health', 'portfolio_state', 'order_queue', 'position_manager_data'],
         requires=['environment_config', 'indicators', 'liquidity_capabilities', 'liquidity_score',
