@@ -117,7 +117,7 @@ class Executor(BaseModule):
         self.debugger = ExecutorDebugManager(self.bus, config=dbg_cfg)
 
         # seed bus with empty snapshots
-        self._publish_all(exec_fills=[], accepted=[], rejected=[], step_pnl=0.0, reason="startup")
+        self._publish_all(exec_fills=[], accepted=[], rejected=[], step_pnl=0.0, realized_step=0.0, unrealized=0.0, reason="startup")
 
     # ─────────────────────────────────────────────────────────
     # initialization / config update
@@ -234,6 +234,8 @@ class Executor(BaseModule):
         try:
             # use bus step if available to align with env; otherwise monotonic
             val = self.bus.get("step_idx", "Executor", default=None)
+            if val is None:
+                val = self.bus.get("step_idx", "PositionManager", default=None)
             if isinstance(val, (int, float)) and not (isinstance(val, float) and math.isnan(val)):
                 self.step_idx = int(val)
             else:
@@ -277,7 +279,14 @@ class Executor(BaseModule):
 
             # publish to bus
             self.debugger.begin("publish_bus")
-            self._publish_all(exec_fills=fills, accepted=accepted, rejected=rejected, step_pnl=step_pnl)
+            self._publish_all(
+                exec_fills=fills,
+                accepted=accepted,
+                rejected=rejected,
+                step_pnl=step_pnl,
+                realized_step=realized_step,
+                unrealized=unreal_after,
+            )
             self.debugger.end("publish_bus")
             # Prune consumed orders to avoid duplicate_id churn
             self._prune_order_queue()
@@ -353,6 +362,8 @@ class Executor(BaseModule):
             "balance": float(self.balance),
             "equity": float(self.equity),
             "current_pnl": float(step_pnl),
+            "realized_pnl_step": float(realized_step),
+            "unrealized_pnl": float(unreal_after),
             "step": int(self.step_idx),
         }
         trade_data = {
@@ -368,6 +379,8 @@ class Executor(BaseModule):
             "balance": float(self.balance),
             "equity": float(self.equity),
             "current_pnl": float(step_pnl),
+            "realized_pnl_step": float(realized_step),
+            "unrealized_pnl": float(unreal_after),
             "step": int(self.step_idx),
         }
         live_adapter_status = self.bus.get(
@@ -389,48 +402,29 @@ class Executor(BaseModule):
                         entry[k] = v
                 pos_list.append(entry)
         except Exception:
-            # Fall back to a basic projection if anything goes wrong
             try:
                 pos_list = [{"instrument": inst, **(p or {})} for inst, p in (positions_after or {}).items()]
             except Exception:
                 pos_list = []
 
-        # also include raw balance/equity at top-level for strict readers
         return {
-            # core snapshots
             "positions": positions_after,
             "trades": self.trades[-200:],
             "recent_trades": recent,
-
-            # per-step order & execution rollups
             "order_data": order_data,
             "execution_data": execution_data,
             "execution_reports": fills,
-
-            # portfolio telemetry
             "portfolio_metrics": portfolio_metrics,
             "trading_result": {"pnl": float(step_pnl)},
-
-            # rollups for downstream consumers
             "trade_data": trade_data,
             "market_state": market_state,
-
-            # FIX: Contract-required position_data (canonical publisher) — normalized list schema
             "position_data": {"positions": pos_list, "count": len(pos_list)},
-
-            # helpful aliases (explicitly returned to satisfy strict orchestrators)
             "current_positions": current_positions,
             "pnl_data": pnl_data,
-
-            # live routing/health surface
             "live_adapter_status": live_adapter_status,
-
-            # **raw aliases to avoid BUS MISS for simple readers**
             "balance": float(self.balance),
             "equity": float(self.equity),
             "current_pnl": float(step_pnl),
-
-            # baselines
             "pending_orders": order_data.get("accepted", []),
             "account_state": {
                 "balance": float(self.balance),
@@ -438,11 +432,10 @@ class Executor(BaseModule):
                 "initial_balance": float(self.initial_balance),
                 "step": int(self.step_idx)
             },
-
-            # housekeeping
             "order_queue": [],
             "processing_time_ms": (time.time() - t0) * 1000.0,
         }
+
 
     # ─────────────────────────────────────────────────────────
     # intents
@@ -470,17 +463,26 @@ class Executor(BaseModule):
                     reason = self._filter_reason(intent)
                     rejected.append({"reason": reason, "intent": intent})
 
-        # consume queue (do not write canonical key back to the bus; owner is PositionManager)
-        # Keep consumption internal to Executor
+        # consume queue: keep consumption internal to Executor (no write-back here)
 
-        # fallback: position_decision_* from environment_config instruments
+        # fallback: position_decision_* (look under PositionManager as well)
         if self.cfg.read_position_decisions:
-            env_cfg = self.bus.get("environment_config", "Executor", default={}) or {}
+            env_cfg = (self.bus.get("environment_config", "Executor", default=None)
+                    or self.bus.get("environment_config", "PositionManager", default={})
+                    or {})
             instruments = env_cfg.get("instruments") or []
             for inst in instruments:
+                core = inst.replace("/", "").replace("_", "")
+
+                # try both module spaces and canonical variants
                 node = self.bus.get(f"position_decision_{inst}", "Executor", default=None)
-                if not isinstance(node, dict) or not node.get("decision"):
-                    node = self.bus.get(f"position_decision_{inst.replace('/','').replace('_','')}", "Executor", default=None)
+                if not (isinstance(node, dict) and node.get("decision")):
+                    node = self.bus.get(f"position_decision_{inst}", "PositionManager", default=None)
+                if not (isinstance(node, dict) and node.get("decision")):
+                    node = self.bus.get(f"position_decision_{core}", "PositionManager", default=None)
+                if not (isinstance(node, dict) and node.get("decision")):
+                    node = self.bus.get(f"position_decision_{core}", "Executor", default=None)
+
                 if isinstance(node, dict) and node.get("decision"):
                     dec_count += 1
                     dec = str(node["decision"]).lower()
@@ -586,20 +588,25 @@ class Executor(BaseModule):
             return None
 
     def _passes_filters(self, intent: Dict[str, Any]) -> bool:
-        if intent["action"] == "hold" and self.cfg.ignore_hold:
+        act = str(intent.get("action", "")).lower()
+        if act == "hold" and self.cfg.ignore_hold:
             return False
+        # Always allow risk-reduction/exit actions regardless of thresholds
+        if act in ("close", "emergency_close", "scale_down"):
+            return True
         if float(intent.get("confidence", 0.0)) < self.cfg.min_confidence:
             return False
-        if abs(float(intent.get("intensity", 0.0))) < self.cfg.min_intensity and intent["action"] not in ("close", "emergency_close"):
+        if abs(float(intent.get("intensity", 0.0))) < self.cfg.min_intensity and act not in ("close", "emergency_close"):
             return False
         return True
 
     def _filter_reason(self, intent: Dict[str, Any]) -> str:
-        if intent["action"] == "hold" and self.cfg.ignore_hold:
+        act = str(intent.get("action", "")).lower()
+        if act == "hold" and self.cfg.ignore_hold:
             return "ignore_hold"
         if float(intent.get("confidence", 0.0)) < self.cfg.min_confidence:
             return f"low_confidence<{self.cfg.min_confidence}"
-        if abs(float(intent.get("intensity", 0.0))) < self.cfg.min_intensity and intent["action"] not in ("close", "emergency_close"):
+        if abs(float(intent.get("intensity", 0.0))) < self.cfg.min_intensity and act not in ("close", "emergency_close"):
             return f"low_intensity<{self.cfg.min_intensity}"
         if intent.get("id") in self._seen_ids:
             return "duplicate_id"
@@ -609,8 +616,12 @@ class Executor(BaseModule):
     # SIM execution
     # ─────────────────────────────────────────────────────────
     def _sim_price(self, inst: str, side: int) -> Optional[float]:
-        sp = self.bus.get("prices", "Executor", default={}) or {}
-        pd = self.bus.get("price_data", "Executor", default={}) or {}
+        sp = (self.bus.get("prices", "Executor", default=None)
+            or self.bus.get("prices", "PositionManager", default={})
+            or {})
+        pd = (self.bus.get("price_data", "Executor", default=None)
+            or self.bus.get("price_data", "PositionManager", default={})
+            or {})
         px = None
         try:
             node = None
@@ -635,10 +646,11 @@ class Executor(BaseModule):
             return None
         # mid → side-aware exec price
         if self.cfg.default_spread:
-            px += (self.cfg.default_spread / 2.0) * (+1 if side < 0 else -1)
+            px += (self.cfg.default_spread / 2.0) * (+1 if side > 0 else -1)
         if self.cfg.slippage_pts:
-            px += self.cfg.slippage_pts * (+1 if side < 0 else -1)
+            px += self.cfg.slippage_pts * (+1 if side > 0 else -1)
         return px
+
 
     def _units_from(self, size_eur: float, units: float, price: float) -> float:
         if units and units > 0:
@@ -790,33 +802,30 @@ class Executor(BaseModule):
                 if inst not in self.positions or add_units <= 0:
                     continue
                 p = self.positions[inst]
-                if p.side > 0:
-                    reduce_u = min(add_units, p.units)
-                    realized = (price - p.entry_price) * p.side * reduce_u - commission(reduce_u * price)
-                    realized_step += realized
-                    p.units -= reduce_u
-                    p.notional_eur -= reduce_u * p.entry_price
-                    if p.units <= 1e-12:
-                        del self.positions[inst]
-                    side = -1
-                else:
-                    new_u = p.units + add_units
-                    p.entry_price = (p.entry_price * p.units + price * add_units) / new_u
-                    p.units = new_u
-                    p.notional_eur += add_units * price
-                    side = -1
+                # Reduce exposure regardless of side; realize P&L on reduced portion
+                reduce_u = min(add_units, p.units)
+                if reduce_u <= 0:
+                    continue
+                realized = (price - p.entry_price) * p.side * reduce_u - commission(reduce_u * price)
+                realized_step += realized
+                p.units -= reduce_u
+                p.notional_eur -= reduce_u * p.entry_price
+                if p.units <= 1e-12:
+                    del self.positions[inst]
+                trade_side = -1 if p.side > 0 else +1  # sell to reduce long; buy to reduce short
                 fill = TradeFill(
                     id=f"fill-{uuid.uuid4().hex[:10]}",
                     ts=time.time(),
                     step=self.step_idx,
                     instrument=inst,
-                    action="scale_down" if side == -1 else "scale_down_reduce",
-                    side=side,
-                    units=add_units,
+                    action="scale_down_reduce",
+                    side=trade_side,
+                    units=reduce_u,
                     price=price,
-                    notional_eur=add_units * price,
+                    notional_eur=reduce_u * price,
+                    realized_pnl=realized,
                     origin_id=origin_id,
-                    comment="scale_down",
+                    comment="reduce",
                 ).as_bus()
                 self.trades.append(fill); fills.append(fill)
 
@@ -853,13 +862,11 @@ class Executor(BaseModule):
                 continue
             unreal += (px - p.entry_price) * p.side * p.units
 
-        # For simulation/training: mark-to-market balance (accumulate all P&L)
-        # Balance accumulates both realized and unrealized P&L
+        # Compute equity as realized balance plus unrealized P&L
         equity_now = float(self.balance + unreal)
         step_pnl = float(equity_now - self._last_equity)
 
-        # Update balance to reflect total account value (mark-to-market)
-        self.balance = equity_now
+        # Keep balance as realized-only; track equity separately
         self.equity = equity_now
         self._last_equity = equity_now
 
@@ -880,7 +887,7 @@ class Executor(BaseModule):
 
         for intent in intents:
             inst_src = intent["instrument"]
-            inst = resolve_symbol(inst_src, self.cfg.symbol_overrides)
+            inst = resolve_symbol(inst_src, self.cfg.symbol_overrides, broker=self.cfg.live_broker)
             action = str(intent["action"]).lower()
             side = {"open_long": +1, "scale_up": +1, "open_short": -1, "scale_down": -1}.get(action, 0)
 
@@ -950,6 +957,7 @@ class Executor(BaseModule):
 
         return fills, step_pnl
 
+
     # ─────────────────────────────────────────────────────────
     # bus publishing
         # ─────────────────────────────────────────────────────────
@@ -960,6 +968,8 @@ class Executor(BaseModule):
         accepted: List[Dict[str, Any]],
         rejected: List[Dict[str, Any]],
         step_pnl: float,
+        realized_step: float = 0.0,
+        unrealized: float = 0.0,
         reason: str = ""
     ) -> None:
         pos_snap: Dict[str, Any] = {}
@@ -981,6 +991,8 @@ class Executor(BaseModule):
             "balance": float(self.balance),
             "equity": float(self.equity),
             "current_pnl": float(step_pnl),
+            "realized_pnl_step": float(realized_step),
+            "unrealized_pnl": float(unrealized),
             "step": int(self.step_idx),
         }
         market_state = {"balance": float(self.balance), "equity": float(self.equity), "step": int(self.step_idx)}
@@ -1033,7 +1045,14 @@ class Executor(BaseModule):
         self.bus.set("current_positions", pos_snap, thesis="alias: current_positions")
         self.bus.set(
             "pnl_data",
-            {"balance": self.balance, "equity": self.equity, "current_pnl": step_pnl, "step": self.step_idx},
+            {
+                "balance": float(self.balance),
+                "equity": float(self.equity),
+                "current_pnl": float(step_pnl),
+                "realized_pnl_step": float(realized_step),
+                "unrealized_pnl": float(unrealized),
+                "step": int(self.step_idx),
+            },
             thesis="alias: pnl_data",
         )
 
@@ -1066,6 +1085,8 @@ class Executor(BaseModule):
                 balance=f"{self.balance:.2f}",
                 equity=f"{self.equity:.2f}",
                 step_pnl=f"{step_pnl:.2f}",
+                realized_step=f"{realized_step:.2f}",
+                unrealized=f"{unrealized:.2f}",
                 reason=reason or "ok",
             )
         )
