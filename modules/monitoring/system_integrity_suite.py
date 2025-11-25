@@ -346,6 +346,11 @@ class SystemIntegritySuite:
             "pending_orders", "account_state", "market_state", "market_context"
         }
 
+        # Rate limiting for BUS MISS warnings to prevent log spam
+        self._miss_warn_times: Dict[str, float] = {}  # key -> last warning time
+        self._miss_warn_interval = 60.0  # seconds between warnings per key
+        self._miss_warn_counts: Dict[str, int] = {}  # key -> suppressed count
+
         self._d("Debug enabled")  # initial debug note
         self._i("🧭", "SystemIntegritySuite initialized")
 
@@ -799,7 +804,19 @@ class SystemIntegritySuite:
         self._note_missing(key=str(key), requester_hint=requester, consumers=None)
         if requester:
             self._module_stats[requester]["miss"] += 1
-        self._w("❌", "BUS MISS", key=key, requester=requester)
+        # Rate-limited warning to prevent log spam
+        miss_key = f"{key}:{requester}"
+        last_warn = self._miss_warn_times.get(miss_key, 0.0)
+        if now - last_warn >= self._miss_warn_interval:
+            suppressed = self._miss_warn_counts.get(miss_key, 0)
+            if suppressed > 0:
+                self._w("❌", "BUS MISS", key=key, requester=requester, suppressed=suppressed)
+            else:
+                self._w("❌", "BUS MISS", key=key, requester=requester)
+            self._miss_warn_times[miss_key] = now
+            self._miss_warn_counts[miss_key] = 0
+        else:
+            self._miss_warn_counts[miss_key] = self._miss_warn_counts.get(miss_key, 0) + 1
 
     def _on_get_ok(self, evt: Dict[str, Any]) -> None:
         key = evt.get("key")
@@ -932,6 +949,7 @@ class SystemIntegritySuite:
         lc.miss_count += 1
         self._transition(key, "MISSING", now, None, None)
         self._record_event("miss", key=key, requester=requester_hint)
+        # Only log "Tracking missing key" once per key (not per requester)
         if lc.miss_count == 1:
             self._w("🕵️", "Tracking missing key", key=key, requester=requester_hint or "unknown")
 

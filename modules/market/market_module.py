@@ -630,18 +630,52 @@ class UnifiedMarketModule(
                     elif sess_abbr == 'OFF':
                         session_name = 'closed'
 
-            # Final fallback: infer from current UTC time
+            # Try to get timestamp from market data (for training mode) - do this first
+            data_timestamp = None
+            timestamps_list = aggregated.get('timestamps', [])
+            if timestamps_list and len(timestamps_list) > 0:
+                try:
+                    ts_str = timestamps_list[-1]  # Use most recent timestamp
+                    if isinstance(ts_str, str):
+                        # Parse ISO format timestamp
+                        if ts_str.endswith('Z'):
+                            ts_str = ts_str[:-1] + '+00:00'
+                        data_timestamp = datetime.datetime.fromisoformat(ts_str)
+                    elif isinstance(ts_str, (int, float)):
+                        data_timestamp = datetime.datetime.utcfromtimestamp(ts_str)
+                except Exception:
+                    pass
+            
+            # Also try timestamp from inputs or market_data
+            if data_timestamp is None:
+                ts_input = aggregated.get('timestamp')
+                if isinstance(ts_input, str):
+                    try:
+                        if ts_input.endswith('Z'):
+                            ts_input = ts_input[:-1] + '+00:00'
+                        data_timestamp = datetime.datetime.fromisoformat(ts_input)
+                    except Exception:
+                        pass
+
+            # Final fallback: infer session from data timestamp (for training) or current UTC time (for live)
             if not session_name or session_name == 'unknown':
                 from modules.utils.session_utils import infer_market_session
-                session_name = infer_market_session()
+                # Use data timestamp for session inference (important for training!)
+                session_name = infer_market_session(data_timestamp)
 
+            # Use data timestamp for market_context if available (for training consistency)
+            context_timestamp = (
+                data_timestamp.isoformat() if data_timestamp 
+                else datetime.datetime.utcnow().isoformat()
+            )
+            
             aggregated.setdefault('market_context', {
                 'regime': aggregated.get('market_regime', 'unknown'),
                 'volatility_level': aggregated.get('volatility_level', 'medium'),
                 'session': normalize_session_name(session_name),
                 'theme': aggregated.get('market_theme', 0),
                 'liquidity_score': aggregated.get('liquidity_score', 0.5),
-                'timestamp': datetime.datetime.utcnow().isoformat()
+                'timestamp': context_timestamp
             })
 
             # Generate step_idx as incremental counter

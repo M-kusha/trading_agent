@@ -2880,7 +2880,13 @@ class ModuleOrchestrator:
         inputs: Dict[str, Any] = {'execution_id': execution_id}
         missing: List[str] = []
 
+        # In training/offline mode, data timestamps don't reflect real-time
+        # so we use a much higher threshold (or disable warnings entirely)
+        live_mode = getattr(self.config, "live_mode", False)
         stale_warn_s = float(getattr(self.config, "stale_warn_s", 60.0))
+        if not live_mode:
+            # During training, historical data may appear "stale" but is actually valid
+            stale_warn_s = max(stale_warn_s, 3600.0)  # 1 hour threshold for offline mode
 
         for required_key in metadata.requires:
             data = self.smart_bus.get_with_metadata(required_key, module_name)

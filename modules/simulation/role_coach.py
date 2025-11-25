@@ -295,10 +295,21 @@ class RoleCoach(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             # Priority: explicit 'session_data' & 'regime_data' override 'market_context'
             activity['regime'] = regime_data.get('market_regime',
                                  market_context.get('regime', 'unknown'))
-            # Session: prefer explicit session_data/session; else market_context; else inference
+            # Session: prefer explicit session_data/session; else market_context; else inference from data timestamp
             session_val = session_data.get('session', market_context.get('session', 'unknown'))
             if not isinstance(session_val, str) or session_val.lower() == 'unknown' or not session_val:
-                session_val = infer_market_session()
+                # Try to get data timestamp for proper session inference (important for training!)
+                data_timestamp = None
+                ts_str = market_context.get('timestamp')
+                if isinstance(ts_str, str):
+                    try:
+                        import datetime
+                        if ts_str.endswith('Z'):
+                            ts_str = ts_str[:-1] + '+00:00'
+                        data_timestamp = datetime.datetime.fromisoformat(ts_str)
+                    except Exception:
+                        pass
+                session_val = infer_market_session(data_timestamp)
             activity['session'] = session_val
             activity['volatility_level'] = (
                 market_context.get('volatility_level', 'medium')

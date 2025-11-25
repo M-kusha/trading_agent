@@ -132,6 +132,9 @@ class InfoBusConfig:
     rate_limit_writes_per_sec: int = 0  # 0 = unlimited
     default_namespace: Optional[str] = None  # e.g. "core"
 
+    # Operating mode - affects staleness checks
+    live_mode: bool = False  # When False (training), staleness warnings are suppressed
+
     # [FIXED] New contract enforcement flags from audit
     enforce_single_writer: bool = True
     enforce_dependency_declaration: bool = True
@@ -1547,6 +1550,9 @@ class SmartInfoBus:
                     max_age_check = float(max_age)
                 else:
                     max_age_check = float(self.config.max_data_age_seconds)
+                    # In training mode, use a much higher threshold (or disable)
+                    if not getattr(self.config, 'live_mode', False):
+                        max_age_check = max(max_age_check, 7200.0)  # 2 hours for training
                     if max_age is not None and not isinstance(max_age, (int, float)):
                         try:
                             self.logger.warning(
