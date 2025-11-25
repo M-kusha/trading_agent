@@ -393,6 +393,7 @@ class PositionManagerBase(
     def _initialize_position_state(self, reset_hist_only: bool = False) -> None:
         if not reset_hist_only:
             self.consecutive_losses = 0
+            self.consecutive_scale_downs: Dict[str, int] = defaultdict(int)  # Track consecutive scale-downs per instrument
             self.open_positions: Dict[str, Dict[str, Any]] = {}
         self._decision_history = deque(maxlen=100)
         self._portfolio_health_history = deque(maxlen=50)

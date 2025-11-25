@@ -16,6 +16,36 @@ import time
 import numpy as np
 
 
+def safe_float(val: Any, default: float = 0.0) -> float:
+    """
+    Safely convert a value to float, handling dicts, None, and invalid types.
+    
+    This handles cases where values might be dicts (e.g., from nested JSON structures)
+    or other non-numeric types that would cause float() to raise an exception.
+    
+    Args:
+        val: Value to convert (can be int, float, str, dict, None, etc.)
+        default: Default value to return if conversion fails
+        
+    Returns:
+        Float value or default
+    """
+    if val is None:
+        return default
+    if isinstance(val, dict):
+        # Try to get first numeric value from dict
+        for v in val.values():
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                continue
+        return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
 class LRUCache:
     """
     Thread-safe LRU cache with optional per-key TTL.
@@ -154,8 +184,8 @@ class MemoryUtils:
 
         # Fallback: derive from side/size
         side = str(trade.get("side", "hold")).lower()
-        size = float(trade.get("size", 0.0))
-        confidence = float(trade.get("confidence", 0.5))
+        size = safe_float(trade.get("size", 0.0), 0.0)
+        confidence = safe_float(trade.get("confidence", 0.5), 0.5)
 
         if side == "buy":
             position_delta = size

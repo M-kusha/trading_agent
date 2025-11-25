@@ -39,12 +39,14 @@ from .components.mistakes import MistakeComponent
 from .components.neural import NeuralComponent
 from .components.playbook import PlaybookComponent
 from .components.budget import BudgetComponent
+from .components.loss_risk_head import LossRiskHeadComponent
+from .components.interventions import InterventionsComponent
 
 # Import shared resources
 from .shared.memory_store import UnifiedMemoryStore
 from .shared.feature_extractor import UnifiedFeatureExtractor
 from .shared.pattern_detector import UnifiedPatternDetector
-from .shared.utils import MemoryUtils, LRUCache
+from .shared.utils import MemoryUtils, LRUCache, safe_float
 
 # Import debug logger
 from .debug.memory_logger import MemoryDebugLogger
@@ -90,6 +92,8 @@ class UnifiedMemoryConfig:
     enable_neural: bool = True
     enable_playbook: bool = True
     enable_budget: bool = True
+    enable_loss_risk_head: bool = True
+    enable_interventions: bool = True
 
     # Performance settings
     max_processing_time_ms: float = 500
@@ -129,6 +133,15 @@ class UnifiedMemoryConfig:
     utilization_target: float = 0.8
     efficiency_weight: float = 0.7
     recency_weight: float = 0.3
+
+    # Loss Risk Head settings (NEW: per enhance.md)
+    loss_threshold: float = 0.0  # P(loss > τ) where τ is this threshold
+    loss_head_lr: float = 0.001
+    loss_head_hidden_dim: int = 64
+
+    # Interventions settings (NEW: per enhance.md)
+    intervention_decay: float = 0.99  # Decay factor for intervention strength
+    intervention_min_samples: int = 3  # Min samples before intervention activates
 
 
 @module(**module_args(
@@ -315,6 +328,14 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         if self.unified_config.enable_budget:
             self.components["budget"] = BudgetComponent(self.unified_config, shared_resources)
 
+        # NEW: Loss Risk Head component (per enhance.md)
+        if self.unified_config.enable_loss_risk_head:
+            self.components["loss_risk_head"] = LossRiskHeadComponent(self.unified_config, shared_resources)
+
+        # NEW: Interventions component (per enhance.md)
+        if self.unified_config.enable_interventions:
+            self.components["interventions"] = InterventionsComponent(self.unified_config, shared_resources)
+
     def _initialize_debug_logger(self) -> None:
         """Initialize unified debug logging (with per-level files)"""
         # Master off switch
@@ -423,8 +444,101 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
             except Exception:
                 pass
 
+            # ═══════════════════════════════════════════════════════════════════
+            # Seed default values for ALL memory outputs so downstream modules
+            # (PositionManager, Executor, VotingKernel, etc.) can run before
+            # UnifiedMemory's first process() cycle completes.
+            # ═══════════════════════════════════════════════════════════════════
+            self._publish_default_outputs()
+
         except Exception as e:
             self.logger.error(f"Initialization failed: {e}")
+
+    def _publish_default_outputs(self) -> None:
+        """
+        Publish default/neutral values for all memory outputs.
+        
+        This ensures downstream modules (PositionManager, Executor, etc.) can
+        execute before UnifiedMemory has completed its first process() cycle.
+        These values are conservative/neutral to avoid affecting trading decisions.
+        """
+        try:
+            # memory_gate: Default to no veto, neutral risk
+            default_gate = {
+                "veto": False,
+                "risk_multiplier": 1.0,
+                "confidence": 0.5,
+                "reasons": ["memory_initializing"],
+                "risk_score": 0.0,
+                "danger_similarity": 0.0,
+                "loss_prob": 0.0,
+            }
+            self.smart_bus.set("memory_gate", default_gate, module="UnifiedMemory",
+                               thesis="Default memory gate (pre-initialization)")
+
+            # memory_vote: Neutral vote
+            default_vote = {
+                "signed_bias": 0.0,
+                "confidence": 0.5,
+                "expected_pnl": 0.0,
+                "weight": 0.0,
+            }
+            self.smart_bus.set("memory_vote", default_vote, module="UnifiedMemory",
+                               thesis="Default memory vote (pre-initialization)")
+
+            # memory_rationale: Empty rationale
+            default_rationale = {
+                "danger_evidence": [],
+                "playbook_evidence": [],
+                "intervention_evidence": [],
+                "summary": "Memory system initializing",
+            }
+            self.smart_bus.set("memory_rationale", default_rationale, module="UnifiedMemory",
+                               thesis="Default memory rationale (pre-initialization)")
+
+            # playbook_recall: Empty recall
+            default_playbook = {
+                "signed_bias": 0.0,
+                "confidence": 0.5,
+                "expected_pnl": 0.0,
+                "similar_patterns": [],
+                "recommendation": "neutral",
+            }
+            self.smart_bus.set("playbook_recall", default_playbook, module="UnifiedMemory",
+                               thesis="Default playbook recall (pre-initialization)")
+
+            # intuition_vector: Zero vector
+            import numpy as np
+            default_intuition = np.zeros(32, dtype=np.float32).tolist()
+            self.smart_bus.set("intuition_vector", default_intuition, module="UnifiedMemory",
+                               thesis="Default intuition vector (pre-initialization)")
+
+            # danger_zones: Empty zones
+            default_danger = {
+                "zones": [],
+                "current_risk": 0.0,
+                "nearest_zone_distance": float("inf"),
+            }
+            self.smart_bus.set("danger_zones", default_danger, module="UnifiedMemory",
+                               thesis="Default danger zones (pre-initialization)")
+
+            # mistake_avoidance: Neutral avoidance
+            default_avoidance = {
+                "avoidance_signal": 0.0,
+                "similar_mistakes": [],
+                "recommendation": "proceed",
+            }
+            self.smart_bus.set("mistake_avoidance", default_avoidance, module="UnifiedMemory",
+                               thesis="Default mistake avoidance (pre-initialization)")
+
+            # neural_risk_hint: Neutral hint
+            self.smart_bus.set("neural_risk_hint", 0.5, module="UnifiedMemory",
+                               thesis="Default neural risk hint (pre-initialization)")
+
+            self.logger.info("Published default memory outputs for downstream modules")
+
+        except Exception as e:
+            self.logger.error(f"Failed to publish default outputs: {e}")
 
     async def _run_components(self, context: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         """
@@ -466,6 +580,17 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
 
             # 4. Merge results
             unified_result = self._merge_results(component_results)
+
+            # 4a. Compose memory_gate, memory_vote, and memory_rationale
+            memory_gate, memory_vote, memory_rationale = self._compose_gate_and_vote(
+                component_results, context
+            )
+            unified_result["memory_gate"] = memory_gate
+            unified_result["memory_vote"] = memory_vote
+            unified_result["memory_rationale"] = memory_rationale
+            
+            # 4a.1. Extract neural_risk_hint as top-level key (required by contract)
+            unified_result["neural_risk_hint"] = memory_vote.get("neural_risk_hint", 0.5)
 
             # 4b. Ingest optional training metrics (from bus or inputs) and expose consolidated progress
             try:
@@ -571,6 +696,45 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         self.cache.put(cache_key, context, ttl=1)
         return context
 
+    def _extract_query_from_context(self, market_context: Dict[str, Any]) -> Optional[np.ndarray]:
+        """
+        Extract a query vector from market context for neural retrieval.
+        
+        Creates a lightweight feature vector from available market signals.
+        Returns None if insufficient data.
+        """
+        try:
+            features: List[float] = []
+            
+            # Volatility
+            vol = market_context.get("volatility", 0.5)
+            if isinstance(vol, dict):
+                vol = float(list(vol.values())[0]) if vol else 0.5
+            features.append(safe_float(vol, 0.5))
+            
+            # Regime encoding
+            regime_map = {"trending": 1.0, "ranging": 0.0, "volatile": 0.5}
+            regime = str(market_context.get("regime", "unknown")).lower()
+            features.append(safe_float(regime_map.get(regime, 0.25), 0.25))
+            
+            # Session encoding
+            session_map = {"asian": 0.0, "european": 0.5, "american": 1.0}
+            session = str(market_context.get("session", "unknown")).lower()
+            features.append(safe_float(session_map.get(session, 0.25), 0.25))
+            
+            # Risk metrics
+            features.append(safe_float(market_context.get("drawdown_pct", 0.0), 0.0) / 100.0)
+            features.append(safe_float(market_context.get("exposure_pct", 0.0), 0.0) / 100.0)
+            
+            # Pad to embed_dim
+            embed_dim = int(getattr(self.unified_config, "embed_dim", 32))
+            while len(features) < embed_dim:
+                features.append(0.0)
+            
+            return np.array(features[:embed_dim], dtype=np.float32)
+        except Exception:
+            return None
+
     async def _store_experiences(self, context: Dict[str, Any]) -> None:
         """Store new experiences in unified store (with diagnostics)."""
         trades = context.get("trades", []) or []
@@ -609,19 +773,67 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                         except (ValueError, TypeError):
                             continue
 
+                # Extract features for pattern detection
+                trade_features = self.feature_extractor.extract_trade_features(
+                    trade, context.get("market_context", {})
+                )
+                
+                # Compute pattern_label for intervention linkage
+                # Uses a hash of discretized features to create stable pattern labels
+                pattern_label: Optional[str] = None
+                try:
+                    # Create a simple pattern label from key features
+                    regime = str(context["market_context"].get("regime", "unknown"))
+                    
+                    # Extract volatility - try numeric first, then map string level
+                    volatility_raw = context["market_context"].get("volatility")
+                    if volatility_raw is None:
+                        # Try volatility_level (string like "low", "medium", "high")
+                        vol_level = str(context["market_context"].get("volatility_level", "medium")).lower()
+                        volatility = {"low": 0.2, "medium": 0.5, "high": 0.8}.get(vol_level, 0.5)
+                    else:
+                        volatility = float(volatility_raw) if volatility_raw else 0.5
+                    
+                    vol_bucket = "high" if volatility > 0.7 else ("low" if volatility < 0.3 else "med")
+                    session = str(context["market_context"].get("session", "unknown"))
+                    pnl_sign = "loss" if pnl_value < 0 else "win"
+                    
+                    # Compose pattern label from context
+                    pattern_label = f"{regime}_{vol_bucket}_{session}_{pnl_sign}"
+                except Exception:
+                    volatility = 0.5
+                    vol_bucket = "med"
+
+                # Calculate importance based on P&L magnitude and trade characteristics
+                importance = min(1.0, 0.3 + abs(pnl_value) * 0.1)  # Base 0.3, increases with P&L
+                if pnl_value != 0.0:
+                    importance = min(1.0, importance + 0.2)  # Boost for trades with actual P&L
+
+                # Get episode from bus or training metrics
+                episode = context.get("episode", 0)
+                if episode == 0:
+                    # Try to get from episode_data on bus
+                    episode_data = context.get("episode_data", {})
+                    episode = episode_data.get("episode", episode_data.get("num_episodes", 0))
+                if episode == 0:
+                    # Try enhanced_performance from bus (published by training callback)
+                    enhanced_perf = self.smart_bus.get("enhanced_performance", "UnifiedMemory") or {}
+                    episode = enhanced_perf.get("episode", enhanced_perf.get("episodes", self._episode_count))
+
                 entry = {
                     "timestamp": time.time(),
-                    "features": self.feature_extractor.extract_trade_features(
-                        trade, context.get("market_context", {})
-                    ),
+                    "features": trade_features,
                     "action": self.utils.extract_action(trade),
                     "pnl": pnl_value,
+                    "importance": importance,
                     "context": context["market_context"],
                     "metadata": {
                         "regime": context["market_context"].get("regime"),
-                        "volatility": context["market_context"].get("volatility"),
+                        "volatility": volatility,
+                        "volatility_level": context["market_context"].get("volatility_level", vol_bucket),
                         "session": context["market_context"].get("session"),
-                        "episode": context.get("episode", self._episode_count),
+                        "episode": episode,
+                        "pattern_label": pattern_label,  # NEW: for intervention linkage
                     },
                 }
                 batch.append(entry)
@@ -674,7 +886,13 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
             group1_names.append("mistakes")
 
         if "playbook" in self.components:
-            group1_tasks.append(self._run_component("playbook", context))
+            # Always request recall to compute signed_bias for memory_vote
+            playbook_context = {
+                **context,
+                "recall_requested": True,
+                "query_features": context.get("features"),
+            }
+            group1_tasks.append(self._run_component("playbook", playbook_context))
             group1_names.append("playbook")
 
         if group1_tasks:
@@ -696,9 +914,38 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
             group2_names.append("compression")
 
         if "neural" in self.components:
-            neural_context = {**group2_context, "experiences": self.memory_store.get_recent(50)}
+            # Pass current features as query to enable retrieval and neural_risk_hint computation
+            current_features = context.get("features")
+            if current_features is None:
+                # Fallback: try to get features from market_context
+                market_ctx = context.get("market_context", {})
+                if market_ctx:
+                    current_features = self._extract_query_from_context(market_ctx)
+            
+            neural_context = {
+                **group2_context,
+                "experiences": self.memory_store.get_recent(50),
+                "query": current_features,  # Enable retrieval for neural_risk_hint
+            }
             group2_tasks.append(self._run_component("neural", neural_context))
             group2_names.append("neural")
+
+        # NEW: Loss risk head component
+        if "loss_risk_head" in self.components:
+            loss_context = {**group2_context, "experiences": self.memory_store.get_recent(50)}
+            group2_tasks.append(self._run_component("loss_risk_head", loss_context))
+            group2_names.append("loss_risk_head")
+
+        # NEW: Interventions component  
+        if "interventions" in self.components:
+            # Pass pattern_label from recent experiences and mistakes results
+            intervention_context = {
+                **group2_context,
+                "experiences": self.memory_store.get_recent(50),
+                "mistakes_result": results.get("mistakes", {}),
+            }
+            group2_tasks.append(self._run_component("interventions", intervention_context))
+            group2_names.append("interventions")
 
         if group2_tasks:
             group2_results = await asyncio.gather(*group2_tasks, return_exceptions=True)
@@ -730,7 +977,18 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                 if name == "compression":
                     component_context["memory_data"] = self.memory_store.get_recent(100)
                 elif name == "neural":
+                    # Pass query for retrieval and neural_risk_hint computation
                     component_context["experiences"] = self.memory_store.get_recent(50)
+                    current_features = context.get("features")
+                    if current_features is None:
+                        market_ctx = context.get("market_context", {})
+                        if market_ctx:
+                            current_features = self._extract_query_from_context(market_ctx)
+                    component_context["query"] = current_features
+                elif name == "playbook":
+                    # Request recall to compute signed_bias for memory_vote
+                    component_context["recall_requested"] = True
+                    component_context["query_features"] = context.get("features")
                 elif name == "budget":
                     component_context["component_performance"] = self._calculate_component_performance(results)
 
@@ -808,7 +1066,191 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         }
         return merged
 
+    def _compose_gate_and_vote(
+        self,
+        component_results: Dict[str, Dict[str, Any]],
+        context: Dict[str, Any],
+    ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+        """
+        Compose memory_gate, memory_vote, and memory_rationale from component outputs.
+        
+        This is the central fusion method per enhance.md Section 4.1:
+        - memory_gate: Can veto or reduce trade size based on risk signals
+        - memory_vote: Adds signed bias to ensemble (confidence * signed_bias)
+        - memory_rationale: Evidence bundle for explainability
+        
+        Returns:
+            Tuple of (memory_gate, memory_vote, memory_rationale) dicts
+        """
+        # === Gather signals from components ===
+        
+        # From mistakes component
+        mistakes_result = component_results.get("mistakes", {})
+        gate_snippet = mistakes_result.get("gate_snippet", {})
+        mistake_avoidance = mistakes_result.get("mistake_avoidance", {})
+        
+        # Get danger signals from gate_snippet (primary) or mistake_avoidance (fallback)
+        danger_similarity = safe_float(gate_snippet.get("danger_similarity", 0.0), 0.0)
+        danger_confidence = safe_float(gate_snippet.get("confidence", 0.0), 0.0)
+        avoidance_signal = safe_float(mistake_avoidance.get("avoidance_signal", gate_snippet.get("avoidance_signal", 0.0)), 0.0)
+        
+        # From playbook component
+        playbook_result = component_results.get("playbook", {})
+        playbook_recall = playbook_result.get("playbook_recall", {})
+        signed_bias = safe_float(playbook_recall.get("signed_bias", 0.0), 0.0)
+        playbook_confidence = safe_float(playbook_recall.get("confidence", 0.5), 0.5)
+        top_neighbors = playbook_recall.get("top_neighbors", [])
+        expected_pnl = safe_float(playbook_recall.get("expected_pnl", 0.0), 0.0)
+        
+        # From neural component
+        neural_result = component_results.get("neural", {})
+        neural_risk_hint = safe_float(neural_result.get("neural_risk_hint", 0.5), 0.5)
+        max_attention = safe_float(neural_result.get("max_attention", 0.5), 0.5)
+        
+        # From loss_risk_head (if available)
+        loss_risk_result = component_results.get("loss_risk_head", {})
+        loss_risk_assessment = loss_risk_result.get("loss_risk_assessment", {})
+        loss_prob = safe_float(loss_risk_assessment.get("loss_prob", 0.0), 0.0)
+        loss_uncertainty = safe_float(loss_risk_assessment.get("uncertainty", 0.5), 0.5)
+        
+        # From interventions (if available)
+        interventions_result = component_results.get("interventions", {})
+        intervention_rec = interventions_result.get("intervention_recommendation", {})
+        intervention_type = intervention_rec.get("intervention", "none") if intervention_rec else "none"
+        intervention_strength = safe_float(intervention_rec.get("strength", 0.0) if intervention_rec else 0.0, 0.0)
+        intervention_veto = bool(intervention_rec.get("veto_recommended", False) if intervention_rec else False)
+        
+        # === Compute fused risk_score ===
+        # risk_score = max(loss_prob, danger_similarity) as per enhance.md
+        risk_score = max(loss_prob, danger_similarity)
+        
+        # === Compose memory_gate ===
+        # Use gate_snippet if available, otherwise compute from signals
+        if gate_snippet:
+            memory_gate = {
+                "veto": gate_snippet.get("veto", False),
+                "risk_multiplier": gate_snippet.get("risk_multiplier", 1.0),
+                "confidence": gate_snippet.get("confidence", 0.5),
+                "reasons": gate_snippet.get("reasons", []),
+                "risk_score": risk_score,
+                "danger_similarity": danger_similarity,
+                "loss_prob": loss_prob,
+            }
+        else:
+            # Fallback: compute gate from raw signals
+            veto = False
+            risk_multiplier = 1.0
+            reasons: List[str] = []
+            
+            # Veto conditions
+            if danger_similarity > 0.8 and danger_confidence > 0.7:
+                veto = True
+                reasons.append(f"High danger similarity: {danger_similarity:.2f}")
+            
+            if loss_prob > 0.7 and loss_uncertainty < 0.3:
+                veto = True
+                reasons.append(f"High loss probability: {loss_prob:.2f}")
+            
+            if intervention_type == "avoid" and intervention_strength > 0.8:
+                veto = True
+                reasons.append(f"Intervention: avoid pattern")
+            
+            # Also check if interventions component directly recommends veto
+            if intervention_veto:
+                veto = True
+                reasons.append(f"Intervention veto recommended")
+            
+            # Risk multiplier (reduce size if risky but not vetoing)
+            if not veto:
+                if avoidance_signal > 0.5:
+                    risk_multiplier = max(0.3, 1.0 - avoidance_signal * 0.7)
+                    reasons.append(f"Size reduced by avoidance signal: {avoidance_signal:.2f}")
+                
+                if intervention_type == "halve_size":
+                    risk_multiplier = min(risk_multiplier, 0.5)
+                    reasons.append("Intervention: halve_size")
+                
+                if risk_score > 0.5:
+                    risk_multiplier = min(risk_multiplier, 1.0 - risk_score * 0.5)
+                    reasons.append(f"Risk score adjustment: {risk_score:.2f}")
+            
+            gate_confidence = max(danger_confidence, 1.0 - loss_uncertainty)
+            
+            memory_gate = {
+                "veto": veto,
+                "risk_multiplier": round(risk_multiplier, 3),
+                "confidence": round(gate_confidence, 3),
+                "reasons": reasons,
+                "risk_score": round(risk_score, 3),
+                "danger_similarity": round(danger_similarity, 3),
+                "loss_prob": round(loss_prob, 3),
+            }
+        
+        # === Compose memory_vote ===
+        # vote_value = playbook_confidence * signed_bias
+        vote_value = playbook_confidence * signed_bias
+        
+        # Adjust vote by neural risk hint (reduce confidence if attention is diffuse)
+        attention_weight = 1.0 - neural_risk_hint * 0.3  # Scale down by up to 30%
+        
+        memory_vote = {
+            "vote_value": round(vote_value * attention_weight, 3),
+            "signed_bias": round(signed_bias, 3),
+            "confidence": round(playbook_confidence * attention_weight, 3),
+            "expected_pnl": round(expected_pnl, 2),
+            "neural_risk_hint": round(neural_risk_hint, 3),
+            "max_attention": round(max_attention, 3),
+            "source": "memory",
+        }
+        
+        # === Compose memory_rationale ===
+        # Evidence bundle for explainability
+        memory_rationale = {
+            "gate_reasons": memory_gate.get("reasons", []),
+            "top_neighbors": top_neighbors[:5] if top_neighbors else [],
+            "signals": {
+                "danger_similarity": round(danger_similarity, 3),
+                "avoidance_signal": round(avoidance_signal, 3),
+                "loss_prob": round(loss_prob, 3),
+                "signed_bias": round(signed_bias, 3),
+                "neural_risk_hint": round(neural_risk_hint, 3),
+            },
+            "intervention": {
+                "type": intervention_type,
+                "strength": round(intervention_strength, 3),
+            } if intervention_type != "none" else None,
+            "verdict": "veto" if memory_gate["veto"] else (
+                "caution" if memory_gate["risk_multiplier"] < 0.7 else "proceed"
+            ),
+            "summary": self._generate_rationale_summary(memory_gate, memory_vote),
+        }
+        
+        return memory_gate, memory_vote, memory_rationale
     
+    def _generate_rationale_summary(
+        self,
+        gate: Dict[str, Any],
+        vote: Dict[str, Any],
+    ) -> str:
+        """Generate human-readable summary for rationale."""
+        parts: List[str] = []
+        
+        if gate["veto"]:
+            parts.append("VETO: Trade blocked due to high risk")
+        elif gate["risk_multiplier"] < 0.5:
+            parts.append(f"CAUTION: Size reduced to {gate['risk_multiplier']:.0%}")
+        else:
+            parts.append("OK: Proceed with trade")
+        
+        if vote["signed_bias"] > 0.3:
+            parts.append(f"Memory favors trade (+{vote['signed_bias']:.2f})")
+        elif vote["signed_bias"] < -0.3:
+            parts.append(f"Memory warns against trade ({vote['signed_bias']:.2f})")
+        
+        if gate.get("reasons"):
+            parts.append(f"Reasons: {', '.join(gate['reasons'][:2])}")
+        
+        return " | ".join(parts)
 
     def _apply_budget_optimization(self, result: Dict[str, Any], budget_result: Dict[str, Any]) -> Dict[str, Any]:
         """Apply budget optimization to results"""
@@ -859,6 +1301,10 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
             "memory_analytics",
             # Training progress (optional consolidated view)
             "training_progress",
+            # NEW: Memory gate/vote/rationale keys per enhance.md
+            "memory_gate",     # Veto/size control signal
+            "memory_vote",     # Signed ensemble contribution
+            "memory_rationale", # Evidence bundle for explainability
         ]:
             if key in result:
                 updates.append((key, result[key]))
@@ -1021,6 +1467,19 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                 "playbook_quality": self._get_default_value("playbook_quality"),
                 "playbook_recall": self._get_default_value("playbook_recall"),
             },
+            # NEW: Loss risk head fallback
+            "loss_risk_head": {
+                "loss_prob": 0.0,
+                "uncertainty": 0.5,
+                "calibration_ece": 0.0,
+                "samples_seen": 0,
+            },
+            # NEW: Interventions fallback
+            "interventions": {
+                "intervention": None,
+                "intervention_count": 0,
+                "active_patterns": [],
+            },
         }
         return fallbacks.get(name, {})
 
@@ -1055,6 +1514,43 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
             "playbook_recall",
         ]:
             response[key] = self._get_default_value(key)
+
+        # Add composite gate/vote signals (required by contract)
+        response["memory_gate"] = {
+            "veto": False,
+            "risk_multiplier": 1.0,
+            "confidence": 0.5,
+            "reasons": [f"fallback: {reason}"],
+            "risk_score": 0.0,
+            "danger_similarity": 0.0,
+            "loss_prob": 0.0,
+        }
+        response["memory_vote"] = {
+            "vote_value": 0.0,
+            "signed_bias": 0.0,
+            "confidence": 0.5,
+            "expected_pnl": 0.0,
+            "neural_risk_hint": 0.5,
+            "max_attention": 0.5,
+            "source": "memory_fallback",
+        }
+        response["memory_rationale"] = {
+            "gate_reasons": [f"fallback: {reason}"],
+            "top_neighbors": [],
+            "signals": {
+                "danger_similarity": 0.0,
+                "avoidance_signal": 0.0,
+                "loss_prob": 0.0,
+                "signed_bias": 0.0,
+                "neural_risk_hint": 0.5,
+            },
+            "intervention": None,
+            "verdict": "proceed",
+            "summary": f"Memory fallback: {reason}",
+        }
+        
+        # Add neural_risk_hint as top-level key (required by contract)
+        response["neural_risk_hint"] = 0.5
 
         response["_thesis"] = f"Unified memory fallback: {reason}"
         response["fallback_reason"] = reason
@@ -1143,7 +1639,24 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         except Exception as e:
             self.logger.error(f"Memory pressure check failed: {e}")
 
+    def on_episode_end(self, episode_info: Optional[Dict[str, Any]] = None) -> None:
+        """
+        Called at the end of each episode to update episode counter and optionally process episode data.
+        Should be called by the training loop or environment.
+        """
+        self._episode_count += 1
+        
+        if self.unified_config.debug:
+            self.debug_logger.debug(
+                f"Episode ended: episode={self._episode_count}",
+                component="lifecycle",
+                data={"episode_info": episode_info or {}}
+            )
 
+    def increment_episode(self) -> int:
+        """Increment and return the new episode count."""
+        self._episode_count += 1
+        return self._episode_count
 
 
     # Public methods

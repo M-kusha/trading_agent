@@ -391,12 +391,20 @@ class NeuralComponent(MemoryComponent):
             self.retrieval_history.append(
                 {"timestamp": time.time(), "retrieved_count": len(retrieved), "avg_similarity": float(np.mean(sim_scores))}
             )
+            
+            # === NEW: neural_risk_hint for memory_vote composition ===
+            # Low max attention = model is uncertain = higher risk
+            max_attention = float(weights.max().item()) if weights.numel() > 0 else 0.0
+            neural_risk_hint = 1.0 - max_attention  # High when attention is diffuse
 
             return {
                 "retrieval_performed": True,
                 "retrieved_memories": retrieved,
                 "similarity_scores": sim_scores,
                 "attention_weights": weights.detach().cpu().numpy().tolist(),
+                # New fields for memory_vote
+                "neural_risk_hint": neural_risk_hint,
+                "max_attention": max_attention,
             }
         except Exception as e:
             self.log_error("Retrieval failed", e)
@@ -507,6 +515,9 @@ class NeuralComponent(MemoryComponent):
                 "neural_performance_score": float(self._calculate_performance_score()),
                 "last_updated": time.time(),
             },
+            # Include retrieval signals for memory_vote composition
+            "neural_risk_hint": float(result.get("neural_risk_hint", 0.5)),
+            "max_attention": float(result.get("max_attention", 0.5)),
         }
 
     def _calculate_performance_score(self) -> float:
@@ -549,4 +560,7 @@ class NeuralComponent(MemoryComponent):
                 "neural_performance_score": 0.0,
                 "last_updated": 0.0,
             },
+            # Fallback values for memory_vote composition
+            "neural_risk_hint": 0.5,
+            "max_attention": 0.5,
         }

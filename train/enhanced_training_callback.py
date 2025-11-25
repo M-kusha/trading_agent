@@ -779,6 +779,8 @@ class ModernEnhancedTrainingCallback(BaseCallback):
         snap = {
             "step": metrics.get("timestep", self.n_calls),
             "timestamp": datetime.now().isoformat(),
+            "episode": self.episode_count,  # Add episode count for memory module
+            "episodes": self.episode_count,  # Alias for compatibility
             "episode_reward_mean": metrics.get("episode_reward_mean", 0.0),
             "steps_per_second": metrics.get("steps_per_second", 0.0),
             "system_health_score": metrics.get("system_health_score", 100.0),

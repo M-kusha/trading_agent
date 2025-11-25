@@ -494,22 +494,36 @@ class UnifiedMemoryStore:
     def _calculate_retention_score(self, memory: MemoryEntry) -> float:
         """
         Calculate retention score (higher => keep more).
-        Combines importance, recency, access, and |pnl|.
+        Combines importance, recency, access, |pnl|, and loss_bonus.
+        
+        Sign-aware retention: Big losers persist longer for learning.
+        
+        Weights (per enhance plan):
+        - importance: 0.35
+        - recency: 0.25
+        - access: 0.15
+        - |pnl|: 0.05
+        - loss_bonus: 0.20 (big losses get higher retention)
         """
         importance_score = float(np.clip(memory.importance, 0.0, 1.0))
 
         age_hours = max(0.0, (time.time() - memory.timestamp) / 3600.0)
-        recency_score = float(np.exp(-age_hours))  # decays with age
+        recency_score = float(np.exp(-age_hours / 24.0))  # Slower decay: half-life ~24h
 
-        access_score = float(np.log1p(memory.access_count) / 10.0)
+        access_score = float(np.clip(np.log1p(memory.access_count) / 10.0, 0.0, 1.0))
 
-        pnl_score = float(abs(memory.pnl) / 100.0)
+        pnl_score = float(np.clip(abs(memory.pnl) / 100.0, 0.0, 1.0))
+        
+        # Loss bonus: big losers (negative pnl) get higher retention for learning
+        # loss_bonus = max(0.0, -pnl) / 50.0, capped at 1.0
+        loss_bonus = float(np.clip(max(0.0, -memory.pnl) / 50.0, 0.0, 1.0))
 
         score = (
-            importance_score * 0.4
-            + recency_score * 0.3
-            + access_score * 0.2
-            + pnl_score * 0.1
+            importance_score * 0.35
+            + recency_score * 0.25
+            + access_score * 0.15
+            + pnl_score * 0.05
+            + loss_bonus * 0.20
         )
         return score
 

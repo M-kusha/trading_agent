@@ -50,6 +50,10 @@ class RewardAnalyticsEngine:
 
     # trend buffers
     TREND_MAXLEN = 50
+    # performance analytics max entries per key
+    PERF_ANALYTICS_MAXLEN = 100
+    # session analytics max entries per day
+    SESSION_ANALYTICS_MAXLEN = 500
 
     def __init__(
         self,
@@ -66,15 +70,19 @@ class RewardAnalyticsEngine:
         # Internal lock for engine-owned structures
         self._lock: threading.RLock = threading.RLock()
 
-        # Analytics storage (typed)
-        self.performance_analytics: DefaultDict[str, List[float]] = defaultdict(list)
+        # Analytics storage (typed) - using deque for bounded memory
+        self.performance_analytics: DefaultDict[str, Deque[float]] = defaultdict(
+            lambda: deque(maxlen=self.PERF_ANALYTICS_MAXLEN)
+        )
         self.component_effectiveness: DefaultDict[str, _ComponentStats] = defaultdict(_ComponentStats)
 
         # Regime analytics (typed buckets)
         self.regime_analytics: DefaultDict[str, _RegimeBucket] = defaultdict(_RegimeBucket)
 
-        # Session analytics (per-day raw entries)
-        self.session_analytics: DefaultDict[str, List[Dict[str, Any]]] = defaultdict(list)
+        # Session analytics (per-day raw entries) - bounded to prevent memory growth
+        self.session_analytics: DefaultDict[str, Deque[Dict[str, Any]]] = defaultdict(
+            lambda: deque(maxlen=self.SESSION_ANALYTICS_MAXLEN)
+        )
 
         # Daily aggregates
         self.daily_performance: DefaultDict[str, Dict[str, float]] = defaultdict(

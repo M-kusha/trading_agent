@@ -984,6 +984,77 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                     self.logger.warning(f"Trading mode integration failed in risk adjustment: {e}")
             # ═══════════════════════════════════════════════════════════════════
 
+            # ═══════════════════════════════════════════════════════════════════
+            # MEMORY MODULE INTEGRATION  
+            # Read memory signals to inform risk factors
+            # ═══════════════════════════════════════════════════════════════════
+            try:
+                # Read memory_gate for veto/risk_multiplier
+                memory_gate = self.smart_bus.get('memory_gate', 'DynamicRiskController') or {}
+                if isinstance(memory_gate, dict):
+                    # Apply memory risk multiplier to overall scale
+                    memory_risk_mult = float(memory_gate.get('risk_multiplier', 1.0))
+                    if memory_risk_mult < 1.0:
+                        # Memory wants reduced risk - apply to market_stress factor
+                        self.risk_factors['market_stress'] *= memory_risk_mult
+                        if self.debug:
+                            self.logger.info(format_operator_message(
+                                icon="🧠",
+                                message="Memory risk multiplier applied",
+                                multiplier=f"{memory_risk_mult:.2f}x"
+                            ))
+
+                # Read danger_zones for loss pattern awareness
+                danger_zones = self.smart_bus.get('danger_zones', 'DynamicRiskController') or {}
+                if isinstance(danger_zones, dict):
+                    danger_similarity = float(danger_zones.get('similarity', 0.0))
+                    if danger_similarity > 0.5:  # Similar to past losing patterns
+                        danger_penalty = max(0.6, 1.0 - danger_similarity * 0.5)
+                        self.risk_factors['market_stress'] *= danger_penalty
+                        if self.debug:
+                            self.logger.info(format_operator_message(
+                                icon="⚠️",
+                                message="Memory danger zone penalty applied",
+                                similarity=f"{danger_similarity:.2f}",
+                                penalty=f"{danger_penalty:.2f}x"
+                            ))
+
+                # Read mistake_avoidance for loss prevention
+                mistake_avoidance = self.smart_bus.get('mistake_avoidance', 'DynamicRiskController') or {}
+                if isinstance(mistake_avoidance, dict):
+                    avoidance_signal = float(mistake_avoidance.get('avoidance_signal', 0.0))
+                    if avoidance_signal > 0.5:  # Memory warns against current setup
+                        avoidance_penalty = max(0.7, 1.0 - avoidance_signal * 0.4)
+                        self.risk_factors['losing_streak'] *= avoidance_penalty
+                        if self.debug:
+                            self.logger.info(format_operator_message(
+                                icon="🚫",
+                                message="Memory mistake avoidance applied",
+                                signal=f"{avoidance_signal:.2f}",
+                                penalty=f"{avoidance_penalty:.2f}x"
+                            ))
+
+                # Read intuition_vector for pattern confidence boost
+                intuition = self.smart_bus.get('intuition_vector', 'DynamicRiskController') or {}
+                if isinstance(intuition, dict):
+                    intuition_strength = float(intuition.get('strength', 0.5))
+                    if intuition_strength > 0.7:  # High confidence pattern recognition
+                        # Allow slightly more risk when memory is confident
+                        confidence_boost = min(1.2, 1.0 + (intuition_strength - 0.7) * 0.3)
+                        self.risk_factors['market_stress'] *= confidence_boost
+                        if self.debug:
+                            self.logger.info(format_operator_message(
+                                icon="💡",
+                                message="Memory intuition confidence boost",
+                                strength=f"{intuition_strength:.2f}",
+                                boost=f"{confidence_boost:.2f}x"
+                            ))
+
+            except Exception as e:
+                if self.debug:
+                    self.logger.warning(f"Memory integration failed in risk adjustment: {e}")
+            # ═══════════════════════════════════════════════════════════════════
+
             # Calculate preliminary risk scale
             preliminary_scale = await self._calculate_preliminary_risk_scale_async()
 

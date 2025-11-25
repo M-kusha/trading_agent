@@ -15,6 +15,7 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler
 
 from .base import MemoryComponent
+from modules.memory.shared.utils import safe_float
 
 
 class PlaybookComponent(MemoryComponent):
@@ -134,14 +135,14 @@ class PlaybookComponent(MemoryComponent):
         # Volatility level
         vol_map = {"low": 0.2, "medium": 0.5, "high": 0.8, "extreme": 1.0}
         vol_level = str(market_context.get("volatility_level", "medium")).lower()
-        feats.append(float(vol_map.get(vol_level, 0.5)))
+        feats.append(safe_float(vol_map.get(vol_level, 0.5), 0.5))
 
         # Risk context
         feats.extend(
             [
-                float(market_context.get("drawdown_pct", 0.0)) / 100.0,
-                float(market_context.get("exposure_pct", 0.0)) / 100.0,
-                float(market_context.get("position_count", 0)) / 10.0,
+                safe_float(market_context.get("drawdown_pct", 0.0), 0.0) / 100.0,
+                safe_float(market_context.get("exposure_pct", 0.0), 0.0) / 100.0,
+                safe_float(market_context.get("position_count", 0), 0) / 10.0,
             ]
         )
 
@@ -153,8 +154,8 @@ class PlaybookComponent(MemoryComponent):
         # Trade features
         feats.extend(
             [
-                float(trade.get("size", 0.0)),
-                float(trade.get("confidence", 0.5)),
+                safe_float(trade.get("size", 0.0), 0.0),
+                safe_float(trade.get("confidence", 0.5), 0.5),
                 1.0
                 if str(trade.get("side", "")).lower() == "buy"
                 else -1.0
@@ -166,8 +167,8 @@ class PlaybookComponent(MemoryComponent):
         # Price context
         symbol = str(trade.get("symbol", "EUR_USD"))
         if symbol in prices:
-            current_price = float(prices[symbol])
-            entry_price = float(trade.get("price", current_price))
+            current_price = safe_float(prices[symbol], 0.0)
+            entry_price = safe_float(trade.get("price", current_price), current_price)
             price_change = (current_price - entry_price) / (entry_price + self._EPS)
             feats.extend([current_price / 2.0, price_change])
         else:
@@ -180,7 +181,7 @@ class PlaybookComponent(MemoryComponent):
 
     def _extract_trade_action(self, trade: Dict[str, Any]) -> np.ndarray:
         """Extract a 2D action vector from trade (signed size, placeholder)."""
-        size = float(trade.get("size", 0.0))
+        size = safe_float(trade.get("size", 0.0), 0.0)
         side = str(trade.get("side", "hold")).lower()
         if side == "buy":
             action = [size, 0.0]
@@ -250,13 +251,21 @@ class PlaybookComponent(MemoryComponent):
             data["losses"] += 1
         data["total_pnl"] += float(pnl)
 
-        # Keep dict reasonably bounded
+        # Keep pattern_effectiveness dict reasonably bounded
         if len(self.pattern_effectiveness) > self.pattern_memory_size:
             # Drop the stalest/least updated pattern
             # (heuristic: smallest wins+losses)
             victim = min(self.pattern_effectiveness.items(), key=lambda kv: kv[1]["wins"] + kv[1]["losses"])[0]
             if victim in self.pattern_effectiveness:
                 del self.pattern_effectiveness[victim]
+        
+        # Keep context_patterns dict bounded as well
+        if len(self.context_patterns) > self.pattern_memory_size * 2:
+            # Drop lowest-count patterns
+            sorted_patterns = sorted(self.context_patterns.items(), key=lambda kv: kv[1])
+            to_remove = len(self.context_patterns) - self.pattern_memory_size
+            for key_to_remove, _ in sorted_patterns[:to_remove]:
+                del self.context_patterns[key_to_remove]
 
     # -------------------------------------------------------------------------
     # Modeling
@@ -338,6 +347,28 @@ class PlaybookComponent(MemoryComponent):
                 recommended_action = np.zeros(2, dtype=np.float32)
 
             profitable_matches = int(np.sum(np.asarray(similar_pnls) > 0.0))
+            
+            # === NEW: signed_bias for memory_vote ===
+            # signed_bias = tanh(expected_pnl / pnl_scale)
+            pnl_scale = 20.0  # Scale factor for normalizing PnL to [-1, 1]
+            signed_bias = float(np.tanh(expected_pnl / pnl_scale))
+            
+            # === NEW: top-K neighbors for rationale bundle ===
+            top_neighbors: List[Dict[str, Any]] = []
+            for i, (dist_val, pnl_val) in enumerate(zip(dists.tolist(), similar_pnls)):
+                # Calculate age in hours
+                neighbor_idx = idx[i]
+                if neighbor_idx < len(self.timestamps):
+                    age_h = (time.time() - self.timestamps[neighbor_idx]) / 3600.0
+                else:
+                    age_h = 0.0
+                
+                top_neighbors.append({
+                    "sim": round(float(np.exp(-dist_val)), 3),  # Convert distance to similarity
+                    "pnl": round(pnl_val, 2),
+                    "age_h": round(age_h, 1),
+                    "dist": round(float(dist_val), 3),
+                })
 
             # Record recall
             self.recall_history.append(
@@ -346,6 +377,7 @@ class PlaybookComponent(MemoryComponent):
                     "expected_pnl": expected_pnl,
                     "confidence": confidence,
                     "similar_trades": len(idx),
+                    "signed_bias": signed_bias,
                 }
             )
 
@@ -356,6 +388,9 @@ class PlaybookComponent(MemoryComponent):
                 "recommended_action": recommended_action.astype(np.float32).tolist(),
                 "similar_trades": len(idx),
                 "profitable_matches": profitable_matches,
+                # New fields for memory_vote composition
+                "signed_bias": signed_bias,
+                "top_neighbors": top_neighbors,
             }
         except Exception as e:
             self.log_error("Recall failed", e)
@@ -433,6 +468,11 @@ class PlaybookComponent(MemoryComponent):
                 "recall_efficiency": float(self.recall_efficiency),
                 "prediction_accuracy": float(self.prediction_accuracy),
                 "last_recall": last_recall,
+                # Include recall results for memory_vote composition
+                "signed_bias": float(result.get("signed_bias", 0.0)),
+                "confidence": float(result.get("confidence", 0.5)),
+                "expected_pnl": float(result.get("expected_pnl", 0.0)),
+                "top_neighbors": result.get("top_neighbors", []),
             },
         }
 
@@ -463,5 +503,10 @@ class PlaybookComponent(MemoryComponent):
                 "recall_efficiency": 0.0,
                 "prediction_accuracy": 0.0,
                 "last_recall": None,
+                # Fallback values for memory_vote composition
+                "signed_bias": 0.0,
+                "confidence": 0.5,
+                "expected_pnl": 0.0,
+                "top_neighbors": [],
             },
         }

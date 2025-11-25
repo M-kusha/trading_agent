@@ -2065,6 +2065,57 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
 
             # # print(f"{'='*80}\n")
 
+            # ==========================================================
+            # MEMORY INTEGRATION: Add memory as a voter
+            # ==========================================================
+            try:
+                memory_vote = self.smart_bus.get('memory_vote', self.__class__.__name__)
+                if isinstance(memory_vote, dict):
+                    vote_value = float(memory_vote.get('vote_value', 0.0))
+                    signed_bias = float(memory_vote.get('signed_bias', 0.0))
+                    mem_confidence = float(memory_vote.get('confidence', 0.5))
+                    expected_pnl = float(memory_vote.get('expected_pnl', 0.0))
+                    
+                    # Only add memory vote if it has meaningful signal
+                    if abs(signed_bias) > 0.05 and mem_confidence > 0.2:
+                        # Determine direction from signed_bias
+                        if signed_bias > 0.1:
+                            mem_action = "long"
+                        elif signed_bias < -0.1:
+                            mem_action = "short"
+                        else:
+                            mem_action = "abstain"
+                        
+                        # Memory vote weighted by confidence and neural risk hint
+                        neural_risk = float(memory_vote.get('neural_risk_hint', 0.5))
+                        adjusted_confidence = mem_confidence * (1.0 - neural_risk * 0.3)
+                        
+                        memory_expert_vote = {
+                            "expert": "UnifiedMemory",
+                            "vote": {
+                                "action": mem_action,
+                                "signal_strength": abs(vote_value),
+                                "expected_pnl": expected_pnl,
+                                "signed_bias": signed_bias,
+                            },
+                            "confidence": adjusted_confidence,
+                            "timestamp": datetime.datetime.now().isoformat(),
+                        }
+                        
+                        # Add memory vote to the list
+                        expert_votes.append(memory_expert_vote)
+                        
+                        self.logger.info(format_operator_message(
+                            icon="🧠",
+                            message="MEMORY_VOTE_ADDED",
+                            action=mem_action,
+                            confidence=f"{adjusted_confidence:.2f}",
+                            signed_bias=f"{signed_bias:.2f}",
+                            expected_pnl=f"{expected_pnl:.2f}",
+                        ))
+            except Exception as e:
+                self.logger.debug(f"Memory vote integration skipped: {e}")
+
             self.logger.info(format_operator_message(
                 icon="[VOTES]",
                 message="Expert votes collected",

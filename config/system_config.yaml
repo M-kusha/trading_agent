@@ -454,6 +454,8 @@ modules:
       enable_neural: false
       enable_playbook: true
       enable_budget: false
+      enable_loss_risk_head: true
+      enable_interventions: true
 
       # Performance
       max_processing_time_ms: 200

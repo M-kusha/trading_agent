@@ -710,6 +710,7 @@ Strategy Arbiter v3.1 Initialization:
         """
         Multi-criteria gate: blend absolute strength, consensus support, reliability proxy,
         risk (volatility/collusion), novelty (change vs. previous).
+        Now includes MEMORY MODULE signals for enhanced gating.
         """
         try:
             weights = self.gate_intelligence.get("criteria_weights", [0.25, 0.20, 0.20, 0.20, 0.15])
@@ -723,10 +724,91 @@ Strategy Arbiter v3.1 Initialization:
 
             crit = [strength, float(np.clip(consensus, 0.0, 1.0)), reliability, risk, novelty]
             score = float(np.dot(np.array(crit, dtype=np.float32), np.array(weights, dtype=np.float32)))
+
+            # ═══════════════════════════════════════════════════════════════════
+            # MEMORY MODULE INTEGRATION
+            # Read memory signals to influence gate decision
+            # ═══════════════════════════════════════════════════════════════════
+            memory_veto = False
+            memory_adjustment = 1.0
+            memory_reasons: List[str] = []
+            try:
+                # Read memory_gate for veto/risk decisions
+                memory_gate = self.smart_bus.get('memory_gate', 'StrategyArbiter') or {}
+                if isinstance(memory_gate, dict):
+                    if memory_gate.get('veto', False):
+                        memory_veto = True
+                        memory_reasons = memory_gate.get('reasons', ['Memory veto'])
+                    else:
+                        # Apply risk multiplier to score
+                        mem_risk_mult = float(memory_gate.get('risk_multiplier', 1.0))
+                        if mem_risk_mult < 1.0:
+                            memory_adjustment *= mem_risk_mult
+                            
+                # Read danger_zones for pattern similarity
+                danger_zones = self.smart_bus.get('danger_zones', 'StrategyArbiter') or {}
+                if isinstance(danger_zones, dict):
+                    danger_similarity = float(danger_zones.get('similarity', 0.0))
+                    if danger_similarity > 0.7:  # Very similar to past losing pattern
+                        memory_veto = True
+                        memory_reasons.append(f'danger_zone_similarity={danger_similarity:.2f}')
+                    elif danger_similarity > 0.4:  # Moderate danger
+                        memory_adjustment *= max(0.7, 1.0 - danger_similarity * 0.4)
+                        
+                # Read mistake_avoidance for loss prevention
+                mistake_avoidance = self.smart_bus.get('mistake_avoidance', 'StrategyArbiter') or {}
+                if isinstance(mistake_avoidance, dict):
+                    avoidance_signal = float(mistake_avoidance.get('avoidance_signal', 0.0))
+                    if avoidance_signal > 0.8:  # Strong avoidance warning
+                        memory_veto = True
+                        memory_reasons.append(f'mistake_avoidance={avoidance_signal:.2f}')
+                    elif avoidance_signal > 0.5:
+                        memory_adjustment *= max(0.8, 1.0 - avoidance_signal * 0.3)
+                        
+                # Read playbook_recall for pattern confidence boost
+                playbook = self.smart_bus.get('playbook_recall', 'StrategyArbiter') or {}
+                if isinstance(playbook, dict):
+                    pattern_confidence = float(playbook.get('pattern_confidence', 0.5))
+                    if pattern_confidence > 0.8:  # High confidence in recognized pattern
+                        memory_adjustment *= min(1.2, 1.0 + (pattern_confidence - 0.8) * 0.5)
+                        
+            except Exception as e:
+                if getattr(self, 'debug', False):
+                    self.logger.warning(f"Memory integration in gate failed: {e}")
+            # ═══════════════════════════════════════════════════════════════════
+
+            # Apply memory adjustment to score
+            score *= memory_adjustment
+
             # Adaptive baseline threshold
             base_thr = _smart_gate(float(self.curr_vol), 0) if self._step_count >= self.bootstrap_steps else _BASE_GATE * 0.5
             adj = self.market_adaptation["regime_multipliers"].get(self.market_regime, {}).get("gate_adjustment", 1.0)
             threshold = float(np.clip(base_thr / adj, 0.05, 0.95))
+
+            # Memory veto overrides score
+            if memory_veto:
+                if getattr(self, 'debug', False):
+                    self.logger.info(
+                        format_operator_message(
+                            icon="🧠",
+                            message="MEMORY_VETO in gate",
+                            reasons=memory_reasons[:3],
+                            original_score=f"{score:.3f}",
+                        )
+                    )
+                return False, threshold, {
+                    "strength": strength,
+                    "consensus": float(np.clip(consensus, 0.0, 1.0)),
+                    "reliability": reliability,
+                    "risk": risk,
+                    "novelty": novelty,
+                    "gate_score": score,
+                    "threshold": threshold,
+                    "memory_veto": True,
+                    "memory_reasons": memory_reasons,
+                    "memory_adjustment": memory_adjustment,
+                }
+
             return (score >= threshold), threshold, {
                 "strength": strength,
                 "consensus": float(np.clip(consensus, 0.0, 1.0)),
@@ -735,6 +817,8 @@ Strategy Arbiter v3.1 Initialization:
                 "novelty": novelty,
                 "gate_score": score,
                 "threshold": threshold,
+                "memory_veto": False,
+                "memory_adjustment": memory_adjustment,
             }
         except Exception:
             # fallback to simple strength gating

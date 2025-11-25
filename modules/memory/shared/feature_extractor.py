@@ -14,6 +14,20 @@ from typing import cast
 
 import numpy as np
 from modules.utils.session_utils import normalize_session_name
+from modules.memory.shared.utils import safe_float
+
+# Import bar_signature for OHLCV shape features
+try:
+    from modules.memory.shared.bar_signature import extract_bar_signature as _extract_bar_signature, BarSignature
+    _HAS_BAR_SIGNATURE = True
+    BAR_SIG_DIM = BarSignature.OUTPUT_DIM
+except ImportError:
+    _HAS_BAR_SIGNATURE = False
+    BAR_SIG_DIM = 12
+    
+    def _extract_bar_signature(ohlcv: np.ndarray) -> np.ndarray:
+        """Fallback stub when bar_signature module is unavailable."""
+        return np.zeros(BAR_SIG_DIM, dtype=np.float32)
 
 
 Number = Union[int, float, np.number]
@@ -28,6 +42,7 @@ class UnifiedFeatureExtractor:
       - Market context encoding
       - Trade feature extraction
       - Observation processing
+      - Bar signature extraction (OHLCV shape features)
       - Feature normalization
       - Lightweight LRU caching for efficiency
     """
@@ -41,9 +56,12 @@ class UnifiedFeatureExtractor:
         self.market_features_dim: int = 10
         self.trade_features_dim: int = 10
         self.observation_features_dim: int = 20
+        self.bar_signature_dim: int = BAR_SIG_DIM  # 12-dim OHLCV shape features
         self.total_dim: int = (
             self.market_features_dim + self.trade_features_dim + self.observation_features_dim
         )
+        # Extended total with bar signature
+        self.extended_dim: int = self.total_dim + self.bar_signature_dim
 
         # Encoding maps (float32 for downstream models)
         self.regime_map: Dict[str, np.ndarray] = {
@@ -82,6 +100,8 @@ class UnifiedFeatureExtractor:
         observations: Optional[ArrayLike] = None,
         market_context: Optional[Mapping[str, Any]] = None,
         trade: Optional[Mapping[str, Any]] = None,
+        ohlcv: Optional[np.ndarray] = None,
+        include_bar_signature: bool = False,
     ) -> np.ndarray:
         """
         Extract a unified feature vector.
@@ -90,13 +110,15 @@ class UnifiedFeatureExtractor:
             observations: Raw observations (ndarray/list/tuple/dict/number).
             market_context: Market context dictionary.
             trade: Trade information dictionary.
+            ohlcv: OHLCV data array with shape [N, 5+] for bar signature extraction.
+            include_bar_signature: Whether to include bar signature features.
 
         Returns:
-            A float32 feature vector of fixed length (self.total_dim).
+            A float32 feature vector of fixed length (total_dim or extended_dim).
         """
         key = self._make_cache_key(observations, market_context, trade)
         cached = self._cache_get(key)
-        if cached is not None:
+        if cached is not None and not include_bar_signature:
             return cached
 
         chunks: List[np.ndarray] = []
@@ -117,7 +139,14 @@ class UnifiedFeatureExtractor:
 
         combined = np.concatenate(chunks).astype(np.float32, copy=False)
         combined = self._ensure_dim(combined, self.total_dim)
-        self._cache_put(key, combined)
+        
+        # Optionally append bar signature features
+        if include_bar_signature:
+            bar_sig = self.extract_bar_signature(ohlcv)
+            combined = np.concatenate([combined, bar_sig]).astype(np.float32, copy=False)
+        else:
+            self._cache_put(key, combined)
+        
         return combined
 
     def extract_market_features(self, market_context: Mapping[str, Any]) -> np.ndarray:
@@ -154,8 +183,8 @@ class UnifiedFeatureExtractor:
         feats.extend(self.session_map.get(session, self.session_map["unknown"]))
 
         # Risk metrics (2)
-        drawdown = float(market_context.get("drawdown_pct", 0.0)) / 100.0
-        exposure = float(market_context.get("exposure_pct", 0.0)) / 100.0
+        drawdown = safe_float(market_context.get("drawdown_pct", 0.0), 0.0) / 100.0
+        exposure = safe_float(market_context.get("exposure_pct", 0.0), 0.0) / 100.0
         feats.extend([drawdown, exposure])
 
         arr = np.asarray(feats, dtype=np.float32).reshape(-1)
@@ -175,10 +204,10 @@ class UnifiedFeatureExtractor:
         feats: List[float] = []
 
         # Trade characteristics (4)
-        feats.append(float(trade.get("size", 0.0)))
-        feats.append(float(trade.get("confidence", 0.5)))
-        feats.append(float(trade.get("volume", 1.0)))
-        feats.append(float(trade.get("duration", 1.0)))
+        feats.append(safe_float(trade.get("size", 0.0), 0.0))
+        feats.append(safe_float(trade.get("confidence", 0.5), 0.5))
+        feats.append(safe_float(trade.get("volume", 1.0), 1.0))
+        feats.append(safe_float(trade.get("duration", 1.0), 1.0))
 
         # Side encoding (1)
         side = str(trade.get("side", "hold")).lower()
@@ -190,12 +219,12 @@ class UnifiedFeatureExtractor:
             feats.append(0.0)
 
         # PnL & risk (2)
-        feats.append(float(trade.get("pnl", 0.0)) / 100.0)  # normalize
-        feats.append(float(trade.get("risk", 0.0)))
+        feats.append(safe_float(trade.get("pnl", 0.0), 0.0) / 100.0)  # normalize
+        feats.append(safe_float(trade.get("risk", 0.0), 0.0))
 
         # Price movement (2)
-        entry_price = float(trade.get("entry_price", 1.0))
-        exit_price = float(trade.get("exit_price", entry_price))
+        entry_price = safe_float(trade.get("entry_price", 1.0), 1.0)
+        exit_price = safe_float(trade.get("exit_price", entry_price), entry_price)
         denom = entry_price if abs(entry_price) > self._EPS else 1.0
         price_change = (exit_price - entry_price) / denom
         feats.extend([entry_price, price_change])
@@ -251,6 +280,57 @@ class UnifiedFeatureExtractor:
                 arr = np.zeros(1, dtype=np.float32)
 
         return self._ensure_dim(arr, self.observation_features_dim)
+
+    def extract_bar_signature(self, ohlcv: Optional[np.ndarray] = None) -> np.ndarray:
+        """
+        Extract bar signature features from OHLCV data.
+        
+        Uses the bar_signature module to compute 12-dimensional shape features:
+        - slope_10, slope_30: Short/medium-term price slopes
+        - atr_jump: Volatility expansion signal
+        - compression_z: Low volatility consolidation
+        - breakout_dist: Distance from recent high/low
+        - wick_body_ratio: Candle shape indicator
+        - range_frac: Bar range relative to recent range
+        - shape_code: Encoded candle pattern
+        - trend_strength: Directional conviction
+        - momentum_divergence: Price/momentum divergence
+        - volume_profile: Volume relative to average
+        - price_position: Position in recent range
+
+        Args:
+            ohlcv: OHLCV data array with shape [N, 5+]. 
+                   Columns: open, high, low, close, volume (optional).
+                   Uses the last ~50 bars for feature computation.
+
+        Returns:
+            Float32 feature vector of length bar_signature_dim (12).
+        """
+        if ohlcv is None or not _HAS_BAR_SIGNATURE:
+            return np.zeros(self.bar_signature_dim, dtype=np.float32)
+        
+        try:
+            arr = np.asarray(ohlcv, dtype=np.float32)
+            if arr.ndim != 2 or arr.shape[1] < 4:
+                return np.zeros(self.bar_signature_dim, dtype=np.float32)
+            
+            # Compute bar signature using the shared utility
+            sig = _extract_bar_signature(arr)
+            return self._ensure_dim(sig, self.bar_signature_dim)
+        except Exception:
+            return np.zeros(self.bar_signature_dim, dtype=np.float32)
+
+    def get_bar_signature_names(self) -> List[str]:
+        """Return human-readable names for bar signature features."""
+        return [
+            "slope_10", "slope_30", "atr_jump", "compression_z",
+            "breakout_dist", "wick_body_ratio", "range_frac", "shape_code",
+            "trend_strength", "momentum_divergence", "volume_profile", "price_position"
+        ]
+
+    def get_extended_feature_names(self) -> List[str]:
+        """Return feature names including bar signature (extended_dim)."""
+        return self.get_feature_names() + self.get_bar_signature_names()
 
 
     def normalize(self, features: np.ndarray) -> np.ndarray:

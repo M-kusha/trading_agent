@@ -889,6 +889,10 @@ modules:
     - pattern_memory
     - playbook_quality
     - playbook_recall
+    - memory_gate
+    - memory_vote
+    - memory_rationale
+    - neural_risk_hint
     requires:
     - actions
     - episode_data

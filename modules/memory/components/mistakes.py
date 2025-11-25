@@ -16,6 +16,7 @@ from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import StandardScaler
 
 from .base import MemoryComponent
+from modules.memory.shared.utils import safe_float
 
 
 class MistakeComponent(MemoryComponent):
@@ -92,6 +93,15 @@ class MistakeComponent(MemoryComponent):
 
             avoidance_result = self._calculate_avoidance_signals(context)
             learning_result.update(avoidance_result)
+            
+            # Compose gate snippet for UnifiedMemory consumption
+            gate_snippet = self._compose_gate_snippet(
+                danger_similarity=avoidance_result.get("danger_similarity", 0.0),
+                profit_similarity=avoidance_result.get("profit_similarity", 0.0),
+                avoidance_signal=avoidance_result.get("avoidance_signal", 0.0),
+                context=context,
+            )
+            learning_result["gate_snippet"] = gate_snippet
 
             return self._format_output(learning_result)
         except Exception as e:
@@ -145,15 +155,15 @@ class MistakeComponent(MemoryComponent):
             features: List[float] = []
 
             # Trade features
-            features.append(float(trade.get("confidence", 0.5)))
-            features.append(float(trade.get("volume", 1.0)))
-            features.append(float(trade.get("duration", 1.0)))
+            features.append(safe_float(trade.get("confidence", 0.5), 0.5))
+            features.append(safe_float(trade.get("volume", 1.0), 1.0))
+            features.append(safe_float(trade.get("duration", 1.0), 1.0))
 
             # Market context: volatility can be scalar or dict
             vol = market_context.get("volatility", 0.5)
             if isinstance(vol, dict):
                 vol = (list(vol.values()) or [0.5])[0]
-            features.append(float(vol))
+            features.append(safe_float(vol, 0.5))
 
             # Session encoding
             session_map = {"asian": 0.0, "european": 0.5, "us": 1.0}
@@ -186,6 +196,9 @@ class MistakeComponent(MemoryComponent):
             data["count"] += 1
             data["severity"] += float(loss)
             data["last_seen"] = time.time()
+            
+            # Bound pattern dict to prevent memory leaks
+            self._bound_pattern_dict(self.loss_patterns, max_patterns=100)
 
     def _process_win_trade(self, features: np.ndarray, profit: float, trade: Dict[str, Any]) -> None:
         """Record a win example and track patterns."""
@@ -198,6 +211,25 @@ class MistakeComponent(MemoryComponent):
             data["count"] += 1
             data["profitability"] += float(profit)
             data["last_seen"] = time.time()
+            
+            # Bound pattern dict to prevent memory leaks
+            self._bound_pattern_dict(self.win_patterns, max_patterns=100)
+
+    def _bound_pattern_dict(self, patterns: Dict[str, Dict[str, Any]], max_patterns: int = 100) -> None:
+        """Evict oldest/least-used patterns if dict exceeds max_patterns."""
+        if len(patterns) <= max_patterns:
+            return
+        
+        # Sort by last_seen (oldest first)
+        sorted_patterns = sorted(
+            patterns.items(),
+            key=lambda kv: kv[1].get("last_seen", 0.0)
+        )
+        
+        # Evict oldest patterns
+        to_remove = len(patterns) - max_patterns
+        for key, _ in sorted_patterns[:to_remove]:
+            del patterns[key]
 
     def _bound_buffer_inplace(self, buf: List[Tuple[np.ndarray, float, Dict[str, Any]]]) -> None:
         """Ensure memory buffers remain within configured fraction."""
@@ -394,6 +426,150 @@ class MistakeComponent(MemoryComponent):
             "consecutive_losses": int(self.consecutive_losses),
         }
 
+    def _compose_gate_snippet(
+        self,
+        danger_similarity: float,
+        profit_similarity: float,
+        avoidance_signal: float,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Compose a compact gate snippet for UnifiedMemory consumption.
+        
+        Returns:
+            Dict containing:
+            - risk_multiplier: Trade size risk adjustment (higher = riskier)
+            - veto: Boolean recommending trade rejection
+            - confidence: Confidence in the gate decision [0, 1]
+            - reasons: List of reasons for the gate decision
+        """
+        # Risk multiplier: increases with danger, decreases with profit proximity
+        # risk_multiplier = 1 + 1.5 * max(0, danger_similarity - profit_similarity)
+        net_danger = max(0.0, danger_similarity - profit_similarity)
+        risk_multiplier = 1.0 + 1.5 * net_danger
+        
+        # Veto decision based on thresholds
+        # veto = (danger_similarity > 0.55 and avoidance_signal > 0.6)
+        veto_threshold_danger = 0.55
+        veto_threshold_avoidance = 0.6
+        veto = bool(danger_similarity > veto_threshold_danger and avoidance_signal > veto_threshold_avoidance)
+        
+        # Additional veto conditions
+        if self.consecutive_losses >= 5:
+            veto = True  # Emergency stop after streak
+        
+        # Confidence: based on clustering quality and sample count
+        sample_confidence = min(1.0, (len(self.loss_buffer) + len(self.win_buffer)) / 50.0)
+        avg_quality = float(np.mean(list(self.cluster_quality_scores))) if self.cluster_quality_scores else 0.5
+        confidence = 0.5 * sample_confidence + 0.5 * avg_quality
+        
+        # Build reasons list
+        reasons: List[Dict[str, Any]] = []
+        
+        if danger_similarity > 0.4:
+            # Find closest danger zone for pattern info
+            pattern_info = self._get_nearest_pattern_info(context.get("features"))
+            reasons.append({
+                "type": "pattern",
+                "label": pattern_info.get("label", "DANGER_ZONE"),
+                "regime": str(context.get("market_context", {}).get("regime", "unknown")).lower(),
+                "similarity": round(danger_similarity, 3),
+                "stats": {
+                    "n": len(self.loss_buffer),
+                    "winrate": self._calculate_zone_winrate(),
+                    "avg_pnl": self._calculate_avg_loss_pnl(),
+                },
+            })
+        
+        if self.consecutive_losses >= 3:
+            reasons.append({
+                "type": "streak",
+                "consecutive_losses": self.consecutive_losses,
+                "message": f"Loss streak of {self.consecutive_losses} detected",
+            })
+        
+        if profit_similarity > danger_similarity and profit_similarity > 0.5:
+            reasons.append({
+                "type": "opportunity",
+                "profit_similarity": round(profit_similarity, 3),
+                "message": "Setup resembles profitable patterns",
+            })
+        
+        return {
+            "risk_multiplier": float(np.clip(risk_multiplier, 1.0, 5.0)),
+            "veto": veto,
+            "confidence": float(np.clip(confidence, 0.0, 1.0)),
+            "reasons": reasons,
+            "danger_similarity": float(danger_similarity),
+            "profit_similarity": float(profit_similarity),
+            "avoidance_signal": float(avoidance_signal),
+        }
+    
+    def _get_nearest_pattern_info(self, features: Optional[np.ndarray]) -> Dict[str, Any]:
+        """Get info about the nearest danger zone pattern."""
+        if features is None or not self.danger_zones:
+            return {"label": "UNKNOWN", "severity": 0.0}
+        
+        try:
+            # Find nearest zone
+            vec = self._prep_feature_row(features)
+            if not self._loss_scaler_fitted:
+                return {"label": "UNKNOWN", "severity": 0.0}
+            
+            scaled = self._loss_scaler.transform(vec)
+            
+            min_dist = float("inf")
+            nearest_zone = None
+            
+            for i, zone in enumerate(self.danger_zones):
+                center = np.asarray(zone["center"], dtype=np.float32)
+                dist = float(np.linalg.norm(scaled[0] - center))
+                if dist < min_dist:
+                    min_dist = dist
+                    nearest_zone = zone
+            
+            if nearest_zone is None:
+                return {"label": "UNKNOWN", "severity": 0.0}
+            
+            # Generate pattern label from zone characteristics
+            size = nearest_zone.get("size", 0)
+            severity = nearest_zone.get("severity", 0.0)
+            
+            if severity > 20:
+                severity_label = "HIGH"
+            elif severity > 10:
+                severity_label = "MED"
+            else:
+                severity_label = "LOW"
+            
+            return {
+                "label": f"DANGER_ZONE_{severity_label}_{size}",
+                "severity": severity,
+                "size": size,
+            }
+            
+        except Exception:
+            return {"label": "UNKNOWN", "severity": 0.0}
+    
+    def _calculate_zone_winrate(self) -> float:
+        """Calculate win rate for patterns near danger zones."""
+        if not self.loss_buffer and not self.win_buffer:
+            return 0.0
+        
+        total = len(self.loss_buffer) + len(self.win_buffer)
+        if total == 0:
+            return 0.0
+        
+        return float(len(self.win_buffer) / total)
+    
+    def _calculate_avg_loss_pnl(self) -> float:
+        """Calculate average PnL of loss patterns."""
+        if not self.loss_buffer:
+            return 0.0
+        
+        losses = [float(entry[1]) for entry in self.loss_buffer]
+        return float(-np.mean(losses)) if losses else 0.0
+
     def _calculate_danger_similarity(self, features: np.ndarray) -> float:
         """Distance-based similarity to loss 'danger zones' in LOSS-scaled space."""
         if not self.danger_zones or not self._loss_scaler_fitted:
@@ -451,6 +627,9 @@ class MistakeComponent(MemoryComponent):
     def _format_output(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """Format output to match contract requirements."""
         avg_quality = float(np.mean(list(self.cluster_quality_scores))) if self.cluster_quality_scores else 0.0
+        
+        # Get gate snippet if present
+        gate_snippet = result.get("gate_snippet", {})
 
         return {
             "danger_zones": {
@@ -485,6 +664,15 @@ class MistakeComponent(MemoryComponent):
                 "win_patterns": dict(list(self.win_patterns.items())[:10]),
                 "total_loss_patterns": int(len(self.loss_patterns)),
                 "total_win_patterns": int(len(self.win_patterns)),
+            },
+            # Gate snippet for UnifiedMemory to compose memory_gate
+            "gate_snippet": {
+                "risk_multiplier": gate_snippet.get("risk_multiplier", 1.0),
+                "veto": gate_snippet.get("veto", False),
+                "confidence": gate_snippet.get("confidence", 0.0),
+                "reasons": gate_snippet.get("reasons", []),
+                "danger_similarity": gate_snippet.get("danger_similarity", 0.0),
+                "profit_similarity": gate_snippet.get("profit_similarity", 0.0),
             },
         }
 

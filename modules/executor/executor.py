@@ -502,6 +502,24 @@ class Executor(BaseModule):
         q_count = 0
         dec_count = 0
 
+        # ==========================================================
+        # MEMORY INTEGRATION: Check for memory veto before processing
+        # ==========================================================
+        memory_veto = False
+        memory_veto_reasons: List[str] = []
+        try:
+            memory_gate = self.bus.get("memory_gate", "Executor", default=None)
+            if isinstance(memory_gate, dict) and memory_gate.get("veto", False):
+                memory_veto = True
+                memory_veto_reasons = memory_gate.get("reasons", ["Memory system vetoed"])
+                self.logger.warning(format_operator_message(
+                    icon="🧠",
+                    message="MEMORY_VETO_ACTIVE",
+                    reasons=memory_veto_reasons[:3],
+                ))
+        except Exception:
+            pass
+
         # explicit order_queue
         oq = self.bus.get("order_queue", "Executor", default=[])
         if isinstance(oq, list):
@@ -510,6 +528,13 @@ class Executor(BaseModule):
                 intent = self._normalize_order_item(item)
                 if not intent:
                     rejected.append({"reason": "bad_order_queue_item", "raw": item})
+                # Memory veto check - reject new opening orders
+                elif memory_veto and intent.get("action", "").lower() in ("open_long", "open_short", "buy", "sell"):
+                    rejected.append({
+                        "reason": "memory_veto",
+                        "intent": intent,
+                        "memory_reasons": memory_veto_reasons
+                    })
                 elif self._passes_filters(intent):
                     if intent["id"] not in self._seen_ids:
                         accepted.append(intent); self._seen_ids.add(intent["id"])

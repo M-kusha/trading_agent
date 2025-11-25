@@ -93,6 +93,18 @@ class PositionManager(PositionManagerBase):
         rationale: Dict[str, Any] = {"stage": "initial", "factors": []}
         risk_factors: Dict[str, float] = {}
 
+        # ==========================================================
+        # MEMORY INTEGRATION: Read all memory signals upfront
+        # ==========================================================
+        memory_data = self._get_memory_intelligence()
+        
+        # ---------- MEMORY VETO CHECK (highest priority gate)
+        if memory_data.get("veto", False) and not has_position:
+            rationale["stage"] = "memory_veto"
+            rationale["factors"].extend(memory_data.get("veto_reasons", ["Memory system vetoed this trade"]))
+            rationale["memory_data"] = memory_data
+            return self._finalize_decision(instrument, decision, 0.0, 0.0, 0.3, rationale, risk_factors, context)
+
         # ---------- Fast emergency gate (only closes / reduces)
         if self._check_emergency_conditions(context):
             if has_position:
@@ -107,6 +119,15 @@ class PositionManager(PositionManagerBase):
             rationale["stage"] = "emergency_hold"
             rationale["factors"].append("Emergency conditions; no open position")
             return self._finalize_decision(instrument, decision, 0.0, 0.0, 0.6, rationale, risk_factors, context)
+
+        # ---------- MEMORY DANGER ZONE CHECK (before opening new positions)
+        if not has_position and memory_data.get("in_danger_zone", False):
+            danger_similarity = memory_data.get("danger_similarity", 0.0)
+            if danger_similarity > 0.7:
+                rationale["stage"] = "memory_danger_zone"
+                rationale["factors"].append(f"Memory danger zone: {danger_similarity:.1%} similarity to past losses")
+                rationale["memory_data"] = memory_data
+                return self._finalize_decision(instrument, decision, 0.0, 0.0, 0.4, rationale, risk_factors, context)
 
         # ---------- Signal & portfolio gates
         min_sig = float(self.Cval("min_signal_threshold", 0.20))
@@ -178,6 +199,9 @@ class PositionManager(PositionManagerBase):
 
             rationale["stage"] = "new_position"
             rationale["factors"].append(f"Strong signal {sig_strength:.3f} for new position")
+            # Reset scale-down counter for new position
+            if hasattr(self, 'consecutive_scale_downs'):
+                self.consecutive_scale_downs[instrument] = 0
             return self._finalize_decision(instrument, decision, intensity, size, confidence, rationale, risk_factors, context)
 
         # From here on: we have a position; choose scale-up / scale-down / close
@@ -204,14 +228,33 @@ class PositionManager(PositionManagerBase):
                         self.arm_scale_cooldown(instrument, seconds=float(self.Cval("scale_cooldown_seconds", 15.0)))
                         return self._finalize_decision(instrument, decision, intensity, size, confidence, rationale, risk_factors, context)
 
+        # ---------- Force close after too many consecutive scale-downs (prevents infinite scaling)
+        max_scale_downs = int(self.Cval("max_consecutive_scale_downs", 5))
+        current_scale_downs = getattr(self, 'consecutive_scale_downs', {}).get(instrument, 0)
+        if current_scale_downs >= max_scale_downs:
+            decision = PositionDecision.CLOSE
+            intensity = 0.85
+            confidence = 0.75
+            rationale["stage"] = "force_close_scale_down_limit"
+            rationale["factors"].append(f"Forced close after {current_scale_downs} consecutive scale-downs")
+            # Reset counter on close
+            if hasattr(self, 'consecutive_scale_downs'):
+                self.consecutive_scale_downs[instrument] = 0
+            return self._finalize_decision(instrument, decision, intensity, 0.0, confidence, rationale, risk_factors, context)
+
         # Opposing signals: reduce or close
+        # NOTE: Lowered close threshold from 0.80 to 0.65 because signals typically max at ~0.70
+        # This enables actual position closing instead of infinite scale-down loops
         if not signal_aligns and sig_strength > 0.50:
-            if sig_strength >= 0.80:
+            if sig_strength >= 0.65:
                 decision = PositionDecision.CLOSE
                 intensity = 0.9
                 confidence = 0.8
                 rationale["stage"] = "close_reverse"
                 rationale["factors"].append(f"Strong opposing signal {sig_strength:.3f}")
+                # Reset counter on close
+                if hasattr(self, 'consecutive_scale_downs'):
+                    self.consecutive_scale_downs[instrument] = 0
                 return self._finalize_decision(instrument, decision, intensity, 0.0, confidence, rationale, risk_factors, context)
             else:
                 decision = PositionDecision.SCALE_DOWN
@@ -220,6 +263,9 @@ class PositionManager(PositionManagerBase):
                 size = max(self._calculate_position_size(context, intensity, confidence) * 0.5, 0.0)
                 rationale["stage"] = "scale_down"
                 rationale["factors"].append(f"Opposing signal {sig_strength:.3f}, reducing exposure")
+                # Track consecutive scale-downs
+                if hasattr(self, 'consecutive_scale_downs'):
+                    self.consecutive_scale_downs[instrument] = current_scale_downs + 1
                 return self._finalize_decision(instrument, decision, intensity, size, confidence, rationale, risk_factors, context)
 
         # Risk-based nudge: if risk metrics high, consider mild scale-down
@@ -231,9 +277,15 @@ class PositionManager(PositionManagerBase):
             size = max(self._calculate_position_size(context, intensity, confidence) * 0.4, 0.0)
             rationale["stage"] = "risk_management_reduce"
             rationale["factors"].append("High risk factors; trimming exposure")
+            # Track consecutive scale-downs for risk-based scale-down too
+            if hasattr(self, 'consecutive_scale_downs'):
+                self.consecutive_scale_downs[instrument] = current_scale_downs + 1
             return self._finalize_decision(instrument, decision, intensity, size, confidence, rationale, risk_factors, context)
 
-        # Nothing compelling — hold
+        # Nothing compelling — hold (reset scale-down counter on hold too, since we're not scaling down)
+        if hasattr(self, 'consecutive_scale_downs') and current_scale_downs > 0:
+            # Don't reset on HOLD - only reset on CLOSE or opposite direction
+            pass
         rationale["stage"] = "hold"
         rationale["factors"].append("No actionable change")
         return self._finalize_decision(instrument, decision, 0.0, 0.0, 0.55, rationale, risk_factors, context)
@@ -569,6 +621,25 @@ class PositionManager(PositionManagerBase):
                     )
                 )
 
+        # ==========================================================
+        # MEMORY INTEGRATION: Apply memory risk multiplier
+        # ==========================================================
+        try:
+            memory_gate = self.smart_bus.get('memory_gate', 'PositionManager')
+            if isinstance(memory_gate, dict):
+                mem_risk_mult = float(memory_gate.get('risk_multiplier', 1.0))
+                if mem_risk_mult < 1.0:
+                    adjusted_size *= mem_risk_mult
+                    if self.debug:
+                        self.logger.info(format_operator_message(
+                            icon="🧠",
+                            message="MEMORY_SIZE_ADJUSTMENT",
+                            multiplier=f"{mem_risk_mult:.2f}x",
+                            reasons=memory_gate.get('reasons', [])[:2],
+                        ))
+        except Exception:
+            pass
+
         abs_size = abs(adjusted_size)
         min_viable_size = balance * float(self.Cval("min_size_pct", 0.01))
 
@@ -618,6 +689,128 @@ class PositionManager(PositionManagerBase):
         except Exception:
             pass
         return 0.5
+
+    # ==========================================================
+    # Memory Intelligence Integration
+    # ==========================================================
+    def _get_memory_intelligence(self) -> Dict[str, Any]:
+        """
+        Gather all actionable intelligence from the unified memory system.
+        
+        Reads multiple memory bus keys to provide:
+        - Gate signals (veto, risk_multiplier)
+        - Danger zone detection
+        - Expected PnL from similar trades
+        - Avoidance signals
+        - Pattern recognition insights
+        - Playbook recommendations
+        
+        Returns a consolidated dict for position decision logic.
+        """
+        result: Dict[str, Any] = {
+            # Gate signals
+            "veto": False,
+            "risk_multiplier": 1.0,
+            "veto_reasons": [],
+            # Danger zones
+            "in_danger_zone": False,
+            "danger_similarity": 0.0,
+            "avoidance_signal": 0.0,
+            # Playbook insights
+            "expected_pnl": 0.0,
+            "playbook_confidence": 0.5,
+            "signed_bias": 0.0,
+            # Neural insights
+            "neural_risk_hint": 0.5,
+            # Loss prediction
+            "loss_prob": 0.0,
+            # Intervention recommendation
+            "intervention_type": "none",
+            "intervention_strength": 0.0,
+        }
+        
+        try:
+            # 1) memory_gate - Primary gate signal (veto + size control)
+            memory_gate = self.smart_bus.get("memory_gate", "PositionManager")
+            if isinstance(memory_gate, dict):
+                result["veto"] = bool(memory_gate.get("veto", False))
+                result["risk_multiplier"] = float(memory_gate.get("risk_multiplier", 1.0))
+                result["veto_reasons"] = memory_gate.get("reasons", [])
+                result["danger_similarity"] = float(memory_gate.get("danger_similarity", 0.0))
+                result["loss_prob"] = float(memory_gate.get("loss_prob", 0.0))
+            
+            # 2) memory_vote - Ensemble contribution
+            memory_vote = self.smart_bus.get("memory_vote", "PositionManager")
+            if isinstance(memory_vote, dict):
+                result["signed_bias"] = float(memory_vote.get("signed_bias", 0.0))
+                result["expected_pnl"] = float(memory_vote.get("expected_pnl", 0.0))
+                result["playbook_confidence"] = float(memory_vote.get("confidence", 0.5))
+                result["neural_risk_hint"] = float(memory_vote.get("neural_risk_hint", 0.5))
+            
+            # 3) danger_zones - Direct danger zone check
+            danger_zones = self.smart_bus.get("danger_zones", "PositionManager")
+            if isinstance(danger_zones, dict):
+                zones = danger_zones.get("zones", [])
+                zone_count = danger_zones.get("zone_count", 0)
+                if zone_count > 0 or len(zones) > 0:
+                    result["in_danger_zone"] = True
+                    # Use max similarity from zones if available
+                    max_sim = 0.0
+                    for z in zones[:5]:
+                        if isinstance(z, dict):
+                            max_sim = max(max_sim, float(z.get("similarity", 0.0)))
+                    result["danger_similarity"] = max(result["danger_similarity"], max_sim)
+            
+            # 4) mistake_avoidance - Avoidance signal
+            mistake_avoidance = self.smart_bus.get("mistake_avoidance", "PositionManager")
+            if isinstance(mistake_avoidance, dict):
+                result["avoidance_signal"] = float(mistake_avoidance.get("avoidance_signal", 0.0))
+                # Strong avoidance signal can trigger danger zone
+                if result["avoidance_signal"] > 0.6:
+                    result["in_danger_zone"] = True
+            
+            # 5) playbook_recall - Historical pattern insights
+            playbook_recall = self.smart_bus.get("playbook_recall", "PositionManager")
+            if isinstance(playbook_recall, dict):
+                if result["expected_pnl"] == 0.0:
+                    result["expected_pnl"] = float(playbook_recall.get("expected_pnl", 0.0))
+                if result["playbook_confidence"] == 0.5:
+                    result["playbook_confidence"] = float(playbook_recall.get("confidence", 0.5))
+            
+            # 6) intuition_vector - Compressed pattern intelligence
+            intuition = self.smart_bus.get("intuition_vector", "PositionManager")
+            if isinstance(intuition, dict):
+                strength = float(intuition.get("strength", 0.0))
+                # Negative intuition strength indicates loss-aligned patterns
+                if strength < -0.3:
+                    result["avoidance_signal"] = max(result["avoidance_signal"], abs(strength))
+            
+            # 7) loss_prevention - Loss prevention metrics
+            loss_prevention = self.smart_bus.get("loss_prevention", "PositionManager")
+            if isinstance(loss_prevention, dict):
+                effectiveness = float(loss_prevention.get("avoidance_effectiveness", 0.0))
+                # If avoidance has been effective, trust it more
+                if effectiveness > 0.5:
+                    result["risk_multiplier"] *= (1.0 - effectiveness * 0.3)
+            
+            # Log memory intelligence if debug enabled
+            if self.debug and (result["veto"] or result["in_danger_zone"] or result["avoidance_signal"] > 0.3):
+                self.logger.info(format_operator_message(
+                    icon="🧠",
+                    message="MEMORY_INTELLIGENCE",
+                    veto=result["veto"],
+                    danger_zone=result["in_danger_zone"],
+                    danger_sim=f"{result['danger_similarity']:.2f}",
+                    avoidance=f"{result['avoidance_signal']:.2f}",
+                    risk_mult=f"{result['risk_multiplier']:.2f}",
+                    expected_pnl=f"{result['expected_pnl']:.2f}",
+                ))
+                
+        except Exception as e:
+            if self.debug:
+                self.logger.warning(f"Memory intelligence fetch failed: {e}")
+        
+        return result
 
     # ==========================================================
     # Emergency conditions

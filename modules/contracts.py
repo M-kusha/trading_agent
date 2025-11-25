@@ -67,8 +67,10 @@ CONTRACTS: Dict[str, ModuleContract] = {
         provides=['risk_alerts', 'risk_analytics', 'risk_factors', 'risk_scaling',
                   'DynamicRiskController_voting_proposal', 'DynamicRiskController_confidence'],
         # NOTE: 'position_data' is provided by PositionManager
+        # NOTE: Memory signals (memory_gate, danger_zones, etc.) used for risk factor adjustment
         requires=['anomaly_detection', 'compliance', 'execution_quality', 'market_context', 'market_data',
-                  'market_regime', 'performance_data', 'portfolio_risk', 'position_data', 'risk_data'],
+                  'market_regime', 'performance_data', 'portfolio_risk', 'position_data', 'risk_data',
+                  'memory_gate', 'danger_zones', 'mistake_avoidance', 'intuition_vector'],
         meta={'is_voting_member': True, 'thesis_required': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'risk', 'version': '4.0.0'}
     ),
@@ -307,6 +309,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         # IMPORTANT: removed 'trade_vote' to keep VotingKernel the single writer of the final vote.
         # FIX: Removed horizon_alignment to avoid conflict with TimeHorizonAligner's canonical horizon_alignment
         # FIX: Added committee_decision_id for coordination
+        # NOTE: Memory signals used as ensemble voter contribution
         provides=['committee_decision', 'committee_confidence', 'member_proposals', 'performance_feedback',
                   'time_of_day', 'votes', 'committee_votes', 'voting_summary', 'voting_weights',
                   'strategy_arbiter_weights', 'committee_consensus', 'member_confidences_ordered',
@@ -314,6 +317,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
         requires=['emergency_mode', 'market_context', 'market_open', 'market_regime', 'portfolio_state',
                   'recent_trades', 'risk_data', 'risk_score', 'session_type', 'system_health',
                   'theme_detection', 'volatility_data',
+                  # Memory signals for ensemble voting
+                  'memory_vote', 'playbook_recall', 'intuition_vector',
                   # Individual voting proposals from all voting members
                   'DynamicRiskController_voting_proposal', 'DynamicRiskController_confidence',
                   'EnhancedAnomalyDetector_voting_proposal', 'EnhancedAnomalyDetector_confidence',
@@ -369,6 +374,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='StrategyArbiter',
         file='voting/strategy_arbiter.py',
         # FIX: Added arbiter_decision_id for coordination
+        # NOTE: Memory signals used in _evaluate_gate() for pattern-aware gating
         provides=['alpha_weights', 'arbiter_recommendations', 'decision_statistics', 'gate_decision',
                   'instrument_signals', 'instruments',
                   'member_performance', 'member_weights', 'proposal_analysis',
@@ -377,7 +383,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
                   'expert_performance', 'arbiter_decision_id'],
         requires=['collusion_score', 'consensus_score', 'horizon_alignment', 'market_context', 'market_regime',
                   'member_confidences', 'member_proposals', 'recent_trades', 'session_data', 'volatility_data',
-                  'universe', 'watched_instruments'],
+                  'universe', 'watched_instruments',
+                  'memory_gate', 'danger_zones', 'mistake_avoidance', 'playbook_recall'],
         meta={'category': 'voting', 'version': '3.0.0'}
     ),
 
@@ -474,13 +481,15 @@ CONTRACTS: Dict[str, ModuleContract] = {
               'category': 'external', 'version': '1.0.1'}
     ),
 
+    # NOTE: NewsSentimentModule is currently DISABLED (entire file commented out).
+    # Keep contract entry for future re-enablement but mark as disabled.
     'NewsSentimentModule': ModuleContract(
         name='NewsSentimentModule',
         file='external/news_sentiment.py',
         provides=['news_sentiment', 'news_summary', 'sentiment_confidence', 'sentiment_trend'],
         requires=['market_data', 'symbols', 'trading_session'],
         meta={'thesis_required': True, 'health_monitoring': True, 'performance_tracking': True,
-              'category': 'external', 'version': '3.0.0'}
+              'category': 'external', 'version': '3.0.0', 'disabled': True}
     ),
 
     'SessionManager': ModuleContract(
@@ -504,11 +513,13 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='PositionManager',
         file='position/position_logic.py',
         # FIX: Renamed position_data → position_manager_data to avoid conflict with Executor's canonical position_data
+        # NOTE: Memory signals used for veto gate and position sizing intelligence
         provides=['position_decisions', 'position_health', 'portfolio_state', 'order_queue', 'position_manager_data'],
         requires=['environment_config', 'indicators', 'liquidity_capabilities', 'liquidity_score',
                   'market_conditions', 'market_context', 'market_data', 'market_liquidity',
                   'market_regime', 'price_data', 'prices', 'technical_indicators',
-                  'time_risk_analysis', 'volatility_data'],
+                  'time_risk_analysis', 'volatility_data',
+                  'memory_gate', 'playbook_recall', 'intuition_vector', 'danger_zones', 'mistake_avoidance'],
         meta={'is_voting_member': False, 'thesis_required': True, 'explainable': True,
               'health_monitoring': True, 'performance_tracking': True,
               'category': 'position', 'version': '3.1.2'}
@@ -518,13 +529,15 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='Executor',
         file='executor/executor.py',
         # FIX: Added position_data as canonical provider (actual executed positions)
+        # NOTE: Memory gate used for final safety veto on order execution
         provides=['positions', 'trades', 'recent_trades',
                   'order_data', 'execution_data', 'execution_reports',
                   'portfolio_metrics', 'trading_result', 'current_pnl',
                   'trade_data', 'market_state', 'position_data',
                   'current_positions', 'pnl_data',
                   'live_adapter_status', 'pending_orders', 'account_state'],
-        requires=['order_queue', 'prices', 'price_data', 'environment_config', 'step_idx', 'execution_mode'],
+        requires=['order_queue', 'prices', 'price_data', 'environment_config', 'step_idx', 'execution_mode',
+                  'memory_gate'],
         meta={'is_voting_member': False, 'thesis_required': False, 'explainable': True,
               'health_monitoring': True, 'performance_tracking': True,
               'category': 'executor', 'version': '1.0.0'}
@@ -670,12 +683,16 @@ CONTRACTS: Dict[str, ModuleContract] = {
             # Neural
             'attention_retrieval', 'importance_scoring', 'memory_embedding', 'neural_memory',
             # Playbook
-            'memory_analytics', 'pattern_memory', 'playbook_quality', 'playbook_recall'
+            'memory_analytics', 'pattern_memory', 'playbook_quality', 'playbook_recall',
+            # NEW: Composite gate/vote signals for downstream consumers
+            'memory_gate', 'memory_vote', 'memory_rationale',
+            # NEW: Neural risk head output
+            'neural_risk_hint'
         ],
         requires=['actions', 'episode_data', 'features', 'market_context', 'market_data',
                   'observations', 'prices', 'rewards', 'risk_data', 'time_risk_analysis', 'trades'],
         meta={'thesis_required': True, 'health_monitoring': True, 'performance_tracking': True,
-              'category': 'memory', 'version': '4.0.0'}
+              'category': 'memory', 'version': '4.1.0'}
     ),
 }
 
