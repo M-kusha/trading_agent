@@ -182,8 +182,8 @@ class TradingConfig:
     # Risk Management (fallback guard-rails; Compliance/PortfolioRiskSystem are canonical)
     # ===================================================================
     rotation_gap: int = 5
-    max_position_pct: float = 0.10       # fallback cap per-trade
-    max_total_exposure: float = 0.30     # fallback cap portfolio exposure
+    max_position_pct: float = 0.25       # fallback cap per-trade (25% = ~0.25 lots on 100k balance)
+    max_total_exposure: float = 0.50     # fallback cap portfolio exposure (raised for aggressive trading)
     max_drawdown: float = 0.20           # fallback episode/session DD limit
     max_correlation: float = 0.8
 

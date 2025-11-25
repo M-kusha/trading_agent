@@ -701,6 +701,17 @@ class UnifiedMarketModule(
             aggregated.setdefault('session_data', aggregated.get('session_data', {}))
             aggregated.setdefault('spread_analysis', aggregated.get('spread_analysis', {}))
             aggregated.setdefault('trading_sessions', aggregated.get('trading_sessions', {}))
+            # Build per-instrument liquidity map for PositionManager
+            if 'liquidity_score_by_instrument' not in aggregated:
+                liq_score = aggregated.get('liquidity_score', 0.5)
+                # Default: same score for all watched instruments
+                universe = inputs.get('universe', ['EUR/USD', 'XAU/USD'])
+                if not isinstance(universe, list):
+                    universe = ['EUR/USD', 'XAU/USD']
+                aggregated['liquidity_score_by_instrument'] = {
+                    inst.replace("/", "_").replace(" ", "_"): float(liq_score)
+                    for inst in universe
+                }
 
             # Theme
             aggregated.setdefault('market_theme', int(aggregated.get('market_theme', 0)))
@@ -797,7 +808,63 @@ class UnifiedMarketModule(
 
             return aggregated
         except Exception:
+            # Ensure ALL critical keys are present even on error (full contract compliance)
             aggregated.setdefault('market_analysis_thesis', thesis)
+            aggregated.setdefault('_thesis', thesis)
+            aggregated.setdefault('thesis', thesis)
+            # Fractal / Regime
+            aggregated.setdefault('fractal_metrics', {})
+            aggregated.setdefault('market_regime', 'unknown')
+            aggregated.setdefault('regime_data', {})
+            aggregated.setdefault('regime_strength', 0.0)
+            aggregated.setdefault('timestamps', [])
+            aggregated.setdefault('trend_direction', 0.0)
+            # Liquidity
+            aggregated.setdefault('liquidity_capabilities', {})
+            aggregated.setdefault('liquidity_prediction', {})
+            aggregated.setdefault('liquidity_score', 0.5)
+            aggregated.setdefault('liquidity_thesis', thesis)
+            aggregated.setdefault('liquidity_score_by_instrument', {"EUR_USD": 0.5, "XAU_USD": 0.5})
+            aggregated.setdefault('market_depth', {})
+            aggregated.setdefault('session_data', {})
+            aggregated.setdefault('spread_analysis', {})
+            aggregated.setdefault('trading_sessions', {})
+            # Theme
+            aggregated.setdefault('market_theme', 0)
+            aggregated.setdefault('theme_detection', {})
+            aggregated.setdefault('theme_detector_health', {'status': 'ERROR'})
+            aggregated.setdefault('theme_detector_status', 'ERROR')
+            aggregated.setdefault('theme_strength', 0.0)
+            aggregated.setdefault('theme_transition', 0.0)
+            # Regime performance matrix
+            aggregated.setdefault('backtesting_data', {})
+            aggregated.setdefault('regime_accuracy', {'value': 0.0, 'by_regime': {}})
+            aggregated.setdefault('regime_analysis', {})
+            aggregated.setdefault('regime_matrix_analysis', {})
+            aggregated.setdefault('regime_matrix_health', {'status': 'ERROR'})
+            aggregated.setdefault('regime_matrix_status', 'ERROR')
+            aggregated.setdefault('regime_performance', {'matrix': [], 'current_regime': 0, 'predicted_regime': 0, 'avg_performance': 0.0})
+            aggregated.setdefault('regime_prediction', {'predicted': 0, 'actual': 0, 'correct': False})
+            aggregated.setdefault('stress_test_results', {})
+            # Time-aware risk scaling
+            aggregated.setdefault('risk_scaling_factor', 1.0)
+            aggregated.setdefault('session_risk', {'risk_level': 0.5, 'current_session': 'unknown'})
+            aggregated.setdefault('time_risk_health', {'status': 'ERROR'})
+            aggregated.setdefault('time_risk_status', 'ERROR')
+            aggregated.setdefault('time_risk_analysis', {'session': 'UNKNOWN', 'minute_in_session': 0, 'is_rollover_window': False, 'volatility_hint': 'medium'})
+            aggregated.setdefault('volatility_adjustment', 1.0)
+            # Unified extras
+            aggregated.setdefault('unified_market_analysis', {'error': True})
+            # Market context
+            now_iso = datetime.datetime.now().isoformat()
+            aggregated.setdefault('market_context', {
+                'regime': 'unknown',
+                'volatility_level': 'medium',
+                'session': 'unknown',
+                'theme': 0,
+                'liquidity_score': 0.5,
+                'timestamp': now_iso,
+            })
             return aggregated
 
     def _build_theme_health(self, theme_result: Optional[ComponentResult]) -> Tuple[Dict[str, Any], str]:
@@ -1251,6 +1318,7 @@ class UnifiedMarketModule(
             ("liquidity_prediction", aggregated.get("liquidity_prediction")),
             ("liquidity_score", aggregated.get("liquidity_score")),
             ("liquidity_thesis", aggregated.get("liquidity_thesis")),
+            ("liquidity_score_by_instrument", aggregated.get("liquidity_score_by_instrument", {})),  # Per-instrument liquidity
             ("market_depth", aggregated.get("market_depth")),
             ("session_data", aggregated.get("session_data")),
             ("spread_analysis", aggregated.get("spread_analysis")),
@@ -1323,22 +1391,72 @@ class UnifiedMarketModule(
         processing_time = (time.time() - start_time) * 1000
         self.metrics_tracker.record_failure("unified_process", str(error))
 
-        # Return safe fallback
+        now_iso = datetime.datetime.now().isoformat()
+        error_thesis = f"Market analysis failed: {str(error)[:100]}"
+
+        # Return safe fallback with ALL required keys from contract
         return {
             "error": str(error),
             "processing_time_ms": processing_time,
             "success": False,
-            "_thesis": f"Market analysis failed: {str(error)[:100]}",
-            "thesis": f"Market analysis failed: {str(error)[:100]}",
-            # Provide default values for critical keys
+            "_thesis": error_thesis,
+            "thesis": error_thesis,
+            # Fractal / Regime
+            "fractal_metrics": {},
             "market_regime": "unknown",
+            "regime_data": {},
             "regime_strength": 0.0,
+            "timestamps": [],
+            "trend_direction": 0.0,
+            # Liquidity
+            "liquidity_capabilities": {},
+            "liquidity_prediction": {},
             "liquidity_score": 0.5,
+            "liquidity_thesis": error_thesis,
+            "liquidity_score_by_instrument": {"EUR_USD": 0.5, "XAU_USD": 0.5},
+            "market_depth": {},
+            "session_data": {},
+            "spread_analysis": {},
+            "trading_sessions": {},
+            # Theme
             "market_theme": 0,
+            "theme_detection": {},
+            "theme_detector_health": {"status": "ERROR"},
+            "theme_detector_status": "ERROR",
+            "theme_strength": 0.0,
+            "theme_transition": 0.0,
+            # Regime performance matrix
+            "backtesting_data": {},
+            "regime_accuracy": {"value": 0.0, "by_regime": {}},
+            "regime_analysis": {},
+            "regime_matrix_analysis": {},
+            "regime_matrix_health": {"status": "ERROR"},
+            "regime_matrix_status": "ERROR",
+            "regime_performance": {"matrix": [], "current_regime": 0, "predicted_regime": 0, "avg_performance": 0.0},
+            "regime_prediction": {"predicted": 0, "actual": 0, "correct": False},
+            "stress_test_results": {},
+            # Time-aware risk scaling
             "risk_scaling_factor": 1.0,
+            "session_risk": {"risk_level": 0.5, "current_session": "unknown"},
+            "time_risk_health": {"status": "ERROR"},
+            "time_risk_status": "ERROR",
+            "time_risk_analysis": {"session": "UNKNOWN", "minute_in_session": 0, "is_rollover_window": False, "volatility_hint": "medium"},
+            "volatility_adjustment": 1.0,
+            # Unified extras
+            "unified_market_analysis": {"error": True},
+            "market_analysis_thesis": error_thesis,
+            # Market context
+            "market_context": {
+                "regime": "unknown",
+                "volatility_level": "medium",
+                "session": "unknown",
+                "theme": 0,
+                "liquidity_score": 0.5,
+                "timestamp": now_iso,
+            },
             "_metadata": {
                 "error": True,
-                "timestamp": datetime.datetime.now().isoformat(),
+                "timestamp": now_iso,
             },
         }
 

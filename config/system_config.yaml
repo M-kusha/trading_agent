@@ -687,3 +687,11 @@ modules:
       timeout_ms: 250
       provides_data:
         - expert_votes
+
+# InfoBus cross-process persistence (enables frontend to see training data)
+info_bus:
+  persistence_enabled: true
+  persist_write_interval_seconds: 0.5
+  persistence_file: "state/infobus_data.json"
+  # Keys to persist for frontend visibility (null = persist ALL keys)
+  persist_keys: null

@@ -180,7 +180,17 @@ class PositionManager(PositionManagerBase):
                 rationale["factors"].append(f"Signal {sig_strength:.3f} below threshold {min_sig:.2f}")
                 return self._finalize_decision(instrument, decision, 0.0, 0.0, 0.5, rationale, risk_factors, context)
 
-            decision = PositionDecision.OPEN_LONG if context.market_direction > 0 else PositionDecision.OPEN_SHORT
+            # FIX BUG 1: Use voting direction when available, fallback to signal direction
+            trade_vote = self.smart_bus.get("trade_vote_v2", "PositionManager")
+            voting_direction = None
+            if isinstance(trade_vote, dict) and trade_vote.get("action") in ("BUY", "buy", "SELL", "sell"):
+                vote_action = str(trade_vote.get("action", "")).upper()
+                voting_direction = 1 if vote_action == "BUY" else -1
+                rationale["factors"].append(f"Using voting direction: {vote_action}")
+            
+            # Use voting direction if available and confident, else fallback to signal
+            effective_direction = voting_direction if voting_direction is not None else context.market_direction
+            decision = PositionDecision.OPEN_LONG if effective_direction > 0 else PositionDecision.OPEN_SHORT
             intensity = sig_strength
             confidence = self._calculate_confidence(context, decision)
             size = self._calculate_position_size(context, intensity, confidence)

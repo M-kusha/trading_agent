@@ -289,8 +289,29 @@ class SystemIntegritySuite:
       • logger: RotatingLogger-like with info/warning/error(/debug).
       • orchestrator: optional; if present, used for module list + metadata.
     """
+    
+    # Singleton instance
+    _singleton_instance: Optional["SystemIntegritySuite"] = None
+    _singleton_lock = threading.Lock()
 
     # ── Construction ──────────────────────────────────────────
+    def __new__(cls, *args, **kwargs):
+        """Singleton pattern to prevent multiple instances."""
+        if cls._singleton_instance is None:
+            with cls._singleton_lock:
+                if cls._singleton_instance is None:
+                    instance = super().__new__(cls)
+                    instance._initialized = False  # type: ignore[attr-defined]
+                    cls._singleton_instance = instance
+        return cls._singleton_instance
+    
+    @classmethod
+    def get_instance(cls, **kwargs) -> "SystemIntegritySuite":
+        """Get or create the singleton instance."""
+        if cls._singleton_instance is None:
+            return cls(**kwargs)
+        return cls._singleton_instance
+
     def __init__(
         self,
         *,
@@ -299,6 +320,10 @@ class SystemIntegritySuite:
         logger: Optional[LoggerProto] = None,
         orchestrator: Any = None,
     ) -> None:
+        # Prevent re-initialization of singleton
+        if getattr(self, "_initialized", False):
+            return
+        
         # Allow env overrides for quick toggling
         env_debug = os.getenv("SIS_DEBUG")
         cfg = config or SuiteConfig()
@@ -346,13 +371,41 @@ class SystemIntegritySuite:
             "pending_orders", "account_state", "market_state", "market_context"
         }
 
+        # Write-once keys: Keys that are intentionally set once at startup/init
+        # and are NOT expected to be refreshed. Exclude from staleness warnings.
+        self.write_once_keys: Set[str] = {
+            # Module initialization keys (set once per module lifecycle)
+            "preflight_report", "warmup_report", "autotune_report",
+            "selftest_report", "startup_report", "system_ready",
+            "enhanced_training_start", "environment_observation_size",
+            # Config keys (set once at startup)
+            "config_update", "env_mode", "mode_config", "mode_thresholds",
+            "environment_config",
+            # Initialization markers (pattern: *_initialization)
+            # These are handled by suffix matching in _is_write_once()
+        }
+        # Suffixes that indicate write-once initialization keys
+        self._write_once_suffixes: Tuple[str, ...] = (
+            "_initialization", "_init", "_config", "_capabilities",
+        )
+
         # Rate limiting for BUS MISS warnings to prevent log spam
         self._miss_warn_times: Dict[str, float] = {}  # key -> last warning time
         self._miss_warn_interval = 60.0  # seconds between warnings per key
         self._miss_warn_counts: Dict[str, int] = {}  # key -> suppressed count
+        self._init_time = time.time()  # Track init time for grace period
+        self._startup_grace_period = 30.0  # Suppress warnings for first 30 seconds
+        
+        # Rate limiting for provider change warnings
+        self._provider_change_times: Dict[str, float] = {}  # key -> last warning time
+        self._provider_change_interval = 120.0  # seconds between warnings per key
+        self._provider_change_counts: Dict[str, int] = {}  # key -> suppressed count
 
         self._d("Debug enabled")  # initial debug note
         self._i("🧭", "SystemIntegritySuite initialized")
+        
+        # Mark singleton as initialized
+        self._initialized = True
 
     # ── Internal logging helpers ──────────────────────────────
     def _d(self, message: str, **ctx: Any) -> None:
@@ -481,6 +534,9 @@ class SystemIntegritySuite:
             for k, cons in consumers_map.items():
                 self._lifecycle.setdefault(k, KeyLifecycle()).consumers |= set(cons)
 
+        # Track write-once keys separately (for summary)
+        write_once_count = 0
+
         # Fresh / Stale
         for key, meta in freshness.items():
             age = float(meta.get("age_seconds", 0.0) or 0.0)
@@ -489,18 +545,24 @@ class SystemIntegritySuite:
             if age <= self.cfg.stale_age_warn_seconds:
                 self._mark_fresh(key, provider, version, now)
             else:
-                self._mark_stale(key, provider, version, now)
-                # Detailed root-cause trace for stale detected by heartbeat
-                consumers = sorted(list(consumers_map.get(key, [])))
-                self._note_stale(
-                    key=key,
-                    cause="heartbeat_age",
-                    provider=provider,
-                    version=version,
-                    age=age,
-                    consumers=consumers,
-                    requester=None,
-                )
+                # Skip staleness warnings for write-once keys
+                if self._is_write_once(key):
+                    # Still mark as fresh since write-once keys are intentionally static
+                    self._mark_fresh(key, provider, version, now)
+                    write_once_count += 1
+                else:
+                    self._mark_stale(key, provider, version, now)
+                    # Detailed root-cause trace for stale detected by heartbeat
+                    consumers = sorted(list(consumers_map.get(key, [])))
+                    self._note_stale(
+                        key=key,
+                        cause="heartbeat_age",
+                        provider=provider,
+                        version=version,
+                        age=age,
+                        consumers=consumers,
+                        requester=None,
+                    )
 
         # Missing (consumed but no provider and not in freshness)
         for key, consumers in consumers_map.items():
@@ -509,12 +571,13 @@ class SystemIntegritySuite:
                     self._mark_missing(key, "/".join(sorted(consumers)) if consumers else None, now)
                     self._note_missing(key=key, requester_hint=None, consumers=sorted(consumers))
 
-        # Summary
+        # Summary (exclude write-once from stale count in logs)
         snap = self._lifecycle_snapshot()
         self._i("💓", "Heartbeat",
                  missing=len(snap["unresolved"]),
                  stale=len(snap["stale"]),
-                 fresh=len(snap["fresh"]))
+                 fresh=len(snap["fresh"]),
+                 write_once=write_once_count if write_once_count > 0 else None)
 
         # SLA for watchlist
         overdue: List[Tuple[str, float]] = []
@@ -788,6 +851,22 @@ class SystemIntegritySuite:
             return False
         return bool(self._ignore_re and self._ignore_re.search(s))
 
+    def _is_write_once(self, key: str) -> bool:
+        """Check if a key is a write-once key that shouldn't be flagged as stale.
+        
+        Write-once keys are intentionally set once at initialization/startup
+        and are NOT expected to refresh. Examples:
+          - Module initialization markers (*_initialization)
+          - Startup reports (preflight_report, warmup_report, etc.)
+          - Static config keys (mode_config, environment_config)
+        """
+        if key in self.write_once_keys:
+            return True
+        for suffix in self._write_once_suffixes:
+            if key.endswith(suffix):
+                return True
+        return False
+
     def _preview(self, txt: Any) -> str:
         try:
             s = repr(txt)
@@ -804,6 +883,11 @@ class SystemIntegritySuite:
         self._note_missing(key=str(key), requester_hint=requester, consumers=None)
         if requester:
             self._module_stats[requester]["miss"] += 1
+        
+        # Skip logging during startup grace period
+        if now - self._init_time < self._startup_grace_period:
+            return
+        
         # Rate-limited warning to prevent log spam
         miss_key = f"{key}:{requester}"
         last_warn = self._miss_warn_times.get(miss_key, 0.0)
@@ -916,11 +1000,23 @@ class SystemIntegritySuite:
             old = lc.status
             lc.last_event_ts = now
 
-            # Provider change tracking
+            # Provider change tracking with rate limiting
             if provider and provider != lc.last_provider and lc.last_provider is not None:
                 lc.provider_changes += 1
                 self._provider_changes.append((now, key, lc.last_provider, provider))
-                self._i("🔁", "Provider changed", key=key, old=lc.last_provider, new=provider)
+                
+                # Rate-limited logging for provider changes
+                last_warn = self._provider_change_times.get(key, 0.0)
+                if now - last_warn >= self._provider_change_interval:
+                    suppressed = self._provider_change_counts.get(key, 0)
+                    if suppressed > 0:
+                        self._i("🔁", "Provider changed", key=key, old=lc.last_provider, new=provider, suppressed=suppressed)
+                    else:
+                        self._i("🔁", "Provider changed", key=key, old=lc.last_provider, new=provider)
+                    self._provider_change_times[key] = now
+                    self._provider_change_counts[key] = 0
+                else:
+                    self._provider_change_counts[key] = self._provider_change_counts.get(key, 0) + 1
             if provider:
                 lc.last_provider = provider
             try:
@@ -949,8 +1045,8 @@ class SystemIntegritySuite:
         lc.miss_count += 1
         self._transition(key, "MISSING", now, None, None)
         self._record_event("miss", key=key, requester=requester_hint)
-        # Only log "Tracking missing key" once per key (not per requester)
-        if lc.miss_count == 1:
+        # Only log "Tracking missing key" once per key, and skip during grace period
+        if lc.miss_count == 1 and (now - self._init_time >= self._startup_grace_period):
             self._w("🕵️", "Tracking missing key", key=key, requester=requester_hint or "unknown")
 
     def _mark_stale(self, key: str, provider: Optional[str], version: Any, now: float) -> None:

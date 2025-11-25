@@ -283,6 +283,19 @@ class DashboardManager:
         ]
         if self.debug:
             cmd.append("--reload")
+            # Exclude directories that change during training to prevent unwanted restarts
+            # These directories are modified by the training subprocess and InfoBus persistence
+            cmd.extend([
+                "--reload-exclude", "state",
+                "--reload-exclude", "logs",
+                "--reload-exclude", "data",
+                "--reload-exclude", "checkpoints",
+                "--reload-exclude", "models",
+                "--reload-exclude", "metrics",
+                "--reload-exclude", "*.json",
+                "--reload-exclude", "*.log",
+                "--reload-exclude", "*.jsonl",
+            ])
 
         env = build_env(
             base={"PYTHONPATH": ".", "PYTHONUNBUFFERED": "1"},
@@ -368,7 +381,7 @@ class DashboardManager:
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,
             "universal_newlines": True,
-            "shell": False
+            "shell": os.name == "nt"  # Use shell=True on Windows for npm/yarn/pnpm
         }
         if os.name == "nt":
             popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP

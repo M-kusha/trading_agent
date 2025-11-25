@@ -9,13 +9,23 @@ export default defineConfig({
     host: true,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://127.0.0.1:8000',
         changeOrigin: true,
+        secure: false,
+        configure: (proxy, _options) => {
+          proxy.on('error', (err, _req, _res) => {
+            console.log('proxy error', err);
+          });
+          proxy.on('proxyReq', (proxyReq, req, _res) => {
+            proxyReq.setHeader('Connection', 'keep-alive');
+          });
+        },
       },
       '/ws': {
-        target: 'http://localhost:8000',
+        target: 'ws://127.0.0.1:8000',
         ws: true,
         changeOrigin: true,
+        secure: false,
       }
     }
   },

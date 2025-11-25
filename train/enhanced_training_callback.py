@@ -10,12 +10,176 @@ from __future__ import annotations
 import os
 import json
 import time
+import threading
+import asyncio
+import urllib.request
+import urllib.error
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Deque
 from collections import deque, defaultdict
 
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
+
+# WebSocket client for sending metrics to backend
+WEBSOCKET_AVAILABLE = False
+try:
+    import websockets
+    from websockets.sync.client import connect as ws_connect
+    WEBSOCKET_AVAILABLE = True
+except ImportError:
+    websockets = None  # type: ignore
+    ws_connect = None  # type: ignore
+
+# Guard against partially available import where ws_connect is None
+if ws_connect is None:
+    WEBSOCKET_AVAILABLE = False
+
+try:
+    import requests  # type: ignore
+    REQUESTS_AVAILABLE = True
+except Exception:
+    requests = None  # type: ignore
+    REQUESTS_AVAILABLE = False
+
+
+# ───────────────────────────────────────────────────────────────────
+# WebSocket Metrics Broadcaster - Sends training metrics to backend
+# ───────────────────────────────────────────────────────────────────
+class WebSocketMetricsBroadcaster:
+    """Broadcasts training metrics to backend via WebSocket on port 8001 with HTTP fallback."""
+    
+    def __init__(self, host: str = "localhost", port: int = 8001, http_fallback_url: Optional[str] = None):
+        self.uri = f"ws://{host}:{port}"
+        self.http_url = http_fallback_url or "http://localhost:8000/api/training/metrics"
+        self.ws: Any = None
+        self.connected = False
+        self._lock = threading.Lock()
+        self._connect_attempts = 0
+        # Try websocket up to 3 times with delays before falling back to HTTP
+        disable_ws = os.getenv("METRICS_WS_DISABLE", "0") == "1" or os.getenv("TRAINING_METRICS_WS_DISABLE", "0") == "1"
+        self._max_connect_attempts = 0 if disable_ws else 3
+        self._http_warned = False
+        self._deferred_connect = True  # Defer connection until first metrics send
+        self._first_connect_done = False
+        
+    def connect(self) -> bool:
+        """Attempt to connect to the backend WebSocket server with retries"""
+        if self._max_connect_attempts == 0:
+            return False
+        if not WEBSOCKET_AVAILABLE or ws_connect is None:
+            if not self._first_connect_done:
+                print("[WARN] websockets package not available - using HTTP fallback for metrics")
+                self._first_connect_done = True
+            return False
+            
+        if self.connected and self.ws:
+            return True
+            
+        with self._lock:
+            # Already exceeded max attempts
+            if self._connect_attempts >= self._max_connect_attempts:
+                return False
+            
+            # Retry loop with exponential backoff
+            while self._connect_attempts < self._max_connect_attempts:
+                self._connect_attempts += 1
+                try:
+                    connector = ws_connect
+                    if connector is None:
+                        # Should not happen because of guards, but keep safe for type checkers
+                        return False
+                    # Use longer timeout and disable compression for reliability
+                    self.ws = connector(
+                        self.uri, 
+                        open_timeout=10,
+                        close_timeout=5,
+                        max_size=2**20,  # 1MB max message size
+                    )
+                    self.connected = True
+                    self._first_connect_done = True
+                    print(f"[OK] Connected to training metrics server at {self.uri}")
+                    return True
+                except Exception as e:
+                    if self._connect_attempts < self._max_connect_attempts:
+                        # Wait before retry (exponential backoff: 1s, 2s, 4s)
+                        wait_time = 2 ** (self._connect_attempts - 1)
+                        time.sleep(wait_time)
+                    else:
+                        # Final attempt failed - switch to HTTP fallback silently
+                        if not self._first_connect_done:
+                            print(f"[INFO] WebSocket unavailable, using HTTP fallback for training metrics")
+                            self._first_connect_done = True
+            
+            self.connected = False
+            return False
+
+    def _send_http_fallback(self, metrics: Dict[str, Any]) -> bool:
+        """
+        Fallback path to push metrics via HTTP if websocket handshake fails.
+        Uses requests when available, otherwise urllib from stdlib.
+        """
+        payload = {
+            "type": "training_metrics",
+            "data": metrics,
+            "timestamp": datetime.now().isoformat()
+        }
+
+        try:
+            if REQUESTS_AVAILABLE and requests is not None:
+                resp = requests.post(self.http_url, json=payload, timeout=2)
+                return 200 <= resp.status_code < 300
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                self.http_url,
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=2) as resp:  # nosec B310
+                return 200 <= getattr(resp, "status", 0) < 300
+        except Exception as e:
+            if not self._http_warned:
+                # Avoid log spam if backend endpoint is unavailable
+                print(f"[WARN] HTTP metrics fallback failed: {e}")
+                self._http_warned = True
+            return False
+            
+    def send_metrics(self, metrics: Dict[str, Any]) -> bool:
+        """Send metrics to the backend WebSocket server"""
+        if not self.connected:
+            if not self.connect():
+                return self._send_http_fallback(metrics)
+                
+        try:
+            with self._lock:
+                if self.ws is None:
+                    return self._send_http_fallback(metrics)
+                    
+                message = {
+                    "type": "training_metrics",
+                    "data": metrics,
+                    "timestamp": datetime.now().isoformat()
+                }
+                self.ws.send(json.dumps(message))
+                return True
+        except Exception:
+            self.connected = False
+            self.ws = None
+            # Try to reconnect on next send
+            return self._send_http_fallback(metrics)
+            
+    def close(self):
+        """Close the WebSocket connection"""
+        try:
+            with self._lock:
+                if self.ws:
+                    self.ws.close()
+                self.ws = None
+                self.connected = False
+        except Exception:
+            pass
+
 
 # Import beautiful visualizer
 try:
@@ -188,11 +352,26 @@ class ModernEnhancedTrainingCallback(BaseCallback):
 
     def __init__(self, total_timesteps: int, config: Any,
                  metrics_broadcaster: Any = None, verbose: int = 1,
-                 use_beautiful_display: bool = True):
+                 use_beautiful_display: bool = True,
+                 enable_ws_broadcast: bool = False):
         super().__init__(verbose)
         self.total_timesteps = int(total_timesteps)
         self.config = config
-        self.metrics_broadcaster = metrics_broadcaster
+        
+        # Auto-create WebSocket broadcaster if not provided and enabled
+        if metrics_broadcaster is None and enable_ws_broadcast:
+            try:
+                ws_broadcaster = WebSocketMetricsBroadcaster(host="localhost", port=8001)
+                # Don't connect immediately - defer to first metrics send for better reliability
+                # This avoids race conditions with backend startup
+                self.metrics_broadcaster = ws_broadcaster
+                print("[INFO] WebSocket metrics broadcaster initialized (will connect on first send)")
+            except Exception as e:
+                self.metrics_broadcaster = None
+                print(f"[WARN] Failed to create WebSocket broadcaster: {e}")
+        else:
+            self.metrics_broadcaster = metrics_broadcaster
+            
         self.use_beautiful_display = use_beautiful_display and VISUALIZER_AVAILABLE
 
         # Initialize beautiful visualizer
@@ -433,6 +612,14 @@ class ModernEnhancedTrainingCallback(BaseCallback):
             print(f"📁 Final report saved: {path}")
         except Exception:
             pass
+        
+        # Close WebSocket broadcaster if we own it
+        if self.metrics_broadcaster and isinstance(self.metrics_broadcaster, WebSocketMetricsBroadcaster):
+            try:
+                self.metrics_broadcaster.close()
+                print("[OK] WebSocket metrics broadcaster closed")
+            except Exception as e:
+                print(f"[WARN] Error closing WebSocket broadcaster: {e}")
 
     # ── Telemetry helpers ───────────────────────────────────────────
     def _print_enhanced_progress(self):

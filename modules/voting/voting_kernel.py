@@ -697,6 +697,7 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
                 "action": "abstain",
                 "size": 0.0,
                 "confidence": 0.0,
+                "consensus_score": consensus.get("score", 0.0) or 0.0,  # Pass through consensus score
                 "reason": "no_arbiter_decision",
             }),
             
@@ -767,7 +768,7 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
             "voting_consensus": 0.0,  # FIX: Required by contract
             "consensus_summary": {},  # FIX: Required by contract
             "voting_metrics": {"processing_time_ms": processing_time},  # FIX: Required by contract
-            "trade_vote_v2": {"action": "abstain", "size": 0.0, "confidence": 0.0, "reason": "kernel_error"},  # FIX: Required
+            "trade_vote_v2": {"action": "abstain", "size": 0.0, "confidence": 0.0, "consensus_score": 0.0, "reason": "kernel_error"},  # FIX: Required
             "decision_id": None,
             "pipeline_timeline": timeline,
             "processing_time_ms": processing_time,
@@ -785,7 +786,7 @@ class VotingKernel(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin)
             "voting_consensus": 0.0,  # FIX: Required by contract
             "consensus_summary": {},  # FIX: Required by contract
             "voting_metrics": {"processing_time_ms": 0.0},  # FIX: Required by contract
-            "trade_vote_v2": {"action": "abstain", "size": 0.0, "confidence": 0.0, "reason": "disabled"},  # FIX: Required
+            "trade_vote_v2": {"action": "abstain", "size": 0.0, "confidence": 0.0, "consensus_score": 0.0, "reason": "disabled"},  # FIX: Required
             "decision_id": None,
             "pipeline_timeline": [],
             "processing_time_ms": 0.0,

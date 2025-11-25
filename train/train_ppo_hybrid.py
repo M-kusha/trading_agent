@@ -301,6 +301,9 @@ def create_environments(data: Dict, config: TradingConfig, n_envs: int = 1, seed
     if not test_environment_creation(data, config):
         raise RuntimeError("Environment creation test failed")
 
+    # Respect requested env count when safe; Windows/live is forced to 1 for stability
+    requested_envs = max(1, int(getattr(config, "num_envs", n_envs)))
+    n_envs = requested_envs
     if getattr(config, "live_mode", False) or platform.system() == "Windows":
         n_envs = 1
         print("[TOOL] Using single environment for stability")
@@ -382,7 +385,12 @@ def train_modern_ppo(config: TradingConfig, data_source: str, pretrained_model_p
         model = create_ppo_model(train_env, config)
 
     # Callbacks
-    callback = ModernEnhancedTrainingCallback(getattr(config, "final_training_steps", 100_000), config, verbose=1)
+    callback = ModernEnhancedTrainingCallback(
+        getattr(config, "final_training_steps", 100_000),
+        config,
+        verbose=1,
+        enable_ws_broadcast=False,
+    )
     callbacks = [
         callback,
         CheckpointCallback(
@@ -477,6 +485,17 @@ def main():
     p.add_argument("--timesteps", type=int)
     p.add_argument("--lr", type=float)
     p.add_argument("--batch_size", type=int)
+    p.add_argument("--n_epochs", type=int)
+    p.add_argument("--gamma", type=float)
+    p.add_argument("--n_steps", type=int)
+    p.add_argument("--clip_range", type=float)
+    p.add_argument("--ent_coef", type=float)
+    p.add_argument("--vf_coef", type=float)
+    p.add_argument("--max_grad_norm", type=float)
+    p.add_argument("--target_kl", type=float)
+    p.add_argument("--checkpoint_freq", type=int)
+    p.add_argument("--eval_freq", type=int)
+    p.add_argument("--num_envs", type=int)
     p.add_argument("--balance", type=float)
     p.add_argument("--data_dir", type=str, default="data/processed")
     p.add_argument("--pretrained", type=str)
@@ -509,6 +528,17 @@ def main():
     if args.timesteps: config.final_training_steps = args.timesteps
     if args.lr: config.learning_rate = args.lr
     if args.batch_size: config.batch_size = args.batch_size
+    if args.n_epochs: config.n_epochs = args.n_epochs
+    if args.gamma: config.gamma = args.gamma
+    if args.n_steps: config.n_steps = args.n_steps
+    if args.clip_range: config.clip_range = args.clip_range
+    if args.ent_coef: config.ent_coef = args.ent_coef
+    if args.vf_coef: config.vf_coef = args.vf_coef
+    if args.max_grad_norm: config.max_grad_norm = args.max_grad_norm
+    if args.target_kl: config.target_kl = args.target_kl
+    if args.checkpoint_freq: config.checkpoint_freq = args.checkpoint_freq
+    if args.eval_freq: config.eval_freq = args.eval_freq
+    if args.num_envs: config.num_envs = args.num_envs
     if args.balance: config.initial_balance = args.balance
     if args.data_dir: config.data_dir = args.data_dir
     if args.debug: config.debug = True

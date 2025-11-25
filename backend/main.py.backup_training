@@ -321,15 +321,23 @@ class EnhancedTradingSystemState:
     """Advanced state management with comprehensive module tracking"""
 
     # Explicit attribute types to satisfy static type checkers
+    training_process: Optional[subprocess.Popen[str]]
+    training_websocket_server: Optional[Any]
     trading_task: Optional[asyncio.Task[Any]]
+    tensorboard_process: Optional[subprocess.Popen[bytes]]
     monitoring_tasks: List[asyncio.Task[Any]]
     broadcast_lock: Optional[asyncio.Lock]
+
+    training_mode: Optional[str]
+    training_metrics: Dict[str, Any]
+    training_metrics_history: List[Dict[str, Any]]
+    training_start_time: Optional[datetime]
+    training_config: Optional['PPOTrainingConfig']
 
     live_env: Optional[Any]
     model: Optional[Any]
     last_trade_time: Dict[str, float]
     trading_config: Optional['LiveTradingConfig']
-    tensorboard_process: Optional[Any]
 
     websocket_connections: List[WebSocket]
     training_websocket_connections: List[Any]
@@ -350,15 +358,24 @@ class EnhancedTradingSystemState:
         self.current_session_id = str(uuid.uuid4())
 
         # Process management
+        self.training_process = None
+        self.training_websocket_server = None
         self.trading_task = None
+        self.tensorboard_process = None
         self.monitoring_tasks = []
+
+        # Training state
+        self.training_mode = None  # "offline" or "online"
+        self.training_metrics = {}
+        self.training_metrics_history = []
+        self.training_start_time = None
+        self.training_config = None
 
         # Trading state
         self.live_env = None
         self.model = None
         self.last_trade_time = {}
         self.trading_config = None
-        self.tensorboard_process = None
 
         # Performance tracking
         self.performance_metrics = {
@@ -591,6 +608,32 @@ class EnhancedTradingSystemState:
         }
         self.alerts.append(alert_entry)
         self.alerts = self.alerts[-500:]
+        
+    def add_training_metrics(self, metrics: Dict[str, Any]):
+        """Add training metrics and maintain history"""
+        self.training_metrics = metrics
+        self.training_metrics_history.append({
+            **metrics,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        # Keep only last 1000 entries to prevent memory issues
+        if len(self.training_metrics_history) > 1000:
+            self.training_metrics_history = self.training_metrics_history[-1000:]
+    
+    def get_training_progress(self) -> Dict[str, Any]:
+        """Get comprehensive training progress data"""
+        if not self.training_metrics:
+            return {}
+            
+        return {
+            "current_metrics": self.training_metrics,
+            "history": self.training_metrics_history[-100:],  # Last 100 entries
+            "training_active": self.system_status == "TRAINING",
+            "mode": self.training_mode,
+            "start_time": self.training_start_time.isoformat() if self.training_start_time else None,
+            "elapsed_time": (datetime.now() - self.training_start_time).total_seconds() if self.training_start_time else 0,
+        }
 
 # Global state instance
 state = EnhancedTradingSystemState()
@@ -600,11 +643,63 @@ state = EnhancedTradingSystemState()
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 class TrainingMetricsServer:
-    """WebSocket server - DISABLED FOR LIVE TRADING ONLY"""
-    pass
+    """WebSocket server to receive metrics from training process"""
+    
+    def __init__(self, host='localhost', port=8001):
+        self.host = host
+        self.port = port
+        self.server = None
+        self.clients = set()
+        # Use a quieter logger so transient handshake failures do not spam stack traces
+        self.ws_logger = logging.getLogger("TrainingMetricsServer.ws")
+        self.ws_logger.setLevel(logging.WARNING)
+        
+    async def handler(self, websocket):
+        """Handle WebSocket connections from training process"""
+        self.clients.add(websocket)
+        logger.info(f"Training metrics client connected from {websocket.remote_address}")
+        
+        try:
+            async for message in websocket:
+                try:
+                    data = json.loads(message)
+                    if data.get("type") == "training_metrics":
+                        metrics = data.get("data", {})
+                        state.add_training_metrics(metrics)
+                        
+                        # Broadcast to frontend clients
+                        await broadcast_training_metrics(metrics)
+                        
+                except json.JSONDecodeError:
+                    logger.error("Invalid JSON received from training process")
+                    
+        except websockets.exceptions.ConnectionClosed:
+            pass
+        finally:
+            self.clients.remove(websocket)
+            logger.info("Training metrics client disconnected")
+    
+    async def start(self):
+        """Start the WebSocket server"""
+        self.server = await websockets.serve(
+            self.handler,
+            self.host,
+            self.port,
+            logger=self.ws_logger,
+            ping_interval=20,
+            ping_timeout=20,
+            max_size=1_000_000,
+        )
+        logger.info(f"Training metrics server started on ws://{self.host}:{self.port}")
+        
+    async def stop(self):
+        """Stop the WebSocket server"""
+        if self.server:
+            self.server.close()
+            await self.server.wait_closed()
 
-# Global training metrics server - REMOVED FOR LIVE TRADING ONLY
-# training_metrics_server = TrainingMetricsServer()  # DISABLED
+# Global training metrics server
+training_metrics_server = TrainingMetricsServer()
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # MT5 Integration
@@ -1600,8 +1695,23 @@ async def _send_to_all_websockets(message: dict):
             if ws in state.websocket_connections:
                 state.websocket_connections.remove(ws)
 
-# ═══════════════════════════════════════════════════════════════════
-# Emergency Controls# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+async def broadcast_training_metrics(metrics: Dict[str, Any]):
+    """Broadcast training metrics to frontend"""
+    if not state.websocket_connections:
+        return
+        
+    try:
+        message = {
+            "type": "training_metrics",
+            "data": metrics,
+            "timestamp": datetime.now().isoformat()
+        }
+        await _send_to_all_websockets(message)
+                
+    except Exception as e:
+        logger.error(f"Training metrics broadcast error: {e}")
+
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # Emergency Controls
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
@@ -1719,6 +1829,9 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to initialize InfoBus in standby mode: {e}")
 
+    # Start training metrics WebSocket server
+    asyncio.create_task(training_metrics_server.start())
+
     # Initialize broadcast lock when event loop is available
     try:
         state.broadcast_lock = asyncio.Lock()
@@ -1741,10 +1854,18 @@ async def shutdown_event():
     """Enhanced system shutdown"""
     logger.info("[STOP] Shutting down trading dashboard...")
     
+    # Stop training metrics server
+    await training_metrics_server.stop()
+    
     # Cancel monitoring tasks
     for task in state.monitoring_tasks:
         if not task.done():
             task.cancel()
+    
+    # Stop training if active
+    if state.training_process and state.training_process.poll() is None:
+        state.training_process.terminate()
+        state.training_process.wait(timeout=10)
     
     # Stop trading if active
     if state.trading_task and not state.trading_task.done():
@@ -1830,6 +1951,84 @@ async def logout():
     await broadcast_system_state()
     return {"success": True}
 
+# Training endpoints
+@app.post("/api/training/start")
+async def training_start(config: PPOTrainingConfig):
+    """Start PPO training with mode selection"""
+    result = await start_training(config)
+    await broadcast_system_state()
+    return result
+
+@app.post("/api/training/stop")
+async def training_stop():
+    """Stop training"""
+    if state.training_process and state.training_process.poll() is None:
+        state.training_process.terminate()
+        state.training_process.wait(timeout=10)
+        state.training_process = None
+        state.system_status = "IDLE"
+        state.add_alert("Training stopped by user", "info", "training")
+        await broadcast_system_state()
+        return {"success": True}
+    else:
+        raise HTTPException(status_code=400, detail="No training process running")
+
+@app.get("/api/training/progress")
+async def get_training_progress():
+    """Get detailed training progress and metrics"""
+    return state.get_training_progress()
+
+@app.get("/api/training/metrics/history")
+async def get_training_metrics_history(limit: int = Query(default=100, le=1000)):
+    """Get historical training metrics"""
+    history = state.training_metrics_history[-limit:]
+    
+    # Calculate additional statistics
+    if history:
+        rewards = [m.get('episode_reward_mean', 0) for m in history]
+        
+        return {
+            "metrics": history,
+            "statistics": {
+                "avg_reward": np.mean(rewards) if rewards else 0,
+                "max_reward": max(rewards) if rewards else 0,
+                "min_reward": min(rewards) if rewards else 0,
+                "reward_trend": "improving" if len(rewards) > 1 and rewards[-1] > rewards[0] else "stable",
+                "total_episodes": history[-1].get('episodes', 0) if history else 0,
+                "total_timesteps": history[-1].get('timestep', 0) if history else 0,
+            },
+            "count": len(history),
+            "limit": limit
+        }
+    
+    return {"metrics": [], "statistics": {}, "count": 0, "limit": limit}
+
+@app.post("/api/training/metrics")
+async def push_training_metrics(payload: Dict[str, Any]):
+    """
+    Ingest training metrics via HTTP (fallback when the WS metrics channel is unavailable).
+    Accepts either a raw metrics dict or a payload with a 'data'/'metrics' wrapper.
+    """
+    try:
+        metrics = payload.get("data") if isinstance(payload, dict) else None
+        if metrics is None and isinstance(payload, dict):
+            metrics = payload.get("metrics")
+        if metrics is None:
+            metrics = payload
+
+        metrics = sanitize_for_json(metrics)
+        if not isinstance(metrics, dict):
+            raise HTTPException(status_code=400, detail="Invalid metrics payload")
+
+        state.add_training_metrics(metrics)
+        await broadcast_training_metrics(metrics)
+        return {"success": True, "count": len(state.training_metrics_history)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to ingest training metrics: {e}")
+        raise HTTPException(status_code=500, detail="Failed to ingest training metrics")
+
 # Live trading endpoints
 @app.post("/api/trading/start")
 async def trading_start(config: LiveTradingConfig):
@@ -1900,6 +2099,7 @@ async def get_comprehensive_status():
             "last_health_check": state.system_metrics.get("last_health_check"),
         },
         "system_metrics": state.system_metrics,
+        "training": state.get_training_progress(),
         "timestamp": datetime.now().isoformat(),
     }
 
@@ -4559,6 +4759,12 @@ async def api_documentation():
             "authentication": {
                 "POST /api/login": "Login to MT5",
                 "POST /api/logout": "Logout and cleanup",
+            },
+            "training": {
+                "POST /api/training/start": "Start PPO training (offline/online)",
+                "POST /api/training/stop": "Stop training",
+                "GET /api/training/progress": "Get training progress",
+                "GET /api/training/metrics/history": "Get training metrics history",
             },
             "trading": {
                 "POST /api/trading/start": "Start live trading",

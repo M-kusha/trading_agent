@@ -395,6 +395,9 @@ class PositionManagerBase(
             self.consecutive_losses = 0
             self.consecutive_scale_downs: Dict[str, int] = defaultdict(int)  # Track consecutive scale-downs per instrument
             self.open_positions: Dict[str, Dict[str, Any]] = {}
+            # Trade cooldown to prevent rapid-fire trading
+            self._last_new_position_time: Dict[str, float] = {}  # Per-instrument cooldown
+            self._trade_cooldown_seconds = float(self.config.get("trade_cooldown_seconds", 60.0))  # 60s default
         self._decision_history = deque(maxlen=100)
         self._portfolio_health_history = deque(maxlen=50)
         self._exposure_history = deque(maxlen=100)
@@ -564,33 +567,243 @@ class PositionManagerBase(
             self._flush_logs()
         return order
 
+    def _get_strategy_confidence_boost(self) -> Tuple[float, str]:
+        """
+        Read strategy module outputs and calculate a confidence boost.
+        
+        Returns:
+            (boost_amount, reason) - boost is 0.0 to 0.15, reason explains why
+        
+        Strategy signals that can boost confidence:
+        - market_thesis with high confidence
+        - bias_analysis showing no harmful biases
+        - trading_mode == "aggressive" or "normal"
+        """
+        boost = 0.0
+        reasons = []
+        
+        try:
+            # 1. Market thesis boost (from ThesisEvolutionEngine)
+            market_thesis = self.smart_bus.get("market_thesis", "PositionManager")
+            if isinstance(market_thesis, dict):
+                thesis_conf = float(market_thesis.get("confidence", 0.0) or 0.0)
+                thesis_direction = market_thesis.get("direction", "")
+                if thesis_conf > 0.6 and thesis_direction in ("bullish", "bearish"):
+                    boost += 0.05
+                    reasons.append(f"thesis:{thesis_direction}@{thesis_conf:.0%}")
+            
+            # 2. Best thesis boost (strongest current hypothesis)
+            best_thesis = self.smart_bus.get("best_thesis", "PositionManager")
+            if isinstance(best_thesis, dict):
+                best_conf = float(best_thesis.get("confidence", 0.0) or 0.0)
+                if best_conf > 0.7:
+                    boost += 0.05
+                    reasons.append(f"best_thesis@{best_conf:.0%}")
+            
+            # 3. Bias analysis (from BiasAuditor) - boost if no dangerous biases
+            bias_analysis = self.smart_bus.get("bias_analysis", "PositionManager")
+            if isinstance(bias_analysis, dict):
+                active_biases = bias_analysis.get("active_biases", [])
+                severe_biases = [b for b in active_biases if b.get("severity", "") in ("high", "critical")]
+                if not severe_biases:
+                    boost += 0.03
+                    reasons.append("no_severe_bias")
+                else:
+                    boost -= 0.05  # Penalty for severe biases
+                    reasons.append(f"bias_penalty:{len(severe_biases)}")
+            
+            # 4. Trading mode boost (from TradingModeManager)
+            trading_mode = self.smart_bus.get("trading_mode", "PositionManager")
+            if isinstance(trading_mode, str):
+                if trading_mode.lower() in ("aggressive", "opportunity"):
+                    boost += 0.02
+                    reasons.append(f"mode:{trading_mode}")
+                elif trading_mode.lower() in ("defensive", "cautious"):
+                    boost -= 0.02
+                    reasons.append(f"mode_penalty:{trading_mode}")
+            
+        except Exception as e:
+            if self.debug:
+                self.logger.debug(f"[STRATEGY] Boost calculation error: {e}")
+        
+        # Cap the boost
+        boost = max(-0.10, min(0.15, boost))
+        reason = ", ".join(reasons) if reasons else "no_strategy_signals"
+        return boost, reason
+
     def _check_voting_consensus(self) -> bool:
         """
-        Configurable consensus gate:
-          - require_voting_consensus (default True)
-          - allow_safety_orders_without_consensus (default True) — applied in _enqueue_orders
+        SMART MULTI-LAYER CONSENSUS GATE WITH STRATEGY INTELLIGENCE:
+        
+        The committee has two types of voters:
+        1. DIRECTION VOTERS (vote BUY/SELL): EnhancedThemeExpert, PPOAgent, memory
+        2. RISK VOTERS (vote GO/NO-GO): DynamicRiskController, PortfolioRiskSystem, 
+           EnhancedAnomalyDetector, ExecutionQualityMonitor, MetaAgent
+        
+        Logic:
+        - Layer 0: Get strategy confidence boost from ThesisEngine, BiasAuditor, etc.
+        - Layer 1: Check if any RISK voter says HALT/EMERGENCY -> BLOCK
+        - Layer 2: Check if DIRECTION consensus exists (50%+ agreement on BUY or SELL)
+        - Layer 3: Check trade_vote_v2 with strategy boost applied
+        - Layer 4: Committee consensus fallback
+        
+        This allows trades when direction voters agree, while risk voters can veto.
+        Strategy modules can boost confidence to help borderline cases pass.
         """
         if not bool(self.config.get("require_voting_consensus", True)):
             return True
 
         try:
+            # Define action categories
+            DIRECTION_ACTIONS = {"buy", "sell", "long", "short"}
+            RISK_BLOCK_ACTIONS = {"halt", "emergency", "reduce_risk", "block"}
+            RISK_CAUTION_ACTIONS = {"caution", "reduce", "warning"}
+            RISK_APPROVE_ACTIONS = {"proceed", "hold", "maintain", "increase_risk", "safe", "approve"}
+            
+            # Get committee data
             consensus = self.smart_bus.get("committee_consensus", "PositionManager")
-            if isinstance(consensus, dict):
-                consensus_exists = consensus.get("consensus_exists")
-                consensus_strength = float(consensus.get("consensus_strength", 0.0) or 0.0)
-                if consensus_exists or consensus_strength > 0.3:
+            expert_votes = self.smart_bus.get("expert_votes", "PositionManager")
+            
+            # ═══════════════════════════════════════════════════════════════════
+            # LAYER 1: RISK VETO CHECK
+            # If any risk module says HALT/EMERGENCY, block immediately
+            # ═══════════════════════════════════════════════════════════════════
+            if isinstance(expert_votes, list):
+                risk_voters = ["DynamicRiskController", "PortfolioRiskSystem", 
+                              "EnhancedAnomalyDetector", "ExecutionQualityMonitor", "MetaAgent"]
+                
+                for vote in expert_votes:
+                    expert = vote.get("expert", "")
+                    action = str(vote.get("vote", {}).get("action", "")).lower()
+                    confidence = float(vote.get("confidence", 0.0) or 0.0)
+                    
+                    # If a risk voter says HALT with high confidence, block
+                    if expert in risk_voters and action in RISK_BLOCK_ACTIONS and confidence > 0.5:
+                        if self.debug:
+                            self.logger.debug(f"[GATE] Risk veto by {expert}: action={action}, conf={confidence:.1%}")
+                        return False
+            
+            # ═══════════════════════════════════════════════════════════════════
+            # LAYER 2: DIRECTION CONSENSUS CHECK (STRICTER)
+            # Need at least 2 direction voters AND 70% agreement to pass this layer
+            # This prevents single-voter bypass
+            # ═══════════════════════════════════════════════════════════════════
+            direction_votes = {"buy": 0.0, "sell": 0.0}
+            direction_voters = 0
+            
+            if isinstance(expert_votes, list):
+                for vote in expert_votes:
+                    action = str(vote.get("vote", {}).get("action", "")).lower()
+                    confidence = float(vote.get("confidence", 0.0) or 0.0)
+                    
+                    # Only count votes with meaningful confidence
+                    if confidence > 0.2:  # Minimum 20% confidence to count
+                        if action in ("buy", "long"):
+                            direction_votes["buy"] += confidence
+                            direction_voters += 1
+                        elif action in ("sell", "short"):
+                            direction_votes["sell"] += confidence
+                            direction_voters += 1
+            
+            direction_total = direction_votes["buy"] + direction_votes["sell"]
+            
+            # STRICTER: Need at least 2 direction voters AND 70% agreement
+            if direction_total > 0 and direction_voters >= 2:
+                buy_pct = direction_votes["buy"] / direction_total
+                sell_pct = direction_votes["sell"] / direction_total
+                direction_consensus = max(buy_pct, sell_pct)
+                
+                if direction_consensus >= 0.70:  # 70% direction consensus (was 50%)
+                    if self.debug:
+                        dominant = "BUY" if buy_pct > sell_pct else "SELL"
+                        self.logger.debug(f"[GATE] Direction consensus: {dominant} at {direction_consensus:.1%} ({direction_voters} voters)")
                     return True
-
+            
+            # ═══════════════════════════════════════════════════════════════════
+            # LAYER 3: TRADE_VOTE_V2 CHECK (STRICTER THRESHOLDS)
+            # Require clear BUY/SELL action (not ABSTAIN) with good confidence
+            # ═══════════════════════════════════════════════════════════════════
+            strategy_boost, boost_reason = self._get_strategy_confidence_boost()
+            
             trade_vote = self.smart_bus.get("trade_vote_v2", "PositionManager")
-            if isinstance(trade_vote, dict) and trade_vote.get("action"):
-                return True
-        except Exception:
+            if isinstance(trade_vote, dict):
+                vote_confidence = float(trade_vote.get("confidence", 0.0) or 0.0)
+                vote_action = str(trade_vote.get("action", "")).lower()
+                consensus_score = float(trade_vote.get("consensus_score", 0.0) or 0.0)
+                
+                # CRITICAL: ABSTAIN = NO TRADE
+                if vote_action == "abstain":
+                    if self.debug:
+                        self.logger.debug(f"[GATE] ABSTAIN vote - blocking trade")
+                    return False
+                
+                # Apply strategy boost to confidence (max +10%)
+                boosted_confidence = vote_confidence + min(strategy_boost, 0.10)
+                
+                # STRICTER THRESHOLDS for live trading:
+                # - boosted confidence > 38% (was 30%)
+                # - consensus_score > 70% (was 60%)
+                conf_threshold = 0.38
+                consensus_threshold = 0.70
+                
+                if vote_action in ("buy", "sell") and boosted_confidence > conf_threshold and consensus_score > consensus_threshold:
+                    if self.debug:
+                        self.logger.debug(
+                            f"[GATE] trade_vote_v2 pass: {vote_action}, "
+                            f"conf={vote_confidence:.1%}+{strategy_boost:+.1%}={boosted_confidence:.1%}, "
+                            f"consensus={consensus_score:.1%}, strategy={boost_reason}"
+                        )
+                    return True
+            
+            # ═══════════════════════════════════════════════════════════════════
+            # LAYER 4: COMMITTEE CONSENSUS (STRICTER)
+            # Require 50%+ consensus strength
+            # ═══════════════════════════════════════════════════════════════════
+            if isinstance(consensus, dict):
+                consensus_strength = float(consensus.get("consensus_strength", 0.0) or 0.0)
+                if consensus_strength > 0.50:  # 50% threshold (was 40%)
+                    return True
+            
+            # No consensus achieved through any layer
+            return False
+            
+        except Exception as e:
+            if self.debug:
+                self.logger.warning(f"[GATE] Consensus check error: {e}")
             return False
 
-        return False
+    def _check_trade_cooldown(self, instrument: str, intent: str) -> bool:
+        """
+        Check if we're in a cooldown period for this instrument.
+        Returns True if trade is ALLOWED, False if still in cooldown.
+        
+        Only applies to new position opens, not closes or scale operations.
+        """
+        if intent not in ("open", "open_long", "open_short"):
+            return True  # Closes and scales are always allowed
+        
+        now = time.time()
+        last_trade = getattr(self, "_last_new_position_time", {}).get(instrument, 0.0)
+        cooldown = getattr(self, "_trade_cooldown_seconds", 60.0)
+        
+        elapsed = now - last_trade
+        if elapsed < cooldown:
+            if self.debug:
+                self.logger.warning(
+                    f"⏳ COOLDOWN: {instrument} - {cooldown - elapsed:.0f}s remaining "
+                    f"(min {cooldown:.0f}s between new positions)"
+                )
+            return False
+        return True
+
+    def _record_trade_time(self, instrument: str) -> None:
+        """Record when a new position was opened for cooldown tracking."""
+        if not hasattr(self, "_last_new_position_time"):
+            self._last_new_position_time = {}
+        self._last_new_position_time[instrument] = time.time()
 
     def _enqueue_orders(self, orders: List[Dict[str, Any]]) -> None:
-        """Append orders to shared 'order_queue' with consensus gate and safety exceptions."""
+        """Append orders to shared 'order_queue' with consensus gate, cooldown, and safety exceptions."""
         if not orders:
             return
 
@@ -598,7 +811,22 @@ class PositionManagerBase(
         allow_safety = bool(self.config.get("allow_safety_orders_without_consensus", True))
 
         try:
-            # If no consensus, only allow reduce-only orders (close/scale_down/emergency_close)
+            # STEP 1: Apply cooldown filter for new positions
+            cooldown_filtered = []
+            for o in orders:
+                intent = o.get("intent", "")
+                instrument = o.get("instrument", "")
+                if self._check_trade_cooldown(instrument, intent):
+                    cooldown_filtered.append(o)
+                else:
+                    if self.debug:
+                        self.logger.info(f"[COOLDOWN] Blocked {intent} on {instrument}")
+            orders = cooldown_filtered
+            
+            if not orders:
+                return
+
+            # STEP 2: If no consensus, only allow reduce-only orders
             if not have_consensus:
                 safe = [o for o in orders if bool(o.get("reduce_only"))]
                 blocked = len(orders) - len(safe)
@@ -606,14 +834,23 @@ class PositionManagerBase(
                     # Get consensus details for warning
                     try:
                         consensus = self.smart_bus.get("committee_consensus", "PositionManager")
+                        trade_vote = self.smart_bus.get("trade_vote_v2", "PositionManager")
                         strength = 0.0
+                        vote_conf = 0.0
+                        consensus_score = 0.0
                         if isinstance(consensus, dict):
                             strength = float(consensus.get("consensus_strength", 0.0) or 0.0)
+                        if isinstance(trade_vote, dict):
+                            vote_conf = float(trade_vote.get("confidence", 0.0) or 0.0)
+                            consensus_score = float(trade_vote.get("consensus_score", 0.0) or 0.0)
+                        
+                        strategy_boost, boost_reason = self._get_strategy_confidence_boost()
 
                         self.logger.warning(
-                            f"⚠️  CONSENSUS GATE: Blocked {blocked} order(s) | "
-                            f"Consensus: {strength:.1%} (threshold: 30%) | "
-                            f"Only safety orders allowed"
+                            f"⚠️  SMART GATE: Blocked {blocked} order(s) | "
+                            f"Vote: {vote_conf:.1%}+{strategy_boost:+.1%}={vote_conf+strategy_boost:.1%} | "
+                            f"Consensus: {consensus_score:.1%} | Strategy: {boost_reason} | "
+                            f"Need: conf>38% + consensus>70%"
                         )
                     except:
                         self.logger.warning(
@@ -628,6 +865,7 @@ class PositionManagerBase(
                 if not orders:
                     return
 
+            # STEP 3: Enqueue orders and record cooldown times
             existing = self.smart_bus.get("order_queue", "PositionManager")
             if not isinstance(existing, list):
                 existing = []
@@ -636,6 +874,10 @@ class PositionManagerBase(
                 if o.get("id") not in existing_ids:
                     existing.append(o)
                     existing_ids.add(o.get("id"))
+                    # Record trade time for cooldown (only for new position opens)
+                    intent = o.get("intent", "")
+                    if intent in ("open", "open_long", "open_short"):
+                        self._record_trade_time(o.get("instrument", ""))
             self.smart_bus.set(
                 "order_queue",
                 existing,
@@ -1007,7 +1249,13 @@ class PositionManagerBase(
             md = pick(market_data, inst)
             if isinstance(md, dict):
                 inst_dict["current_price"] = float(md.get("close", md.get("price", md.get("bid", 0.0))))
-                inst_dict["volatility"] = float(md.get("atr", md.get("volatility", self.Cval("min_volatility", 0.015))))
+                raw_vol = float(md.get("atr", md.get("volatility", self.Cval("min_volatility", 0.015))))
+                # FIX: Clamp volatility to reasonable bounds (0.1% to 100%)
+                # ATR values > 1.0 are likely raw price ATR, not percentage - normalize
+                if raw_vol > 1.0 and inst_dict.get("current_price", 0) > 0:
+                    # Convert absolute ATR to percentage of price
+                    raw_vol = raw_vol / inst_dict["current_price"]
+                inst_dict["volatility"] = float(np.clip(raw_vol, 0.001, 1.0))
 
             pd = pick(price_data, inst)
             if isinstance(pd, dict):
@@ -1018,16 +1266,26 @@ class PositionManagerBase(
             ti = pick(tech, inst)
             if isinstance(ti, dict):
                 sma20 = float(ti.get("sma_20", 0.0))
-                sma50 = float(ti.get("sma_50", 0.0)) or 1.0
-                inst_dict["trend_strength"] = (sma20 - sma50) / (abs(sma50) or 1.0)
+                sma50 = float(ti.get("sma_50", 0.0))
+                # FIX: Normalize trend_strength to [-1, 1] and handle missing SMA data
+                if sma50 == 0.0:
+                    inst_dict["trend_strength"] = 0.0  # No trend when SMA data missing
+                else:
+                    raw_trend = (sma20 - sma50) / abs(sma50)
+                    inst_dict["trend_strength"] = float(np.clip(raw_trend, -1.0, 1.0))
                 inst_dict["momentum"] = float(ti.get("macd", 0.0))
                 inst_dict["rsi"] = float(ti.get("rsi", 50.0))
 
             vd = pick(vol, inst)
             if isinstance(vd, dict):
-                inst_dict["volatility"] = float(
+                raw_vol = float(
                     vd.get("atr", vd.get("volatility", inst_dict.get("volatility", self.Cval("min_volatility", 0.015))))
                 )
+                # FIX: Clamp volatility to reasonable bounds (0.1% to 100%)
+                # ATR values > 1.0 are likely raw price ATR, not percentage - normalize
+                if raw_vol > 1.0 and inst_dict.get("current_price", 0) > 0:
+                    raw_vol = raw_vol / inst_dict["current_price"]
+                inst_dict["volatility"] = float(np.clip(raw_vol, 0.001, 1.0))
 
             sp = pick(simple_prices, inst)
             if sp is not None and "current_price" not in inst_dict:
@@ -1152,8 +1410,13 @@ class PositionManagerBase(
             ti = pick(tech_map, inst)
             if isinstance(ti, dict):
                 sma20 = float(ti.get("sma_20", 0.0))
-                sma50 = float(ti.get("sma_50", 0.0)) or 1.0
-                inst_dict["trend_strength"] = (sma20 - sma50) / (abs(sma50) or 1.0)
+                sma50 = float(ti.get("sma_50", 0.0))
+                # FIX: Normalize trend_strength to [-1, 1] and handle missing SMA data
+                if sma50 == 0.0:
+                    inst_dict["trend_strength"] = 0.0  # No trend when SMA data missing
+                else:
+                    raw_trend = (sma20 - sma50) / abs(sma50)
+                    inst_dict["trend_strength"] = float(np.clip(raw_trend, -1.0, 1.0))
                 inst_dict["momentum"] = float(ti.get("macd", 0.0))
                 inst_dict["rsi"] = float(ti.get("rsi", 50.0))
 
@@ -1161,7 +1424,12 @@ class PositionManagerBase(
             if isinstance(vd, dict):
                 vol_val = vd.get("atr", vd.get("volatility", self.Cval("min_volatility", 0.015)))
                 if isinstance(vol_val, (int, float)):
-                    inst_dict["volatility"] = float(max(vol_val, self.Cval("min_volatility", 0.015)))
+                    raw_vol = float(vol_val)
+                    # FIX: Clamp volatility to reasonable bounds (0.1% to 100%)
+                    # ATR values > 1.0 are likely raw price ATR, not percentage - normalize
+                    if raw_vol > 1.0 and inst_dict.get("current_price", 0) > 0:
+                        raw_vol = raw_vol / inst_dict["current_price"]
+                    inst_dict["volatility"] = float(np.clip(raw_vol, 0.001, 1.0))
 
             if self.use_bus_instrument_signals:
                 sig = pick(bus_signals, inst)

@@ -7,6 +7,6 @@ class MT5Credentials:
     MetaTrader5 credentials loaded from environment variables,
     with safe fallbacks if you haven’t set them.
     """
-    ACCOUNT  = int(os.getenv("MT5_ACCOUNT",  "10007642097"))
-    PASSWORD = os.getenv("MT5_PASSWORD", "*5MaPeMw")
+    ACCOUNT  = int(os.getenv("MT5_ACCOUNT",  "99363084"))
+    PASSWORD = os.getenv("MT5_PASSWORD", "8dPj@rUu")
     SERVER   = os.getenv("MT5_SERVER",   "MetaQuotes-Demo")

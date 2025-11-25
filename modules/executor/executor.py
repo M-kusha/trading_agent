@@ -30,7 +30,7 @@ class ExecutorConfig:
     live_broker: str = "mt5"
     symbol_overrides: Optional[Dict[str, str]] = None
     lot_step: float = 0.01
-    min_lot: float = 0.01
+    min_lot: float = 0.20              # Minimum 0.20 lots for meaningful trades
     contract_size: float = 100000.0
     price_decimals: int = 5
 
@@ -105,6 +105,7 @@ class Executor(BaseModule):
         self._last_equity: float = float(self.equity)
         self.positions: Dict[str, PositionSnap] = {}
         self.trades: List[Dict[str, Any]] = []
+        self.closed_positions: List[Dict[str, Any]] = []  # Track closed positions for win rate
         self.step_idx: int = 0
         self._seen_ids: Set[str] = set()
 
@@ -478,6 +479,7 @@ class Executor(BaseModule):
             "current_positions": current_positions,
             "pnl_data": pnl_data,
             "live_adapter_status": live_adapter_status,
+            "closed_positions": list(self.closed_positions),  # For win rate tracking
             "balance": float(self.balance),
             "equity": float(self.equity),
             "current_pnl": float(step_pnl),
@@ -720,6 +722,27 @@ class Executor(BaseModule):
             return float(size_eur / price)
         return 0.0
 
+    def _track_closed_position(self, position: "PositionSnap", close_price: float, realized_pnl: float, close_reason: str) -> None:
+        """Track a fully closed position for win rate and analytics."""
+        closed_record = {
+            "instrument": position.instrument,
+            "side": position.side,
+            "units": position.units,
+            "entry_price": position.entry_price,
+            "close_price": close_price,
+            "pnl": realized_pnl,
+            "profit": realized_pnl,  # Alias for compatibility
+            "close_reason": close_reason,
+            "close_step": self.step_idx,
+            "entry_step": getattr(position, "entry_step", 0),
+            "close_time": time.time(),
+            "open_time": getattr(position, "open_time", 0.0),
+        }
+        self.closed_positions.append(closed_record)
+        # Keep only last 500 closed positions to avoid memory bloat
+        if len(self.closed_positions) > 500:
+            self.closed_positions = self.closed_positions[-500:]
+
     def _execute_sim(self, intents: List[Dict[str, Any]], *, want_breakdown: bool = False) -> Tuple[List[Dict[str, Any]], float, float, float]:
         fills: List[Dict[str, Any]] = []
         realized_step = 0.0
@@ -763,6 +786,7 @@ class Executor(BaseModule):
                         comment="reverse",
                     ).as_bus()
                     self.trades.append(fill); fills.append(fill)
+                    self._track_closed_position(p, price, realized, "reverse")
                     del self.positions[inst]
 
                 if add_units > 0:
@@ -823,6 +847,7 @@ class Executor(BaseModule):
                         p.units -= reduce_u
                         p.notional_eur -= reduce_u * p.entry_price
                         if p.units <= 1e-12:
+                            self._track_closed_position(p, price, realized, "scale_up_reduce")
                             del self.positions[inst]
                         fill = TradeFill(
                             id=f"fill-{uuid.uuid4().hex[:10]}",
@@ -872,6 +897,7 @@ class Executor(BaseModule):
                 p.units -= reduce_u
                 p.notional_eur -= reduce_u * p.entry_price
                 if p.units <= 1e-12:
+                    self._track_closed_position(p, price, realized, "scale_down")
                     del self.positions[inst]
                 trade_side = -1 if p.side > 0 else +1  # sell to reduce long; buy to reduce short
                 fill = TradeFill(
@@ -910,6 +936,7 @@ class Executor(BaseModule):
                         comment="close",
                     ).as_bus()
                     self.trades.append(fill); fills.append(fill)
+                    self._track_closed_position(p, price, realized, action)
                     del self.positions[inst]
 
         # apply realized → balance

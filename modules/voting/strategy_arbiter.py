@@ -865,11 +865,16 @@ Strategy Arbiter v3.1 Initialization:
             gate_score = float(details.get("gate_score", 0.0))
             confidence = float(np.clip(0.6 * gate_score + 0.4 * strength, 0.0, 1.0)) if passed else 0.0
 
+            # Get consensus score to include in gate_decision for downstream (PositionManager)
+            cons_score = float(self.smart_bus.get("consensus_score", "StrategyArbiter") or 
+                               details.get("consensus", 0.5))
+            
             record = {
                 "decision": "pass" if passed else "block",
                 "action": action_label,
                 "size": strength if passed else 0.0,
                 "confidence": confidence,
+                "consensus_score": cons_score,  # CRITICAL: Used by PositionManager's consensus gate
                 "criteria": details,
                 "timestamp": dt.datetime.now().isoformat(),
                 "reason": "gate_passed" if passed else "gating_blocked",

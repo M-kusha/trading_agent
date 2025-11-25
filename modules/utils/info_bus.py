@@ -139,6 +139,12 @@ class InfoBusConfig:
     enforce_single_writer: bool = True
     enforce_dependency_declaration: bool = True
 
+    # Cross-process persistence (enables frontend to see training data)
+    persistence_enabled: bool = True  # Default ON for frontend visibility
+    persist_write_interval_seconds: float = 1.0
+    persistence_file: str = "state/infobus_data.json"
+    persist_keys: Optional[List[str]] = None  # If None, persist all keys
+
     def __post_init__(self):
         self._validate_config()
 
@@ -520,7 +526,38 @@ class SmartInfoBus:
     # ──────────────────────────────────────────────────────────────
     # Construction
     # ──────────────────────────────────────────────────────────────
+    @staticmethod
+    def _load_config_from_yaml() -> Optional[InfoBusConfig]:
+        """Load InfoBusConfig from system_config.yaml if available."""
+        try:
+            import yaml as yaml_module
+            config_paths = [
+                "config/system_config.yaml",
+                "../config/system_config.yaml",
+                os.path.join(os.path.dirname(__file__), "../../config/system_config.yaml"),
+            ]
+            for config_path in config_paths:
+                if os.path.exists(config_path):
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        system_config = yaml_module.safe_load(f)
+                    if system_config and 'info_bus' in system_config:
+                        bus_cfg = system_config['info_bus']
+                        # Map YAML keys to InfoBusConfig fields
+                        return InfoBusConfig(
+                            persistence_enabled=bus_cfg.get('persistence_enabled', True),
+                            persist_write_interval_seconds=float(bus_cfg.get('persist_write_interval_seconds', 0.5)),
+                            persistence_file=bus_cfg.get('persistence_file', 'state/infobus_data.json'),
+                            persist_keys=bus_cfg.get('persist_keys'),  # None means persist all
+                        )
+                    break
+        except Exception:
+            pass  # Fall back to defaults
+        return None
+
     def __init__(self, config: Optional[InfoBusConfig] = None):
+            # Load config from system_config.yaml if not provided
+            if config is None:
+                config = self._load_config_from_yaml()
             self.config = config or InfoBusConfig()
 
             # Core data store + history
@@ -528,8 +565,8 @@ class SmartInfoBus:
             self._data_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=self.config.max_history_versions))
             self._data_timestamps: Dict[str, float] = {}
 
-            # Cross-process persistence
-            self._persistence_file = "infobus_data.json"
+            # Cross-process persistence - use config value
+            self._persistence_file = getattr(self.config, 'persistence_file', "state/infobus_data.json")
             self._persistence_lock = threading.Lock()
 
             # Locks
@@ -725,31 +762,53 @@ class SmartInfoBus:
         # Backward-compatible config gates (won't fail if attrs are missing)
         if not getattr(self.config, 'persistence_enabled', False):
             return
+        
+        # Check if this key should be persisted
+        persist_keys = getattr(self.config, 'persist_keys', None)
+        if persist_keys is not None and key not in persist_keys:
+            return  # Skip keys not in the allowed list
+            
         try:
             with self._persistence_lock:
                 # Debounce writes
                 if not hasattr(self, "_last_persist_write"):
                     self._last_persist_write = 0.0
                 now = time.time()
-                interval = float(getattr(self.config, 'persist_write_interval_seconds', 2.0))
+                interval = float(getattr(self.config, 'persist_write_interval_seconds', 1.0))
                 if now - self._last_persist_write < interval:
+                    # Queue the key for next batch write
+                    if not hasattr(self, "_pending_persist_keys"):
+                        self._pending_persist_keys: Set[str] = set()
+                    self._pending_persist_keys.add(key)
                     return
 
+                # Ensure directory exists
+                persist_file = getattr(self.config, 'persistence_file', self._persistence_file)
+                persist_dir = os.path.dirname(persist_file)
+                if persist_dir and not os.path.exists(persist_dir):
+                    os.makedirs(persist_dir, exist_ok=True)
+                
                 # Read existing persisted data safely (fallbacks + repair)
-                persisted_data: Dict[str, Any] = self._safe_read_json_file(self._persistence_file)
+                persisted_data: Dict[str, Any] = self._safe_read_json_file(persist_file)
 
-                # Update with new data (serialize to JSON-compatible format)
-                serializable_value = self._make_serializable(value)
-                version = getattr(self._data_store.get(key), 'version', 1)
-                persisted_data[key] = {
-                    'value': serializable_value,
-                    'timestamp': now,
-                    'version': version
-                }
+                # Collect all pending keys + current key
+                keys_to_persist = getattr(self, "_pending_persist_keys", set()) | {key}
+                self._pending_persist_keys = set()  # Clear pending
+                
+                # Batch persist all queued keys
+                for k in keys_to_persist:
+                    if k in self._data_store:
+                        stored_val = self._data_store[k].value
+                        serializable_value = self._make_serializable(stored_val)
+                        version = self._data_store[k].version
+                        persisted_data[k] = {
+                            'value': serializable_value,
+                            'timestamp': now,
+                            'version': version
+                        }
 
                 # Atomic write with backup to avoid partial/corrupt files
-                self._atomic_write_json(self._persistence_file, persisted_data)
-
+                self._atomic_write_json(persist_file, persisted_data)
                 self._last_persist_write = now
 
         except Exception as e:
@@ -759,8 +818,10 @@ class SmartInfoBus:
     def _load_persisted_data(self) -> None:
         """Load persisted data from file on startup."""
         try:
-            if os.path.exists(self._persistence_file):
-                persisted_data = self._safe_read_json_file(self._persistence_file)
+            persist_file = getattr(self.config, 'persistence_file', self._persistence_file)
+            if os.path.exists(persist_file):
+                persisted_data = self._safe_read_json_file(persist_file)
+                self.logger.info(f"[PERSISTENCE] Loading {len(persisted_data)} keys from {persist_file}")
 
                 # Load persisted data into memory store if not already present
                 for key, data in persisted_data.items():
@@ -786,8 +847,9 @@ class SmartInfoBus:
     def _get_persisted_value(self, key: str) -> Any:
         """Get value from persistent storage if not in memory."""
         try:
-            if os.path.exists(self._persistence_file):
-                persisted_data = self._safe_read_json_file(self._persistence_file)
+            persist_file = getattr(self.config, 'persistence_file', self._persistence_file)
+            if os.path.exists(persist_file):
+                persisted_data = self._safe_read_json_file(persist_file)
                 if key in persisted_data:
                     return persisted_data[key]['value']
         except Exception as e:
@@ -796,7 +858,13 @@ class SmartInfoBus:
 
     def _make_serializable(self, value: Any) -> Any:
         """Convert value to JSON-serializable format."""
-        if isinstance(value, (str, int, float, bool, type(None))):
+        import math
+        if isinstance(value, (str, int, bool, type(None))):
+            return value
+        elif isinstance(value, float):
+            # Handle inf and NaN which are not JSON-compliant
+            if math.isnan(value) or math.isinf(value):
+                return 0.0
             return value
         elif isinstance(value, (list, tuple)):
             return [self._make_serializable(item) for item in value]
@@ -805,7 +873,11 @@ class SmartInfoBus:
         elif hasattr(value, '__dict__'):
             return self._make_serializable(value.__dict__)
         elif isinstance(value, np.ndarray):
-            return value.tolist()
+            # Handle inf/NaN in numpy arrays
+            arr = value.copy()
+            arr = np.where(np.isnan(arr), 0.0, arr)
+            arr = np.where(np.isinf(arr), 0.0, arr)
+            return arr.tolist()
         else:
             # For other types, convert to string representation
             return str(value)

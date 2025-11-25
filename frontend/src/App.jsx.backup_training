@@ -1112,7 +1112,7 @@ const MemoryTab = React.memo(function MemoryTab() {
             <div>
               <h3 className="text-yellow-400 font-medium">No Memory Data Available</h3>
               <p className="text-gray-400 text-sm mt-1">
-                Memory data will populate once live trading starts. Start trading to see real-time memory system metrics.
+                Memory data will populate once training starts. Start a training session to see real-time memory system metrics.
               </p>
             </div>
           </div>
@@ -1899,7 +1899,7 @@ const RiskTab = React.memo(function RiskTab() {
             <div>
               <h3 className="text-yellow-400 font-medium">No Risk Data Available</h3>
               <p className="text-gray-400 text-sm mt-1">
-                Risk metrics will populate once live trading starts. Start trading to see real-time risk management data.
+                Risk metrics will populate once training starts. Start a training session to see real-time risk management data.
               </p>
             </div>
           </div>
@@ -2120,9 +2120,8 @@ const RiskMetricsPanel = React.memo(function RiskMetricsPanel({ data }) {
 });
 
 const AnomaliesPanel = React.memo(function AnomaliesPanel({ data }) {
-  const rawScore = data.anomaly_score;
-  const anomalyScore = typeof rawScore === 'number' ? rawScore : (parseFloat(rawScore) || 0);
-  const threshold = typeof data.anomaly_threshold === 'number' ? data.anomaly_threshold : 0.8;
+  const anomalyScore = data.anomaly_score || 0;
+  const threshold = data.anomaly_threshold || 0.8;
 
   return (
     <div className="space-y-6">
@@ -2912,7 +2911,7 @@ const VotingTab = React.memo(function VotingTab() {
             <div>
               <h3 className="text-yellow-400 font-medium">No Voting Data Available</h3>
               <p className="text-gray-400 text-sm mt-1">
-                Voting data will populate once live trading starts. Start trading to see real-time voting system metrics.
+                Voting data will populate once training starts. Start a training session to see real-time voting system metrics.
               </p>
             </div>
           </div>
@@ -3789,6 +3788,7 @@ const OverviewTab = React.memo(function OverviewTab({
   systemState,
   moduleStates,
   alerts,
+  stopTraining,
   stopTrading,
   emergencyStop,
   readAlerts,
@@ -3984,6 +3984,15 @@ const OverviewTab = React.memo(function OverviewTab({
         <div className="flex items-center space-x-4">
           <AlertBadge alerts={alerts} readAlerts={readAlerts} setReadAlerts={setReadAlerts} onClick={() => appDispatch({ type: 'SET_SHOW_ALERTS', payload: true })} />
 
+          {systemStatus === 'TRAINING' && (
+            <button
+              onClick={stopTraining}
+              className="flex items-center space-x-2 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 px-4 py-2 rounded-lg transition-all duration-200 text-white font-medium shadow-lg hover:shadow-xl"
+            >
+              <Square className="w-4 h-4" />
+              <span>Stop Training</span>
+            </button>
+          )}
           {systemStatus === 'TRADING' && (
             <>
               <button
@@ -4894,29 +4903,170 @@ const ModulesTab = React.memo(function ModulesTab({
   portalRoot
 });
 
-// TrainingTab removed - Live trading only
+const TrainingTab = React.memo(function TrainingTab({
+  systemStatus,
+  systemState,
+  trainingHistory,
+  trainingConfig,
+  setTrainingConfig,
+  startTraining,
+  stopTraining
+}) {
+  const [selectedChart, setSelectedChart] = useState('rewards');
+
+  const chartData = (trainingHistory || []).map((m, idx) => ({
+    step: m.timestep || idx,
+    reward: m.episode_reward_mean || 0,
+    std: m.episode_reward_std || 0,
+    length: m.episode_length_mean || 0,
+    loss: m.policy_loss || 0,
+    value_loss: m.value_loss || 0,
+    learning_rate: m.learning_rate || 0,
+    explained_variance: m.explained_variance || 0
+  }));
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-2xl font-bold text-white">PPO Training Control</h2>
+          {systemStatus === 'TRAINING' && (
+            <div className="flex items-center space-x-2">
+              <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse" />
+              <span className="text-green-400 font-medium">Training Active</span>
+            </div>
+          )}
+        </div>
+
+        <div className="mb-6">
+          <label className="block text-sm font-medium text-gray-400 mb-2">Training Mode</label>
+          <ModeSelector value={trainingConfig.mode} onChange={(mode) => setTrainingConfig({ ...trainingConfig, mode })} />
+          {trainingConfig.mode === 'online' && !systemState?.mt5_connected && (
+            <div className="mt-2 bg-yellow-900/20 border border-yellow-500/20 text-yellow-400 px-4 py-2 rounded-lg">
+              <AlertCircle className="w-4 h-4 inline mr-2" />
+              MT5 must be connected for online training
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center space-x-4">
+          {systemStatus === 'IDLE' ? (
+            <button
+              onClick={startTraining}
+              disabled={trainingConfig.mode === 'online' && !systemState?.mt5_connected}
+              className="flex items-center space-x-2 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 px-6 py-3 rounded-lg transition-all duration-200 text-white font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Play className="w-5 h-5" />
+              <span>Start {trainingConfig.mode === 'online' ? 'Online' : 'Offline'} Training</span>
+            </button>
+          ) : systemStatus === 'TRAINING' ? (
+            <button
+              onClick={stopTraining}
+              className="flex items-center space-x-2 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 px-6 py-3 rounded-lg transition-all duration-200 text-white font-medium"
+            >
+              <Square className="w-5 h-5" />
+              <span>Stop Training</span>
+            </button>
+          ) : (
+            <div className="flex items-center space-x-2 text-yellow-400">
+              <Loader2 className="w-5 h-5 animate-spin" />
+              <span>Processing...</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {chartData.length > 0 && (
+        <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-bold text-white">Training Metrics</h3>
+            <select
+              value={selectedChart}
+              onChange={(e) => setSelectedChart(e.target.value)}
+              className="bg-gray-700 text-white px-3 py-1 rounded border border-gray-600"
+            >
+              <option value="rewards">Rewards</option>
+              <option value="losses">Losses</option>
+              <option value="learning">Learning Rate</option>
+            </select>
+          </div>
+
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              {selectedChart === 'rewards' ? (
+                <RechartsLineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                  <XAxis dataKey="step" stroke="#9CA3AF" />
+                  <YAxis stroke="#9CA3AF" />
+                  <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151' }} />
+                  <Line type="monotone" dataKey="reward" stroke="#10B981" strokeWidth={2} dot={false} isAnimationActive={false} />
+                </RechartsLineChart>
+              ) : selectedChart === 'losses' ? (
+                <RechartsLineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                  <XAxis dataKey="step" stroke="#9CA3AF" />
+                  <YAxis stroke="#9CA3AF" />
+                  <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151' }} />
+                  <Line type="monotone" dataKey="loss" stroke="#EF4444" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="value_loss" stroke="#3B82F6" strokeWidth={2} dot={false} isAnimationActive={false} />
+                </RechartsLineChart>
+              ) : (
+                <RechartsLineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                  <XAxis dataKey="step" stroke="#9CA3AF" />
+                  <YAxis stroke="#9CA3AF" />
+                  <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151' }} />
+                  <Line type="monotone" dataKey="learning_rate" stroke="#F59E0B" strokeWidth={2} dot={false} isAnimationActive={false} />
+                </RechartsLineChart>
+              )}
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
 
 const TradingTab = React.memo(function TradingTab({
   systemStatus,
+  tradingConfig,
+  setTradingConfig,
   startTrading,
   stopTrading,
   emergencyStop
 }) {
   return (
     <div className="space-y-6">
+      <h2 className="text-2xl font-bold text-white">Live Trading Configuration</h2>
+
       <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-2xl font-bold text-white">Live Trading Control</h2>
-          <div className={`px-3 py-1 rounded-full text-sm font-medium ${
-            systemStatus === 'TRADING' ? 'bg-green-500/20 text-green-400' :
-            systemStatus === 'STOPPING' ? 'bg-yellow-500/20 text-yellow-400' :
-            'bg-gray-500/20 text-gray-400'
-          }`}>
-            {systemStatus === 'TRADING' ? 'Active' : systemStatus === 'STOPPING' ? 'Stopping...' : 'Idle'}
+        <h3 className="text-lg font-semibold mb-4 text-white">Trading Parameters</h3>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div>
+            <label className="block text-sm font-medium text-gray-400 mb-2">Instruments</label>
+            <input
+              type="text"
+              value={tradingConfig.instruments.join(', ')}
+              onChange={e => setTradingConfig({ ...tradingConfig, instruments: e.target.value.split(',').map(s => s.trim()) })}
+              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500"
+              placeholder="EURUSD, XAUUSD"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-400 mb-2">Timeframes</label>
+            <input
+              type="text"
+              value={tradingConfig.timeframes.join(', ')}
+              onChange={e => setTradingConfig({ ...tradingConfig, timeframes: e.target.value.split(',').map(s => s.trim()) })}
+              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500"
+              placeholder="H1, H4, D1"
+            />
           </div>
         </div>
 
-        <div className="flex items-center space-x-4">
+        <div className="mt-6 flex items-center space-x-4">
           {systemStatus === 'IDLE' ? (
             <button
               onClick={startTrading}
@@ -4958,7 +5108,7 @@ const LogsTab = React.memo(function LogsTab({ logs, fetchLogs }) {
   const { state: appState, dispatch: appDispatch } = useAppState();
   const selectedLogCategory = appState.selectedLogCategory;
 
-  const logCategories = ['system', 'risk', 'strategy', 'position', 'trading'];
+  const logCategories = ['system', 'training', 'risk', 'strategy', 'position'];
 
   return (
     <div className="space-y-6">
@@ -5161,6 +5311,13 @@ const EnhancedTradingDashboard = () => {
   const [moduleCategories, setModuleCategories] = useState({});
   const [moduleStats, setModuleStats] = useState({});
 
+  // Training state
+  const [trainingProgress, setTrainingProgress] = useState(null);
+  const [trainingMetrics, setTrainingMetrics] = useState(null);
+  const [trainingHistory, setTrainingHistory] = useState([]);
+  const [csvFiles, setCsvFiles] = useState([]);
+  const [uploadProgress, setUploadProgress] = useState(0);
+
   // UI state
   const [logs, setLogs] = useState({});
   const [checkpoints, setCheckpoints] = useState([]);
@@ -5191,6 +5348,30 @@ const EnhancedTradingDashboard = () => {
     const filtered = alerts.filter(a => !dismissedAlerts.has(alertId(a)));
     if (filtered.length !== alerts.length) setAlerts(filtered);
   }, [alerts, dismissedAlerts, alertId]);
+
+  // Training config
+  const [trainingConfig, setTrainingConfig] = useState({
+    mode: 'offline',
+    timesteps: 100000,
+    learning_rate: 3e-4,
+    batch_size: 64,
+    n_epochs: 10,
+    gamma: 0.99,
+    n_steps: 2048,
+    clip_range: 0.2,
+    ent_coef: 0.01,
+    vf_coef: 0.5,
+    max_grad_norm: 0.5,
+    target_kl: 0.01,
+    checkpoint_freq: 10000,
+    eval_freq: 5000,
+    num_envs: 1,
+    data_dir: 'data/processed',
+    initial_balance: 3000,
+    pretrained_model: null,
+    auto_pretrained: false,
+    debug: false
+  });
 
   // Trading config
   const [tradingConfig, setTradingConfig] = useState({
@@ -5251,6 +5432,7 @@ const EnhancedTradingDashboard = () => {
     try {
       const config = await apiCall('/config/system');
       if (config.trading) setTradingConfig(prev => ({ ...prev, ...config.trading }));
+      if (config.training) setTrainingConfig(prev => ({ ...prev, ...config.training }));
       if (config.mt5?.server) setLoginForm(prev => ({ ...prev, server: config.mt5.server }));
     } catch (err) {
       console.error('Failed to load system configuration:', err);
@@ -5294,6 +5476,22 @@ const EnhancedTradingDashboard = () => {
       setAccountInfo(null); // Clear MT5 account info
     } catch (err) {
       console.error('Logout error:', err);
+    }
+  };
+
+  // Training actions
+  const startTraining = async () => {
+    try {
+      await apiCall('/training/start', { method: 'POST', body: JSON.stringify(trainingConfig), noCache: true });
+    } catch (err) {
+      setError(`Failed to start training: ${err.message}`);
+    }
+  };
+  const stopTraining = async () => {
+    try {
+      await apiCall('/training/stop', { method: 'POST', noCache: true });
+    } catch (err) {
+      setError(`Failed to stop training: ${err.message}`);
     }
   };
 
@@ -5358,7 +5556,23 @@ const EnhancedTradingDashboard = () => {
     }
   }, [apiCall]);
 
-  // CSV files functionality removed - live trading only
+  const fetchTrainingHistory = useCallback(async () => {
+    try {
+      const data = await apiCall('/training/metrics/history?limit=100');
+      setTrainingHistory(data.metrics || []);
+    } catch (err) {
+      console.error('Failed to fetch training history:', err);
+    }
+  }, [apiCall]);
+
+  const fetchCsvFiles = useCallback(async () => {
+    try {
+      const data = await apiCall('/data/list');
+      setCsvFiles(data.files || []);
+    } catch (err) {
+      console.error('Failed to fetch CSV files:', err);
+    }
+  }, [apiCall]);
 
   const fetchEnhancedModules = useCallback(async () => {
     try {
@@ -5415,7 +5629,26 @@ const EnhancedTradingDashboard = () => {
     }
   };
 
-  // CSV upload functionality removed - live trading only
+  const uploadCsvFiles = async (files) => {
+    const formData = new FormData();
+    for (const file of files) formData.append('files', file);
+    try {
+      setUploadProgress(0);
+      const response = await fetch(`${API_BASE}/data/upload`, { method: 'POST', body: formData });
+      if (response.ok) {
+        setError('');
+        await fetchCsvFiles();
+        alert('CSV files uploaded successfully');
+      } else {
+        const data = await response.json();
+        setError(data.detail || 'Upload failed');
+      }
+    } catch (err) {
+      setError(`Upload failed: ${err.message}`);
+    } finally {
+      setUploadProgress(0);
+    }
+  };
 
   // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // WebSocket connection with throttled/batched updates (no flicker)
@@ -5443,6 +5676,12 @@ const EnhancedTradingDashboard = () => {
               return filtered;
             });
             setSystemMetrics(prev => ({ ...prev, ...(stateData.system_metrics || {}) }));
+            setTrainingProgress(stateData.training_progress || null);
+            break;
+          }
+          case 'training_metrics': {
+            setTrainingMetrics(update.data);
+            setTrainingHistory(prev => [...prev.slice(-99), update.data]);
             break;
           }
           case 'modules_update': {
@@ -5539,6 +5778,7 @@ const EnhancedTradingDashboard = () => {
 
         const minIntervals = {
           'system_state': 2000,
+          'training_metrics': 1000,
           'modules_update': 5000,
           'mt5_data_update': 10000,
           'logs_update': 5000,
@@ -5598,12 +5838,17 @@ const EnhancedTradingDashboard = () => {
       if (Date.now() - appState.lastUpdate.system < 10000) return;
       await Promise.all([
         fetchCheckpoints(),
+        fetchCsvFiles(),
         fetchLogs(selectedLogCategory),
         fetchEnhancedModules()
       ]);
     };
     loadInitial();
-  }, [isLoggedIn, selectedLogCategory, fetchCheckpoints, fetchLogs, fetchEnhancedModules, appState.lastUpdate.system]);
+  }, [isLoggedIn, selectedLogCategory, fetchCheckpoints, fetchCsvFiles, fetchLogs, fetchEnhancedModules, appState.lastUpdate.system]);
+
+  useEffect(() => {
+    if (isLoggedIn && systemStatus === 'TRAINING') fetchTrainingHistory();
+  }, [isLoggedIn, systemStatus, fetchTrainingHistory]);
 
   useEffect(() => {
     if (isLoggedIn && activeTab === 'modules' && !appState.dataLoaded.modules) {
@@ -5732,16 +5977,38 @@ const EnhancedTradingDashboard = () => {
 
           <div className="flex items-center space-x-4">
             {systemStatus === 'IDLE' && (
+              <>
+                <button
+                  onClick={startTraining}
+                  className="group relative overflow-hidden bg-gradient-to-r from-blue-500 via-blue-600 to-purple-600 hover:from-blue-600 hover:via-blue-700 hover:to-purple-700 px-6 py-3 rounded-xl transition-all duration-300 transform hover:scale-105 hover:shadow-2xl text-white font-semibold"
+                >
+                  <div className="absolute inset-0 bg-gradient-to-r from-blue-400 to-purple-500 opacity-0 group-hover:opacity-20 transition-opacity duration-300"></div>
+                  <div className="relative flex items-center space-x-2">
+                    <Brain className="w-5 h-5 animate-pulse" />
+                    <span className="tracking-wide">Start Training</span>
+                  </div>
+                  <div className="absolute inset-0 rounded-xl ring-2 ring-blue-400/30 group-hover:ring-blue-300/50 transition-all duration-300"></div>
+                </button>
+                <button
+                  onClick={startTrading}
+                  className="group relative overflow-hidden bg-gradient-to-r from-emerald-500 via-green-600 to-teal-600 hover:from-emerald-600 hover:via-green-700 hover:to-teal-700 px-6 py-3 rounded-xl transition-all duration-300 transform hover:scale-105 hover:shadow-2xl text-white font-semibold"
+                >
+                  <div className="absolute inset-0 bg-gradient-to-r from-emerald-400 to-teal-500 opacity-0 group-hover:opacity-20 transition-opacity duration-300"></div>
+                  <div className="relative flex items-center space-x-2">
+                    <Play className="w-5 h-5 group-hover:animate-bounce" />
+                    <span className="tracking-wide">Start Trading</span>
+                  </div>
+                  <div className="absolute inset-0 rounded-xl ring-2 ring-emerald-400/30 group-hover:ring-emerald-300/50 transition-all duration-300"></div>
+                </button>
+              </>
+            )}
+            {systemStatus === 'TRAINING' && (
               <button
-                onClick={startTrading}
-                className="group relative overflow-hidden bg-gradient-to-r from-emerald-500 via-green-600 to-teal-600 hover:from-emerald-600 hover:via-green-700 hover:to-teal-700 px-6 py-3 rounded-xl transition-all duration-300 transform hover:scale-105 hover:shadow-2xl text-white font-semibold"
+                onClick={stopTraining}
+                className="flex items-center space-x-2 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 px-4 py-2 rounded-lg transition-all duration-200 text-white font-medium"
               >
-                <div className="absolute inset-0 bg-gradient-to-r from-emerald-400 to-teal-500 opacity-0 group-hover:opacity-20 transition-opacity duration-300"></div>
-                <div className="relative flex items-center space-x-2">
-                  <Play className="w-5 h-5 group-hover:animate-bounce" />
-                  <span className="tracking-wide">Start Trading</span>
-                </div>
-                <div className="absolute inset-0 rounded-xl ring-2 ring-emerald-400/30 group-hover:ring-emerald-300/50 transition-all duration-300"></div>
+                <Square className="w-4 h-4" />
+                <span>Stop Training</span>
               </button>
             )}
             {systemStatus === 'TRADING' && (
@@ -5796,7 +6063,8 @@ const EnhancedTradingDashboard = () => {
                 onClick={() => setActiveTab('modules')}
                 badge={Object.values(moduleStates).filter(m => m?.errors?.length > 0).length || null}
               />
-              <TabButton icon={TrendingUp} label="Trading" active={activeTab === 'trading'} onClick={() => setActiveTab('trading')} />
+              <TabButton icon={Brain} label="Training" active={activeTab === 'training'} onClick={() => setActiveTab('training')} disabled={systemStatus === 'TRADING'} />
+              <TabButton icon={TrendingUp} label="Trading" active={activeTab === 'trading'} onClick={() => setActiveTab('trading')} disabled={systemStatus === 'TRAINING'} />
               <TabButton icon={BarChart2} label="Analytics" active={activeTab === 'analytics'} onClick={() => setActiveTab('analytics')} />
               <TabButton icon={HardDrive} label="Memory" active={activeTab === 'memory'} onClick={() => setActiveTab('memory')} />
               <TabButton icon={Shield} label="Risk" active={activeTab === 'risk'} onClick={() => setActiveTab('risk')} />
@@ -5816,6 +6084,20 @@ const EnhancedTradingDashboard = () => {
                   ${performance.daily_pnl?.toLocaleString() || '0.00'}
                 </div>
               </div>
+
+              {systemStatus === 'TRAINING' && trainingMetrics && (
+                <>
+                  <div className="bg-gray-900/50 rounded-lg p-3">
+                    <div className="text-xs text-gray-400 mb-1">Training Progress</div>
+                    <div className="text-lg font-bold text-blue-400">{((trainingMetrics.progress_pct || 0)).toFixed(1)}%</div>
+                  </div>
+
+                  <div className="bg-gray-900/50 rounded-lg p-3">
+                    <div className="text-xs text-gray-400 mb-1">Episode Reward</div>
+                    <div className="text-lg font-bold text-purple-400">{(trainingMetrics.episode_reward_mean || 0).toFixed(2)}</div>
+                  </div>
+                </>
+              )}
 
               {systemStatus === 'TRADING' && (
                 <div className="bg-gray-900/50 rounded-lg p-3">
@@ -5849,6 +6131,7 @@ const EnhancedTradingDashboard = () => {
                 systemState={systemState}
                 moduleStates={moduleStates}
                 alerts={alerts}
+                stopTraining={stopTraining}
                 stopTrading={stopTrading}
                 emergencyStop={emergencyStop}
                 readAlerts={readAlerts}
@@ -5873,9 +6156,23 @@ const EnhancedTradingDashboard = () => {
               />
             )}
 
+            {activeTab === 'training' && (
+              <TrainingTab
+                systemStatus={systemStatus}
+                systemState={systemState}
+                trainingHistory={trainingHistory}
+                trainingConfig={trainingConfig}
+                setTrainingConfig={setTrainingConfig}
+                startTraining={startTraining}
+                stopTraining={stopTraining}
+              />
+            )}
+
             {activeTab === 'trading' && (
               <TradingTab
                 systemStatus={systemStatus}
+                tradingConfig={tradingConfig}
+                setTradingConfig={setTradingConfig}
                 startTrading={startTrading}
                 stopTrading={stopTrading}
                 emergencyStop={emergencyStop}

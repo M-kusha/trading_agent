@@ -435,6 +435,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'fractal_metrics', 'market_regime', 'regime_data', 'regime_strength', 'timestamps', 'trend_direction',
             # Liquidity
             'liquidity_capabilities', 'liquidity_prediction', 'liquidity_score', 'liquidity_thesis',
+            'liquidity_score_by_instrument',  # FIX: Added for PositionManager instrument-level liquidity lookup
             'market_depth', 'session_data', 'spread_analysis', 'trading_sessions',
             # Theme
             'market_theme', 'theme_detection', 'theme_detector_health', 'theme_detector_status',
@@ -529,12 +530,13 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='Executor',
         file='executor/executor.py',
         # FIX: Added position_data as canonical provider (actual executed positions)
+        # FIX: Added closed_positions (consumed by TrainingVisualizer for win rate tracking)
         # NOTE: Memory gate used for final safety veto on order execution
         provides=['positions', 'trades', 'recent_trades',
                   'order_data', 'execution_data', 'execution_reports',
                   'portfolio_metrics', 'trading_result', 'current_pnl',
                   'trade_data', 'market_state', 'position_data',
-                  'current_positions', 'pnl_data',
+                  'current_positions', 'pnl_data', 'closed_positions',
                   'live_adapter_status', 'pending_orders', 'account_state'],
         requires=['order_queue', 'prices', 'price_data', 'environment_config', 'step_idx', 'execution_mode',
                   'memory_gate'],
