@@ -1159,8 +1159,8 @@ class Executor(BaseModule):
         # Step 1: Sync actual MT5 positions
         # ─────────────────────────────────────────────────────
         try:
-            import MetaTrader5 as mt5
-            raw_positions = list(mt5.positions_get() or [])
+            import MetaTrader5 as mt5  # type: ignore[import]
+            raw_positions = list(mt5.positions_get() or [])  # type: ignore[attr-defined]
             mt5_positions = [
                 {
                     "symbol": getattr(p, "symbol", ""),
@@ -1564,10 +1564,10 @@ class Executor(BaseModule):
             return {"ok": False, "error": "not_connected"}
         
         try:
-            import MetaTrader5 as mt5
+            import MetaTrader5 as mt5  # type: ignore[import]
             
             # Get position info
-            position = mt5.positions_get(ticket=ticket)
+            position = mt5.positions_get(ticket=ticket)  # type: ignore[attr-defined]
             if not position:
                 self.logger.warning(f"[CLOSE_TICKET] Position {ticket} not found in MT5")
                 return {"ok": False, "error": "position_not_found"}
@@ -1593,14 +1593,14 @@ class Executor(BaseModule):
             }
             
             # Get price
-            tick = mt5.symbol_info_tick(symbol)
+            tick = mt5.symbol_info_tick(symbol)  # type: ignore[attr-defined]
             if tick:
                 request["price"] = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
             else:
                 self.logger.warning(f"[CLOSE_TICKET] No tick data for {symbol}")
             
             self.logger.info(f"[CLOSE_TICKET] Sending close request: {request}")
-            result = mt5.order_send(request)
+            result = mt5.order_send(request)  # type: ignore[attr-defined]
             
             if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                 self.logger.info(f"[CLOSE_TICKET] ✅ Successfully closed ticket {ticket}")
