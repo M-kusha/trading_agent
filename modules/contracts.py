@@ -516,8 +516,9 @@ CONTRACTS: Dict[str, ModuleContract] = {
         file='position/position_logic.py',
         # FIX: Renamed position_data → position_manager_data to avoid conflict with Executor's canonical position_data
         # NOTE: Memory signals used for veto gate and position sizing intelligence
+        # FIX: Added agent_action as primary signal source - agent's trading decisions
         provides=['position_decisions', 'position_health', 'portfolio_state', 'order_queue', 'position_manager_data'],
-        requires=['environment_config', 'indicators', 'liquidity_capabilities', 'liquidity_score',
+        requires=['agent_action', 'environment_config', 'indicators', 'liquidity_capabilities', 'liquidity_score',
                   'market_conditions', 'market_context', 'market_data', 'market_liquidity',
                   'market_regime', 'price_data', 'prices', 'technical_indicators',
                   'time_risk_analysis', 'volatility_data',
@@ -533,14 +534,15 @@ CONTRACTS: Dict[str, ModuleContract] = {
         # FIX: Added position_data as canonical provider (actual executed positions)
         # FIX: Added closed_positions (consumed by TrainingVisualizer for win rate tracking)
         # NOTE: Memory gate used for final safety veto on order execution
+        # FIX: Removed order_queue from requires - Executor runs with empty queue if not available
+        # This breaks circular dependency: PositionManager -> UnifiedMemory -> Executor
         provides=['positions', 'trades', 'recent_trades',
                   'order_data', 'execution_data', 'execution_reports',
                   'portfolio_metrics', 'trading_result', 'current_pnl',
                   'trade_data', 'market_state', 'position_data',
                   'current_positions', 'pnl_data', 'closed_positions',
                   'live_adapter_status', 'pending_orders', 'account_state'],
-        requires=['order_queue', 'prices', 'price_data', 'environment_config', 'step_idx', 'execution_mode',
-                  'memory_gate'],
+        requires=['prices', 'price_data', 'environment_config', 'step_idx', 'execution_mode'],
         meta={'is_voting_member': False, 'thesis_required': False, 'explainable': True,
               'health_monitoring': True, 'performance_tracking': True,
               'category': 'executor', 'version': '1.0.0'}
@@ -584,7 +586,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='AuditingCoordinator',
         file='auditing/auditing_coordinator.py',
         provides=['audit_metrics', 'audit_report', 'audit_status'],
-        requires=['market_data', 'trades', 'trading_signal'],
+        # FIX: Removed trading_signal - it's provided by MetaRLController which runs after this
+        requires=['market_data', 'trades'],
         meta={'is_voting_member': False, 'explainable': True, 'category': 'auditing', 'version': '2.0.0'}
     ),
 
@@ -592,7 +595,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='TradeExplanationAuditor',
         file='auditing/trade_explanation_auditor.py',
         provides=['audit_alerts', 'explanation_metrics', 'trade_explanations'],
-        requires=['market_data', 'trades', 'trading_signal'],
+        # FIX: Removed trading_signal - it's provided by MetaRLController which runs after this
+        requires=['market_data', 'trades'],
         meta={'is_voting_member': False, 'explainable': True, 'category': 'auditing', 'version': '2.0.0'}
     ),
 
@@ -600,7 +604,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='TradeThesisTracker',
         file='auditing/trade_thesis_tracker.py',
         provides=['thesis_alerts', 'thesis_analysis'],
-        requires=['market_data', 'trades', 'trading_signal'],
+        # FIX: Removed trading_signal - it's provided by MetaRLController which runs after this
+        requires=['market_data', 'trades'],
         meta={'is_voting_member': False, 'explainable': True, 'category': 'auditing', 'version': '2.0.0'}
     ),
 
@@ -640,8 +645,9 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='EnhancedWorldModel',
         file='models/world_model.py',
         provides=['market_predictions', 'prediction_confidence', 'scenario_generation', 'world_model_analytics'],
+        # FIX: Removed shadow_predictions - circular dependency with ShadowSimulator
         requires=['market_conditions', 'market_context', 'market_data', 'market_regime', 'performance_data',
-                  'performance_metrics', 'regime_data', 'risk_data', 'shadow_predictions',
+                  'performance_metrics', 'regime_data', 'risk_data',
                   'time_risk_analysis', 'trading_data', 'volatility_adjustment'],
         meta={'thesis_required': True, 'health_monitoring': True, 'performance_tracking': True,
               'category': 'models', 'version': '4.0.1'}

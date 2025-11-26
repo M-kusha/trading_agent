@@ -330,15 +330,52 @@ class RewardDataExtractor:
         return 'medium'
 
     def _resolve_consensus(self, market_data: Dict[str, Any]) -> float:
-        """Resolve consensus value, defaulting to 0.5."""
+        """Resolve consensus value from voting system.
+        
+        CRITICAL: Default of 0.5 means NO learning signal from voting alignment.
+        We try multiple sources to find actual consensus data.
+        """
+        # Priority 1: kernel_consensus_score (canonical VotingKernel output)
+        kernel_consensus = self._safe_bus_get_silent('kernel_consensus_score')
+        if kernel_consensus is not None and self._is_valid_number(kernel_consensus):
+            return float(np.clip(float(kernel_consensus), 0.0, 1.0))
+        
+        # Priority 2: Direct consensus_score 
+        consensus_score = self._safe_bus_get_silent('consensus_score')
+        if consensus_score is not None and self._is_valid_number(consensus_score):
+            return float(np.clip(float(consensus_score), 0.0, 1.0))
+        
+        # Priority 3: voting_result.consensus_score
+        voting_result = self._safe_bus_get_silent('voting_result')
+        if isinstance(voting_result, dict):
+            cs = voting_result.get('consensus_score')
+            if cs is not None and self._is_valid_number(cs):
+                return float(np.clip(float(cs), 0.0, 1.0))
+        
+        # Priority 4: arbiter_output.consensus
+        arbiter_output = self._safe_bus_get_silent('arbiter_output')
+        if isinstance(arbiter_output, dict):
+            cs = arbiter_output.get('consensus')
+            if cs is not None and self._is_valid_number(cs):
+                return float(np.clip(float(cs), 0.0, 1.0))
+        
+        # Priority 5: market_context.consensus (legacy fallback)
         market_context = market_data.get('market_context', {}) or {}
-        val = None
         if isinstance(market_context, dict):
-            val = market_context.get('consensus', 0.5)
+            val = market_context.get('consensus')
+            if val is not None and self._is_valid_number(val):
+                return float(np.clip(float(val), 0.0, 1.0))
+        
+        # No consensus found - log warning (important for training quality)
+        self._dbg_note("WARNING: No consensus signal found - reward won't learn voting alignment")
+        return 0.5
+    
+    def _safe_bus_get_silent(self, key: str) -> Optional[Any]:
+        """Get from bus without tracking in report (for secondary lookups)."""
         try:
-            return float(val)  # type: ignore[arg-type]
+            return self.smart_bus.get(key, "RiskAdjustedReward")
         except Exception:
-            return 0.5
+            return None
 
     def _resolve_balance_info(
         self,

@@ -475,7 +475,13 @@ class RewardCalculator:
         return bonuses
 
     def _calculate_win_bonus(self, trades: List[Dict[str, Any]]) -> float:
-        """Calculate winning trade bonus"""
+        """Calculate winning trade bonus.
+        
+        FIXED: Prevents positive feedback loop by:
+        1. Requiring minimum history before streak bonuses
+        2. Capping streak bonus multiplier
+        3. Using diminishing returns for high win rates
+        """
         if not trades:
             return 0.0
 
@@ -489,10 +495,14 @@ class RewardCalculator:
 
         win_ratio = winning_trades / max(1, len(trades))
 
-        bonus = win_ratio * float(self.cfg.win_bonus_weight)
+        # Use sqrt for diminishing returns - prevents overfitting to early wins
+        # 50% win rate -> 0.71 factor, 80% win rate -> 0.89 factor
+        diminishing_factor = float(np.sqrt(win_ratio))
+        bonus = diminishing_factor * float(self.cfg.win_bonus_weight)
 
-        # Streak bonus
-        if len(self.state.pnl_history) >= 3:
+        # Streak bonus ONLY if we have sufficient history (prevents early overfitting)
+        history_len = len(self.state.pnl_history)
+        if history_len >= 10:  # Need 10+ samples before streak bonus
             recent = list(self.state.pnl_history)[-3:]
             recent_wins = []
             for p in recent:
@@ -501,7 +511,8 @@ class RewardCalculator:
                 except Exception:
                     recent_wins.append(False)
             if all(recent_wins):
-                bonus *= 1.3
+                # Cap streak bonus at 1.15x (was 1.3x - too aggressive)
+                bonus *= 1.15
 
         return float(bonus)
 
@@ -693,6 +704,16 @@ class RewardCalculator:
         """Update state after calculation"""
         try:
             self.state.record_calculation(trades, float(pnl), float(reward))
+            
+            # SPARSE REWARD DETECTION: Warn if PnL is always zero (training will fail)
+            if self.calculation_count > 20:
+                recent_pnls = list(self.state.pnl_history)[-20:] if hasattr(self.state, 'pnl_history') else []
+                if recent_pnls and all(abs(p) < 1e-6 for p in recent_pnls):
+                    self.logger.warning(
+                        "⚠️ SPARSE REWARD: PnL has been zero for 20+ steps. "
+                        "Model cannot learn. Check: 1) Trades closing properly, "
+                        "2) Balance updates flowing, 3) Position manager publishing fills"
+                    )
         except Exception as e:
             # never fail hard on state updates
             self.logger.debug(f"record_calculation failed: {e}")

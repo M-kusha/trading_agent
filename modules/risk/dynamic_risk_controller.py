@@ -116,6 +116,8 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
             self.current_mode = RiskControlMode.INITIALIZATION
             self.current_risk_scale = float(self._cfg.base_risk_scale)
             self._risk_quality = 0.5
+            # Initialize market_regime early (before super().__init__ calls _initialize)
+            self.market_regime = "normal"
             # Provide a SmartInfoBus reference for early _initialize bus writes
             self.smart_bus = InfoBusManager.get_instance()
             # Debug flag for conditional logging
@@ -124,6 +126,8 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
             # Best-effort defaults; _initialize is guarded with try/except
             if not hasattr(self, "debug"):
                 self.debug = False
+            if not hasattr(self, "market_regime"):
+                self.market_regime = "normal"
 
         # Preserve our typed config before BaseModule init
         original_cfg = self._cfg
@@ -726,9 +730,9 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                 risk_level_str = "CRITICAL"
             elif self.current_mode == RiskControlMode.AGGRESSIVE_REDUCTION:
                 risk_level_str = "HIGH"
-            elif self.current_mode == RiskControlMode.CONSERVATIVE:
+            elif self.current_mode == RiskControlMode.PROTECTIVE:
                 risk_level_str = "ELEVATED"
-            elif self.current_mode == RiskControlMode.OPPORTUNISTIC:
+            elif self.current_mode == RiskControlMode.RECOVERY:
                 risk_level_str = "LOW"
 
             # Risk assessment for API consumption
@@ -1264,25 +1268,34 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
             return {"correlation_factor": 1.0, "error": str(e)}
 
     async def _update_losing_streak_factor_async(self, pnl: float) -> Dict[str, Any]:
-        """Update losing streak risk factor"""
+        """Update losing streak risk factor.
+        
+        FIXED: Cleaner streak tracking logic:
+        - Consecutive losses counted correctly (each loss increments by 1)
+        - Win resets streak to 0 (not gradual decrement)
+        - Neutral (pnl=0) preserves current streak
+        """
         try:
-            # Track consecutive losses
-            if pnl < 0 and self.last_pnl < 0:
+            # Track consecutive losses with clear logic
+            if pnl < 0:
                 self.consecutive_losses += 1
             elif pnl > 0:
-                self.consecutive_losses = max(0, self.consecutive_losses - 1)
+                self.consecutive_losses = 0  # Win resets streak completely
+            # pnl == 0: no change (neutral)
 
             self.last_pnl = float(pnl)
 
-            # Calculate factor
+            # Calculate factor with gradual reduction
             if self.consecutive_losses <= 2:
                 factor = 1.0
                 severity = "normal"
             elif self.consecutive_losses <= 5:
+                # Gradual reduction: 0.85, 0.70, 0.55
                 reduction = (self.consecutive_losses - 2) * 0.15
                 factor = 1.0 - reduction
                 severity = "elevated"
             else:
+                # Floor at 0.4 for extended losing streaks
                 factor = 0.4
                 severity = "critical"
 
@@ -1870,9 +1883,9 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                 risk_level_str = "CRITICAL"
             elif self.current_mode == RiskControlMode.AGGRESSIVE_REDUCTION:
                 risk_level_str = "HIGH"
-            elif self.current_mode == RiskControlMode.CONSERVATIVE:
+            elif self.current_mode == RiskControlMode.PROTECTIVE:
                 risk_level_str = "ELEVATED"
-            elif self.current_mode == RiskControlMode.OPPORTUNISTIC:
+            elif self.current_mode == RiskControlMode.RECOVERY:
                 risk_level_str = "LOW"
 
             self.smart_bus.set(
@@ -1989,9 +2002,9 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
             risk_level_str = "CRITICAL"
         elif self.current_mode == RiskControlMode.AGGRESSIVE_REDUCTION:
             risk_level_str = "HIGH"
-        elif self.current_mode == RiskControlMode.CONSERVATIVE:
+        elif self.current_mode == RiskControlMode.PROTECTIVE:
             risk_level_str = "ELEVATED"
-        elif self.current_mode == RiskControlMode.OPPORTUNISTIC:
+        elif self.current_mode == RiskControlMode.RECOVERY:
             risk_level_str = "LOW"
         
         return {
@@ -2129,6 +2142,16 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                 "emergency_active": True,
                 "timestamp": datetime.datetime.now().isoformat(),
             },
+            "DynamicRiskController_voting_proposal": {
+                "action": "HOLD",
+                "direction": 0,
+                "confidence": 0.1,
+                "risk_weight": 1.0,
+                "reasoning": "Error fallback - holding due to risk control failure",
+                "veto": True,
+                "veto_reason": reason,
+            },
+            "DynamicRiskController_confidence": 0.1,
             "_thesis": thesis,
         }
 

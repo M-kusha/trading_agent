@@ -765,12 +765,41 @@ class ModernEnhancedTrainingCallback(BaseCallback):
 
             if getattr(env, "smart_bus", None):
                 ms = getattr(env, "market_state", None)
+                
+                # FIX: Read balance from SmartInfoBus (synced from Executor) instead of stale market_state
+                balance = 0.0
+                equity = 0.0
+                instruments = []
+                try:
+                    account_state = self.smart_bus.get("account_state", "EnhancedCallback", default=None)
+                    if isinstance(account_state, dict):
+                        balance = float(account_state.get("balance", 0.0) or 0.0)
+                        equity = float(account_state.get("equity", 0.0) or 0.0)
+                    else:
+                        # Fallback to env.market_state if bus data not available
+                        balance = float(getattr(ms, "balance", 0.0)) if ms else 0.0
+                        equity = balance
+                    
+                    # Get trading instruments from environment config
+                    env_config = self.smart_bus.get("environment_config", "EnhancedCallback", default=None)
+                    if isinstance(env_config, dict):
+                        instruments = env_config.get("instruments", [])
+                    if not instruments:
+                        # Fallback to env attribute
+                        instruments = getattr(env, "instruments", ["EUR/USD", "XAU/USD"])
+                except Exception:
+                    balance = float(getattr(ms, "balance", 0.0)) if ms else 0.0
+                    equity = balance
+                    instruments = getattr(env, "instruments", ["EUR/USD", "XAU/USD"])
+                
                 return {
                     "env_smartinfobus_status": "active",
                     "env_current_step": int(getattr(env, "current_step", 0)),
                     "env_drawdown": float(getattr(ms, "current_drawdown", 0.0)) if ms else 0.0,
-                    "env_balance": float(getattr(ms, "balance", 0.0)) if ms else 0.0,
+                    "env_balance": balance,
+                    "env_equity": equity,
                     "env_modules": int(len(getattr(getattr(env, "orchestrator", None), "modules", []))) if getattr(env, "orchestrator", None) else 0,
+                    "instruments": instruments,
                 }
             return {"env_smartinfobus_status": "none"}
         except Exception as e:

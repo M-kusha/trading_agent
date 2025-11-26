@@ -834,6 +834,8 @@ async def live_trading_loop(config: LiveTradingConfig, connector):
         step_count = 0
         last_balance_update = time.time()
         last_health_check = time.time()
+        last_state_save = time.time()  # NEW: Track state saving
+        STATE_SAVE_INTERVAL = 300  # Save module states every 5 minutes
 
         # Initialize ModuleOrchestrator for live trading
         # Environment config should already be set by start_live_trading()
@@ -890,6 +892,16 @@ async def live_trading_loop(config: LiveTradingConfig, connector):
                 if time.time() - last_health_check > 60:  # Every minute
                     perform_health_checks()
                     last_health_check = time.time()
+                
+                # NEW: Periodic state saving for learning persistence
+                if orchestrator and time.time() - last_state_save > STATE_SAVE_INTERVAL:
+                    try:
+                        results = orchestrator.state_manager.save_all_module_states(orchestrator)
+                        saved = sum(1 for ok in results.values() if ok)
+                        logger.info(f"[SAVE] Periodic state save: {saved}/{len(results)} modules saved")
+                        last_state_save = time.time()
+                    except Exception as e:
+                        logger.warning(f"Periodic state save failed: {e}")
                 
                 # Emergency checks
                 if check_emergency_conditions():
@@ -1820,6 +1832,17 @@ async def emergency_stop():
                 await state.trading_task
             except asyncio.CancelledError:
                 pass
+
+        # NEW: Save all module states before shutdown (preserve learning)
+        try:
+            from modules.core.module_system import ModuleOrchestrator
+            orchestrator = ModuleOrchestrator.get_instance()
+            if orchestrator and hasattr(orchestrator, 'state_manager'):
+                results = orchestrator.state_manager.save_all_module_states(orchestrator)
+                saved = sum(1 for ok in results.values() if ok)
+                logger.info(f"[SAVE] Emergency shutdown state save: {saved}/{len(results)} modules saved")
+        except Exception as e:
+            logger.warning(f"Failed to save module states on emergency stop: {e}")
 
         # Reset execution mode to SIM on InfoBus
         try:

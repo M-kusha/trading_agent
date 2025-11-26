@@ -1382,8 +1382,42 @@ class Executor(BaseModule):
             inst = resolve_symbol(inst_src, self.cfg.symbol_overrides, broker=self.cfg.live_broker)
             action = str(intent.get("action", "")).lower()
             
-            # Skip close actions (handled above)
+            # Handle explicit close actions from order_queue (e.g., from PositionManager)
             if action in ("close", "emergency_close"):
+                # Check if we have a position in this instrument
+                existing_positions = self.smart_position_manager.get_all_positions()
+                if inst in existing_positions:
+                    position = self.positions.get(inst)  # Get our sim position for tracking
+                    self.logger.info(
+                        format_operator_message(
+                            "🎯",
+                            "EXPLICIT_CLOSE",
+                            action=action.upper(),
+                            symbol=inst,
+                            source="order_queue",
+                        )
+                    )
+                    result = self.adapter.close_position(inst)
+                    if result.get("ok"):
+                        # Track the close with proper details
+                        close_price = float(result.get("price", 0) or 0)
+                        realized_pnl = 0.0
+                        if position:
+                            realized_pnl = (close_price - position.entry_price) * position.side * position.units
+                            self._track_closed_position(position, close_price, realized_pnl, action)
+                            # Remove from positions and update balance
+                            if inst in self.positions:
+                                del self.positions[inst]
+                            self.balance += realized_pnl
+                        
+                        fills.append({
+                            "action": action,
+                            "symbol": inst,
+                            "source": "order_queue",
+                            "realized_pnl": realized_pnl,
+                            "ok": True,
+                        })
+                        self.smart_position_manager.record_trade(inst)
                 continue
             
             # Determine signal from intent

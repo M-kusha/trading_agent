@@ -688,6 +688,22 @@ class ModernTradingEnv(gym.Env):
             except Exception:
                 pass
 
+        # FIX: Sync balance/equity from Executor's account_state after orchestrator runs
+        # This ensures market_state reflects actual P&L from executed trades
+        try:
+            if self.smart_bus:
+                account_state = self.smart_bus.get("account_state", "Environment", default=None)
+                if isinstance(account_state, dict):
+                    new_balance = account_state.get("balance")
+                    new_equity = account_state.get("equity")
+                    if new_balance is not None:
+                        self.market_state.balance = float(new_balance)
+                        self.balance = float(new_balance)
+                    if new_equity is not None:
+                        self.equity = float(new_equity)
+        except Exception:
+            pass
+
         # Reward shaping (bus-first)
         reward: Optional[float] = None
         try:
@@ -704,7 +720,7 @@ class ModernTradingEnv(gym.Env):
         # This ensures the RL agent always gets SOME learning signal
         if reward is None:
             try:
-                # Use balance change as a simple reward signal
+                # FIX: Use actual balance from market_state (now synced from Executor)
                 current_balance = float(self.market_state.balance)
                 pnl_delta = current_balance - float(self._last_equity if hasattr(self, '_last_equity') else current_balance)
                 # Normalize by initial balance to keep reward in reasonable range

@@ -519,6 +519,12 @@ class BeautifulTrainingVisualizer:
         timestep = int(training_data.get('timestep', 0))
         total_timesteps = int(training_data.get('total_timesteps', 100000))
         episode = int(training_data.get('episode', 0))
+        
+        # Get current trading instruments
+        instruments = training_data.get('instruments', [])
+        if not instruments:
+            instruments = training_data.get('active_instruments', ['EUR/USD', 'XAU/USD'])
+        instruments_str = ' | '.join(instruments) if instruments else 'EUR/USD | XAU/USD'
 
         title = "QUANTUM TRADING SYSTEM"
         gradient_title = Colors.gradient_text(title, (0, 122, 255), (175, 82, 222))
@@ -530,6 +536,7 @@ class BeautifulTrainingVisualizer:
 
         self._add(f"{Colors.DARK_GRAY}{'═' * self.terminal_width}{Colors.RESET}")
         self._add(self._center(f"{gradient_title}  {live_indicator}"))
+        self._add(self._center(f"{Colors.CYAN}Trading: {Colors.GOLD}{instruments_str}{Colors.RESET}"))
         self._add(
             self._center(
                 f"{Colors.GRAY}Episode {Colors.GOLD}{episode:,}{Colors.GRAY} │ Step {Colors.CYAN}{timestep:,}"
@@ -802,9 +809,9 @@ class BeautifulTrainingVisualizer:
             self._add('')
             return
 
-        # Position table header
+        # Position table header - now includes Instrument
         header_parts = [
-            f"{Colors.BOLD}{Colors.WHITE}ID{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.WHITE}Inst{Colors.RESET}",
             f"{Colors.BOLD}{Colors.WHITE}Type{Colors.RESET}",
             f"{Colors.BOLD}{Colors.WHITE}Entry{Colors.RESET}",
             f"{Colors.BOLD}{Colors.WHITE}Current{Colors.RESET}",
@@ -817,19 +824,19 @@ class BeautifulTrainingVisualizer:
         # Calculate column widths based on terminal width
         available_width = self.terminal_width - 8  # margins
         col_widths = {
-            'id': max(6, int(available_width * 0.08)),
-            'type': max(8, int(available_width * 0.10)),
+            'inst': max(10, int(available_width * 0.12)),
+            'type': max(6, int(available_width * 0.08)),
             'entry': max(10, int(available_width * 0.12)),
             'current': max(10, int(available_width * 0.12)),
-            'lot': max(8, int(available_width * 0.10)),
-            'pnl': max(12, int(available_width * 0.18)),
-            'pnl_pct': max(10, int(available_width * 0.12)),
-            'duration': max(10, int(available_width * 0.18)),
+            'lot': max(6, int(available_width * 0.08)),
+            'pnl': max(10, int(available_width * 0.14)),
+            'pnl_pct': max(8, int(available_width * 0.10)),
+            'duration': max(8, int(available_width * 0.14)),
         }
 
         # Build header row
         header_row = (
-            f"  {header_parts[0]:<{col_widths['id']}} "
+            f"  {header_parts[0]:<{col_widths['inst']}} "
             f"{header_parts[1]:<{col_widths['type']}} "
             f"{header_parts[2]:>{col_widths['entry']}} "
             f"{header_parts[3]:>{col_widths['current']}} "
@@ -847,8 +854,8 @@ class BeautifulTrainingVisualizer:
             if not isinstance(pos, dict):
                 continue
 
-            # Extract position data
-            pos_id = str(pos.get('id', pos.get('ticket', idx + 1)))
+            # Extract position data - now extract instrument
+            instrument = str(pos.get('instrument', pos.get('symbol', 'N/A')))[:10]
             pos_type = str(pos.get('type', pos.get('action', 'HOLD'))).upper()
             entry_price = float(pos.get('entry_price', pos.get('open_price', 0)))
             current_price = float(pos.get('current_price', pos.get('price', entry_price)))
@@ -903,9 +910,9 @@ class BeautifulTrainingVisualizer:
             pnl_sign = "+" if pnl >= 0 else ""
             pnl_pct_sign = "+" if pnl_pct >= 0 else ""
 
-            # Build position row
+            # Build position row - now shows instrument instead of ID
             pos_row = (
-                f"  {Colors.GRAY}#{pos_id:<{col_widths['id'] - 1}}{Colors.RESET} "
+                f"  {Colors.CYAN}{instrument:<{col_widths['inst']}}{Colors.RESET} "
                 f"{type_color}{type_icon} {pos_type:<{col_widths['type'] - 2}}{Colors.RESET} "
                 f"{Colors.WHITE}{entry_price:>{col_widths['entry'] - 1}.5f}{Colors.RESET} "
                 f"{Colors.CYAN}{current_price:>{col_widths['current'] - 1}.5f}{Colors.RESET} "
@@ -938,8 +945,111 @@ class BeautifulTrainingVisualizer:
 
         self._add(summary_line)
         self._add("")
+
+        # Render closed positions (recent trades) if available
+        closed_positions = positions_data.get('closed_positions', [])
+        if closed_positions:
+            self._render_closed_positions(closed_positions)
+        
         self._add('')
         self._add('')
+
+    def _render_closed_positions(self, closed_positions: List[Any]) -> None:
+        """Render recent closed positions (trade history) with P&L breakdown"""
+        if not closed_positions:
+            return
+            
+        # Ensure it's a list
+        if not isinstance(closed_positions, list):
+            return
+            
+        self._add(f"{Colors.GRAY}{'─' * self.terminal_width}{Colors.RESET}")
+        self._add(self._center(f"{Colors.GOLD}RECENT TRADES (Closed Positions){Colors.RESET}"))
+        self._add("")
+        
+        # Calculate statistics
+        wins = 0
+        losses = 0
+        total_profit = 0.0
+        total_loss = 0.0
+        
+        for pos in closed_positions:
+            if not isinstance(pos, dict):
+                continue
+            pnl = float(pos.get('pnl', pos.get('profit', 0)) or 0)
+            if pnl > 0:
+                wins += 1
+                total_profit += pnl
+            elif pnl < 0:
+                losses += 1
+                total_loss += abs(pnl)
+        
+        total_trades = wins + losses
+        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+        profit_factor = (total_profit / total_loss) if total_loss > 0 else (float('inf') if total_profit > 0 else 0)
+        net_pnl = total_profit - total_loss
+        
+        # Stats row
+        win_color = Colors.BUY_GREEN if win_rate >= 50 else Colors.ORANGE if win_rate >= 30 else Colors.SELL_RED
+        pf_color = Colors.BUY_GREEN if profit_factor >= 1.5 else Colors.GOLD if profit_factor >= 1.0 else Colors.SELL_RED
+        net_color = Colors.PROFIT_GREEN if net_pnl >= 0 else Colors.LOSS_RED
+        net_sign = "+" if net_pnl >= 0 else ""
+        
+        stats_row = (
+            f"  {Colors.GRAY}Trades:{Colors.RESET} {Colors.WHITE}{total_trades}{Colors.RESET}  "
+            f"{Colors.GRAY}│{Colors.RESET}  "
+            f"{Colors.GRAY}W/L:{Colors.RESET} {Colors.BUY_GREEN}{wins}{Colors.RESET}/{Colors.SELL_RED}{losses}{Colors.RESET}  "
+            f"{Colors.GRAY}│{Colors.RESET}  "
+            f"{Colors.GRAY}Win Rate:{Colors.RESET} {win_color}{win_rate:.1f}%{Colors.RESET}  "
+            f"{Colors.GRAY}│{Colors.RESET}  "
+            f"{Colors.GRAY}PF:{Colors.RESET} {pf_color}{profit_factor:.2f}{Colors.RESET}  "
+            f"{Colors.GRAY}│{Colors.RESET}  "
+            f"{Colors.GRAY}Net P&L:{Colors.RESET} {net_color}{net_sign}${net_pnl:.2f}{Colors.RESET}"
+        )
+        self._add(_ansi_safe_truncate(stats_row, self.terminal_width))
+        self._add("")
+        
+        # Recent trades table (last 5)
+        recent = list(closed_positions)[-5:]
+        recent.reverse()  # Most recent first
+        
+        if recent:
+            # Header
+            header = (
+                f"  {Colors.BOLD}{Colors.WHITE}{'Instrument':<12} {'Side':<6} {'Entry':>10} {'Close':>10} "
+                f"{'P&L':>12} {'Reason':<10}{Colors.RESET}"
+            )
+            self._add(_ansi_safe_truncate(header, self.terminal_width))
+            self._add(f"  {Colors.DARK_GRAY}{BoxChars.H * (self.terminal_width - 4)}{Colors.RESET}")
+            
+            for pos in recent:
+                if not isinstance(pos, dict):
+                    continue
+                    
+                instrument = str(pos.get('instrument', 'N/A'))[:12]
+                side = pos.get('side', 0)
+                side_str = "LONG" if side > 0 else "SHORT" if side < 0 else "N/A"
+                side_color = Colors.BUY_GREEN if side > 0 else Colors.SELL_RED if side < 0 else Colors.GRAY
+                
+                entry_price = float(pos.get('entry_price', 0) or 0)
+                close_price = float(pos.get('close_price', 0) or 0)
+                pnl = float(pos.get('pnl', pos.get('profit', 0)) or 0)
+                reason = str(pos.get('close_reason', 'N/A'))[:10]
+                
+                pnl_color = Colors.PROFIT_GREEN if pnl >= 0 else Colors.LOSS_RED
+                pnl_sign = "+" if pnl >= 0 else ""
+                
+                row = (
+                    f"  {Colors.CYAN}{instrument:<12}{Colors.RESET} "
+                    f"{side_color}{side_str:<6}{Colors.RESET} "
+                    f"{Colors.WHITE}{entry_price:>10.5f}{Colors.RESET} "
+                    f"{Colors.WHITE}{close_price:>10.5f}{Colors.RESET} "
+                    f"{pnl_color}{pnl_sign}${pnl:>10.2f}{Colors.RESET} "
+                    f"{Colors.GRAY}{reason:<10}{Colors.RESET}"
+                )
+                self._add(_ansi_safe_truncate(row, self.terminal_width))
+        
+        self._add("")
 
     def _render_market_analysis(self, market_data: Dict[str, Any]) -> None:
         regime = str(market_data.get('regime', 'trending')).upper()
@@ -1143,16 +1253,27 @@ class BeautifulTrainingVisualizer:
         })
 
         # In simulation mode, balance is mark-to-market (includes all P&L)
-        current_balance = account_state.get('balance', 3000)
+        # FIX: Try multiple sources for balance - prefer account_state, fallback to training_metrics
+        current_balance = account_state.get('balance') if account_state else None
+        if current_balance is None or current_balance == 0:
+            current_balance = training_metrics.get('env_balance')
+        if current_balance is None or current_balance == 0:
+            current_balance = training_metrics.get('env_equity')
+        if current_balance is None:
+            current_balance = 3000  # Default fallback
+        
+        initial_balance = account_state.get('initial_balance') if account_state else None
+        if initial_balance is None or initial_balance == 0:
+            initial_balance = 3000  # Default
 
         self._render_performance_metrics({
             'balance': current_balance,
-            'initial_balance': account_state.get('initial_balance', 3000),
+            'initial_balance': initial_balance,
             'drawdown': training_metrics.get('env_drawdown', 0),
-            'max_drawdown': account_state.get('max_drawdown', 0),
+            'max_drawdown': account_state.get('max_drawdown', 0) if account_state else 0,
             'sharpe_ratio': trading_performance.get('sharpe_ratio', 0),
             'current_reward': training_metrics.get('current_episode_reward', 0),
-            'best_reward': training_metrics.get('best_reward', 0),
+            'best_reward': training_metrics.get('best_reward', 0) if training_metrics.get('best_reward') is not None else 0,
             'avg_reward': training_metrics.get('episode_reward_mean', 0),
         })
 
@@ -1238,7 +1359,7 @@ class BeautifulTrainingVisualizer:
 
         # Render to terminal (full repaint)
         # TEMPORARILY DISABLED FOR DEBUG OUTPUT
-        # self._ui.render_lines(self._frame)
+        self._ui.render_lines(self._frame)
 
     def _determine_action(self, positions: List[Any]) -> str:
         """Determine current action from positions"""

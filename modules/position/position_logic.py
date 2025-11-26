@@ -154,13 +154,52 @@ class PositionManager(PositionManagerBase):
             return self._finalize_decision(instrument, decision, 0.0, 0.0, 0.5, rationale, risk_factors, context)
 
         # ==========================================================
-        # EXISTING POSITION: Let SmartPositionManager handle exits
+        # EXISTING POSITION: Handle exits based on agent action
         # ==========================================================
         if has_position:
-            # Just HOLD - exit logic is in SmartPositionManager (Executor)
-            # We only emit EMERGENCY_CLOSE (above) for critical situations
+            # Get current position side from portfolio_health
+            position_side = 1  # Default to long
+            try:
+                positions = self.smart_bus.get("positions", "PositionManager", default={})
+                if isinstance(positions, dict) and instrument in positions:
+                    pos = positions[instrument]
+                    if isinstance(pos, dict):
+                        position_side = int(pos.get("side", 1))
+            except Exception:
+                pass
+            
+            # FIX: Check if agent wants to close/reverse based on signal direction
+            agent_direction = context.market_direction  # -1, 0, or +1
+            
+            # Close if: 1) Agent direction is opposite to position, or 2) Agent signal is near zero
+            should_close = False
+            close_reason = ""
+            
+            # Condition 1: Agent direction reverses (LONG position but SHORT signal, or vice versa)
+            if position_side > 0 and agent_direction < 0:
+                should_close = True
+                close_reason = "Agent signaling SHORT while holding LONG"
+            elif position_side < 0 and agent_direction > 0:
+                should_close = True
+                close_reason = "Agent signaling LONG while holding SHORT"
+            
+            # Condition 2: Agent signal intensity near zero (wants to exit)
+            exit_threshold = float(self.Cval("exit_signal_threshold", 0.10))
+            if sig_strength < exit_threshold:
+                should_close = True
+                close_reason = f"Agent signal weak ({sig_strength:.3f} < {exit_threshold})"
+            
+            if should_close:
+                decision = PositionDecision.CLOSE
+                intensity = 1.0  # Full close
+                confidence = 0.7
+                rationale["stage"] = "agent_exit"
+                rationale["factors"].append(close_reason)
+                return self._finalize_decision(instrument, decision, intensity, 0.0, confidence, rationale, risk_factors, context)
+            
+            # Otherwise HOLD - no exit signal from agent
             rationale["stage"] = "hold_existing"
-            rationale["factors"].append("Position exists; exits handled by SmartPositionManager")
+            rationale["factors"].append(f"Holding position; agent direction={agent_direction}, signal={sig_strength:.3f}")
             return self._finalize_decision(instrument, decision, 0.0, 0.0, 0.6, rationale, risk_factors, context)
 
         # ==========================================================
@@ -337,7 +376,34 @@ class PositionManager(PositionManagerBase):
     ) -> SignalContext:
         inst_data = market_data.get(instrument, {}) or {}
 
-        raw_intensity = inst_data.get("intensity", 0.0)
+        # ============================================================
+        # FIX: Read agent_action as PRIMARY signal source
+        # The PPO agent outputs [direction, size] which should drive trading
+        # ============================================================
+        raw_intensity = 0.0
+        try:
+            agent_action = self.smart_bus.get("agent_action", "PositionManager", default=None)
+            if agent_action is not None:
+                # agent_action format: [direction (-1 to 1), size (0 to 1)]
+                if isinstance(agent_action, (list, tuple)) and len(agent_action) >= 1:
+                    direction = float(agent_action[0])  # -1 to 1
+                    size = float(agent_action[1]) if len(agent_action) > 1 else 0.5
+                    # Convert to intensity: direction * size gives trading signal
+                    raw_intensity = direction * size
+                elif isinstance(agent_action, dict):
+                    # Handle dict format {direction: x, size: y}
+                    direction = float(agent_action.get("direction", agent_action.get("action", 0.0)))
+                    size = float(agent_action.get("size", agent_action.get("intensity", 0.5)))
+                    raw_intensity = direction * size
+                elif isinstance(agent_action, (int, float)):
+                    raw_intensity = float(agent_action)
+        except Exception:
+            pass
+        
+        # Fallback to market_data intensity if agent_action not available
+        if abs(raw_intensity) < 1e-6:
+            raw_intensity = inst_data.get("intensity", 0.0)
+        
         market_intensity = float(raw_intensity if isinstance(raw_intensity, (int, float)) else 0.0)
         market_direction = int(np.sign(market_intensity))
 
