@@ -96,7 +96,11 @@ def _percentile_ms(samples: List[float], q: float) -> float:
 
 
 def _predict_timeout_ms(perf: Dict[str, Any], default_ms: float, cfg: 'ModuleConfig') -> int:
-    """Adaptive timeout = EWMA(pctl(recent)), clamped to [floor, ceiling]."""
+    """Adaptive timeout = EWMA(pctl(recent)), clamped to [floor, ceiling].
+    
+    IMPORTANT: The explicit default_ms (from config) is treated as a MINIMUM floor
+    to prevent adaptive tuning from reducing timeouts below configured values.
+    """
     recent = list(perf.get("recent_times", []))
     if not recent:
         return int(default_ms)
@@ -105,8 +109,11 @@ def _predict_timeout_ms(perf: Dict[str, Any], default_ms: float, cfg: 'ModuleCon
     prev = max(1.0, float(default_ms))
     alpha = 0.30  # EWMA smoothing
     blended = alpha * pctl + (1.0 - alpha) * prev
-    lo = float(getattr(cfg, "timeout_floor_ms", 150))
-    hi = float(getattr(cfg, "timeout_ceiling_ms", 10000))
+    # Use max of global floor OR explicit config value as minimum
+    # This ensures by_module overrides are respected as minimums
+    global_floor = float(getattr(cfg, "timeout_floor_ms", 150))
+    lo = max(global_floor, float(default_ms))  # Config timeout is minimum floor
+    hi = float(getattr(cfg, "timeout_ceiling_ms", 30000))
     return int(min(hi, max(lo, blended)))
 
 

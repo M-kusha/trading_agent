@@ -15,7 +15,7 @@ execution:
     by_module:
       # Market analysis (heavy)
       UnifiedMarketModule: 15000  # init + 54k bars
-      PositionManager: 12000  # Increased further - handles signal extraction and position logic
+      PositionManager: 15000  # Increased - handles signal extraction and position logic
 
       # Voting / coordination
       AlternativeRealitySampler: 6000
