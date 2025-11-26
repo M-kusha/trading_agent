@@ -316,21 +316,44 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
         if current_hour is None:
             current_hour = self.time_helper.get_utcnow().hour
 
-        # Trading session based on hour
+        # Detect ALL active sessions (markets can overlap)
+        # London: 08:00-16:00 UTC, NY: 13:00-21:00 UTC, Sydney: 21:00-06:00 UTC, Tokyo: 00:00-08:00 UTC
+        active_sessions = []
         if 8 <= current_hour < 16:
+            active_sessions.append("london")
+        if 13 <= current_hour < 21:
+            active_sessions.append("new_york")
+        if 21 <= current_hour or current_hour < 6:
+            active_sessions.append("sydney")
+        if 0 <= current_hour < 8:
+            active_sessions.append("tokyo")
+        
+        # Store active sessions list
+        self.active_sessions = active_sessions if active_sessions else ["closed"]
+        
+        # Determine primary session (with overlap priority)
+        if "london" in active_sessions and "new_york" in active_sessions:
+            self.trading_session = "london_newyork_overlap"  # High liquidity overlap
+        elif "london" in active_sessions:
             self.trading_session = "london"
-        elif 13 <= current_hour < 21:
+        elif "new_york" in active_sessions:
             self.trading_session = "new_york"
-        elif 21 <= current_hour or current_hour < 6:
+        elif "sydney" in active_sessions and "tokyo" in active_sessions:
+            self.trading_session = "asia_overlap"  # Asian overlap
+        elif "tokyo" in active_sessions:
+            self.trading_session = "tokyo"
+        elif "sydney" in active_sessions:
             self.trading_session = "sydney"
         else:
-            self.trading_session = "tokyo"
+            self.trading_session = "closed"
 
         # Session type based on hour
-        if 9 <= current_hour < 17:
+        if 13 <= current_hour < 16:
+            self.session_type = "london_ny_overlap"  # Prime trading hours
+        elif 9 <= current_hour < 17:
             self.session_type = "main"
         elif 17 <= current_hour < 21:
-            self.session_type = "overlap"
+            self.session_type = "late"
         else:
             self.session_type = "overnight"
 

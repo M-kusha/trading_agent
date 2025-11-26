@@ -2217,6 +2217,123 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         self.logger.info("[RELOAD] Enhanced Execution Quality Monitor reset - all state cleared")
 
     # ─────────────────────────────────────────────────────────────
+    # STATE PERSISTENCE
+    # ─────────────────────────────────────────────────────────────
+
+    def _get_custom_state(self) -> Dict[str, Any]:
+        """Return custom state for persistence."""
+        return {
+            # Execution histories
+            'slippage_history': list(self.slippage_history)[-50:],
+            'latency_history': list(self.latency_history)[-50:],
+            'fill_history': list(self.fill_history)[-50:],
+            'spread_history': list(self.spread_history)[-50:],
+            'quality_history': list(self.quality_history)[-50:],
+            
+            # Quality metrics
+            'quality_score': float(self.quality_score),
+            'execution_count': self.execution_count,
+            'degraded_executions': self.degraded_executions,
+            
+            # Comprehensive metrics
+            'comprehensive_metrics': dict(self.comprehensive_metrics),
+            
+            # Adaptive parameters
+            'adaptive_params': dict(self._adaptive_params),
+            
+            # Performance tracking per regime/session
+            'regime_performance': {k: {sk: list(sv)[-20:] for sk, sv in v.items()} 
+                                   for k, v in self.regime_performance.items()},
+            'session_performance': {k: {sk: list(sv)[-20:] for sk, sv in v.items()} 
+                                    for k, v in self.session_performance.items()},
+            
+            # Alert tracking
+            'quality_alerts': list(self.quality_alerts)[-10:],
+            'escalation_count': self.escalation_count,
+            
+            # Mode info
+            'current_mode': self.current_mode.value,
+            'market_regime': self.market_regime,
+            'volatility_regime': self.volatility_regime,
+            'market_session': self.market_session,
+        }
+
+    def _set_custom_state(self, state: Dict[str, Any]) -> None:
+        """Restore custom state from persistence."""
+        if not state:
+            return
+        
+        try:
+            # Restore histories
+            if 'slippage_history' in state:
+                self.slippage_history = deque(state['slippage_history'], maxlen=self._cfg.stats_window)
+            if 'latency_history' in state:
+                self.latency_history = deque(state['latency_history'], maxlen=self._cfg.stats_window)
+            if 'fill_history' in state:
+                self.fill_history = deque(state['fill_history'], maxlen=self._cfg.stats_window)
+            if 'spread_history' in state:
+                self.spread_history = deque(state['spread_history'], maxlen=self._cfg.stats_window)
+            if 'quality_history' in state:
+                self.quality_history = deque(state['quality_history'], maxlen=self._cfg.stats_window)
+            
+            # Restore quality metrics
+            if 'quality_score' in state:
+                self.quality_score = float(state['quality_score'])
+            if 'execution_count' in state:
+                self.execution_count = int(state['execution_count'])
+            if 'degraded_executions' in state:
+                self.degraded_executions = int(state['degraded_executions'])
+            
+            # Restore comprehensive metrics
+            if 'comprehensive_metrics' in state:
+                self.comprehensive_metrics.update(state['comprehensive_metrics'])
+            
+            # Restore adaptive parameters
+            if 'adaptive_params' in state:
+                self._adaptive_params.update(state['adaptive_params'])
+            
+            # Restore regime/session performance
+            if 'regime_performance' in state:
+                for regime, data in state['regime_performance'].items():
+                    for key, values in data.items():
+                        self.regime_performance[regime][key] = list(values)
+            if 'session_performance' in state:
+                for session, data in state['session_performance'].items():
+                    for key, values in data.items():
+                        self.session_performance[session][key] = list(values)
+            
+            # Restore alerts
+            if 'quality_alerts' in state:
+                self.quality_alerts = deque(state['quality_alerts'], maxlen=10)
+            if 'escalation_count' in state:
+                self.escalation_count = int(state['escalation_count'])
+            
+            # Restore mode info
+            if 'current_mode' in state:
+                mode_str = state['current_mode']
+                for mode in ExecutionMode:
+                    if mode.value == mode_str:
+                        self.current_mode = mode
+                        break
+            if 'market_regime' in state:
+                self.market_regime = state['market_regime']
+            if 'volatility_regime' in state:
+                self.volatility_regime = state['volatility_regime']
+            if 'market_session' in state:
+                self.market_session = state['market_session']
+            
+            self.logger.info(
+                format_operator_message(
+                    "[STATE]", "ExecutionQualityMonitor state restored",
+                    executions=self.execution_count,
+                    quality=f"{self.quality_score:.2f}",
+                    mode=self.current_mode.value
+                )
+            )
+        except Exception as e:
+            self.logger.warning(f"Failed to restore ExecutionQualityMonitor state: {e}")
+
+    # ─────────────────────────────────────────────────────────────
     # BASEMODULE ABSTRACT METHOD IMPLEMENTATIONS
     # ─────────────────────────────────────────────────────────────
 

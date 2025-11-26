@@ -699,8 +699,21 @@ class ModernTradingEnv(gym.Env):
                     reward = float(sr)
         except Exception:
             pass
+        
+        # Fallback: If no shaped reward from bus, compute simple PnL-based reward
+        # This ensures the RL agent always gets SOME learning signal
         if reward is None:
-            reward = 0.0  # no embedded PnL delta here
+            try:
+                # Use balance change as a simple reward signal
+                current_balance = float(self.market_state.balance)
+                pnl_delta = current_balance - float(self._last_equity if hasattr(self, '_last_equity') else current_balance)
+                # Normalize by initial balance to keep reward in reasonable range
+                initial = float(getattr(self.config, 'initial_balance', 3000.0) or 3000.0)
+                reward = pnl_delta / max(initial, 1.0) * 10.0  # Scale factor for learning
+                reward = float(np.clip(reward, -1.0, 1.0))  # Clip to prevent extreme values
+                self._last_equity = current_balance
+            except Exception:
+                reward = 0.0
 
         # update drawdown anchors locally (balance unchanged here)
         if self.market_state.balance > self.market_state.peak_balance:

@@ -1,11 +1,14 @@
-// // frontend/src/main.jsx
+// frontend/src/main.jsx
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { StoreProvider } from './store';
 import TradingDashboard from './App.jsx';
 import './index.css';
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <TradingDashboard />
+    <StoreProvider>
+      <TradingDashboard />
+    </StoreProvider>
   </React.StrictMode>,
 );

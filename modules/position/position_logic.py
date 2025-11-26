@@ -83,6 +83,18 @@ class PositionManager(PositionManagerBase):
     # Core decision logic
     # ==========================================================
     def _make_position_decision(self, context: SignalContext) -> PositionDecisionResult:
+        """
+        Simplified decision logic - ENTRY DECISIONS ONLY.
+        
+        Exit logic (profit-taking, loss-cutting, trailing stops) is handled
+        by SmartPositionManager in the Executor for live trading.
+        
+        This module focuses on:
+        1. Memory veto/danger zone checks (pre-entry filtering)
+        2. Emergency conditions
+        3. Signal-based entry decisions (OPEN_LONG, OPEN_SHORT)
+        4. Portfolio health gates
+        """
         instrument = context.instrument
         has_position = instrument in self.open_positions
 
@@ -141,164 +153,55 @@ class PositionManager(PositionManagerBase):
             rationale["factors"].append(f"Portfolio health {portfolio_health_score:.3f} too low to open")
             return self._finalize_decision(instrument, decision, 0.0, 0.0, 0.5, rationale, risk_factors, context)
 
-        # ---------- Hard risk limits & trailing take-profit (when position exists)
+        # ==========================================================
+        # EXISTING POSITION: Let SmartPositionManager handle exits
+        # ==========================================================
         if has_position:
-            pnl_eur = self._get_unrealised_pnl_from_bus(instrument)
-            hard_loss_eur = float(self.Cval("hard_loss_eur", 100.0))
+            # Just HOLD - exit logic is in SmartPositionManager (Executor)
+            # We only emit EMERGENCY_CLOSE (above) for critical situations
+            rationale["stage"] = "hold_existing"
+            rationale["factors"].append("Position exists; exits handled by SmartPositionManager")
+            return self._finalize_decision(instrument, decision, 0.0, 0.0, 0.6, rationale, risk_factors, context)
 
-            # 1) Hard stop-loss (absolute)
-            if pnl_eur <= -abs(hard_loss_eur):
-                decision = PositionDecision.CLOSE
-                intensity = 1.0
-                confidence = 0.95
-                rationale["stage"] = "risk_management"
-                rationale["factors"].append(f"Hard loss-cut triggered at EUR {pnl_eur:.2f} ≤ -{hard_loss_eur:.0f}")
-                return self._finalize_decision(instrument, decision, intensity, 0.0, confidence, rationale, risk_factors, context)
+        # ==========================================================
+        # NO POSITION: Evaluate entry signals
+        # ==========================================================
+        if sig_strength < min_sig:
+            rationale["stage"] = "signal_filter"
+            rationale["factors"].append(f"Signal {sig_strength:.3f} below threshold {min_sig:.2f}")
+            return self._finalize_decision(instrument, decision, 0.0, 0.0, 0.5, rationale, risk_factors, context)
 
-            # 2) Trailing take-profit with favorability check
-            trailing_pct = float(self.Cval("take_profit_trailing_pct", 0.15))
-            min_activation_eur = float(self.Cval("take_profit_min_eur", 150.0))
+        # Use voting direction when available, fallback to signal direction
+        trade_vote = self.smart_bus.get("trade_vote_v2", "PositionManager")
+        voting_direction = None
+        if isinstance(trade_vote, dict) and trade_vote.get("action") in ("BUY", "buy", "SELL", "sell"):
+            vote_action = str(trade_vote.get("action", "")).upper()
+            voting_direction = 1 if vote_action == "BUY" else -1
+            rationale["factors"].append(f"Using voting direction: {vote_action}")
+        
+        # Use voting direction if available and confident, else fallback to signal
+        effective_direction = voting_direction if voting_direction is not None else context.market_direction
+        decision = PositionDecision.OPEN_LONG if effective_direction > 0 else PositionDecision.OPEN_SHORT
+        intensity = sig_strength
+        confidence = self._calculate_confidence(context, decision)
+        size = self._calculate_position_size(context, intensity, confidence)
 
-            favors_down = self.favors_trend_down(instrument, context.market_intensity, lookback=6, eps=0.03)
-            if self.should_close_for_trailing_profit(instrument, trailing_pct, min_activation_eur, favors_down):
-                decision = PositionDecision.CLOSE
-                intensity = 0.9
-                confidence = 0.9
-                rationale["stage"] = "take_profit_trailing"
-                peak = self._profit_tracker.peak(instrument)
-                cur = self._profit_tracker.last(instrument)
-                drop_pct = (peak - cur) / max(1e-9, peak)
-                rationale["factors"].append(
-                    f"Trailing TP: peak={peak:.2f}, now={cur:.2f}, drop={drop_pct:.1%} ≥ {trailing_pct:.1%}, favors_down"
-                )
-                return self._finalize_decision(instrument, decision, intensity, 0.0, confidence, rationale, risk_factors, context)
-
-        # ---------- Decide open / scale / reduce
-        if not has_position:
-            if sig_strength < min_sig:
-                rationale["stage"] = "signal_filter"
-                rationale["factors"].append(f"Signal {sig_strength:.3f} below threshold {min_sig:.2f}")
-                return self._finalize_decision(instrument, decision, 0.0, 0.0, 0.5, rationale, risk_factors, context)
-
-            # FIX BUG 1: Use voting direction when available, fallback to signal direction
-            trade_vote = self.smart_bus.get("trade_vote_v2", "PositionManager")
-            voting_direction = None
-            if isinstance(trade_vote, dict) and trade_vote.get("action") in ("BUY", "buy", "SELL", "sell"):
-                vote_action = str(trade_vote.get("action", "")).upper()
-                voting_direction = 1 if vote_action == "BUY" else -1
-                rationale["factors"].append(f"Using voting direction: {vote_action}")
-            
-            # Use voting direction if available and confident, else fallback to signal
-            effective_direction = voting_direction if voting_direction is not None else context.market_direction
-            decision = PositionDecision.OPEN_LONG if effective_direction > 0 else PositionDecision.OPEN_SHORT
-            intensity = sig_strength
-            confidence = self._calculate_confidence(context, decision)
-            size = self._calculate_position_size(context, intensity, confidence)
-
-            # Enforce min viable notional; otherwise hold
-            min_size_pct = float(self.Cval("min_size_pct", 0.01))
-            if abs(size) < context.balance * min_size_pct:
-                if sig_strength > (min_sig + 0.10):
-                    size = context.balance * min_size_pct
-                else:
-                    rationale["stage"] = "sizing"
-                    rationale["factors"].append("Computed size below minimum; holding")
-                    decision = PositionDecision.HOLD
-                    intensity = 0.0
-                    size = 0.0
-
-            rationale["stage"] = "new_position"
-            rationale["factors"].append(f"Strong signal {sig_strength:.3f} for new position")
-            # Reset scale-down counter for new position
-            if hasattr(self, 'consecutive_scale_downs'):
-                self.consecutive_scale_downs[instrument] = 0
-            return self._finalize_decision(instrument, decision, intensity, size, confidence, rationale, risk_factors, context)
-
-        # From here on: we have a position; choose scale-up / scale-down / close
-        current_side = int(np.sign(self.open_positions[instrument].get("side", 0)))
-        signal_aligns = (current_side > 0 and context.market_direction > 0) or (current_side < 0 and context.market_direction < 0)
-        pnl_eur = self._get_unrealised_pnl_from_bus(instrument)
-
-        # Scale-up rules: only when strong, not too frequent, not near concentration limits, and preferably with non-negative P&L
-        if signal_aligns:
-            scale_th = float(self.Cval("position_scale_threshold", max(min_sig + 0.10, 0.35)))
-            if sig_strength > scale_th and self.scale_cooldown_ok(instrument) and pnl_eur >= -0.01 * self.Cval("hard_loss_eur", 100.0):
-                # also avoid scaling if already near concentration cap
-                max_conc = float(self.Cval("max_instrument_concentration", 0.30))
-                if context.current_exposure < (max_conc * 0.9):
-                    decision = PositionDecision.SCALE_UP
-                    # lighter intensity for adds
-                    intensity = min(0.8 * sig_strength, 0.9)
-                    confidence = self._calculate_confidence(context, decision)
-                    size = max(self._calculate_position_size(context, intensity, confidence) * 0.5, 0.0)
-                    if size > 0:
-                        rationale["stage"] = "scale_up"
-                        rationale["factors"].append(f"Signal {sig_strength:.3f} aligns; exposure OK; cooldown OK")
-                        # arm cooldown to avoid spam scaling
-                        self.arm_scale_cooldown(instrument, seconds=float(self.Cval("scale_cooldown_seconds", 15.0)))
-                        return self._finalize_decision(instrument, decision, intensity, size, confidence, rationale, risk_factors, context)
-
-        # ---------- Force close after too many consecutive scale-downs (prevents infinite scaling)
-        max_scale_downs = int(self.Cval("max_consecutive_scale_downs", 5))
-        current_scale_downs = getattr(self, 'consecutive_scale_downs', {}).get(instrument, 0)
-        if current_scale_downs >= max_scale_downs:
-            decision = PositionDecision.CLOSE
-            intensity = 0.85
-            confidence = 0.75
-            rationale["stage"] = "force_close_scale_down_limit"
-            rationale["factors"].append(f"Forced close after {current_scale_downs} consecutive scale-downs")
-            # Reset counter on close
-            if hasattr(self, 'consecutive_scale_downs'):
-                self.consecutive_scale_downs[instrument] = 0
-            return self._finalize_decision(instrument, decision, intensity, 0.0, confidence, rationale, risk_factors, context)
-
-        # Opposing signals: reduce or close
-        # NOTE: Lowered close threshold from 0.80 to 0.65 because signals typically max at ~0.70
-        # This enables actual position closing instead of infinite scale-down loops
-        if not signal_aligns and sig_strength > 0.50:
-            if sig_strength >= 0.65:
-                decision = PositionDecision.CLOSE
-                intensity = 0.9
-                confidence = 0.8
-                rationale["stage"] = "close_reverse"
-                rationale["factors"].append(f"Strong opposing signal {sig_strength:.3f}")
-                # Reset counter on close
-                if hasattr(self, 'consecutive_scale_downs'):
-                    self.consecutive_scale_downs[instrument] = 0
-                return self._finalize_decision(instrument, decision, intensity, 0.0, confidence, rationale, risk_factors, context)
+        # Enforce min viable notional; otherwise hold
+        min_size_pct = float(self.Cval("min_size_pct", 0.01))
+        if abs(size) < context.balance * min_size_pct:
+            if sig_strength > (min_sig + 0.10):
+                size = context.balance * min_size_pct
             else:
-                decision = PositionDecision.SCALE_DOWN
-                intensity = 0.6
-                confidence = 0.65
-                size = max(self._calculate_position_size(context, intensity, confidence) * 0.5, 0.0)
-                rationale["stage"] = "scale_down"
-                rationale["factors"].append(f"Opposing signal {sig_strength:.3f}, reducing exposure")
-                # Track consecutive scale-downs
-                if hasattr(self, 'consecutive_scale_downs'):
-                    self.consecutive_scale_downs[instrument] = current_scale_downs + 1
+                rationale["stage"] = "sizing"
+                rationale["factors"].append("Computed size below minimum; holding")
+                decision = PositionDecision.HOLD
+                intensity = 0.0
+                size = 0.0
                 return self._finalize_decision(instrument, decision, intensity, size, confidence, rationale, risk_factors, context)
 
-        # Risk-based nudge: if risk metrics high, consider mild scale-down
-        risk_factors = self._assess_risk_factors(context)
-        if max(risk_factors.values() or [0.0]) > 0.75 and context.current_exposure > 0.0:
-            decision = PositionDecision.SCALE_DOWN
-            intensity = 0.4
-            confidence = 0.6
-            size = max(self._calculate_position_size(context, intensity, confidence) * 0.4, 0.0)
-            rationale["stage"] = "risk_management_reduce"
-            rationale["factors"].append("High risk factors; trimming exposure")
-            # Track consecutive scale-downs for risk-based scale-down too
-            if hasattr(self, 'consecutive_scale_downs'):
-                self.consecutive_scale_downs[instrument] = current_scale_downs + 1
-            return self._finalize_decision(instrument, decision, intensity, size, confidence, rationale, risk_factors, context)
-
-        # Nothing compelling — hold (reset scale-down counter on hold too, since we're not scaling down)
-        if hasattr(self, 'consecutive_scale_downs') and current_scale_downs > 0:
-            # Don't reset on HOLD - only reset on CLOSE or opposite direction
-            pass
-        rationale["stage"] = "hold"
-        rationale["factors"].append("No actionable change")
-        return self._finalize_decision(instrument, decision, 0.0, 0.0, 0.55, rationale, risk_factors, context)
+        rationale["stage"] = "new_position"
+        rationale["factors"].append(f"Strong signal {sig_strength:.3f} for new position")
+        return self._finalize_decision(instrument, decision, intensity, size, confidence, rationale, risk_factors, context)
 
     # ==========================================================
     # Decision helpers

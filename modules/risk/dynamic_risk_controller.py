@@ -283,6 +283,38 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                 thesis="Initial dynamic risk controller status",
             )
 
+            # Publish initial risk level, scale, and assessment for API consumption
+            self.smart_bus.set(
+                "risk_level",
+                "NORMAL",
+                module="DynamicRiskController",
+                thesis="Initial risk level: NORMAL",
+            )
+
+            self.smart_bus.set(
+                "risk_scale",
+                float(self.current_risk_scale),
+                module="DynamicRiskController",
+                thesis=f"Initial risk scale: {self.current_risk_scale:.2f}",
+            )
+
+            self.smart_bus.set(
+                "risk_assessment",
+                {
+                    "risk_level": "NORMAL",
+                    "risk_scale": float(self.current_risk_scale),
+                    "risk_quality": float(self._risk_quality),
+                    "market_regime": self.market_regime,
+                    "mode": self.current_mode.value,
+                    "adaptive_scaling": self.adaptive_scaling,
+                    "consecutive_losses": 0,
+                    "emergency_active": False,
+                    "timestamp": datetime.datetime.now().isoformat(),
+                },
+                module="DynamicRiskController",
+                thesis="Initial risk assessment for API consumption",
+            )
+
             # Publish a baseline voting proposal to avoid early BUS MISS from committee
             try:
                 baseline_vote = {
@@ -585,6 +617,19 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                         "base_risk_scale": float(self._cfg.base_risk_scale),
                         "timestamp": datetime.datetime.now().isoformat(),
                     },
+                    "risk_level": "NORMAL",
+                    "risk_scale": float(self.current_risk_scale),
+                    "risk_assessment": {
+                        "risk_level": "NORMAL",
+                        "risk_scale": float(self.current_risk_scale),
+                        "risk_quality": float(self._risk_quality),
+                        "market_regime": self.market_regime,
+                        "mode": self.current_mode.value,
+                        "adaptive_scaling": self.adaptive_scaling,
+                        "consecutive_losses": self.consecutive_losses,
+                        "emergency_active": False,
+                        "timestamp": datetime.datetime.now().isoformat(),
+                    },
                     "DynamicRiskController_voting_proposal": await self.vote(),
                     "DynamicRiskController_confidence": 0.5,
                     "_thesis": thesis,
@@ -675,12 +720,39 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                 "low_risk_quality": self._risk_quality < self._cfg.min_risk_quality,
             }
 
+            # Calculate risk level string for API
+            risk_level_str = "NORMAL"
+            if self.current_mode == RiskControlMode.EMERGENCY:
+                risk_level_str = "CRITICAL"
+            elif self.current_mode == RiskControlMode.AGGRESSIVE_REDUCTION:
+                risk_level_str = "HIGH"
+            elif self.current_mode == RiskControlMode.CONSERVATIVE:
+                risk_level_str = "ELEVATED"
+            elif self.current_mode == RiskControlMode.OPPORTUNISTIC:
+                risk_level_str = "LOW"
+
+            # Risk assessment for API consumption
+            risk_assessment = {
+                "risk_level": risk_level_str,
+                "risk_scale": float(self.current_risk_scale),
+                "risk_quality": float(self._risk_quality),
+                "market_regime": self.market_regime,
+                "mode": self.current_mode.value,
+                "adaptive_scaling": self.adaptive_scaling,
+                "consecutive_losses": self.consecutive_losses,
+                "emergency_active": self.current_mode == RiskControlMode.EMERGENCY,
+                "timestamp": datetime.datetime.now().isoformat(),
+            }
+
             result.update(
                 {
                     "risk_scaling": scaling_data,
                     "risk_factors": factors_data,
                     "risk_analytics": analytics_data,
                     "risk_alerts": alerts_data,
+                    "risk_level": risk_level_str,
+                    "risk_scale": float(self.current_risk_scale),
+                    "risk_assessment": risk_assessment,
                     "_thesis": thesis,
                 }
             )
@@ -1791,6 +1863,52 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                 thesis="Risk control alerts and emergency status tracking",
             )
 
+            # Publish top-level risk keys for frontend API consumption
+            # These are the keys the backend API expects for /api/risk/overview
+            risk_level_str = "NORMAL"
+            if self.current_mode == RiskControlMode.EMERGENCY:
+                risk_level_str = "CRITICAL"
+            elif self.current_mode == RiskControlMode.AGGRESSIVE_REDUCTION:
+                risk_level_str = "HIGH"
+            elif self.current_mode == RiskControlMode.CONSERVATIVE:
+                risk_level_str = "ELEVATED"
+            elif self.current_mode == RiskControlMode.OPPORTUNISTIC:
+                risk_level_str = "LOW"
+
+            self.smart_bus.set(
+                "risk_level",
+                risk_level_str,
+                module="DynamicRiskController",
+                thesis=f"Current risk level: {risk_level_str}",
+            )
+
+            self.smart_bus.set(
+                "risk_scale",
+                float(self.current_risk_scale),
+                module="DynamicRiskController",
+                thesis=f"Current risk scale: {self.current_risk_scale:.2f}",
+            )
+
+            # Risk assessment summary for API
+            risk_assessment = {
+                "risk_level": risk_level_str,
+                "risk_scale": float(self.current_risk_scale),
+                "risk_quality": float(self._risk_quality),
+                "market_regime": self.market_regime,
+                "mode": self.current_mode.value,
+                "adaptive_scaling": self.adaptive_scaling,
+                "consecutive_losses": self.consecutive_losses,
+                "emergency_active": self.current_mode == RiskControlMode.EMERGENCY,
+                "timestamp": datetime.datetime.now().isoformat(),
+            }
+
+            self.smart_bus.set(
+                "risk_assessment",
+                risk_assessment,
+                module="DynamicRiskController",
+                thesis="Risk assessment summary for API consumption",
+            )
+
             # Voting proposal — publish canonical keys expected by coordinator and optional normalized feed
             if "DynamicRiskController_voting_proposal" in result:
                 proposal = result["DynamicRiskController_voting_proposal"]
@@ -1864,6 +1982,18 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
         """Handle case when no risk data is available"""
         self.logger.warning("No risk data available - maintaining current scale")
         thesis = "No risk data available - maintaining current risk posture"
+        
+        # Calculate risk level string
+        risk_level_str = "NORMAL"
+        if self.current_mode == RiskControlMode.EMERGENCY:
+            risk_level_str = "CRITICAL"
+        elif self.current_mode == RiskControlMode.AGGRESSIVE_REDUCTION:
+            risk_level_str = "HIGH"
+        elif self.current_mode == RiskControlMode.CONSERVATIVE:
+            risk_level_str = "ELEVATED"
+        elif self.current_mode == RiskControlMode.OPPORTUNISTIC:
+            risk_level_str = "LOW"
+        
         return {
             "current_mode": self.current_mode.value,
             "current_risk_scale": self.current_risk_scale,
@@ -1898,6 +2028,19 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                 "risk_adjustments_made": self.risk_adjustments_made,
                 "critical_mode": self.current_mode in [RiskControlMode.EMERGENCY, RiskControlMode.AGGRESSIVE_REDUCTION],
                 "low_risk_quality": self._risk_quality < self._cfg.min_risk_quality,
+            },
+            "risk_level": risk_level_str,
+            "risk_scale": float(self.current_risk_scale),
+            "risk_assessment": {
+                "risk_level": risk_level_str,
+                "risk_scale": float(self.current_risk_scale),
+                "risk_quality": float(self._risk_quality),
+                "market_regime": self.market_regime,
+                "mode": self.current_mode.value,
+                "adaptive_scaling": self.adaptive_scaling,
+                "consecutive_losses": self.consecutive_losses,
+                "emergency_active": self.current_mode == RiskControlMode.EMERGENCY,
+                "timestamp": datetime.datetime.now().isoformat(),
             },
             "_thesis": thesis,
         }
@@ -1972,6 +2115,19 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
                 "risk_adjustments_made": self.risk_adjustments_made,
                 "critical_mode": True,
                 "low_risk_quality": True,
+            },
+            "risk_level": "CRITICAL",
+            "risk_scale": float(self._cfg.min_risk_scale),
+            "risk_assessment": {
+                "risk_level": "CRITICAL",
+                "risk_scale": float(self._cfg.min_risk_scale),
+                "risk_quality": 0.1,
+                "market_regime": self.market_regime,
+                "mode": RiskControlMode.EMERGENCY.value,
+                "adaptive_scaling": self.adaptive_scaling,
+                "consecutive_losses": self.consecutive_losses,
+                "emergency_active": True,
+                "timestamp": datetime.datetime.now().isoformat(),
             },
             "_thesis": thesis,
         }
@@ -2434,3 +2590,102 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
     def calculate_risk_scale(self) -> float:
         """Legacy interface to get risk scale"""
         return float(self.current_risk_scale)
+
+    # ================== STATE PERSISTENCE ==================
+
+    def _get_custom_state(self) -> Dict[str, Any]:
+        """
+        Get custom state for persistence.
+        Saves risk history, factors, and learning data.
+        """
+        return {
+            # Core risk state
+            "current_risk_scale": float(self.current_risk_scale),
+            "risk_factors": dict(self.risk_factors),
+            
+            # History tracking
+            "vol_history": list(self.vol_history),
+            "dd_history": list(self.dd_history),
+            "risk_scale_history": list(self.risk_scale_history),
+            "market_regime_history": list(self.market_regime_history),
+            "_risk_effectiveness_history": list(self._risk_effectiveness_history),
+            
+            # Tracking state
+            "consecutive_losses": int(self.consecutive_losses),
+            "last_pnl": float(self.last_pnl),
+            "risk_adjustments_made": int(self.risk_adjustments_made),
+            "emergency_interventions": int(self.emergency_interventions),
+            
+            # Market context
+            "market_regime": str(self.market_regime),
+            "volatility_regime": str(self.volatility_regime),
+            "market_session": str(self.market_session),
+            
+            # Analytics
+            "risk_analytics": dict(self.risk_analytics),
+            "regime_performance": dict(self.regime_performance),
+            "risk_events": list(self.risk_events)[-100:] if self.risk_events else [],
+            
+            # Adaptive parameters
+            "_adaptive_params": dict(self._adaptive_params),
+            "_risk_quality": float(self._risk_quality),
+            
+            # Mode and circuit breaker
+            "current_mode": self.current_mode.value if hasattr(self.current_mode, 'value') else str(self.current_mode),
+            "circuit_breaker": dict(self.circuit_breaker),
+        }
+
+    def _set_custom_state(self, state: Dict[str, Any]) -> None:
+        """
+        Restore custom state from persistence.
+        """
+        if not state:
+            return
+        
+        # Core risk state
+        self.current_risk_scale = float(state.get("current_risk_scale", self.current_risk_scale))
+        if "risk_factors" in state:
+            self.risk_factors.update(state["risk_factors"])
+        
+        # History tracking (restore with maxlen)
+        if "vol_history" in state:
+            self.vol_history = deque(state["vol_history"], maxlen=self._cfg.vol_history_len)
+        if "dd_history" in state:
+            self.dd_history = deque(state["dd_history"], maxlen=50)
+        if "risk_scale_history" in state:
+            self.risk_scale_history = deque(state["risk_scale_history"], maxlen=100)
+        if "market_regime_history" in state:
+            self.market_regime_history = deque(state["market_regime_history"], maxlen=20)
+        if "_risk_effectiveness_history" in state:
+            self._risk_effectiveness_history = deque(state["_risk_effectiveness_history"], maxlen=50)
+        
+        # Tracking state
+        self.consecutive_losses = int(state.get("consecutive_losses", self.consecutive_losses))
+        self.last_pnl = float(state.get("last_pnl", self.last_pnl))
+        self.risk_adjustments_made = int(state.get("risk_adjustments_made", self.risk_adjustments_made))
+        self.emergency_interventions = int(state.get("emergency_interventions", self.emergency_interventions))
+        
+        # Market context
+        self.market_regime = str(state.get("market_regime", self.market_regime))
+        self.volatility_regime = str(state.get("volatility_regime", self.volatility_regime))
+        self.market_session = str(state.get("market_session", self.market_session))
+        
+        # Analytics
+        if "risk_analytics" in state:
+            self.risk_analytics.update(state["risk_analytics"])
+        if "regime_performance" in state:
+            self.regime_performance.update(state["regime_performance"])
+        if "risk_events" in state:
+            self.risk_events = deque(state["risk_events"], maxlen=100)
+        
+        # Adaptive parameters
+        if "_adaptive_params" in state:
+            self._adaptive_params.update(state["_adaptive_params"])
+        self._risk_quality = float(state.get("_risk_quality", self._risk_quality))
+        
+        # Circuit breaker
+        if "circuit_breaker" in state:
+            self.circuit_breaker.update(state["circuit_breaker"])
+        
+        self.logger.info(f"📂 Restored DynamicRiskController state: scale={self.current_risk_scale:.2f}, "
+                        f"vol_history={len(self.vol_history)}, risk_events={len(self.risk_events)}")

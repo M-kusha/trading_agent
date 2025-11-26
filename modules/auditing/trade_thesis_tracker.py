@@ -82,7 +82,52 @@ class TradeThesisTracker(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         self.worst_thesis = None
         
         self.logger.info("[RELOAD] Trade thesis tracker reset complete")
-    
+
+    # ------------------------------ STATE PERSISTENCE -----------------
+    def _get_custom_state(self) -> Dict[str, Any]:
+        """Return custom state for persistence."""
+        return {
+            'current_thesis': self.current_thesis,
+            'thesis_changes': self.thesis_changes,
+            'thesis_performance': dict(self.thesis_performance),
+            'thesis_history': list(self.thesis_history)[-100:],
+            'thesis_patterns': dict(self.thesis_patterns),
+            'transition_matrix': {k: dict(v) for k, v in self.transition_matrix.items()},
+            'best_thesis': self.best_thesis,
+            'worst_thesis': self.worst_thesis,
+        }
+
+    def _set_custom_state(self, state: Dict[str, Any]) -> None:
+        """Restore custom state from persistence."""
+        if not state:
+            return
+        
+        try:
+            if 'current_thesis' in state:
+                self.current_thesis = state['current_thesis']
+            if 'thesis_changes' in state:
+                self.thesis_changes = int(state['thesis_changes'])
+            if 'thesis_performance' in state:
+                for k, v in state['thesis_performance'].items():
+                    self.thesis_performance[k] = v
+            if 'thesis_history' in state:
+                self.thesis_history = deque(state['thesis_history'], maxlen=500)
+            if 'thesis_patterns' in state:
+                for k, v in state['thesis_patterns'].items():
+                    self.thesis_patterns[k] = int(v)
+            if 'transition_matrix' in state:
+                for k, v in state['transition_matrix'].items():
+                    for k2, v2 in v.items():
+                        self.transition_matrix[k][k2] = int(v2)
+            if 'best_thesis' in state:
+                self.best_thesis = state['best_thesis']
+            if 'worst_thesis' in state:
+                self.worst_thesis = state['worst_thesis']
+            
+            self.logger.info(f"[STATE] TradeThesisTracker state restored: {self.thesis_changes} changes, {len(self.thesis_performance)} theses")
+        except Exception as e:
+            self.logger.warning(f"Failed to restore TradeThesisTracker state: {e}")
+
     async def process(self, **inputs) -> Dict[str, Any]:
         """
         🧠 MAIN THESIS TRACKING PROCESS

@@ -138,8 +138,10 @@ INFOBUS_PERSISTENCE_FILE = Path("state/infobus_data.json")
 def sanitize_for_json(obj: Any) -> Any:
     """Recursively sanitize an object for JSON serialization.
     Replaces inf, -inf, NaN with None or 0.0 to avoid JSON encoding errors.
+    Converts deque, set, frozenset to lists.
     """
     import math
+    from collections import deque
     
     if obj is None:
         return None
@@ -150,6 +152,9 @@ def sanitize_for_json(obj: Any) -> Any:
     elif isinstance(obj, dict):
         return {k: sanitize_for_json(v) for k, v in obj.items()}
     elif isinstance(obj, (list, tuple)):
+        return [sanitize_for_json(item) for item in obj]
+    elif isinstance(obj, (deque, set, frozenset)):
+        # Convert deque, set, frozenset to list
         return [sanitize_for_json(item) for item in obj]
     elif hasattr(obj, '__dict__'):
         # Handle objects with __dict__
@@ -592,6 +597,10 @@ class EnhancedTradingSystemState:
         self.alerts.append(alert_entry)
         self.alerts = self.alerts[-500:]
 
+    def get_training_progress(self) -> Optional[Dict[str, Any]]:
+        """Get training progress (stub - training removed)"""
+        return None
+
 # Global state instance
 state = EnhancedTradingSystemState()
 
@@ -803,6 +812,9 @@ async def start_live_trading(config: LiveTradingConfig):
         state.system_status = "TRADING"
         state.add_alert("Live trading started successfully", "success", "trading")
         logger.info("Live trading started successfully")
+
+        # Immediately broadcast so frontend shows TRADING status
+        await broadcast_system_state()
 
         return {"success": True, "message": "Live trading started", "session_id": state.current_session_id}
 
@@ -1071,6 +1083,24 @@ def perform_health_checks():
             terminal_info = mt5.terminal_info()
             if not terminal_info or not terminal_info.trade_allowed:
                 state.add_warning("MT5 trading not allowed", "mt5")
+            
+            # Check for positions without SL/TP (critical safety check)
+            try:
+                positions = mt5.positions_get()
+                if positions:
+                    missing_sl_count = sum(1 for p in positions if p.sl <= 0)
+                    missing_tp_count = sum(1 for p in positions if p.tp <= 0)
+                    
+                    if missing_sl_count > 0:
+                        state.add_warning(f"⚠️ {missing_sl_count} positions without Stop Loss!", "risk")
+                        logger.warning(f"[RISK] {missing_sl_count} positions without Stop Loss - auto-fixing...")
+                        # Auto-fix positions without SL/TP
+                        asyncio.create_task(auto_fix_sl_tp())
+                    
+                    if missing_tp_count > 0:
+                        state.add_warning(f"⚠️ {missing_tp_count} positions without Take Profit", "risk")
+            except Exception as e:
+                logger.error(f"Error checking positions SL/TP: {e}")
         
         # Check model status
         if state.model_loaded and state.model is None:
@@ -1092,6 +1122,87 @@ def perform_health_checks():
         
     except Exception as e:
         state.add_error(f"Health check error: {str(e)}", "system")
+
+
+async def auto_fix_sl_tp():
+    """Auto-fix positions missing SL/TP in background"""
+    try:
+        import yaml
+        try:
+            with open('config/risk_policy.yaml', 'r') as f:
+                risk_config = yaml.safe_load(f) or {}
+                sl_tp_config = risk_config.get('sl_tp_settings', {})
+        except Exception:
+            sl_tp_config = {'auto_sl_enabled': True, 'auto_tp_enabled': True}
+
+        if not sl_tp_config.get('fix_missing_sl_tp', True):
+            return
+
+        positions = mt5.positions_get()
+        if not positions:
+            return
+
+        def pips_to_price(symbol: str, pips: float) -> float:
+            sym_upper = symbol.upper()
+            if 'XAU' in sym_upper or 'GOLD' in sym_upper:
+                return pips * 0.01
+            elif 'JPY' in sym_upper:
+                return pips * 0.01
+            else:
+                return pips * 0.0001
+
+        fixed_count = 0
+        for pos in positions:
+            needs_sl = pos.sl <= 0 and sl_tp_config.get('auto_sl_enabled', True)
+            needs_tp = pos.tp <= 0 and sl_tp_config.get('auto_tp_enabled', True)
+            
+            if not needs_sl and not needs_tp:
+                continue
+
+            symbol = pos.symbol
+            symbol_config = sl_tp_config.get(symbol, sl_tp_config.get('default', {}))
+            sl_pips = symbol_config.get('stop_loss_pips', 50)
+            tp_pips = symbol_config.get('take_profit_pips', 100)
+            
+            sl_distance = pips_to_price(symbol, sl_pips)
+            tp_distance = pips_to_price(symbol, tp_pips)
+            
+            symbol_info = mt5.symbol_info(symbol)
+            digits = symbol_info.digits if symbol_info else 5
+            
+            new_sl = pos.sl
+            new_tp = pos.tp
+            is_buy = pos.type == mt5.ORDER_TYPE_BUY
+            
+            if is_buy:
+                if needs_sl and sl_pips > 0:
+                    new_sl = round(pos.price_open - sl_distance, digits)
+                if needs_tp and tp_pips > 0:
+                    new_tp = round(pos.price_open + tp_distance, digits)
+            else:
+                if needs_sl and sl_pips > 0:
+                    new_sl = round(pos.price_open + sl_distance, digits)
+                if needs_tp and tp_pips > 0:
+                    new_tp = round(pos.price_open - tp_distance, digits)
+
+            request = {
+                "action": mt5.TRADE_ACTION_SLTP,
+                "symbol": symbol,
+                "position": pos.ticket,
+                "sl": new_sl if new_sl > 0 else 0.0,
+                "tp": new_tp if new_tp > 0 else 0.0,
+            }
+            
+            result = mt5.order_send(request)
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                fixed_count += 1
+                logger.info(f"[AUTO-SL/TP] Fixed position {pos.ticket}: SL={new_sl:.5f} TP={new_tp:.5f}")
+
+        if fixed_count > 0:
+            logger.info(f"[AUTO-SL/TP] Auto-fixed {fixed_count} positions")
+
+    except Exception as e:
+        logger.error(f"[AUTO-SL/TP] Error: {e}")
 
 def check_emergency_conditions() -> bool:
     """Enhanced emergency condition checking"""
@@ -1269,9 +1380,11 @@ async def monitor_training_process():
 async def broadcast_system_state():
     """Broadcast comprehensive system state including training metrics"""
     if not state.websocket_connections:
+        logger.debug("[WS] No websocket connections for system_state broadcast")
         return
     
     try:
+        logger.debug(f"[WS] Broadcasting system_state to {len(state.websocket_connections)} clients, status={state.system_status}")
         # Optional analytics enrichments from InfoBus
         regime_analytics: Dict[str, Any] = {}
         trading_analytics: Dict[str, Any] = {}
@@ -1344,13 +1457,15 @@ async def broadcast_system_state():
         system_state = sanitize_for_json(system_state)
         
         # Send to all connected clients via common helper (with locking)
+        logger.debug(f"[WS] Sending system_state message, size={len(str(system_state))} chars")
         await _send_to_all_websockets(system_state)
 
     except Exception as e:
+        logger.error(f"[WS] Broadcast system_state error: {str(e)}")
         state.add_error(f"Broadcast error: {str(e)}", "websocket")
 
 async def broadcast_mt5_data_update():
-    """Broadcast MT5 data updates"""
+    """Broadcast MT5 data updates including live positions"""
     if not state.websocket_connections:
         return
 
@@ -1359,10 +1474,45 @@ async def broadcast_mt5_data_update():
         chart_data = None  # Do not push chart data via WS to avoid overwriting HTTP-fetched series
         recent_trades: List[Dict[str, Any]] = []
         symbols: List[Dict[str, Any]] = []
+        positions: List[Dict[str, Any]] = []
+        account_info: Dict[str, Any] = {}
 
         # Try to get real MT5 data if connected
         if state.mt5_connected:
             try:
+                # Get account info
+                acc = mt5.account_info()
+                if acc:
+                    account_info = {
+                        "balance": float(acc.balance),
+                        "equity": float(acc.equity),
+                        "profit": float(acc.profit),
+                        "margin": float(acc.margin),
+                        "margin_free": float(acc.margin_free),
+                    }
+                    # Update state performance metrics with real data
+                    state.performance_metrics["current_balance"] = float(acc.balance)
+                    if state.performance_metrics.get("start_balance", 0) == 0:
+                        state.performance_metrics["start_balance"] = float(acc.balance)
+                    state.performance_metrics["total_pnl"] = float(acc.profit)
+                
+                # Get open positions
+                mt5_positions = mt5.positions_get()
+                if mt5_positions:
+                    for pos in mt5_positions:
+                        positions.append({
+                            "ticket": pos.ticket,
+                            "symbol": pos.symbol,
+                            "type": "BUY" if pos.type == mt5.ORDER_TYPE_BUY else "SELL",
+                            "volume": float(pos.volume),
+                            "price_open": float(pos.price_open),
+                            "price_current": float(pos.price_current),
+                            "profit": float(pos.profit),
+                            "sl": float(pos.sl) if pos.sl else None,
+                            "tp": float(pos.tp) if pos.tp else None,
+                            "time": datetime.fromtimestamp(pos.time).isoformat(),
+                        })
+                
                 # Get recent trades
                 deals = mt5.history_deals_get(datetime.now() - timedelta(days=1), datetime.now())
                 if deals:
@@ -1409,6 +1559,9 @@ async def broadcast_mt5_data_update():
         payload: Dict[str, Any] = {
             "recentTrades": recent_trades,
             "symbols": symbols,
+            "positions": positions,
+            "account": account_info,
+            "positionCount": len(positions),
             "timestamp": datetime.now().isoformat(),
         }
         if chart_data is not None:
@@ -1425,9 +1578,11 @@ async def broadcast_mt5_data_update():
 
 async def start_real_time_updates():
     """Start periodic real-time updates"""
+    logger.info("[WS] Starting real-time update loop")
     while True:
         try:
             # Broadcast system state every 5 seconds
+            logger.debug("[WS] Periodic broadcast_system_state call")
             await broadcast_system_state()
 
             # Broadcast module updates every 10 seconds
@@ -1577,28 +1732,38 @@ async def broadcast_logs_update(category: str, logs_data: list):
 async def _send_to_all_websockets(message: dict):
     """Helper function to send message to all connected websockets"""
     lock = getattr(state, "broadcast_lock", None)
-    if lock is not None:
-        async with lock:  # ensure only one broadcast runs at a time
-            disconnected = []
-            for websocket in list(state.websocket_connections):
-                try:
-                    await websocket.send_json(message)
-                except Exception:
-                    disconnected.append(websocket)
-            for ws in disconnected:
-                if ws in state.websocket_connections:
-                    state.websocket_connections.remove(ws)
-    else:
-        # Fallback without lock (startup race); still send sequentially
+    
+    async def _do_send():
         disconnected = []
         for websocket in list(state.websocket_connections):
             try:
+                # Check if websocket is still in a valid state
+                if hasattr(websocket, 'client_state'):
+                    from starlette.websockets import WebSocketState
+                    if websocket.client_state != WebSocketState.CONNECTED:
+                        logger.debug(f"[WS] Skipping websocket in state: {websocket.client_state}")
+                        disconnected.append(websocket)
+                        continue
                 await websocket.send_json(message)
-            except Exception:
-                disconnected.append(websocket)
+            except Exception as e:
+                # Only remove on actual connection errors, not transient issues
+                error_str = str(e).lower()
+                if any(x in error_str for x in ['closed', 'disconnect', 'connection', 'broken pipe']):
+                    logger.debug(f"[WS] Removing disconnected websocket: {e}")
+                    disconnected.append(websocket)
+                else:
+                    logger.warning(f"[WS] Error sending to websocket (keeping connection): {e}")
         for ws in disconnected:
             if ws in state.websocket_connections:
                 state.websocket_connections.remove(ws)
+                logger.debug(f"[WS] Removed websocket, {len(state.websocket_connections)} remaining")
+    
+    if lock is not None:
+        async with lock:  # ensure only one broadcast runs at a time
+            await _do_send()
+    else:
+        # Fallback without lock (startup race)
+        await _do_send()
 
 # ═══════════════════════════════════════════════════════════════════
 # Emergency Controls# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -2103,6 +2268,8 @@ def sanitize_for_json(obj: Any) -> Any:
     Recursively convert numpy types and other non-JSON-serializable objects to Python native types.
     This fixes FastAPI JSON encoder errors with numpy.bool, numpy.int64, NaN/Inf floats, etc.
     """
+    from collections import deque
+    
     if obj is None:
         return None
     if isinstance(obj, (np.bool_, bool)):
@@ -2121,7 +2288,7 @@ def sanitize_for_json(obj: Any) -> Any:
         return {k: sanitize_for_json(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [sanitize_for_json(item) for item in obj]
-    if isinstance(obj, set):
+    if isinstance(obj, (set, frozenset, deque)):
         return [sanitize_for_json(item) for item in obj]
     if hasattr(obj, '__dict__'):
         # Handle objects with __dict__ (pydantic models, etc.)
@@ -3007,16 +3174,143 @@ async def get_mt5_positions():
                 "price_open": pos.price_open,
                 "price_current": pos.price_current,
                 "profit": pos.profit,
+                "sl": pos.sl,
+                "tp": pos.tp,
+                "has_sl": pos.sl > 0,
+                "has_tp": pos.tp > 0,
                 "time": datetime.fromtimestamp(pos.time).isoformat()
             })
+
+        # Count positions without SL/TP
+        missing_sl = sum(1 for p in position_data if not p["has_sl"])
+        missing_tp = sum(1 for p in position_data if not p["has_tp"])
 
         return {
             "success": True,
             "positions": position_data,
+            "total": len(position_data),
+            "missing_sl": missing_sl,
+            "missing_tp": missing_tp,
             "timestamp": datetime.now().isoformat()
         }
 
     except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/mt5/positions/fix-sl-tp")
+async def fix_positions_sl_tp():
+    """Fix positions that are missing SL/TP - critical for network disconnect protection"""
+    try:
+        if not state.mt5_connected:
+            return {"success": False, "error": "MT5 not connected"}
+
+        # Load risk policy config
+        import yaml
+        try:
+            with open('config/risk_policy.yaml', 'r') as f:
+                risk_config = yaml.safe_load(f) or {}
+                sl_tp_config = risk_config.get('sl_tp_settings', {})
+        except Exception:
+            sl_tp_config = {}
+
+        if not sl_tp_config.get('fix_missing_sl_tp', True):
+            return {"success": False, "error": "fix_missing_sl_tp is disabled in config"}
+
+        positions = mt5.positions_get()
+        if positions is None or len(positions) == 0:
+            return {"success": True, "message": "No positions to fix", "fixed": 0}
+
+        fixed_count = 0
+        results = []
+
+        def pips_to_price(symbol: str, pips: float) -> float:
+            """Convert pips to price distance"""
+            sym_upper = symbol.upper()
+            if 'XAU' in sym_upper or 'GOLD' in sym_upper:
+                return pips * 0.01
+            elif 'JPY' in sym_upper:
+                return pips * 0.01
+            else:
+                return pips * 0.0001
+
+        for pos in positions:
+            current_sl = pos.sl
+            current_tp = pos.tp
+            
+            needs_sl = current_sl <= 0 and sl_tp_config.get('auto_sl_enabled', True)
+            needs_tp = current_tp <= 0 and sl_tp_config.get('auto_tp_enabled', True)
+            
+            if not needs_sl and not needs_tp:
+                continue
+
+            symbol = pos.symbol
+            symbol_config = sl_tp_config.get(symbol, sl_tp_config.get('default', {}))
+            sl_pips = symbol_config.get('stop_loss_pips', 50)
+            tp_pips = symbol_config.get('take_profit_pips', 100)
+            
+            sl_distance = pips_to_price(symbol, sl_pips)
+            tp_distance = pips_to_price(symbol, tp_pips)
+            
+            # Get symbol info for rounding
+            symbol_info = mt5.symbol_info(symbol)
+            digits = symbol_info.digits if symbol_info else 5
+            
+            new_sl = current_sl
+            new_tp = current_tp
+            is_buy = pos.type == mt5.ORDER_TYPE_BUY
+            
+            if is_buy:
+                if needs_sl and sl_pips > 0:
+                    new_sl = round(pos.price_open - sl_distance, digits)
+                if needs_tp and tp_pips > 0:
+                    new_tp = round(pos.price_open + tp_distance, digits)
+            else:  # SELL
+                if needs_sl and sl_pips > 0:
+                    new_sl = round(pos.price_open + sl_distance, digits)
+                if needs_tp and tp_pips > 0:
+                    new_tp = round(pos.price_open - tp_distance, digits)
+
+            request = {
+                "action": mt5.TRADE_ACTION_SLTP,
+                "symbol": symbol,
+                "position": pos.ticket,
+                "sl": new_sl if new_sl > 0 else 0.0,
+                "tp": new_tp if new_tp > 0 else 0.0,
+            }
+            
+            result = mt5.order_send(request)
+            
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                fixed_count += 1
+                results.append({
+                    "ticket": pos.ticket,
+                    "symbol": symbol,
+                    "sl": new_sl,
+                    "tp": new_tp,
+                    "ok": True
+                })
+                logger.info(f"[SL/TP] Fixed position {pos.ticket}: SL={new_sl:.5f} TP={new_tp:.5f}")
+            else:
+                error = result.retcode if result else "none"
+                results.append({
+                    "ticket": pos.ticket,
+                    "symbol": symbol,
+                    "ok": False,
+                    "error": str(error)
+                })
+                logger.warning(f"[SL/TP] Failed to fix position {pos.ticket}: {error}")
+
+        return {
+            "success": True,
+            "fixed": fixed_count,
+            "total": len(positions),
+            "results": results,
+            "timestamp": datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"[SL/TP] Error fixing positions: {e}")
         return {"success": False, "error": str(e)}
 
 @app.get("/api/mt5/deals/recent")
@@ -3047,7 +3341,7 @@ async def get_recent_mt5_deals(limit: int = 10):
                 "volume": deal.volume,
                 "price": deal.price,
                 "profit": deal.profit,
-                "time": datetime.fromtimestamp(deal.time).strftime("%H:%M")
+                "time": deal.time  # Unix timestamp - frontend will format it
             })
 
         return {
@@ -4199,6 +4493,251 @@ async def external_session():
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+# ================== ENHANCED POSITION/TRADING ENDPOINTS ==================
+@app.get("/api/position/decisions")
+async def position_decisions():
+    """Get detailed position decisions with rationale, confidence, and risk factors per instrument"""
+    try:
+        position_decisions = get_bus_value_with_fallback('position_decisions', 'BackendAPI', default={}) or {}
+        portfolio_state = get_bus_value_with_fallback('portfolio_state', 'BackendAPI', default={}) or {}
+        current_positions = get_bus_value_with_fallback('current_positions', 'BackendAPI', default={}) or {}
+        position_manager_data = get_bus_value_with_fallback('position_manager_data', 'BackendAPI', default={}) or {}
+        position_health = get_bus_value_with_fallback('position_health', 'BackendAPI', default={}) or {}
+        
+        # Build detailed decisions per instrument
+        detailed_decisions = {}
+        for instrument, decision in position_decisions.items():
+            detailed_decisions[instrument] = {
+                "decision": decision.get("decision", "hold"),
+                "intensity": decision.get("intensity", 0.0),
+                "size": decision.get("size", 0.0),
+                "confidence": decision.get("confidence", 0.5),
+                "risk_factors": decision.get("risk_factors", {}),
+                "rationale": decision.get("rationale", []),
+                "voting_info": decision.get("voting_info", {}),
+                "current_position": current_positions.get(instrument.replace("/", "").replace("_", ""), {}),
+            }
+        
+        return sanitize_for_json({
+            "success": True,
+            "decisions": detailed_decisions,
+            "portfolio_state": {
+                "health_score": portfolio_state.get("health_score", 0.0),
+                "exposure_ratio": portfolio_state.get("exposure_ratio", 0.0),
+                "balance": portfolio_state.get("balance", 0.0),
+                "drawdown": portfolio_state.get("drawdown", 0.0),
+                "open_positions": portfolio_state.get("open_positions", 0),
+            },
+            "position_health": position_health,
+            "position_count": len(current_positions),
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/voting/breakdown")
+async def voting_breakdown():
+    """Get individual voter proposals with confidence scores and breakdown"""
+    try:
+        # Get all voting proposals from individual voters
+        voter_proposals = {}
+        voter_names = [
+            "PPOAgent", "MetaAgent", "DynamicRiskController", "EnhancedAnomalyDetector",
+            "ExecutionQualityMonitor", "PortfolioRiskSystem", "EnhancedSeasonalityRiskExpert",
+            "EnhancedThemeExpert"
+        ]
+        
+        for voter in voter_names:
+            proposal = get_bus_value_with_fallback(f'{voter}_voting_proposal', 'BackendAPI', default=None)
+            confidence = get_bus_value_with_fallback(f'{voter}_confidence', 'BackendAPI', default=None)
+            if proposal or confidence is not None:
+                voter_proposals[voter] = {
+                    "proposal": proposal or {},
+                    "confidence": confidence if confidence is not None else 0.5,
+                    "active": True
+                }
+        
+        # Get voting summary and committee data
+        voting_summary = get_bus_value_with_fallback('voting_summary', 'BackendAPI', default={}) or {}
+        committee_decision = get_bus_value_with_fallback('committee_decision', 'BackendAPI', default={}) or {}
+        committee_votes = get_bus_value_with_fallback('committee_votes', 'BackendAPI', default={}) or {}
+        member_confidences = get_bus_value_with_fallback('member_confidences_ordered', 'BackendAPI', default=[]) or []
+        consensus_score = get_bus_value_with_fallback('consensus_score', 'BackendAPI', default=0.5)
+        agreement_score = get_bus_value_with_fallback('agreement_score', 'BackendAPI', default=0.0)
+        
+        return sanitize_for_json({
+            "success": True,
+            "voters": voter_proposals,
+            "voter_count": len(voter_proposals),
+            "voting_summary": voting_summary,
+            "committee_decision": committee_decision,
+            "committee_votes": committee_votes,
+            "member_confidences": member_confidences,
+            "consensus_score": consensus_score,
+            "agreement_score": agreement_score,
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/strategy/curriculum")
+async def strategy_curriculum():
+    """Get curriculum progress, competency scores, and learning stage"""
+    try:
+        curriculum_stage = get_bus_value_with_fallback('curriculum_stage', 'BackendAPI', default={}) or {}
+        competency_scores = get_bus_value_with_fallback('competency_scores', 'BackendAPI', default={}) or {}
+        learning_recommendations = get_bus_value_with_fallback('learning_recommendations', 'BackendAPI', default=[]) or []
+        stage_progression = get_bus_value_with_fallback('stage_progression', 'BackendAPI', default={}) or {}
+        mastery_assessment = get_bus_value_with_fallback('mastery_assessment', 'BackendAPI', default={}) or {}
+        learning_constraints = get_bus_value_with_fallback('learning_constraints', 'BackendAPI', default={}) or {}
+        
+        return sanitize_for_json({
+            "success": True,
+            "current_stage": {
+                "index": curriculum_stage.get("stage_index", 0),
+                "name": curriculum_stage.get("stage_name", "Unknown"),
+                "description": curriculum_stage.get("description", ""),
+                "progress": curriculum_stage.get("progress", 0.0),
+            },
+            "competency_scores": competency_scores,
+            "learning_recommendations": learning_recommendations,
+            "stage_progression": stage_progression,
+            "mastery_assessment": mastery_assessment,
+            "learning_constraints": learning_constraints,
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/strategy/bias")
+async def strategy_bias():
+    """Get psychological bias analysis and adjustments"""
+    try:
+        bias_analysis = get_bus_value_with_fallback('bias_analysis', 'BackendAPI', default={}) or {}
+        bias_adjustments = get_bus_value_with_fallback('bias_adjustments', 'BackendAPI', default={}) or {}
+        psychological_state = get_bus_value_with_fallback('psychological_state', 'BackendAPI', default={}) or {}
+        bias_corrections = get_bus_value_with_fallback('bias_corrections', 'BackendAPI', default={}) or {}
+        bias_recommendations = get_bus_value_with_fallback('bias_recommendations', 'BackendAPI', default=[]) or []
+        bias_report = get_bus_value_with_fallback('bias_report', 'BackendAPI', default={}) or {}
+        
+        # Extract aggregate metrics
+        aggregate = bias_analysis.get("aggregate_metrics", {})
+        individual = bias_analysis.get("individual_biases", {})
+        
+        return sanitize_for_json({
+            "success": True,
+            "bias_scores": {
+                "total_bias_score": aggregate.get("total_bias_score", 0.0),
+                "dominant_bias": aggregate.get("dominant_bias", "none"),
+                "bias_severity": aggregate.get("bias_severity", "low"),
+            },
+            "individual_biases": individual,
+            "adjustments": bias_adjustments,
+            "psychological_state": psychological_state,
+            "corrections": bias_corrections,
+            "recommendations": bias_recommendations,
+            "report": bias_report,
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/strategy/opponent")
+async def strategy_opponent():
+    """Get opponent simulation data and effectiveness"""
+    try:
+        opponent_simulation = get_bus_value_with_fallback('opponent_simulation', 'BackendAPI', default={}) or {}
+        opponent_analysis = get_bus_value_with_fallback('opponent_analysis', 'BackendAPI', default={}) or {}
+        opponent_mode = get_bus_value_with_fallback('opponent_mode', 'BackendAPI', default="random")
+        adversarial_scenarios = get_bus_value_with_fallback('adversarial_scenarios', 'BackendAPI', default=[]) or []
+        
+        # Extract effectiveness metrics
+        effectiveness = opponent_analysis.get("effectiveness", {})
+        
+        return sanitize_for_json({
+            "success": True,
+            "simulation": {
+                "mode": opponent_simulation.get("mode", "random"),
+                "intensity": opponent_simulation.get("intensity", 1.0),
+                "adaptive_intensity": opponent_simulation.get("adaptive_intensity", 1.0),
+                "context_adjustments": opponent_simulation.get("context_adjustments", {}),
+            },
+            "effectiveness": {
+                "score": effectiveness.get("score", 0.5),
+                "impact_variance": effectiveness.get("impact_variance", 0.0),
+                "robustness_contribution": effectiveness.get("robustness_contribution", 0.0),
+            },
+            "current_mode": opponent_mode,
+            "adversarial_scenarios": adversarial_scenarios[:10],  # Limit to 10
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/strategy/genome")
+async def strategy_genome():
+    """Get strategy genome pool evolution data"""
+    try:
+        best_genome = get_bus_value_with_fallback('best_genome', 'BackendAPI', default={}) or {}
+        genome_weights = get_bus_value_with_fallback('genome_weights', 'BackendAPI', default={}) or {}
+        genome_analysis = get_bus_value_with_fallback('genome_analysis', 'BackendAPI', default={}) or {}
+        genome_recommendations = get_bus_value_with_fallback('genome_recommendations', 'BackendAPI', default=[]) or []
+        evolution_history = get_bus_value_with_fallback('evolution_history', 'BackendAPI', default=[]) or []
+        
+        return sanitize_for_json({
+            "success": True,
+            "best_genome": {
+                "parameters": best_genome.get("parameters", []),
+                "fitness": best_genome.get("fitness", 0.0),
+                "generation": best_genome.get("generation", 0),
+            },
+            "active_weights": {
+                "genome": genome_weights.get("active_genome", []),
+                "genome_idx": genome_weights.get("active_genome_idx", 0),
+                "fitness": genome_weights.get("active_fitness", 0.0),
+                "population_size": genome_weights.get("population_size", 0),
+            },
+            "analysis": genome_analysis,
+            "recommendations": genome_recommendations[:5],
+            "evolution_history": evolution_history[-20:],  # Last 20 entries
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/decisions/timeline")
+async def decisions_timeline():
+    """Get decision timeline with explanations and rationales"""
+    try:
+        decision_rationales = get_bus_value_with_fallback('decision_rationales', 'BackendAPI', default=[]) or []
+        explanation_metrics = get_bus_value_with_fallback('explanation_metrics', 'BackendAPI', default={}) or {}
+        active_theses = get_bus_value_with_fallback('active_theses', 'BackendAPI', default={}) or {}
+        best_thesis = get_bus_value_with_fallback('best_thesis', 'BackendAPI', default="")
+        thesis_evolution = get_bus_value_with_fallback('thesis_evolution', 'BackendAPI', default={}) or {}
+        trade_explanation = get_bus_value_with_fallback('trade_explanation', 'BackendAPI', default={}) or {}
+        contextual_narratives = get_bus_value_with_fallback('contextual_narratives', 'BackendAPI', default=[]) or []
+        
+        return sanitize_for_json({
+            "success": True,
+            "rationales": decision_rationales[-20:],  # Last 20
+            "explanation_metrics": {
+                "total_trades_audited": explanation_metrics.get("total_trades_audited", 0),
+                "high_confidence_trades": explanation_metrics.get("high_confidence_trades", 0),
+                "low_confidence_trades": explanation_metrics.get("low_confidence_trades", 0),
+                "missing_explanations": explanation_metrics.get("missing_explanations", 0),
+            },
+            "thesis": {
+                "current": best_thesis,
+                "active_theses": active_theses,
+                "evolution": thesis_evolution,
+            },
+            "trade_explanation": trade_explanation,
+            "narratives": contextual_narratives[-10:],
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 @app.get("/api/logs/{category}")
 async def get_logs(category: str, lines: int = Query(default=100, le=10000)):
     """Enhanced log retrieval"""
@@ -4479,6 +5018,7 @@ async def websocket_endpoint(websocket: WebSocket):
     """Enhanced WebSocket endpoint with better error handling"""
     await websocket.accept()
     state.websocket_connections.append(websocket)
+    logger.info(f"[WS] New connection, total: {len(state.websocket_connections)}")
 
     try:
         # Send initial state
@@ -4491,6 +5031,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 data = await websocket.receive_text()
             except WebSocketDisconnect:
                 # Normal client disconnect (e.g., dev StrictMode unmount)
+                logger.debug("[WS] Client disconnected normally")
                 break
             except Exception as e:
                 # Treat unexpected receive errors as non-fatal and exit loop quietly
@@ -4517,6 +5058,7 @@ async def websocket_endpoint(websocket: WebSocket):
     finally:
         if websocket in state.websocket_connections:
             state.websocket_connections.remove(websocket)
+            logger.info(f"[WS] Connection removed, total: {len(state.websocket_connections)}")
 
 # Health check endpoint
 @app.get("/health")

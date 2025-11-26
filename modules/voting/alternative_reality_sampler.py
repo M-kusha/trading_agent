@@ -1239,3 +1239,74 @@ class AlternativeRealitySampler(BaseModule, SmartInfoBusTradingMixin, SmartInfoB
                 "intelligence_parameters": dict(getattr(self, "sampling_intelligence", {})),
             },
         }
+
+    # ── state persistence ───────────────────────────────
+    def _get_custom_state(self) -> Dict[str, Any]:
+        """Return custom state for persistence."""
+        return {
+            # Learned sigma and dimension
+            'base_sigma': float(self.base_sigma),
+            'dim': self.dim,
+            
+            # Histories
+            'sampling_history': list(self.sampling_history)[-60:],
+            'uncertainty_history': list(self.uncertainty_history)[-120:],
+            'effectiveness_history': list(self.effectiveness_history)[-90:],
+            
+            # Strategy weights (learned)
+            'sampling_strategies': {k: dict(v) for k, v in self.sampling_strategies.items()},
+            
+            # Quality metrics
+            'quality_metrics': dict(self.quality_metrics),
+            
+            # Stats
+            'sampling_stats': dict(self.sampling_stats),
+            
+            # Intelligence params (may be adapted)
+            'sampling_intelligence': dict(self.sampling_intelligence),
+        }
+
+    def _set_custom_state(self, state: Dict[str, Any]) -> None:
+        """Restore custom state from persistence."""
+        if not state:
+            return
+        
+        try:
+            if 'base_sigma' in state:
+                self.base_sigma = float(state['base_sigma'])
+            if 'dim' in state:
+                self.dim = int(state['dim'])
+            
+            # Restore histories
+            if 'sampling_history' in state:
+                self.sampling_history = deque(state['sampling_history'], maxlen=self.config_t.history_samples)
+            if 'uncertainty_history' in state:
+                self.uncertainty_history = deque(state['uncertainty_history'], maxlen=self.config_t.history_uncert)
+            if 'effectiveness_history' in state:
+                self.effectiveness_history = deque(state['effectiveness_history'], maxlen=self.config_t.history_effect)
+            
+            # Restore strategies
+            if 'sampling_strategies' in state:
+                for k, v in state['sampling_strategies'].items():
+                    if k in self.sampling_strategies:
+                        self.sampling_strategies[k].update(v)
+            
+            # Restore metrics
+            if 'quality_metrics' in state:
+                self.quality_metrics.update(state['quality_metrics'])
+            if 'sampling_stats' in state:
+                self.sampling_stats.update(state['sampling_stats'])
+            if 'sampling_intelligence' in state:
+                self.sampling_intelligence.update(state['sampling_intelligence'])
+            
+            self.logger.info(
+                format_operator_message(
+                    icon="[STATE]",
+                    message="AlternativeRealitySampler state restored",
+                    samples=self.sampling_stats.get('total_samples_created', 0),
+                    sigma=f"{self.base_sigma:.3f}",
+                    dim=self.dim
+                )
+            )
+        except Exception as e:
+            self.logger.warning(f"Failed to restore AlternativeRealitySampler state: {e}")

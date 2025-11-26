@@ -65,6 +65,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='DynamicRiskController',
         file='risk/dynamic_risk_controller.py',
         provides=['risk_alerts', 'risk_analytics', 'risk_factors', 'risk_scaling',
+                  'risk_level', 'risk_scale', 'risk_assessment',
                   'DynamicRiskController_voting_proposal', 'DynamicRiskController_confidence'],
         # NOTE: 'position_data' is provided by PositionManager
         # NOTE: Memory signals (memory_gate, danger_zones, etc.) used for risk factor adjustment
@@ -72,7 +73,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
                   'market_regime', 'performance_data', 'portfolio_risk', 'position_data', 'risk_data',
                   'memory_gate', 'danger_zones', 'mistake_avoidance', 'intuition_vector'],
         meta={'is_voting_member': True, 'thesis_required': True, 'health_monitoring': True,
-              'performance_tracking': True, 'category': 'risk', 'version': '4.0.0'}
+              'performance_tracking': True, 'category': 'risk', 'version': '4.1.0'}
     ),
 
     'EnhancedAnomalyDetector': ModuleContract(
@@ -674,6 +675,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='UnifiedMemory',
         file='memory/unified_memory.py',
         provides=[
+            # Overview metrics for frontend API
+            'unified_metrics', 'unified_memory_status',
             # Replay
             'learning_progress', 'pattern_analysis', 'replay_sequences', 'sequence_quality',
             # Budget
@@ -694,7 +697,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         requires=['actions', 'episode_data', 'features', 'market_context', 'market_data',
                   'observations', 'prices', 'rewards', 'risk_data', 'time_risk_analysis', 'trades'],
         meta={'thesis_required': True, 'health_monitoring': True, 'performance_tracking': True,
-              'category': 'memory', 'version': '4.1.0'}
+              'category': 'memory', 'version': '4.2.0'}
     ),
 }
 

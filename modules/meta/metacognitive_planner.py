@@ -1522,6 +1522,103 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
         except Exception as e:
             return np.zeros(13, dtype=np.float32)
 
+    # ------------------------------ STATE PERSISTENCE -----------------
+    def _get_custom_state(self) -> Dict[str, Any]:
+        """Return custom state for persistence."""
+        return {
+            # Planning state
+            'planning_cycle': self.planning_cycle,
+            'current_phase': self.current_phase.value,
+            'cognitive_load': float(self.cognitive_load),
+            'planning_confidence': float(self.planning_confidence),
+            'strategy_coherence': float(self.strategy_coherence),
+            'adaptation_speed': float(self.adaptation_speed),
+            
+            # Histories (truncated)
+            'episode_history': list(self.episode_history)[-50:],
+            'session_plans': list(self.session_plans)[-5:],
+            'adaptation_history': list(self.adaptation_history)[-25:],
+            'strategic_insights': list(self.strategic_insights)[-10:],
+            'learning_history': list(self.learning_history)[-50:],
+            
+            # Genome (learned parameters)
+            'genome': dict(self.genome),
+            
+            # Phase stats
+            'phase_stats': {k: dict(v) for k, v in self.phase_stats.items()},
+            
+            # Strategy evolution
+            'strategy_evolution_trace': list(self.strategy_evolution_trace)[-20:],
+            
+            # Current recommendations
+            'current_recommendations': list(self.current_recommendations),
+        }
+
+    def _set_custom_state(self, state: Dict[str, Any]) -> None:
+        """Restore custom state from persistence."""
+        if not state:
+            return
+        
+        try:
+            # Restore planning state
+            if 'planning_cycle' in state:
+                self.planning_cycle = int(state['planning_cycle'])
+            if 'current_phase' in state:
+                phase_str = state['current_phase']
+                for phase in PlanningPhase:
+                    if phase.value == phase_str:
+                        self.current_phase = phase
+                        break
+            if 'cognitive_load' in state:
+                self.cognitive_load = float(state['cognitive_load'])
+            if 'planning_confidence' in state:
+                self.planning_confidence = float(state['planning_confidence'])
+            if 'strategy_coherence' in state:
+                self.strategy_coherence = float(state['strategy_coherence'])
+            if 'adaptation_speed' in state:
+                self.adaptation_speed = float(state['adaptation_speed'])
+            
+            # Restore histories
+            if 'episode_history' in state:
+                self.episode_history = deque(state['episode_history'], maxlen=self.genome.get("window", 100))
+            if 'session_plans' in state:
+                self.session_plans = deque(state['session_plans'], maxlen=10)
+            if 'adaptation_history' in state:
+                self.adaptation_history = deque(state['adaptation_history'], maxlen=50)
+            if 'strategic_insights' in state:
+                self.strategic_insights = deque(state['strategic_insights'], maxlen=20)
+            if 'learning_history' in state:
+                self.learning_history = deque(state['learning_history'], maxlen=100)
+            
+            # Restore genome
+            if 'genome' in state:
+                self.genome.update(state['genome'])
+            
+            # Restore phase stats
+            if 'phase_stats' in state:
+                for phase_str, stats in state['phase_stats'].items():
+                    self.phase_stats[phase_str].update(stats)
+            
+            # Restore strategy evolution
+            if 'strategy_evolution_trace' in state:
+                self.strategy_evolution_trace = list(state['strategy_evolution_trace'])
+            
+            # Restore recommendations
+            if 'current_recommendations' in state:
+                self.current_recommendations = list(state['current_recommendations'])
+            
+            self.logger.info(
+                format_operator_message(
+                    icon="[STATE]",
+                    message="MetaCognitivePlanner state restored",
+                    cycles=self.planning_cycle,
+                    phase=self.current_phase.value,
+                    adaptations=len(self.adaptation_history)
+                )
+            )
+        except Exception as e:
+            self.logger.warning(f"Failed to restore MetaCognitivePlanner state: {e}")
+
     async def propose_action(self, **inputs) -> Dict[str, Any]:
         """Propose planning-based action"""
         try:

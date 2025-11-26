@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import time
 import math
+import yaml
+from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
 
 from .base_adapter import BaseLiveAdapter, LiveAdapterConfig
@@ -27,11 +29,66 @@ def _sf(v: Any, default: float = 0.0) -> float:
         return default
 
 
+def _load_sl_tp_config() -> Dict[str, Any]:
+    """Load SL/TP configuration from risk_policy.yaml"""
+    try:
+        config_path = Path("config/risk_policy.yaml")
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f) or {}
+                return config.get('sl_tp_settings', {})
+    except Exception:
+        pass
+    return {}
+
+
+def _get_sl_tp_pips(symbol: str) -> tuple:
+    """Get SL/TP pips for a symbol from config"""
+    config = _load_sl_tp_config()
+    
+    # Check if auto SL/TP is enabled
+    if not config.get('auto_sl_enabled', True):
+        sl_pips = 0
+    else:
+        sl_pips = config.get(symbol, config.get('default', {})).get('stop_loss_pips', 50)
+    
+    if not config.get('auto_tp_enabled', True):
+        tp_pips = 0
+    else:
+        tp_pips = config.get(symbol, config.get('default', {})).get('take_profit_pips', 100)
+    
+    return (sl_pips, tp_pips)
+
+
+def _pips_to_price(symbol: str, pips: float) -> float:
+    """Convert pips to price distance based on symbol"""
+    # Gold (XAU) uses 0.01 per pip, Forex typically uses 0.0001 or 0.01 for JPY pairs
+    sym_upper = symbol.upper()
+    if 'XAU' in sym_upper or 'GOLD' in sym_upper:
+        return pips * 0.01  # 1 pip = $0.01 for gold
+    elif 'JPY' in sym_upper:
+        return pips * 0.01  # 1 pip = 0.01 for JPY pairs
+    else:
+        return pips * 0.0001  # 1 pip = 0.0001 for most forex pairs
+
+
 class MT5Adapter(BaseLiveAdapter):
     """
     MT5 adapter wired to BaseLiveAdapter's robust wrappers.
     Only *_impl methods below talk to MT5 directly.
     """
+    
+    # Symbol-specific contract sizes (units per 1.0 lot)
+    # Gold/Silver are in oz, Forex in currency units
+    SYMBOL_CONTRACT_SIZES = {
+        'XAUUSD': 100.0,      # 100 oz per lot
+        'XAUEUR': 100.0,      # 100 oz per lot
+        'XAGUSD': 5000.0,     # 5000 oz per lot for silver
+        'XAGEUR': 5000.0,     # 5000 oz per lot for silver
+        'BTCUSD': 1.0,        # 1 BTC per lot
+        'ETHUSD': 1.0,        # 1 ETH per lot
+        # Forex pairs use default (100,000)
+    }
 
     def __init__(self, cfg: LiveAdapterConfig):
         super().__init__(cfg)
@@ -46,6 +103,27 @@ class MT5Adapter(BaseLiveAdapter):
                 def error(self, *a, **k):
                     pass
             self.log = _Dummy()
+    
+    def _get_contract_size(self, symbol: str, default: float = 100_000.0) -> float:
+        """Get contract size for a symbol (units per 1.0 lot)."""
+        sym_upper = symbol.upper().replace("_", "")
+        
+        # Check exact match first
+        if sym_upper in self.SYMBOL_CONTRACT_SIZES:
+            return self.SYMBOL_CONTRACT_SIZES[sym_upper]
+        
+        # Check for gold/silver patterns
+        if 'XAU' in sym_upper or 'GOLD' in sym_upper:
+            return 100.0  # Gold: 100 oz per lot
+        if 'XAG' in sym_upper or 'SILVER' in sym_upper:
+            return 5000.0  # Silver: 5000 oz per lot
+        
+        # Crypto patterns
+        if 'BTC' in sym_upper or 'ETH' in sym_upper:
+            return 1.0
+        
+        # Default to forex contract size
+        return default
 
     # ─────────────────────────────────────────────────────
     # Connection
@@ -207,7 +285,8 @@ class MT5Adapter(BaseLiveAdapter):
             pass
         return getattr(mt5, "ORDER_FILLING_IOC", 1)
 
-    def _send_deal(self, sym: str, side: int, lots: float, filling_mode: Optional[int] = None) -> Dict[str, Any]:
+    def _send_deal(self, sym: str, side: int, lots: float, filling_mode: Optional[int] = None, 
+                    sl_price: Optional[float] = None, tp_price: Optional[float] = None) -> Dict[str, Any]:
         if not self._ensure_symbol(sym):
             try:
                 self.log.warning(f"[MT5] send_deal blocked: symbol not available: {sym}")
@@ -216,6 +295,41 @@ class MT5Adapter(BaseLiveAdapter):
             return {"ok": False, "error": "symbol_not_available"}
         try:
             t = mt5.ORDER_TYPE_BUY if side > 0 else mt5.ORDER_TYPE_SELL
+            
+            # Get current price for SL/TP calculation
+            tick = mt5.symbol_info_tick(sym)
+            if tick is None:
+                self.log.warning(f"[MT5] Could not get tick for {sym}")
+                return {"ok": False, "error": "no_tick_data"}
+            
+            current_price = tick.ask if side > 0 else tick.bid
+            
+            # Calculate SL/TP if not provided
+            if sl_price is None or tp_price is None:
+                sl_pips, tp_pips = _get_sl_tp_pips(sym)
+                sl_distance = _pips_to_price(sym, sl_pips)
+                tp_distance = _pips_to_price(sym, tp_pips)
+                
+                if side > 0:  # BUY
+                    if sl_price is None and sl_pips > 0:
+                        sl_price = current_price - sl_distance
+                    if tp_price is None and tp_pips > 0:
+                        tp_price = current_price + tp_distance
+                else:  # SELL
+                    if sl_price is None and sl_pips > 0:
+                        sl_price = current_price + sl_distance
+                    if tp_price is None and tp_pips > 0:
+                        tp_price = current_price - tp_distance
+            
+            # Round prices to symbol's digits
+            symbol_info = mt5.symbol_info(sym)
+            digits = getattr(symbol_info, 'digits', 5) if symbol_info else 5
+            
+            if sl_price:
+                sl_price = round(sl_price, digits)
+            if tp_price:
+                tp_price = round(tp_price, digits)
+            
             req = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": sym,
@@ -227,8 +341,17 @@ class MT5Adapter(BaseLiveAdapter):
                 "type_filling": filling_mode if filling_mode is not None else self._pick_filling_mode(sym),
                 "type_time": mt5.ORDER_TIME_GTC,
             }
+            
+            # Add SL/TP to request if valid
+            if sl_price and sl_price > 0:
+                req["sl"] = sl_price
+            if tp_price and tp_price > 0:
+                req["tp"] = tp_price
+            
             try:
-                self.log.info(f"[MT5] order_send: sym={sym} side={side} lots={lots:.4f} filling={req['type_filling']}")
+                sl_str = f"SL={sl_price:.5f}" if sl_price else "SL=None"
+                tp_str = f"TP={tp_price:.5f}" if tp_price else "TP=None"
+                self.log.info(f"[MT5] order_send: sym={sym} side={side} lots={lots:.4f} {sl_str} {tp_str} filling={req['type_filling']}")
             except Exception:
                 pass
             r = mt5.order_send(req)
@@ -357,9 +480,13 @@ class MT5Adapter(BaseLiveAdapter):
                     continue
                 by_sym.setdefault(sym, []).append(p)
 
-            cs = float(self.cfg.contract_size or 100_000.0)
+            # Default contract size from config
+            default_cs = float(self.cfg.contract_size or 100_000.0)
 
             for sym, plist in by_sym.items():
+                # Use symbol-specific contract size
+                cs = self._get_contract_size(sym, default_cs)
+                
                 buy_lots = sum(_sf(getattr(p, "volume", 0.0)) for p in plist
                                if getattr(p, "type", 1) == getattr(mt5, "POSITION_TYPE_BUY", 0))
                 sell_lots = sum(_sf(getattr(p, "volume", 0.0)) for p in plist
@@ -407,3 +534,106 @@ class MT5Adapter(BaseLiveAdapter):
             return out
         except Exception:
             return {}
+
+    def fix_positions_without_sl_tp(self) -> Dict[str, Any]:
+        """
+        Check all open positions and add SL/TP if missing.
+        This is critical for risk management if network disconnects.
+        Returns dict with results for each position modified.
+        """
+        if not (_MT5 and self.connected):
+            return {"ok": False, "error": "mt5_not_connected", "fixed": 0}
+        
+        try:
+            # Check if fix_missing_sl_tp is enabled
+            config = _load_sl_tp_config()
+            if not config.get('fix_missing_sl_tp', True):
+                return {"ok": True, "message": "fix_missing_sl_tp disabled", "fixed": 0}
+            
+            positions = list(mt5.positions_get() or [])
+            if not positions:
+                return {"ok": True, "message": "no_positions", "fixed": 0}
+            
+            fixed_count = 0
+            results = []
+            
+            for pos in positions:
+                ticket = getattr(pos, 'ticket', 0)
+                symbol = getattr(pos, 'symbol', '')
+                current_sl = _sf(getattr(pos, 'sl', 0.0))
+                current_tp = _sf(getattr(pos, 'tp', 0.0))
+                open_price = _sf(getattr(pos, 'price_open', 0.0))
+                pos_type = getattr(pos, 'type', 0)
+                
+                # Check if SL or TP is missing
+                needs_sl = current_sl <= 0 and config.get('auto_sl_enabled', True)
+                needs_tp = current_tp <= 0 and config.get('auto_tp_enabled', True)
+                
+                if not needs_sl and not needs_tp:
+                    continue
+                
+                # Get SL/TP pips for this symbol
+                sl_pips, tp_pips = _get_sl_tp_pips(symbol)
+                sl_distance = _pips_to_price(symbol, sl_pips)
+                tp_distance = _pips_to_price(symbol, tp_pips)
+                
+                # Get symbol info for rounding
+                symbol_info = mt5.symbol_info(symbol)
+                digits = getattr(symbol_info, 'digits', 5) if symbol_info else 5
+                
+                # Calculate new SL/TP based on position type
+                new_sl = current_sl
+                new_tp = current_tp
+                
+                is_buy = pos_type == getattr(mt5, "POSITION_TYPE_BUY", 0)
+                
+                if is_buy:
+                    if needs_sl and sl_pips > 0:
+                        new_sl = round(open_price - sl_distance, digits)
+                    if needs_tp and tp_pips > 0:
+                        new_tp = round(open_price + tp_distance, digits)
+                else:  # SELL
+                    if needs_sl and sl_pips > 0:
+                        new_sl = round(open_price + sl_distance, digits)
+                    if needs_tp and tp_pips > 0:
+                        new_tp = round(open_price - tp_distance, digits)
+                
+                # Modify the position
+                request = {
+                    "action": mt5.TRADE_ACTION_SLTP,
+                    "symbol": symbol,
+                    "position": ticket,
+                    "sl": new_sl if new_sl > 0 else 0.0,
+                    "tp": new_tp if new_tp > 0 else 0.0,
+                }
+                
+                try:
+                    self.log.info(f"[MT5] Fixing SL/TP for position {ticket}: {symbol} SL={new_sl:.5f} TP={new_tp:.5f}")
+                except Exception:
+                    pass
+                
+                result = mt5.order_send(request)
+                
+                if result and result.retcode in (getattr(mt5, "TRADE_RETCODE_DONE", 10009),):
+                    fixed_count += 1
+                    results.append({"ticket": ticket, "symbol": symbol, "sl": new_sl, "tp": new_tp, "ok": True})
+                    try:
+                        self.log.info(f"[MT5] Fixed position {ticket}: SL={new_sl:.5f} TP={new_tp:.5f}")
+                    except Exception:
+                        pass
+                else:
+                    error = getattr(result, 'retcode', 'unknown') if result else 'none'
+                    results.append({"ticket": ticket, "symbol": symbol, "ok": False, "error": str(error)})
+                    try:
+                        self.log.warning(f"[MT5] Failed to fix position {ticket}: retcode={error}")
+                    except Exception:
+                        pass
+            
+            return {"ok": True, "fixed": fixed_count, "total": len(positions), "results": results}
+        
+        except Exception as e:
+            try:
+                self.log.error(f"[MT5] fix_positions_without_sl_tp exception: {e}")
+            except Exception:
+                pass
+            return {"ok": False, "error": str(e), "fixed": 0}

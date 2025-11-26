@@ -2187,3 +2187,98 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 "context": {},
                 "timestamp": time.time(),
             }
+
+    # ================== STATE PERSISTENCE ==================
+
+    def _get_custom_state(self) -> Dict[str, Any]:
+        """
+        Get custom state for persistence.
+        Saves portfolio risk history and metrics.
+        """
+        return {
+            # Core risk state
+            "current_var": float(self.current_var),
+            "max_correlation": float(self.max_correlation),
+            "risk_adjustment": float(self.risk_adjustment),
+            
+            # Returns history (per-instrument)
+            "returns_history": {k: list(v) for k, v in self.returns_history.items()},
+            "portfolio_returns": list(self.portfolio_returns),
+            "position_history": list(self.position_history),
+            
+            # Tracking state
+            "limit_violations": int(self.limit_violations),
+            "daily_risk_used": float(self.daily_risk_used),
+            "total_exposure": float(self.total_exposure),
+            
+            # Market context
+            "market_regime": str(self.market_regime),
+            "volatility_regime": str(self.volatility_regime),
+            
+            # Performance metrics
+            "performance_metrics": dict(self.performance_metrics),
+            
+            # Correlation and position data
+            "correlation_matrix": {k: dict(v) if isinstance(v, dict) else v 
+                                   for k, v in self.correlation_matrix.items()},
+            "current_positions": dict(self.current_positions),
+            
+            # Adaptive parameters
+            "_adaptive_params": dict(self._adaptive_params),
+            
+            # Mode and circuit breaker
+            "current_mode": self.current_mode.value if hasattr(self.current_mode, 'value') else str(self.current_mode),
+            "circuit_breaker": dict(self.circuit_breaker),
+        }
+
+    def _set_custom_state(self, state: Dict[str, Any]) -> None:
+        """
+        Restore custom state from persistence.
+        """
+        if not state:
+            return
+        
+        # Core risk state
+        self.current_var = float(state.get("current_var", self.current_var))
+        self.max_correlation = float(state.get("max_correlation", self.max_correlation))
+        self.risk_adjustment = float(state.get("risk_adjustment", self.risk_adjustment))
+        
+        # Returns history
+        if "returns_history" in state:
+            for k, v in state["returns_history"].items():
+                maxlen = max(self._cfg.var_window, self._cfg.correlation_window)
+                self.returns_history[k] = deque(v, maxlen=maxlen)
+        if "portfolio_returns" in state:
+            self.portfolio_returns = deque(state["portfolio_returns"], maxlen=self._cfg.var_window)
+        if "position_history" in state:
+            self.position_history = deque(state["position_history"], maxlen=100)
+        
+        # Tracking state
+        self.limit_violations = int(state.get("limit_violations", self.limit_violations))
+        self.daily_risk_used = float(state.get("daily_risk_used", self.daily_risk_used))
+        self.total_exposure = float(state.get("total_exposure", self.total_exposure))
+        
+        # Market context
+        self.market_regime = str(state.get("market_regime", self.market_regime))
+        self.volatility_regime = str(state.get("volatility_regime", self.volatility_regime))
+        
+        # Performance metrics
+        if "performance_metrics" in state:
+            self.performance_metrics.update(state["performance_metrics"])
+        
+        # Correlation and position data
+        if "correlation_matrix" in state:
+            self.correlation_matrix.update(state["correlation_matrix"])
+        if "current_positions" in state:
+            self.current_positions.update(state["current_positions"])
+        
+        # Adaptive parameters
+        if "_adaptive_params" in state:
+            self._adaptive_params.update(state["_adaptive_params"])
+        
+        # Circuit breaker
+        if "circuit_breaker" in state:
+            self.circuit_breaker.update(state["circuit_breaker"])
+        
+        self.logger.info(f"📂 Restored PortfolioRiskSystem state: VaR={self.current_var:.2%}, "
+                        f"positions={len(self.current_positions)}, violations={self.limit_violations}")

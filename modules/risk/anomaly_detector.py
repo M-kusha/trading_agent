@@ -1976,6 +1976,125 @@ class EnhancedAnomalyDetector(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTra
         self.mode_start_time = datetime.datetime.now()
         self.logger.info("[RELOAD] Enhanced Anomaly Detector reset - all state cleared")
 
+    # ------------------------------ STATE PERSISTENCE -----------------
+    def _get_custom_state(self) -> Dict[str, Any]:
+        """Return custom state for persistence."""
+        return {
+            # Histories (truncated for storage)
+            'pnl_history': list(self.pnl_history)[-50:],
+            'volume_history': list(self.volume_history)[-50:],
+            'price_history': list(self.price_history)[-50:],
+            'observation_history': list(self.observation_history)[-25:],
+            'volatility_history': list(self.volatility_history)[-30:],
+            'threshold_history': list(self.threshold_history)[-50:],
+            
+            # Anomaly counts and stats
+            'detection_stats': dict(self.detection_stats),
+            'anomaly_score': float(self.anomaly_score),
+            'detection_confidence': float(self.detection_confidence),
+            'step_count': self.step_count,
+            
+            # Adaptive parameters (learned)
+            'adaptive_params': dict(self.adaptive_params),
+            
+            # Thresholds (may have been adapted)
+            'current_thresholds': dict(self.current_thresholds),
+            
+            # Market context
+            'market_regime': self.market_regime,
+            'market_session': self.market_session,
+            'volatility_regime': self.volatility_regime,
+            'market_stress_level': float(self.market_stress_level),
+            
+            # Training progress
+            'training_progress': float(self.training_progress),
+            'is_training_complete': self.is_training_complete,
+            
+            # Detection quality
+            '_detection_quality': float(self._detection_quality),
+            
+            # Mode
+            'current_mode': self.current_mode.value,
+        }
+
+    def _set_custom_state(self, state: Dict[str, Any]) -> None:
+        """Restore custom state from persistence."""
+        if not state:
+            return
+        
+        try:
+            # Restore histories
+            if 'pnl_history' in state:
+                self.pnl_history = deque(state['pnl_history'], maxlen=self._cfg.history_size)
+            if 'volume_history' in state:
+                self.volume_history = deque(state['volume_history'], maxlen=self._cfg.history_size)
+            if 'price_history' in state:
+                self.price_history = deque(state['price_history'], maxlen=self._cfg.history_size)
+            if 'observation_history' in state:
+                self.observation_history = deque(state['observation_history'], maxlen=min(self._cfg.history_size, 50))
+            if 'volatility_history' in state:
+                self.volatility_history = deque(state['volatility_history'], maxlen=self._cfg.volatility_window)
+            if 'threshold_history' in state:
+                self.threshold_history = deque(state['threshold_history'], maxlen=100)
+            
+            # Restore stats
+            if 'detection_stats' in state:
+                self.detection_stats = defaultdict(int, state['detection_stats'])
+            if 'anomaly_score' in state:
+                self.anomaly_score = float(state['anomaly_score'])
+            if 'detection_confidence' in state:
+                self.detection_confidence = float(state['detection_confidence'])
+            if 'step_count' in state:
+                self.step_count = int(state['step_count'])
+            
+            # Restore adaptive params
+            if 'adaptive_params' in state:
+                self.adaptive_params.update(state['adaptive_params'])
+            
+            # Restore thresholds
+            if 'current_thresholds' in state:
+                self.current_thresholds.update(state['current_thresholds'])
+            
+            # Restore market context
+            if 'market_regime' in state:
+                self.market_regime = state['market_regime']
+            if 'market_session' in state:
+                self.market_session = state['market_session']
+            if 'volatility_regime' in state:
+                self.volatility_regime = state['volatility_regime']
+            if 'market_stress_level' in state:
+                self.market_stress_level = float(state['market_stress_level'])
+            
+            # Restore training progress
+            if 'training_progress' in state:
+                self.training_progress = float(state['training_progress'])
+            if 'is_training_complete' in state:
+                self.is_training_complete = bool(state['is_training_complete'])
+            
+            # Restore quality
+            if '_detection_quality' in state:
+                self._detection_quality = float(state['_detection_quality'])
+            
+            # Restore mode
+            if 'current_mode' in state:
+                mode_str = state['current_mode']
+                for mode in AnomalyDetectionMode:
+                    if mode.value == mode_str:
+                        self.current_mode = mode
+                        break
+            
+            self.logger.info(
+                format_operator_message(
+                    icon="[STATE]",
+                    message="EnhancedAnomalyDetector state restored",
+                    steps=self.step_count,
+                    score=f"{self.anomaly_score:.2f}",
+                    mode=self.current_mode.value
+                )
+            )
+        except Exception as e:
+            self.logger.warning(f"Failed to restore EnhancedAnomalyDetector state: {e}")
+
     # internal safety: threshold keys
     def _ensure_threshold_keys(self, initial: bool = False) -> None:
         """Ensure required threshold keys exist in base/current dicts.

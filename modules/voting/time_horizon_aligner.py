@@ -917,6 +917,131 @@ class TimeHorizonAligner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             status="All alignment state cleared and systems reinitialized"
         ))
 
+    # ------------------------------ STATE PERSISTENCE -----------------
+    def _get_custom_state(self) -> Dict[str, Any]:
+        """Return custom state for persistence."""
+        def _arr_to_list(arr):
+            return arr.tolist() if isinstance(arr, np.ndarray) else list(arr) if arr is not None else []
+        
+        return {
+            # Learned multipliers (critical - these adapt over time)
+            'adaptive_multipliers': _arr_to_list(self.adaptive_multipliers),
+            'performance_multipliers': _arr_to_list(self.performance_multipliers),
+            'cyclical_adjustments': _arr_to_list(self.cyclical_adjustments),
+            'current_distances': _arr_to_list(self.current_distances),
+            'base_distances': _arr_to_list(self.base_distances),
+            
+            # Regime multipliers (learned per regime)
+            'regime_multipliers': {k: _arr_to_list(v) for k, v in self.regime_multipliers.items()},
+            
+            # Session patterns (learned per session)
+            'session_patterns': {k: _arr_to_list(v) for k, v in self.session_patterns.items()},
+            
+            # Alignment intelligence (learning params)
+            'alignment_intelligence': dict(self.alignment_intelligence),
+            
+            # Alignment quality metrics
+            'alignment_quality': dict(self.alignment_quality),
+            
+            # Statistics (important for understanding behavior)
+            'alignment_stats': dict(self.alignment_stats),
+            
+            # Histories (last N entries)
+            'alignment_history': list(self.alignment_history)[-100:],
+            'adaptation_events': list(self.adaptation_events)[-50:],
+            'performance_history': list(self.performance_history)[-75:],
+            'volatility_history': list(self.volatility_history)[-30:],
+            'horizon_performance': list(self.horizon_performance)[-50:],
+            
+            # Current market state
+            'current_regime': self.current_regime,
+            'current_session': self.current_session,
+            'current_volatility': float(self.current_volatility),
+            'clock': self.clock,
+        }
+
+    def _set_custom_state(self, state: Dict[str, Any]) -> None:
+        """Restore custom state from persistence."""
+        if not state:
+            return
+        
+        try:
+            def _list_to_arr(lst, default_shape):
+                if lst is not None and len(lst) > 0:
+                    return np.array(lst, dtype=np.float32)
+                return np.ones(default_shape, dtype=np.float32)
+            
+            n_horizons = len(self.horizons)
+            
+            # Restore learned multipliers
+            if 'adaptive_multipliers' in state:
+                self.adaptive_multipliers = _list_to_arr(state['adaptive_multipliers'], n_horizons)
+            if 'performance_multipliers' in state:
+                self.performance_multipliers = _list_to_arr(state['performance_multipliers'], n_horizons)
+            if 'cyclical_adjustments' in state:
+                self.cyclical_adjustments = _list_to_arr(state['cyclical_adjustments'], n_horizons)
+            if 'current_distances' in state:
+                self.current_distances = _list_to_arr(state['current_distances'], n_horizons)
+            if 'base_distances' in state:
+                self.base_distances = _list_to_arr(state['base_distances'], n_horizons)
+            
+            # Restore regime multipliers
+            if 'regime_multipliers' in state:
+                for regime, values in state['regime_multipliers'].items():
+                    if regime in self.regime_multipliers:
+                        self.regime_multipliers[regime] = _list_to_arr(values, n_horizons)
+            
+            # Restore session patterns
+            if 'session_patterns' in state:
+                for session, values in state['session_patterns'].items():
+                    if session in self.session_patterns:
+                        self.session_patterns[session] = _list_to_arr(values, n_horizons)
+            
+            # Restore alignment intelligence
+            if 'alignment_intelligence' in state:
+                self.alignment_intelligence.update(state['alignment_intelligence'])
+            
+            # Restore alignment quality
+            if 'alignment_quality' in state:
+                self.alignment_quality.update(state['alignment_quality'])
+            
+            # Restore statistics
+            if 'alignment_stats' in state:
+                self.alignment_stats.update(state['alignment_stats'])
+            
+            # Restore histories
+            if 'alignment_history' in state:
+                self.alignment_history = deque(state['alignment_history'], maxlen=200)
+            if 'adaptation_events' in state:
+                self.adaptation_events = deque(state['adaptation_events'], maxlen=100)
+            if 'performance_history' in state:
+                self.performance_history = deque(state['performance_history'], maxlen=150)
+            if 'volatility_history' in state:
+                self.volatility_history = deque(state['volatility_history'], maxlen=50)
+            if 'horizon_performance' in state:
+                self.horizon_performance = deque(state['horizon_performance'], maxlen=100)
+            
+            # Restore current market state
+            if 'current_regime' in state:
+                self.current_regime = state['current_regime']
+            if 'current_session' in state:
+                self.current_session = state['current_session']
+            if 'current_volatility' in state:
+                self.current_volatility = float(state['current_volatility'])
+            if 'clock' in state:
+                self.clock = state['clock']
+            
+            self.logger.info(format_operator_message(
+                icon="[STATE]",
+                message="TimeHorizonAligner state restored",
+                alignments=self.alignment_stats.get('total_alignments', 0),
+                adaptations=self.alignment_stats.get('significant_adaptations', 0),
+                regime=self.current_regime,
+                session=self.current_session
+            ))
+        except Exception as e:
+            self.logger.warning(f"Failed to restore TimeHorizonAligner state: {e}")
+
     # ------------------------------ BASEMODULE ------------------------
     async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
         try:

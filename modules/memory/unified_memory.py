@@ -244,6 +244,9 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
             max_size=self.unified_config.max_memory_size,
             batch_size=self.unified_config.batch_size,
         )
+        
+        # Load persisted memories from disk
+        self.load_memory_store()
 
         # Shared feature extractor
         self.feature_extractor = UnifiedFeatureExtractor()
@@ -401,11 +404,19 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
             return
 
         def monitoring_loop():
+            save_counter = 0
             while self._monitoring_active:
                 try:
                     self._check_health()
                     self._update_performance_metrics()
                     self._check_memory_pressure()
+                    
+                    # Save memory store periodically (every 10 health checks ~5 minutes)
+                    save_counter += 1
+                    if save_counter >= 10 and self.memory_store.size() > 0:
+                        self.save_memory_store()
+                        save_counter = 0
+                    
                     time.sleep(self.unified_config.health_check_interval)
                 except Exception as e:
                     self.logger.error(f"Monitoring error: {e}")
@@ -1064,6 +1075,16 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
             "processing_status": "complete",
             "health_status": self._health_status,
         }
+        
+        # Also add unified_memory_status (required by contract)
+        merged["unified_memory_status"] = {
+            "components_enabled": self._count_enabled_components(),
+            "memory_size": self.memory_store.size(),
+            "status": "active" if self._health_status == "healthy" else self._health_status,
+            "health_status": self._health_status,
+            "total_memories": self.memory_store.size(),
+            "memory_utilization": self.memory_store.utilization(),
+        }
         return merged
 
     def _compose_gate_and_vote(
@@ -1268,6 +1289,9 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         """Update SmartInfoBus with all provided keys"""
         updates: List[Tuple[str, Any]] = []
         for key in [
+            # Unified metrics (for frontend API)
+            "unified_metrics",
+            "unified_memory_status",
             # Replay keys
             "replay_sequences",
             "pattern_analysis",
@@ -1701,8 +1725,13 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         }
 
     def stop_monitoring(self) -> None:
-        """Stop monitoring thread"""
+        """Stop monitoring thread and save memories"""
         self._monitoring_active = False
+        
+        # Save memory store on shutdown
+        if hasattr(self, 'memory_store') and self.memory_store.size() > 0:
+            self.save_memory_store()
+        
         if hasattr(self, "_monitor_thread"):
             self._monitor_thread.join(timeout=1.0)
 
@@ -1736,3 +1765,69 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
     def confidence(self, obs: Any = None, **kwargs: Any) -> float:
         """Legacy compatibility for confidence"""
         return 0.5
+
+    # =========================================================
+    # Memory Persistence - Save/Load actual memory contents
+    # =========================================================
+    
+    def get_memory_store_path(self) -> str:
+        """Get path for memory store persistence."""
+        import os
+        state_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "state", "memory")
+        os.makedirs(state_dir, exist_ok=True)
+        return os.path.join(state_dir, "memory_store.pkl")
+    
+    def save_memory_store(self) -> bool:
+        """
+        Save the memory store to disk.
+        
+        This should be called periodically and on shutdown to persist learned patterns.
+        """
+        try:
+            filepath = self.get_memory_store_path()
+            success = self.memory_store.save(filepath)
+            if success:
+                self.logger.info(
+                    format_operator_message(
+                        "💾",
+                        "MEMORY_SAVED",
+                        details=f"Saved {self.memory_store.size()} memories to {filepath}",
+                    )
+                )
+            return success
+        except Exception as e:
+            self.logger.error(f"Failed to save memory store: {e}")
+            return False
+    
+    def load_memory_store(self) -> bool:
+        """
+        Load the memory store from disk.
+        
+        This should be called on startup to restore learned patterns.
+        """
+        import os
+        try:
+            filepath = self.get_memory_store_path()
+            if not os.path.exists(filepath):
+                self.logger.info(
+                    format_operator_message(
+                        "🔍",
+                        "MEMORY_NOT_FOUND",
+                        details=f"No saved memory at {filepath}, starting fresh",
+                    )
+                )
+                return False
+            
+            success = self.memory_store.load(filepath)
+            if success:
+                self.logger.info(
+                    format_operator_message(
+                        "📂",
+                        "MEMORY_LOADED",
+                        details=f"Loaded {self.memory_store.size()} memories from {filepath}",
+                    )
+                )
+            return success
+        except Exception as e:
+            self.logger.error(f"Failed to load memory store: {e}")
+            return False

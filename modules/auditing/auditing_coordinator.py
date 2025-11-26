@@ -91,6 +91,32 @@ class AuditingCoordinator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStat
         
         self.logger.info("[RELOAD] Auditing coordinator reset complete")
 
+    # ------------------------------ STATE PERSISTENCE -----------------
+    def _get_custom_state(self) -> Dict[str, Any]:
+        """Return custom state for persistence."""
+        return {
+            'audit_performance': dict(self.audit_performance),
+            'discovered_auditors': dict(self.discovered_auditors),
+            'cross_validation_cache': dict(self.cross_validation_cache),
+        }
+
+    def _set_custom_state(self, state: Dict[str, Any]) -> None:
+        """Restore custom state from persistence."""
+        if not state:
+            return
+        
+        try:
+            if 'audit_performance' in state:
+                self.audit_performance.update(state['audit_performance'])
+            if 'discovered_auditors' in state:
+                self.discovered_auditors.update(state['discovered_auditors'])
+            if 'cross_validation_cache' in state:
+                self.cross_validation_cache.update(state['cross_validation_cache'])
+            
+            self.logger.info(f"[STATE] AuditingCoordinator state restored: {self.audit_performance.get('total_audits', 0)} audits")
+        except Exception as e:
+            self.logger.warning(f"Failed to restore AuditingCoordinator state: {e}")
+
     async def process(self, **inputs) -> Dict[str, Any]:
         """
         [TARGET] MAIN AUDITING PROCESS

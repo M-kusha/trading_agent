@@ -1,11 +1,8 @@
-import React, {
+﻿import React, {
   useState,
   useEffect,
   useCallback,
   useRef,
-  createContext,
-  useContext,
-  useReducer,
   useMemo,
   startTransition,
   useTransition,
@@ -19,7 +16,8 @@ import {
   Cpu, HardDrive, Network, Eye, BarChart2, PieChart as PieChartIcon, LineChart as LineChartIcon, Layers, Bell, X,
   TrendingDown, Percent, Timer, Gauge, Monitor, Server, CloudOff, Power, FileUp,
   Loader2, CheckSquare, Radio, UploadCloud, FolderOpen, FileText, ToggleLeft, ToggleRight,
-  Search, Filter, Grid, List, Hash, Sparkles, Flame, Waves, Zap as Lightning, Crown
+  Search, Filter, Grid, List, Hash, Sparkles, Flame, Waves, Zap as Lightning, Crown,
+  Circle, ChevronRight, BookOpen, Lightbulb, Swords, Dna, Minus
 } from 'lucide-react';
 
 import {
@@ -29,151 +27,41 @@ import {
   ComposedChart, Scatter
 } from 'recharts';
 
+// Tab components extracted to ./components/tabs/
+import {
+  AnalyticsTab,
+  MemoryTab,
+  RiskTab,
+  StrategyTab,
+  VotingTab,
+  TradingTab,
+  LogsTab,
+  AlertsModal
+} from './components/tabs';
+
+// State management
+import {
+  useUIState,
+  useUIDispatch,
+  useTradingState,
+  useTradingDispatch,
+  useModulesState,
+  useModulesDispatch,
+  useDataState,
+  useDataDispatch,
+  UIActions,
+  TradingActions,
+  ModulesActions,
+  DataActions,
+  apiCall,
+  useAppState,
+} from './store';
 
 const API_BASE = '/api';
 
-const AppStateContext = createContext();
-
-const initialAppState = {
-  // UI State
-  selectedTimeframe: '1h',
-  selectedView: 'performance',
-  selectedSymbol: 'EURUSD',
-  moduleSearch: '',
-  moduleFilter: 'all',
-  moduleViewMode: 'grid',
-  selectedLogCategory: 'system',
-  alertFilter: 'all',
-  showAlerts: false,
-
-  // Data State
-  analyticsData: {},
-  analyticsLoading: false,
-  mt5ChartData: [],
-  recentTrades: [],
-  mt5Symbols: [],
-
-  // Persistent flags
-  dataLoaded: {
-    analytics: false,
-    modules: false,
-    logs: false,
-    mt5Data: false
-  },
-
-  // Last update timestamps for throttling
-  lastUpdate: {
-    system: 0,
-    modules: 0,
-    mt5: 0,
-    analytics: 0
-  }
-};
-
-const appStateReducer = (state, action) => {
-  switch (action.type) {
-    case 'SET_TIMEFRAME':
-      if (state.selectedTimeframe === action.payload) return state;
-      return { ...state, selectedTimeframe: action.payload };
-
-    case 'SET_VIEW':
-      if (state.selectedView === action.payload) return state;
-      return { ...state, selectedView: action.payload };
-
-    case 'SET_SYMBOL':
-      if (state.selectedSymbol === action.payload) return state;
-      return { ...state, selectedSymbol: action.payload };
-
-    case 'SET_MODULE_SEARCH':
-      if (state.moduleSearch === action.payload) return state;
-      return { ...state, moduleSearch: action.payload };
-
-    case 'SET_MODULE_FILTER':
-      if (state.moduleFilter === action.payload) return state;
-      return { ...state, moduleFilter: action.payload };
-
-    case 'SET_MODULE_VIEW_MODE':
-      if (state.moduleViewMode === action.payload) return state;
-      return { ...state, moduleViewMode: action.payload };
-
-    case 'SET_LOG_CATEGORY':
-      if (state.selectedLogCategory === action.payload) return state;
-      return { ...state, selectedLogCategory: action.payload };
-
-    case 'SET_ALERT_FILTER':
-      if (state.alertFilter === action.payload) return state;
-      return { ...state, alertFilter: action.payload };
-
-    case 'SET_SHOW_ALERTS':
-      if (state.showAlerts === action.payload) return state;
-      return { ...state, showAlerts: action.payload };
-
-    case 'SET_ANALYTICS_DATA':
-      return {
-        ...state,
-        analyticsData: action.payload,
-        analyticsLoading: false,
-        dataLoaded: { ...state.dataLoaded, analytics: true },
-        lastUpdate: { ...state.lastUpdate, analytics: Date.now() }
-      };
-
-    case 'SET_ANALYTICS_LOADING':
-      return { ...state, analyticsLoading: action.payload };
-
-    case 'SET_MT5_DATA': {
-      // only update pieces that actually changed
-      const chartChanged = action.payload.chartData
-        ? JSON.stringify(state.mt5ChartData) !== JSON.stringify(action.payload.chartData)
-        : false;
-
-      const tradesChanged = action.payload.recentTrades
-        ? JSON.stringify(state.recentTrades) !== JSON.stringify(action.payload.recentTrades)
-        : false;
-
-      const symbolsChanged = action.payload.symbols
-        ? JSON.stringify(state.mt5Symbols) !== JSON.stringify(action.payload.symbols)
-        : false;
-
-      if (!chartChanged && !tradesChanged && !symbolsChanged && Date.now() - state.lastUpdate.mt5 < 5000) {
-        return state;
-      }
-
-      return {
-        ...state,
-        mt5ChartData: action.payload.chartData || state.mt5ChartData,
-        recentTrades: action.payload.recentTrades || state.recentTrades,
-        mt5Symbols: action.payload.symbols || state.mt5Symbols,
-        dataLoaded: { ...state.dataLoaded, mt5Data: true },
-        lastUpdate: { ...state.lastUpdate, mt5: Date.now() }
-      };
-    }
-
-    case 'MARK_DATA_LOADED':
-      return {
-        ...state,
-        dataLoaded: { ...state.dataLoaded, [action.payload]: true }
-      };
-
-    default:
-      return state;
-  }
-};
-
-const AppStateProvider = ({ children }) => {
-  const [state, dispatch] = useReducer(appStateReducer, initialAppState);
-  const value = useMemo(() => ({ state, dispatch }), [state]);
-  return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
-};
-
-const useAppState = () => {
-  const ctx = useContext(AppStateContext);
-  if (!ctx) throw new Error('useAppState must be used within AppStateProvider');
-  return ctx;
-};
-
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 // Error Boundary
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -319,9 +207,9 @@ const getHealthBarColor = (score) => {
   return 'bg-gradient-to-r from-red-500 to-red-400';
 };
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 /** UI Atoms (hoisted & memoized) */
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 const StatusIndicator = React.memo(function StatusIndicator({ status, className = '' }) {
   const configs = {
@@ -408,139 +296,212 @@ const EnhancedModuleCard = React.memo(function EnhancedModuleCard({ module, onTo
     health_status: module?.health_status || 'unknown',
     data_richness: module?.data_richness || 0,
     provides_count: module?.provides_count || 0,
+    requires_count: module?.requires_count || 0,
     error_count: module?.error_count || 0,
     has_errors: module?.has_errors || false,
     insights: module?.insights || null,
+    live_data: module?.live_data || {},
+    last_update: module?.last_update || null,
     ...module
   };
 
   const IconComponent = getCategoryIcon(safeModule.category);
   const categoryGradient = getCategoryColor(safeModule.category);
   const statusColor = getStatusColor(safeModule.status);
+  const dataUtilization = Math.min(100, (safeModule.data_richness / Math.max(1, safeModule.provides_count)) * 100);
+  
+  // Get status icon and pulse animation
+  const getStatusIndicator = (status) => {
+    const s = status?.toUpperCase();
+    if (s === 'ACTIVE' || s === 'PROCESSING') return { icon: Zap, color: 'text-green-400', pulse: true };
+    if (s === 'MONITORING') return { icon: Eye, color: 'text-blue-400', pulse: true };
+    if (s === 'ANALYZING') return { icon: Brain, color: 'text-purple-400', pulse: true };
+    if (s === 'VOTING') return { icon: Users, color: 'text-cyan-400', pulse: true };
+    if (s === 'WARNING') return { icon: AlertTriangle, color: 'text-yellow-400', pulse: true };
+    if (s === 'ERROR') return { icon: XCircle, color: 'text-red-400', pulse: false };
+    if (s === 'DISABLED') return { icon: Power, color: 'text-gray-500', pulse: false };
+    return { icon: Circle, color: 'text-gray-400', pulse: false };
+  };
+  
+  const statusInfo = getStatusIndicator(safeModule.status);
+  const StatusIcon = statusInfo.icon;
+
+  // Format live data preview
+  const getLiveDataPreview = () => {
+    if (!safeModule.live_data || Object.keys(safeModule.live_data).length === 0) return null;
+    const entries = Object.entries(safeModule.live_data).slice(0, 2);
+    return entries.map(([key, value]) => {
+      const shortKey = key.length > 20 ? key.slice(0, 18) + '...' : key;
+      let displayVal = 'â€”';
+      if (typeof value === 'number') displayVal = value.toFixed(2);
+      else if (typeof value === 'string') displayVal = value.slice(0, 12);
+      else if (typeof value === 'boolean') displayVal = value ? 'âœ“' : 'âœ—';
+      else if (value !== null && typeof value === 'object') displayVal = `{${Object.keys(value).length}}`;
+      return { key: shortKey, value: displayVal };
+    });
+  };
+
+  const livePreview = getLiveDataPreview();
 
   return (
-    <div className="bg-gray-800 rounded-xl p-4 border border-gray-700 hover:border-blue-500/50 transition-all duration-300 cursor-pointer group">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center space-x-3">
-          <div className={`p-2 rounded-lg bg-gradient-to-r ${categoryGradient} text-white`}>
-            <IconComponent size={18} />
+    <div 
+      className={`relative bg-gradient-to-br from-gray-800 to-gray-850 rounded-xl border transition-all duration-300 cursor-pointer group overflow-hidden ${
+        safeModule.has_errors ? 'border-red-500/50 hover:border-red-400' :
+        safeModule.enabled ? 'border-gray-700 hover:border-blue-500/70 hover:shadow-lg hover:shadow-blue-500/10' :
+        'border-gray-700/50 hover:border-gray-600'
+      }`}
+      onClick={() => onClick(safeModule)}
+    >
+      {/* Top gradient accent based on category */}
+      <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${categoryGradient}`} />
+      
+      {/* Status pulse indicator */}
+      {statusInfo.pulse && safeModule.enabled && (
+        <div className="absolute top-3 right-3">
+          <span className="relative flex h-2 w-2">
+            <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${statusInfo.color.replace('text-', 'bg-')} opacity-75`}></span>
+            <span className={`relative inline-flex rounded-full h-2 w-2 ${statusInfo.color.replace('text-', 'bg-')}`}></span>
+          </span>
+        </div>
+      )}
+
+      <div className="p-4">
+        {/* Header */}
+        <div className="flex items-start justify-between mb-3">
+          <div className="flex items-center space-x-3">
+            <div className={`p-2.5 rounded-xl bg-gradient-to-br ${categoryGradient} text-white shadow-lg`}>
+              <IconComponent size={20} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h3 className="text-white font-semibold text-sm group-hover:text-blue-400 transition-colors truncate">
+                {safeModule.name.replace(/([A-Z])/g, ' $1').trim()}
+              </h3>
+              <div className="flex items-center space-x-2 mt-0.5">
+                <span className="text-gray-500 text-xs capitalize">
+                  {safeModule.category.replace('_', ' ')}
+                </span>
+                <span className="text-gray-600">â€¢</span>
+                <div className="flex items-center space-x-1">
+                  <StatusIcon size={10} className={statusInfo.color} />
+                  <span className={`text-xs font-medium ${statusInfo.color}`}>
+                    {safeModule.status}
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
-          <div>
-            <h3 className="text-white font-semibold group-hover:text-blue-400 transition-colors">
-              {safeModule.name}
-            </h3>
-            <p className="text-gray-400 text-xs capitalize">
-              {safeModule.category.replace('_', ' ')}
-            </p>
-          </div>
-        </div>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggle(safeModule.name);
-          }}
-          className={`p-1.5 rounded-lg transition-all ${
-            safeModule.enabled
-              ? 'bg-green-600 hover:bg-green-700 text-white'
-              : 'bg-gray-600 hover:bg-gray-700 text-gray-300'
-          }`}
-        >
-          {safeModule.enabled ? <CheckCircle size={14} /> : <XCircle size={14} />}
-        </button>
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="text-gray-400 text-xs">Status:</span>
-          <span className={`text-xs font-medium ${statusColor} capitalize`}>
-            {safeModule.status}
-          </span>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggle(safeModule.name);
+            }}
+            className={`p-1.5 rounded-lg transition-all transform hover:scale-110 ${
+              safeModule.enabled
+                ? 'bg-green-500/20 hover:bg-green-500/30 text-green-400'
+                : 'bg-gray-700 hover:bg-gray-600 text-gray-400'
+            }`}
+          >
+            <Power size={14} />
+          </button>
         </div>
 
-        <div className="flex items-center justify-between">
-          <span className="text-gray-400 text-xs">Provides:</span>
-          <span className="text-blue-400 text-xs font-medium">
-            {safeModule.provides_count} keys
-          </span>
-        </div>
-
-        <div className="flex items-center justify-between">
-          <span className="text-gray-400 text-xs">Live Data:</span>
-          <span className="text-green-400 text-xs font-medium">
-            {safeModule.data_richness} active
-          </span>
-        </div>
-
-        {safeModule.has_errors && (
-          <div className="flex items-center space-x-1 text-red-400 text-xs">
-            <AlertTriangle size={12} />
-            <span>{safeModule.error_count} errors</span>
+        {/* Health Bar with gradient */}
+        {safeModule.health_score !== undefined && (
+          <div className="mb-3">
+            <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center space-x-1">
+                <Heart size={10} className={getHealthColor(safeModule.health_score)} />
+                <span className="text-gray-500 text-xs">Health</span>
+              </div>
+              <span className={`text-xs font-bold ${getHealthColor(safeModule.health_score)}`}>
+                {safeModule.health_score}%
+              </span>
+            </div>
+            <div className="w-full bg-gray-700/50 rounded-full h-1.5 overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-700 ease-out ${getHealthBarColor(safeModule.health_score)}`}
+                style={{ width: `${safeModule.health_score}%` }}
+              />
+            </div>
           </div>
         )}
-      </div>
 
-      {safeModule.health_score !== undefined && (
-        <div className="mt-3">
+        {/* Stats Grid */}
+        <div className="grid grid-cols-3 gap-2 mb-3">
+          <div className="bg-gray-900/50 rounded-lg p-2 text-center">
+            <div className="text-blue-400 font-bold text-sm">{safeModule.provides_count}</div>
+            <div className="text-gray-500 text-xs">Outputs</div>
+          </div>
+          <div className="bg-gray-900/50 rounded-lg p-2 text-center">
+            <div className="text-green-400 font-bold text-sm">{safeModule.data_richness}</div>
+            <div className="text-gray-500 text-xs">Live</div>
+          </div>
+          <div className="bg-gray-900/50 rounded-lg p-2 text-center">
+            <div className={`font-bold text-sm ${safeModule.has_errors ? 'text-red-400' : 'text-gray-400'}`}>
+              {safeModule.error_count}
+            </div>
+            <div className="text-gray-500 text-xs">Errors</div>
+          </div>
+        </div>
+
+        {/* Live Data Preview */}
+        {livePreview && livePreview.length > 0 && (
+          <div className="bg-gray-900/30 rounded-lg p-2 mb-3 border border-gray-700/50">
+            <div className="flex items-center space-x-1 mb-1.5">
+              <Activity size={10} className="text-green-400" />
+              <span className="text-gray-400 text-xs font-medium">Live Data</span>
+            </div>
+            <div className="space-y-1">
+              {livePreview.map(({ key, value }) => (
+                <div key={key} className="flex items-center justify-between">
+                  <span className="text-gray-500 text-xs truncate flex-1">{key}</span>
+                  <span className="text-cyan-400 text-xs font-mono ml-2">{value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Insights Summary */}
+        {safeModule.insights && safeModule.insights.summary && safeModule.insights.summary !== "No data available" && (
+          <div className="bg-gradient-to-r from-blue-900/20 to-purple-900/20 rounded-lg p-2 mb-3 border border-blue-500/20">
+            <div className="flex items-start space-x-2">
+              <Brain size={12} className="text-purple-400 mt-0.5 flex-shrink-0" />
+              <p className="text-xs text-gray-300 leading-relaxed line-clamp-2">
+                {safeModule.insights.summary}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Data Utilization */}
+        <div className="mb-3">
           <div className="flex items-center justify-between mb-1">
-            <span className="text-gray-400 text-xs">Health:</span>
-            <span className={`text-xs font-medium ${getHealthColor(safeModule.health_score)}`}>
-              {safeModule.health_score}% {safeModule.health_status}
+            <span className="text-gray-500 text-xs">Data Flow</span>
+            <span className="text-xs font-medium text-gray-400">
+              {safeModule.data_richness}/{safeModule.provides_count} streams
             </span>
           </div>
-          <div className="w-full bg-gray-700 rounded-full h-2">
+          <div className="w-full bg-gray-700/30 rounded-full h-1">
             <div
-              className={`h-2 rounded-full transition-all duration-500 ${getHealthBarColor(safeModule.health_score)}`}
-              style={{ width: `${safeModule.health_score}%` }}
+              className="bg-gradient-to-r from-blue-500 via-cyan-500 to-green-500 h-1 rounded-full transition-all duration-500"
+              style={{ width: `${dataUtilization}%` }}
             />
           </div>
         </div>
-      )}
 
-      {safeModule.insights && safeModule.insights.summary && safeModule.insights.summary !== "No data available" && (
-        <div className="mt-3 p-2 bg-gray-700/50 rounded-lg border border-gray-600">
-          <p className="text-xs text-gray-300">
-            {safeModule.insights.summary}
-          </p>
-          {safeModule.insights.key_metrics && Object.keys(safeModule.insights.key_metrics).length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {Object.entries(safeModule.insights.key_metrics)
-                .slice(0, 3)
-                .filter(([key, value]) => value != null)
-                .map(([key, value]) => (
-                  <span key={key} className="text-xs bg-blue-600/20 text-blue-300 px-2 py-1 rounded-full">
-                    {key}: {typeof value === 'number' ? value.toFixed(2) :
-                      typeof value === 'object' ? JSON.stringify(value).slice(0, 10) + '...' :
-                      String(value).slice(0, 15)}
-                  </span>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      <div className="mt-3">
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-gray-400 text-xs">Data Utilization:</span>
-          <span className="text-green-400 text-xs font-medium">
-            {safeModule.data_richness}/{safeModule.provides_count}
-          </span>
-        </div>
-        <div className="w-full bg-gray-700 rounded-full h-1.5">
-          <div
-            className="bg-gradient-to-r from-blue-500 to-cyan-500 h-1.5 rounded-full transition-all duration-500"
-            style={{
-              width: `${Math.min(100, (safeModule.data_richness / Math.max(1, safeModule.provides_count)) * 100)}%`
-            }}
-          />
-        </div>
+        {/* Footer with action button */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onClick(safeModule);
+          }}
+          className="w-full py-2 bg-gray-700/50 hover:bg-blue-600/30 text-gray-300 hover:text-white text-xs rounded-lg transition-all duration-200 flex items-center justify-center space-x-1 group/btn"
+        >
+          <span>View Details</span>
+          <ChevronRight size={12} className="transform group-hover/btn:translate-x-0.5 transition-transform" />
+        </button>
       </div>
-
-      <button
-        onClick={() => onClick(safeModule)}
-        className="w-full mt-3 px-2 py-1.5 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 transition-colors"
-      >
-        View Details
-      </button>
     </div>
   );
 });
@@ -624,3164 +585,9 @@ const ModeSelector = React.memo(function ModeSelector({ value, onChange }) {
   );
 });
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-/** Tabs (hoisted). They use context where convenient, and props for actions. */
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Tabs (AnalyticsTab, MemoryTab, RiskTab, StrategyTab, VotingTab, TradingTab, LogsTab, AlertsModal)
+// are imported from ./components/tabs/ - see imports at top of file
 
-const AnalyticsTab = React.memo(function AnalyticsTab() {
-  const { state: appState, dispatch: appDispatch } = useAppState();
-  const { analyticsData, analyticsLoading, selectedTimeframe, selectedView } = appState;
-
-  useEffect(() => {
-    const fetchAnalyticsData = async () => {
-      if (Date.now() - appState.lastUpdate.analytics < 10000) return;
-      try {
-        appDispatch({ type: 'SET_ANALYTICS_LOADING', payload: true });
-
-        const [
-          visualizationResponse,
-          dashboardResponse,
-          performanceResponse,
-          modulesResponse
-        ] = await Promise.all([
-          fetch('/api/visualization-data'),
-          fetch('/api/dashboard-data'),
-          fetch('/api/performance-metrics'),
-          fetch('/api/modules')
-        ]);
-
-        const visualizationData = visualizationResponse.ok ? await visualizationResponse.json() : {};
-        const dashboardData = dashboardResponse.ok ? await dashboardResponse.json() : {};
-        const performanceData = performanceResponse.ok ? await performanceResponse.json() : {};
-        const modulesData = modulesResponse.ok ? await modulesResponse.json() : {};
-
-        appDispatch({
-          type: 'SET_ANALYTICS_DATA',
-          payload: {
-            visualization: visualizationData,
-            dashboard: dashboardData,
-            performance: performanceData,
-            modules: modulesData
-          }
-        });
-      } catch (error) {
-        console.error('Failed to fetch analytics data:', error);
-        appDispatch({ type: 'SET_ANALYTICS_LOADING', payload: false });
-      }
-    };
-
-    if (!appState.dataLoaded.analytics || selectedTimeframe) {
-      fetchAnalyticsData();
-    }
-  }, [selectedTimeframe, appState.dataLoaded.analytics, appState.lastUpdate.analytics, appDispatch]);
-
-  const renderPerformanceMetrics = () => {
-    const performance = analyticsData.performance || {};
-    const visualization = analyticsData.visualization || {};
-
-    return (
-      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
-        {/* Balance & PnL Trends */}
-        <div className="lg:col-span-2 bg-gray-800 rounded-xl p-6 border border-gray-700">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-xl font-bold text-white flex items-center">
-              <TrendingUp size={20} className="mr-2 text-green-400" />
-              Balance & P&L Trends
-            </h3>
-            <div className="flex space-x-2">
-              {['1h', '4h', '1d', '1w'].map(tf => (
-                <button
-                  key={tf}
-                  onClick={() => appDispatch({ type: 'SET_TIMEFRAME', payload: tf })}
-                  className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-                    selectedTimeframe === tf
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                  }`}
-                >
-                  {tf}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart
-                data={
-                  analyticsData.visualization?.performance_metrics?.balance_history?.map((balance, i) => ({
-                    time: i,
-                    balance: balance,
-                    pnl: analyticsData.visualization?.performance_metrics?.pnl_history?.[i] || 0,
-                    drawdown: analyticsData.visualization?.performance_metrics?.drawdown_history?.[i] || 0
-                  })) || []
-                }
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                <XAxis dataKey="time" stroke="#9CA3AF" />
-                <YAxis yAxisId="left" stroke="#9CA3AF" />
-                <YAxis yAxisId="right" orientation="right" stroke="#9CA3AF" />
-                <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151', borderRadius: '8px', color: '#F9FAFB' }} />
-                <Area yAxisId="left" type="monotone" dataKey="balance" stackId="1" stroke="#10B981" fill="#10B981" fillOpacity={0.3} isAnimationActive={false} />
-                <Bar yAxisId="right" dataKey="pnl" fill="#3B82F6" isAnimationActive={false} />
-                <Line yAxisId="right" type="monotone" dataKey="drawdown" stroke="#EF4444" strokeWidth={2} dot={false} isAnimationActive={false} />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        {/* Trading Stats */}
-        <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
-          <h3 className="text-lg font-bold text-white mb-4 flex items-center">
-            <Target size={18} className="mr-2 text-blue-400" />
-            Trading Stats
-          </h3>
-          <div className="space-y-4">
-            <div className="flex justify-between items-center">
-              <span className="text-gray-400">Win Rate</span>
-              <span className="text-green-400 font-bold">
-                {((analyticsData.visualization?.performance_metrics?.win_rate?.slice(-1)[0] || 0) * 100).toFixed(1)}%
-              </span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-gray-400">Active Positions</span>
-              <span className="text-blue-400 font-bold">
-                {analyticsData.visualization?.performance_metrics?.position_count?.slice(-1)[0] || 0}
-              </span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-gray-400">Total Trades</span>
-              <span className="text-purple-400 font-bold">
-                {analyticsData.visualization?.performance_metrics?.trades?.slice(-1)[0] || 0}
-              </span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-gray-400">Risk Score</span>
-              <span className={`font-bold ${
-                (analyticsData.visualization?.performance_metrics?.risk_score?.slice(-1)[0] || 0) > 0.7 ? 'text-red-400' :
-                (analyticsData.visualization?.performance_metrics?.risk_score?.slice(-1)[0] || 0) > 0.4 ? 'text-yellow-400' : 'text-green-400'
-              }`}>
-                {((analyticsData.visualization?.performance_metrics?.risk_score?.slice(-1)[0] || 0) * 100).toFixed(1)}%
-              </span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-gray-400">Consensus</span>
-              <div className="flex items-center">
-                <div className="w-16 bg-gray-700 rounded-full h-2 mr-2">
-                  <div
-                    className="bg-gradient-to-r from-blue-500 to-purple-500 h-2 rounded-full transition-all duration-500"
-                    style={{ width: `${(analyticsData.visualization?.performance_metrics?.consensus?.slice(-1)[0] || 0) * 100}%` }}
-                  />
-                </div>
-                <span className="text-cyan-400 font-bold text-sm">
-                  {((analyticsData.visualization?.performance_metrics?.consensus?.slice(-1)[0] || 0) * 100).toFixed(0)}%
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const renderModuleAnalytics = () => {
-    const modules = toArray(analyticsData.modules?.modules);
-    const modulesByCategory = modules.reduce((acc, module) => {
-      if (!acc[module.category]) acc[module.category] = [];
-      acc[module.category].push(module);
-      return acc;
-    }, {});
-
-    return (
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Module Health */}
-        <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
-          <h3 className="text-xl font-bold text-white mb-4 flex items-center">
-            <Heart size={20} className="mr-2 text-red-400" />
-            Module Health Overview
-          </h3>
-
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <RechartsPieChart>
-                <Pie
-                  data={Object.entries(modulesByCategory).map(([category, categoryModules]) => ({
-                    name: category,
-                    value: categoryModules.length,
-                    health: categoryModules.reduce((acc, m) => acc + (m.health_score || 0), 0) / categoryModules.length
-                  }))}
-                  cx="50%"
-                  cy="50%"
-                  labelLine={false}
-                  label={({ name, value }) => `${name}: ${value}`}
-                  outerRadius={80}
-                  fill="#8884d8"
-                  dataKey="value"
-                  isAnimationActive={false}
-                >
-                  {Object.keys(modulesByCategory).map((category, index) => (
-                    <Cell key={`cell-${index}`} fill={`hsl(${index * 45}, 70%, 60%)`} />
-                  ))}
-                </Pie>
-                <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151', borderRadius: '8px', color: '#F9FAFB' }} />
-              </RechartsPieChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        {/* Top Modules */}
-        <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
-          <h3 className="text-xl font-bold text-white mb-4 flex items-center">
-            <Crown size={20} className="mr-2 text-yellow-400" />
-            Top Performing Modules
-          </h3>
-
-          <div className="space-y-3">
-            {modules
-              .filter(m => m.health_score > 0)
-              .sort((a, b) => (b.health_score || 0) - (a.health_score || 0))
-              .slice(0, 8)
-              .map((module, index) => (
-                <div key={module.id ?? module.name} className="flex items-center justify-between p-3 bg-gray-700/50 rounded-lg">
-                  <div className="flex items-center space-x-3">
-                    <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
-                      index === 0 ? 'bg-yellow-500 text-black' :
-                      index === 1 ? 'bg-gray-400 text-black' :
-                      index === 2 ? 'bg-amber-600 text-black' : 'bg-gray-600 text-white'
-                    }`}>
-                      {index + 1}
-                    </div>
-                    <div>
-                      <div className="text-white font-medium">{module.name}</div>
-                      <div className="text-xs text-gray-400 capitalize">{module.category}</div>
-                    </div>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <div className="w-16 bg-gray-600 rounded-full h-2">
-                      <div
-                        className={`h-2 rounded-full transition-all duration-500 ${
-                          module.health_score >= 90 ? 'bg-green-500' :
-                          module.health_score >= 75 ? 'bg-yellow-500' : 'bg-red-500'
-                        }`}
-                        style={{ width: `${module.health_score}%` }}
-                      />
-                    </div>
-                    <span className="text-sm font-bold text-white">{module.health_score}%</span>
-                  </div>
-                </div>
-              ))}
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const renderSystemFlow = () => {
-    const visualization = analyticsData.visualization || {};
-
-    return (
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        <div className="xl:col-span-2 bg-gray-800 rounded-xl p-6 border border-gray-700">
-          <h3 className="text-xl font-bold text-white mb-4 flex items-center">
-            <Waves size={20} className="mr-2 text-cyan-400" />
-            System Data Flow
-          </h3>
-
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {[
-              { label: 'Data Points', value: visualization.statistics?.data_points_collected || 0, icon: Database, color: 'text-blue-400' },
-              { label: 'Dashboard Updates', value: visualization.statistics?.dashboard_updates || 0, icon: Monitor, color: 'text-green-400' },
-              { label: 'Stream Updates', value: visualization.statistics?.stream_updates || 0, icon: Wifi, color: 'text-purple-400' },
-              { label: 'Active Alerts', value: visualization.recent_alerts?.length || 0, icon: Bell, color: 'text-red-400' }
-            ].map((stat, index) => (
-              <div key={index} className="bg-gray-700/50 rounded-lg p-4 text-center">
-                <stat.icon size={24} className={`mx-auto mb-2 ${stat.color}`} />
-                <div className="text-2xl font-bold text-white">{stat.value.toLocaleString()}</div>
-                <div className="text-xs text-gray-400">{stat.label}</div>
-              </div>
-            ))}
-          </div>
-
-          <div className="mt-6">
-            <h4 className="text-lg font-semibold text-white mb-3">Market Regime Analytics</h4>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {Object.entries(visualization.regime_analytics || {}).map(([regime, data]) => (
-                <div key={regime} className="bg-gray-700/30 rounded-lg p-3">
-                  <div className="text-sm font-medium text-white capitalize">{regime}</div>
-                  <div className="text-xs text-gray-400 mt-1">Time: {data.time_spent || 0}min</div>
-                  <div className="text-xs text-gray-400">Trades: {data.trade_count || 0}</div>
-                  <div className={`text-sm font-bold mt-1 ${
-                    (data.avg_pnl || 0) > 0 ? 'text-green-400' : 'text-red-400'
-                  }`}>
-                    P&L: {(data.avg_pnl || 0) > 0 ? '+' : ''}${(data.avg_pnl || 0).toFixed(2)}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Recent Activity */}
-        <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
-          <h3 className="text-lg font-bold text-white mb-4 flex items-center">
-            <AlertCircle size={18} className="mr-2 text-orange-400" />
-            Recent Activity
-          </h3>
-
-          <div className="space-y-3 max-h-96 overflow-y-auto">
-            {(visualization.recent_alerts || []).slice(0, 20).map((alert, index) => (
-              <div key={index} className="flex items-start space-x-3 p-2 bg-gray-700/30 rounded-lg">
-                <div className={`w-2 h-2 rounded-full mt-2 flex-shrink-0 ${
-                  alert.severity === 'critical' ? 'bg-red-500' :
-                  alert.severity === 'warning' ? 'bg-yellow-500' : 'bg-blue-500'
-                }`} />
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm text-white">
-                    {alert.alert?.message || JSON.stringify(alert.alert).slice(0, 50)}
-                  </div>
-                  <div className="text-xs text-gray-400 mt-1">
-                    {alert.module} â€¢ {new Date(alert.time).toLocaleTimeString()}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const viewComponents = {
-    performance: renderPerformanceMetrics,
-    modules: renderModuleAnalytics,
-    flow: renderSystemFlow
-  };
-
-  if (analyticsLoading) {
-    return (
-      <div className="flex items-center justify-center h-96">
-        <div className="text-center">
-          <Loader2 className="w-8 h-8 animate-spin text-blue-400 mx-auto mb-4" />
-          <div className="text-gray-400">Loading analytics data...</div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-3xl font-bold text-white">Analytics Dashboard</h2>
-          <p className="text-gray-400">Comprehensive system performance and insights</p>
-        </div>
-
-        <div className="flex space-x-2">
-          {[
-            { key: 'performance', label: 'Performance', icon: TrendingUp },
-            { key: 'modules', label: 'Modules', icon: Cpu },
-            { key: 'flow', label: 'System Flow', icon: Waves }
-          ].map(({ key, label, icon: Icon }) => (
-            <button
-              key={key}
-              onClick={() => appDispatch({ type: 'SET_VIEW', payload: key })}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium transition-all ${
-                selectedView === key
-                  ? 'bg-gradient-to-r from-blue-600 to-purple-600 text-white'
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
-            >
-              <Icon size={16} />
-              <span>{label}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="animate-in fade-in duration-500">
-        {viewComponents[selectedView]()}
-      </div>
-    </div>
-  );
-});
-
-const MemoryTab = React.memo(function MemoryTab() {
-  const [memoryData, setMemoryData] = useState({
-    overview: {},
-    components: {},
-    patterns: {},
-    mistakes: {},
-    performance: {}
-  });
-  const [loading, setLoading] = useState(false);
-  const [selectedComponent, setSelectedComponent] = useState('overview');
-  const [lastUpdate, setLastUpdate] = useState(0);
-  const [hasTrainingData, setHasTrainingData] = useState(false);
-
-  // Use refs to track loading state without triggering re-renders
-  const loadingRef = useRef(false);
-  const lastUpdateRef = useRef(0);
-
-  const fetchMemoryData = useCallback(async () => {
-    if (loadingRef.current || Date.now() - lastUpdateRef.current < 5000) return;
-
-    loadingRef.current = true;
-    setLoading(true);
-    try {
-      // Use AbortController for timeout
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-      const [overviewRes, componentsRes, patternsRes, mistakesRes, performanceRes] = await Promise.all([
-        fetch('/api/memory/overview', { signal: controller.signal }).then(r => r.json()).catch(() => ({ success: false })),
-        fetch('/api/memory/components', { signal: controller.signal }).then(r => r.json()).catch(() => ({ success: false })),
-        fetch('/api/memory/patterns', { signal: controller.signal }).then(r => r.json()).catch(() => ({ success: false })),
-        fetch('/api/memory/mistakes', { signal: controller.signal }).then(r => r.json()).catch(() => ({ success: false })),
-        fetch('/api/memory/performance', { signal: controller.signal }).then(r => r.json()).catch(() => ({ success: false }))
-      ]);
-
-      clearTimeout(timeoutId);
-
-      const overview = overviewRes.success ? overviewRes : { error: overviewRes.error };
-      const components = componentsRes.success ? componentsRes.components : {};
-      
-      // Check if we have any meaningful data (training has run)
-      const hasMeaningfulData = (
-        (overview.total_memories || 0) > 0 ||
-        (overview.components_active || 0) > 0 ||
-        overview.health_status !== 'unknown'
-      );
-      setHasTrainingData(hasMeaningfulData);
-
-      setMemoryData({
-        overview,
-        components,
-        patterns: patternsRes.success ? patternsRes.patterns : {},
-        mistakes: mistakesRes.success ? mistakesRes.mistakes : {},
-        performance: performanceRes.success ? performanceRes.performance : {}
-      });
-      lastUpdateRef.current = Date.now();
-      setLastUpdate(Date.now());
-    } catch (error) {
-      if (error.name !== 'AbortError') {
-        console.error('Error fetching memory data:', error);
-      }
-    } finally {
-      loadingRef.current = false;
-      setLoading(false);
-    }
-  }, []); // Empty deps - uses refs for mutable state
-
-  useEffect(() => {
-    fetchMemoryData();
-    const interval = setInterval(fetchMemoryData, 10000); // Update every 10 seconds
-    return () => clearInterval(interval);
-  }, [fetchMemoryData]);
-
-  const componentTabs = [
-    { key: 'overview', label: 'Overview', icon: BarChart3 },
-    { key: 'neural', label: 'Neural', icon: Brain },
-    { key: 'playbook', label: 'Playbook', icon: Target },
-    { key: 'mistakes', label: 'Mistakes', icon: AlertTriangle },
-    { key: 'patterns', label: 'Patterns', icon: Sparkles },
-    { key: 'performance', label: 'Performance', icon: Activity }
-  ];
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-white mb-2">Memory System</h1>
-          <p className="text-gray-400">Monitor unified memory components and performance</p>
-        </div>
-        <button
-          onClick={fetchMemoryData}
-          disabled={loading}
-          className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded-lg transition-colors text-white font-medium"
-        >
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          <span>Refresh</span>
-        </button>
-      </div>
-
-      {/* No Data Banner */}
-      {!hasTrainingData && (
-        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4">
-          <div className="flex items-center space-x-3">
-            <AlertCircle className="w-5 h-5 text-yellow-400" />
-            <div>
-              <h3 className="text-yellow-400 font-medium">No Memory Data Available</h3>
-              <p className="text-gray-400 text-sm mt-1">
-                Memory data will populate once live trading starts. Start trading to see real-time memory system metrics.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Memory Overview Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <div className="flex items-center space-x-3 mb-4">
-            <div className="p-2 bg-blue-500/20 rounded-lg">
-              <HardDrive className="w-5 h-5 text-blue-400" />
-            </div>
-            <div>
-              <h3 className="text-gray-400 text-sm font-medium">Total Memories</h3>
-              <div className="text-2xl font-bold text-white">
-                {memoryData.overview.total_memories || 0}
-              </div>
-            </div>
-          </div>
-          <div className="text-xs text-gray-500">Stored experiences</div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <div className="flex items-center space-x-3 mb-4">
-            <div className="p-2 bg-green-500/20 rounded-lg">
-              <Activity className="w-5 h-5 text-green-400" />
-            </div>
-            <div>
-              <h3 className="text-gray-400 text-sm font-medium">Memory Usage</h3>
-              <div className="text-2xl font-bold text-white">
-                {((memoryData.overview.memory_utilization || 0) * 100).toFixed(1)}%
-              </div>
-            </div>
-          </div>
-          <div className="w-full bg-gray-700 rounded-full h-2 mt-2">
-            <div
-              className="bg-green-400 h-2 rounded-full transition-all duration-300"
-              style={{ width: `${(memoryData.overview.memory_utilization || 0) * 100}%` }}
-            />
-          </div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <div className="flex items-center space-x-3 mb-4">
-            <div className="p-2 bg-purple-500/20 rounded-lg">
-              <Cpu className="w-5 h-5 text-purple-400" />
-            </div>
-            <div>
-              <h3 className="text-gray-400 text-sm font-medium">Active Components</h3>
-              <div className="text-2xl font-bold text-white">
-                {memoryData.overview.components_active || 0}
-              </div>
-            </div>
-          </div>
-          <div className="text-xs text-gray-500">Running modules</div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <div className="flex items-center space-x-3 mb-4">
-            <div className={`p-2 rounded-lg ${
-              memoryData.overview.health_status === 'healthy' ? 'bg-green-500/20' :
-              memoryData.overview.health_status === 'warning' ? 'bg-yellow-500/20' :
-              'bg-red-500/20'
-            }`}>
-              <Heart className={`w-5 h-5 ${
-                memoryData.overview.health_status === 'healthy' ? 'text-green-400' :
-                memoryData.overview.health_status === 'warning' ? 'text-yellow-400' :
-                'text-red-400'
-              }`} />
-            </div>
-            <div>
-              <h3 className="text-gray-400 text-sm font-medium">Health Status</h3>
-              <div className={`text-2xl font-bold capitalize ${
-                memoryData.overview.health_status === 'healthy' ? 'text-green-400' :
-                memoryData.overview.health_status === 'warning' ? 'text-yellow-400' :
-                'text-red-400'
-              }`}>
-                {memoryData.overview.health_status || 'Unknown'}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Component Navigation */}
-      <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-4">
-        <div className="flex flex-wrap gap-2">
-          {componentTabs.map(({ key, label, icon: Icon }) => (
-            <button
-              key={key}
-              onClick={() => setSelectedComponent(key)}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium transition-all ${
-                selectedComponent === key
-                  ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white'
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
-            >
-              <Icon size={16} />
-              <span>{label}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Dynamic Content Based on Selected Component */}
-      <div className="animate-in fade-in duration-500">
-        {selectedComponent === 'overview' && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <MemoryOverviewChart data={memoryData.overview} />
-            <MemoryHealthPanel data={memoryData.overview} />
-          </div>
-        )}
-
-        {selectedComponent === 'neural' && (
-          <NeuralMemoryPanel data={memoryData.components.neural || {}} />
-        )}
-
-        {selectedComponent === 'playbook' && (
-          <PlaybookMemoryPanel data={memoryData.components.playbook || {}} />
-        )}
-
-        {selectedComponent === 'mistakes' && (
-          <MistakeMemoryPanel data={memoryData.mistakes} />
-        )}
-
-        {selectedComponent === 'patterns' && (
-          <PatternsPanel data={memoryData.patterns} />
-        )}
-
-        {selectedComponent === 'performance' && (
-          <MemoryPerformancePanel data={memoryData.performance} />
-        )}
-      </div>
-    </div>
-  );
-});
-
-// Memory Visualization Components
-const MemoryOverviewChart = React.memo(function MemoryOverviewChart({ data }) {
-  const chartData = [
-    { name: 'Usage', value: (data.memory_utilization || 0) * 100, color: '#10b981' },
-    { name: 'Free', value: 100 - ((data.memory_utilization || 0) * 100), color: '#374151' }
-  ];
-
-  return (
-    <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-      <h3 className="text-lg font-semibold text-white mb-4">Memory Usage Overview</h3>
-      <div className="flex items-center justify-center h-64">
-        <ResponsiveContainer width="100%" height="100%">
-          <RechartsPieChart>
-            <Pie
-              data={chartData}
-              cx="50%"
-              cy="50%"
-              innerRadius={60}
-              outerRadius={100}
-              fill="#8884d8"
-              dataKey="value"
-            >
-              {chartData.map((entry, index) => (
-                <Cell key={`cell-${index}`} fill={entry.color} />
-              ))}
-            </Pie>
-            <Tooltip formatter={(value) => `${value.toFixed(1)}%`} />
-          </RechartsPieChart>
-        </ResponsiveContainer>
-      </div>
-      <div className="flex justify-center space-x-4 mt-4">
-        <div className="flex items-center space-x-2">
-          <div className="w-3 h-3 bg-green-500 rounded-full"></div>
-          <span className="text-sm text-gray-400">Used</span>
-        </div>
-        <div className="flex items-center space-x-2">
-          <div className="w-3 h-3 bg-gray-600 rounded-full"></div>
-          <span className="text-sm text-gray-400">Free</span>
-        </div>
-      </div>
-    </div>
-  );
-});
-
-const MemoryHealthPanel = React.memo(function MemoryHealthPanel({ data }) {
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'healthy': return 'text-green-400';
-      case 'warning': return 'text-yellow-400';
-      case 'critical': return 'text-red-400';
-      default: return 'text-gray-400';
-    }
-  };
-
-  const getStatusBg = (status) => {
-    switch (status) {
-      case 'healthy': return 'bg-green-500/20';
-      case 'warning': return 'bg-yellow-500/20';
-      case 'critical': return 'bg-red-500/20';
-      default: return 'bg-gray-500/20';
-    }
-  };
-
-  return (
-    <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-      <h3 className="text-lg font-semibold text-white mb-4">System Health</h3>
-      <div className="space-y-4">
-        <div className={`p-4 rounded-lg ${getStatusBg(data.health_status)}`}>
-          <div className="flex items-center justify-between">
-            <span className="text-gray-300">Overall Status</span>
-            <span className={`font-bold capitalize ${getStatusColor(data.health_status)}`}>
-              {data.health_status || 'Unknown'}
-            </span>
-          </div>
-        </div>
-
-        <div className="bg-gray-700/50 rounded-lg p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-gray-300">Processing Status</span>
-            <span className="text-blue-400 font-medium">
-              {data.processing_status || 'Unknown'}
-            </span>
-          </div>
-        </div>
-
-        <div className="bg-gray-700/50 rounded-lg p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-gray-300">System Status</span>
-            <span className="text-purple-400 font-medium">
-              {data.status || 'Unknown'}
-            </span>
-          </div>
-        </div>
-
-        <div className="bg-gray-700/50 rounded-lg p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-gray-300">Components Enabled</span>
-            <span className="text-green-400 font-bold">
-              {data.components_enabled || 0}
-            </span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-});
-
-const NeuralMemoryPanel = React.memo(function NeuralMemoryPanel({ data }) {
-  const neural = data.neural_memory || {};
-  const attention = data.attention_retrieval || {};
-  const embedding = data.memory_embedding || {};
-  const scoring = data.importance_scoring || {};
-
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-        <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-          <Brain className="w-5 h-5 mr-2 text-purple-400" />
-          Neural Memory Status
-        </h3>
-        <div className="space-y-3">
-          <div className="flex justify-between">
-            <span className="text-gray-400">Buffer Size</span>
-            <span className="text-white font-medium">{neural.buffer_size || 0}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Memory Utilization</span>
-            <span className="text-blue-400 font-medium">
-              {((neural.memory_utilization || 0) * 100).toFixed(1)}%
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Total Embeddings</span>
-            <span className="text-purple-400 font-medium">{embedding.total_embeddings || 0}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Embedding Dimension</span>
-            <span className="text-green-400 font-medium">{embedding.embedding_dim || 0}</span>
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-        <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-          <Eye className="w-5 h-5 mr-2 text-blue-400" />
-          Attention & Scoring
-        </h3>
-        <div className="space-y-3">
-          <div className="flex justify-between">
-            <span className="text-gray-400">Retrieved Count</span>
-            <span className="text-blue-400 font-medium">{attention.retrieved_count || 0}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Avg Importance</span>
-            <span className="text-yellow-400 font-medium">
-              {(scoring.average_importance || 0).toFixed(3)}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Total Scored</span>
-            <span className="text-green-400 font-medium">{scoring.total_scored || 0}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Similarity Scores</span>
-            <span className="text-purple-400 font-medium">
-              {(attention.similarity_scores || []).length}
-            </span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-});
-
-const PlaybookMemoryPanel = React.memo(function PlaybookMemoryPanel({ data }) {
-  const recall = data.playbook_recall || {};
-  const patterns = data.pattern_memory || {};
-  const quality = data.playbook_quality || {};
-  const analytics = data.memory_analytics || {};
-
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-        <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-          <Target className="w-5 h-5 mr-2 text-cyan-400" />
-          Playbook Status
-        </h3>
-        <div className="space-y-3">
-          <div className="flex justify-between">
-            <span className="text-gray-400">Memory Entries</span>
-            <span className="text-cyan-400 font-medium">{recall.memory_entries || 0}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Patterns Identified</span>
-            <span className="text-blue-400 font-medium">{recall.patterns_identified || 0}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Total Patterns</span>
-            <span className="text-purple-400 font-medium">{patterns.total_patterns || 0}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Quality Score</span>
-            <span className="text-green-400 font-medium">
-              {(quality.quality_score || 0).toFixed(2)}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-        <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-          <BarChart3 className="w-5 h-5 mr-2 text-green-400" />
-          Analytics
-        </h3>
-        <div className="space-y-3">
-          <div className="flex justify-between">
-            <span className="text-gray-400">Total Recalls</span>
-            <span className="text-green-400 font-medium">{analytics.total_recalls || 0}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Memory Health</span>
-            <span className="text-yellow-400 font-medium capitalize">
-              {analytics.memory_health || 'Unknown'}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Memory Utilization</span>
-            <span className="text-blue-400 font-medium">
-              {((quality.memory_utilization || 0) * 100).toFixed(1)}%
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Pattern Effectiveness</span>
-            <span className="text-purple-400 font-medium">
-              {Object.keys(patterns.pattern_effectiveness || {}).length}
-            </span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-});
-
-const MistakeMemoryPanel = React.memo(function MistakeMemoryPanel({ data }) {
-  const mistakes = data.mistake_memory || {};
-  const avoidance = data.mistake_avoidance || {};
-  const dangers = data.danger_zones || {};
-  const prevention = data.loss_prevention || {};
-  const recognition = data.pattern_recognition || {};
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-            <AlertTriangle className="w-5 h-5 mr-2 text-red-400" />
-            Mistake Tracking
-          </h3>
-          <div className="space-y-3">
-            <div className="flex justify-between">
-              <span className="text-gray-400">Recent Count</span>
-              <span className="text-red-400 font-medium">
-                {(mistakes.recent || []).length}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Total Mistakes</span>
-              <span className="text-orange-400 font-medium">
-                {mistakes.stats?.count || 0}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Avoidance Signal</span>
-              <span className="text-yellow-400 font-medium">
-                {(avoidance.avoidance_signal || 0).toFixed(3)}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-            <Shield className="w-5 h-5 mr-2 text-blue-400" />
-            Loss Prevention
-          </h3>
-          <div className="space-y-3">
-            <div className="flex justify-between">
-              <span className="text-gray-400">Effectiveness</span>
-              <span className="text-blue-400 font-medium">
-                {((prevention.avoidance_effectiveness || 0) * 100).toFixed(1)}%
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Learning Samples</span>
-              <span className="text-green-400 font-medium">
-                {prevention.learning_samples || 0}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Consecutive Losses</span>
-              <span className="text-red-400 font-medium">
-                {avoidance.consecutive_losses || 0}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-            <Sparkles className="w-5 h-5 mr-2 text-purple-400" />
-            Pattern Recognition
-          </h3>
-          <div className="space-y-3">
-            <div className="flex justify-between">
-              <span className="text-gray-400">Loss Patterns</span>
-              <span className="text-red-400 font-medium">
-                {Object.keys(recognition.loss_patterns || {}).length}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Win Patterns</span>
-              <span className="text-green-400 font-medium">
-                {Object.keys(recognition.win_patterns || {}).length}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Danger Zones</span>
-              <span className="text-yellow-400 font-medium">
-                {(dangers.zones || []).length}
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-});
-
-const PatternsPanel = React.memo(function PatternsPanel({ data }) {
-  const neural = data.neural_patterns || {};
-  const playbook = data.playbook_patterns || {};
-  const compressed = data.compressed_patterns || {};
-  const recognition = data.pattern_recognition || {};
-
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-        <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-          <Brain className="w-5 h-5 mr-2 text-purple-400" />
-          Neural Patterns
-        </h3>
-        <div className="space-y-3">
-          <div className="flex justify-between">
-            <span className="text-gray-400">Attention Retrieval</span>
-            <span className="text-purple-400 font-medium">
-              {neural.attention_retrieval?.retrieved_count || 0}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Memory Embeddings</span>
-            <span className="text-blue-400 font-medium">
-              {neural.memory_embedding?.total_embeddings || 0}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Compressed Profit</span>
-            <span className="text-green-400 font-medium">
-              {(compressed.profit_direction || []).length}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Compressed Loss</span>
-            <span className="text-red-400 font-medium">
-              {(compressed.loss_direction || []).length}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-        <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-          <Target className="w-5 h-5 mr-2 text-cyan-400" />
-          Playbook Patterns
-        </h3>
-        <div className="space-y-3">
-          <div className="flex justify-between">
-            <span className="text-gray-400">Pattern Memory</span>
-            <span className="text-cyan-400 font-medium">
-              {playbook.pattern_memory?.total_patterns || 0}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Pattern Analysis</span>
-            <span className="text-blue-400 font-medium">
-              {playbook.pattern_analysis?.total_patterns || 0}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Win Patterns</span>
-            <span className="text-green-400 font-medium">
-              {Object.keys(recognition.win_patterns || {}).length}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Loss Patterns</span>
-            <span className="text-red-400 font-medium">
-              {Object.keys(recognition.loss_patterns || {}).length}
-            </span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-});
-
-const MemoryPerformancePanel = React.memo(function MemoryPerformancePanel({ data }) {
-  const overview = data.overview || {};
-  const neural = data.neural_performance || {};
-  const playbook = data.playbook_performance || {};
-  const compression = data.compression_performance || {};
-  const budget = data.budget_performance || {};
-
-  const performanceData = [
-    { name: 'Neural', score: (neural.importance_scoring?.average_importance || 0) * 100 },
-    { name: 'Playbook', score: (playbook.playbook_quality?.quality_score || 0) * 100 },
-    { name: 'Compression', score: (compression.memory_compression?.compression_efficiency || 0) * 100 },
-    { name: 'Budget', score: (budget.budget_optimization?.optimality_score || 0) * 100 }
-  ];
-
-  return (
-    <div className="space-y-6">
-      <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-        <h3 className="text-lg font-semibold text-white mb-4">Component Performance</h3>
-        <div className="h-64">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={performanceData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-              <XAxis dataKey="name" stroke="#9CA3AF" />
-              <YAxis stroke="#9CA3AF" />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: '#1F2937',
-                  border: '1px solid #374151',
-                  borderRadius: '0.5rem'
-                }}
-              />
-              <Bar dataKey="score" fill="#8B5CF6" />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Budget Optimization</h3>
-          <div className="space-y-3">
-            <div className="flex justify-between">
-              <span className="text-gray-400">Optimality Score</span>
-              <span className="text-green-400 font-medium">
-                {(budget.budget_optimization?.optimality_score || 0).toFixed(2)}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Total Profit</span>
-              <span className="text-blue-400 font-medium">
-                ${(budget.budget_optimization?.total_profit || 0).toFixed(2)}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Optimization Count</span>
-              <span className="text-purple-400 font-medium">
-                {budget.budget_optimization?.optimization_count || 0}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Memory Compression</h3>
-          <div className="space-y-3">
-            <div className="flex justify-between">
-              <span className="text-gray-400">Total Memories</span>
-              <span className="text-cyan-400 font-medium">
-                {compression.memory_compression?.total_memories || 0}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Compression Efficiency</span>
-              <span className="text-green-400 font-medium">
-                {((compression.memory_compression?.compression_efficiency || 0) * 100).toFixed(1)}%
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Feature Components</span>
-              <span className="text-yellow-400 font-medium">
-                {(compression.feature_importance?.profit_components || []).length}
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-});
-
-const RiskTab = React.memo(function RiskTab() {
-  const [riskData, setRiskData] = useState({
-    overview: {},
-    anomalies: {},
-    compliance: {},
-    drawdown: {},
-    execution: {},
-    portfolio: {},
-    dynamic: {},
-    alerts: {}
-  });
-  const [loading, setLoading] = useState(false);
-  const [selectedComponent, setSelectedComponent] = useState('overview');
-  const [lastUpdate, setLastUpdate] = useState(0);
-  const [hasRiskData, setHasRiskData] = useState(false);
-
-  // Use refs to track loading state without triggering re-renders
-  const loadingRef = useRef(false);
-  const lastUpdateRef = useRef(0);
-
-  const fetchRiskData = useCallback(async () => {
-    if (loadingRef.current || Date.now() - lastUpdateRef.current < 5000) return;
-
-    loadingRef.current = true;
-    setLoading(true);
-    try {
-      // Use AbortController for timeout
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-      const [overviewRes, anomaliesRes, complianceRes, drawdownRes, executionRes, portfolioRes, dynamicRes, alertsRes] = await Promise.all([
-        fetch('/api/risk/overview', { signal: controller.signal }).then(r => r.json()).catch(() => ({ success: false })),
-        fetch('/api/risk/anomalies', { signal: controller.signal }).then(r => r.json()).catch(() => ({ success: false })),
-        fetch('/api/risk/compliance', { signal: controller.signal }).then(r => r.json()).catch(() => ({ success: false })),
-        fetch('/api/risk/drawdown', { signal: controller.signal }).then(r => r.json()).catch(() => ({ success: false })),
-        fetch('/api/risk/execution', { signal: controller.signal }).then(r => r.json()).catch(() => ({ success: false })),
-        fetch('/api/risk/portfolio', { signal: controller.signal }).then(r => r.json()).catch(() => ({ success: false })),
-        fetch('/api/risk/dynamic', { signal: controller.signal }).then(r => r.json()).catch(() => ({ success: false })),
-        fetch('/api/risk/alerts', { signal: controller.signal }).then(r => r.json()).catch(() => ({ success: false }))
-      ]);
-
-      clearTimeout(timeoutId);
-
-      const overview = overviewRes.success ? overviewRes : { error: overviewRes.error };
-      
-      // Check if we have meaningful risk data
-      const hasMeaningfulData = (
-        overview.risk_level && overview.risk_level !== 'UNKNOWN' ||
-        (overview.current_drawdown || 0) > 0 ||
-        (overview.max_drawdown || 0) > 0
-      );
-      setHasRiskData(hasMeaningfulData);
-
-      setRiskData({
-        overview,
-        anomalies: anomaliesRes.success ? anomaliesRes.anomalies : {},
-        compliance: complianceRes.success ? complianceRes.compliance : {},
-        drawdown: drawdownRes.success ? drawdownRes.drawdown : {},
-        execution: executionRes.success ? executionRes.execution : {},
-        portfolio: portfolioRes.success ? portfolioRes.portfolio : {},
-        dynamic: dynamicRes.success ? dynamicRes.dynamic : {},
-        alerts: alertsRes.success ? alertsRes.alerts : {}
-      });
-      lastUpdateRef.current = Date.now();
-      setLastUpdate(Date.now());
-    } catch (error) {
-      if (error.name !== 'AbortError') {
-        console.error('Error fetching risk data:', error);
-      }
-    } finally {
-      loadingRef.current = false;
-      setLoading(false);
-    }
-  }, []); // Empty deps - uses refs for mutable state
-
-  useEffect(() => {
-    fetchRiskData();
-    const interval = setInterval(fetchRiskData, 10000); // Update every 10 seconds
-    return () => clearInterval(interval);
-  }, [fetchRiskData]);
-
-  const componentTabs = [
-    { key: 'overview', label: 'Overview', icon: Shield },
-    { key: 'anomalies', label: 'Anomalies', icon: AlertTriangle },
-    { key: 'compliance', label: 'Compliance', icon: CheckCircle },
-    { key: 'drawdown', label: 'Drawdown', icon: TrendingDown },
-    { key: 'execution', label: 'Execution', icon: Target },
-    { key: 'portfolio', label: 'Portfolio', icon: PieChartIcon },
-    { key: 'dynamic', label: 'Dynamic', icon: Activity },
-    { key: 'alerts', label: 'Alerts', icon: Bell }
-  ];
-
-  const getRiskLevelColor = (level) => {
-    switch (level?.toUpperCase()) {
-      case 'LOW':
-      case 'NORMAL': return 'text-green-400';
-      case 'ELEVATED':
-      case 'WARNING': return 'text-yellow-400';
-      case 'HIGH':
-      case 'CRITICAL': return 'text-red-400';
-      case 'EMERGENCY': return 'text-red-500';
-      default: return 'text-gray-400';
-    }
-  };
-
-  const getRiskLevelBg = (level) => {
-    switch (level?.toUpperCase()) {
-      case 'LOW':
-      case 'NORMAL': return 'bg-green-500/20';
-      case 'ELEVATED':
-      case 'WARNING': return 'bg-yellow-500/20';
-      case 'HIGH':
-      case 'CRITICAL': return 'bg-red-500/20';
-      case 'EMERGENCY': return 'bg-red-500/30';
-      default: return 'bg-gray-500/20';
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-white mb-2">Risk Management</h1>
-          <p className="text-gray-400">Monitor risk systems and alerts</p>
-        </div>
-        <button
-          onClick={fetchRiskData}
-          disabled={loading}
-          className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 px-4 py-2 rounded-lg transition-colors text-white font-medium"
-        >
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          <span>Refresh</span>
-        </button>
-      </div>
-
-      {/* No Data Banner */}
-      {!hasRiskData && (
-        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4">
-          <div className="flex items-center space-x-3">
-            <AlertCircle className="w-5 h-5 text-yellow-400" />
-            <div>
-              <h3 className="text-yellow-400 font-medium">No Risk Data Available</h3>
-              <p className="text-gray-400 text-sm mt-1">
-                Risk metrics will populate once live trading starts. Start trading to see real-time risk management data.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Risk Overview Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <div className={`rounded-lg p-6 border backdrop-blur-sm ${getRiskLevelBg(riskData.overview.risk_level)} border-gray-700`}>
-          <div className="flex items-center space-x-3 mb-4">
-            <div className="p-2 bg-red-500/20 rounded-lg">
-              <Shield className="w-5 h-5 text-red-400" />
-            </div>
-            <div>
-              <h3 className="text-gray-400 text-sm font-medium">Risk Level</h3>
-              <div className={`text-2xl font-bold ${getRiskLevelColor(riskData.overview.risk_level)}`}>
-                {riskData.overview.risk_level || 'UNKNOWN'}
-              </div>
-            </div>
-          </div>
-          <div className="text-xs text-gray-500">System risk assessment</div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <div className="flex items-center space-x-3 mb-4">
-            <div className="p-2 bg-blue-500/20 rounded-lg">
-              <TrendingDown className="w-5 h-5 text-blue-400" />
-            </div>
-            <div>
-              <h3 className="text-gray-400 text-sm font-medium">Current Drawdown</h3>
-              <div className="text-2xl font-bold text-white">
-                {((riskData.overview.current_drawdown || 0) * 100).toFixed(2)}%
-              </div>
-            </div>
-          </div>
-          <div className="w-full bg-gray-700 rounded-full h-2 mt-2">
-            <div
-              className="bg-red-400 h-2 rounded-full transition-all duration-300"
-              style={{ width: `${Math.min((riskData.overview.current_drawdown || 0) * 100 * 4, 100)}%` }}
-            />
-          </div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <div className="flex items-center space-x-3 mb-4">
-            <div className="p-2 bg-purple-500/20 rounded-lg">
-              <Activity className="w-5 h-5 text-purple-400" />
-            </div>
-            <div>
-              <h3 className="text-gray-400 text-sm font-medium">Risk Scale</h3>
-              <div className="text-2xl font-bold text-white">
-                {(riskData.overview.risk_scale || 1.0).toFixed(2)}x
-              </div>
-            </div>
-          </div>
-          <div className="text-xs text-gray-500">Position sizing multiplier</div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <div className="flex items-center space-x-3 mb-4">
-            <div className="p-2 bg-green-500/20 rounded-lg">
-              <CheckCircle className="w-5 h-5 text-green-400" />
-            </div>
-            <div>
-              <h3 className="text-gray-400 text-sm font-medium">Win Rate</h3>
-              <div className="text-2xl font-bold text-white">
-                {((riskData.overview.win_rate || 0) * 100).toFixed(1)}%
-              </div>
-            </div>
-          </div>
-          <div className="w-full bg-gray-700 rounded-full h-2 mt-2">
-            <div
-              className="bg-green-400 h-2 rounded-full transition-all duration-300"
-              style={{ width: `${(riskData.overview.win_rate || 0) * 100}%` }}
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* Component Navigation */}
-      <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-4">
-        <div className="flex flex-wrap gap-2">
-          {componentTabs.map(({ key, label, icon: Icon }) => (
-            <button
-              key={key}
-              onClick={() => setSelectedComponent(key)}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium transition-all ${
-                selectedComponent === key
-                  ? 'bg-gradient-to-r from-red-600 to-red-700 text-white'
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              }`}
-            >
-              <Icon size={16} />
-              <span>{label}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Dynamic Content Based on Selected Component */}
-      <div className="animate-in fade-in duration-500">
-        {selectedComponent === 'overview' && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <RiskOverviewChart data={riskData.overview} />
-            <RiskMetricsPanel data={riskData.overview} />
-          </div>
-        )}
-
-        {selectedComponent === 'anomalies' && (
-          <AnomaliesPanel data={riskData.anomalies} />
-        )}
-
-        {selectedComponent === 'compliance' && (
-          <CompliancePanel data={riskData.compliance} />
-        )}
-
-        {selectedComponent === 'drawdown' && (
-          <DrawdownPanel data={riskData.drawdown} />
-        )}
-
-        {selectedComponent === 'execution' && (
-          <ExecutionPanel data={riskData.execution} />
-        )}
-
-        {selectedComponent === 'portfolio' && (
-          <PortfolioRiskPanel data={riskData.portfolio} />
-        )}
-
-        {selectedComponent === 'dynamic' && (
-          <DynamicRiskPanel data={riskData.dynamic} />
-        )}
-
-        {selectedComponent === 'alerts' && (
-          <RiskAlertsPanel data={riskData.alerts} />
-        )}
-      </div>
-    </div>
-  );
-});
-
-// Risk Visualization Components
-const RiskOverviewChart = React.memo(function RiskOverviewChart({ data }) {
-  const chartData = [
-    { name: 'Current DD', value: (data.current_drawdown || 0) * 100, color: '#ef4444' },
-    { name: 'Max DD', value: (data.max_drawdown || 0) * 100, color: '#dc2626' },
-    { name: 'VAR 95%', value: (data.var_95 || 0) * 100, color: '#f97316' },
-    { name: 'VAR 99%', value: (data.var_99 || 0) * 100, color: '#ea580c' }
-  ];
-
-  return (
-    <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-      <h3 className="text-lg font-semibold text-white mb-4">Risk Metrics Overview</h3>
-      <div className="h-64">
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={chartData}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-            <XAxis dataKey="name" stroke="#9CA3AF" />
-            <YAxis stroke="#9CA3AF" />
-            <Tooltip
-              contentStyle={{
-                backgroundColor: '#1F2937',
-                border: '1px solid #374151',
-                borderRadius: '0.5rem'
-              }}
-              formatter={(value) => [`${value.toFixed(2)}%`, 'Value']}
-            />
-            <Bar dataKey="value" fill="#ef4444" />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-    </div>
-  );
-});
-
-const RiskMetricsPanel = React.memo(function RiskMetricsPanel({ data }) {
-  return (
-    <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-      <h3 className="text-lg font-semibold text-white mb-4">Risk Metrics</h3>
-      <div className="space-y-4">
-        <div className="bg-gray-700/50 rounded-lg p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-gray-300">Sharpe Ratio</span>
-            <span className="text-blue-400 font-medium">
-              {(data.sharpe_ratio || 0).toFixed(2)}
-            </span>
-          </div>
-        </div>
-
-        <div className="bg-gray-700/50 rounded-lg p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-gray-300">Volatility Ratio</span>
-            <span className="text-purple-400 font-medium">
-              {(data.volatility_ratio || 1.0).toFixed(2)}x
-            </span>
-          </div>
-        </div>
-
-        <div className="bg-gray-700/50 rounded-lg p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-gray-300">Risk Budget Used</span>
-            <span className="text-yellow-400 font-medium">
-              {((data.risk_budget_used || 0) * 100).toFixed(1)}%
-            </span>
-          </div>
-        </div>
-
-        <div className="bg-gray-700/50 rounded-lg p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-gray-300">System Status</span>
-            <span className="text-green-400 font-medium capitalize">
-              {data.system_status || 'Unknown'}
-            </span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-});
-
-const AnomaliesPanel = React.memo(function AnomaliesPanel({ data }) {
-  const rawScore = data.anomaly_score;
-  const anomalyScore = typeof rawScore === 'number' ? rawScore : (parseFloat(rawScore) || 0);
-  const threshold = typeof data.anomaly_threshold === 'number' ? data.anomaly_threshold : 0.8;
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-            <AlertTriangle className="w-5 h-5 mr-2 text-red-400" />
-            Anomaly Detection
-          </h3>
-          <div className="space-y-4">
-            <div className="flex justify-between items-center">
-              <span className="text-gray-400">Current Score</span>
-              <div className="flex items-center space-x-2">
-                <span className={`font-bold ${anomalyScore > threshold ? 'text-red-400' : 'text-green-400'}`}>
-                  {anomalyScore.toFixed(3)}
-                </span>
-                <div className={`w-3 h-3 rounded-full ${anomalyScore > threshold ? 'bg-red-400' : 'bg-green-400'}`}></div>
-              </div>
-            </div>
-            <div className="w-full bg-gray-700 rounded-full h-2">
-              <div
-                className={`h-2 rounded-full transition-all duration-300 ${
-                  anomalyScore > threshold ? 'bg-red-400' : 'bg-green-400'
-                }`}
-                style={{ width: `${Math.min(anomalyScore * 100, 100)}%` }}
-              />
-            </div>
-            <div className="flex justify-between text-sm text-gray-400">
-              <span>Normal</span>
-              <span>Threshold: {threshold}</span>
-              <span>Anomaly</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">System Health</h3>
-          <div className="space-y-3">
-            <div className="flex justify-between">
-              <span className="text-gray-400">Detection Mode</span>
-              <span className="text-blue-400 font-medium">
-                {data.detection_mode || 'NORMAL'}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Active Alerts</span>
-              <span className="text-red-400 font-medium">
-                {(data.anomaly_alerts || []).length}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">History Count</span>
-              <span className="text-purple-400 font-medium">
-                {(data.anomaly_history || []).length}
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {(data.anomaly_alerts || []).length > 0 && (
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Recent Anomaly Alerts</h3>
-          <div className="space-y-2 max-h-48 overflow-y-auto">
-            {(data.anomaly_alerts || []).slice(0, 10).map((alert, index) => (
-              <div key={index} className="bg-red-900/20 border border-red-500/30 rounded p-3">
-                <div className="flex justify-between items-start">
-                  <span className="text-red-300">{alert.message || alert.type || 'Anomaly detected'}</span>
-                  <span className="text-xs text-gray-400">
-                    {alert.timestamp ? new Date(alert.timestamp).toLocaleTimeString() : 'Recent'}
-                  </span>
-                </div>
-                {alert.severity && (
-                  <span className={`text-xs px-2 py-1 rounded mt-2 inline-block ${
-                    alert.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
-                    alert.severity === 'warning' ? 'bg-yellow-500/20 text-yellow-400' :
-                    'bg-blue-500/20 text-blue-400'
-                  }`}>
-                    {alert.severity.toUpperCase()}
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-});
-
-const CompliancePanel = React.memo(function CompliancePanel({ data }) {
-  const violations = data.compliance_violations || [];
-  const limits = data.risk_limits || {};
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-            <CheckCircle className="w-5 h-5 mr-2 text-green-400" />
-            Trade Compliance
-          </h3>
-          <div className="space-y-3">
-            <div className="flex justify-between">
-              <span className="text-gray-400">Status</span>
-              <span className={`font-medium ${violations.length === 0 ? 'text-green-400' : 'text-red-400'}`}>
-                {violations.length === 0 ? 'COMPLIANT' : 'VIOLATIONS'}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Active Violations</span>
-              <span className="text-red-400 font-medium">
-                {violations.length}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Max Leverage</span>
-              <span className="text-blue-400 font-medium">
-                {limits.max_leverage || 'N/A'}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Position Limits</h3>
-          <div className="space-y-3">
-            <div className="flex justify-between">
-              <span className="text-gray-400">Max Position Risk</span>
-              <span className="text-yellow-400 font-medium">
-                {((data.position_compliance?.max_position_risk || 0) * 100).toFixed(1)}%
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Current Exposure</span>
-              <span className="text-purple-400 font-medium">
-                {((data.position_compliance?.current_exposure || 0) * 100).toFixed(1)}%
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Compliance Score</span>
-              <span className="text-green-400 font-medium">
-                {((data.position_compliance?.compliance_score || 1.0) * 100).toFixed(0)}%
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Daily Limits</h3>
-          <div className="space-y-3">
-            <div className="flex justify-between">
-              <span className="text-gray-400">Max Daily Trades</span>
-              <span className="text-cyan-400 font-medium">
-                {data.daily_limits?.max_daily_trades || 'N/A'}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Today's Trades</span>
-              <span className="text-orange-400 font-medium">
-                {data.daily_limits?.current_trades || 0}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Limit Utilization</span>
-              <span className="text-blue-400 font-medium">
-                {data.daily_limits?.max_daily_trades ?
-                  `${((data.daily_limits.current_trades || 0) / data.daily_limits.max_daily_trades * 100).toFixed(1)}%` :
-                  'N/A'
-                }
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {violations.length > 0 && (
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Compliance Violations</h3>
-          <div className="space-y-2 max-h-48 overflow-y-auto">
-            {violations.slice(0, 10).map((violation, index) => (
-              <div key={index} className="bg-red-900/20 border border-red-500/30 rounded p-3">
-                <div className="flex justify-between items-start">
-                  <span className="text-red-300">{violation.message || violation.type}</span>
-                  <span className="text-xs text-gray-400">
-                    {violation.timestamp ? new Date(violation.timestamp).toLocaleTimeString() : 'Recent'}
-                  </span>
-                </div>
-                {violation.severity && (
-                  <span className={`text-xs px-2 py-1 rounded mt-2 inline-block ${
-                    violation.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
-                    violation.severity === 'warning' ? 'bg-yellow-500/20 text-yellow-400' :
-                    'bg-blue-500/20 text-blue-400'
-                  }`}>
-                    {violation.severity.toUpperCase()}
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-});
-
-const DrawdownPanel = React.memo(function DrawdownPanel({ data }) {
-  const rescueActive = data.rescue_active || false;
-  const currentDD = data.current_drawdown || 0;
-  const maxDD = data.max_drawdown || 0;
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className={`backdrop-blur-sm border rounded-lg p-6 ${
-          rescueActive ? 'bg-red-500/20 border-red-500/50' : 'bg-gray-800/50 border-gray-700'
-        }`}>
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-            <TrendingDown className="w-5 h-5 mr-2 text-red-400" />
-            Drawdown Status
-            {rescueActive && (
-              <span className="ml-2 px-2 py-1 bg-red-500/30 text-red-300 text-xs rounded">
-                RESCUE ACTIVE
-              </span>
-            )}
-          </h3>
-          <div className="space-y-4">
-            <div className="flex justify-between">
-              <span className="text-gray-400">Current Drawdown</span>
-              <span className="text-red-400 font-bold">
-                {(currentDD * 100).toFixed(2)}%
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Max Drawdown</span>
-              <span className="text-red-500 font-bold">
-                {(maxDD * 100).toFixed(2)}%
-              </span>
-            </div>
-            <div className="w-full bg-gray-700 rounded-full h-3">
-              <div
-                className="bg-red-400 h-3 rounded-full transition-all duration-300"
-                style={{ width: `${Math.min(currentDD * 100 * 4, 100)}%` }}
-              />
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Recovery Analysis</h3>
-          <div className="space-y-3">
-            <div className="flex justify-between">
-              <span className="text-gray-400">Recovery Progress</span>
-              <span className="text-green-400 font-medium">
-                {((data.recovery_progress?.recovery_ratio || 0) * 100).toFixed(1)}%
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Velocity Analysis</span>
-              <span className="text-blue-400 font-medium">
-                {data.velocity_analysis?.velocity_trend || 'Neutral'}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Rescue Triggers</span>
-              <span className="text-purple-400 font-medium">
-                {(data.rescue_triggers || []).length}
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {(data.drawdown_history || []).length > 0 && (
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Drawdown History</h3>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <RechartsLineChart data={data.drawdown_history?.slice(-20) || []}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                <XAxis dataKey="timestamp" stroke="#9CA3AF" />
-                <YAxis stroke="#9CA3AF" />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#1F2937',
-                    border: '1px solid #374151',
-                    borderRadius: '0.5rem'
-                  }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="drawdown"
-                  stroke="#ef4444"
-                  strokeWidth={2}
-                  dot={false}
-                />
-              </RechartsLineChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-});
-
-const ExecutionPanel = React.memo(function ExecutionPanel({ data }) {
-  const qualityScore = data.quality_score || 0;
-  const executionVote = data.execution_vote || 'ABSTAIN';
-
-  const getVoteColor = (vote) => {
-    switch (vote) {
-      case 'PROCEED': return 'text-green-400';
-      case 'CAUTION': return 'text-yellow-400';
-      case 'HALT': return 'text-red-400';
-      default: return 'text-gray-400';
-    }
-  };
-
-  const getVoteBg = (vote) => {
-    switch (vote) {
-      case 'PROCEED': return 'bg-green-500/20';
-      case 'CAUTION': return 'bg-yellow-500/20';
-      case 'HALT': return 'bg-red-500/20';
-      default: return 'bg-gray-500/20';
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className={`backdrop-blur-sm border rounded-lg p-6 ${getVoteBg(executionVote)} border-gray-700`}>
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-            <Target className="w-5 h-5 mr-2 text-blue-400" />
-            Execution Vote
-          </h3>
-          <div className="text-center">
-            <div className={`text-3xl font-bold ${getVoteColor(executionVote)}`}>
-              {executionVote}
-            </div>
-            <div className="text-sm text-gray-400 mt-2">Current recommendation</div>
-          </div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Quality Score</h3>
-          <div className="text-center">
-            <div className="text-3xl font-bold text-blue-400">
-              {(qualityScore * 100).toFixed(1)}%
-            </div>
-            <div className="w-full bg-gray-700 rounded-full h-2 mt-4">
-              <div
-                className="bg-blue-400 h-2 rounded-full transition-all duration-300"
-                style={{ width: `${qualityScore * 100}%` }}
-              />
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Execution Metrics</h3>
-          <div className="space-y-3">
-            <div className="flex justify-between">
-              <span className="text-gray-400">Fill Rate</span>
-              <span className="text-green-400 font-medium">
-                {((data.fill_rate_analysis?.current_fill_rate || 0) * 100).toFixed(1)}%
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Avg Slippage</span>
-              <span className="text-yellow-400 font-medium">
-                {((data.slippage_analysis?.average_slippage || 0) * 10000).toFixed(1)} pips
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Avg Latency</span>
-              <span className="text-purple-400 font-medium">
-                {data.latency_metrics?.average_latency || 0}ms
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {(data.execution_alerts || []).length > 0 && (
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Execution Alerts</h3>
-          <div className="space-y-2 max-h-48 overflow-y-auto">
-            {(data.execution_alerts || []).slice(0, 5).map((alert, index) => (
-              <div key={index} className="bg-yellow-900/20 border border-yellow-500/30 rounded p-3">
-                <div className="flex justify-between items-start">
-                  <span className="text-yellow-300">{alert.message || alert.type}</span>
-                  <span className="text-xs text-gray-400">
-                    {alert.timestamp ? new Date(alert.timestamp).toLocaleTimeString() : 'Recent'}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-});
-
-const PortfolioRiskPanel = React.memo(function PortfolioRiskPanel({ data }) {
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-            <PieChartIcon className="w-5 h-5 mr-2 text-cyan-400" />
-            Portfolio Risk
-          </h3>
-          <div className="space-y-3">
-            <div className="flex justify-between">
-              <span className="text-gray-400">Total Exposure</span>
-              <span className="text-cyan-400 font-medium">
-                {((data.exposure_analysis?.total_exposure || 0) * 100).toFixed(1)}%
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">VAR Analysis</span>
-              <span className="text-red-400 font-medium">
-                {((data.var_analysis?.current_var || 0) * 100).toFixed(2)}%
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Correlation Risk</span>
-              <span className="text-yellow-400 font-medium">
-                {(data.correlation_risk?.risk_score || 0).toFixed(2)}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Diversification</h3>
-          <div className="space-y-3">
-            <div className="flex justify-between">
-              <span className="text-gray-400">Diversification Score</span>
-              <span className="text-green-400 font-medium">
-                {((data.diversification_metrics?.diversification_score || 0) * 100).toFixed(1)}%
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Asset Classes</span>
-              <span className="text-blue-400 font-medium">
-                {data.diversification_metrics?.asset_class_count || 0}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Position Count</span>
-              <span className="text-purple-400 font-medium">
-                {data.position_risk?.active_positions || 0}
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {data.correlation_matrix && Object.keys(data.correlation_matrix).length > 0 && (
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Correlation Matrix</h3>
-          <div className="text-sm text-gray-400 text-center">
-            {Object.keys(data.correlation_matrix).length} pairs analyzed
-          </div>
-        </div>
-      )}
-    </div>
-  );
-});
-
-const DynamicRiskPanel = React.memo(function DynamicRiskPanel({ data }) {
-  const controlMode = data.control_mode || 'NORMAL';
-  const riskScale = data.risk_scale || 1.0;
-
-  const getModeColor = (mode) => {
-    switch (mode) {
-      case 'NORMAL': return 'text-green-400';
-      case 'PROTECTIVE': return 'text-yellow-400';
-      case 'AGGRESSIVE_REDUCTION': return 'text-red-400';
-      case 'EMERGENCY': return 'text-red-500';
-      default: return 'text-gray-400';
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
-            <Activity className="w-5 h-5 mr-2 text-purple-400" />
-            Control Mode
-          </h3>
-          <div className="text-center">
-            <div className={`text-2xl font-bold ${getModeColor(controlMode)}`}>
-              {controlMode}
-            </div>
-            <div className="text-sm text-gray-400 mt-2">Current operational mode</div>
-          </div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Risk Scaling</h3>
-          <div className="text-center">
-            <div className="text-3xl font-bold text-blue-400">
-              {riskScale.toFixed(2)}x
-            </div>
-            <div className="w-full bg-gray-700 rounded-full h-2 mt-4">
-              <div
-                className="bg-blue-400 h-2 rounded-full transition-all duration-300"
-                style={{ width: `${Math.min(riskScale * 50, 100)}%` }}
-              />
-            </div>
-            <div className="text-sm text-gray-400 mt-2">Position size multiplier</div>
-          </div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">System State</h3>
-          <div className="space-y-3">
-            <div className="flex justify-between">
-              <span className="text-gray-400">Risk Level</span>
-              <span className={`font-medium ${getModeColor(data.risk_level)}`}>
-                {data.risk_level || 'NORMAL'}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Freeze Counter</span>
-              <span className="text-red-400 font-medium">
-                {data.freeze_counter || 0}
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {(data.risk_adjustments || []).length > 0 && (
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Recent Risk Adjustments</h3>
-          <div className="space-y-2 max-h-48 overflow-y-auto">
-            {(data.risk_adjustments || []).slice(0, 5).map((adjustment, index) => (
-              <div key={index} className="bg-blue-900/20 border border-blue-500/30 rounded p-3">
-                <div className="flex justify-between items-start">
-                  <span className="text-blue-300">
-                    {adjustment.reason || `Risk scale adjusted to ${adjustment.new_scale}`}
-                  </span>
-                  <span className="text-xs text-gray-400">
-                    {adjustment.timestamp ? new Date(adjustment.timestamp).toLocaleTimeString() : 'Recent'}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-});
-
-const RiskAlertsPanel = React.memo(function RiskAlertsPanel({ data }) {
-  const allAlerts = [
-    ...(data.anomaly_alerts || []).map(alert => ({ ...alert, source: 'Anomaly' })),
-    ...(data.compliance_alerts || []).map(alert => ({ ...alert, source: 'Compliance' })),
-    ...(data.drawdown_alerts || []).map(alert => ({ ...alert, source: 'Drawdown' })),
-    ...(data.execution_alerts || []).map(alert => ({ ...alert, source: 'Execution' })),
-    ...(data.portfolio_alerts || []).map(alert => ({ ...alert, source: 'Portfolio' })),
-    ...(data.risk_alerts || []).map(alert => ({ ...alert, source: 'Risk' })),
-    ...(data.system_alerts || []).map(alert => ({ ...alert, source: 'System' }))
-  ].sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
-
-  const criticalCount = allAlerts.filter(alert => alert.severity === 'critical').length;
-  const warningCount = allAlerts.filter(alert => alert.severity === 'warning').length;
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-4">
-          <div className="text-center">
-            <Bell className="w-8 h-8 text-gray-400 mx-auto mb-2" />
-            <div className="text-2xl font-bold text-white">{allAlerts.length}</div>
-            <div className="text-sm text-gray-400">Total Alerts</div>
-          </div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-4">
-          <div className="text-center">
-            <AlertTriangle className="w-8 h-8 text-red-400 mx-auto mb-2" />
-            <div className="text-2xl font-bold text-red-400">{criticalCount}</div>
-            <div className="text-sm text-gray-400">Critical</div>
-          </div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-4">
-          <div className="text-center">
-            <AlertCircle className="w-8 h-8 text-yellow-400 mx-auto mb-2" />
-            <div className="text-2xl font-bold text-yellow-400">{warningCount}</div>
-            <div className="text-sm text-gray-400">Warning</div>
-          </div>
-        </div>
-
-        <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-4">
-          <div className="text-center">
-            <CheckCircle className="w-8 h-8 text-blue-400 mx-auto mb-2" />
-            <div className="text-2xl font-bold text-blue-400">{allAlerts.length - criticalCount - warningCount}</div>
-            <div className="text-sm text-gray-400">Info</div>
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-lg p-6">
-        <h3 className="text-lg font-semibold text-white mb-4">Recent Risk Alerts</h3>
-        <div className="space-y-2 max-h-96 overflow-y-auto">
-          {allAlerts.slice(0, 20).map((alert, index) => (
-            <div
-              key={index}
-              className={`border rounded p-4 ${
-                alert.severity === 'critical' ? 'bg-red-900/20 border-red-500/30' :
-                alert.severity === 'warning' ? 'bg-yellow-900/20 border-yellow-500/30' :
-                'bg-blue-900/20 border-blue-500/30'
-              }`}
-            >
-              <div className="flex justify-between items-start mb-2">
-                <div className="flex items-center space-x-2">
-                  <span className={`px-2 py-1 text-xs rounded ${
-                    alert.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
-                    alert.severity === 'warning' ? 'bg-yellow-500/20 text-yellow-400' :
-                    'bg-blue-500/20 text-blue-400'
-                  }`}>
-                    {alert.source}
-                  </span>
-                  <span className={`px-2 py-1 text-xs rounded ${
-                    alert.severity === 'critical' ? 'bg-red-500/30 text-red-300' :
-                    alert.severity === 'warning' ? 'bg-yellow-500/30 text-yellow-300' :
-                    'bg-blue-500/30 text-blue-300'
-                  }`}>
-                    {(alert.severity || 'info').toUpperCase()}
-                  </span>
-                </div>
-                <span className="text-xs text-gray-400">
-                  {alert.timestamp ? new Date(alert.timestamp).toLocaleString() : 'Recent'}
-                </span>
-              </div>
-              <div className={`${
-                alert.severity === 'critical' ? 'text-red-300' :
-                alert.severity === 'warning' ? 'text-yellow-300' :
-                'text-blue-300'
-              }`}>
-                {alert.message || alert.type || 'Risk alert triggered'}
-              </div>
-            </div>
-          ))}
-
-          {allAlerts.length === 0 && (
-            <div className="text-center text-gray-400 py-8">
-              <CheckCircle className="w-12 h-12 mx-auto mb-4 text-green-400" />
-              <div className="text-lg font-medium">No Active Risk Alerts</div>
-              <div className="text-sm">All risk systems are operating normally</div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-});
-
-// ═══════════════════════════════════════════════════════════════════
-// VOTING SYSTEM COMPONENTS v1.0
-// ═══════════════════════════════════════════════════════════════════
-
-const VotingTab = React.memo(function VotingTab() {
-  const [votingData, setVotingData] = useState({});
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [activeComponent, setActiveComponent] = useState('overview');
-  const [hasVotingData, setHasVotingData] = useState(false);
-
-  const fetchVotingData = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const endpoints = [
-        '/api/voting/overview',
-        '/api/voting/committee',
-        '/api/voting/consensus',
-        '/api/voting/collusion',
-        '/api/voting/alignment',
-        '/api/voting/sampling',
-        '/api/voting/strategy',
-        '/api/voting/timeline'
-      ];
-
-      // Use AbortController for timeout
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-      const responses = await Promise.all(
-        endpoints.map(endpoint => 
-          fetch(endpoint, { signal: controller.signal })
-            .then(res => res.json())
-            .catch(() => ({ success: false }))
-        )
-      );
-
-      clearTimeout(timeoutId);
-
-      const data = {
-        overview: responses[0].success ? responses[0] : {},
-        committee: responses[1].success ? responses[1] : {},
-        consensus: responses[2].success ? responses[2] : {},
-        collusion: responses[3].success ? responses[3] : {},
-        alignment: responses[4].success ? responses[4] : {},
-        sampling: responses[5].success ? responses[5] : {},
-        strategy: responses[6].success ? responses[6] : {},
-        timeline: responses[7].success ? responses[7] : {}
-      };
-
-      // Check if we have meaningful voting data
-      const overview = data.overview || {};
-      const hasMeaningfulData = (
-        overview.total_votes > 0 ||
-        overview.decisions_made > 0 ||
-        (overview.committee_members || []).length > 0
-      );
-      setHasVotingData(hasMeaningfulData);
-
-      setVotingData(data);
-      setError(null);
-    } catch (err) {
-      if (err.name !== 'AbortError') {
-        setError(`Failed to fetch voting data: ${err.message}`);
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  }, []); // Remove isLoading from deps to prevent infinite loop
-
-  useEffect(() => {
-    fetchVotingData();
-    const interval = setInterval(fetchVotingData, 10000);
-    return () => clearInterval(interval);
-  }, [fetchVotingData]);
-
-  const componentTabs = [
-    { id: 'overview', name: 'Overview', icon: '📊' },
-    { id: 'committee', name: 'Committee', icon: '👥' },
-    { id: 'consensus', name: 'Consensus', icon: '🤝' },
-    { id: 'collusion', name: 'Collusion', icon: '🕵️' },
-    { id: 'alignment', name: 'Alignment', icon: '🕐' },
-    { id: 'sampling', name: 'Sampling', icon: '🎯' },
-    { id: 'strategy', name: 'Strategy', icon: '🏛️' },
-    { id: 'timeline', name: 'Timeline', icon: '⏱️' }
-  ];
-
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-red-400 text-center">
-          <div className="text-xl mb-2">⚠️</div>
-          <div>{error}</div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold text-white flex items-center gap-2">
-          <span className="w-6 h-6 text-blue-400">🗳️</span>
-          Voting System
-        </h2>
-        <button
-          onClick={() => fetchVotingData()}
-          disabled={isLoading}
-          className="px-3 py-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white text-sm rounded transition-colors flex items-center gap-2"
-        >
-          <span className={isLoading ? 'animate-spin' : ''}>🔄</span>
-          Refresh
-        </button>
-      </div>
-
-      {/* No Data Banner */}
-      {!hasVotingData && !isLoading && (
-        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4">
-          <div className="flex items-center space-x-3">
-            <AlertCircle className="w-5 h-5 text-yellow-400" />
-            <div>
-              <h3 className="text-yellow-400 font-medium">No Voting Data Available</h3>
-              <p className="text-gray-400 text-sm mt-1">
-                Voting data will populate once live trading starts. Start trading to see real-time voting system metrics.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="bg-gray-800/50 rounded-lg border border-gray-700">
-        <div className="flex flex-wrap gap-1 p-4 border-b border-gray-700 bg-gray-800/30">
-          {componentTabs.map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveComponent(tab.id)}
-              className={`px-3 py-2 text-sm font-medium rounded transition-colors flex items-center gap-2 ${
-                activeComponent === tab.id
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-700/50 text-gray-300 hover:bg-gray-600/50'
-              }`}
-            >
-              <span className="text-xs">{tab.icon}</span>
-              {tab.name}
-            </button>
-          ))}
-        </div>
-
-        <div className="p-6">
-          {activeComponent === 'overview' && (
-            <VotingOverviewComponent data={votingData.overview} isLoading={isLoading} />
-          )}
-          {activeComponent === 'committee' && (
-            <VotingCommitteeComponent data={votingData.committee} isLoading={isLoading} />
-          )}
-          {activeComponent === 'consensus' && (
-            <VotingConsensusComponent data={votingData.consensus} isLoading={isLoading} />
-          )}
-          {activeComponent === 'collusion' && (
-            <VotingCollusionComponent data={votingData.collusion} isLoading={isLoading} />
-          )}
-          {activeComponent === 'alignment' && (
-            <VotingAlignmentComponent data={votingData.alignment} isLoading={isLoading} />
-          )}
-          {activeComponent === 'sampling' && (
-            <VotingSamplingComponent data={votingData.sampling} isLoading={isLoading} />
-          )}
-          {activeComponent === 'strategy' && (
-            <VotingStrategyComponent data={votingData.strategy} isLoading={isLoading} />
-          )}
-          {activeComponent === 'timeline' && (
-            <VotingTimelineComponent data={votingData.timeline} isLoading={isLoading} />
-          )}
-        </div>
-      </div>
-    </div>
-  );
-});
-
-// Voting Overview Component
-const VotingOverviewComponent = React.memo(function VotingOverviewComponent({ data, isLoading }) {
-  if (isLoading) {
-    return <div className="flex items-center justify-center h-32 text-blue-400">Loading voting overview...</div>;
-  }
-
-  const getHealthColor = (status) => {
-    switch (status) {
-      case 'healthy': return 'text-green-400';
-      case 'warning': return 'text-yellow-400';
-      case 'critical': return 'text-red-400';
-      default: return 'text-gray-400';
-    }
-  };
-
-  const getHealthIcon = (status) => {
-    switch (status) {
-      case 'healthy': return '✅';
-      case 'warning': return '⚠️';
-      case 'critical': return '🚨';
-      default: return '❓';
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Total Decisions</div>
-          <div className="text-2xl font-bold text-blue-400">{data.total_decisions || 0}</div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Success Rate</div>
-          <div className="text-2xl font-bold text-green-400">{((data.success_rate || 0) * 100).toFixed(1)}%</div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Active Components</div>
-          <div className="text-2xl font-bold text-purple-400">{data.components_active || 0}/6</div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Health Status</div>
-          <div className={`text-xl font-bold flex items-center gap-2 ${getHealthColor(data.health_status)}`}>
-            <span>{getHealthIcon(data.health_status)}</span>
-            {(data.health_status || 'unknown').charAt(0).toUpperCase() + (data.health_status || 'unknown').slice(1)}
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-            <span className="text-blue-400">🎯</span>
-            Current Consensus
-          </h3>
-          <div className="space-y-3">
-            <div className="flex justify-between items-center">
-              <span className="text-gray-300">Consensus Score</span>
-              <span className="text-blue-400 font-bold">{(data.current_consensus || 0).toFixed(3)}</span>
-            </div>
-            <div className="w-full bg-gray-600 rounded-full h-2">
-              <div
-                className="bg-gradient-to-r from-blue-500 to-blue-400 h-2 rounded-full transition-all duration-500"
-                style={{ width: `${(data.current_consensus || 0) * 100}%` }}
-              />
-            </div>
-            <div className="text-xs text-gray-400">
-              Higher scores indicate stronger committee agreement
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-            <span className="text-green-400">⚡</span>
-            Performance
-          </h3>
-          <div className="space-y-3">
-            <div className="flex justify-between items-center">
-              <span className="text-gray-300">Avg Processing Time</span>
-              <span className="text-green-400 font-bold">{(data.processing_time_ms || 0).toFixed(1)}ms</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-gray-300">Decision ID</span>
-              <span className="text-gray-400 font-mono text-sm truncate max-w-32">
-                {data.decision_id || 'none'}
-              </span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-gray-300">Last Update</span>
-              <span className="text-gray-400 text-sm">
-                {data.last_update ? new Date(data.last_update).toLocaleTimeString() : 'N/A'}
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-});
-
-// Voting Committee Component
-const VotingCommitteeComponent = React.memo(function VotingCommitteeComponent({ data, isLoading }) {
-  if (isLoading) {
-    return <div className="flex items-center justify-center h-32 text-blue-400">Loading committee data...</div>;
-  }
-
-  const committee = data.committee || {};
-  const summary = committee.summary || {};
-  const analytics = committee.analytics || [];
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Total Members</div>
-          <div className="text-2xl font-bold text-blue-400">{summary.total_members || 0}</div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Active Members</div>
-          <div className="text-2xl font-bold text-green-400">{summary.active_members || 0}</div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Avg Confidence</div>
-          <div className="text-2xl font-bold text-purple-400">{((summary.avg_confidence || 0) * 100).toFixed(1)}%</div>
-        </div>
-      </div>
-
-      <div className="bg-gray-700/30 rounded-lg p-4">
-        <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-          <span className="text-blue-400">👥</span>
-          Member Analytics
-        </h3>
-        {analytics.length > 0 ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {analytics.map(member => (
-              <div key={member.member_id} className="bg-gray-600/30 rounded p-3">
-                <div className="flex justify-between items-center mb-2">
-                  <span className="font-semibold text-white">{member.name}</span>
-                  <span className="text-xs bg-blue-600 text-white px-2 py-1 rounded">
-                    {member.specialization}
-                  </span>
-                </div>
-                <div className="space-y-1 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-gray-300">Performance</span>
-                    <span className="text-green-400">{(member.performance_score * 100).toFixed(1)}%</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-300">Reliability</span>
-                    <span className="text-blue-400">{(member.reliability * 100).toFixed(1)}%</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-300">Votes Cast</span>
-                    <span className="text-gray-400">{member.votes_cast}</span>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="text-center text-gray-400 py-8">
-            <div className="text-4xl mb-2">👥</div>
-            <div className="text-lg">No Committee Members</div>
-            <div className="text-sm">Committee data not available</div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-});
-
-// Voting Consensus Component
-const VotingConsensusComponent = React.memo(function VotingConsensusComponent({ data, isLoading }) {
-  if (isLoading) {
-    return <div className="flex items-center justify-center h-32 text-blue-400">Loading consensus data...</div>;
-  }
-
-  const consensus = data.consensus || {};
-  const breakdown = consensus.breakdown || {};
-  const analytics = consensus.analytics || {};
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Overall Score</div>
-          <div className="text-2xl font-bold text-blue-400">{(consensus.score || 0).toFixed(3)}</div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Agreement Level</div>
-          <div className="text-lg font-bold text-green-400 capitalize">{analytics.agreement_level || 'unknown'}</div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Trend</div>
-          <div className="text-lg font-bold text-purple-400 capitalize">{analytics.trend || 'stable'}</div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-            <span className="text-blue-400">📊</span>
-            Component Breakdown
-          </h3>
-          <div className="space-y-3">
-            {Object.entries(breakdown).map(([component, value]) => (
-              <div key={component}>
-                <div className="flex justify-between items-center mb-1">
-                  <span className="text-gray-300 capitalize">{component}</span>
-                  <span className="text-blue-400 font-bold">{(value || 0).toFixed(3)}</span>
-                </div>
-                <div className="w-full bg-gray-600 rounded-full h-2">
-                  <div
-                    className="bg-gradient-to-r from-blue-500 to-blue-400 h-2 rounded-full"
-                    style={{ width: `${(value || 0) * 100}%` }}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-            <span className="text-green-400">🔍</span>
-            Analytics
-          </h3>
-          <div className="space-y-3">
-            <div className="flex justify-between items-center">
-              <span className="text-gray-300">Quality Score</span>
-              <span className="text-green-400 font-bold">{(analytics.quality || 0).toFixed(3)}</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-gray-300">Stability</span>
-              <span className="text-blue-400 font-bold">{(analytics.stability || 0).toFixed(3)}</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-gray-300">Reliability</span>
-              <span className="text-purple-400 font-bold">{(analytics.reliability || 0).toFixed(3)}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-});
-
-// Voting Collusion Component
-const VotingCollusionComponent = React.memo(function VotingCollusionComponent({ data, isLoading }) {
-  if (isLoading) {
-    return <div className="flex items-center justify-center h-32 text-blue-400">Loading collusion data...</div>;
-  }
-
-  const collusion = data.collusion || {};
-  const analysis = collusion.analysis || {};
-  const integrity = collusion.member_integrity || [];
-  const alerts = collusion.alerts || [];
-
-  const getRiskColor = (level) => {
-    switch (level) {
-      case 'low': return 'text-green-400';
-      case 'medium': return 'text-yellow-400';
-      case 'high': return 'text-red-400';
-      default: return 'text-gray-400';
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Threat Score</div>
-          <div className="text-2xl font-bold text-red-400">{(analysis.threat_score || 0).toFixed(3)}</div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Risk Level</div>
-          <div className={`text-lg font-bold capitalize ${getRiskColor(analysis.risk_level)}`}>
-            {analysis.risk_level || 'unknown'}
-          </div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Suspicious Pairs</div>
-          <div className="text-2xl font-bold text-orange-400">{analysis.suspicious_pairs_count || 0}</div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-            <span className="text-blue-400">🔐</span>
-            Member Integrity
-          </h3>
-          {integrity.length > 0 ? (
-            <div className="space-y-3">
-              {integrity.map(member => (
-                <div key={member.member_id} className="bg-gray-600/30 rounded p-3">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="font-semibold text-white">Expert {member.member_id + 1}</span>
-                    <span className={`text-sm font-bold ${member.coordination_detected ? 'text-red-400' : 'text-green-400'}`}>
-                      {member.coordination_detected ? '⚠️ FLAG' : '✅ CLEAR'}
-                    </span>
-                  </div>
-                  <div className="space-y-1 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-gray-300">Integrity Score</span>
-                      <span className="text-green-400">{(member.integrity_score * 100).toFixed(1)}%</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-300">Independence</span>
-                      <span className="text-blue-400">{(member.independence_level * 100).toFixed(1)}%</span>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-center text-gray-400 py-4">No integrity data available</div>
-          )}
-        </div>
-
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-            <span className="text-red-400">🚨</span>
-            Security Alerts
-          </h3>
-          {alerts.length > 0 ? (
-            <div className="space-y-3">
-              {alerts.map((alert, index) => (
-                <div key={index} className="bg-red-900/20 border border-red-700/50 rounded p-3">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-red-400 font-semibold uppercase text-xs">
-                      {alert.severity}
-                    </span>
-                    <span className="text-gray-400 text-xs">
-                      {new Date(alert.timestamp).toLocaleTimeString()}
-                    </span>
-                  </div>
-                  <div className="text-sm text-gray-300">{alert.message}</div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-center text-gray-400 py-8">
-              <div className="text-4xl mb-2">🔐</div>
-              <div className="text-lg">No Security Alerts</div>
-              <div className="text-sm">All voting patterns appear normal</div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-});
-
-// Voting Alignment Component
-const VotingAlignmentComponent = React.memo(function VotingAlignmentComponent({ data, isLoading }) {
-  if (isLoading) {
-    return <div className="flex items-center justify-center h-32 text-blue-400">Loading alignment data...</div>;
-  }
-
-  const alignment = data.alignment || {};
-  const analysis = alignment.analysis || {};
-  const metrics = alignment.metrics || {};
-  const breakdown = alignment.horizon_breakdown || [];
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Quality Score</div>
-          <div className="text-2xl font-bold text-blue-400">{(analysis.alignment_quality || 0).toFixed(3)}</div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Temporal Coherence</div>
-          <div className="text-2xl font-bold text-green-400">{(analysis.temporal_coherence || 0).toFixed(3)}</div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Alignment Strength</div>
-          <div className="text-2xl font-bold text-purple-400">{(metrics.alignment_strength || 0).toFixed(3)}</div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Weight Variance</div>
-          <div className="text-2xl font-bold text-orange-400">{(metrics.weight_variance || 0).toFixed(3)}</div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-            <span className="text-blue-400">⏰</span>
-            Horizon Distribution
-          </h3>
-          <div className="space-y-3">
-            {Object.entries(analysis.horizon_distribution || {}).map(([horizon, weight]) => (
-              <div key={horizon}>
-                <div className="flex justify-between items-center mb-1">
-                  <span className="text-gray-300 capitalize">{horizon.replace('_', ' ')}</span>
-                  <span className="text-blue-400 font-bold">{(weight * 100).toFixed(1)}%</span>
-                </div>
-                <div className="w-full bg-gray-600 rounded-full h-2">
-                  <div
-                    className="bg-gradient-to-r from-blue-500 to-blue-400 h-2 rounded-full"
-                    style={{ width: `${weight * 100}%` }}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-            <span className="text-green-400">📈</span>
-            Horizon Breakdown
-          </h3>
-          {breakdown.length > 0 ? (
-            <div className="space-y-3 max-h-64 overflow-y-auto">
-              {breakdown.map(horizon => (
-                <div key={horizon.horizon_minutes} className="bg-gray-600/30 rounded p-3">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="font-semibold text-white">{horizon.horizon_minutes}min</span>
-                    <span className="text-blue-400 font-bold">{(horizon.weight || 0).toFixed(3)}</span>
-                  </div>
-                  <div className="space-y-1 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-gray-300">Contribution</span>
-                      <span className="text-green-400">{((horizon.contribution || 0) * 100).toFixed(1)}%</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-300">Stability</span>
-                      <span className="text-purple-400">{((horizon.stability || 0) * 100).toFixed(1)}%</span>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-center text-gray-400 py-4">No horizon data available</div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-});
-
-// Voting Sampling Component
-const VotingSamplingComponent = React.memo(function VotingSamplingComponent({ data, isLoading }) {
-  if (isLoading) {
-    return <div className="flex items-center justify-center h-32 text-blue-400">Loading sampling data...</div>;
-  }
-
-  const sampling = data.sampling || {};
-  const analysis = sampling.analysis || {};
-  const metrics = sampling.metrics || {};
-  const riskAssessment = sampling.risk_assessment || {};
-
-  const getRiskColor = (level) => {
-    switch (level) {
-      case 'low': return 'text-green-400';
-      case 'medium': return 'text-yellow-400';
-      case 'high': return 'text-red-400';
-      default: return 'text-gray-400';
-    }
-  };
-
-  const getRecommendationColor = (rec) => {
-    switch (rec) {
-      case 'proceed': return 'text-green-400';
-      case 'monitor': return 'text-yellow-400';
-      case 'caution': return 'text-red-400';
-      default: return 'text-gray-400';
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Uncertainty Level</div>
-          <div className="text-2xl font-bold text-red-400">{((analysis.uncertainty_level || 0) * 100).toFixed(1)}%</div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Robustness</div>
-          <div className="text-2xl font-bold text-green-400">{((analysis.robustness || 0) * 100).toFixed(1)}%</div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Sample Quality</div>
-          <div className="text-2xl font-bold text-blue-400">{((metrics.sample_quality || 0) * 100).toFixed(1)}%</div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Effective Samples</div>
-          <div className="text-2xl font-bold text-purple-400">{metrics.effective_samples || 0}</div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-            <span className="text-blue-400">📊</span>
-            Sampling Metrics
-          </h3>
-          <div className="space-y-3">
-            <div className="flex justify-between items-center">
-              <span className="text-gray-300">Total Samples</span>
-              <span className="text-blue-400 font-bold">{metrics.total_samples || 0}</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-gray-300">Convergence Rate</span>
-              <span className="text-green-400 font-bold">{((metrics.convergence_rate || 0) * 100).toFixed(1)}%</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-gray-300">Exploration Breadth</span>
-              <span className="text-purple-400 font-bold">{((metrics.exploration_breadth || 0) * 100).toFixed(1)}%</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-gray-300">Sample Diversity</span>
-              <span className="text-orange-400 font-bold">{((analysis.sample_diversity || 0) * 100).toFixed(1)}%</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-            <span className="text-red-400">⚠️</span>
-            Risk Assessment
-          </h3>
-          <div className="space-y-4">
-            <div className="bg-gray-600/30 rounded p-3">
-              <div className="flex justify-between items-center mb-2">
-                <span className="text-gray-300">Risk Level</span>
-                <span className={`font-bold capitalize ${getRiskColor(riskAssessment.risk_level)}`}>
-                  {riskAssessment.risk_level || 'unknown'}
-                </span>
-              </div>
-              <div className="flex justify-between items-center mb-2">
-                <span className="text-gray-300">Recommendation</span>
-                <span className={`font-bold capitalize ${getRecommendationColor(riskAssessment.recommendation)}`}>
-                  {riskAssessment.recommendation || 'unknown'}
-                </span>
-              </div>
-              <div className="flex justify-between items-center mb-2">
-                <span className="text-gray-300">Confidence Score</span>
-                <span className="text-blue-400 font-bold">
-                  {((riskAssessment.confidence_score || 0) * 100).toFixed(1)}%
-                </span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-gray-300">Decision Quality</span>
-                <span className="text-green-400 font-bold capitalize">
-                  {riskAssessment.decision_quality || 'unknown'}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-});
-
-// Voting Strategy Component
-const VotingStrategyComponent = React.memo(function VotingStrategyComponent({ data, isLoading }) {
-  if (isLoading) {
-    return <div className="flex items-center justify-center h-32 text-blue-400">Loading strategy data...</div>;
-  }
-
-  const strategy = data.strategy || {};
-  const analysis = strategy.analysis || {};
-  const breakdown = strategy.breakdown || {};
-  const metrics = strategy.metrics || {};
-  const performance = strategy.performance || {};
-
-  const getGatingColor = (status) => {
-    switch (status) {
-      case 'passed': return 'text-green-400';
-      case 'blocked': return 'text-red-400';
-      default: return 'text-gray-400';
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Final Decision</div>
-          <div className="text-lg font-bold text-blue-400 capitalize">{analysis.final_decision || 'none'}</div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Confidence</div>
-          <div className="text-2xl font-bold text-green-400">{((analysis.confidence || 0) * 100).toFixed(1)}%</div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Signal Strength</div>
-          <div className="text-2xl font-bold text-purple-400">{((analysis.signal_strength || 0) * 100).toFixed(1)}%</div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Gating Status</div>
-          <div className={`text-lg font-bold capitalize ${getGatingColor(analysis.gating_status)}`}>
-            {analysis.gating_status || 'unknown'}
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-            <span className="text-blue-400">📡</span>
-            Signal Analysis
-          </h3>
-          <div className="space-y-3">
-            <div className="flex justify-between items-center">
-              <span className="text-gray-300">Primary Signal</span>
-              <span className="text-blue-400 font-bold capitalize">{breakdown.primary_signal || 'neutral'}</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-gray-300">Signal Coherence</span>
-              <span className="text-green-400 font-bold">{((breakdown.signal_coherence || 0) * 100).toFixed(1)}%</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-gray-300">Cross Validation</span>
-              <span className="text-purple-400 font-bold">{((breakdown.cross_validation || 0) * 100).toFixed(1)}%</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-gray-300">Execution Readiness</span>
-              <span className="text-orange-400 font-bold">{((breakdown.execution_readiness || 0) * 100).toFixed(1)}%</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-            <span className="text-green-400">📈</span>
-            Performance Metrics
-          </h3>
-          <div className="space-y-3">
-            <div className="flex justify-between items-center">
-              <span className="text-gray-300">Success Rate</span>
-              <span className="text-green-400 font-bold">{((metrics.arbitration_success_rate || 0) * 100).toFixed(1)}%</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-gray-300">Signal Accuracy</span>
-              <span className="text-blue-400 font-bold">{((metrics.signal_accuracy || 0) * 100).toFixed(1)}%</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-gray-300">Gating Efficiency</span>
-              <span className="text-purple-400 font-bold">{((metrics.gating_efficiency || 0) * 100).toFixed(1)}%</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-gray-300">Avg Latency</span>
-              <span className="text-orange-400 font-bold">{metrics.decision_latency_ms || 0}ms</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-gray-700/30 rounded-lg p-4">
-        <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-          <span className="text-purple-400">📊</span>
-          Arbitration History
-        </h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
-          <div>
-            <div className="text-2xl font-bold text-blue-400">{performance.total_arbitrations || 0}</div>
-            <div className="text-sm text-gray-400">Total</div>
-          </div>
-          <div>
-            <div className="text-2xl font-bold text-green-400">{performance.successful_arbitrations || 0}</div>
-            <div className="text-sm text-gray-400">Successful</div>
-          </div>
-          <div>
-            <div className="text-2xl font-bold text-red-400">{performance.blocked_decisions || 0}</div>
-            <div className="text-sm text-gray-400">Blocked</div>
-          </div>
-          <div>
-            <div className="text-2xl font-bold text-purple-400">{((performance.avg_confidence || 0) * 100).toFixed(0)}%</div>
-            <div className="text-sm text-gray-400">Avg Confidence</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-});
-
-// Voting Timeline Component
-const VotingTimelineComponent = React.memo(function VotingTimelineComponent({ data, isLoading }) {
-  if (isLoading) {
-    return <div className="flex items-center justify-center h-32 text-blue-400">Loading timeline data...</div>;
-  }
-
-  const timeline = data.timeline || {};
-  const analysis = timeline.analysis || {};
-  const breakdown = timeline.breakdown || [];
-  const stages = timeline.stages || [];
-
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'success': return 'text-green-400';
-      case 'error': return 'text-red-400';
-      case 'no_data': return 'text-yellow-400';
-      default: return 'text-gray-400';
-    }
-  };
-
-  const getStatusIcon = (status) => {
-    switch (status) {
-      case 'success': return '✅';
-      case 'error': return '❌';
-      case 'no_data': return '⚠️';
-      default: return '❓';
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Total Stages</div>
-          <div className="text-2xl font-bold text-blue-400">{analysis.total_stages || 0}</div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Successful</div>
-          <div className="text-2xl font-bold text-green-400">{analysis.successful_stages || 0}</div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Failed</div>
-          <div className="text-2xl font-bold text-red-400">{analysis.failed_stages || 0}</div>
-        </div>
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <div className="text-sm text-gray-400 mb-1">Avg Time</div>
-          <div className="text-2xl font-bold text-purple-400">{(analysis.avg_stage_time || 0).toFixed(1)}ms</div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-            <span className="text-blue-400">⏱️</span>
-            Current Pipeline
-          </h3>
-          <div className="space-y-3">
-            <div className="text-sm text-gray-400 mb-3">
-              Decision ID: <span className="font-mono text-white">{timeline.decision_id || 'none'}</span>
-            </div>
-            {stages.length > 0 ? (
-              stages.map((stage, index) => (
-                <div key={index} className="flex items-center justify-between bg-gray-600/30 rounded p-2">
-                  <div className="flex items-center gap-3">
-                    <span className="text-lg">{getStatusIcon(stage.status)}</span>
-                    <span className="text-white font-medium capitalize">{stage.stage}</span>
-                  </div>
-                  <div className="text-right">
-                    <div className={`text-sm font-bold ${getStatusColor(stage.status)}`}>
-                      {stage.status}
-                    </div>
-                    <div className="text-xs text-gray-400">
-                      {(stage.duration_ms || 0).toFixed(1)}ms
-                    </div>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="text-center text-gray-400 py-4">No pipeline data available</div>
-            )}
-          </div>
-        </div>
-
-        <div className="bg-gray-700/30 rounded-lg p-4">
-          <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-            <span className="text-green-400">📊</span>
-            Stage Performance
-          </h3>
-          {breakdown.length > 0 ? (
-            <div className="space-y-3">
-              {breakdown.map(stage => (
-                <div key={stage.stage} className="bg-gray-600/30 rounded p-3">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="font-semibold text-white capitalize">{stage.stage}</span>
-                    <span className={`text-sm font-bold ${getStatusColor(stage.status)}`}>
-                      {getStatusIcon(stage.status)}
-                    </span>
-                  </div>
-                  <div className="space-y-1 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-gray-300">Duration</span>
-                      <span className="text-blue-400">{(stage.duration_ms || 0).toFixed(1)}ms</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-300">Success Rate</span>
-                      <span className="text-green-400">{((stage.success_rate || 0) * 100).toFixed(1)}%</span>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-center text-gray-400 py-4">No performance data available</div>
-          )}
-        </div>
-      </div>
-
-      {analysis.bottleneck_stage && analysis.bottleneck_stage !== 'none' && (
-        <div className="bg-yellow-900/20 border border-yellow-700/50 rounded-lg p-4">
-          <div className="flex items-center gap-2 mb-2">
-            <span className="text-yellow-400 text-lg">⚠️</span>
-            <span className="text-yellow-400 font-semibold">Performance Alert</span>
-          </div>
-          <div className="text-gray-300">
-            Bottleneck detected in <span className="font-bold text-yellow-400 capitalize">{analysis.bottleneck_stage}</span> stage
-          </div>
-        </div>
-      )}
-    </div>
-  );
-});
 
 const OverviewTab = React.memo(function OverviewTab({
   performance,
@@ -3958,9 +764,9 @@ const OverviewTab = React.memo(function OverviewTab({
             AI Trading Command Center
           </h2>
           <div className="flex items-center space-x-6 mt-2">
-            <p className="text-gray-400">
-              <Clock className="w-4 h-4 inline mr-1" />
-              Uptime: {systemState?.uptime || '0m'}
+            <p className="text-gray-400 flex items-center">
+              <span className="mr-1">Uptime:</span>
+              <LiveUptimeDisplay fallbackUptime={systemState?.uptime || '0m'} />
             </p>
             <p className="text-gray-400">
               <Hash className="w-4 h-4 inline mr-1" />
@@ -4404,11 +1210,11 @@ const OverviewTab = React.memo(function OverviewTab({
               <div className="flex justify-between items-center mb-2">
                 <span className="text-sm font-medium text-white">{selectedSymbol}</span>
                 <span className={`text-sm font-bold ${candlestickData.length > 0 && candlestickData[candlestickData.length - 1]?.close >= candlestickData[candlestickData.length - 1]?.open ? 'text-green-400' : 'text-red-400'}`}>
-                  {candlestickData.length > 0 && candlestickData[candlestickData.length - 1]?.close >= candlestickData[candlestickData.length - 1]?.open ? '↗ BULLISH' : '↘ BEARISH'}
+                  {candlestickData.length > 0 && candlestickData[candlestickData.length - 1]?.close >= candlestickData[candlestickData.length - 1]?.open ? 'â†— BULLISH' : 'â†˜ BEARISH'}
                 </span>
               </div>
               <div className="text-xs text-gray-400">
-                {selectedTimeframe} • {candlestickData.length} candles • Live MT5 Data
+                {selectedTimeframe} â€¢ {candlestickData.length} candles â€¢ Live MT5 Data
               </div>
             </div>
 
@@ -4661,33 +1467,118 @@ const ModulesTab = React.memo(function ModulesTab({
             {filteredModules.map(module => {
               const IconComponent = getCategoryIcon(module.category);
               const statusColor = getStatusColor(module.status);
+              const categoryGradient = getCategoryColor(module.category);
+              const healthColor = getHealthColor(module.health_score || 0);
+              const dataUtilization = Math.min(100, ((module.data_richness || 0) / Math.max(1, module.provides_count || 1)) * 100);
+              
+              // Get key metric preview
+              const keyMetric = module.insights?.key_metrics ? 
+                Object.entries(module.insights.key_metrics)[0] : null;
+              
               return (
                 <div
                   key={module.id ?? module.name}
-                  className="bg-gray-700 rounded-lg p-3 hover:bg-gray-600 transition-all duration-200 cursor-pointer border border-gray-600 hover:border-blue-500/50"
+                  className={`bg-gradient-to-r from-gray-800 to-gray-750 rounded-xl p-4 transition-all duration-300 cursor-pointer border group ${
+                    module.has_errors ? 'border-red-500/30 hover:border-red-400/50' :
+                    module.enabled ? 'border-gray-700 hover:border-blue-500/50 hover:shadow-lg hover:shadow-blue-500/5' :
+                    'border-gray-700/50 hover:border-gray-600'
+                  }`}
                   onClick={() => onSelectModule(module.id ?? module.name)}
                 >
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-3">
-                      <IconComponent size={16} className="text-blue-400" />
-                      <div>
-                        <h3 className="text-white font-medium text-sm">{module.name}</h3>
-                        <p className="text-gray-400 text-xs">
-                          {module.category} â€¢ {module.provides_count} outputs â€¢ {module.data_richness} live
-                        </p>
+                    {/* Left section */}
+                    <div className="flex items-center space-x-4 flex-1 min-w-0">
+                      <div className={`p-2.5 rounded-xl bg-gradient-to-br ${categoryGradient} text-white shadow-md flex-shrink-0`}>
+                        <IconComponent size={18} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center space-x-2">
+                          <h3 className="text-white font-semibold text-sm truncate group-hover:text-blue-400 transition-colors">
+                            {module.name.replace(/([A-Z])/g, ' $1').trim()}
+                          </h3>
+                          {module.enabled && module.data_richness > 0 && (
+                            <span className="flex h-2 w-2 flex-shrink-0">
+                              <span className="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-green-400 opacity-75"></span>
+                              <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center space-x-3 mt-1">
+                          <span className="text-gray-500 text-xs capitalize">{module.category?.replace('_', ' ')}</span>
+                          <span className="text-gray-600">â€¢</span>
+                          <span className={`text-xs font-medium ${statusColor}`}>{module.status}</span>
+                          {module.insights?.summary && module.insights.summary !== "No data available" && (
+                            <>
+                              <span className="text-gray-600">â€¢</span>
+                              <span className="text-gray-400 text-xs truncate max-w-[200px]">
+                                {module.insights.summary}
+                              </span>
+                            </>
+                          )}
+                        </div>
                       </div>
                     </div>
-                    <div className="flex items-center space-x-3">
-                      <span className={`text-xs ${statusColor} capitalize`}>{module.status}</span>
+
+                    {/* Stats section */}
+                    <div className="hidden lg:flex items-center space-x-6 mx-4">
+                      {/* Health */}
+                      <div className="text-center">
+                        <div className={`text-sm font-bold ${healthColor}`}>{module.health_score || 0}%</div>
+                        <div className="text-gray-500 text-xs">Health</div>
+                      </div>
+                      {/* Data Flow */}
+                      <div className="text-center">
+                        <div className="text-sm font-bold text-blue-400">
+                          {module.data_richness || 0}/{module.provides_count || 0}
+                        </div>
+                        <div className="text-gray-500 text-xs">Data</div>
+                      </div>
+                      {/* Key Metric */}
+                      {keyMetric && (
+                        <div className="text-center max-w-[100px]">
+                          <div className="text-sm font-bold text-cyan-400 truncate">
+                            {typeof keyMetric[1] === 'number' ? keyMetric[1].toFixed(2) : String(keyMetric[1]).slice(0, 8)}
+                          </div>
+                          <div className="text-gray-500 text-xs truncate">{keyMetric[0].replace(/_/g, ' ')}</div>
+                        </div>
+                      )}
+                      {/* Utilization bar */}
+                      <div className="w-20">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs text-gray-500">Flow</span>
+                          <span className="text-xs text-gray-400">{dataUtilization.toFixed(0)}%</span>
+                        </div>
+                        <div className="w-full bg-gray-700 rounded-full h-1.5">
+                          <div
+                            className="bg-gradient-to-r from-blue-500 to-green-500 h-1.5 rounded-full transition-all duration-500"
+                            style={{ width: `${dataUtilization}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Right section */}
+                    <div className="flex items-center space-x-3 flex-shrink-0">
+                      {module.has_errors && (
+                        <div className="flex items-center space-x-1 px-2 py-1 bg-red-500/20 rounded-lg">
+                          <AlertTriangle size={12} className="text-red-400" />
+                          <span className="text-red-400 text-xs font-medium">{module.error_count}</span>
+                        </div>
+                      )}
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
                           onToggle(module.name);
                         }}
-                        className={`p-1 rounded transition-all ${module.enabled ? 'text-green-400 hover:bg-green-600/20' : 'text-gray-500 hover:bg-gray-600/20'}`}
+                        className={`p-2 rounded-lg transition-all transform hover:scale-105 ${
+                          module.enabled 
+                            ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30' 
+                            : 'bg-gray-700 text-gray-500 hover:bg-gray-600'
+                        }`}
                       >
-                        {module.enabled ? <CheckCircle size={14} /> : <XCircle size={14} />}
+                        <Power size={14} />
                       </button>
+                      <ChevronRight size={16} className="text-gray-500 group-hover:text-blue-400 transition-colors" />
                     </div>
                   </div>
                 </div>
@@ -4732,7 +1623,7 @@ const ModulesTab = React.memo(function ModulesTab({
                 </div>
                 <div className="bg-gray-900 rounded-lg p-4">
                   <h3 className="text-white font-semibold mb-2">Last Update</h3>
-                  <p className="text-gray-300 text-sm">{selectedModule.last_update ? new Date(selectedModule.last_update).toLocaleString() : 'â€”'}</p>
+                  <p className="text-gray-300 text-sm">{selectedModule.last_update ? new Date(selectedModule.last_update).toLocaleString() : 'Ã¢â‚¬â€'}</p>
                 </div>
               </div>
 
@@ -4891,232 +1782,58 @@ const ModulesTab = React.memo(function ModulesTab({
       )}
     </div>
   );
-  portalRoot
 });
 
-// TrainingTab removed - Live trading only
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
-const TradingTab = React.memo(function TradingTab({
-  systemStatus,
-  startTrading,
-  stopTrading,
-  emergencyStop
-}) {
-  return (
-    <div className="space-y-6">
-      <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-2xl font-bold text-white">Live Trading Control</h2>
-          <div className={`px-3 py-1 rounded-full text-sm font-medium ${
-            systemStatus === 'TRADING' ? 'bg-green-500/20 text-green-400' :
-            systemStatus === 'STOPPING' ? 'bg-yellow-500/20 text-yellow-400' :
-            'bg-gray-500/20 text-gray-400'
-          }`}>
-            {systemStatus === 'TRADING' ? 'Active' : systemStatus === 'STOPPING' ? 'Stopping...' : 'Idle'}
-          </div>
-        </div>
-
-        <div className="flex items-center space-x-4">
-          {systemStatus === 'IDLE' ? (
-            <button
-              onClick={startTrading}
-              className="flex items-center space-x-2 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 px-6 py-3 rounded-lg transition-all duration-200 text-white font-medium"
-            >
-              <Play className="w-5 h-5" />
-              <span>Start Trading</span>
-            </button>
-          ) : systemStatus === 'TRADING' ? (
-            <>
-              <button
-                onClick={stopTrading}
-                className="flex items-center space-x-2 bg-gradient-to-r from-yellow-600 to-yellow-700 hover:from-yellow-700 hover:to-yellow-800 px-6 py-3 rounded-lg transition-all duration-200 text-white font-medium"
-              >
-                <Pause className="w-5 h-5" />
-                <span>Stop Trading</span>
-              </button>
-              <button
-                onClick={emergencyStop}
-                className="flex items-center space-x-2 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 px-6 py-3 rounded-lg transition-all duration-200 text-white font-medium"
-              >
-                <AlertTriangle className="w-5 h-5" />
-                <span>Emergency Stop</span>
-              </button>
-            </>
-          ) : (
-            <div className="flex items-center space-x-2 text-yellow-400">
-              <Loader2 className="w-5 h-5 animate-spin" />
-              <span>Processing...</span>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
+// LiveUptime Component - Self-contained, only re-renders itself
+const LiveUptimeDisplay = React.memo(function LiveUptimeDisplay({ fallbackUptime }) {
+  const [uptime, setUptime] = useState(fallbackUptime || '');
+  const sessionStartRef = useRef(null);
+  
+  useEffect(() => {
+    fetch('/api/status')
+      .then(res => res.json())
+      .then(data => {
+        const startTime = data?.performance?.session_start_time;
+        if (startTime) {
+          sessionStartRef.current = new Date(startTime);
+        }
+      })
+      .catch(() => {});
+  }, []);
+  
+  useEffect(() => {
+    const updateUptime = () => {
+      if (!sessionStartRef.current) return;
+      const now = new Date();
+      const diff = now - sessionStartRef.current;
+      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+      const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+      const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+      let newUptime;
+      if (days > 0) newUptime = days + 'd ' + hours + 'h ' + minutes + 'm';
+      else if (hours > 0) newUptime = hours + 'h ' + minutes + 'm ' + seconds + 's';
+      else newUptime = minutes + 'm ' + seconds + 's';
+      setUptime(newUptime);
+    };
+    updateUptime();
+    const interval = setInterval(updateUptime, 1000);
+    return () => clearInterval(interval);
+  }, []);
+  
+  useEffect(() => {
+    if (fallbackUptime && !sessionStartRef.current) setUptime(fallbackUptime);
+  }, [fallbackUptime]);
+  
+  if (!uptime) return null;
+  return (<span className="flex items-center"><Clock className="w-4 h-4 mr-1" />{uptime}</span>);
 });
 
-const LogsTab = React.memo(function LogsTab({ logs, fetchLogs }) {
-  const { state: appState, dispatch: appDispatch } = useAppState();
-  const selectedLogCategory = appState.selectedLogCategory;
 
-  const logCategories = ['system', 'risk', 'strategy', 'position', 'trading'];
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold text-white">System Logs</h2>
-        <button
-          onClick={() => fetchLogs(selectedLogCategory)}
-          className="flex items-center space-x-2 px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded text-sm transition-colors text-white"
-        >
-          <RefreshCw className="w-4 h-4" />
-          <span>Refresh</span>
-        </button>
-      </div>
-
-      <div className="flex flex-wrap gap-2 mb-4">
-        {logCategories.map(cat => (
-          <button
-            key={cat}
-            onClick={() => {
-              appDispatch({ type: 'SET_LOG_CATEGORY', payload: cat });
-              fetchLogs(cat);
-            }}
-            className={`px-4 py-2 rounded-lg transition-colors font-medium ${
-              selectedLogCategory === cat
-                ? 'bg-gradient-to-r from-blue-600 to-purple-600 text-white'
-                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-            }`}
-          >
-            {cat.charAt(0).toUpperCase() + cat.slice(1)}
-          </button>
-        ))}
-      </div>
-
-      <div className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
-        <div className="p-4 border-b border-gray-700 flex justify-between items-center bg-gray-900">
-          <h3 className="text-lg font-semibold text-white">
-            {selectedLogCategory.charAt(0).toUpperCase() + selectedLogCategory.slice(1)} Logs
-          </h3>
-          <div className="text-sm text-gray-400">
-            {logs[selectedLogCategory]?.content?.length || 0} lines
-          </div>
-        </div>
-        <div className="bg-black max-h-96 overflow-y-auto">
-          <pre className="text-green-400 text-sm font-mono whitespace-pre-wrap p-4 leading-relaxed">
-            {logs[selectedLogCategory]?.content
-              ? logs[selectedLogCategory].content.join('')
-              : 'Loading logs...'}
-          </pre>
-        </div>
-      </div>
-    </div>
-  );
-});
-
-const AlertsModal = React.memo(function AlertsModal({
-  showAlerts,
-  alerts,
-  alertFilter,
-  onClose,
-  setFilter,
-  onClearAll,
-  onDismissAlert
-}) {
-  if (!showAlerts) return null;
-
-  const filteredAlerts = alerts.filter(alert =>
-    alertFilter === 'all' || alert.severity === alertFilter
-  );
-
-  return createPortal(
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-      <div className="bg-gray-800 rounded-xl max-w-4xl w-full max-h-[80vh] overflow-hidden">
-        <div className="p-6 border-b border-gray-700 flex items-center justify-between">
-          <h3 className="text-xl font-bold text-white">System Alerts ({alerts.length})</h3>
-          <div className="flex items-center space-x-4">
-            <button
-              onClick={onClearAll}
-              className="flex items-center space-x-2 bg-red-600 hover:bg-red-700 px-3 py-1 rounded-lg text-white text-sm transition-colors"
-              disabled={alerts.length === 0}
-            >
-              <X className="w-4 h-4" />
-              <span>Clear All</span>
-            </button>
-            <select
-              value={alertFilter}
-              onChange={(e) => setFilter(e.target.value)}
-              className="bg-gray-700 border border-gray-600 rounded-lg px-3 py-1 text-white text-sm"
-            >
-              <option value="all">All Alerts</option>
-              <option value="critical">Critical</option>
-              <option value="warning">Warning</option>
-              <option value="success">Success</option>
-              <option value="info">Info</option>
-            </select>
-            <button onClick={onClose} className="text-gray-400 hover:text-white">
-              <X className="w-6 h-6" />
-            </button>
-          </div>
-        </div>
-
-        <div className="p-6 max-h-96 overflow-y-auto">
-          {filteredAlerts.length > 0 ? (
-            <div className="space-y-3">
-              {filteredAlerts.map((alert, idx) => (
-                <div
-                  key={(alert.timestamp ?? alert.time) + idx}
-                  className={`p-4 rounded-lg border-l-4 ${
-                    alert.severity === 'critical' ? 'bg-red-900/20 border-red-500' :
-                    alert.severity === 'warning' ? 'bg-yellow-900/20 border-yellow-500' :
-                    alert.severity === 'success' ? 'bg-green-900/20 border-green-500' :
-                    'bg-blue-900/20 border-blue-500'
-                  }`}
-                >
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center space-x-2 mb-1">
-                        <span className={`text-xs px-2 py-1 rounded font-medium ${
-                          alert.severity === 'critical' ? 'bg-red-600 text-white' :
-                          alert.severity === 'warning' ? 'bg-yellow-600 text-white' :
-                          alert.severity === 'success' ? 'bg-green-600 text-white' :
-                          'bg-blue-600 text-white'
-                        }`}>
-                          {alert.severity?.toUpperCase?.() || 'INFO'}
-                        </span>
-                        <span className="text-xs text-gray-400">{alert.module}</span>
-                      </div>
-                      <p className="text-white">{alert.alert?.message || alert.alert || 'â€”'}</p>
-                    </div>
-                    <div className="flex items-center space-x-3 ml-4">
-                      <div className="text-xs text-gray-400">
-                        {new Date(alert.timestamp ?? alert.time ?? Date.now()).toLocaleTimeString()}
-                      </div>
-                      <button
-                        onClick={() => onDismissAlert(alert)}
-                        className="text-gray-400 hover:text-red-400 transition-colors"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-center text-gray-400 py-8">
-              No alerts found for the selected filter.
-            </div>
-          )}
-        </div>
-      </div>
-    </div>,
-    document.body
-  );
-});
-
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 /** Main Dashboard (stateful container) */
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 const EnhancedTradingDashboard = () => {
   const { state: appState, dispatch: appDispatch } = useAppState();
@@ -5208,6 +1925,7 @@ const EnhancedTradingDashboard = () => {
   // WS refs
   const ws = useRef(null);
   const reconnectTimer = useRef(null);
+  const pingInterval = useRef(null);
   const reconnectAttempts = useRef(0);
   const maxReconnectAttempts = 10;
   const lastMessageTime = useRef({});
@@ -5314,7 +2032,7 @@ const EnhancedTradingDashboard = () => {
   };
 
   const emergencyStop = async () => {
-    if (!confirm('âš ï¸ EMERGENCY STOP: This will close all positions immediately. Are you sure?')) return;
+    if (!confirm(' EMERGENCY STOP: This will close all positions immediately. Are you sure?')) return;
     try {
       await apiCall('/trading/emergency-stop', { method: 'POST', noCache: true });
     } catch (err) {
@@ -5417,9 +2135,9 @@ const EnhancedTradingDashboard = () => {
 
   // CSV upload functionality removed - live trading only
 
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   // WebSocket connection with throttled/batched updates (no flicker)
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
   const processUpdateQueue = useCallback(async () => {
     if (isProcessingQueue.current || updateQueue.current.length === 0) return;
@@ -5483,9 +2201,20 @@ const EnhancedTradingDashboard = () => {
               payload: {
                 chartData: update.data?.chartData,
                 recentTrades: update.data?.recentTrades,
-                symbols: update.data?.symbols
+                symbols: update.data?.symbols,
+                positions: update.data?.positions,
+                account: update.data?.account,
+                positionCount: update.data?.positionCount,
               }
             });
+            // Update performance if account data is available
+            if (update.data?.account) {
+              setPerformance(prev => ({
+                ...prev,
+                current_balance: update.data.account.balance,
+                total_pnl: update.data.account.profit,
+              }));
+            }
             break;
           }
         }
@@ -5526,9 +2255,17 @@ const EnhancedTradingDashboard = () => {
         clearTimeout(reconnectTimer.current);
         reconnectTimer.current = null;
       }
+      // Send initial ping
       if (ws.current?.readyState === WebSocket.OPEN) {
         ws.current.send(JSON.stringify({ type: 'ping' }));
       }
+      // Start periodic ping to keep connection alive (every 15 seconds)
+      if (pingInterval.current) clearInterval(pingInterval.current);
+      pingInterval.current = setInterval(() => {
+        if (ws.current?.readyState === WebSocket.OPEN) {
+          ws.current.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 15000);
     };
 
 
@@ -5568,6 +2305,11 @@ const EnhancedTradingDashboard = () => {
 
     ws.current.onclose = (evt) => {
       setWsConnected(false);
+      // Clear ping interval
+      if (pingInterval.current) {
+        clearInterval(pingInterval.current);
+        pingInterval.current = null;
+      }
       try {
         console.warn('WebSocket closed', { code: evt?.code, reason: evt?.reason });
       } catch {}
@@ -5588,6 +2330,7 @@ const EnhancedTradingDashboard = () => {
     return () => {
       if (ws.current) ws.current.close();
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+      if (pingInterval.current) clearInterval(pingInterval.current);
     };
   }, []); // mount once
 
@@ -5621,9 +2364,9 @@ const EnhancedTradingDashboard = () => {
     return modulesById[selectedModuleId] ?? null;
   }, [selectedModuleId, modulesById]);
 
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   // Login screen
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
   if (!isLoggedIn) {
     return (
@@ -5699,9 +2442,9 @@ const EnhancedTradingDashboard = () => {
     );
   }
 
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   // Main render
-  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white">
@@ -5720,12 +2463,7 @@ const EnhancedTradingDashboard = () => {
                   {wsConnected ? 'Connected' : 'Disconnected'}
                 </span>
                 <StatusIndicator status={systemStatus} />
-                {systemState?.uptime && (
-                  <span className="flex items-center">
-                    <Clock className="w-4 h-4 mr-1" />
-                    {systemState.uptime}
-                  </span>
-                )}
+                <LiveUptimeDisplay fallbackUptime={systemState?.uptime} />
               </div>
             </div>
           </div>
@@ -5798,6 +2536,7 @@ const EnhancedTradingDashboard = () => {
               />
               <TabButton icon={TrendingUp} label="Trading" active={activeTab === 'trading'} onClick={() => setActiveTab('trading')} />
               <TabButton icon={BarChart2} label="Analytics" active={activeTab === 'analytics'} onClick={() => setActiveTab('analytics')} />
+              <TabButton icon={Sparkles} label="Strategy" active={activeTab === 'strategy'} onClick={() => setActiveTab('strategy')} />
               <TabButton icon={HardDrive} label="Memory" active={activeTab === 'memory'} onClick={() => setActiveTab('memory')} />
               <TabButton icon={Shield} label="Risk" active={activeTab === 'risk'} onClick={() => setActiveTab('risk')} />
               <TabButton icon={Vote} label="Voting" active={activeTab === 'voting'} onClick={() => setActiveTab('voting')} />
@@ -5820,7 +2559,7 @@ const EnhancedTradingDashboard = () => {
               {systemStatus === 'TRADING' && (
                 <div className="bg-gray-900/50 rounded-lg p-3">
                   <div className="text-xs text-gray-400 mb-1">Open Positions</div>
-                  <div className="text-lg font-bold text-blue-400">{moduleStates.position_manager?.position_count || 0}</div>
+                  <div className="text-lg font-bold text-blue-400">{appState.positionCount || 0}</div>
                 </div>
               )}
             </div>
@@ -5879,10 +2618,14 @@ const EnhancedTradingDashboard = () => {
                 startTrading={startTrading}
                 stopTrading={stopTrading}
                 emergencyStop={emergencyStop}
+                positions={appState.mt5Positions}
+                account={appState.mt5Account}
               />
             )}
 
             {activeTab === 'analytics' && <AnalyticsTab />}
+
+            {activeTab === 'strategy' && <StrategyTab />}
 
             {activeTab === 'memory' && <MemoryTab />}
 
@@ -5924,9 +2667,7 @@ const EnhancedTradingDashboard = () => {
 
 const App = () => (
   <ErrorBoundary>
-    <AppStateProvider>
       <EnhancedTradingDashboard />
-    </AppStateProvider>
   </ErrorBoundary>
 );
 

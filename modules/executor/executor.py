@@ -23,6 +23,14 @@ from .adapters.base_adapter import BaseLiveAdapter, LiveAdapterConfig
 from .adapters.mt5_adapter import MT5Adapter
 from .unified_logger import UnifiedExecutorLogger, ExecutionCycleEntry
 
+# Smart Position Management
+from modules.position.smart_position_manager import (
+    SmartPositionManager, 
+    SmartDecision, 
+    PositionAction,
+    SmartPositionConfig,
+)
+
 
 @dataclass
 class ExecutorConfig:
@@ -108,6 +116,7 @@ class Executor(BaseModule):
         self.closed_positions: List[Dict[str, Any]] = []  # Track closed positions for win rate
         self.step_idx: int = 0
         self._seen_ids: Set[str] = set()
+        self._cumulative_pnl: float = 0.0  # Track cumulative P&L for state persistence
 
         # live adapter (ensure initialized; _initialize also handles this during super())
         if not hasattr(self, "adapter"):
@@ -121,6 +130,10 @@ class Executor(BaseModule):
 
         # unified logger
         self.unified_logger = UnifiedExecutorLogger(self.logger)
+
+        # Smart Position Manager for intelligent live trading
+        # Config is loaded from config/risk_policy.yaml -> smart_position section
+        self.smart_position_manager = SmartPositionManager()
 
         # seed bus with empty snapshots
         self._publish_all(exec_fills=[], accepted=[], rejected=[], step_pnl=0.0, realized_step=0.0, unrealized=0.0, reason="startup")
@@ -297,7 +310,8 @@ class Executor(BaseModule):
 
             if mode == "live":
                 self.debugger.begin("execute_live")
-                fills, step_pnl = self._execute_live(accepted)
+                # Use smart execution for intelligent position management
+                fills, step_pnl = self._execute_live_smart(accepted)
                 self.debugger.end("execute_live")
                 positions_after = self.adapter.sync_positions() if self.adapter else {}
                 acct = self.adapter.get_account_info() if self.adapter else {}
@@ -676,6 +690,26 @@ class Executor(BaseModule):
         return "filtered"
 
     # ─────────────────────────────────────────────────────────
+    # Symbol-specific contract sizing
+    # ─────────────────────────────────────────────────────────
+    def _get_contract_size(self, symbol: str) -> float:
+        """Get contract size for a symbol (units per 1.0 lot)."""
+        sym_upper = (symbol or "").upper().replace("_", "").replace("/", "")
+        
+        # Gold/Silver/Crypto have different contract sizes
+        if 'XAU' in sym_upper or 'GOLD' in sym_upper:
+            return 100.0  # Gold: 100 oz per lot
+        if 'XAG' in sym_upper or 'SILVER' in sym_upper:
+            return 5000.0  # Silver: 5000 oz per lot
+        if 'BTC' in sym_upper:
+            return 1.0  # Bitcoin: 1 BTC per lot
+        if 'ETH' in sym_upper:
+            return 1.0  # Ethereum: 1 ETH per lot
+        
+        # Default: Forex 100,000 units per lot
+        return float(self.cfg.contract_size)
+
+    # ─────────────────────────────────────────────────────────
     # SIM execution
     # ─────────────────────────────────────────────────────────
     def _sim_price(self, inst: str, side: int) -> Optional[float]:
@@ -988,7 +1022,10 @@ class Executor(BaseModule):
             size_eur = float(intent.get("size_eur", 0.0) or 0.0)
             if units <= 0 and size_eur > 0 and price_hint > 0:
                 units = size_eur / price_hint
-            lots = max(units / self.adapter.cfg.contract_size, 0.0)
+            
+            # Use symbol-specific contract size
+            contract_size = self._get_contract_size(inst)
+            lots = max(units / contract_size, 0.0)
             lots = round_to_step(lots, self.adapter.cfg.lot_step)
             lots = max(lots, self.adapter.cfg.min_lot) if lots > 0 else 0.0
             # If the order carries positive size (units/size_eur) but rounding drove lots to 0,
@@ -1025,9 +1062,9 @@ class Executor(BaseModule):
                         instrument=inst,
                         action=action,
                         side=side,
-                        units=lots * self.adapter.cfg.contract_size,
+                        units=lots * contract_size,
                         price=px,
-                        notional_eur=lots * self.adapter.cfg.contract_size * px,
+                        notional_eur=lots * contract_size * px,
                         realized_pnl=0.0,
                         origin_id=origin_id,
                         comment="live",
@@ -1054,9 +1091,9 @@ class Executor(BaseModule):
                         instrument=inst,
                         action="scale_down",
                         side=-1 if side > 0 else +1,
-                        units=lots * self.adapter.cfg.contract_size,
+                        units=lots * contract_size,
                         price=px,
-                        notional_eur=lots * self.adapter.cfg.contract_size * px,
+                        notional_eur=lots * contract_size * px,
                         realized_pnl=0.0,
                         origin_id=origin_id,
                         comment="live_reduce",
@@ -1084,6 +1121,465 @@ class Executor(BaseModule):
         except Exception:
             pass
         return fills, step_pnl
+
+    # ─────────────────────────────────────────────────────────
+    # SMART LIVE EXECUTION - Intelligent Position Management
+    # ─────────────────────────────────────────────────────────
+    def _execute_live_smart(self, intents: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], float]:
+        """
+        Smart live execution with position consolidation and intelligent management.
+        
+        Key features:
+        1. Syncs actual MT5 positions before any decision
+        2. Prevents duplicate positions (max 1 per symbol)
+        3. Eliminates hedging (closes opposing positions)
+        4. Smart profit-taking and loss-cutting
+        5. Converts intents to smart decisions
+        """
+        fills: List[Dict[str, Any]] = []
+        if not self.adapter or not self.adapter.is_connected():
+            return fills, 0.0
+
+        acct_before = self.adapter.get_account_info()
+        eq_before = float(acct_before.get("equity", 0.0) or 0.0)
+        
+        try:
+            self.logger.info(
+                format_operator_message(
+                    "🧠",
+                    "SMART_EXECUTE_START",
+                    intents=len(intents),
+                    equity=f"€{eq_before:.2f}",
+                )
+            )
+        except Exception:
+            pass
+
+        # ─────────────────────────────────────────────────────
+        # Step 1: Sync actual MT5 positions
+        # ─────────────────────────────────────────────────────
+        try:
+            import MetaTrader5 as mt5
+            raw_positions = list(mt5.positions_get() or [])
+            mt5_positions = [
+                {
+                    "symbol": getattr(p, "symbol", ""),
+                    "type": getattr(p, "type", 0),
+                    "volume": getattr(p, "volume", 0.0),
+                    "price_open": getattr(p, "price_open", 0.0),
+                    "price_current": getattr(p, "price_current", 0.0),
+                    "profit": getattr(p, "profit", 0.0),
+                    "time": getattr(p, "time", 0),
+                    "ticket": getattr(p, "ticket", 0),
+                    "sl": getattr(p, "sl", 0.0),
+                    "tp": getattr(p, "tp", 0.0),
+                }
+                for p in raw_positions
+            ]
+            self.smart_position_manager.sync_positions(mt5_positions)
+            
+            if mt5_positions:
+                self.logger.info(
+                    format_operator_message(
+                        "📊",
+                        "MT5_POSITIONS_SYNCED",
+                        count=len(mt5_positions),
+                        total_pnl=f"€{self.smart_position_manager.get_total_pnl():.2f}",
+                    )
+                )
+        except Exception as e:
+            self.logger.warning(f"[SMART] Failed to sync MT5 positions: {e}")
+            mt5_positions = []
+
+        # ─────────────────────────────────────────────────────
+        # Step 2: Check for and eliminate hedging
+        # ─────────────────────────────────────────────────────
+        try:
+            hedge_cleanup = self.smart_position_manager.needs_hedge_cleanup(mt5_positions)
+            if hedge_cleanup:
+                self.logger.warning(
+                    format_operator_message(
+                        "⚠️",
+                        "HEDGE_DETECTED",
+                        positions_to_close=len(hedge_cleanup),
+                    )
+                )
+                closed_count = 0
+                failed_count = 0
+                for pos in hedge_cleanup:
+                    ticket = pos.get("ticket", 0)
+                    symbol = pos.get("symbol", "")
+                    if ticket and symbol:
+                        try:
+                            result = self._close_position_by_ticket(ticket, symbol)
+                            if result.get("ok"):
+                                self.logger.info(f"[SMART] ✅ Closed hedge ticket {ticket} on {symbol}")
+                                fills.append({
+                                    "action": "hedge_cleanup",
+                                    "symbol": symbol,
+                                    "ticket": ticket,
+                                    "ok": True,
+                                })
+                                closed_count += 1
+                            else:
+                                error = result.get("error", "unknown")
+                                self.logger.error(f"[SMART] ❌ Failed to close hedge ticket {ticket} on {symbol}: {error}")
+                                failed_count += 1
+                        except Exception as close_err:
+                            self.logger.error(f"[SMART] ❌ Exception closing ticket {ticket}: {close_err}")
+                            failed_count += 1
+                    else:
+                        self.logger.warning(f"[SMART] ⚠️ Invalid position data - ticket={ticket}, symbol={symbol}")
+                        failed_count += 1
+                
+                if closed_count > 0 or failed_count > 0:
+                    self.logger.info(f"[SMART] Hedge cleanup: {closed_count} closed, {failed_count} failed")
+        except Exception as e:
+            self.logger.error(f"[SMART] Hedge cleanup failed: {e}")
+
+        # ─────────────────────────────────────────────────────
+        # Step 3: Check existing positions for exits AND scales
+        # Read signal from InfoBus since PositionManager may emit HOLD
+        # ─────────────────────────────────────────────────────
+        for symbol, position in self.smart_position_manager.get_all_positions().items():
+            # Get current signal from InfoBus - MUST be per-symbol!
+            signal_direction = 0
+            signal_strength = 0.0
+            
+            # First check intents for this specific symbol (most accurate)
+            for intent in intents:
+                if self._normalize_symbol(intent.get("instrument", "")) == symbol:
+                    action = str(intent.get("action", "")).lower()
+                    if action in ("open_long", "scale_up"):
+                        signal_direction = 1
+                    elif action in ("open_short",):
+                        signal_direction = -1
+                    signal_strength = float(intent.get("intensity", intent.get("confidence", 0.5)) or 0.5)
+                    break
+            
+            # Fallback to trade_vote_v2 ONLY if it matches this symbol
+            if signal_direction == 0:
+                try:
+                    trade_vote = self.bus.get("trade_vote_v2", "Executor")
+                    if isinstance(trade_vote, dict):
+                        # Check if this vote is for our symbol or is symbol-agnostic
+                        vote_symbol = trade_vote.get("symbol", trade_vote.get("instrument", ""))
+                        vote_symbol_normalized = self._normalize_symbol(vote_symbol) if vote_symbol else ""
+                        
+                        # Only apply global vote if no symbol specified or matches
+                        if not vote_symbol or vote_symbol_normalized == symbol:
+                            vote_action = str(trade_vote.get("action", "")).upper()
+                            if vote_action == "BUY":
+                                signal_direction = 1
+                            elif vote_action == "SELL":
+                                signal_direction = -1
+                            signal_strength = float(trade_vote.get("confidence", trade_vote.get("intensity", 0.5)) or 0.5)
+                except Exception:
+                    pass
+            
+            # Get smart decision for this position
+            decision = self.smart_position_manager.decide(
+                symbol=symbol,
+                signal_direction=signal_direction,
+                signal_strength=signal_strength,
+                consensus_confidence=signal_strength,
+            )
+            
+            # Execute CLOSE/REVERSE decisions
+            if decision.action in (PositionAction.CLOSE, PositionAction.REVERSE):
+                self.logger.info(
+                    format_operator_message(
+                        "🎯",
+                        "SMART_EXIT",
+                        action=decision.action.value,
+                        symbol=symbol,
+                        reasons=decision.reasons[:2],
+                    )
+                )
+                result = self.adapter.close_position(symbol)
+                if result.get("ok"):
+                    fills.append({
+                        "action": decision.action.value.lower(),
+                        "symbol": symbol,
+                        "reasons": decision.reasons,
+                        "ok": True,
+                    })
+                    self.smart_position_manager.record_trade(symbol)
+            
+            # Execute SCALE_UP decisions
+            elif decision.action == PositionAction.SCALE_UP and decision.lots > 0:
+                self.logger.info(
+                    format_operator_message(
+                        "📈",
+                        "SMART_SCALE_UP",
+                        symbol=symbol,
+                        lots=f"+{decision.lots:.2f}",
+                        reasons=decision.reasons[:2],
+                    )
+                )
+                result = self.adapter.market_order(symbol, decision.side, decision.lots)
+                if result.get("ok"):
+                    px = float(result.get("price", 0) or 0)
+                    contract_size = self._get_contract_size(symbol)
+                    fill = TradeFill(
+                        id=f"fill-{uuid.uuid4().hex[:10]}",
+                        ts=time.time(),
+                        step=self.step_idx,
+                        instrument=symbol,
+                        action="scale_up",
+                        side=decision.side,
+                        units=decision.lots * contract_size,
+                        price=px,
+                        notional_eur=decision.lots * contract_size * px,
+                        realized_pnl=0.0,
+                        origin_id="smart_scale",
+                        comment="; ".join(decision.reasons[:2]),
+                    ).as_bus()
+                    self.trades.append(fill)
+                    fills.append(fill)
+                    self.smart_position_manager.record_trade(symbol, is_scale=True)
+            
+            # Execute SCALE_DOWN decisions
+            elif decision.action == PositionAction.SCALE_DOWN and decision.lots > 0:
+                self.logger.info(
+                    format_operator_message(
+                        "📉",
+                        "SMART_SCALE_DOWN",
+                        symbol=symbol,
+                        lots=f"-{decision.lots:.2f}",
+                        reasons=decision.reasons[:2],
+                    )
+                )
+                # Scale down = close partial position (opposite side order)
+                close_side = -decision.side  # Opposite to reduce
+                result = self.adapter.market_order(symbol, close_side, decision.lots)
+                if result.get("ok"):
+                    px = float(result.get("price", 0) or 0)
+                    contract_size = self._get_contract_size(symbol)
+                    fill = TradeFill(
+                        id=f"fill-{uuid.uuid4().hex[:10]}",
+                        ts=time.time(),
+                        step=self.step_idx,
+                        instrument=symbol,
+                        action="scale_down",
+                        side=close_side,
+                        units=decision.lots * contract_size,
+                        price=px,
+                        notional_eur=decision.lots * contract_size * px,
+                        realized_pnl=0.0,
+                        origin_id="smart_scale",
+                        comment="; ".join(decision.reasons[:2]),
+                    ).as_bus()
+                    self.trades.append(fill)
+                    fills.append(fill)
+                    self.smart_position_manager.record_trade(symbol, is_scale=True)
+
+        # ─────────────────────────────────────────────────────
+        # Step 4: Process new entry intents with smart filtering
+        # ─────────────────────────────────────────────────────
+        for intent in intents:
+            inst_src = intent.get("instrument", "")
+            inst = resolve_symbol(inst_src, self.cfg.symbol_overrides, broker=self.cfg.live_broker)
+            action = str(intent.get("action", "")).lower()
+            
+            # Skip close actions (handled above)
+            if action in ("close", "emergency_close"):
+                continue
+            
+            # Determine signal from intent
+            signal_direction = {"open_long": 1, "scale_up": 1, "open_short": -1, "scale_down": -1}.get(action, 0)
+            signal_strength = float(intent.get("intensity", intent.get("confidence", 0.5)) or 0.5)
+            
+            # Get smart decision
+            decision = self.smart_position_manager.decide(
+                symbol=inst,
+                signal_direction=signal_direction,
+                signal_strength=signal_strength,
+                consensus_confidence=signal_strength,
+            )
+            
+            # Only execute if smart manager approves
+            if decision.action == PositionAction.HOLD:
+                self.logger.info(
+                    format_operator_message(
+                        "⏸️",
+                        "SMART_HOLD",
+                        symbol=inst,
+                        original_action=action,
+                        reasons=decision.reasons[:2],
+                    )
+                )
+                continue
+            
+            if decision.action in (PositionAction.OPEN_LONG, PositionAction.OPEN_SHORT):
+                # Calculate lots
+                lots = decision.lots
+                if lots <= 0:
+                    price_hint = (self.adapter.get_prices(inst) or {}).get("mid", 1.0) or 1.0
+                    size_eur = float(intent.get("size_eur", 0.0) or 0.0)
+                    contract_size = self._get_contract_size(inst)
+                    if size_eur > 0:
+                        units = size_eur / price_hint
+                        lots = max(units / contract_size, 0.0)
+                        lots = round_to_step(lots, self.adapter.cfg.lot_step)
+                        lots = max(lots, self.adapter.cfg.min_lot) if lots > 0 else self.adapter.cfg.min_lot
+                    else:
+                        lots = self.adapter.cfg.min_lot
+                
+                self.logger.info(
+                    format_operator_message(
+                        "🚀",
+                        "SMART_OPEN",
+                        action=decision.action.value,
+                        symbol=inst,
+                        lots=f"{lots:.2f}",
+                        reasons=decision.reasons[:2],
+                    )
+                )
+                
+                result = self.adapter.market_order(inst, decision.side, lots)
+                if result.get("ok"):
+                    px = float(result.get("price", 0) or 0)
+                    contract_size = self._get_contract_size(inst)
+                    fill = TradeFill(
+                        id=f"fill-{uuid.uuid4().hex[:10]}",
+                        ts=time.time(),
+                        step=self.step_idx,
+                        instrument=inst,
+                        action=decision.action.value.lower(),
+                        side=decision.side,
+                        units=lots * contract_size,
+                        price=px,
+                        notional_eur=lots * contract_size * px,
+                        realized_pnl=0.0,
+                        origin_id=intent.get("id", ""),
+                        comment="smart_open",
+                    ).as_bus()
+                    self.trades.append(fill)
+                    fills.append(fill)
+                    self.smart_position_manager.record_trade(inst)
+            
+            elif decision.action == PositionAction.SCALE_UP:
+                lots = decision.lots or self.adapter.cfg.min_lot
+                
+                self.logger.info(
+                    format_operator_message(
+                        "📈",
+                        "SMART_SCALE_UP",
+                        symbol=inst,
+                        lots=f"{lots:.2f}",
+                        reasons=decision.reasons[:2],
+                    )
+                )
+                
+                result = self.adapter.market_order(inst, decision.side, lots)
+                if result.get("ok"):
+                    px = float(result.get("price", 0) or 0)
+                    contract_size = self._get_contract_size(inst)
+                    fill = TradeFill(
+                        id=f"fill-{uuid.uuid4().hex[:10]}",
+                        ts=time.time(),
+                        step=self.step_idx,
+                        instrument=inst,
+                        action="scale_up",
+                        side=decision.side,
+                        units=lots * contract_size,
+                        price=px,
+                        notional_eur=lots * contract_size * px,
+                        realized_pnl=0.0,
+                        origin_id=intent.get("id", ""),
+                        comment="smart_scale",
+                    ).as_bus()
+                    self.trades.append(fill)
+                    fills.append(fill)
+                    self.smart_position_manager.record_trade(inst, is_scale=True)
+
+        # ─────────────────────────────────────────────────────
+        # Step 5: Update account state
+        # ─────────────────────────────────────────────────────
+        acct_after = self.adapter.get_account_info()
+        eq_after = float(acct_after.get("equity", eq_before) or eq_before)
+        step_pnl = float(eq_after - eq_before)
+
+        self.balance = float(acct_after.get("balance", self.balance))
+        self.equity = float(eq_after)
+        self._last_equity = float(eq_after)
+
+        self.logger.info(
+            format_operator_message(
+                "✅",
+                "SMART_EXECUTE_DONE",
+                equity=f"€{eq_after:.2f}",
+                pnl=f"€{step_pnl:+.2f}",
+                fills=len(fills),
+            )
+        )
+        
+        return fills, step_pnl
+
+    def _normalize_symbol(self, symbol: str) -> str:
+        """Normalize symbol for comparison."""
+        return symbol.replace("/", "").replace("_", "").upper()
+
+    def _close_position_by_ticket(self, ticket: int, symbol: str) -> Dict[str, Any]:
+        """Close a specific position by ticket number."""
+        self.logger.debug(f"[CLOSE_TICKET] Attempting to close ticket {ticket} on {symbol}")
+        
+        if not self.adapter or not self.adapter.is_connected():
+            self.logger.warning(f"[CLOSE_TICKET] Adapter not connected")
+            return {"ok": False, "error": "not_connected"}
+        
+        try:
+            import MetaTrader5 as mt5
+            
+            # Get position info
+            position = mt5.positions_get(ticket=ticket)
+            if not position:
+                self.logger.warning(f"[CLOSE_TICKET] Position {ticket} not found in MT5")
+                return {"ok": False, "error": "position_not_found"}
+            
+            pos = position[0]
+            lots = getattr(pos, "volume", 0.0)
+            pos_type = getattr(pos, "type", 0)
+            
+            self.logger.info(f"[CLOSE_TICKET] Found position: ticket={ticket}, lots={lots}, type={pos_type}")
+            
+            # Close by opening opposite
+            close_type = mt5.ORDER_TYPE_SELL if pos_type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
+            
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": lots,
+                "type": close_type,
+                "position": ticket,
+                "magic": 123456,
+                "comment": "smart_close",
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            
+            # Get price
+            tick = mt5.symbol_info_tick(symbol)
+            if tick:
+                request["price"] = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
+            else:
+                self.logger.warning(f"[CLOSE_TICKET] No tick data for {symbol}")
+            
+            self.logger.info(f"[CLOSE_TICKET] Sending close request: {request}")
+            result = mt5.order_send(request)
+            
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                self.logger.info(f"[CLOSE_TICKET] ✅ Successfully closed ticket {ticket}")
+                return {"ok": True, "price": getattr(result, "price", 0)}
+            else:
+                retcode = getattr(result, "retcode", "unknown") if result else "no_result"
+                comment = getattr(result, "comment", "") if result else ""
+                self.logger.error(f"[CLOSE_TICKET] ❌ MT5 rejected close: retcode={retcode}, comment={comment}")
+                return {"ok": False, "error": f"{retcode}: {comment}"}
+        
+        except Exception as e:
+            self.logger.error(f"[CLOSE_TICKET] Exception: {e}")
+            return {"ok": False, "error": str(e)}
 
 
     # ─────────────────────────────────────────────────────────
@@ -1306,3 +1802,48 @@ class Executor(BaseModule):
 
         # Log it
         self.unified_logger.log_execution_cycle(entry)
+
+    # ─────────────────────────────────────────────────────────
+    # State Persistence - Save/Load executor state
+    # ─────────────────────────────────────────────────────────
+    
+    def _get_custom_state(self) -> Dict[str, Any]:
+        """
+        Get custom state for persistence.
+        
+        Saves:
+        - Balance and equity
+        - Trade history (last 500 trades)
+        - Position state (for sim mode)
+        - Step counter
+        """
+        return {
+            "balance": float(self.balance),
+            "equity": float(self.equity),
+            "step_idx": int(self.step_idx),
+            "trades": list(self.trades[-500:]) if self.trades else [],
+            "positions": {k: v.as_bus() if hasattr(v, 'as_bus') else v for k, v in self.positions.items()},
+            "_last_equity": float(self._last_equity),
+            "_cumulative_pnl": float(self._cumulative_pnl),
+        }
+    
+    def _set_custom_state(self, state: Dict[str, Any]) -> None:
+        """
+        Restore custom state from persistence.
+        """
+        if not state:
+            return
+        
+        self.balance = float(state.get("balance", self.balance))
+        self.equity = float(state.get("equity", self.equity))
+        self.step_idx = int(state.get("step_idx", self.step_idx))
+        self._last_equity = float(state.get("_last_equity", self.equity))
+        self._cumulative_pnl = float(state.get("_cumulative_pnl", 0.0))
+        
+        # Restore trades
+        trades = state.get("trades", [])
+        if trades:
+            self.trades = list(trades)
+            self.logger.info(f"📂 Restored {len(self.trades)} trades from state")
+        
+        # Note: positions are synced from MT5 in live mode, so we don't restore them
