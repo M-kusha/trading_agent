@@ -1261,6 +1261,25 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 'market_open': self._is_market_hours(),
             }
 
+            # Publish ALL declared keys to SmartInfoBus (not just aliases)
+            # This prevents "critically stale" warnings for keys like alerts, market_conditions, etc.
+            core_keys = [
+                'alerts', 'market_conditions', 'economic_calendar', 'environment',
+                'learning_context', 'learning_status', 'macro_data', 'step_data', 'strategy_status',
+                'market_data', 'prices', 'price_data', 'ohlcv_data', 'volatility_data',
+                'volatility_level', 'multi_timeframe_data', 'historical_prices',
+                'session_type', 'trading_session', 'timestamp', 'step_idx',
+                'symbols', 'universe', 'watched_instruments'
+            ]
+            for key in core_keys:
+                if key in snapshot:
+                    try:
+                        self.smart_bus.set(key, snapshot[key], module='MarketDataProvider', 
+                                          thesis=f'Market data update {key}', confidence=0.8)
+                    except Exception as e:
+                        if pid % max(1, self.cfg.log_every_n) == 0:
+                            self.debug.log_bus_publish_fail(key, e)
+
             # Publish aliases to SmartInfoBus
             if alias_payload:
                 self.debug.log_alias_publish(list(alias_payload.keys()))

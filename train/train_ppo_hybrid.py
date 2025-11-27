@@ -174,6 +174,25 @@ class FileDataProvider:
             print("[WARN] No usable CSVs; using dummy data")
             return create_dummy_data(config)
 
+        # Filter out small timeframes that would limit episode length
+        min_bars_for_training = getattr(config, "min_required_data_bars", 2000)
+        filtered_data: Dict[str, Dict[str, pd.DataFrame]] = {}
+        for inst, tfs in data.items():
+            filtered_tfs = {}
+            for tf, df in tfs.items():
+                if len(df) >= min_bars_for_training:
+                    filtered_tfs[tf] = df
+                else:
+                    print(f"[FILTER] Excluding {inst}/{tf}: only {len(df)} bars (need {min_bars_for_training}+)")
+            if filtered_tfs:
+                filtered_data[inst] = filtered_tfs
+        
+        if not filtered_data:
+            print("[WARN] No data survived filtering; using original data with warning")
+            filtered_data = data
+        else:
+            data = filtered_data
+
         total_bars = sum(len(df) for d in data.values() for df in d.values())
         print(f"[SUMMARY] Loaded {len(data)} instruments, {total_bars:,} bars")
         return data

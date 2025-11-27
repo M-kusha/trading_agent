@@ -534,16 +534,15 @@ CONTRACTS: Dict[str, ModuleContract] = {
         # FIX: Added position_data as canonical provider (actual executed positions)
         # FIX: Added closed_positions (consumed by TrainingVisualizer for win rate tracking)
         # NOTE: Memory gate used for final safety veto on order execution
-        # FIX: Re-added order_queue to requires - Executor MUST run AFTER PositionManager
-        # to receive trading decisions. The dependency chain is valid:
-        # PositionManager provides order_queue -> Executor consumes it
+        # NOTE: order_queue is consumed but NOT required - Executor handles empty queue gracefully
+        # This allows Executor to run in parallel with PositionManager (order_queue comes next cycle)
         provides=['positions', 'trades', 'recent_trades',
                   'order_data', 'execution_data', 'execution_reports',
                   'portfolio_metrics', 'trading_result', 'current_pnl',
                   'trade_data', 'market_state', 'position_data',
                   'current_positions', 'pnl_data', 'closed_positions',
                   'live_adapter_status', 'pending_orders', 'account_state'],
-        requires=['prices', 'price_data', 'environment_config', 'step_idx', 'execution_mode', 'order_queue'],
+        requires=['prices', 'price_data', 'environment_config', 'step_idx', 'execution_mode'],
         meta={'is_voting_member': False, 'thesis_required': False, 'explainable': True,
               'health_monitoring': True, 'performance_tracking': True,
               'category': 'executor', 'version': '1.0.0'}

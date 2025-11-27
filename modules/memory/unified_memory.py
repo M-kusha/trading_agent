@@ -384,6 +384,12 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         self._episode_count = 0
         self._total_memories_processed = 0
         self._last_optimization = time.time()
+        
+        # Step-based throttling for performance (skip expensive components most steps)
+        self._step_count = 0
+        self._throttle_interval = 5  # Run expensive components every 5 steps
+        self._cached_component_results: Dict[str, Dict[str, Any]] = {}
+        self._cached_unified_result: Optional[Dict[str, Any]] = None
 
         # Component states
         self._component_states = {
@@ -393,6 +399,12 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         # Training metrics (bounded history to prevent memory growth)
         self._training_metrics_history: deque = deque(maxlen=100)
         self._training_metrics_current: Dict[str, Any] = {}
+        
+        # Component performance tracking
+        self._component_performance: Dict[str, deque] = defaultdict(lambda: deque(maxlen=50))
+        
+        # Cache stats
+        self._cache_stats = {"hits": 0, "misses": 0}
 
     def _count_enabled_components(self) -> int:
         """Count enabled components"""
@@ -565,8 +577,12 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         Main processing loop coordinating all components
 
         Returns all contract-required keys with proper values
+        
+        Performance optimization: Uses step-based throttling to skip expensive
+        component execution most steps. Cached results are returned when throttled.
         """
         start_time = time.time()
+        self._step_count += 1
 
         # Debug logging
         if self.unified_config.debug:
@@ -580,13 +596,24 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                 else:
                     return self._create_fallback_response("Circuit breaker open")
 
+            # Throttling: Return cached result if available and not time to refresh
+            should_refresh = (self._step_count % self._throttle_interval == 0) or self._cached_unified_result is None
+            
+            if not should_refresh and self._cached_unified_result is not None:
+                # Fast path: return cached result with updated timestamp
+                cached = self._cached_unified_result.copy()
+                cached["_thesis"] = f"Cached memory result (step {self._step_count}, refresh every {self._throttle_interval})"
+                processing_time = (time.time() - start_time) * 1000
+                self._record_success(processing_time)
+                return cached
+
             # 1. Extract unified context
             context = await self._extract_unified_context(inputs)
 
-            # 2. Store new experiences
+            # 2. Store new experiences (lightweight, do every step)
             await self._store_experiences(context)
 
-            # 3. Run components
+            # 3. Run components (expensive, throttled)
             component_results = await self._run_components(context)
 
             # 4. Merge results
@@ -634,6 +661,10 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
             # 7. Generate thesis
             thesis = self._generate_unified_thesis(unified_result, context)
             unified_result["_thesis"] = thesis
+            
+            # 8. Cache result for throttled fast-path returns
+            self._cached_unified_result = unified_result.copy()
+            self._cached_component_results = component_results
 
             # Record success
             processing_time = (time.time() - start_time) * 1000

@@ -899,6 +899,10 @@ class SystemIntegritySuite:
         if now - self._init_time < self._startup_grace_period:
             return
         
+        # Skip expected first-tick misses (these are normal for first run)
+        if key in self._expected_first_tick_misses:
+            return
+        
         # Rate-limited warning to prevent log spam
         miss_key = f"{key}:{requester}"
         last_warn = self._miss_warn_times.get(miss_key, 0.0)

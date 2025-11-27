@@ -1725,11 +1725,11 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             # Restore episode history
             self.episode_history = deque(curriculum_state.get("episode_history", []), maxlen=self.window)
             
-            # Restore performance metrics
+            # Restore performance metrics with bounded deques to prevent memory leak
             performance_metrics = curriculum_state.get("performance_metrics", {})
-            self.performance_metrics = defaultdict(list)
+            self.performance_metrics = defaultdict(lambda: deque(maxlen=100))
             for k, v in performance_metrics.items():
-                self.performance_metrics[k] = list(v)
+                self.performance_metrics[k] = deque(v, maxlen=100)
             
             # Restore learning stats and competency areas
             self.learning_stats = curriculum_state.get("learning_stats", self.learning_stats)

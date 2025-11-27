@@ -80,8 +80,8 @@ class RiskAdjustedReward(
         config: Optional[RewardConfig | Dict[str, Any]] = None,
         genome: Optional[Dict[str, Any]] = None,
         env: Any = None,
-        debug: bool = True,
-        debug_level: str = "Trace",
+        debug: bool = False,
+        debug_level: str = "INFO",
         **kwargs,
     ):
         # Logging & bus first

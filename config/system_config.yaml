@@ -202,7 +202,7 @@ modules:
       correlation_threshold: 0.8
       var_confidence: 0.95
       rebalance_threshold: 0.05
-      timeout_ms: 150
+      timeout_ms: 1000
 
   ExecutionQualityMonitor:
     config:
@@ -254,7 +254,7 @@ modules:
       adapt_rate: 0.01
       min_confidence: 0.3
       bootstrap_steps: 50
-      debug: true
+      debug: false
       reinforce_lr: 0.001
       prior_blend: 0.30
       timeout_ms: 3000
@@ -337,7 +337,7 @@ modules:
       mastery_threshold: 0.8
       progression_rate: 0.05
       stage_duration: 1000
-      timeout_ms: 3000
+      timeout_ms: 5000
 
   ExplanationGenerator:
     config:
@@ -345,7 +345,7 @@ modules:
       narrative_style: 'technical'
       update_frequency: 60
       context_window: 50
-      timeout_ms: 500
+      timeout_ms: 2000
 
   OpponentModeEnhancer:
     config:
@@ -399,7 +399,7 @@ modules:
       adaptation_rate: 0.05
       strategic_weight: 0.6
       tactical_weight: 0.4
-      timeout_ms: 400
+      timeout_ms: 1500
 
   MetaRLController:
     config:
@@ -427,20 +427,20 @@ modules:
       retrieval_threshold: 0.7
       pattern_recognition_depth: 5
       forgetting_rate: 0.001
-      timeout_ms: 200
+      timeout_ms: 2000
 
-      # Debug settings (enabled for detailed debugging)
-      debug: true
-      debug_level: "DEBUG"
+      # Debug settings (DISABLED for training performance)
+      debug: false
+      debug_level: "WARNING"
       debug_log_path: "logs/memory/unified_debug.log"
-      enable_combined_log: true
-      enable_trace_log: true
+      enable_combined_log: false
+      enable_trace_log: false
       trace_file_path: "logs/memory/unified_trace.log"
-      enable_debug_log: true
+      enable_debug_log: false
       debug_file_path: "logs/memory/unified_debug_only.log"
-      enable_info_log: true
+      enable_info_log: false
       info_file_path: "logs/memory/unified_info.log"
-      enable_warning_log: true
+      enable_warning_log: false
       warning_file_path: "logs/memory/unified_warning.log"
       enable_error_log: true
       error_file_path: "logs/memory/unified_error.log"
@@ -651,7 +651,7 @@ modules:
       adaptation_rate: 0.05
       simulation_runs: 100
       confidence_threshold: 0.7
-      timeout_ms: 1000
+      timeout_ms: 2000
 
   RoleCoach:
     config:

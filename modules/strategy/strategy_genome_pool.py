@@ -122,6 +122,12 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'evolution_momentum': 0.85
         }
         
+        # Step-based throttling for performance optimization
+        self._step_count = 0
+        self._throttle_interval = 10  # Only run full analysis every 10 steps
+        self._cached_result: Optional[Dict[str, Any]] = None
+        self._last_full_process_time = 0.0
+        
         # Generate initialization thesis
         self._generate_initialization_thesis()
         
@@ -246,6 +252,9 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         """
         Modern async processing with comprehensive genome evolution analysis
         
+        Performance optimization: Uses step-based throttling to skip expensive
+        evolution analysis most steps. Returns cached genome weights when throttled.
+        
         Args:
             **inputs: Variable keyword arguments for processing
         
@@ -253,11 +262,30 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             Dict containing genome weights, evolution analysis, and recommendations
         """
         start_time = time.time()
+        self._step_count += 1
         
         try:
             # Circuit breaker check
             if self.is_disabled:
                 return self._generate_disabled_response()
+            
+            # Throttling: Return cached result if available and not time to refresh
+            should_refresh = (
+                self._step_count % self._throttle_interval == 0 or 
+                self._cached_result is None
+            )
+            
+            if not should_refresh and self._cached_result is not None:
+                # Fast path: return cached result with current genome weights
+                cached = self._cached_result.copy()
+                cached['genome_weights'] = self._get_current_genome_weights()  # Always fresh weights
+                cached['_thesis'] = f"Cached genome pool result (step {self._step_count}, refresh every {self._throttle_interval})"
+                
+                # Record fast performance
+                processing_time = (time.time() - start_time) * 1000
+                self.performance_tracker.record_metric('StrategyGenomePool', 'process_time', processing_time, True)
+                self.error_count = 0
+                return cached
             
             # Get comprehensive market data from SmartInfoBus
             market_data = await self._get_comprehensive_market_data()
@@ -290,6 +318,10 @@ class StrategyGenomePool(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 'strategy_genome_pool_initialization': self._get_sgp_init_view(),
                 '_thesis': thesis
             }
+            
+            # Cache result for throttled fast-path returns
+            self._cached_result = results.copy()
+            self._last_full_process_time = time.time()
             
             # Update SmartInfoBus with comprehensive thesis
             await self._update_smartinfobus_comprehensive(results, thesis)

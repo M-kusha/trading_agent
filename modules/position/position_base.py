@@ -707,13 +707,13 @@ class PositionManagerBase(
             
             direction_total = direction_votes["buy"] + direction_votes["sell"]
             
-            # STRICTER: Need at least 2 direction voters AND 70% agreement
-            if direction_total > 0 and direction_voters >= 2:
+            # RELAXED: Need at least 1 direction voter AND 50% agreement (lowered for training)
+            if direction_total > 0 and direction_voters >= 1:
                 buy_pct = direction_votes["buy"] / direction_total
                 sell_pct = direction_votes["sell"] / direction_total
                 direction_consensus = max(buy_pct, sell_pct)
                 
-                if direction_consensus >= 0.70:  # 70% direction consensus (was 50%)
+                if direction_consensus >= 0.50:  # 50% direction consensus (lowered for training)
                     if self.debug:
                         dominant = "BUY" if buy_pct > sell_pct else "SELL"
                         self.logger.debug(f"[GATE] Direction consensus: {dominant} at {direction_consensus:.1%} ({direction_voters} voters)")
@@ -741,10 +741,10 @@ class PositionManagerBase(
                 boosted_confidence = vote_confidence + min(strategy_boost, 0.10)
                 
                 # STRICTER THRESHOLDS for live trading:
-                # - boosted confidence > 38% (was 30%)
-                # - consensus_score > 70% (was 60%)
-                conf_threshold = 0.38
-                consensus_threshold = 0.70
+                # - boosted confidence > 28% (lowered for training)
+                # - consensus_score > 60% (lowered for training)
+                conf_threshold = 0.28
+                consensus_threshold = 0.60
                 
                 if vote_action in ("buy", "sell") and boosted_confidence > conf_threshold and consensus_score > consensus_threshold:
                     if self.debug:
@@ -756,12 +756,12 @@ class PositionManagerBase(
                     return True
             
             # ═══════════════════════════════════════════════════════════════════
-            # LAYER 4: COMMITTEE CONSENSUS (STRICTER)
-            # Require 50%+ consensus strength
+            # LAYER 4: COMMITTEE CONSENSUS (RELAXED FOR TRAINING)
+            # Require 35%+ consensus strength (lowered from 50%)
             # ═══════════════════════════════════════════════════════════════════
             if isinstance(consensus, dict):
                 consensus_strength = float(consensus.get("consensus_strength", 0.0) or 0.0)
-                if consensus_strength > 0.50:  # 50% threshold (was 40%)
+                if consensus_strength > 0.35:  # 35% threshold (lowered for training)
                     return True
             
             # No consensus achieved through any layer
@@ -778,22 +778,52 @@ class PositionManagerBase(
         Returns True if trade is ALLOWED, False if still in cooldown.
         
         Only applies to new position opens, not closes or scale operations.
+        
+        Uses step-based cooldown in simulation mode (fast training) or
+        real-time cooldown in live mode.
         """
         if intent not in ("open", "open_long", "open_short"):
             return True  # Closes and scales are always allowed
         
-        now = time.time()
-        last_trade = getattr(self, "_last_new_position_time", {}).get(instrument, 0.0)
-        cooldown = getattr(self, "_trade_cooldown_seconds", 60.0)
+        # Check execution mode - use step-based cooldown for training
+        exec_mode = "simulation"
+        try:
+            exec_mode = str(self.smart_bus.get("execution_mode", "PositionManager") or "simulation").lower()
+        except Exception:
+            pass
         
-        elapsed = now - last_trade
-        if elapsed < cooldown:
-            if self.debug:
-                self.logger.warning(
-                    f"⏳ COOLDOWN: {instrument} - {cooldown - elapsed:.0f}s remaining "
-                    f"(min {cooldown:.0f}s between new positions)"
-                )
-            return False
+        if exec_mode in ("live", "paper"):
+            # Real-time cooldown for live trading (60 seconds)
+            now = time.time()
+            last_trade = getattr(self, "_last_new_position_time", {}).get(instrument, 0.0)
+            cooldown = getattr(self, "_trade_cooldown_seconds", 60.0)
+            elapsed = now - last_trade
+            if elapsed < cooldown:
+                if self.debug:
+                    self.logger.warning(
+                        f"⏳ COOLDOWN: {instrument} - {cooldown - elapsed:.0f}s remaining "
+                        f"(min {cooldown:.0f}s between new positions)"
+                    )
+                return False
+        else:
+            # Step-based cooldown for simulation/training (10 steps minimum between trades)
+            current_step = 0
+            try:
+                current_step = int(self.smart_bus.get("step_idx", "PositionManager") or 0)
+            except Exception:
+                pass
+            
+            last_trade_step = getattr(self, "_last_new_position_step", {}).get(instrument, -999)
+            step_cooldown = int(self.config.get("trade_cooldown_steps", 10))  # 10 steps default
+            
+            steps_elapsed = current_step - last_trade_step
+            if steps_elapsed < step_cooldown:
+                if self.debug:
+                    self.logger.debug(
+                        f"⏳ COOLDOWN: {instrument} - {step_cooldown - steps_elapsed} steps remaining"
+                    )
+                return False
+        
         return True
 
     def _record_trade_time(self, instrument: str) -> None:
@@ -801,6 +831,15 @@ class PositionManagerBase(
         if not hasattr(self, "_last_new_position_time"):
             self._last_new_position_time = {}
         self._last_new_position_time[instrument] = time.time()
+        
+        # Also record step-based for simulation mode
+        if not hasattr(self, "_last_new_position_step"):
+            self._last_new_position_step = {}
+        try:
+            current_step = int(self.smart_bus.get("step_idx", "PositionManager") or 0)
+            self._last_new_position_step[instrument] = current_step
+        except Exception:
+            self._last_new_position_step[instrument] = 0
 
     def _enqueue_orders(self, orders: List[Dict[str, Any]]) -> None:
         """Append orders to shared 'order_queue' with consensus gate, cooldown, and safety exceptions."""

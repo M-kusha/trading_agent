@@ -1831,6 +1831,7 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                     'horizon_minutes': int(horizon_alignment.get('intended_horizon_minutes', 0))
                         if isinstance(horizon_alignment, dict) else 0,
                     'confidence': float(committee_confidence),
+                    'consensus_score': float(consensus.get('consensus_strength', 0.0) or 0.0),  # FIX: Required for position gate
                     'reason': decision.get('reason', ''),
                     'decision_id': decision_id,
                     'timestamp': datetime.datetime.now().isoformat(),
@@ -1874,6 +1875,7 @@ class EnhancedVotingCommitteeCoordinator(BaseModule, SmartInfoBusVotingMixin, Sm
                 },
                 'trade_vote_v2': {
                     'action': 'abstain', 'size': 0.0, 'horizon_minutes': 0, 'confidence': 0.1,
+                    'consensus_score': 0.0,  # FIX: Required for position gate
                     'reason': 'committee-error', 'decision_id': None, 'timestamp': datetime.datetime.now().isoformat()
                 },
                 '_thesis': f"Committee coordination failed: {error_context}",
