@@ -112,11 +112,13 @@ class Executor(BaseModule):
         self.equity: float = float(self.balance)
         self._last_equity: float = float(self.equity)
         self.positions: Dict[str, PositionSnap] = {}
-        self.trades: List[Dict[str, Any]] = []
+        self.trades: List[Dict[str, Any]] = []  # Will be trimmed to last 1000
         self.closed_positions: List[Dict[str, Any]] = []  # Track closed positions for win rate
         self.step_idx: int = 0
         self._seen_ids: Set[str] = set()
+        self._max_seen_ids: int = 5000  # Memory limit for seen IDs
         self._cumulative_pnl: float = 0.0  # Track cumulative P&L for state persistence
+        self._max_trades: int = 1000  # Memory limit for trades list
 
         # live adapter (ensure initialized; _initialize also handles this during super())
         if not hasattr(self, "adapter"):
@@ -609,6 +611,12 @@ class Executor(BaseModule):
         except Exception:
             pass
 
+        # Trim _seen_ids to prevent memory leak
+        if len(self._seen_ids) > self._max_seen_ids:
+            # Keep most recent IDs by converting to list, taking last N, and converting back
+            ids_list = list(self._seen_ids)
+            self._seen_ids = set(ids_list[-(self._max_seen_ids // 2):])
+
         return accepted, rejected, q_count, dec_count
 
     def _prune_order_queue(self) -> None:
@@ -992,6 +1000,10 @@ class Executor(BaseModule):
         self.equity = equity_now
         self._last_equity = equity_now
 
+        # Trim trades list to prevent memory leak
+        if len(self.trades) > self._max_trades:
+            self.trades = self.trades[-self._max_trades:]
+
         if want_breakdown:
             return fills, step_pnl, float(realized_step), float(unreal)
         return fills, step_pnl, 0.0, 0.0  # not used
@@ -1113,6 +1125,10 @@ class Executor(BaseModule):
         self.balance = float(acct_after.get("balance", self.balance))
         self.equity = float(eq_after)
         self._last_equity = float(eq_after)
+
+        # Trim trades list to prevent memory leak
+        if len(self.trades) > self._max_trades:
+            self.trades = self.trades[-self._max_trades:]
 
         try:
             self.logger.info(
@@ -1548,6 +1564,10 @@ class Executor(BaseModule):
                 fills=len(fills),
             )
         )
+        
+        # Trim trades list to prevent memory leak
+        if len(self.trades) > self._max_trades:
+            self.trades = self.trades[-self._max_trades:]
         
         return fills, step_pnl
 

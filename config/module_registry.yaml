@@ -902,7 +902,6 @@ modules:
     - observations
     - prices
     - rewards
-    - risk_data
     - time_risk_analysis
     - trades
   VotingKernel:

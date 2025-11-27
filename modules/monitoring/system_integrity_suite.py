@@ -116,16 +116,16 @@ def _get_orchestrator() -> Any:
 @dataclass
 class SuiteConfig:
     # Heartbeat & lifecycle thresholds
-    heartbeat_interval_seconds: float = 5.0
-    stale_age_warn_seconds: float = 60.0
-    stale_age_critical_seconds: float = 180.0  # escalate after this
-    resolution_warn_seconds: float = 15.0  # SLA before first FRESH on watchlist keys
+    heartbeat_interval_seconds: float = 30.0        # Reduced frequency to avoid spam
+    stale_age_warn_seconds: float = 300.0           # Increased from 60s - training steps are slow
+    stale_age_critical_seconds: float = 600.0       # Increased from 180s - training steps are slow
+    resolution_warn_seconds: float = 60.0           # Increased from 15s
     # Logging / Debug
     operator_mode: bool = True
     plain_english: bool = True
-    debug: bool = True                              # <── master debug switch
+    debug: bool = False                             # <── Disabled for training performance
     debug_ring_size: int = 500                       # recent events ring buffer
-    log_on_every_event: bool = True                 # chatty trace if True
+    log_on_every_event: bool = False                # Disabled for training performance
     # Discovery roots
     modules_root: str = "modules"
     # Visualization defaults
@@ -394,7 +394,18 @@ class SystemIntegritySuite:
         self._miss_warn_interval = 60.0  # seconds between warnings per key
         self._miss_warn_counts: Dict[str, int] = {}  # key -> suppressed count
         self._init_time = time.time()  # Track init time for grace period
-        self._startup_grace_period = 30.0  # Suppress warnings for first 30 seconds
+        self._startup_grace_period = 60.0  # Suppress warnings for first 60 seconds (extended for full pipeline warmup)
+        
+        # Keys that are expected to miss on first tick (inter-module dependencies)
+        # These resolve after the first full orchestration cycle
+        self._expected_first_tick_misses: Set[str] = {
+            "expert_performance",  # StrategyArbiter provides after voting modules run
+            "committee_members",   # VotingCommitteeCoordinator provides after first process()
+            "trade_vote",          # Deprecated - use trade_vote_v2
+            "trade_vote_v2",       # VotingKernel provides after first process()
+            "consensus_score",     # ConsensusDetector provides after first process()
+            "voting_consensus",    # VotingKernel provides after first process()
+        }
         
         # Rate limiting for provider change warnings
         self._provider_change_times: Dict[str, float] = {}  # key -> last warning time

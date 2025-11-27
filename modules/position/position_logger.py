@@ -353,8 +353,8 @@ class UnifiedPositionLogger:
             if cc and isinstance(cc, dict):
                 signals['committee_consensus'] = cc
 
-            # Trade vote
-            tv = bus.get("trade_vote_v2", "PositionManager") or bus.get("trade_vote", "PositionManager")  # type: ignore
+            # Trade vote (trade_vote_v2 is the canonical key from VotingKernel)
+            tv = bus.get("trade_vote_v2", "PositionManager")  # type: ignore
             if tv and isinstance(tv, dict):
                 signals['trade_vote'] = tv
 

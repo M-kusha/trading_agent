@@ -534,15 +534,16 @@ CONTRACTS: Dict[str, ModuleContract] = {
         # FIX: Added position_data as canonical provider (actual executed positions)
         # FIX: Added closed_positions (consumed by TrainingVisualizer for win rate tracking)
         # NOTE: Memory gate used for final safety veto on order execution
-        # FIX: Removed order_queue from requires - Executor runs with empty queue if not available
-        # This breaks circular dependency: PositionManager -> UnifiedMemory -> Executor
+        # FIX: Re-added order_queue to requires - Executor MUST run AFTER PositionManager
+        # to receive trading decisions. The dependency chain is valid:
+        # PositionManager provides order_queue -> Executor consumes it
         provides=['positions', 'trades', 'recent_trades',
                   'order_data', 'execution_data', 'execution_reports',
                   'portfolio_metrics', 'trading_result', 'current_pnl',
                   'trade_data', 'market_state', 'position_data',
                   'current_positions', 'pnl_data', 'closed_positions',
                   'live_adapter_status', 'pending_orders', 'account_state'],
-        requires=['prices', 'price_data', 'environment_config', 'step_idx', 'execution_mode'],
+        requires=['prices', 'price_data', 'environment_config', 'step_idx', 'execution_mode', 'order_queue'],
         meta={'is_voting_member': False, 'thesis_required': False, 'explainable': True,
               'health_monitoring': True, 'performance_tracking': True,
               'category': 'executor', 'version': '1.0.0'}
@@ -700,8 +701,11 @@ CONTRACTS: Dict[str, ModuleContract] = {
             # NEW: Neural risk head output
             'neural_risk_hint'
         ],
+        # FIX: Removed 'risk_data' from requires to break circular dependency:
+        # PortfolioRiskSystem -> Executor -> PositionManager -> UnifiedMemory -> PortfolioRiskSystem
+        # UnifiedMemory can get risk_data optionally from bus with fallback
         requires=['actions', 'episode_data', 'features', 'market_context', 'market_data',
-                  'observations', 'prices', 'rewards', 'risk_data', 'time_risk_analysis', 'trades'],
+                  'observations', 'prices', 'rewards', 'time_risk_analysis', 'trades'],
         meta={'thesis_required': True, 'health_monitoring': True, 'performance_tracking': True,
               'category': 'memory', 'version': '4.2.0'}
     ),

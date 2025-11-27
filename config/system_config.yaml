@@ -15,11 +15,11 @@ execution:
     by_module:
       # Market analysis (heavy)
       UnifiedMarketModule: 15000  # init + 54k bars
-      PositionManager: 15000  # Increased - handles signal extraction and position logic
+      PositionManager: 20000  # Increased - handles signal extraction and position logic
 
       # Voting / coordination
       AlternativeRealitySampler: 6000
-      DynamicRiskController: 6000
+      DynamicRiskController: 10000  # Increased - complex risk calculations
       TimeHorizonAligner: 6000
       CollusionAuditor: 6000
       EnhancedVotingCommitteeCoordinator: 8000
@@ -50,8 +50,8 @@ execution:
       OpponentSimulator: 4000
       ShadowSimulator: 8000
 
-      # Reward (expensive)
-      RiskAdjustedReward: 30000
+      # Reward - reduced for faster training (was 30000)
+      RiskAdjustedReward: 8000
 
     # Coarse defaults by category (used when module not listed above)
     by_category:
@@ -62,11 +62,11 @@ execution:
       meta: 4000
 
   stage:
-    timeout_overhead_s: 15.0
-    timeout_pct_padding: 0.75
+    timeout_overhead_s: 3.0       # Reduced from 15s - adds to every stage
+    timeout_pct_padding: 0.25     # Reduced from 0.75 - adds 25% instead of 75%
     pre_stage_readiness_preview: true
     soft_schedule_on_missing_inputs: true
-    heartbeat_interval_s: 6.0
+    heartbeat_interval_s: 30.0    # Reduced frequency to avoid log spam
     report_to_bus: true
 
   # Circuit breaker behavior for critical modules
@@ -84,6 +84,10 @@ execution:
     half_open_single_probe: true
     stale_warn_s: 300.0         # increased to 5min due to orchestrator slowdown (10s->33s per execution)
     dynamic_config_bus_key: "config_update"
+    # AGGRESSIVE config wait times - critical for fast training
+    config_wait_timeout_s: 1.0   # Reduced from 10s - config is cached after first check
+    config_ready_grace_s: 0.1    # Minimal stabilization period
+    startup_max_wait_s: 3.0      # Reduced from 45s - system_ready gate timeout
 
   # Circuit breaker thresholds by module criticality
   circuit_breaker_thresholds:

@@ -385,9 +385,10 @@ class ModuleConfig:
         self.use_queue_scheduler = kwargs.get('use_queue_scheduler', False)
         self.queue_concurrency = kwargs.get('queue_concurrency', self.max_parallel_modules)
 
-        # Configuration timing fixes
-        self.config_wait_timeout_s = kwargs.get('config_wait_timeout_s', 10.0)
-        self.config_ready_grace_s = kwargs.get('config_ready_grace_s', 2.0)
+        # Configuration timing fixes - reduced defaults for faster startup
+        self.config_wait_timeout_s = kwargs.get('config_wait_timeout_s', 2.0)  # Reduced from 10s
+        self.config_ready_grace_s = kwargs.get('config_ready_grace_s', 0.2)   # Reduced from 2s
+        self.startup_max_wait_s = kwargs.get('startup_max_wait_s', 5.0)       # Reduced from 45s
 
         # Circuit breaker recovery for critical modules
         self.critical_module_recovery_time_s = kwargs.get('critical_module_recovery_time_s', 30.0)
@@ -444,19 +445,19 @@ class ModuleConfig:
 
         # ── NEW (V1.5): startup + preflight + warmup + autotune + self-test ──
         self.startup_gate_enabled = kwargs.get('startup_gate_enabled', True)
-        self.startup_max_wait_s = kwargs.get('startup_max_wait_s', 45.0)
+        self.startup_max_wait_s = kwargs.get('startup_max_wait_s', 5.0)  # Reduced from 45s
 
-        # Preflight readiness
-        self.preflight_timeout_s = kwargs.get('preflight_timeout_s', 15.0)
-        self.preflight_poll_interval_s = kwargs.get('preflight_poll_interval_s', 0.10)
+        # Preflight readiness - reduced defaults for faster startup
+        self.preflight_timeout_s = kwargs.get('preflight_timeout_s', 3.0)  # Reduced from 15s
+        self.preflight_poll_interval_s = kwargs.get('preflight_poll_interval_s', 0.05)  # Faster polling
         self.preflight_required_keys = kwargs.get('preflight_required_keys', [])
         self.preflight_quorum = kwargs.get('preflight_quorum', 0.85)
 
-        # Warmup & autotune
-        self.warmup_enabled = kwargs.get('warmup_enabled', True)
+        # Warmup & autotune - disabled by default for faster startup
+        self.warmup_enabled = kwargs.get('warmup_enabled', False)  # Disabled
         self.warmup_reps = kwargs.get('warmup_reps', 1)
-        self.autotune_enabled = kwargs.get('autotune_enabled', True)
-        self.autotune_reps = kwargs.get('autotune_reps', 2)
+        self.autotune_enabled = kwargs.get('autotune_enabled', False)  # Disabled
+        self.autotune_reps = kwargs.get('autotune_reps', 1)  # Reduced from 2
         self.autotune_padding_pct = kwargs.get('autotune_padding_pct', 0.35)
 
         # Built-in self test (BIST)
@@ -702,6 +703,10 @@ class ModuleOrchestrator:
         # NEW (V1.5): startup gate state
         self._startup_ready: bool = False
         self._startup_report: Dict[str, Any] = {}
+
+        # PERFORMANCE: Cache flags to skip repeated waits (set True after first successful check)
+        self._config_confirmed_ready: bool = False
+        self._system_ready_gate_passed: bool = False
 
         self._initialized = False
         self._shutdown_requested = False
@@ -1400,7 +1405,18 @@ class ModuleOrchestrator:
         if not self._initialized:
             raise RuntimeError("Orchestrator not initialized")
 
-        if self._async_execution_lock is None:
+        # Re-create lock if event loop changed (happens on training restart)
+        try:
+            current_loop = asyncio.get_running_loop()
+            if self._async_execution_lock is None:
+                self._async_execution_lock = asyncio.Lock()
+            else:
+                # Check if lock is bound to a different loop
+                lock_loop = getattr(self._async_execution_lock, '_loop', None)
+                if lock_loop is not None and lock_loop is not current_loop:
+                    self._async_execution_lock = asyncio.Lock()
+        except RuntimeError:
+            # No running loop - create new lock
             self._async_execution_lock = asyncio.Lock()
 
         should_enter, reason = self._check_emergency_conditions()
@@ -1816,24 +1832,34 @@ class ModuleOrchestrator:
         - bootstrap_async set _startup_ready, OR
         - bus shows system_ready key, OR
         - max wait exceeded (then proceed with warning).
+        
+        OPTIMIZATION: Only wait once. After gate passes, cache result.
         """
+        # Skip if already passed gate (cached)
+        if getattr(self, '_system_ready_gate_passed', False):
+            return
+            
         if not getattr(self.config, "startup_gate_enabled", True):
+            self._system_ready_gate_passed = True
             return
 
         key = getattr(self.config, "system_ready_bus_key", "system_ready")
-        max_wait = float(getattr(self.config, "startup_max_wait_s", 45.0))
+        max_wait = float(getattr(self.config, "startup_max_wait_s", 5.0))  # Reduced from 45s
         t0 = time.time()
         while True:
             if self._startup_ready:
+                self._system_ready_gate_passed = True
                 return
             try:
                 r = self.smart_bus.get(key, "Orchestrator")
                 if isinstance(r, dict) and r.get("ready"):
+                    self._system_ready_gate_passed = True
                     return
             except Exception:
                 pass
             if (time.time() - t0) >= max_wait:
                 self.logger.warning("[STARTUP] System-ready gate exceeded max wait; proceeding anyway.")
+                self._system_ready_gate_passed = True
                 return
             await asyncio.sleep(0.05)
 
@@ -2823,7 +2849,14 @@ class ModuleOrchestrator:
         """
         Wait for configuration to be available on the bus before proceeding with execution.
         This prevents race conditions where modules request config before it's published.
+        
+        OPTIMIZATION: Only wait on the FIRST call. After config is confirmed available once,
+        skip future waits to avoid 10s blocking on every step.
         """
+        # Skip if already confirmed ready (cached result)
+        if getattr(self, '_config_confirmed_ready', False):
+            return
+            
         config_key = self.config.dynamic_config_bus_key
         timeout_s = self.config.config_wait_timeout_s
         grace_s = self.config.config_ready_grace_s
@@ -2836,6 +2869,7 @@ class ModuleOrchestrator:
                 config_data = self.smart_bus.get(config_key, "Orchestrator")
                 if config_data is not None:
                     config_available = True
+                    self._config_confirmed_ready = True  # Cache success
                     self.logger.debug(f"[CONFIG] Configuration ready after {time.time() - start_time:.2f}s")
                     break
             except Exception as e:
@@ -2845,6 +2879,7 @@ class ModuleOrchestrator:
 
         if not config_available:
             self.logger.warning(f"[CONFIG] Configuration not available after {timeout_s}s, proceeding anyway")
+            self._config_confirmed_ready = True  # Don't wait again even if not found
         else:
             # Add grace period for configuration to stabilize
             if grace_s > 0:
@@ -3208,7 +3243,8 @@ class ModuleOrchestrator:
             if 'adaptive' in execution_config:
                 ad = execution_config['adaptive'] or {}
                 for k in ('auto_tune_timeouts', 'timeout_target_pctl', 'timeout_floor_ms',
-                        'timeout_ceiling_ms', 'readiness_grace_s', 'half_open_single_probe', 'stale_warn_s'):
+                        'timeout_ceiling_ms', 'readiness_grace_s', 'half_open_single_probe', 'stale_warn_s',
+                        'dynamic_config_bus_key', 'config_wait_timeout_s', 'config_ready_grace_s', 'startup_max_wait_s'):
                     if k in ad:
                         setattr(self.config, k, ad[k])
 

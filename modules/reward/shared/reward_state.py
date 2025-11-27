@@ -77,22 +77,25 @@ class RewardState:
             'adaptation_confidence': 0.5
         }
 
-        # Performance tracking
+        # Performance tracking - BOUNDED to prevent memory leaks
+        # Use deque factory for bounded regime performance
+        self._regime_maxlen = 100  # Max entries per regime
+        self._session_maxlen = 200  # Max entries per session
         self.regime_performance = defaultdict(lambda: {
-            'rewards': [],
-            'trades': [],
-            'pnl': []
+            'rewards': deque(maxlen=100),
+            'trades': deque(maxlen=100),
+            'pnl': deque(maxlen=100)
         })
-        self.regime_transition_rewards = defaultdict(list)
-        self.volatility_performance = defaultdict(list)
-        self.session_analytics = defaultdict(list)
+        self.regime_transition_rewards = defaultdict(lambda: deque(maxlen=50))
+        self.volatility_performance = defaultdict(lambda: deque(maxlen=100))
+        self.session_analytics = defaultdict(lambda: deque(maxlen=200))
 
         # Trading metrics
         self.trades_processed = 0
         self.winning_trades = 0
 
-        # Audit trail
-        self.audit_trail: List[Dict[str, Any]] = []
+        # Audit trail - BOUNDED to prevent memory leak
+        self.audit_trail: Deque[Dict[str, Any]] = deque(maxlen=config.history_size)
         self.audit_log_size = config.history_size
 
         # Genome
