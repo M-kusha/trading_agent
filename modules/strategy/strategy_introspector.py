@@ -177,6 +177,22 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 self.smart_bus.set('module_data', seeded_module_data,
                                    module='StrategyIntrospector',
                                    thesis="Initialization seed: module_data aggregator updated with StrategyIntrospector baseline")
+
+            # Publish lightweight baselines to satisfy contract without fabricating signals
+            if self.smart_bus.get('strategy_weights', 'StrategyIntrospector') is None:
+                self.smart_bus.set(
+                    'strategy_weights',
+                    {},
+                    module='StrategyIntrospector',
+                    thesis="Baseline strategy weights (empty)"
+                )
+            if self.smart_bus.get('member_performance', 'StrategyIntrospector') is None:
+                self.smart_bus.set(
+                    'member_performance',
+                    {},
+                    module='StrategyIntrospector',
+                    thesis="Baseline member performance (empty)"
+                )
         except Exception:
             # Seeding is best-effort; continue initialization regardless
             pass

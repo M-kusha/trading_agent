@@ -36,32 +36,330 @@ modules:
     - multi_timeframe_data
     - ohlcv_data
     - price_data
-  AlternativeRealitySampler:
+  # LEGACY VOTING MODULES - DEPRECATED (moved to voting/legacy/, code commented out)
+  # AlternativeRealitySampler:
+  #   category: voting
+  #   file_path: modules\voting\legacy\alternative_reality_sampler.py
+  #   module_path: modules.voting.legacy.alternative_reality_sampler
+  #   deprecated: true
+  
+  # CollusionAuditor:
+  #   category: voting
+  #   file_path: modules\voting\legacy\collusion_auditor.py
+  #   module_path: modules.voting.legacy.collusion_auditor
+  #   deprecated: true
+  
+  # ConsensusDetector:
+  #   category: voting
+  #   file_path: modules\voting\legacy\consensus_detector.py
+  #   module_path: modules.voting.legacy.consensus_detector
+  #   deprecated: true
+  
+  # EnhancedVotingCommitteeCoordinator:
+  #   category: voting
+  #   file_path: modules\voting\legacy\voting_wrappers.py
+  #   module_path: modules.voting.legacy.voting_wrappers
+  #   deprecated: true
+  
+  # EnhancedThemeExpert:
+  #   category: voting
+  #   file_path: modules\voting\legacy\voting_wrappers.py
+  #   module_path: modules.voting.legacy.voting_wrappers
+  #   deprecated: true
+  
+  # EnhancedSeasonalityRiskExpert:
+  #   category: voting
+  #   file_path: modules\voting\legacy\voting_wrappers.py
+  #   module_path: modules.voting.legacy.voting_wrappers
+  #   deprecated: true
+  
+  # StrategyArbiter:
+  #   category: voting
+  #   file_path: modules\voting\legacy\strategy_arbiter.py
+  #   module_path: modules.voting.legacy.strategy_arbiter
+  #   deprecated: true
+  
+  # TimeHorizonAligner:
+  #   category: voting
+  #   file_path: modules\voting\legacy\time_horizon_aligner.py
+  #   module_path: modules.voting.legacy.time_horizon_aligner
+  #   deprecated: true
+  
+  # VotingKernel:
+  #   category: voting
+  #   file_path: modules\voting\legacy\voting_kernel.py
+  #   module_path: modules.voting.legacy.voting_kernel
+  #   deprecated: true
+
+  # ═══════════════════════════ UNIFIED VOTING v5.0 ═══════════════════════════
+  ThemeExpert:
     category: voting
-    file_path: modules\voting\alternative_reality_sampler.py
-    module_path: modules.voting.alternative_reality_sampler
+    file_path: modules\voting\experts\theme.py
+    module_path: modules.voting.experts.theme
     provides:
-    - alternative_reality_sampler_initialization
+    - ThemeExpert_voting_proposal
+    - ThemeExpert_confidence
+    - theme_voting_proposal
+    - theme_confidence
+    - theme_volatility_regime
+    - theme_trend_regime
+    - theme_risk_regime
+    - theme_composite_score
+    - theme_analysis
+    - agreement_score
+    - theme_expert_analysis
+    - theme_expert_thesis
+    requires:
+    - market_data
+    - features
+
+  SeasonalityRiskExpert:
+    category: voting
+    file_path: modules\voting\experts\seasonality.py
+    module_path: modules.voting.experts.seasonality
+    provides:
+    - SeasonalityRiskExpert_voting_proposal
+    - SeasonalityRiskExpert_confidence
+    - seasonality_voting_proposal
+    - seasonality_confidence
+    - seasonal_voting_proposal
+    - seasonal_confidence
+    - seasonal_session
+    - seasonal_dow_bias
+    - seasonal_monthly_pattern
+    - seasonal_composite_score
+    - seasonal_rollover_risk
+    - seasonal_weekend_risk
+    - seasonality_risk_analysis
+    - seasonality_analysis
+    - seasonality_expert_analysis
+    - seasonality_expert_thesis
+    requires:
+    - market_data
+    - features
+
+  MomentumExpert:
+    category: voting
+    file_path: modules\voting\experts\momentum.py
+    module_path: modules.voting.experts.momentum
+    provides:
+    - MomentumExpert_voting_proposal
+    - MomentumExpert_confidence
+    - momentum_voting_proposal
+    - momentum_confidence
+    - momentum_analysis
+    requires:
+    - market_data
+    - prices
+    - technical_indicators
+
+  TrendExpert:
+    category: voting
+    file_path: modules\voting\experts\trend.py
+    module_path: modules.voting.experts.trend
+    provides:
+    - TrendExpert_voting_proposal
+    - TrendExpert_confidence
+    - trend_voting_proposal
+    - trend_confidence
+    - trend_analysis
+    requires:
+    - market_data
+    - prices
+    - technical_indicators
+
+  CommitteeCoordinator:
+    category: voting
+    file_path: modules\voting\stages\committee.py
+    module_path: modules.voting.stages.committee
+    provides:
+    - committee_votes
+    - committee_summary
+    - committee_decision_id
+    - raw_proposals
+    - member_confidences
+    - voting_weights
+    - committee_decision
+    - committee_confidence
+    - votes
+    - voting_summary
+    - strategy_arbiter_weights
+    - committee_consensus
+    requires:
+    - ThemeExpert_voting_proposal
+    - ThemeExpert_confidence
+    - SeasonalityRiskExpert_voting_proposal
+    - SeasonalityRiskExpert_confidence
+    - MomentumExpert_voting_proposal
+    - MomentumExpert_confidence
+    - TrendExpert_voting_proposal
+    - TrendExpert_confidence
+    - DynamicRiskController_voting_proposal
+    - DynamicRiskController_confidence
+    - PPOAgent_voting_proposal
+    - PPOAgent_confidence
+    - market_regime
+    - volatility_data
+
+  ConsensusAnalyzer:
+    category: voting
+    file_path: modules\voting\stages\consensus.py
+    module_path: modules.voting.stages.consensus
+    provides:
+    - consensus_result
+    - agreement_score
+    - consensus_direction
+    - consensus_confidence
+    - consensus_thesis
+    - consensus_score
+    - consensus_components
+    - consensus_quality
+    - directional_consensus
+    - magnitude_consensus
+    - consensus_decision_id
+    requires:
+    - committee_votes
+    - raw_proposals
+    - member_confidences
+    - voting_weights
+    - market_regime
+    - volatility_data
+
+  CollusionDetector:
+    category: voting
+    file_path: modules\voting\stages\collusion.py
+    module_path: modules.voting.stages.collusion
+    provides:
+    - collusion_result
+    - collusion_detected
+    - collusion_score
+    - suspicious_pairs
+    - collusion_thesis
+    - collusion_alerts
+    - member_independence_scores
+    - collusion_decision_id
+    requires:
+    - committee_votes
+    - raw_proposals
+    - member_confidences
+    - agreement_score
+    - market_regime
+
+  HorizonAligner:
+    category: voting
+    file_path: modules\voting\stages\horizon.py
+    module_path: modules.voting.stages.horizon
+    provides:
+    - horizon_weights
+    - horizon_alignment
+    - aligned_weights
+    - horizon_thesis
+    - horizon_distances
+    - horizon_multipliers
+    - alignment_quality
+    - adaptation_status
+    - horizon_decision_id
+    requires:
+    - voting_weights
+    - market_regime
+    - session_type
+    - volatility_data
+
+  UncertaintySampler:
+    category: voting
+    file_path: modules\voting\stages\uncertainty.py
+    module_path: modules.voting.stages.uncertainty
+    provides:
+    - uncertainty_result
+    - sampling_uncertainty
+    - fragility_score
+    - effective_samples
+    - uncertainty_thesis
     - alternative_samples
     - confidence_bounds
     - diversity_score
-    - effective_samples
     - sampling_decision_id
     - sampling_fragility
-    - sampling_recommendations
-    - sampling_stats
-    - sampling_uncertainty
+    - fragility
     requires:
+    - committee_votes
+    - consensus_result
     - agreement_score
-    - consensus_direction
-    - market_context
     - market_regime
-    - recent_trades
-    - session_metrics
-    - strategy_arbiter_weights
     - volatility_data
-    - votes
-    - voting_summary
+
+  FinalArbiter:
+    category: voting
+    file_path: modules\voting\stages\arbiter.py
+    module_path: modules.voting.stages.arbiter
+    provides:
+    - final_decision
+    - trade_vote
+    - gate_decision
+    - arbiter_thesis
+    - decision_confidence
+    - decision_rationale
+    - arbiter_recommendations
+    - instrument_signals
+    - voting_quality
+    - member_weights
+    - arbiter_decision_id
+    requires:
+    - consensus_result
+    - collusion_result
+    - uncertainty_result
+    - horizon_alignment
+    - market_regime
+    - volatility_data
+    - memory_gate
+    - danger_zones
+
+  SlimVotingKernel:
+    category: voting
+    file_path: modules\voting\pipeline\kernel.py
+    module_path: modules.voting.pipeline.kernel
+    provides:
+    - kernel_decision
+    - trade_vote_v2
+    - decision_bundle
+    - voting_consensus
+    - consensus_summary
+    - voting_metrics
+    - decision_id
+    - tick_ts
+    - kernel_decision_id
+    - kernel_tick_ts
+    - pipeline_status
+    - pipeline_thesis
+    - decision_coordination
+    - fragility
+    requires:
+    # Market data (portfolio_state removed to avoid circular dep)
+    - market_data
+    - price_data
+    - technical_indicators
+    - market_regime
+    - session_type
+    - volatility_data
+    - timestamp
+    # Voting stage outputs - kernel reads these from bus
+    - committee_votes
+    - committee_decision
+    - committee_confidence
+    - raw_proposals
+    - consensus_result
+    - consensus_score
+    - agreement_score
+    - collusion_result
+    - collusion_detected
+    - collusion_score
+    - horizon_alignment
+    - aligned_weights
+    - uncertainty_result
+    - fragility
+    - final_decision
+    - gate_decision
+
   AuditingCoordinator:
     category: auditing
     file_path: modules\auditing\auditing_coordinator.py
@@ -95,33 +393,8 @@ modules:
     - session_context
     - trading_session
     - volatility_level
-  CollusionAuditor:
-    category: voting
-    file_path: modules\voting\collusion_auditor.py
-    module_path: modules.voting.collusion_auditor
-    provides:
-    - audit_recommendations
-    - behavioral_profiles
-    - collusion_alerts
-    - collusion_auditor_initialization
-    - collusion_decision_id
-    - collusion_score
-    - coordination_events
-    - detection_statistics
-    - member_independence_scores
-    - suspicious_pairs
-    requires:
-    - agreement_score
-    - consensus_direction
-    - market_context
-    - market_regime
-    - member_confidences
-    - raw_proposals
-    - recent_trades
-    - strategy_arbiter_weights
-    - volatility_data
-    - votes
-    - voting_summary
+  # CollusionAuditor - DEPRECATED, replaced by CollusionDetector (see above)
+  
   ComplianceModule:
     category: risk
     file_path: modules\risk\compliance.py
@@ -136,31 +409,8 @@ modules:
     - market_context
     - order_data
     - positions
-  ConsensusDetector:
-    category: voting
-    file_path: modules\voting\consensus_detector.py
-    module_path: modules.voting.consensus_detector
-    provides:
-    - confidence_consensus
-    - consensus_components
-    - consensus_detector_initialization
-    - consensus_quality
-    - consensus_recommendations
-    - consensus_score
-    - consensus_trends
-    - directional_consensus
-    - magnitude_consensus
-    - member_contributions
-    - consensus_quality_metrics
-    - consensus_decision_id
-    requires:
-    - agreement_score
-    - consensus_direction
-    - market_context
-    - market_regime
-    - member_confidences
-    - raw_proposals
-    - volatility_data
+  # ConsensusDetector - DEPRECATED, replaced by ConsensusAnalyzer (see v5.0.0 voting modules above)
+  
   CorrelatedRiskController:
     category: risk
     file_path: modules\risk\correlated_risk_controller.py
@@ -189,8 +439,7 @@ modules:
     - stage_progression
     requires:
     - episode_summary
-    - learning_context
-    - market_conditions
+    - market_context
     - performance_data
     - recent_trades
     - risk_metrics
@@ -247,95 +496,12 @@ modules:
     - performance_data
     - risk_data
     - trading_data
-  EnhancedVotingCommitteeCoordinator:
-    category: voting
-    file_path: modules\voting\voting_wrappers.py
-    module_path: modules.voting.voting_wrappers
-    provides:
-    - committee_decision
-    - committee_confidence
-    - member_proposals
-    - performance_feedback
-    - time_of_day
-    - votes
-    - committee_votes
-    - voting_summary
-    - voting_weights
-    - strategy_arbiter_weights
-    - committee_consensus
-    - member_confidences_ordered
-    - expert_votes
-    - committee_members
-    - proposal_vectors
-    - signals
-    - committee_decision_id
-    requires:
-    - DynamicRiskController_confidence
-    - DynamicRiskController_voting_proposal
-    - EnhancedAnomalyDetector_confidence
-    - EnhancedAnomalyDetector_voting_proposal
-    - EnhancedSeasonalityRiskExpert_confidence
-    - EnhancedSeasonalityRiskExpert_voting_proposal
-    - EnhancedThemeExpert_confidence
-    - EnhancedThemeExpert_voting_proposal
-    - ExecutionQualityMonitor_confidence
-    - ExecutionQualityMonitor_voting_proposal
-    - MetaAgent_confidence
-    - MetaAgent_voting_proposal
-    - PPOAgent_confidence
-    - PPOAgent_voting_proposal
-    - PortfolioRiskSystem_confidence
-    - PortfolioRiskSystem_voting_proposal
-    - emergency_mode
-    - market_context
-    - market_open
-    - market_regime
-    - portfolio_state
-    - recent_trades
-    - risk_data
-    - risk_score
-    - session_type
-    - system_health
-    - theme_detection
-    - volatility_data
-  EnhancedThemeExpert:
-    category: voting
-    file_path: modules\voting\voting_wrappers.py
-    module_path: modules.voting.voting_wrappers
-    provides:
-    - EnhancedThemeExpert_confidence
-    - EnhancedThemeExpert_voting_proposal
-    - agreement_score
-    - consensus_direction
-    - member_confidences
-    - raw_proposals
-    - theme_confidence
-    - theme_voting_proposal
-    requires:
-    - market_data
-    - price_data
-    - technical_indicators
-    - market_regime
-    - market_open
-  EnhancedSeasonalityRiskExpert:
-    category: voting
-    file_path: modules\voting\voting_wrappers.py
-    module_path: modules.voting.voting_wrappers
-    provides:
-    - seasonality_risk_analysis
-    - seasonal_voting_proposal
-    - seasonal_confidence
-    - seasonality_analysis
-    - seasonality_voting_proposal
-    - seasonality_confidence
-    - EnhancedSeasonalityRiskExpert_confidence
-    - EnhancedSeasonalityRiskExpert_voting_proposal
-    requires:
-    - market_data
-    - price_data
-    - technical_indicators
-    - market_regime
-    - market_open
+  # EnhancedVotingCommitteeCoordinator - DEPRECATED, replaced by CommitteeCoordinator (see v5.0.0 voting modules)
+  
+  # EnhancedThemeExpert - DEPRECATED, replaced by ThemeExpert (see v5.0.0 voting modules)
+  
+  # EnhancedSeasonalityRiskExpert - DEPRECATED, replaced by SeasonalityRiskExpert (see v5.0.0 voting modules)
+  
   ExecutionQualityMonitor:
     category: risk
     file_path: modules\risk\execution_quality_monitor.py
@@ -368,7 +534,6 @@ modules:
     - market_overview
     requires:
     - bias_analysis
-    - learning_status
     - market_context
     - module_data
     - module_insights
@@ -377,7 +542,6 @@ modules:
     - recent_trades
     - risk_data
     - session_metrics
-    - strategy_status
     - system_alerts
   MetaAgent:
     category: meta
@@ -391,7 +555,7 @@ modules:
     - MetaAgent_voting_proposal
     - MetaAgent_confidence
     requires:
-    - market_conditions
+    - market_context
     - risk_signals
     - system_performance
     - time_risk_analysis
@@ -407,7 +571,7 @@ modules:
     - tactical_recommendations
     requires:
     - actions
-    - market_conditions
+    - market_context
     - market_data
     - market_regime
     - performance_metrics
@@ -521,11 +685,12 @@ modules:
     - position_health
     - position_manager_data
     requires:
+    - trade_vote_v2
+    - kernel_decision
     - environment_config
     - indicators
     - liquidity_capabilities
     - liquidity_score
-    - market_conditions
     - market_context
     - market_data
     - market_liquidity
@@ -535,6 +700,11 @@ modules:
     - technical_indicators
     - time_risk_analysis
     - volatility_data
+    - memory_gate
+    - playbook_recall
+    - intuition_vector
+    - danger_zones
+    - mistake_avoidance
   PPOAgent:
     category: meta
     file_path: modules\meta\ppo_agent.py
@@ -569,38 +739,8 @@ modules:
     - performance_data
     - risk_metrics
     - trade_data
-  StrategyArbiter:
-    category: voting
-    file_path: modules\voting\strategy_arbiter.py
-    module_path: modules.voting.strategy_arbiter
-    provides:
-    - alpha_weights
-    - arbiter_decision_id
-    - arbiter_recommendations
-    - decision_statistics
-    - expert_performance
-    - gate_decision
-    - instrument_signals
-    - instruments
-    - member_performance
-    - member_weights
-    - proposal_analysis
-    - strategy_arbiter_initialization
-    - strategy_weights
-    - voting_quality
-    requires:
-    - collusion_score
-    - consensus_score
-    - horizon_alignment
-    - market_context
-    - market_regime
-    - member_confidences
-    - member_proposals
-    - recent_trades
-    - session_data
-    - universe
-    - volatility_data
-    - watched_instruments
+  # StrategyArbiter - DEPRECATED, replaced by FinalArbiter (see v5.0.0 voting modules)
+  
   StrategyGenomePool:
     category: strategy
     file_path: modules\strategy\strategy_genome_pool.py
@@ -639,10 +779,8 @@ modules:
     requires:
     - market_context
     - market_regime
-    - member_performance
     - recent_trades
     - risk_data
-    - strategy_weights
     - volatility_data
   ThesisEvolutionEngine:
     category: strategy
@@ -658,7 +796,6 @@ modules:
     - thesis_recommendations
     - market_thesis
     requires:
-    - economic_calendar
     - market_context
     - market_data
     - market_regime
@@ -668,25 +805,8 @@ modules:
     - strategy_performance
     - trading_performance
     - volatility_data
-  TimeHorizonAligner:
-    category: voting
-    file_path: modules\voting\time_horizon_aligner.py
-    module_path: modules.voting.time_horizon_aligner
-    provides:
-    - adaptation_status
-    - aligned_weights
-    - alignment_quality
-    - horizon_alignment
-    - horizon_alignment_meta
-    - horizon_decision_id
-    - horizon_distances
-    - horizon_multipliers
-    requires:
-    - voting_weights
-    - market_regime
-    - session_type
-    - volatility_data
-    - market_context
+  # TimeHorizonAligner - DEPRECATED, replaced by HorizonAligner (see v5.0.0 voting modules)
+  
   TradingModeManager:
     category: trading_modes
     file_path: modules\trading_modes\trading_mode.py
@@ -710,7 +830,6 @@ modules:
     - consensus_quality
     - consensus_score
     - drawdown_risk
-    - economic_calendar
     - execution_quality
     - liquidity_score
     - market_context
@@ -788,19 +907,10 @@ modules:
     file_path: modules\external\market_data_provider.py
     module_path: modules.external.market_data_provider
     provides:
-    - alerts
     - bid_ask_data
-    - economic_calendar
-    - environment
     - historical_prices
     - indicators
-    - input1
-    - input2
-    - learning_context
-    - learning_status
     - liquidity_data
-    - macro_data
-    - market_conditions
     - market_data
     - market_data_EUR_USD_D1
     - market_data_EUR_USD_H1
@@ -815,9 +925,7 @@ modules:
     - price_data
     - prices
     - session_type
-    - step_data
     - step_idx
-    - strategy_status
     - symbols
     - technical_indicators
     - timestamp
@@ -904,28 +1012,8 @@ modules:
     - rewards
     - time_risk_analysis
     - trades
-  VotingKernel:
-    category: voting
-    file_path: modules\voting\voting_kernel.py
-    module_path: modules.voting.voting_kernel
-    provides:
-    - consensus_summary
-    - decision_bundle
-    - decision_coordination
-    - decision_id
-    - fragility
-    - kernel_decision_id
-    - kernel_tick_ts
-    - tick_ts
-    - trade_vote_v2
-    - voting_consensus
-    - voting_metrics
-    requires:
-    - market_data
-    - price_data
-    - technical_indicators
-    - market_regime
-    - portfolio_state
+  # VotingKernel - DEPRECATED, replaced by SlimVotingKernel (see v5.0.0 voting modules)
+  
   EnhancedWorldModel:
     category: models
     file_path: modules\models\world_model.py
@@ -936,7 +1024,6 @@ modules:
     - scenario_generation
     - world_model_analytics
     requires:
-    - market_conditions
     - market_context
     - market_data
     - market_regime
@@ -1111,7 +1198,6 @@ modules:
     requires:
     - bid_ask_data
     - historical_prices
-    - macro_data
     - market_data
     - multi_timeframe_data
     - technical_indicators
@@ -1130,13 +1216,11 @@ modules:
     - system_status
     - visualization_data
     requires:
-    - alerts
     - consensus_data
     - market_data
     - module_performance
     - positions
     - recent_trades
     - risk_metrics
-    - step_data
     - system_alerts
     - trading_performance

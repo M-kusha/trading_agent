@@ -1449,20 +1449,14 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
         indicators_map = {s: {k: float(v) for k, v in d.items()} for s, d in self.technical_indicators.items()}
 
+        # NOTE: Removed stale placeholder keys (alerts, economic_calendar, environment,
+        # learning_context, learning_status, macro_data, market_conditions, step_data,
+        # strategy_status) - these were empty dicts/lists causing stale data warnings.
+        # Consumers handle missing keys with fallbacks.
         snapshot: Dict[str, Any] = {
-            "alerts": [],
             "bid_ask_data": bid_ask_data,
-            "economic_calendar": [],
-            "environment": {},
-            "environment_config": {},  # contract requires we provide it; keep empty to avoid semantic conflicts
             "historical_prices": multi_tf,
             "indicators": indicators_map,
-            "input1": {},
-            "input2": {},
-            "learning_context": {},
-            "learning_status": {},
-            "macro_data": {},
-            "market_conditions": {},
             "market_data": market_data,
             "market_liquidity": liquidity_data,  # legacy mirror
             "module_insights": {
@@ -1476,13 +1470,10 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             },
             "multi_timeframe_data": multi_tf,
             "ohlcv_data": ohlcv_data,
-            "portfolio_metrics": {},
             "price_data": price_data,
             "prices": {s: price_data[s]["last"] for s in price_data},
             "session_type": self.session_type,
-            "step_data": {},
             "step_idx": int(self._update_count),
-            "strategy_status": {},
             "symbols": list(self.cfg.supported_symbols),
             "technical_indicators": indicators_map,
             "timestamp": ts_iso,
@@ -1493,6 +1484,45 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             # UnifiedDataExtractor expectations
             "volume_data": volume_data,
             "liquidity_data": liquidity_data,
+            # Restored bus keys with actual data
+            "market_conditions": {
+                "timestamp": ts_iso,
+                "volatility_level": vol_level,
+                "session_type": self.session_type,
+                "trading_session": self.trading_session,
+                "active_sessions": getattr(self, "active_sessions", []),
+                "symbols": list(self.cfg.supported_symbols),
+            },
+            "environment": {
+                "mode": self.cfg.mode,
+                "provider": "MarketDataProvider",
+                "timestamp": ts_iso,
+                "session_type": self.session_type,
+                "trading_session": self.trading_session,
+                "market_open": self._is_market_hours(),
+                "symbols": list(self.cfg.supported_symbols),
+            },
+            "step_data": {
+                "step_idx": int(self._update_count),
+                "timestamp": ts_iso,
+                "mode": self.cfg.mode,
+            },
+            "alerts": [],
+            "learning_status": {
+                "phase": self.cfg.mode,
+                "progress_step": int(self._update_count),
+                "timestamp": ts_iso,
+            },
+            "learning_context": {
+                "session_type": self.session_type,
+                "volatility_level": vol_level,
+                "symbols": list(self.cfg.supported_symbols),
+            },
+            "strategy_status": {
+                "status": "running",
+                "volatility_level": vol_level,
+                "timestamp": ts_iso,
+            },
         }
         return snapshot
 
@@ -1517,20 +1547,11 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
     def _empty_snapshot(self, error: Optional[str] = None) -> Dict[str, Any]:
         now = self._to_iso_ts(datetime.datetime.utcnow())
         indicators_map = {s: dict(self.technical_indicators.get(s, {})) for s in self.cfg.supported_symbols}
+        # NOTE: Removed stale placeholder keys (same as _build_snapshot)
         snapshot: Dict[str, Any] = {
-            "alerts": [],
             "bid_ask_data": {},
-            "economic_calendar": [],
-            "environment": {},
-            "environment_config": {},
             "historical_prices": {},
             "indicators": indicators_map,
-            "input1": {},
-            "input2": {},
-            "learning_context": {},
-            "learning_status": {},
-            "macro_data": {},
-            "market_conditions": {},
             "market_data": {},
             "market_liquidity": {},
             "module_insights": {
@@ -1543,13 +1564,10 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             },
             "multi_timeframe_data": {},
             "ohlcv_data": {},
-            "portfolio_metrics": {},
             "price_data": {},
             "prices": {},
             "session_type": self.session_type,
-            "step_data": {},
             "step_idx": int(self._update_count),
-            "strategy_status": {},
             "symbols": list(self.cfg.supported_symbols),
             "technical_indicators": indicators_map,
             "timestamp": now,
@@ -1559,6 +1577,44 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             "volatility_level": "low",
             "volume_data": {},
             "liquidity_data": {},
+            "market_conditions": {
+                "timestamp": now,
+                "volatility_level": "low",
+                "session_type": self.session_type,
+                "trading_session": self.trading_session,
+                "active_sessions": getattr(self, "active_sessions", []),
+                "symbols": list(self.cfg.supported_symbols),
+            },
+            "environment": {
+                "mode": self.cfg.mode,
+                "provider": "MarketDataProvider",
+                "timestamp": now,
+                "session_type": self.session_type,
+                "trading_session": self.trading_session,
+                "market_open": False,
+                "symbols": list(self.cfg.supported_symbols),
+            },
+            "step_data": {
+                "step_idx": int(self._update_count),
+                "timestamp": now,
+                "mode": self.cfg.mode,
+            },
+            "alerts": [],
+            "learning_status": {
+                "phase": self.cfg.mode,
+                "progress_step": int(self._update_count),
+                "timestamp": now,
+            },
+            "learning_context": {
+                "session_type": self.session_type,
+                "volatility_level": "low",
+                "symbols": list(self.cfg.supported_symbols),
+            },
+            "strategy_status": {
+                "status": "initializing",
+                "volatility_level": "low",
+                "timestamp": now,
+            },
         }
         return snapshot
 

@@ -655,14 +655,17 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                     component_results["budget"],
                 )
 
-            # 6. Update SmartInfoBus
+            # 6. Ensure required outputs are present (never return partials silently)
+            unified_result = self._ensure_required_outputs(unified_result, reason=None)
+
+            # 7. Update SmartInfoBus
             await self._update_all_bus_keys(unified_result)
 
-            # 7. Generate thesis
+            # 8. Generate thesis
             thesis = self._generate_unified_thesis(unified_result, context)
             unified_result["_thesis"] = thesis
             
-            # 8. Cache result for throttled fast-path returns
+            # 9. Cache result for throttled fast-path returns
             self._cached_unified_result = unified_result.copy()
             self._cached_component_results = component_results
 
@@ -1607,6 +1610,23 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         # Add neural_risk_hint as top-level key (required by contract)
         response["neural_risk_hint"] = 0.5
 
+        # Add unified metrics/status to satisfy contract even on failure
+        response["unified_metrics"] = {
+            "total_memories": self.memory_store.size() if hasattr(self, "memory_store") else 0,
+            "memory_utilization": self.memory_store.utilization() if hasattr(self, "memory_store") else 0.0,
+            "components_active": 0,
+            "processing_status": "fallback",
+            "health_status": "degraded",
+        }
+        response["unified_memory_status"] = {
+            "components_enabled": 0,
+            "memory_size": self.memory_store.size() if hasattr(self, "memory_store") else 0,
+            "status": "fallback",
+            "health_status": "degraded",
+            "total_memories": self.memory_store.size() if hasattr(self, "memory_store") else 0,
+            "memory_utilization": self.memory_store.utilization() if hasattr(self, "memory_store") else 0.0,
+        }
+
         response["_thesis"] = f"Unified memory fallback: {reason}"
         response["fallback_reason"] = reason
         return response
@@ -1622,11 +1642,12 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
             self.circuit_breaker["state"] = "OPEN"
 
         # Log error
+        ctx = self.error_pinpointer.analyze_error(error, "UnifiedMemory.process")
         self.logger.error(
             format_operator_message(
                 "❌",
                 "UNIFIED_MEMORY_ERROR",
-                error=str(error),
+                error=str(ctx),
                 processing_time_ms=processing_time,
                 context="unified_memory",
             )
@@ -1639,7 +1660,9 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         if self.unified_config.debug:
             self.debug_logger.log_error("PROCESS_ERROR", error)
 
-        return self._create_fallback_response(f"Error: {str(error)}")
+        fallback = self._create_fallback_response(f"Error: {str(error)}")
+        fallback = self._ensure_required_outputs(fallback, reason=str(error))
+        return fallback
 
     def _record_success(self, processing_time: float) -> None:
         """Record successful processing"""
@@ -1653,6 +1676,79 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
 
         # Update performance tracker
         self.performance_tracker.record_metric("UnifiedMemory", "process_cycle", processing_time, True)
+
+    def _ensure_required_outputs(self, result: Dict[str, Any], reason: Optional[str]) -> Dict[str, Any]:
+        """
+        Guarantee contract-required outputs exist. If missing, populate safe defaults and
+        emit an explicit error so issues are not silently ignored.
+        """
+        required_defaults: Dict[str, Any] = {
+            "unified_metrics": {
+                "total_memories": self.memory_store.size() if hasattr(self, "memory_store") else 0,
+                "memory_utilization": self.memory_store.utilization() if hasattr(self, "memory_store") else 0.0,
+                "components_active": 0,
+                "processing_status": "fallback" if reason else "complete",
+                "health_status": "degraded" if reason else getattr(self, "_health_status", "unknown"),
+            },
+            "unified_memory_status": {
+                "components_enabled": 0,
+                "memory_size": self.memory_store.size() if hasattr(self, "memory_store") else 0,
+                "status": "fallback" if reason else "active",
+                "health_status": "degraded" if reason else getattr(self, "_health_status", "unknown"),
+                "total_memories": self.memory_store.size() if hasattr(self, "memory_store") else 0,
+                "memory_utilization": self.memory_store.utilization() if hasattr(self, "memory_store") else 0.0,
+            },
+            "memory_gate": {
+                "veto": False,
+                "risk_multiplier": 1.0,
+                "confidence": 0.5,
+                "reasons": [f"autofill: {reason}"] if reason else [],
+                "risk_score": 0.0,
+                "danger_similarity": 0.0,
+                "loss_prob": 0.0,
+            },
+            "memory_vote": {
+                "vote_value": 0.0,
+                "signed_bias": 0.0,
+                "confidence": 0.5,
+                "expected_pnl": 0.0,
+                "neural_risk_hint": 0.5,
+                "max_attention": 0.5,
+                "source": "memory_autofill",
+            },
+            "memory_rationale": {
+                "gate_reasons": [f"autofill: {reason}"] if reason else [],
+                "top_neighbors": [],
+                "signals": {
+                    "danger_similarity": 0.0,
+                    "avoidance_signal": 0.0,
+                    "loss_prob": 0.0,
+                    "signed_bias": 0.0,
+                    "neural_risk_hint": 0.5,
+                },
+                "intervention": None,
+                "verdict": "proceed",
+                "summary": f"Memory autofill: {reason or 'missing required outputs'}",
+            },
+            "neural_risk_hint": 0.5,
+        }
+
+        missing: List[str] = []
+        for key, default_val in required_defaults.items():
+            if key not in result:
+                result[key] = default_val
+                missing.append(key)
+
+        if missing:
+            self.logger.error(
+                format_operator_message(
+                    "�!",
+                    "UNIFIED_MEMORY_MISSING_OUTPUTS",
+                    missing=missing,
+                    reason=reason or "unspecified",
+                )
+            )
+        return result
 
     def _record_failure(self, error: Exception) -> None:
         """Record processing failure"""

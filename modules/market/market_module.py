@@ -705,7 +705,7 @@ class UnifiedMarketModule(
             if 'liquidity_score_by_instrument' not in aggregated:
                 liq_score = aggregated.get('liquidity_score', 0.5)
                 # Default: same score for all watched instruments
-                universe = inputs.get('universe', ['EUR/USD', 'XAU/USD'])
+                universe = aggregated.get('universe') or aggregated.get('watched_instruments') or ['EUR/USD', 'XAU/USD']
                 if not isinstance(universe, list):
                     universe = ['EUR/USD', 'XAU/USD']
                 aggregated['liquidity_score_by_instrument'] = {

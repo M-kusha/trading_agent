@@ -1705,6 +1705,8 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             'decision_rationales': ["Rationale generation unavailable"],
             'explanation_metrics': self.session_metrics.copy(),
             'health_metrics': {'status': 'error', 'error_context': str(error_context)},
+            'explanation_generator_initialization': self._init_payload or (self.smart_bus.get('explanation_generator_initialization', 'ExplanationGenerator') or {}),
+            'market_overview': {},
             '_thesis': f"ExplanationGenerator encountered an error and entered degraded mode: {error_context}"
         }
 

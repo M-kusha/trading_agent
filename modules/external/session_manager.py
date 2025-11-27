@@ -288,6 +288,18 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                 except Exception:
                     pass
 
+                # Publish canonical session labels upfront
+                try:
+                    session_ctx = self._build_session_context()
+                    bus.set('session_canonical', session_ctx.get('session_canonical', 'unknown'),
+                            module='SessionManager', thesis='Canonical session label (init)')
+                    bus.set('trading_session', session_ctx.get('trading_session', 'unknown'),
+                            module='SessionManager', thesis='Trading session label (init)')
+                    bus.set('session_type', session_ctx.get('session_type', 'unknown'),
+                            module='SessionManager', thesis='Session type label (init)')
+                except Exception:
+                    pass
+
                 try:
                     bus.declare_owner('execution_mode', 'SessionManager')
                 except Exception:
@@ -740,6 +752,29 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
             system_performance = self._build_system_performance()
             session_health = self._build_session_health()
             session_context = self._build_session_context()
+
+            # Publish canonical session labels for consumers that read direct keys
+            try:
+                self.smart_bus.set(
+                    'session_canonical',
+                    session_context.get('session_canonical', 'unknown'),
+                    module='SessionManager',
+                    thesis='Canonical session label'
+                )
+                self.smart_bus.set(
+                    'trading_session',
+                    session_context.get('trading_session', 'unknown'),
+                    module='SessionManager',
+                    thesis='Trading session label'
+                )
+                self.smart_bus.set(
+                    'session_type',
+                    session_context.get('session_type', 'unknown'),
+                    module='SessionManager',
+                    thesis='Session type label'
+                )
+            except Exception:
+                pass
 
             # Extract bus data once
             (performance_data, environment_config, portfolio_metrics,

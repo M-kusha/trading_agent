@@ -333,7 +333,10 @@ class RewardState:
     def get_audit_trail(self, n: int = 20) -> List[Dict[str, Any]]:
         """Get recent audit trail"""
 
-        return self.audit_trail[-n:] if self.audit_trail else []
+        if not self.audit_trail:
+            return []
+        trail: List[Dict[str, Any]] = list(self.audit_trail)
+        return trail[-n:] if n > 0 else trail
 
     def get_health_status(self) -> Dict[str, Any]:
         """Get health status"""

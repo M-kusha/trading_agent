@@ -1490,7 +1490,8 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             'mastery_assessment': {'overall_mastery': 0.5, 'error': str(error_context)},
             'learning_analytics': self.learning_stats.copy(),
             'health_metrics': {'status': 'error', 'error_context': str(error_context)},
-            'curriculum_initialization': self._get_curriculum_initialization_view()
+            'curriculum_initialization': self._get_curriculum_initialization_view(),
+            '_thesis': f"CurriculumPlannerPlus error: {error_context}"
         }
 
     def _get_safe_learning_defaults(self) -> Dict[str, Any]:

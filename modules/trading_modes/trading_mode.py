@@ -148,6 +148,19 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         self._initialize_state_management()
         self._initialize_advanced_systems()
 
+        # Seed optional dependencies with safe defaults to satisfy stage readiness
+        try:
+            # Only seed if no provider has declared ownership
+            bus = InfoBusManager.get_instance()
+            providers = getattr(bus, "get_providers", lambda k: [])("shadow_predictions") or []
+            if not providers:
+                bus.set("shadow_predictions", {}, module="TradingModeManager", thesis="Baseline shadow predictions (empty)")
+            providers = getattr(bus, "get_providers", lambda k: [])("economic_calendar") or []
+            if not providers:
+                bus.set("economic_calendar", {}, module="TradingModeManager", thesis="Baseline economic calendar (empty)")
+        except Exception:
+            pass
+
         # Enhanced mode configuration
         self.initial_mode = self._cfg.initial_mode if self._cfg.initial_mode in self.TRADING_MODES else 'normal'
         self.window = int(self._cfg.window)

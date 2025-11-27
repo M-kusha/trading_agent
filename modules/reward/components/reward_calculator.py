@@ -42,6 +42,10 @@ class RewardCalculator:
         # Calculation tracking
         self.calculation_count: int = 0
         self.component_magnitudes: Dict[str, float] = {}
+        
+        # Step-by-step PnL tracking (for proper RL reward signals)
+        # RL needs the CHANGE in value per step, not cumulative totals
+        self._last_step_balance: Optional[float] = None
 
     # ─────────────────────────────────────────────────────────────
     # Public
@@ -70,23 +74,37 @@ class RewardCalculator:
         # Calculate denominator (never zero)
         denom = baseline_balance if (baseline_balance and baseline_balance > 0) else max(1e-9, balance_now)
 
-        # Calculate base PnL - use balance change (includes realized + unrealized)
-        # This is correct for mark-to-market accounting where balance includes all P&L
+        # FIX: Calculate STEP-BY-STEP PnL change (not cumulative total)
+        # RL needs per-step rewards that reflect the action's immediate impact
+        # Using cumulative PnL causes the reward to always be large negative after losses
+        if self._last_step_balance is None:
+            self._last_step_balance = baseline_balance if baseline_balance else balance_now
+        
+        # Step delta: change since last step (what RL actually learns from)
+        step_pnl_delta = balance_now - self._last_step_balance
+        self._last_step_balance = balance_now
+        
+        # Normalize by initial balance to keep in reasonable range
+        step_reward = step_pnl_delta / denom * 100.0  # Scale: 1% balance change = 1.0 reward
+        
+        # Also track cumulative for metrics/debugging
         total_pnl = balance_now - (baseline_balance if baseline_balance else balance_now)
 
         # Also calculate realized-only PnL from trades for metrics/debugging
         realised_pnl_from_trades = self._calculate_realised_pnl(trades)
 
-        base_component = total_pnl / denom
+        base_component = step_pnl_delta / denom  # Use step delta, not cumulative
 
         # Initialize components
         components = self._initialize_components(
             reward_data, total_pnl, base_component,
             balance_now, baseline_balance
         )
+        components['step_pnl_delta'] = step_pnl_delta  # Track for debugging
 
-        # Start with total P&L as base reward (realized + unrealized)
-        reward = total_pnl
+        # FIX: Start with STEP delta as base reward (not cumulative PnL!)
+        # This gives the RL agent a proper learning signal
+        reward = step_reward
 
         # Apply penalties
         penalties = await self._calculate_penalties(reward_data, components)
@@ -736,6 +754,11 @@ class RewardCalculator:
         except Exception:
             # logging must not break pipeline
             pass
+
+    def reset(self) -> None:
+        """Reset step-by-step tracking for new episode"""
+        self._last_step_balance = None
+        self.calculation_count = 0
 
     # ─────────────────────────────────────────────────────────────
     # Utilities

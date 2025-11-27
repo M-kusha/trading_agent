@@ -654,6 +654,18 @@ class PositionManagerBase(
             return True
 
         try:
+            # Risk-aware modifiers (fragility/collusion dampen thresholds)
+            fragility = 0.0
+            collusion_score = 0.0
+            try:
+                fragility = float(self.smart_bus.get("fragility", "PositionManager") or
+                                  self.smart_bus.get("sampling_fragility", "PositionManager") or 0.0)
+                collusion_score = float(self.smart_bus.get("collusion_score", "PositionManager") or 0.0)
+            except Exception:
+                pass
+            risk_factor = 1.0 + 0.6 * fragility + 0.5 * collusion_score
+            risk_block = (fragility >= 0.85) or (collusion_score >= 0.85)
+
             # Define action categories
             DIRECTION_ACTIONS = {"buy", "sell", "long", "short"}
             RISK_BLOCK_ACTIONS = {"halt", "emergency", "reduce_risk", "block"}
@@ -682,6 +694,12 @@ class PositionManagerBase(
                         if self.debug:
                             self.logger.debug(f"[GATE] Risk veto by {expert}: action={action}, conf={confidence:.1%}")
                         return False
+
+            # If fragility/collusion are extreme, block before further checks
+            if risk_block:
+                if self.debug:
+                    self.logger.debug(f"[GATE] Blocking due to fragility/collusion (fragility={fragility:.2f}, collusion={collusion_score:.2f})")
+                return False
             
             # ═══════════════════════════════════════════════════════════════════
             # LAYER 2: DIRECTION CONSENSUS CHECK (STRICTER)
@@ -740,11 +758,11 @@ class PositionManagerBase(
                 # Apply strategy boost to confidence (max +10%)
                 boosted_confidence = vote_confidence + min(strategy_boost, 0.10)
                 
-                # STRICTER THRESHOLDS for live trading:
-                # - boosted confidence > 28% (lowered for training)
-                # - consensus_score > 60% (lowered for training)
-                conf_threshold = 0.28
-                consensus_threshold = 0.60
+                # STRICTER THRESHOLDS for live trading with risk-aware penalty:
+                # - boosted confidence > base * risk_factor
+                # - consensus_score > base * risk_factor
+                conf_threshold = min(0.90, 0.28 * risk_factor)
+                consensus_threshold = min(0.95, 0.60 * risk_factor)
                 
                 if vote_action in ("buy", "sell") and boosted_confidence > conf_threshold and consensus_score > consensus_threshold:
                     if self.debug:
@@ -761,7 +779,8 @@ class PositionManagerBase(
             # ═══════════════════════════════════════════════════════════════════
             if isinstance(consensus, dict):
                 consensus_strength = float(consensus.get("consensus_strength", 0.0) or 0.0)
-                if consensus_strength > 0.35:  # 35% threshold (lowered for training)
+                committee_threshold = min(0.90, 0.35 * risk_factor)
+                if consensus_strength > committee_threshold:  # Risk-adjusted threshold
                     return True
             
             # No consensus achieved through any layer
@@ -889,7 +908,7 @@ class PositionManagerBase(
                             f"⚠️  SMART GATE: Blocked {blocked} order(s) | "
                             f"Vote: {vote_conf:.1%}+{strategy_boost:+.1%}={vote_conf+strategy_boost:.1%} | "
                             f"Consensus: {consensus_score:.1%} | Strategy: {boost_reason} | "
-                            f"Need: conf>38% + consensus>70%"
+                            f"Need: conf>28% + consensus>60%"
                         )
                     except:
                         self.logger.warning(
@@ -1379,12 +1398,12 @@ class PositionManagerBase(
         )
         vol_map = self.smart_bus.get("volatility_data", "PositionManager") or {}
         market_context = self.smart_bus.get("market_context", "PositionManager") or {}
-        market_conditions = self.smart_bus.get("market_conditions", "PositionManager") or {}
+        # NOTE: market_conditions removed - redundant with market_context
         liq_caps = self.smart_bus.get("liquidity_capabilities", "PositionManager") or {}
         liq_score = self.smart_bus.get("liquidity_score", "PositionManager")
         market_liquidity = self.smart_bus.get("market_liquidity", "PositionManager") or {}
 
-        regime = market_context.get("volatility_regime", market_conditions.get("volatility_regime"))
+        regime = market_context.get("volatility_regime") or market_context.get("regime")
         session = market_context.get("session")
 
         bus_signals = {}

@@ -1285,11 +1285,15 @@ class Executor(BaseModule):
                         # Only apply global vote if no symbol specified or matches
                         if not vote_symbol or vote_symbol_normalized == symbol:
                             vote_action = str(trade_vote.get("action", "")).upper()
-                            if vote_action == "BUY":
-                                signal_direction = 1
-                            elif vote_action == "SELL":
-                                signal_direction = -1
-                            signal_strength = float(trade_vote.get("confidence", trade_vote.get("intensity", 0.5)) or 0.5)
+                            vote_confidence = float(trade_vote.get("confidence", trade_vote.get("intensity", 0.5)) or 0.0)
+                            vote_consensus = float(trade_vote.get("consensus_score", 0.0) or 0.0)
+                            # Require a minimum confidence/consensus to use global vote
+                            if vote_confidence >= 0.35 and vote_consensus >= 0.55 and vote_action in ("BUY", "SELL"):
+                                if vote_action == "BUY":
+                                    signal_direction = 1
+                                elif vote_action == "SELL":
+                                    signal_direction = -1
+                                signal_strength = vote_confidence
                 except Exception:
                     pass
             

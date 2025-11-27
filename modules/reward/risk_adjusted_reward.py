@@ -699,6 +699,9 @@ class RiskAdjustedReward(
             self.state.reset()
             self.analytics_engine.reset()
             self.adaptation_manager.reset()
+            # FIX: Reset calculator's step-by-step tracking for new episode
+            if hasattr(self, 'calculator') and self.calculator:
+                self.calculator.reset()
         if self.debug_manager.enabled:
             with self._safe_debug():
                 self.debug_manager.log_reset()

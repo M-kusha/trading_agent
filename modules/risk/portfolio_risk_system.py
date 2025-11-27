@@ -2219,8 +2219,9 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             "performance_metrics": dict(self.performance_metrics),
             
             # Correlation and position data
-            "correlation_matrix": {k: dict(v) if isinstance(v, dict) else v 
-                                   for k, v in self.correlation_matrix.items()},
+            "correlation_matrix": (
+                self.correlation_matrix.tolist() if self.correlation_matrix is not None else None
+            ),
             "current_positions": dict(self.current_positions),
             
             # Adaptive parameters
@@ -2268,7 +2269,14 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         
         # Correlation and position data
         if "correlation_matrix" in state:
-            self.correlation_matrix.update(state["correlation_matrix"])
+            cm = state["correlation_matrix"]
+            if cm is None:
+                self.correlation_matrix = None
+            else:
+                try:
+                    self.correlation_matrix = np.array(cm, dtype=np.float64)
+                except Exception:
+                    self.correlation_matrix = None
         if "current_positions" in state:
             self.current_positions.update(state["current_positions"])
         

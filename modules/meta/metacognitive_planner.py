@@ -180,6 +180,12 @@ class MetaCognitivePlanner(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRis
         self.planning_effectiveness = defaultdict(lambda: {'successful': 0, 'total': 0, 'avg_outcome': 0.0})
         self.strategy_performance = defaultdict(list)
         self.market_adaptation_patterns = defaultdict(list)
+        # Per-phase statistics (indexed by phase name)
+        self.phase_stats: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
+            'successful': 0,
+            'total': 0,
+            'avg_outcome': 0.0,
+        })
         
         # Cognitive metrics
         self.cognitive_load = 0.5

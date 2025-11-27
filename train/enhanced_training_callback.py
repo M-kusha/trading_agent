@@ -406,6 +406,19 @@ class ModernEnhancedTrainingCallback(BaseCallback):
         self.health_check_interval = max(50, int(getattr(config, "risk_check_frequency", 1)) * 50)
         self.last_health_check = 0
 
+        # Cache for training metrics (SB3's logger.name_to_value resets between updates)
+        # We retain the last non-zero values so metrics aren't always 0 between PPO updates
+        self._cached_training_metrics: Dict[str, float] = {
+            "clip_fraction": 0.0,
+            "explained_variance": 0.0,
+            "policy_loss": 0.0,
+            "value_loss": 0.0,
+            "entropy_loss": 0.0,
+            "policy_gradient_loss": 0.0,
+            "approx_kl": 0.0,
+        }
+        self._last_ppo_update_step: int = 0  # Track when PPO last updated
+
         # Safe logger
         self.training_log = RotatingLogger_Cls(
             name="EnhancedTrainingCallback",
@@ -885,15 +898,29 @@ class ModernEnhancedTrainingCallback(BaseCallback):
             out["learning_rate"] = lr_float
 
             # Optional SB3 metrics (best-effort)
+            # SB3's logger.name_to_value resets between PPO updates (every n_steps)
+            # We cache the last non-zero values to avoid always showing 0 between updates
             if getattr(self.model, "logger", None) and hasattr(self.model.logger, "name_to_value"):
                 nd = self.model.logger.name_to_value
-                out.update({
-                    "clip_fraction": nd.get("train/clip_fraction", 0),
-                    "explained_variance": nd.get("train/explained_variance", 0),
-                    "policy_loss": nd.get("train/policy_loss", 0),
-                    "value_loss": nd.get("train/value_loss", 0),
-                    "entropy_loss": nd.get("train/entropy_loss", 0),
-                })
+                
+                # Check if this is a fresh PPO update (non-zero values present)
+                clip_frac = nd.get("train/clip_fraction", 0)
+                if clip_frac != 0 or nd.get("train/policy_gradient_loss", 0) != 0:
+                    # Fresh update - cache all values
+                    self._cached_training_metrics.update({
+                        "clip_fraction": nd.get("train/clip_fraction", 0),
+                        "explained_variance": nd.get("train/explained_variance", 0),
+                        "policy_loss": nd.get("train/policy_gradient_loss", 0),  # Use policy_gradient_loss
+                        "value_loss": nd.get("train/value_loss", 0),
+                        "entropy_loss": nd.get("train/entropy_loss", 0),
+                        "policy_gradient_loss": nd.get("train/policy_gradient_loss", 0),
+                        "approx_kl": nd.get("train/approx_kl", 0),
+                    })
+                    self._last_ppo_update_step = self.n_calls
+                    
+                # Always return cached values (they persist between updates)
+                out.update(self._cached_training_metrics)
+                out["last_ppo_update_step"] = self._last_ppo_update_step
             return out
         except Exception:
             return {}

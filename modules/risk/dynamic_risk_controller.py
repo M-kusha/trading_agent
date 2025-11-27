@@ -10,7 +10,7 @@ import threading
 from modules.contracts import module_args
 import numpy as np
 import datetime
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Union, Deque
 from collections import deque, defaultdict
 from dataclasses import dataclass
 from enum import Enum
@@ -220,7 +220,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
         self.market_session = "unknown"
 
         # Enhanced risk event tracking
-        self.risk_events: List[Dict[str, Any]] = []
+        self.risk_events: Deque[Dict[str, Any]] = deque(maxlen=100)
         self.risk_adjustments_made = 0
         self.emergency_interventions = 0
 
@@ -1704,9 +1704,9 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
 
             self.risk_events.append(event)
 
-            # Keep only recent events
-            if len(self.risk_events) > 50:
-                self.risk_events = self.risk_events[-50:]
+            # Keep only recent events (bounded deque + extra guard)
+            while len(self.risk_events) > 50:
+                self.risk_events.popleft()
 
             # Log significant adjustments
             if abs(new_scale - old_scale) > 0.2:

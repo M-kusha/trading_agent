@@ -118,19 +118,19 @@ class PositionManager(PositionManagerBase):
             return self._finalize_decision(instrument, decision, 0.0, 0.0, 0.3, rationale, risk_factors, context)
 
         # ---------- Fast emergency gate (only closes / reduces)
-        if self._check_emergency_conditions(context):
-            if has_position:
-                decision = PositionDecision.EMERGENCY_CLOSE
-                intensity = 1.0
-                confidence = 0.9
-                rationale["stage"] = "emergency"
-                rationale["factors"].append("Emergency conditions detected")
-                return self._finalize_decision(instrument, decision, intensity, size, confidence, rationale, risk_factors, context)
+            if self._check_emergency_conditions(context):
+                if has_position:
+                    decision = PositionDecision.EMERGENCY_CLOSE
+                    intensity = 1.0
+                    confidence = 0.9
+                    rationale["stage"] = "emergency"
+                    rationale["factors"].append("Emergency conditions detected")
+                    return self._finalize_decision(instrument, decision, intensity, size, confidence, rationale, risk_factors, context)
 
-            # No position: just hold if emergency with no exposure
-            rationale["stage"] = "emergency_hold"
-            rationale["factors"].append("Emergency conditions; no open position")
-            return self._finalize_decision(instrument, decision, 0.0, 0.0, 0.6, rationale, risk_factors, context)
+                # No position: just hold if emergency with no exposure
+                rationale["stage"] = "emergency_hold"
+                rationale["factors"].append("Emergency conditions; no open position")
+                return self._finalize_decision(instrument, decision, 0.0, 0.0, 0.6, rationale, risk_factors, context)
 
         # ---------- MEMORY DANGER ZONE CHECK (before opening new positions)
         if not has_position and memory_data.get("in_danger_zone", False):
@@ -239,7 +239,8 @@ class PositionManager(PositionManagerBase):
                 return self._finalize_decision(instrument, decision, intensity, size, confidence, rationale, risk_factors, context)
 
         rationale["stage"] = "new_position"
-        rationale["factors"].append(f"Strong signal {sig_strength:.3f} for new position")
+        direction_label = "BULLISH" if effective_direction > 0 else "BEARISH"
+        rationale["factors"].append(f"{direction_label} signal {sig_strength:.3f} for new position")
         return self._finalize_decision(instrument, decision, intensity, size, confidence, rationale, risk_factors, context)
 
     # ==========================================================
@@ -377,32 +378,52 @@ class PositionManager(PositionManagerBase):
         inst_data = market_data.get(instrument, {}) or {}
 
         # ============================================================
-        # FIX: Read agent_action as PRIMARY signal source
-        # The PPO agent outputs [direction, size] which should drive trading
+        # Signal extraction priority:
+        # 1. inst_data["intensity"] - comes from instrument_signals via SmartBus
+        #    (Already correctly parsed by StrategyArbiter from agent_action)
+        # 2. agent_action - multi-instrument format [inst0_int, inst1_int, ...]
+        #    Parse per-instrument using self.instruments index
+        # 3. Default to 0.0
         # ============================================================
         raw_intensity = 0.0
-        try:
-            agent_action = self.smart_bus.get("agent_action", "PositionManager", default=None)
-            if agent_action is not None:
-                # agent_action format: [direction (-1 to 1), size (0 to 1)]
-                if isinstance(agent_action, (list, tuple)) and len(agent_action) >= 1:
-                    direction = float(agent_action[0])  # -1 to 1
-                    size = float(agent_action[1]) if len(agent_action) > 1 else 0.5
-                    # Convert to intensity: direction * size gives trading signal
-                    raw_intensity = direction * size
-                elif isinstance(agent_action, dict):
-                    # Handle dict format {direction: x, size: y}
-                    direction = float(agent_action.get("direction", agent_action.get("action", 0.0)))
-                    size = float(agent_action.get("size", agent_action.get("intensity", 0.5)))
-                    raw_intensity = direction * size
-                elif isinstance(agent_action, (int, float)):
-                    raw_intensity = float(agent_action)
-        except Exception:
-            pass
         
-        # Fallback to market_data intensity if agent_action not available
-        if abs(raw_intensity) < 1e-6:
+        # Priority 1: Use pre-parsed intensity from instrument_signals (via position_base)
+        if "intensity" in inst_data:
             raw_intensity = inst_data.get("intensity", 0.0)
+        
+        # Priority 2: Fallback to agent_action with correct multi-instrument parsing
+        if abs(raw_intensity) < 1e-6:
+            try:
+                agent_action = self.smart_bus.get("agent_action", "PositionManager", default=None)
+                if agent_action is not None and isinstance(agent_action, (list, tuple, np.ndarray)):
+                    action_arr = np.asarray(agent_action, dtype=np.float32).flatten()
+                    n_instruments = len(self.instruments)
+                    
+                    # Find this instrument's index
+                    try:
+                        inst_idx = self.instruments.index(instrument)
+                    except ValueError:
+                        inst_idx = -1
+                    
+                    if inst_idx >= 0:
+                        # Multi-instrument format: first n elements are intensities per instrument
+                        # Format is [inst0_intensity, inst1_intensity, ...] (contiguous)
+                        # or [inst0_int, inst0_conf, inst1_int, inst1_conf, ...] (interleaved)
+                        if action_arr.size >= 2 * n_instruments:
+                            # Try contiguous first (more common)
+                            contiguous = action_arr[:n_instruments]
+                            interleaved = action_arr[0:2*n_instruments:2]
+                            # Use whichever has more signal content
+                            if np.mean(np.abs(contiguous)) >= np.mean(np.abs(interleaved)):
+                                raw_intensity = float(contiguous[inst_idx])
+                            else:
+                                raw_intensity = float(interleaved[inst_idx])
+                        elif action_arr.size >= n_instruments:
+                            raw_intensity = float(action_arr[inst_idx])
+                        elif inst_idx < action_arr.size:
+                            raw_intensity = float(action_arr[inst_idx])
+            except Exception:
+                pass
         
         market_intensity = float(raw_intensity if isinstance(raw_intensity, (int, float)) else 0.0)
         market_direction = int(np.sign(market_intensity))

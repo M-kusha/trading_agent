@@ -1015,9 +1015,33 @@ class BeautifulTrainingVisualizer:
         
         if recent:
             # Header
+            available = max(40, self.terminal_width - 6)  # account for margins/spaces
+            base_widths = {
+                "instrument": 12,
+                "side": 6,
+                "entry": 10,
+                "close": 10,
+                "pnl": 12,
+                "reason": 10,
+            }
+            base_total = sum(base_widths.values()) + 5  # spaces between columns
+            scale = min(1.0, max(0.55, available / base_total))
+
+            def w(name: str, minimum: int) -> int:
+                return max(minimum, int(base_widths[name] * scale))
+
+            entry_prec = 5 if scale > 0.85 else 4 if scale > 0.75 else 3
+            reason_width = w("reason", 6)
+
             header = (
-                f"  {Colors.BOLD}{Colors.WHITE}{'Instrument':<12} {'Side':<6} {'Entry':>10} {'Close':>10} "
-                f"{'P&L':>12} {'Reason':<10}{Colors.RESET}"
+                f"  {Colors.BOLD}{Colors.WHITE}"
+                f"{'Instrument':<{w('instrument', 6)}} "
+                f"{'Side':<{w('side', 4)}} "
+                f"{'Entry':>{w('entry', 6)}} "
+                f"{'Close':>{w('close', 6)}} "
+                f"{'P&L':>{w('pnl', 8)}} "
+                f"{'Reason':<{reason_width}}"
+                f"{Colors.RESET}"
             )
             self._add(_ansi_safe_truncate(header, self.terminal_width))
             self._add(f"  {Colors.DARK_GRAY}{BoxChars.H * (self.terminal_width - 4)}{Colors.RESET}")
@@ -1034,18 +1058,18 @@ class BeautifulTrainingVisualizer:
                 entry_price = float(pos.get('entry_price', 0) or 0)
                 close_price = float(pos.get('close_price', 0) or 0)
                 pnl = float(pos.get('pnl', pos.get('profit', 0)) or 0)
-                reason = str(pos.get('close_reason', 'N/A'))[:10]
+                reason = str(pos.get('close_reason', 'N/A'))[:reason_width]
                 
                 pnl_color = Colors.PROFIT_GREEN if pnl >= 0 else Colors.LOSS_RED
                 pnl_sign = "+" if pnl >= 0 else ""
                 
                 row = (
-                    f"  {Colors.CYAN}{instrument:<12}{Colors.RESET} "
-                    f"{side_color}{side_str:<6}{Colors.RESET} "
-                    f"{Colors.WHITE}{entry_price:>10.5f}{Colors.RESET} "
-                    f"{Colors.WHITE}{close_price:>10.5f}{Colors.RESET} "
-                    f"{pnl_color}{pnl_sign}${pnl:>10.2f}{Colors.RESET} "
-                    f"{Colors.GRAY}{reason:<10}{Colors.RESET}"
+                    f"  {Colors.CYAN}{instrument:<{w('instrument', 6)}}{Colors.RESET} "
+                    f"{side_color}{side_str:<{w('side', 4)}}{Colors.RESET} "
+                    f"{Colors.WHITE}{entry_price:>{w('entry', 6)}.{entry_prec}f}{Colors.RESET} "
+                    f"{Colors.WHITE}{close_price:>{w('close', 6)}.{entry_prec}f}{Colors.RESET} "
+                    f"{pnl_color}{pnl_sign}${pnl:>{w('pnl', 8)-1}.2f}{Colors.RESET} "
+                    f"{Colors.GRAY}{reason:<{reason_width}}{Colors.RESET}"
                 )
                 self._add(_ansi_safe_truncate(row, self.terminal_width))
         
