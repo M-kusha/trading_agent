@@ -83,7 +83,7 @@ class TrendExpert(VotingExpertBase):
         self.strong_trend_multiplier = 2.5
         
         # Confluence requirements
-        self.min_confluence_score = float(self.config.get('min_confluence', 0.35))
+        self.min_confluence_score = float(self.config.get('min_confluence', 0.15))
         self.strong_signal_confluence = float(self.config.get('strong_confluence', 0.65))
         
         # S/R detection
@@ -132,9 +132,9 @@ class TrendExpert(VotingExpertBase):
         
         # Performance tracking
         self.trend_performance: Dict[str, Dict[str, Any]] = {
-            'trend_bullish': {'signals': 0, 'success': 0, 'total_pnl': 0.0},
-            'trend_bearish': {'signals': 0, 'success': 0, 'total_pnl': 0.0},
-            'trend_neutral': {'signals': 0, 'success': 0, 'total_pnl': 0.0},
+            'long': {'signals': 0, 'success': 0, 'total_pnl': 0.0},
+            'short': {'signals': 0, 'success': 0, 'total_pnl': 0.0},
+            'flat': {'signals': 0, 'success': 0, 'total_pnl': 0.0},
         }
         
         self.log_info(
@@ -434,8 +434,9 @@ class TrendExpert(VotingExpertBase):
         try:
             # Update price data
             if not self._update_price_data(market_data):
+                self.log_warning("[TREND] No valid price data - returning flat")
                 return {
-                    'action': 'trend_neutral',
+                    'action': 'flat',
                     'signal_strength': 0.0,
                     'reason': 'No valid price data',
                 }
@@ -446,8 +447,9 @@ class TrendExpert(VotingExpertBase):
             
             # Need sufficient data
             if len(prices) < self.slow_period + 10:
+                self.log_warning(f"[TREND] Insufficient data: {len(prices)} bars (need {self.slow_period + 10}) - returning flat")
                 return {
-                    'action': 'trend_neutral',
+                    'action': 'flat',
                     'signal_strength': 0.0,
                     'reason': f'Insufficient data: {len(prices)} bars',
                 }
@@ -597,18 +599,21 @@ class TrendExpert(VotingExpertBase):
                 else:
                     self.trend_duration = 1
             
-            # ADX gating - only signal if trend is strong enough
-            adx_gate = self.adx_value >= (self.adx_trending_threshold * 0.8)
+            # ADX gating - softer gate for weak trends
+            adx_gate = self.adx_value >= (self.adx_trending_threshold * 0.5)  # Lowered threshold
             
-            # Determine direction
-            if net_trend > self.min_confluence_score and adx_gate:
-                action = 'trend_bullish'
+            # ALWAYS give a directional vote based on net trend
+            # Only truly flat when trend is exactly 0
+            if net_trend > 0.01 and adx_gate:  # Very low threshold for bullish
+                action = 'long'
                 self.current_trend = 'uptrend'
-                signal_strength = min(1.0, bullish_confluence)
-                
-                # Boost for strong confluence
+                # Scale signal strength based on confluence
                 if bullish_confluence >= self.strong_signal_confluence:
-                    signal_strength = min(1.0, signal_strength * 1.2)
+                    signal_strength = min(1.0, bullish_confluence * 1.2)
+                elif bullish_confluence >= self.min_confluence_score:
+                    signal_strength = min(0.8, bullish_confluence)
+                else:
+                    signal_strength = max(0.2, bullish_confluence * 0.5)  # Weak but still directional
                 
                 # Boost for ADX strength
                 if self.adx_value >= self.adx_strong_threshold:
@@ -618,13 +623,15 @@ class TrendExpert(VotingExpertBase):
                 if self.trend_duration >= 5:
                     signal_strength = min(1.0, signal_strength * 1.1)
                 
-            elif net_trend < -self.min_confluence_score and adx_gate:
-                action = 'trend_bearish'
+            elif net_trend < -0.01 and adx_gate:  # Very low threshold for bearish
+                action = 'short'
                 self.current_trend = 'downtrend'
-                signal_strength = min(1.0, bearish_confluence)
-                
                 if bearish_confluence >= self.strong_signal_confluence:
-                    signal_strength = min(1.0, signal_strength * 1.2)
+                    signal_strength = min(1.0, bearish_confluence * 1.2)
+                elif bearish_confluence >= self.min_confluence_score:
+                    signal_strength = min(0.8, bearish_confluence)
+                else:
+                    signal_strength = max(0.2, bearish_confluence * 0.5)
                 
                 if self.adx_value >= self.adx_strong_threshold:
                     signal_strength = min(1.0, signal_strength * 1.15)
@@ -632,10 +639,21 @@ class TrendExpert(VotingExpertBase):
                 if self.trend_duration >= 5:
                     signal_strength = min(1.0, signal_strength * 1.1)
                 
+            elif net_trend > 0.01:  # Weak trend but no ADX confirmation
+                action = 'long'
+                self.current_trend = 'weak_uptrend'
+                signal_strength = max(0.15, bullish_confluence * 0.3)
+                
+            elif net_trend < -0.01:  # Weak trend but no ADX confirmation
+                action = 'short'
+                self.current_trend = 'weak_downtrend'
+                signal_strength = max(0.15, bearish_confluence * 0.3)
+                
             else:
-                action = 'trend_neutral'
+                # Truly flat - no directional bias at all
+                action = 'flat'
                 self.current_trend = 'neutral'
-                signal_strength = 0.2
+                signal_strength = 0.1
             
             # ═══════════════ BUILD PROPOSAL ═══════════════
             
@@ -683,7 +701,7 @@ class TrendExpert(VotingExpertBase):
         except Exception as e:
             self.log_error(f"[TREND] Proposal generation failed: {e}")
             return {
-                'action': 'trend_neutral',
+                'action': 'flat',
                 'signal_strength': 0.0,
                 'reason': f'Analysis error: {str(e)[:100]}',
             }
@@ -695,16 +713,16 @@ class TrendExpert(VotingExpertBase):
     ) -> float:
         """Calculate sophisticated confidence score."""
         try:
-            action = proposal.get('action', 'trend_neutral')
+            action = proposal.get('action', 'flat')
             
             # Base confidence from signal strength
             signal_strength = proposal.get('signal_strength', 0.0)
             base = 0.3 + signal_strength * 0.4
             
             # Confluence bonus
-            if action == 'trend_bullish':
+            if action == 'long':
                 confluence = proposal.get('bullish_confluence', 0.0)
-            elif action == 'trend_bearish':
+            elif action == 'short':
                 confluence = proposal.get('bearish_confluence', 0.0)
             else:
                 confluence = 0.0
@@ -793,6 +811,10 @@ class TrendExpert(VotingExpertBase):
         
         return {
             **base,
+            # Standard naming convention
+            'TrendExpert_voting_proposal': proposal,
+            'TrendExpert_confidence': confidence,
+            # Alias keys for backward compatibility
             'trend_voting_proposal': proposal,
             'trend_confidence': confidence,
             'trend_analysis': trend_analysis,

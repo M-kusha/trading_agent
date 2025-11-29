@@ -1235,8 +1235,20 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             vol_adj       = self.smart_bus.get('volatility_adjustment', 'EnhancedWorldModel') or {}
             market_cond   = self.smart_bus.get('market_conditions', 'EnhancedWorldModel') or {}
 
+            # Guard against scalar / non-dict values coming from the bus
+            if not isinstance(regime_data, dict):
+                regime_data = {}
+            if not isinstance(vol_adj, dict):
+                # Some pipelines publish volatility_adjustment as a scalar (e.g., 1.0);
+                # treat that as "no structured volatility regime info" for encoding.
+                vol_adj = {}
+            if not isinstance(market_cond, dict):
+                market_cond = {}
+
             # Legacy
             market_context = self.smart_bus.get('market_context', 'EnhancedWorldModel') or {}
+            if not isinstance(market_context, dict):
+                market_context = {}
 
             # Regime scalar (ordinal proxy)
             regime_val_map = {'trending': 1.0, 'volatile': 0.75, 'ranging': 0.5, 'unknown': 0.25}
@@ -1258,6 +1270,8 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 market_data.get('risk_snapshot')
                 or market_cond.get('risk_snapshot', {})
             )
+            if not isinstance(risk_snapshot, dict):
+                risk_snapshot = {}
             feats.extend([
                 risk_snapshot.get('drawdown_pct', 0.0) / 100.0,
                 risk_snapshot.get('exposure_pct', 0.0) / 100.0,
@@ -1274,6 +1288,8 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
 
             # Trading snapshot (optional)
             trading_snapshot = market_data.get('trading_snapshot', {})
+            if not isinstance(trading_snapshot, dict):
+                trading_snapshot = {}
             feats.extend([
                 min(1.0, trading_snapshot.get('trade_count', 0) / 100.0),
                 trading_snapshot.get('avg_trade_size', 0.0) / 1000.0,
@@ -1282,6 +1298,8 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
 
             # Performance (prefer canonical performance_metrics)
             perf = market_data.get('performance_data', {})
+            if not isinstance(perf, dict):
+                perf = {}
             feats.extend([
                 perf.get('recent_pnl', 0.0) / 1000.0,
                 perf.get('win_rate', 0.5),

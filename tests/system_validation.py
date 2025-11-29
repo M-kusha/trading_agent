@@ -472,84 +472,18 @@ def test_voting_kernel():
 
 
 # ============================================================
-# TEST 8: Strategy Genome Pool Evolution
+# TEST 8: Strategy Genome Pool Evolution - REMOVED (module cleanup)
 # ============================================================
 def test_strategy_evolution():
-    """Test strategy genome pool evolves properly"""
+    """Test strategy genome pool - DISABLED (module removed during cleanup)"""
     print("\n" + "-"*40)
     print("TEST 8: Strategy Genome Pool Evolution")
     print("-"*40)
     
-    try:
-        from modules.strategy.strategy_genome_pool import StrategyGenomePool
-        
-        # Create with minimal config
-        pool = StrategyGenomePool.__new__(StrategyGenomePool)
-        pool.config = {
-            'population_size': 5,
-            'tournament_k': 2,
-            'crossover_rate': 0.5,
-            'mutation_rate': 0.2,
-            'mutation_scale': 0.2,
-            'genome_size': 4,
-            'debug': False,
-        }
-        pool.metadata = type('obj', (object,), {'provides': []})()
-        pool.smart_bus = None
-        
-        # Manual initialization of key attributes
-        pool.population_size = 5
-        pool.genome_size = 4
-        pool.genome_bounds = {
-            'sl_base': (0.2, 3.0),
-            'tp_base': (0.3, 4.0),
-            'vol_scale': (0.1, 2.5),
-            'regime_adapt': (0.0, 0.8),
-        }
-        
-        # Initialize population
-        pool.population = np.random.uniform(0, 1, (pool.population_size, pool.genome_size))
-        pool.fitness = np.zeros(pool.population_size)
-        pool.best_fitness = -np.inf
-        pool.best_genome = pool.population[0].copy()
-        
-        results.add("Genome pool creation", True, f"{pool.population_size} genomes")
-        
-        # Simulate fitness evaluation
-        for i in range(pool.population_size):
-            # Simulate PnL from using this genome
-            pool.fitness[i] = np.random.uniform(-100, 200)
-        
-        # Find best
-        best_idx = np.argmax(pool.fitness)
-        if pool.fitness[best_idx] > pool.best_fitness:
-            pool.best_fitness = pool.fitness[best_idx]
-            pool.best_genome = pool.population[best_idx].copy()
-        
-        results.add("Fitness evaluation", True, f"Best fitness: {pool.best_fitness:.2f}")
-        
-        # Test selection (tournament)
-        def tournament_select(population, fitness, k=2):
-            indices = np.random.choice(len(population), size=k, replace=False)
-            best_local = indices[np.argmax(fitness[indices])]
-            return population[best_local].copy()
-        
-        parent1 = tournament_select(pool.population, pool.fitness)
-        parent2 = tournament_select(pool.population, pool.fitness)
-        
-        # Crossover
-        mask = np.random.rand(pool.genome_size) < 0.5
-        child = np.where(mask, parent1, parent2)
-        
-        # Mutation
-        mutation_mask = np.random.rand(pool.genome_size) < 0.2
-        child[mutation_mask] += np.random.randn(np.sum(mutation_mask)) * 0.1
-        child = np.clip(child, 0, 1)
-        
-        results.add("Genetic operations", True, "Selection, crossover, mutation OK")
-        
-    except Exception as e:
-        results.add("Strategy evolution", False, str(e))
+    # StrategyGenomePool module removed during module cleanup (zero consumers)
+    # See docs/MODULE_CLEANUP_ANALYSIS.md for details
+    print("SKIPPED - StrategyGenomePool removed during module cleanup")
+    results.add("Strategy genome pool", None, "Module removed - skipped")
 
 
 # ============================================================
@@ -593,31 +527,18 @@ def test_risk_limits():
 # ============================================================
 # TEST 10: Shadow Simulator Projections
 # ============================================================
+# TEST 10: Shadow Simulator - REMOVED (module cleanup)
+# ============================================================
 def test_shadow_simulator():
-    """Test shadow simulator can project scenarios"""
+    """Test shadow simulator - DISABLED (module removed during cleanup)"""
     print("\n" + "-"*40)
     print("TEST 10: Shadow Simulator Projections")
     print("-"*40)
     
-    try:
-        from modules.simulation.shadow_simulator import ShadowSimulator
-        
-        results.add("Shadow simulator import", True)
-        
-        # Test simulation strategies exist
-        strategies = ShadowSimulator.SIMULATION_STRATEGIES
-        results.add("Simulation strategies", True, f"{len(strategies)} strategies available")
-        
-        # Test defaults
-        defaults = ShadowSimulator.ENHANCED_DEFAULTS
-        if 'horizon' in defaults and 'scenario_count' in defaults:
-            results.add("Simulator config", True, 
-                       f"Horizon: {defaults['horizon']}, Scenarios: {defaults['scenario_count']}")
-        else:
-            results.add("Simulator config", False, "Missing required defaults")
-            
-    except Exception as e:
-        results.add("Shadow simulator", False, str(e))
+    # ShadowSimulator module removed during module cleanup (zero consumers)
+    # See docs/MODULE_CLEANUP_ANALYSIS.md for details
+    print("SKIPPED - ShadowSimulator removed during module cleanup")
+    results.add("Shadow simulator", None, "Module removed - skipped")
 
 
 # ============================================================

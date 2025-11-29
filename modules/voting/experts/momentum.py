@@ -94,9 +94,9 @@ class MomentumExpert(VotingExpertBase):
         self.divergence_lookback = int(self.config.get('divergence_lookback', 20))
         self.divergence_significance = float(self.config.get('divergence_significance', 0.02))
         
-        # Confluence requirements
-        self.min_confluence_score = float(self.config.get('min_confluence', 0.4))
-        self.strong_signal_confluence = float(self.config.get('strong_confluence', 0.7))
+        # Confluence requirements - lowered for more signals during training
+        self.min_confluence_score = float(self.config.get('min_confluence', 0.15))
+        self.strong_signal_confluence = float(self.config.get('strong_confluence', 0.5))
         
         # ═══════════════════════════ STATE ═══════════════════════════
         # Price/volume history
@@ -134,9 +134,9 @@ class MomentumExpert(VotingExpertBase):
         
         # Performance tracking
         self.momentum_performance: Dict[str, Dict[str, Any]] = {
-            'momentum_long': {'signals': 0, 'success': 0, 'total_pnl': 0.0},
-            'momentum_short': {'signals': 0, 'success': 0, 'total_pnl': 0.0},
-            'momentum_neutral': {'signals': 0, 'success': 0, 'total_pnl': 0.0},
+            'long': {'signals': 0, 'success': 0, 'total_pnl': 0.0},
+            'short': {'signals': 0, 'success': 0, 'total_pnl': 0.0},
+            'flat': {'signals': 0, 'success': 0, 'total_pnl': 0.0},
         }
         
         # Divergence tracking
@@ -436,8 +436,9 @@ class MomentumExpert(VotingExpertBase):
         try:
             # Update price data
             if not self._update_price_data(market_data):
+                self.log_warning("[MOMENTUM] No valid price data - returning flat")
                 return {
-                    'action': 'momentum_neutral',
+                    'action': 'flat',
                     'signal_strength': 0.0,
                     'reason': 'No valid price data',
                 }
@@ -449,8 +450,9 @@ class MomentumExpert(VotingExpertBase):
             
             # Need sufficient data
             if len(prices) < max(self.roc_periods) + 5:
+                self.log_warning(f"[MOMENTUM] Insufficient data: {len(prices)} bars (need {max(self.roc_periods) + 5}) - returning flat")
                 return {
-                    'action': 'momentum_neutral',
+                    'action': 'flat',
                     'signal_strength': 0.0,
                     'reason': f'Insufficient data: {len(prices)} bars',
                 }
@@ -591,35 +593,41 @@ class MomentumExpert(VotingExpertBase):
             else:
                 self.momentum_acceleration = 0.0
             
-            # Determine direction
-            if net_momentum > self.min_confluence_score:
-                action = 'momentum_long'
+            # ALWAYS give a directional vote based on net momentum
+            # Only truly flat when momentum is exactly 0
+            if net_momentum > 0.01:  # Very low threshold for bullish
+                action = 'long'
                 self.momentum_direction = 1
-                signal_strength = min(1.0, bullish_confluence)
-                
-                # Boost for strong confluence
+                # Scale signal strength based on confluence
                 if bullish_confluence >= self.strong_signal_confluence:
-                    signal_strength = min(1.0, signal_strength * 1.2)
+                    signal_strength = min(1.0, bullish_confluence * 1.2)
+                elif bullish_confluence >= self.min_confluence_score:
+                    signal_strength = min(0.8, bullish_confluence)
+                else:
+                    signal_strength = max(0.2, bullish_confluence * 0.5)  # Weak but still directional
                 
                 # Boost for momentum acceleration
                 if self.momentum_acceleration > 0.02:
                     signal_strength = min(1.0, signal_strength * 1.1)
                 
-            elif net_momentum < -self.min_confluence_score:
-                action = 'momentum_short'
+            elif net_momentum < -0.01:  # Very low threshold for bearish
+                action = 'short'
                 self.momentum_direction = -1
-                signal_strength = min(1.0, bearish_confluence)
-                
                 if bearish_confluence >= self.strong_signal_confluence:
-                    signal_strength = min(1.0, signal_strength * 1.2)
+                    signal_strength = min(1.0, bearish_confluence * 1.2)
+                elif bearish_confluence >= self.min_confluence_score:
+                    signal_strength = min(0.8, bearish_confluence)
+                else:
+                    signal_strength = max(0.2, bearish_confluence * 0.5)
                 
                 if self.momentum_acceleration < -0.02:
                     signal_strength = min(1.0, signal_strength * 1.1)
                 
             else:
-                action = 'momentum_neutral'
+                # Truly flat - no directional bias at all
+                action = 'flat'
                 self.momentum_direction = 0
-                signal_strength = 0.2
+                signal_strength = 0.1
             
             # ═══════════════ BUILD PROPOSAL ═══════════════
             
@@ -658,7 +666,7 @@ class MomentumExpert(VotingExpertBase):
         except Exception as e:
             self.log_error(f"[MOMENTUM] Proposal generation failed: {e}")
             return {
-                'action': 'momentum_neutral',
+                'action': 'flat',
                 'signal_strength': 0.0,
                 'reason': f'Analysis error: {str(e)[:100]}',
             }
@@ -670,16 +678,16 @@ class MomentumExpert(VotingExpertBase):
     ) -> float:
         """Calculate sophisticated confidence score."""
         try:
-            action = proposal.get('action', 'momentum_neutral')
+            action = proposal.get('action', 'flat')
             
             # Base confidence from signal strength
             signal_strength = proposal.get('signal_strength', 0.0)
             base = 0.3 + signal_strength * 0.4
             
             # Confluence bonus
-            if action == 'momentum_long':
+            if action == 'long':
                 confluence = proposal.get('bullish_confluence', 0.0)
-            elif action == 'momentum_short':
+            elif action == 'short':
                 confluence = proposal.get('bearish_confluence', 0.0)
             else:
                 confluence = 0.0
@@ -755,6 +763,10 @@ class MomentumExpert(VotingExpertBase):
         
         return {
             **base,
+            # Standard naming convention
+            'MomentumExpert_voting_proposal': proposal,
+            'MomentumExpert_confidence': confidence,
+            # Alias keys for backward compatibility
             'momentum_voting_proposal': proposal,
             'momentum_confidence': confidence,
             'momentum_analysis': momentum_analysis,

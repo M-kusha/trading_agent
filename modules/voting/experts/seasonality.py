@@ -152,9 +152,55 @@ class SeasonalityRiskExpert(BaseModule):
                 high_impact_window
             )
             
+            # Build proposal dict for voting
+            proposal = {
+                "action": action,
+                "signal_strength": confidence,
+                "reason": thesis
+            }
+            
+            # Publish to SmartInfoBus for CommitteeCoordinator discovery
+            name = self.__class__.__name__
+            try:
+                self.smart_bus.set('SeasonalityRiskExpert_voting_proposal', proposal, module=name, thesis=thesis)
+                self.smart_bus.set('SeasonalityRiskExpert_confidence', confidence, module=name, thesis=f'Confidence: {confidence:.1%}')
+                self.smart_bus.set('seasonality_voting_proposal', proposal, module=name, thesis=thesis)
+                self.smart_bus.set('seasonality_confidence', confidence, module=name, thesis=f'Seasonality confidence: {confidence:.1%}')
+            except Exception:
+                pass
+            
             return {
-                "SeasonalityRiskExpert_voting_proposal": action,
+                "SeasonalityRiskExpert_voting_proposal": proposal,
                 "SeasonalityRiskExpert_confidence": confidence,
+                "seasonality_voting_proposal": proposal,   # Alias for contract compatibility
+                "seasonality_confidence": confidence,     # Alias for contract compatibility
+                "seasonal_voting_proposal": proposal,       # Additional alias
+                "seasonal_confidence": confidence,        # Additional alias
+                "seasonality_risk_analysis": {            # Required by contract
+                    "session": session_analysis['current_session'],
+                    "dow_bias": dow_analysis['bias'],
+                    "monthly_pattern": monthly_analysis['pattern'],
+                    "composite_score": composite_score,
+                    "rollover_risk": rollover_risk,
+                    "weekend_risk": weekend_risk,
+                    "action": action,
+                    "confidence": confidence
+                },
+                "seasonality_analysis": {                 # Alias
+                    "session": session_analysis['current_session'],
+                    "dow_bias": dow_analysis['bias'],
+                    "monthly_pattern": monthly_analysis['pattern'],
+                    "composite_score": composite_score
+                },
+                "seasonality_expert_analysis": {          # Backward compat alias
+                    "session": session_analysis['current_session'],
+                    "dow_bias": dow_analysis['bias'],
+                    "monthly_pattern": monthly_analysis['pattern'],
+                    "composite_score": composite_score,
+                    "rollover_risk": rollover_risk,
+                    "weekend_risk": weekend_risk
+                },
+                "seasonality_expert_thesis": thesis,      # Backward compat alias
                 "seasonal_session": session_analysis['current_session'],
                 "seasonal_dow_bias": dow_analysis['bias'],
                 "seasonal_monthly_pattern": monthly_analysis['pattern'],
@@ -435,7 +481,7 @@ class SeasonalityRiskExpert(BaseModule):
         features: Dict, 
         price_type: str
     ) -> np.ndarray:
-        """Extract price array from market data or features."""
+        """Extract price array from market data, features, or InfoBus."""
         if isinstance(market_data, dict):
             if price_type in market_data:
                 data = market_data[price_type]
@@ -454,6 +500,36 @@ class SeasonalityRiskExpert(BaseModule):
                 data = features[price_type]
                 if isinstance(data, (list, np.ndarray)):
                     return np.array(data, dtype=float)
+
+        try:
+            historical = self.smart_bus.get("historical_prices", self.module_name, default=None)
+        except Exception:
+            historical = None
+
+        if isinstance(historical, dict):
+            symbol = None
+            for candidate in ("XAU_USD", "EUR_USD"):
+                if candidate in historical:
+                    symbol = candidate
+                    break
+            if symbol is None and historical:
+                symbol = next(iter(historical.keys()))
+
+            if symbol is not None:
+                sym_block = historical.get(symbol)
+                if isinstance(sym_block, dict):
+                    tf_rec = None
+                    for tf in ("H4", "H1", "D1"):
+                        candidate_rec = sym_block.get(tf)
+                        if isinstance(candidate_rec, dict):
+                            tf_rec = candidate_rec
+                            break
+                    if tf_rec is None and sym_block:
+                        tf_rec = sym_block.get(next(iter(sym_block.keys())))
+                    if isinstance(tf_rec, dict):
+                        seq = tf_rec.get(price_type)
+                        if isinstance(seq, (list, np.ndarray)):
+                            return np.array(seq, dtype=float)
         
         return np.array([])
     
@@ -507,90 +583,111 @@ class SeasonalityRiskExpert(BaseModule):
         """
         Select trading action based on seasonal analysis.
         
-        Returns: (action, confidence, thesis)
+        Returns: (action, confidence, thesis) - action is 'long', 'short', or 'flat'
         """
-        # High-impact caution takes priority
+        # High-impact caution: stay flat
         if high_impact_window:
             return (
-                "high_impact_caution",
+                "flat",  # Standard neutral action
                 0.7,
                 f"High-impact event window detected, recommending caution"
             )
         
-        # Weekend risk warning
+        # Weekend risk: stay flat
         if weekend_risk:
             return (
-                "session_avoid",
+                "flat",  # Standard neutral action
                 0.75,
                 "Weekend gap risk - Friday late session, avoid new positions"
             )
         
-        # Rollover caution
+        # Rollover caution: stay flat
         if rollover_risk:
             return (
-                "session_avoid",
+                "flat",  # Standard neutral action
                 0.6,
                 "Rollover window - wider spreads and reduced liquidity expected"
             )
         
-        # Poor session quality
-        if session_analysis['session_quality'] < 0.5:
+        # Poor session quality: stay flat
+        if session_analysis['session_quality'] < 0.3:  # Lowered threshold
             return (
-                "session_avoid",
+                "flat",  # Standard neutral action
                 0.55,
                 f"Low session quality ({session_analysis['current_session']}), "
                 f"reduced liquidity expected"
             )
         
-        # Strong seasonal bias
-        if monthly_analysis['risk_on'] and composite_score > 0.7:
+        # Strong seasonal long bias
+        if monthly_analysis['risk_on'] and composite_score > 0.6:  # Lowered threshold
             confidence = self.base_confidence + (composite_score - 0.5) * 0.6
             return (
-                "seasonal_long_bias",
+                "long",  # Standard bullish action
                 np.clip(confidence, 0.5, 0.8),
                 f"Favorable seasonal conditions: {monthly_analysis['month_name']} "
                 f"(risk-on period), composite: {composite_score:.2f}"
             )
         
-        # Cautious seasonal bias
-        if not monthly_analysis['risk_on'] and composite_score < 0.4:
+        # Cautious seasonal short bias
+        if not monthly_analysis['risk_on'] and composite_score < 0.45:  # Raised threshold
             confidence = self.base_confidence + (0.5 - composite_score) * 0.6
             return (
-                "seasonal_short_bias",
+                "short",  # Standard bearish action
                 np.clip(confidence, 0.5, 0.75),
                 f"Unfavorable seasonal conditions: {monthly_analysis['month_name']} "
                 f"(risk-off period), composite: {composite_score:.2f}"
             )
         
-        # Optimal session for trading
+        # Optimal session - use dow bias for direction
         if session_analysis['current_session'] in ['overlap_eu_us', 'european']:
-            if dow_analysis['trend_continuation'] > 0.65:
-                return (
-                    "session_optimal",
-                    0.6,
-                    f"Optimal trading session: {session_analysis['current_session']}, "
-                    f"{dow_analysis['day_name']} (trend continuation: "
-                    f"{dow_analysis['trend_continuation']:.0%})"
-                )
+            if dow_analysis['trend_continuation'] > 0.55:  # Lowered threshold
+                # Use day-of-week bias for direction
+                dow_bias = dow_analysis.get('bias', 'neutral')
+                if dow_bias == 'bullish':
+                    return (
+                        "long",
+                        0.55,
+                        f"Optimal session + bullish {dow_analysis['day_name']} bias"
+                    )
+                elif dow_bias == 'bearish':
+                    return (
+                        "short",
+                        0.55,
+                        f"Optimal session + bearish {dow_analysis['day_name']} bias"
+                    )
         
-        # Month-end/quarter-end effects
+        # Month-end/quarter-end effects - stay flat
         if monthly_analysis['is_quarter_end']:
             return (
-                "seasonal_neutral",
+                "flat",  # Standard neutral action
                 0.4,
                 "Quarter-end rebalancing period - expect unusual flows"
             )
         
         if monthly_analysis['is_month_end']:
             return (
-                "seasonal_neutral",
+                "flat",  # Standard neutral action
                 0.35,
                 "Month-end positioning - potential for unusual volatility"
             )
         
-        # Default neutral
+        # Default: use composite score for direction with lower threshold
+        if composite_score > 0.52:
+            return (
+                "long",
+                0.45,
+                f"Slight bullish seasonal conditions - composite: {composite_score:.2f}"
+            )
+        elif composite_score < 0.48:
+            return (
+                "short",
+                0.45,
+                f"Slight bearish seasonal conditions - composite: {composite_score:.2f}"
+            )
+        
+        # True neutral only when composite is very close to 0.5
         return (
-            "seasonal_neutral",
+            "flat",  # Standard neutral action
             0.3,
             f"Neutral seasonal conditions - session: {session_analysis['current_session']}, "
             f"day: {dow_analysis['day_name']}, composite: {composite_score:.2f}"
@@ -599,8 +696,37 @@ class SeasonalityRiskExpert(BaseModule):
     def _neutral_output(self, reason: str) -> Dict[str, Any]:
         """Generate neutral output with explanation."""
         return {
-            "SeasonalityRiskExpert_voting_proposal": "seasonal_neutral",
+            "SeasonalityRiskExpert_voting_proposal": "flat",
             "SeasonalityRiskExpert_confidence": 0.1,
+            "seasonality_voting_proposal": "flat",   # Alias for contract compatibility
+            "seasonality_confidence": 0.1,                        # Alias for contract compatibility
+            "seasonal_voting_proposal": "flat",       # Additional alias
+            "seasonal_confidence": 0.1,                           # Additional alias
+            "seasonality_risk_analysis": {                        # Required by contract
+                "session": "unknown",
+                "dow_bias": "unknown",
+                "monthly_pattern": "unknown",
+                "composite_score": 0.5,
+                "rollover_risk": False,
+                "weekend_risk": False,
+                "action": "flat",
+                "confidence": 0.1
+            },
+            "seasonality_analysis": {                             # Alias
+                "session": "unknown",
+                "dow_bias": "unknown",
+                "monthly_pattern": "unknown",
+                "composite_score": 0.5
+            },
+            "seasonality_expert_analysis": {                      # Backward compat alias
+                "session": "unknown",
+                "dow_bias": "unknown",
+                "monthly_pattern": "unknown",
+                "composite_score": 0.5,
+                "rollover_risk": False,
+                "weekend_risk": False
+            },
+            "seasonality_expert_thesis": f"Seasonal flat: {reason}",  # Backward compat alias
             "seasonal_session": "unknown",
             "seasonal_dow_bias": "unknown",
             "seasonal_monthly_pattern": "unknown",

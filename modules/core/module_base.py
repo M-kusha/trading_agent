@@ -81,8 +81,8 @@ class ModuleMetadata:
     readiness_grace_s: float | None = None  # Optional per-module micro grace
 
     VALID_CATEGORIES = [
-        'auditing', 'core', 'executor', 'external', 'features', 'market', 'memory', 'meta',
-        'models', 'monitoring', 'position', 'reward', 'risk', 'simulation',
+        'core', 'executor', 'external', 'features', 'market', 'memory', 'meta',
+        'models', 'monitoring', 'position', 'reward', 'risk',
         'strategy', 'trading_modes', 'utils', 'visualization', 'voting', 'general'
     ]
 

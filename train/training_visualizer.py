@@ -1285,7 +1285,7 @@ class BeautifulTrainingVisualizer:
             current_balance = training_metrics.get('env_equity')
         if current_balance is None:
             current_balance = 3000  # Default fallback
-        
+
         initial_balance = account_state.get('initial_balance') if account_state else None
         if initial_balance is None or initial_balance == 0:
             initial_balance = 3000  # Default

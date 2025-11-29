@@ -43,10 +43,7 @@ module_standards:
     thesis_mandatory: false
     explanation_depth: 'standard'
 
-  auditing:
-    explainability_level: 'high'
-    thesis_mandatory: true
-    explanation_depth: 'detailed'
+  # auditing category removed (modules deleted during cleanup)
 
   external:
     explainability_level: 'low'
@@ -93,10 +90,7 @@ module_standards:
     thesis_mandatory: false
     explanation_depth: 'basic'
 
-  simulation:
-    explainability_level: 'medium'
-    thesis_mandatory: true
-    explanation_depth: 'standard'
+  # simulation category removed (modules deleted during cleanup)
 
   utils:
     explainability_level: 'low'

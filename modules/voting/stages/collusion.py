@@ -449,6 +449,11 @@ class CollusionDetector(VotingModuleBase):
             'collusion_alerts': [],
             'decision_id': decision_id,
             'collusion_decision_id': decision_id,
+            # Contract-expected keys
+            'collusion_result': {'collusion_detected': False, 'reason': 'insufficient_data', 'collusion_score': 0.0},
+            'collusion_detected': False,
+            'collusion_thesis': 'Collusion analysis skipped (insufficient data)',
+            'member_independence_scores': {},
             '_thesis': 'Collusion analysis skipped (insufficient data)',
         }
     

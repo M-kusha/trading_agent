@@ -176,8 +176,11 @@ class AdaptationManager:
         regime_rewards = []
         for _, data in regime_perf.items():
             rewards = data.get('rewards', [])
-            if rewards:
-                regime_rewards.append(float(np.mean(rewards[-10:])))
+            # rewards is backed by a deque in RewardState; convert to list
+            # before slicing to avoid TypeError: sequence index must be integer, not 'slice'
+            rewards_list = list(rewards) if rewards is not None else []
+            if rewards_list:
+                regime_rewards.append(float(np.mean(rewards_list[-10:])))
 
         if not regime_rewards:
             return

@@ -416,7 +416,6 @@ class ModuleConfig:
 
         # Discovery: modernized modules
         self.module_paths = kwargs.get('module_paths', [
-            'modules/auditing',
             'modules/core',
             'modules/executor',
             'modules/external',
@@ -432,7 +431,6 @@ class ModuleConfig:
             'modules/trading_modes',
             'modules/visualization',
             'modules/voting',
-            'modules/simulation',
         ])
 
         self.legacy_modules = {

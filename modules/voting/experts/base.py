@@ -232,6 +232,138 @@ class VotingExpertBase(VotingModuleBase):
             )
         except Exception as e:
             self.logger.debug(f"Baseline key publication skipped: {e}")
+
+    def _build_market_data(self, raw_market_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Build a canonical market_data view from SmartInfoBus so all experts
+        see the same OHLCV snapshot per step.
+        """
+        name = self.__class__.__name__
+
+        market_data: Dict[str, Any] = {}
+        if isinstance(raw_market_data, dict):
+            market_data.update(raw_market_data)
+
+        try:
+            historical = self.smart_bus.get('historical_prices', name, default=None)
+        except Exception:
+            historical = None
+
+        try:
+            price_data = self.smart_bus.get('price_data', name, default=None)
+        except Exception:
+            price_data = None
+
+        try:
+            prices = self.smart_bus.get('prices', name, default=None)
+        except Exception:
+            prices = None
+
+        primary_symbol = self.config.get('primary_symbol')
+        if not isinstance(primary_symbol, str) or not primary_symbol:
+            if isinstance(historical, dict):
+                for candidate in ('XAU_USD', 'EUR_USD'):
+                    if candidate in historical:
+                        primary_symbol = candidate
+                        break
+                if not primary_symbol and historical:
+                    primary_symbol = next(iter(historical.keys()))
+            elif isinstance(price_data, dict) and price_data:
+                for candidate in ('XAU_USD', 'EUR_USD'):
+                    if candidate in price_data:
+                        primary_symbol = candidate
+                        break
+                if not primary_symbol:
+                    primary_symbol = next(iter(price_data.keys()))
+
+        primary_tf = str(self.config.get('primary_timeframe', 'H4') or 'H4')
+
+        if 'ohlcv' not in market_data:
+            ohlcv: Dict[str, Any] = {}
+            if isinstance(historical, dict) and isinstance(primary_symbol, str) and primary_symbol in historical:
+                sym_block = historical.get(primary_symbol)
+                if isinstance(sym_block, dict):
+                    rec = sym_block.get(primary_tf)
+                    if not isinstance(rec, dict):
+                        for tf in ('H4', 'H1', 'D1'):
+                            candidate = sym_block.get(tf)
+                            if isinstance(candidate, dict):
+                                rec = candidate
+                                break
+                    if not isinstance(rec, dict) and sym_block:
+                        first_key = next(iter(sym_block.keys()))
+                        rec = sym_block.get(first_key)
+                    if isinstance(rec, dict):
+                        for key in ('open', 'high', 'low', 'close', 'volume'):
+                            seq = rec.get(key)
+                            if isinstance(seq, (list, tuple)):
+                                ohlcv[key] = list(seq)
+            if ohlcv:
+                market_data['ohlcv'] = ohlcv
+                if 'close' in ohlcv and 'close_prices' not in market_data:
+                    market_data['close_prices'] = ohlcv['close']
+
+        if 'prices' not in market_data:
+            if isinstance(prices, dict) and prices:
+                value = None
+                if isinstance(primary_symbol, str) and primary_symbol in prices:
+                    value = prices.get(primary_symbol)
+                else:
+                    value = next(iter(prices.values()))
+                try:
+                    market_data['prices'] = [float(value)] if value is not None else []
+                except Exception:
+                    pass
+            elif isinstance(market_data.get('ohlcv'), dict):
+                close_seq = market_data['ohlcv'].get('close')
+                if isinstance(close_seq, list):
+                    market_data['prices'] = close_seq
+
+        if 'current_price' not in market_data:
+            value = None
+            if isinstance(price_data, dict) and price_data:
+                sym_block = None
+                if isinstance(primary_symbol, str) and primary_symbol in price_data:
+                    sym_block = price_data.get(primary_symbol)
+                else:
+                    sym_block = next(iter(price_data.values()))
+                if isinstance(sym_block, dict):
+                    value = sym_block.get('last') or sym_block.get('close')
+            if value is None:
+                prices_list = market_data.get('prices')
+                if isinstance(prices_list, list) and prices_list:
+                    value = prices_list[-1]
+            if value is not None:
+                try:
+                    market_data['current_price'] = float(value)
+                except Exception:
+                    pass
+
+        if 'volume' not in market_data and isinstance(market_data.get('ohlcv'), dict):
+            vol_seq = market_data['ohlcv'].get('volume')
+            if isinstance(vol_seq, list) and vol_seq:
+                try:
+                    market_data['volume'] = float(vol_seq[-1])
+                except Exception:
+                    pass
+
+        if 'high' not in market_data and isinstance(market_data.get('ohlcv'), dict):
+            high_seq = market_data['ohlcv'].get('high')
+            if isinstance(high_seq, list) and high_seq:
+                try:
+                    market_data['high'] = float(high_seq[-1])
+                except Exception:
+                    pass
+
+        if 'low' not in market_data and isinstance(market_data.get('ohlcv'), dict):
+            low_seq = market_data['ohlcv'].get('low')
+            if isinstance(low_seq, list) and low_seq:
+                try:
+                    market_data['low'] = float(low_seq[-1])
+                except Exception:
+                    pass
+
+        return market_data
     
     async def process(self, **inputs) -> Dict[str, Any]:
         """
@@ -254,12 +386,12 @@ class VotingExpertBase(VotingModuleBase):
             if self._check_circuit_breaker():
                 return self._degraded_output("circuit_breaker_open")
             
-            # 2. Get market data
-            market_data = (
+            raw_market_data = (
                 inputs.get('market_data') or
                 self.smart_bus.get('market_data', name) or
                 {}
             )
+            market_data = self._build_market_data(raw_market_data)
             
             # 3. Update context
             self._update_market_context(market_data)

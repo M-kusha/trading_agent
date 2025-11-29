@@ -9,9 +9,10 @@ and generate voting proposals with confidence scores.
 
 from modules.voting.experts.base import VotingExpertBase
 from modules.voting.experts.theme import ThemeExpert
-from modules.voting.experts.seasonality import SeasonalityRiskExpert, normalize_session_name
+from modules.voting.experts.seasonality import SeasonalityRiskExpert
 from modules.voting.experts.momentum import MomentumExpert
 from modules.voting.experts.trend import TrendExpert
+from modules.utils.session_utils import normalize_session_name
 
 __all__ = [
     # Base

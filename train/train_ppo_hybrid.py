@@ -59,6 +59,7 @@ except Exception:
         def warning(self, *_a, **_k): pass
         def error(self, *_a, **_k): print("ERROR:", *_a)
         def critical(self, *_a, **_k): print("CRITICAL:", *_a)
+
     def _fallback_format_operator_message(**kw): return f"[{kw.get('icon','')}] {kw.get('message','')}"
     RotatingLogger_Cls = _FallbackRotatingLogger
     format_operator_message_func = _fallback_format_operator_message
@@ -82,6 +83,7 @@ except Exception:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             import json
             with open(path, "w") as f: json.dump(self._d, f, indent=2)
+
     class _FallbackInfoBusManager:
         @staticmethod
         def get_instance(): return _FallbackSmartBus()
@@ -186,7 +188,7 @@ class FileDataProvider:
                     print(f"[FILTER] Excluding {inst}/{tf}: only {len(df)} bars (need {min_bars_for_training}+)")
             if filtered_tfs:
                 filtered_data[inst] = filtered_tfs
-        
+
         if not filtered_data:
             print("[WARN] No data survived filtering; using original data with warning")
             filtered_data = data
@@ -366,7 +368,6 @@ def create_ppo_model(env, config: TradingConfig):
         target_kl=getattr(config, "target_kl", None),
         verbose=0,
         tensorboard_log=getattr(config, "tensorboard_dir", "runs"),
-        policy_kwargs=policy_kwargs,
         device=("cuda" if torch.cuda.is_available() else "cpu"),
         seed=getattr(config, "init_seed", 42),
     )
@@ -396,12 +397,39 @@ def train_modern_ppo(config: TradingConfig, data_source: str, pretrained_model_p
     train_env = create_environments(data, config, n_envs=1, seed=getattr(config, "init_seed", 42))
     eval_env = create_environments(data, config, n_envs=1, seed=getattr(config, "init_seed", 42) + 1337)
 
-    # Model
+    # Model (new vs checkpoint)
     if pretrained_model_path and os.path.exists(pretrained_model_path):
         print(f"[LOAD] {pretrained_model_path}")
         model = PPO.load(pretrained_model_path, env=train_env)
     else:
         model = create_ppo_model(train_env, config)
+
+    # Determine current vs target steps and remaining training
+    current_steps = int(getattr(model, "num_timesteps", 0) or 0)
+    target_steps = int(getattr(config, "final_training_steps", 100_000) or 0)
+
+    if target_steps <= 0:
+        # Safety: don't run an infinite or negative training
+        print(f"[WARN] Non-positive target steps ({target_steps}); skipping training call.")
+        remaining_steps = 0
+    elif current_steps >= target_steps:
+        # Already at or beyond target: no further training needed
+        print(
+            f"[RESUME] Checkpoint already at {current_steps:,} steps "
+            f"(target {target_steps:,}); skipping additional training."
+        )
+        remaining_steps = 0
+    else:
+        remaining_steps = target_steps - current_steps
+        print(
+            f"[RESUME] Current steps: {current_steps:,} | "
+            f"Target: {target_steps:,} | Remaining: {remaining_steps:,}"
+        )
+
+    # Decide whether to reset SB3's internal step counter
+    # - From scratch (0 steps) -> reset_num_timesteps=True
+    # - From checkpoint        -> reset_num_timesteps=False (continue)
+    reset_timesteps = (current_steps == 0)
 
     # Callbacks
     callback = ModernEnhancedTrainingCallback(
@@ -431,13 +459,16 @@ def train_modern_ppo(config: TradingConfig, data_source: str, pretrained_model_p
     # Learn
     start = datetime.now()
     try:
-        model.learn(
-            total_timesteps=getattr(config, "final_training_steps", 100_000),
-            callback=CallbackList(callbacks),
-            tb_log_name=f"modern_ppo_{'live' if getattr(config, 'live_mode', False) else 'offline'}",
-            reset_num_timesteps=True,
-            progress_bar=False,
-        )
+        if remaining_steps > 0:
+            model.learn(
+                total_timesteps=remaining_steps,
+                callback=CallbackList(callbacks),
+                tb_log_name=f"modern_ppo_{'live' if getattr(config, 'live_mode', False) else 'offline'}",
+                reset_num_timesteps=reset_timesteps,
+                progress_bar=False,
+            )
+        else:
+            print("[INFO] No remaining steps to train; skipping model.learn().")
     except KeyboardInterrupt:
         print("\n[WARN] Interrupted by user, saving emergency checkpoint…")
         try:
@@ -573,9 +604,42 @@ def main():
     if args.pretrained:
         pretrained_path = args.pretrained
     elif args.auto_pretrained:
+        # 1) Prefer final model
         auto_path = os.path.join(getattr(config, "model_dir", "models"), "modern_ppo_final.zip")
         if os.path.exists(auto_path):
             pretrained_path = auto_path
+            print(f"[AUTO] Using final model as pretrained: {pretrained_path}")
+        else:
+            # 2) Fall back to latest checkpoint in checkpoint_dir
+            ckpt_dir = getattr(config, "checkpoint_dir", "checkpoints")
+            if os.path.isdir(ckpt_dir):
+                candidates = [
+                    os.path.join(ckpt_dir, f)
+                    for f in os.listdir(ckpt_dir)
+                    if f.endswith(".zip")
+                ]
+
+                def _extract_steps(path: str) -> int:
+                    # Expected name format: prefix_xxx_<steps>_steps.zip
+                    name = os.path.basename(path)
+                    core = name[:-4]  # remove ".zip"
+                    parts = core.split("_")
+                    try:
+                        for i, p in enumerate(parts):
+                            if p.isdigit() and i + 1 < len(parts) and parts[i + 1] == "steps":
+                                return int(p)
+                    except Exception:
+                        pass
+                    return 0
+
+                if candidates:
+                    candidates.sort(
+                        key=lambda p: (_extract_steps(p), os.path.getmtime(p)),
+                        reverse=True,
+                    )
+                    pretrained_path = candidates[0]
+                    print(f"[AUTO] Using latest checkpoint as pretrained: {pretrained_path}")
+            # If still nothing found, pretrained_path remains None
 
     # Save config (best-effort)
     try:

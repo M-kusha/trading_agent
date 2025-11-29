@@ -2157,9 +2157,11 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         """Update mode performance metrics"""
         self.mode_stats['current_mode_duration'] += 1
         self.mode_stats['total_uptime'] += 1
-        self.performance_tracker.record_metric('TradingModeManager', 'mode_duration', self.mode_stats['current_mode_duration'])
+        # NOTE: mode_duration is a tick counter, NOT milliseconds - don't use record_metric
+        # which expects duration_ms and logs "slow operation" warnings
         self.performance_tracker.record_metric('TradingModeManager', 'mode_effectiveness', self.mode_stats['mode_effectiveness'])
-        self.performance_tracker.record_metric('TradingModeManager', 'mode_persistence', self.mode_persistence)
+        # mode_persistence is also a counter, not duration - remove from record_metric
+        # self.performance_tracker.record_metric('TradingModeManager', 'mode_persistence', self.mode_persistence)
 
     def _get_health_metrics(self) -> Dict[str, Any]:
         """Get comprehensive health metrics for monitoring"""

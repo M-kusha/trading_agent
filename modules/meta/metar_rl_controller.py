@@ -26,7 +26,9 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
 
 from modules.meta.ppo_agent import PPOAgent
-from modules.meta.ppo_lag_agent import PPOLagAgent
+
+# PPOLagAgent has been removed (module cleanup - zero consumers, redundant with PPOAgent)
+PPOLagAgent = None  # Placeholder for backwards compatibility
 
 
 class ControllerMode(Enum):
@@ -45,7 +47,7 @@ class ControllerConfig:
     """Configuration for Meta RL Controller"""
     obs_size: int = 64
     act_size: int = 2
-    method: str = "ppo-lag"
+    method: str = "ppo"  # Changed from ppo-lag (removed module)
     device: str = "cpu"
     profit_target: float = 150.0
     training_episodes: int = 1000
@@ -319,19 +321,20 @@ class MetaRLController(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMix
                 self.logger.warning(f"Failed to initialize PPOAgent: {e}")
                 self._agents["ppo"] = None
             
-            # Try to initialize PPO-Lag agent  
-            try:
-                self._agents["ppo-lag"] = PPOLagAgent()
-            except Exception as e:
-                self.logger.warning(f"Failed to initialize PPOLagAgent: {e}")
-                self._agents["ppo-lag"] = None
+            # PPOLagAgent has been removed (module cleanup - zero consumers, redundant with PPOAgent)
+            # Keeping entry as None for backwards compatibility
+            self._agents["ppo-lag"] = None
             
-            # Set active agent
-            if preferred_method in self._agents:
+            # Set active agent - default to ppo since ppo-lag is removed
+            if preferred_method == "ppo-lag":
+                preferred_method = "ppo"
+                self.logger.info("PPOLagAgent removed, defaulting to PPOAgent")
+            
+            if preferred_method in self._agents and self._agents[preferred_method] is not None:
                 self.active_agent_name = preferred_method
             else:
-                self.active_agent_name = "ppo-lag"
-                self.logger.warning(f"Unknown method {preferred_method}, defaulting to ppo-lag")
+                self.active_agent_name = "ppo"
+                self.logger.warning(f"Unknown/unavailable method {preferred_method}, defaulting to ppo")
             
             self.active_agent = self._agents[self.active_agent_name]
             

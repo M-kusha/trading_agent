@@ -72,7 +72,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
         requires=['anomaly_detection', 'compliance', 'execution_quality', 'market_context', 'market_data',
                   'market_regime', 'performance_data', 'portfolio_risk', 'position_data', 'risk_data',
                   'memory_gate', 'danger_zones', 'mistake_avoidance', 'intuition_vector'],
-        meta={'is_voting_member': True, 'thesis_required': True, 'health_monitoring': True,
+        # NOTE: is_voting_member=False - provides risk gate actions (proceed/caution/halt), not directional votes
+        meta={'is_voting_member': False, 'thesis_required': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'risk', 'version': '4.1.0'}
     ),
 
@@ -82,7 +83,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
         provides=['anomaly_alerts', 'anomaly_detection', 'anomaly_score', 'detection_analytics', 'anomaly_detector',
                   'EnhancedAnomalyDetector_voting_proposal', 'EnhancedAnomalyDetector_confidence'],
         requires=['market_context', 'market_data', 'performance_data', 'risk_data', 'trading_data'],
-        meta={'is_voting_member': True, 'thesis_required': True, 'health_monitoring': True,
+        # NOTE: is_voting_member=False - provides anomaly gate actions, not directional votes
+        meta={'is_voting_member': False, 'thesis_required': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'risk', 'version': '4.0.0'}
     ),
 
@@ -92,7 +94,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
         provides=['execution_alerts', 'execution_analytics', 'execution_quality', 'quality_metrics',
                   'ExecutionQualityMonitor_voting_proposal', 'ExecutionQualityMonitor_confidence'],
         requires=['execution_data', 'market_context', 'market_data', 'order_data', 'trade_data'],
-        meta={'is_voting_member': True, 'thesis_required': True, 'health_monitoring': True,
+        # NOTE: is_voting_member=False - provides execution gate actions, not directional votes
+        meta={'is_voting_member': False, 'thesis_required': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'risk', 'version': '4.0.0'}
     ),
 
@@ -103,7 +106,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
                   'risk_score', 'risk_signals', 'portfolio_trade_data', 'trading_data',
                   'PortfolioRiskSystem_voting_proposal', 'PortfolioRiskSystem_confidence'],
         requires=['market_context', 'market_data', 'positions'],
-        meta={'is_voting_member': True, 'thesis_required': True, 'health_monitoring': True,
+        # NOTE: is_voting_member=False - provides risk gate actions, not directional votes
+        meta={'is_voting_member': False, 'thesis_required': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'risk', 'version': '4.0.0'}
     ),
 
@@ -138,12 +142,13 @@ CONTRACTS: Dict[str, ModuleContract] = {
         requires=['actions', 'market_context', 'market_data', 'market_regime', 'performance_metrics',
                   'regime_data', 'trades', 'volatility_adjustment'],
         meta={'thesis_required': True, 'health_monitoring': True, 'performance_tracking': True,
-              'category': 'meta', 'version': '3.0.1'}
+              'category': 'meta', 'version': '3.0.1', 'disabled': True}  # DISABLED - Zero consumers
     ),
 
+    # NOTE: MetaRLController file is metar_rl_controller.py (typo in filename)
     'MetaRLController': ModuleContract(
         name='MetaRLController',
-        file='meta/meta_rl_controller.py',  # fixed path
+        file='meta/metar_rl_controller.py',
         provides=['agent_decisions', 'agents_performance', 'automation_status', 'controller_status',
                   'controller_training_overview', 'meta_signals', 'trading_signal', 'trading_signals'],
         requires=['actions', 'market_data', 'trades', 'training_signals'],
@@ -178,7 +183,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         provides=['agent_status', 'market_adaptation', 'position_metrics', 'ppo_lag_training_metrics'],
         requires=['actions', 'market_data', 'trades', 'training_signals'],
         meta={'thesis_required': True, 'health_monitoring': True, 'performance_tracking': True,
-              'category': 'meta', 'version': '3.0.0'}
+              'category': 'meta', 'version': '3.0.0', 'disabled': True}  # DISABLED - Zero consumers, redundant with PPOAgent
     ),
 
     # ═══════════════════════════════ STRATEGY ════════════════════════════════
@@ -193,39 +198,41 @@ CONTRACTS: Dict[str, ModuleContract] = {
               'category': 'strategy', 'version': '3.0.0'}
     ),
 
-    'OpponentModeEnhancer': ModuleContract(
-        name='OpponentModeEnhancer',
-        file='strategy/opponent_mode_enhancer.py',
-        provides=['market_mode_detection', 'mode_analysis', 'mode_performance', 'mode_recommendations',
-                  'mode_weights', 'opponent_mode_enhancer_initialization', 'strategy_adaptation'],
-        requires=['market_context', 'market_data', 'market_regime', 'price_data', 'recent_trades', 'session_metrics',
-                  'technical_indicators', 'trading_performance', 'volatility_data'],
-        meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
-              'category': 'strategy', 'version': '3.0.0'}
-    ),
+    # DISABLED - Zero consumers
+    # 'OpponentModeEnhancer': ModuleContract(
+    #     name='OpponentModeEnhancer',
+    #     file='strategy/opponent_mode_enhancer.py',
+    #     provides=['market_mode_detection', 'mode_analysis', 'mode_performance', 'mode_recommendations',
+    #               'mode_weights', 'opponent_mode_enhancer_initialization', 'strategy_adaptation'],
+    #     requires=['market_context', 'market_data', 'market_regime', 'price_data', 'recent_trades', 'session_metrics',
+    #               'technical_indicators', 'trading_performance', 'volatility_data'],
+    #     meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
+    #           'category': 'strategy', 'version': '3.0.0', 'disabled': True}
+    # ),
 
-    'PlaybookClusterer': ModuleContract(
-        name='PlaybookClusterer',
-        file='strategy/playbook_clusterer.py',
-        # FIX: Renamed pattern_analysis → playbook_patterns to avoid conflict with UnifiedMemory's canonical pattern_analysis
-        provides=['cluster_analysis', 'cluster_effectiveness', 'cluster_recommendations', 'cluster_weights',
-                  'clustering_health', 'clustering_thesis', 'playbook_clusterer_initialization', 'playbook_patterns'],
-        requires=['market_context', 'market_data', 'market_regime', 'playbook_memory', 'recent_trades',
-                  'session_metrics', 'trading_performance', 'volatility_data'],
-        meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
-              'category': 'strategy', 'version': '3.0.0'}
-    ),
+    # DISABLED - Zero consumers  
+    # 'PlaybookClusterer': ModuleContract(
+    #     name='PlaybookClusterer',
+    #     file='strategy/playbook_clusterer.py',
+    #     provides=['cluster_analysis', 'cluster_effectiveness', 'cluster_recommendations', 'cluster_weights',
+    #               'clustering_health', 'clustering_thesis', 'playbook_clusterer_initialization', 'playbook_patterns'],
+    #     requires=['market_context', 'market_data', 'market_regime', 'playbook_memory', 'recent_trades',
+    #               'session_metrics', 'trading_performance', 'volatility_data'],
+    #     meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
+    #           'category': 'strategy', 'version': '3.0.0', 'disabled': True}
+    # ),
 
-    'StrategyGenomePool': ModuleContract(
-        name='StrategyGenomePool',
-        file='strategy/strategy_genome_pool.py',
-        provides=['best_genome', 'evolution_analytics', 'genome_analysis', 'genome_recommendations',
-                  'genome_weights', 'population_metrics', 'strategy_genome_pool_initialization'],
-        requires=['market_context', 'market_data', 'market_regime', 'recent_trades', 'risk_data',
-                  'session_metrics', 'trading_performance', 'volatility_data'],
-        meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
-              'category': 'strategy', 'version': '3.0.0'}
-    ),
+    # DISABLED - Zero consumers
+    # 'StrategyGenomePool': ModuleContract(
+    #     name='StrategyGenomePool',
+    #     file='strategy/strategy_genome_pool.py',
+    #     provides=['best_genome', 'evolution_analytics', 'genome_analysis', 'genome_recommendations',
+    #               'genome_weights', 'population_metrics', 'strategy_genome_pool_initialization'],
+    #     requires=['market_context', 'market_data', 'market_regime', 'recent_trades', 'risk_data',
+    #               'session_metrics', 'trading_performance', 'volatility_data'],
+    #     meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
+    #           'category': 'strategy', 'version': '3.0.0', 'disabled': True}
+    # ),
 
     'StrategyIntrospector': ModuleContract(
         name='StrategyIntrospector',
@@ -770,65 +777,67 @@ CONTRACTS: Dict[str, ModuleContract] = {
     ),
 
     # ═══════════════════════════════ AUDITING ════════════════════════════════
-    'AuditingCoordinator': ModuleContract(
-        name='AuditingCoordinator',
-        file='auditing/auditing_coordinator.py',
-        provides=['audit_metrics', 'audit_report', 'audit_status'],
-        # FIX: Removed trading_signal - it's provided by MetaRLController which runs after this
-        requires=['market_data', 'trades'],
-        meta={'is_voting_member': False, 'explainable': True, 'category': 'auditing', 'version': '2.0.0'}
-    ),
+    # DISABLED - All auditing modules have zero consumers
+    # These are pure logging modules that don't contribute to trading decisions
+    # 'AuditingCoordinator': ModuleContract(
+    #     name='AuditingCoordinator',
+    #     file='auditing/auditing_coordinator.py',
+    #     provides=['audit_metrics', 'audit_report', 'audit_status'],
+    #     requires=['market_data', 'trades'],
+    #     meta={'is_voting_member': False, 'explainable': True, 'category': 'auditing', 'version': '2.0.0', 'disabled': True}
+    # ),
 
-    'TradeExplanationAuditor': ModuleContract(
-        name='TradeExplanationAuditor',
-        file='auditing/trade_explanation_auditor.py',
-        provides=['audit_alerts', 'explanation_metrics', 'trade_explanations'],
-        # FIX: Removed trading_signal - it's provided by MetaRLController which runs after this
-        requires=['market_data', 'trades'],
-        meta={'is_voting_member': False, 'explainable': True, 'category': 'auditing', 'version': '2.0.0'}
-    ),
+    # 'TradeExplanationAuditor': ModuleContract(
+    #     name='TradeExplanationAuditor',
+    #     file='auditing/trade_explanation_auditor.py',
+    #     provides=['audit_alerts', 'explanation_metrics', 'trade_explanations'],
+    #     requires=['market_data', 'trades'],
+    #     meta={'is_voting_member': False, 'explainable': True, 'category': 'auditing', 'version': '2.0.0', 'disabled': True}
+    # ),
 
-    'TradeThesisTracker': ModuleContract(
-        name='TradeThesisTracker',
-        file='auditing/trade_thesis_tracker.py',
-        provides=['thesis_alerts', 'thesis_analysis'],
-        # FIX: Removed trading_signal - it's provided by MetaRLController which runs after this
-        requires=['market_data', 'trades'],
-        meta={'is_voting_member': False, 'explainable': True, 'category': 'auditing', 'version': '2.0.0'}
-    ),
+    # 'TradeThesisTracker': ModuleContract(
+    #     name='TradeThesisTracker',
+    #     file='auditing/trade_thesis_tracker.py',
+    #     provides=['thesis_alerts', 'thesis_analysis'],
+    #     requires=['market_data', 'trades'],
+    #     meta={'is_voting_member': False, 'explainable': True, 'category': 'auditing', 'version': '2.0.0', 'disabled': True}
+    # ),
 
     # ═══════════════════════════ SIMULATION / MODELS ════════════════════════
-    'OpponentSimulator': ModuleContract(
-        name='OpponentSimulator',
-        file='simulation/opponent_simulator.py',
-        provides=['adversarial_scenarios', 'market_noise', 'market_perturbations', 'opponent_analysis',
-                  'opponent_simulation', 'perturbation_history', 'simulated_prices', 'simulation_effects',
-                  'simulation_statistics'],
-        requires=['historical_prices', 'market_context', 'market_data', 'positions', 'prices',
-                  'regime_data', 'session_data', 'volatility'],
-        meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
-              'category': 'simulation', 'version': '3.0.0'}
-    ),
+    # DISABLED - All simulation modules have zero consumers
+    # 'OpponentSimulator': ModuleContract(
+    #     name='OpponentSimulator',
+    #     file='simulation/opponent_simulator.py',
+    #     provides=['adversarial_scenarios', 'market_noise', 'market_perturbations', 'opponent_analysis',
+    #               'opponent_simulation', 'perturbation_history', 'simulated_prices', 'simulation_effects',
+    #               'simulation_statistics'],
+    #     requires=['historical_prices', 'market_context', 'market_data', 'positions', 'prices',
+    #               'regime_data', 'session_data', 'volatility'],
+    #     meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
+    #           'category': 'simulation', 'version': '3.0.0', 'disabled': True}
+    # ),
 
-    'RoleCoach': ModuleContract(
-        name='RoleCoach',
-        file='simulation/role_coach.py',
-        provides=['coaching_penalties', 'coaching_recommendations', 'coaching_results', 'coaching_statistics', 'compliance_tracking', 'discipline_assessment', 'discipline_penalty', 'performance_scoring', 'trade_limits'],
-        requires=['market_context', 'pending_orders', 'positions', 'recent_trades', 'regime_data', 'risk_metrics', 'session_data', 'trading_performance'],
-        meta={'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'simulation', 'version': '3.0.0'}
-    ),
+    # 'RoleCoach': ModuleContract(
+    #     name='RoleCoach',
+    #     file='simulation/role_coach.py',
+    #     provides=['coaching_penalties', 'coaching_recommendations', 'coaching_results', 'coaching_statistics', 
+    #               'compliance_tracking', 'discipline_assessment', 'discipline_penalty', 'performance_scoring', 'trade_limits'],
+    #     requires=['market_context', 'pending_orders', 'positions', 'recent_trades', 'regime_data', 
+    #               'risk_metrics', 'session_data', 'trading_performance'],
+    #     meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
+    #           'category': 'simulation', 'version': '3.0.0', 'disabled': True}
+    # ),
 
-    'ShadowSimulator': ModuleContract(
-        name='ShadowSimulator',
-        file='simulation/shadow_simulator.py',
-        provides=['forward_projections', 'scenario_analysis', 'scenario_recommendations', 'shadow_predictions',
-                  'shadow_simulation', 'simulation_confidence', 'simulation_predictions', 'strategy_simulations'],
-        # NOTE: Removed 'environment' - no longer provided by MarketDataProvider
-        requires=['votes', 'market_context', 'market_data', 'pending_orders', 'positions', 'prices',
-                  'recent_trades', 'risk_metrics', 'trading_performance'],
-        meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
-              'category': 'simulation', 'version': '3.0.0'}
-    ),
+    # 'ShadowSimulator': ModuleContract(
+    #     name='ShadowSimulator',
+    #     file='simulation/shadow_simulator.py',
+    #     provides=['forward_projections', 'scenario_analysis', 'scenario_recommendations', 'shadow_predictions',
+    #               'shadow_simulation', 'simulation_confidence', 'simulation_predictions', 'strategy_simulations'],
+    #     requires=['votes', 'market_context', 'market_data', 'pending_orders', 'positions', 'prices',
+    #               'recent_trades', 'risk_metrics', 'trading_performance'],
+    #     meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
+    #           'category': 'simulation', 'version': '3.0.0', 'disabled': True}
+    # ),
 
     'EnhancedWorldModel': ModuleContract(
         name='EnhancedWorldModel',

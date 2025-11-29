@@ -1303,7 +1303,31 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
             parts.append(f"Memory warns against trade ({vote['signed_bias']:.2f})")
         
         if gate.get("reasons"):
-            parts.append(f"Reasons: {', '.join(gate['reasons'][:2])}")
+            raw_reasons = gate.get("reasons")
+            reasons_list: List[Any]
+            if isinstance(raw_reasons, dict):
+                reasons_list = [raw_reasons]
+            elif isinstance(raw_reasons, (list, tuple)):
+                reasons_list = list(raw_reasons)
+            else:
+                reasons_list = [raw_reasons]
+
+            formatted: List[str] = []
+            for r in reasons_list[:2]:
+                if isinstance(r, dict):
+                    text = (
+                        r.get("reason")
+                        or r.get("description")
+                        or r.get("message")
+                        or r.get("text")
+                        or str(r)
+                    )
+                else:
+                    text = str(r)
+                formatted.append(str(text))
+
+            if formatted:
+                parts.append(f"Reasons: {', '.join(formatted)}")
         
         return " | ".join(parts)
 

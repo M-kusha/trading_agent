@@ -17,7 +17,19 @@ execution:
       UnifiedMarketModule: 15000  # init + 54k bars
       PositionManager: 20000  # Increased - handles signal extraction and position logic
 
-      # Voting / coordination
+      # Voting / coordination (new modular voting system)
+      ThemeExpert: 3000
+      SeasonalityRiskExpert: 3000
+      MomentumExpert: 3000
+      TrendExpert: 3000
+      CommitteeCoordinator: 5000
+      ConsensusAnalyzer: 3000
+      CollusionDetector: 3000
+      HorizonAligner: 3000
+      UncertaintySampler: 3000
+      FinalArbiter: 4000
+      SlimVotingKernel: 8000
+      # Legacy voting names (kept for backward compat)
       AlternativeRealitySampler: 6000
       DynamicRiskController: 10000  # Increased - complex risk calculations
       TimeHorizonAligner: 6000
@@ -25,30 +37,17 @@ execution:
       EnhancedVotingCommitteeCoordinator: 8000
       StrategyArbiter: 5000
 
-      # Auditing
-      AuditingCoordinator: 5000
-      TradeExplanationAuditor: 4000
-      TradeThesisTracker: 4000
-
       # Strategy
       BiasAuditor: 4000
       CurriculumPlannerPlus: 6000
       ThesisEvolutionEngine: 8000   # de-duplicated; keep higher
-      StrategyGenomePool: 10000
-      OpponentModeEnhancer: 6000
-      PlaybookClusterer: 7000
       TradingModeManager: 5000
       VisualizationInterface: 8000
-      RoleCoach: 6000
 
       # Meta / analysis
       MetaAgent: 5000
       EnhancedAnomalyDetector: 8000
       EnhancedWorldModel: 6000
-
-      # Simulation
-      OpponentSimulator: 4000
-      ShadowSimulator: 8000
 
       # Reward - reduced for faster training (was 30000)
       RiskAdjustedReward: 8000
@@ -56,9 +55,7 @@ execution:
     # Coarse defaults by category (used when module not listed above)
     by_category:
       voting: 5000
-      auditing: 4000
       strategy: 4000
-      simulation: 4000
       meta: 4000
 
   stage:
@@ -306,6 +303,20 @@ modules:
         - signals
         - proposal_vectors
 
+  # Updated name: CommitteeCoordinator (was EnhancedVotingCommitteeCoordinator)
+  CommitteeCoordinator:
+    config:
+      consensus_threshold: 0.6
+      minimum_voters: 2
+      performance_weighting: true
+      max_vote_age_s: 30.0
+      discovery_mode: 'registry_only'
+      voter_flag_name: 'is_voting_member'
+      # Explicit voters list (empty = use discovery from contracts)
+      voters: []
+      timeout_ms: 5000
+
+  # Legacy name - kept for backward compatibility
   EnhancedVotingCommitteeCoordinator:
     config:
       committee_size: 5
@@ -315,14 +326,6 @@ modules:
       timeout_ms: 3000
 
   # Strategy
-  StrategyGenomePool:
-    config:
-      population_size: 50
-      mutation_rate: 0.1
-      selection_pressure: 0.7
-      genome_types: ['momentum', 'mean_reversion', 'breakout', 'arbitrage']
-      timeout_ms: 200
-
   BiasAuditor:
     config:
       bias_detection_threshold: 0.7
@@ -346,23 +349,6 @@ modules:
       update_frequency: 60
       context_window: 50
       timeout_ms: 2000
-
-  OpponentModeEnhancer:
-    config:
-      mode_detection_window: 30
-      adaptation_speed: 0.1
-      market_modes: ['trending', 'ranging', 'volatile', 'calm']
-      confidence_threshold: 0.7
-      timeout_ms: 300
-
-  PlaybookClusterer:
-    config:
-      num_clusters: 10
-      clustering_method: 'kmeans'
-      feature_dimensions: 20
-      update_frequency: 100
-      min_cluster_size: 5
-      timeout_ms: 400
 
   StrategyIntrospector:
     config:
@@ -392,14 +378,6 @@ modules:
       min_training_episodes: 100
       max_processing_time_ms: 300
       timeout_ms: 3000
-
-  MetaCognitivePlanner:
-    config:
-      planning_horizon: 50
-      adaptation_rate: 0.05
-      strategic_weight: 0.6
-      tactical_weight: 0.4
-      timeout_ms: 1500
 
   MetaRLController:
     config:
@@ -563,31 +541,6 @@ modules:
       timeout_ms: 30000
       max_processing_time_ms: 30000
 
-  # Auditing
-  AuditingCoordinator:
-    config:
-      audit_frequency: 100
-      audit_depth: 'comprehensive'
-      report_format: 'detailed'
-      alert_threshold: 0.8
-      timeout_ms: 2000
-
-  TradeExplanationAuditor:
-    config:
-      explanation_required: true
-      min_explanation_quality: 0.7
-      audit_all_trades: true
-      explanation_timeout: 30
-      timeout_ms: 1500
-
-  TradeThesisTracker:
-    config:
-      thesis_validation: true
-      tracking_window: 50
-      thesis_score_threshold: 0.6
-      update_frequency: 10
-      timeout_ms: 1500
-
   # Features
   MultiScaleFeatureEngine:
     config:
@@ -615,16 +568,6 @@ modules:
       theme_detection: true
       fractal_analysis: true
 
-  PPOLagAgent:
-    config:
-      learning_rate: 0.0003
-      clip_eps: 0.2
-      value_coeff: 0.5
-      entropy_coeff: 0.01
-      lag_compensation: true
-      lag_detection_threshold: 100
-      timeout_ms: 400
-
   EnhancedWorldModel:
     config:
       model_complexity: 'medium'
@@ -643,33 +586,6 @@ modules:
       real_time_updates: true
       export_formats: ['png', 'svg']
       timeout_ms: 200
-
-  OpponentSimulator:
-    config:
-      simulation_depth: 3
-      opponent_types: ['aggressive', 'conservative', 'random']
-      adaptation_rate: 0.05
-      simulation_runs: 100
-      confidence_threshold: 0.7
-      timeout_ms: 2000
-
-  RoleCoach:
-    config:
-      coaching_intensity: 'medium'
-      feedback_frequency: 25
-      performance_tracking: true
-      improvement_suggestions: true
-      learning_acceleration: 1.2
-      timeout_ms: 300
-
-  ShadowSimulator:
-    config:
-      shadow_depth: 2
-      parallel_simulations: 5
-      reality_divergence_threshold: 0.3
-      shadow_update_frequency: 10
-      confidence_weighting: true
-      timeout_ms: 800
 
   # Extra voting experts
   EnhancedSeasonalityRiskExpert:

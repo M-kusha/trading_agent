@@ -392,6 +392,8 @@ class ModernEnhancedTrainingCallback(BaseCallback):
         self.consecutive_failures: int = 0
         self.circuit_breaker_state = {"active": False, "failures": 0}
         self.display_update_counter: int = 0
+        # Global step offset when resuming from checkpoints
+        self.initial_num_timesteps: int = 0
 
         # Rolling windows
         self.episode_rewards: Deque[float] = deque(maxlen=2000)
@@ -480,6 +482,12 @@ class ModernEnhancedTrainingCallback(BaseCallback):
     def _on_training_start(self) -> None:
         self.start_time = datetime.now()
         self._tb_ready = bool(getattr(self.model, "logger", None))
+        # Capture starting global step so visualizer and metrics
+        # continue counting from checkpoints instead of resetting
+        try:
+            self.initial_num_timesteps = int(getattr(self.model, "num_timesteps", 0) or 0)
+        except Exception:
+            self.initial_num_timesteps = 0
 
         # Integration validation (non-fatal)
         try:
@@ -656,7 +664,9 @@ class ModernEnhancedTrainingCallback(BaseCallback):
     def _print_basic_progress(self):
         """Basic text-based progress display (fallback)"""
         elapsed = (datetime.now() - self.start_time).total_seconds()
-        progress = (self.n_calls / max(self.total_timesteps, 1)) * 100.0
+        # Use global step (checkpoint-aware) for progress
+        global_step = self.initial_num_timesteps + self.n_calls
+        progress = (global_step / max(self.total_timesteps, 1)) * 100.0
 
         eta_str = "calculating..."
         if progress > 0:
@@ -672,7 +682,7 @@ class ModernEnhancedTrainingCallback(BaseCallback):
         best = f"{self.best_reward:.2f}" if self.best_reward != -float("inf") else "N/A"
 
         print(
-            f"\r[RELOAD] Step: {self.n_calls:,}/{self.total_timesteps:,} "
+            f"\r[RELOAD] Step: {global_step:,}/{self.total_timesteps:,} "
             f"({progress:.1f}%) | [TIME] {elapsed/60:.1f}min | "
             f"[MONEY] Last: {last} | [TROPHY] Best: {best} | "
             f"[LAT] P50:{p50:.1f}ms P95:{p95:.1f}ms | [WAIT] ETA: {eta_str}",
@@ -682,11 +692,14 @@ class ModernEnhancedTrainingCallback(BaseCallback):
 
     def _collect_enhanced_metrics(self) -> Dict[str, Any]:
         elapsed = (datetime.now() - self.start_time).total_seconds()
-        progress = self.n_calls / max(self.total_timesteps, 1)
+        # Global, checkpoint-aware step for visualizer / dashboards
+        global_step = self.initial_num_timesteps + self.n_calls
+        progress = global_step / max(self.total_timesteps, 1)
+        # Keep SPS based on steps taken in this run
         sps = (self.n_calls / elapsed) if elapsed > 0 else 0.0
 
         m: Dict[str, Any] = {
-            "timestep": self.n_calls,
+            "timestep": global_step,
             "total_timesteps": self.total_timesteps,
             "progress_pct": progress * 100.0,
             "episodes": self.episode_count,
@@ -1063,6 +1076,9 @@ class ModernEnhancedTrainingCallback(BaseCallback):
         if not self._tb_ready:
             return
         try:
+            # Use checkpoint-aware global step for TensorBoard so
+            # resumed runs continue from the previous step count
+            step = int(metrics.get("timestep", self.initial_num_timesteps + self.n_calls))
             # minimal TB logging; add records carefully to avoid noisy logs
             lr = metrics.get("learning_rate", None)
             if lr is not None:
@@ -1071,7 +1087,7 @@ class ModernEnhancedTrainingCallback(BaseCallback):
             self.model.logger.record("custom/episode_reward_mean", metrics.get("episode_reward_mean", 0.0))
             self.model.logger.record("custom/step_ms_p50", metrics.get("step_ms_p50", 0.0))
             self.model.logger.record("custom/step_ms_p95", metrics.get("step_ms_p95", 0.0))
-            self.model.logger.dump(self.n_calls)
+            self.model.logger.dump(step)
         except Exception:
             pass
 

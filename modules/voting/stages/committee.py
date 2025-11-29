@@ -82,19 +82,25 @@ class CommitteeCoordinator(VotingModuleBase):
         self.ingest_minimum = int(self.config.get('ingest_minimum', self.minimum_voters))
         # Gate/risk actions should not be counted as directional votes.
         # These are risk module signals (proceed/caution/halt) that indicate safety, not direction.
-        # Also filter 'hold' since risk modules use it when they're not giving directional guidance.
+        # Also filter 'hold'/'flat' since these indicate no directional guidance.
         self.ignore_actions = set(self.config.get('ignore_actions', [
-            'abstain', None, 'unknown', 'neutral', 'hold',
+            'abstain', None, 'unknown', 'neutral', 'hold', 'flat',
             # Risk gate actions (from ExecutionQualityMonitor, AnomalyDetector, etc.)
             'proceed', 'caution', 'halt', 'continue', 'confirm', 'wait',
-            # Expert neutral actions
+            # Expert neutral actions (legacy - new experts use 'long'/'short'/'flat')
             'seasonal_neutral', 'momentum_neutral', 'trend_neutral', 'theme_neutral',
-            # Session avoidance (not directional, just timing)
+            # Session avoidance (legacy - now mapped to 'flat')
             'session_avoid', 'session_optimal',
-            # High impact caution (not directional)
+            # High impact caution (legacy - now mapped to 'flat')
             'high_impact_caution',
         ]))
         self.max_votes_per_tick = int(self.config.get('max_votes_per_tick', 128))
+        
+        # Warmup configuration - wait for experts to have enough data before trading
+        self.warmup_ticks = int(self.config.get('warmup_ticks', 50))  # Wait 50 ticks before trading
+        self.min_directional_votes = int(self.config.get('min_directional_votes', 3))  # Need at least 3 long/short votes
+        self.warmup_complete = False
+        self._tick_count = 0
         
         # State
         self.active_experts: List[str] = []
@@ -116,7 +122,9 @@ class CommitteeCoordinator(VotingModuleBase):
         self.logger.info(
             f"[COMMITTEE] CommitteeCoordinator initialized | "
             f"threshold={self.consensus_threshold:.1%} | "
-            f"min_voters={self.minimum_voters}"
+            f"min_voters={self.minimum_voters} | "
+            f"warmup_ticks={self.warmup_ticks} | "
+            f"min_directional_votes={self.min_directional_votes}"
         )
         
         # Publish baseline keys
@@ -240,6 +248,14 @@ class CommitteeCoordinator(VotingModuleBase):
             pairs.append(('theme_voting_proposal', 'theme_confidence'))
         if name in ['EnhancedSeasonalityRiskExpert', 'SeasonalityRiskExpert']:
             pairs.append(('seasonality_voting_proposal', 'seasonality_confidence'))
+        if name == 'MomentumExpert':
+            pairs.append(('momentum_voting_proposal', 'momentum_confidence'))
+        if name == 'TrendExpert':
+            pairs.append(('trend_voting_proposal', 'trend_confidence'))
+        if name == 'PPOAgent':
+            pairs.append(('policy_actions', 'agent_performance'))
+        if name == 'MetaAgent':
+            pairs.append(('automation_decisions', 'meta_performance'))
         
         return pairs
     
@@ -250,6 +266,9 @@ class CommitteeCoordinator(VotingModuleBase):
             voters_set = set(voters)
             expert_votes: List[Dict[str, Any]] = []
             now_ts = time.time()
+            
+            self.logger.debug(f"[COLLECT] Discovered {len(voters)} voters: {voters}")
+            self.logger.debug(f"[COLLECT] Discovery mode: {self.discovery_mode}, ingest_minimum: {self.ingest_minimum}")
             
             # 1) Feed-first: read from expert_votes bus key
             if self.discovery_mode in ('feed_only', 'feed_then_registry'):
@@ -278,13 +297,8 @@ class CommitteeCoordinator(VotingModuleBase):
                 by_expert[v['expert']] = v
             expert_votes = list(by_expert.values())
             
-            # 2) Fallback: read per-voter bus keys
-            need_more = (
-                len(expert_votes) < max(self.ingest_minimum, 1) and
-                self.discovery_mode in ('registry_only', 'feed_then_registry')
-            )
-            
-            if need_more:
+            # 2) Fallback: read per-voter bus keys - ALWAYS do this for registry_only mode
+            if self.discovery_mode in ('registry_only', 'feed_then_registry'):
                 for name in voters:
                     if name in by_expert:
                         continue
@@ -292,20 +306,25 @@ class CommitteeCoordinator(VotingModuleBase):
                         for prop_key, conf_key in self._voter_key_pairs(name):
                             proposal = self.smart_bus.get(prop_key, self.__class__.__name__, default=None)
                             if proposal is None:
+                                self.logger.debug(f"[COLLECT] {name}: No proposal at key '{prop_key}'")
                                 continue
                             confidence = self.smart_bus.get(conf_key, self.__class__.__name__, default=None)
                             if confidence is None:
+                                self.logger.debug(f"[COLLECT] {name}: No confidence at key '{conf_key}'")
                                 continue
+                            
+                            self.logger.debug(f"[COLLECT] {name}: Found vote at '{prop_key}' with conf={confidence}")
                             
                             raw = {
                                 'expert': name,
-                                'vote': dict(proposal) if isinstance(proposal, dict) else {},
-                                'confidence': float(confidence),
+                                'vote': dict(proposal) if isinstance(proposal, dict) else {'action': str(proposal)},
+                                'confidence': float(confidence) if isinstance(confidence, (int, float)) else 0.5,
                                 'timestamp': datetime.datetime.now().isoformat(),
                             }
                             norm = self._normalize_vote_entry(raw)
                             if norm:
                                 by_expert[name] = norm
+                                self.logger.debug(f"[COLLECT] {name}: Normalized action='{norm.get('vote', {}).get('action')}'")
                             break
                     except Exception as e:
                         self.logger.warning(f"Failed to collect vote from {name}: {e}")
@@ -313,11 +332,21 @@ class CommitteeCoordinator(VotingModuleBase):
                 expert_votes = list(by_expert.values())
             
             # 3) Filter abstains if non-abstain votes present
+            # Log what we collected before filtering
+            before_count = len(expert_votes)
+            actions_collected = [v.get('vote', {}).get('action', 'unknown') for v in expert_votes]
+            
             if any(v.get('vote', {}).get('action') not in self.ignore_actions for v in expert_votes):
                 expert_votes = [
                     v for v in expert_votes 
                     if v.get('vote', {}).get('action') not in self.ignore_actions
                 ]
+                filtered_count = before_count - len(expert_votes)
+                if filtered_count > 0:
+                    self.logger.debug(
+                        f"[FILTER] Filtered {filtered_count} neutral votes. "
+                        f"Actions: {actions_collected}"
+                    )
             
             # 4) Add memory vote if available
             expert_votes = await self._add_memory_vote(expert_votes)
@@ -700,6 +729,9 @@ class CommitteeCoordinator(VotingModuleBase):
         name = self.__class__.__name__
         
         try:
+            # Track warmup progress
+            self._tick_count += 1
+            
             # Get decision ID
             decision_id = self.smart_bus.get('kernel_decision_id', name)
             if not decision_id:
@@ -709,6 +741,61 @@ class CommitteeCoordinator(VotingModuleBase):
             # Collect votes
             expert_votes = await self._collect_expert_votes()
             expert_weights = await self._calculate_expert_weights(expert_votes)
+            
+            # Count directional votes (non-flat/non-neutral)
+            directional_votes = [
+                v for v in expert_votes 
+                if v.get('vote', {}).get('action') not in self.ignore_actions
+            ]
+            n_directional = len(directional_votes)
+            
+            # Check warmup status
+            if not self.warmup_complete:
+                # Still in warmup - check if we should complete
+                if self._tick_count >= self.warmup_ticks and n_directional >= self.min_directional_votes:
+                    self.warmup_complete = True
+                    self.logger.info(
+                        f"[WARMUP] ✅ Complete after {self._tick_count} ticks with "
+                        f"{n_directional} directional votes"
+                    )
+                    # Publish warmup complete status
+                    self.smart_bus.set(
+                        'warmup_status',
+                        {
+                            'complete': True,
+                            'tick_count': self._tick_count,
+                            'warmup_ticks': self.warmup_ticks,
+                            'directional_votes': n_directional,
+                            'min_directional_votes': self.min_directional_votes,
+                            'progress_pct': 100
+                        },
+                        module=name,
+                        thesis='Warmup complete - trading enabled'
+                    )
+                else:
+                    # Still warming up - return abstain
+                    warmup_reason = (
+                        f"Warmup in progress: tick {self._tick_count}/{self.warmup_ticks}, "
+                        f"{n_directional}/{self.min_directional_votes} directional votes"
+                    )
+                    self.logger.info(f"[WARMUP] ⏳ {warmup_reason}")
+                    
+                    # Publish warmup status to bus
+                    self.smart_bus.set(
+                        'warmup_status',
+                        {
+                            'complete': False,
+                            'tick_count': self._tick_count,
+                            'warmup_ticks': self.warmup_ticks,
+                            'directional_votes': n_directional,
+                            'min_directional_votes': self.min_directional_votes,
+                            'progress_pct': min(100, (self._tick_count / self.warmup_ticks) * 100)
+                        },
+                        module=name,
+                        thesis=warmup_reason
+                    )
+                    
+                    return self._warmup_output(warmup_reason, decision_id)
             
             # Make decisions
             decision = await self._determine_committee_decision(expert_votes, expert_weights)
@@ -902,6 +989,55 @@ class CommitteeCoordinator(VotingModuleBase):
         
         except Exception as e:
             self.logger.warning(f"Decision recording failed: {e}")
+    
+    def _warmup_output(self, reason: str, decision_id: str) -> Dict[str, Any]:
+        """Return contract-compliant warmup output (hold during warmup)."""
+        warmup_thesis = f"WARMUP: {reason}"
+        return {
+            # Primary outputs (new v5.0)
+            'committee_decision': {'action': 'abstain', 'reason': reason},
+            'committee_consensus': {'consensus_exists': False, 'warmup': True, 'reason': reason},
+            'committee_confidence': 0.0,
+            'committee_votes': [],
+            'committee_summary': {
+                'warmup': True,
+                'total_members': 0,
+                'decision': 'abstain',
+                'reason': reason,
+                'tick_count': self._tick_count,
+                'warmup_ticks': self.warmup_ticks
+            },
+            'committee_decision_id': decision_id,
+            'raw_proposals': {},
+            'member_confidences': {},
+            'voting_weights': {},
+            
+            # Backward compatibility
+            'votes': [],
+            'voting_summary': {'action': 'abstain', 'warmup': True, 'reason': reason},
+            'strategy_arbiter_weights': {},
+            'expert_votes': [],
+            'expert_weights': {},
+            'committee_analytics': dict(self.committee_analytics),
+            'committee_members': [],
+            'n_members': 0,
+            'proposal_vectors': [],
+            'decision_id': decision_id,
+            'time_of_day': 0,
+            
+            # Trade vote outputs
+            'trade_vote': {'action': 'abstain', 'confidence': 0.0, 'warmup': True},
+            'trade_vote_v2': {
+                'action': 'abstain',
+                'size': 0.0,
+                'confidence': 0.0,
+                'consensus_score': 0.0,
+                'warmup': True,
+                'decision_id': decision_id,
+                'timestamp': datetime.datetime.now().isoformat()
+            },
+            '_thesis': warmup_thesis
+        }
     
     def _error_output(self, error: str) -> Dict[str, Any]:
         """Return contract-compliant error output."""

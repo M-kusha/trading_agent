@@ -90,6 +90,7 @@ class ThemeExpert(BaseModule):
             features = self.smart_bus.get("features", self.module_name, default={})
             
             if not market_data and not features:
+                self.logger.warning("[THEME] No market data or features available")
                 return self._neutral_output("No market data available")
             
             close_prices = self._extract_prices(market_data, features, 'close')
@@ -98,6 +99,7 @@ class ThemeExpert(BaseModule):
             volume = self._extract_prices(market_data, features, 'volume')
             
             if len(close_prices) < self.vol_lookback:
+                self.logger.warning(f"[THEME] Insufficient price history: {len(close_prices)} prices (need {self.vol_lookback})")
                 return self._neutral_output("Insufficient price history")
             
             # Calculate all regime components
@@ -138,9 +140,44 @@ class ThemeExpert(BaseModule):
             # Apply regime persistence filter
             action, confidence = self._apply_persistence_filter(action, confidence)
             
+            # Build proposal dict for voting
+            proposal = {
+                "action": action,
+                "signal_strength": confidence,
+                "reason": thesis
+            }
+            
+            # Publish to SmartInfoBus for CommitteeCoordinator discovery
+            name = self.__class__.__name__
+            try:
+                self.smart_bus.set('ThemeExpert_voting_proposal', proposal, module=name, thesis=thesis)
+                self.smart_bus.set('ThemeExpert_confidence', confidence, module=name, thesis=f'Confidence: {confidence:.1%}')
+                self.smart_bus.set('theme_voting_proposal', proposal, module=name, thesis=thesis)
+                self.smart_bus.set('theme_confidence', confidence, module=name, thesis=f'Theme confidence: {confidence:.1%}')
+            except Exception:
+                pass
+            
             return {
-                "ThemeExpert_voting_proposal": action,
+                "ThemeExpert_voting_proposal": proposal,
                 "ThemeExpert_confidence": confidence,
+                "theme_voting_proposal": proposal,  # Alias for contract compatibility
+                "theme_confidence": confidence,   # Alias for contract compatibility
+                "theme_analysis": {               # Required by contract
+                    "volatility_regime": vol_regime,
+                    "trend_regime": trend_regime,
+                    "risk_regime": risk_regime,
+                    "composite_score": composite_score,
+                    "action": action,
+                    "confidence": confidence
+                },
+                "agreement_score": confidence,    # Required by contract
+                "theme_expert_analysis": {        # Backward compat alias
+                    "volatility_regime": vol_regime,
+                    "trend_regime": trend_regime,
+                    "risk_regime": risk_regime,
+                    "composite_score": composite_score
+                },
+                "theme_expert_thesis": thesis,    # Backward compat alias
                 "theme_volatility_regime": vol_regime,
                 "theme_trend_regime": trend_regime,
                 "theme_risk_regime": risk_regime,
@@ -158,8 +195,7 @@ class ThemeExpert(BaseModule):
         features: Dict, 
         price_type: str
     ) -> np.ndarray:
-        """Extract price array from market data or features."""
-        # Try market_data first
+        """Extract price array from market data, features, or InfoBus."""
         if isinstance(market_data, dict):
             if price_type in market_data:
                 data = market_data[price_type]
@@ -180,6 +216,36 @@ class ThemeExpert(BaseModule):
                 data = features[price_type]
                 if isinstance(data, (list, np.ndarray)):
                     return np.array(data, dtype=float)
+
+        try:
+            historical = self.smart_bus.get("historical_prices", self.module_name, default=None)
+        except Exception:
+            historical = None
+
+        if isinstance(historical, dict):
+            symbol = None
+            for candidate in ("XAU_USD", "EUR_USD"):
+                if candidate in historical:
+                    symbol = candidate
+                    break
+            if symbol is None and historical:
+                symbol = next(iter(historical.keys()))
+
+            if symbol is not None:
+                sym_block = historical.get(symbol)
+                if isinstance(sym_block, dict):
+                    tf_rec = None
+                    for tf in ("H4", "H1", "D1"):
+                        candidate_rec = sym_block.get(tf)
+                        if isinstance(candidate_rec, dict):
+                            tf_rec = candidate_rec
+                            break
+                    if tf_rec is None and sym_block:
+                        tf_rec = sym_block.get(next(iter(sym_block.keys())))
+                    if isinstance(tf_rec, dict):
+                        seq = tf_rec.get(price_type)
+                        if isinstance(seq, (list, np.ndarray)):
+                            return np.array(seq, dtype=float)
         
         return np.array([])
     
@@ -564,73 +630,109 @@ class ThemeExpert(BaseModule):
         """
         Select trading theme action based on regime analysis.
         
-        Returns: (action, confidence, thesis)
+        Returns: (action, confidence, thesis) - action is 'long', 'short', or 'flat'
         """
-        # Extreme volatility: hedge
+        # Extreme volatility: stay flat/hedge
         if vol_regime == "extreme_vol":
             confidence = 0.7 + (vol_score - 0.9) * 3
             return (
-                "volatility_hedging",
+                "flat",  # Standard neutral action
                 np.clip(confidence, 0.6, 0.9),
                 f"Extreme volatility detected (score: {vol_score:.2f}), defensive positioning"
             )
         
-        # Strong trends: follow
+        # Strong uptrend: go long
         if trend_regime == "strong_uptrend":
             confidence = self.base_confidence + abs(trend_score) * 0.4
             return (
-                "trend_following",
+                "long",  # Standard bullish action
                 np.clip(confidence, 0.5, 0.85),
                 f"Strong uptrend (ADX score: {abs(trend_score):.2f}), trend following mode"
             )
         
+        # Strong downtrend: go short
         if trend_regime == "strong_downtrend":
             confidence = self.base_confidence + abs(trend_score) * 0.4
             return (
-                "safe_haven_rotation",
+                "short",  # Standard bearish action
                 np.clip(confidence, 0.5, 0.85),
                 f"Strong downtrend (ADX score: {abs(trend_score):.2f}), defensive rotation"
             )
         
-        # Risk-on environment
-        if risk_regime == "risk_on" and composite_score > 0.65:
+        # Risk-on environment: go long
+        if risk_regime == "risk_on" and composite_score > 0.55:  # Lowered threshold
             confidence = self.base_confidence + (composite_score - 0.5) * 0.6
             return (
-                "long_risk_assets",
+                "long",  # Standard bullish action
                 np.clip(confidence, 0.5, 0.8),
                 f"Risk-on environment (composite: {composite_score:.2f}), bullish positioning"
             )
         
-        # Risk-off environment
-        if risk_regime in ["risk_off", "cautious"] and composite_score < 0.4:
+        # Risk-off environment: go short
+        if risk_regime in ["risk_off", "cautious"] and composite_score < 0.45:  # Raised threshold
             confidence = self.base_confidence + (0.5 - composite_score) * 0.6
             return (
-                "safe_haven_rotation",
+                "short",  # Standard bearish action
                 np.clip(confidence, 0.5, 0.8),
                 f"Risk-off environment (composite: {composite_score:.2f}), defensive positioning"
             )
         
-        # Ranging market: mean reversion
-        if trend_regime == "ranging" and vol_regime == "low_vol":
+        # Weak uptrend: cautious long
+        if trend_regime == "weak_uptrend":
             return (
-                "mean_reversion",
-                0.55,
-                "Low volatility ranging market, mean reversion opportunity"
+                "long",
+                0.45,
+                f"Weak uptrend detected, cautious bullish positioning"
             )
         
-        # High volatility ranging: breakout potential
-        if trend_regime == "ranging" and vol_regime == "high_vol":
+        # Weak downtrend: cautious short
+        if trend_regime == "weak_downtrend":
             return (
-                "breakout",
-                0.5,
-                "High volatility consolidation, potential breakout setup"
+                "short",
+                0.45,
+                f"Weak downtrend detected, cautious bearish positioning"
             )
         
-        # Default neutral
+        # Ranging market: use composite score for direction
+        if trend_regime == "ranging":
+            if composite_score > 0.5:
+                return (
+                    "long",
+                    0.35,
+                    f"Ranging market with slight bullish bias (composite: {composite_score:.2f})"
+                )
+            elif composite_score < 0.5:
+                return (
+                    "short",
+                    0.35,
+                    f"Ranging market with slight bearish bias (composite: {composite_score:.2f})"
+                )
+            else:
+                return (
+                    "flat",
+                    0.3,
+                    f"Ranging market - neutral composite"
+                )
+        
+        # Default: use composite score for direction
+        if composite_score > 0.5:
+            return (
+                "long",
+                0.3,
+                f"Mixed signals favoring long (composite: {composite_score:.2f})"
+            )
+        elif composite_score < 0.5:
+            return (
+                "short",
+                0.3,
+                f"Mixed signals favoring short (composite: {composite_score:.2f})"
+            )
+        
+        # Truly neutral - rare
         return (
-            "theme_neutral",
-            0.3,
-            f"Mixed signals - vol: {vol_regime}, trend: {trend_regime}, risk: {risk_regime}"
+            "flat",
+            0.25,
+            f"Truly neutral - vol: {vol_regime}, trend: {trend_regime}, risk: {risk_regime}"
         )
     
     def _apply_persistence_filter(
@@ -664,13 +766,48 @@ class ThemeExpert(BaseModule):
     
     def _neutral_output(self, reason: str) -> Dict[str, Any]:
         """Generate neutral output with explanation."""
+        proposal = "flat"
+        confidence = 0.1
+        thesis = f"Theme flat: {reason}"
+        
+        # Publish to SmartInfoBus even when neutral (prevents stale keys)
+        try:
+            self.smart_bus.set('ThemeExpert_voting_proposal', proposal, 
+                              module=self.module_name, thesis=thesis)
+            self.smart_bus.set('ThemeExpert_confidence', confidence, 
+                              module=self.module_name, thesis=f'Confidence: {confidence:.1%}')
+            self.smart_bus.set('theme_voting_proposal', proposal, 
+                              module=self.module_name, thesis=thesis)
+            self.smart_bus.set('theme_confidence', confidence, 
+                              module=self.module_name, thesis=f'Theme confidence: {confidence:.1%}')
+        except Exception:
+            pass
+        
         return {
-            "ThemeExpert_voting_proposal": "theme_neutral",
-            "ThemeExpert_confidence": 0.1,
+            "ThemeExpert_voting_proposal": proposal,
+            "ThemeExpert_confidence": confidence,
+            "theme_voting_proposal": proposal,  # Alias for contract compatibility
+            "theme_confidence": confidence,                   # Alias for contract compatibility
+            "theme_analysis": {                        # Required by contract
+                "volatility_regime": "unknown",
+                "trend_regime": "unknown",
+                "risk_regime": "unknown",
+                "composite_score": 0.5,
+                "action": proposal,
+                "confidence": confidence
+            },
+            "agreement_score": confidence,                    # Required by contract
+            "theme_expert_analysis": {                 # Backward compat alias
+                "volatility_regime": "unknown",
+                "trend_regime": "unknown",
+                "risk_regime": "unknown",
+                "composite_score": 0.5
+            },
+            "theme_expert_thesis": thesis,  # Backward compat alias
             "theme_volatility_regime": "unknown",
             "theme_trend_regime": "unknown",
             "theme_risk_regime": "unknown",
             "theme_composite_score": 0.5,
-            "_thesis": f"Theme neutral: {reason}"
+            "_thesis": thesis
         }
 

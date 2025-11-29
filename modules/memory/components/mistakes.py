@@ -57,6 +57,10 @@ class MistakeComponent(MemoryComponent):
         # State
         self.consecutive_losses: int = 0
         self.avoidance_signal: float = 0.0
+        self._processed_trade_ids: set = set()  # Track processed trade IDs to avoid duplicates
+        self._veto_start_time: float = 0.0  # When veto was triggered
+        self._veto_timeout_seconds: float = 60.0  # Veto expires after 60 seconds (allows recovery)
+        self._ticks_since_last_trade: int = 0  # Ticks since last trade for decay
 
         # Pattern tracking
         self.loss_patterns: Dict[str, Dict[str, Any]] = defaultdict(
@@ -124,6 +128,24 @@ class MistakeComponent(MemoryComponent):
             if not isinstance(trade, dict) or "pnl" not in trade:
                 continue
 
+            # Generate a unique trade ID to avoid reprocessing the same trade
+            trade_id = trade.get("id") or trade.get("trade_id") or trade.get("ticket")
+            if trade_id is None:
+                # Fallback: create ID from trade properties
+                trade_id = f"{trade.get('symbol', '')}_{trade.get('open_time', '')}_{trade.get('close_time', '')}_{trade.get('pnl', 0)}"
+            
+            # Skip if already processed
+            if trade_id in self._processed_trade_ids:
+                continue
+            
+            # Mark as processed
+            self._processed_trade_ids.add(trade_id)
+            
+            # Limit set size to prevent memory bloat
+            if len(self._processed_trade_ids) > 1000:
+                # Remove oldest entries (convert to list, slice, convert back)
+                self._processed_trade_ids = set(list(self._processed_trade_ids)[-500:])
+
             features = self._extract_trade_features(trade, market_context)
             if features is None:
                 continue
@@ -137,6 +159,7 @@ class MistakeComponent(MemoryComponent):
                 self._process_win_trade(features, pnl, trade)
                 wins_learned += 1
                 self.consecutive_losses = 0
+                self._veto_start_time = 0.0  # Reset veto timer on win
 
         return {
             "losses_learned": losses_learned,
@@ -454,9 +477,24 @@ class MistakeComponent(MemoryComponent):
         veto_threshold_avoidance = 0.6
         veto = bool(danger_similarity > veto_threshold_danger and avoidance_signal > veto_threshold_avoidance)
         
-        # Additional veto conditions
+        # Additional veto conditions with timeout recovery
         if self.consecutive_losses >= 5:
-            veto = True  # Emergency stop after streak
+            # Check if veto should expire (timeout recovery)
+            current_time = time.time()
+            if self._veto_start_time == 0.0:
+                self._veto_start_time = current_time  # Start timeout timer
+            
+            elapsed = current_time - self._veto_start_time
+            if elapsed < self._veto_timeout_seconds:
+                veto = True  # Still in veto period
+            else:
+                # Veto expired - decay consecutive losses to allow recovery
+                self.consecutive_losses = max(0, self.consecutive_losses - 2)  # Reduce by 2
+                self._veto_start_time = 0.0  # Reset timer
+                self._log_debug("veto_timeout_recovery", details={
+                    "new_consecutive_losses": self.consecutive_losses,
+                    "elapsed_seconds": elapsed
+                })
         
         # Confidence: based on clustering quality and sample count
         sample_confidence = min(1.0, (len(self.loss_buffer) + len(self.win_buffer)) / 50.0)
