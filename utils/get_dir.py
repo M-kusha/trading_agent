@@ -37,29 +37,131 @@ _LAYER_W = dict(
     dynamicriskcontroller=1.0,      # Risk controller
 )
 
-_SIG_K     = 4.0        # REDUCED from 8.0 - gentler slope
-_SIG_KNEE  = 0.15       # REDUCED from 0.20 - lower threshold
-_BASE_GATE = 0.15       # REDUCED from 0.25 - easier base gate
-_VOL_REF   = 0.02       # INCREASED from 0.01 - less sensitive to volatility
+# ═══════════════════════════════════════════════════════════════════════════
+# MODE-AWARE GATE PARAMETERS
+# Automatically switch between LIVE (conservative) and TRAINING (exploratory)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Global mode flag - set by TradingModeManager or config
+_TRADING_MODE: str = "TRAINING"  # "LIVE" or "TRAINING"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LIVE MODE PARAMETERS (Conservative - protect capital)
+# ─────────────────────────────────────────────────────────────────────────────
+_LIVE_PARAMS = {
+    "SIG_K": 6.0,           # Steeper slope for sharper confidence cutoff
+    "SIG_KNEE": 0.25,       # Higher knee = need more confidence to pass
+    "BASE_GATE": 0.30,      # Higher base gate = harder to trigger trades
+    "VOL_REF": 0.015,       # More sensitive to volatility
+    "VOL_MULT_EXTREME": 1.8,  # Multiplier for extreme volatility
+    "VOL_MULT_HIGH": 1.5,     # Multiplier for high volatility
+    "VOL_MULT_ELEVATED": 1.2, # Multiplier for elevated volatility
+    "CONSENSUS_DISCOUNT": 0.90,  # Only 10% reduction for strong consensus
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TRAINING MODE PARAMETERS (Exploratory - allow learning)
+# ─────────────────────────────────────────────────────────────────────────────
+_TRAINING_PARAMS = {
+    "SIG_K": 4.0,           # Gentler slope for exploration
+    "SIG_KNEE": 0.15,       # Lower knee = easier to pass
+    "BASE_GATE": 0.15,      # Lower base gate = more trades for learning
+    "VOL_REF": 0.02,        # Less sensitive to volatility
+    "VOL_MULT_EXTREME": 1.4,  # Smaller multiplier
+    "VOL_MULT_HIGH": 1.2,     # Smaller multiplier
+    "VOL_MULT_ELEVATED": 1.1, # Smaller multiplier
+    "CONSENSUS_DISCOUNT": 0.80,  # 20% reduction for strong consensus
+}
+
+
+def set_trading_mode(mode: str) -> None:
+    """
+    Set the global trading mode. Call this at startup based on config.
+    
+    Args:
+        mode: "LIVE" for conservative real-money trading,
+              "TRAINING" for exploratory learning mode
+    """
+    global _TRADING_MODE
+    mode = mode.upper().strip()
+    if mode not in ("LIVE", "TRAINING"):
+        mode = "TRAINING"  # Default to safer exploratory mode
+    _TRADING_MODE = mode
+
+
+def get_trading_mode() -> str:
+    """Get the current trading mode."""
+    return _TRADING_MODE
+
+
+def get_gate_params() -> dict:
+    """Get the current gate parameters based on trading mode."""
+    if _TRADING_MODE == "LIVE":
+        return _LIVE_PARAMS.copy()
+    return _TRAINING_PARAMS.copy()
+
+
+# Legacy accessors (for backward compatibility) - now mode-aware
+def _get_sig_k() -> float:
+    return get_gate_params()["SIG_K"]
+
+def _get_sig_knee() -> float:
+    return get_gate_params()["SIG_KNEE"]
+
+def _get_base_gate() -> float:
+    return get_gate_params()["BASE_GATE"]
+
+def _get_vol_ref() -> float:
+    return get_gate_params()["VOL_REF"]
 
 def _squash(c: float) -> float:
     """
-    Gentler squashing function for confidence values.
+    Mode-aware squashing function for confidence values.
+    Uses steeper curve in LIVE mode, gentler in TRAINING.
     """
-    return 1.0 / (1.0 + np.exp(-_SIG_K * (c - _SIG_KNEE)))
+    params = get_gate_params()
+    return 1.0 / (1.0 + np.exp(-params["SIG_K"] * (c - params["SIG_KNEE"])))
+
 
 def _smart_gate(volatility: float, maj: int) -> float:
     """
-    Less restrictive gate that allows more trades through.
+    Mode-aware gate for trading decisions.
+    
+    LIVE mode: Conservative - protects capital with high thresholds
+    TRAINING mode: Exploratory - allows more trades for learning
+    
     Args:
         volatility: Current market volatility
         maj: Majority direction (+1 or -1)
     Returns:
-        Gate threshold (lower = easier to pass)
+        Gate threshold (higher = harder to pass)
     """
-    gate = _BASE_GATE
-    if volatility > _VOL_REF * 2:
-        gate *= 1.2  # Only 20% increase instead of doubling
+    params = get_gate_params()
+    gate = params["BASE_GATE"]
+    vol_ref = params["VOL_REF"]
+    
+    # Volatility-based scaling (more aggressive in LIVE mode)
+    if volatility > vol_ref * 3:
+        gate *= params["VOL_MULT_EXTREME"]
+    elif volatility > vol_ref * 2:
+        gate *= params["VOL_MULT_HIGH"]
+    elif volatility > vol_ref * 1.5:
+        gate *= params["VOL_MULT_ELEVATED"]
+    
+    # Reduce gate when majority agrees (smaller reduction in LIVE mode)
     if abs(maj) > 0:
-        gate *= 0.8
+        gate *= params["CONSENSUS_DISCOUNT"]
+    
     return gate
+
+
+def get_gate_info() -> dict:
+    """
+    Get current gate configuration for logging/debugging.
+    Returns dict with mode and all active parameters.
+    """
+    return {
+        "mode": _TRADING_MODE,
+        "params": get_gate_params(),
+        "description": "CONSERVATIVE" if _TRADING_MODE == "LIVE" else "EXPLORATORY",
+    }

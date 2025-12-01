@@ -162,9 +162,9 @@ class TradingConfig:
     # ===================================================================
     # Trading Parameters (fallback only; modules own live values)
     # ===================================================================
-    no_trade_penalty: float = 0.3
-    consensus_min: float = 0.30
-    consensus_max: float = 0.70
+    no_trade_penalty: float = 0.2          # Reduced - don't force trading
+    consensus_min: float = 0.50            # Raised from 0.30 - need more agreement
+    consensus_max: float = 0.85            # Raised from 0.70 - higher ceiling
     max_episodes: int = 10000
 
     # Execution economics (used by embedded executor when PositionManager/ExecutionQualityMonitor
@@ -174,18 +174,18 @@ class TradingConfig:
     commission_per_million: float = 0.0
 
     # Soft gating for env-embedded logic (fallback only; modules should own these live)
-    min_confidence: float = 0.0
-    min_intensity: float = 0.25
+    min_confidence: float = 0.35           # Raised from 0.0 - require confidence
+    min_intensity: float = 0.35            # Raised from 0.25 - filter weak signals
     ignore_hold: bool = True
 
     # ===================================================================
     # Risk Management (fallback guard-rails; Compliance/PortfolioRiskSystem are canonical)
     # ===================================================================
     rotation_gap: int = 5
-    max_position_pct: float = 0.25       # fallback cap per-trade (25% = ~0.25 lots on 100k balance)
-    max_total_exposure: float = 0.50     # fallback cap portfolio exposure (raised for aggressive trading)
-    max_drawdown: float = 0.20           # fallback episode/session DD limit
-    max_correlation: float = 0.8
+    max_position_pct: float = 0.15       # Reduced from 0.25 - smaller positions = less risk
+    max_total_exposure: float = 0.35     # Reduced from 0.50 - less total exposure
+    max_drawdown: float = 0.15           # Reduced from 0.20 - tighter DD limit
+    max_correlation: float = 0.7         # Reduced from 0.8 - less correlated risk
 
     # Position Management Specific (fallbacks)
     max_consecutive_losses: int = 5
@@ -283,6 +283,16 @@ class TradingConfig:
     def __post_init__(self) -> None:
         """Post-initialization setup with clamps, dirs, and invariants."""
         object.__setattr__(self, "max_steps_per_episode", int(self.max_steps))
+
+        # ═══════════════════════════════════════════════════════════════
+        # AUTO-SET TRADING MODE based on live_mode flag
+        # This propagates to all mode-aware subsystems (gates, voting, rewards)
+        # ═══════════════════════════════════════════════════════════════
+        try:
+            from modules.core.trading_mode import TradingModeManager
+            TradingModeManager.from_config(self, silent=True)
+        except ImportError:
+            pass  # Module not available yet during early init
 
         # Sanitize lists
         self.instruments = [str(x) for x in (self.instruments or []) if str(x).strip()]
@@ -496,20 +506,34 @@ class ConfigPresets:
 
     @staticmethod
     def conservative_live() -> TradingConfig:
+        """Ultra-conservative configuration for LIVE trading with real money."""
         return TradingConfig(
-            # Conservative risk settings (fallbacks)
+            # ═══════════════════════════════════════════════════════════════
+            # ULTRA-CONSERVATIVE RISK SETTINGS FOR LIVE TRADING
+            # ═══════════════════════════════════════════════════════════════
             initial_balance=1000.0,
-            max_position_pct=0.05,
-            max_total_exposure=0.15,
-            max_drawdown=0.10,
-            consensus_min=0.50,
+            max_position_pct=0.03,         # Max 3% per position (was 5%)
+            max_total_exposure=0.10,       # Max 10% total exposure (was 15%)
+            max_drawdown=0.08,             # Max 8% drawdown before halt (was 10%)
+            max_correlation=0.6,           # Lower correlation tolerance
+            
+            # Strong consensus requirements
+            consensus_min=0.65,            # Need 65% agreement (was 50%)
+            min_confidence=0.50,           # Need 50% confidence
+            min_intensity=0.40,            # Need strong signal
+            
+            # Position management - very conservative
+            max_consecutive_losses=3,      # Only 3 losses before reducing
+            loss_reduction=0.5,            # Reduce by 50% after consecutive losses
+            emergency_drawdown_trigger=0.06,  # Emergency at 6% DD
+            emergency_close_threshold=0.80,   # Close at 80% risk threshold
 
             # Live trading settings
             live_mode=True,
             debug=False,
             enable_shadow_sim=False,
 
-            # Bus-first policy
+            # Bus-first policy (let modules control)
             bus_first=True,
             prefer_bus_data=True,
             prefer_bus_features=True,
@@ -524,25 +548,26 @@ class ConfigPresets:
             info_bus_audit_level="WARNING",
             info_bus_validation=True,
 
-            # Monitoring
-            risk_check_frequency=1,
-            risk_alert_cooldown=3,
-            max_concurrent_alerts=5,
+            # Frequent monitoring
+            risk_check_frequency=1,        # Check every step
+            risk_alert_cooldown=2,         # Quick alerts
+            max_concurrent_alerts=3,       # Fewer alerts before action
 
-            # Learning (legacy defaults)
-            learning_rate=1e-4,
+            # Conservative learning (shouldn't update live, but safety)
+            learning_rate=1e-5,            # Very slow learning
             ent_coef=0.001,
-            n_steps=1024,
+            n_steps=512,
 
-            # Episodes
-            max_steps=100,
-            final_training_steps=50000,
+            # Short episodes for quick recovery
+            max_steps=50,
+            final_training_steps=10000,
 
-            # Logging cadence
-            log_interval=5,
-            checkpoint_freq=2500,
-            eval_freq=1000,
+            # Logging
+            log_interval=1,                # Log every step
+            checkpoint_freq=1000,
+            eval_freq=500,
 
+            # Single instrument to start
             instruments=["EUR_USD"],
             timeframes=["H1", "H4", "D1"],
         )
@@ -655,7 +680,18 @@ class ConfigFactory:
         info_bus_level: str = "auto",
         **overrides: Any
     ) -> TradingConfig:
-
+        """
+        Create a TradingConfig with appropriate mode settings.
+        
+        Args:
+            mode: "live", "research", "production", or "backtest"
+            risk_level: "conservative", "moderate", or "aggressive"
+            info_bus_level: "auto", "DEBUG", "INFO", "WARNING", "ERROR"
+            **overrides: Additional config overrides
+        
+        Note: Setting mode="live" automatically enables LIVE trading mode
+              across all subsystems (gates, voting, rewards).
+        """
         if mode == "live":
             config = ConfigPresets.conservative_live()
         elif mode == "research":
@@ -698,6 +734,14 @@ class ConfigFactory:
                 print(f"Warning: Unknown config parameter '{key}'")
 
         config.__post_init__()
+        
+        # Explicitly set trading mode after config is fully built
+        try:
+            from modules.core.trading_mode import TradingModeManager
+            TradingModeManager.from_config(config)
+        except ImportError:
+            pass
+        
         return config
 
 

@@ -2,6 +2,9 @@
 """
 Shared Configuration for Reward System
 Centralized configuration management with validation and normalization
+
+MODE-AWARE: Penalty weights automatically switch between LIVE (conservative)
+and TRAINING (exploratory) modes. Call set_reward_mode() at startup.
 """
 
 from dataclasses import dataclass, field
@@ -18,9 +21,81 @@ class RewardMode(Enum):
     OPTIMIZATION = "optimization"
 
 
+# ═══════════════════════════════════════════════════════════════════
+# MODE-AWARE REWARD PARAMETERS
+# ═══════════════════════════════════════════════════════════════════
+
+# Global mode flag
+_REWARD_MODE: str = "TRAINING"  # "LIVE" or "TRAINING"
+
+# ───────────────────────────────────────────────────────────────────
+# LIVE MODE PARAMETERS (Conservative - protect capital)
+# ───────────────────────────────────────────────────────────────────
+_LIVE_REWARD_PARAMS = {
+    # Penalty weights (strong penalties for risky behavior)
+    "dd_pen_weight": 3.0,           # Strong drawdown penalty
+    "risk_pen_weight": 0.25,        # Strong risk penalty
+    "tail_pen_weight": 0.8,         # Strong tail risk penalty
+    "mistake_pen_weight": 0.5,      # Strong mistake penalty
+    "no_trade_penalty_weight": 0.02,  # Very low - don't force trading
+    
+    # Bonus weights (conservative)
+    "win_bonus_weight": 0.8,        # Lower win bonus
+    "trade_frequency_bonus": 0.1,   # Low frequency bonus
+}
+
+# ───────────────────────────────────────────────────────────────────
+# TRAINING MODE PARAMETERS (Exploratory - allow learning)
+# ───────────────────────────────────────────────────────────────────
+_TRAINING_REWARD_PARAMS = {
+    # Penalty weights (moderate for exploration)
+    "dd_pen_weight": 2.0,           # Moderate drawdown penalty
+    "risk_pen_weight": 0.1,         # Moderate risk penalty
+    "tail_pen_weight": 0.5,         # Moderate tail risk penalty
+    "mistake_pen_weight": 0.3,      # Moderate mistake penalty
+    "no_trade_penalty_weight": 0.05,  # Encourage trading to learn
+    
+    # Bonus weights (encourage exploration)
+    "win_bonus_weight": 1.0,        # Full win bonus
+    "trade_frequency_bonus": 0.2,   # Encourage frequent trades
+}
+
+
+def set_reward_mode(mode: str) -> None:
+    """
+    Set the global reward mode. Call this at startup based on config.
+    
+    Args:
+        mode: "LIVE" for conservative real-money trading,
+              "TRAINING" for exploratory learning mode
+    """
+    global _REWARD_MODE
+    mode = mode.upper().strip()
+    if mode not in ("LIVE", "TRAINING"):
+        mode = "TRAINING"  # Default to exploratory mode
+    _REWARD_MODE = mode
+
+
+def get_reward_mode() -> str:
+    """Get the current reward mode."""
+    return _REWARD_MODE
+
+
+def get_reward_params() -> Dict[str, float]:
+    """Get the current reward parameters based on mode."""
+    if _REWARD_MODE == "LIVE":
+        return _LIVE_REWARD_PARAMS.copy()
+    return _TRAINING_REWARD_PARAMS.copy()
+
+
 @dataclass
 class RewardConfig:
-    """Configuration for Risk-Adjusted Reward System"""
+    """
+    Configuration for Risk-Adjusted Reward System.
+    
+    MODE-AWARE: Default values are overridden based on global mode.
+    Call set_reward_mode("LIVE") or set_reward_mode("TRAINING") at startup.
+    """
 
     # Balance configuration
     initial_balance: Optional[float] = None
@@ -32,7 +107,7 @@ class RewardConfig:
     # Regime weights
     regime_weights: List[float] = field(default_factory=lambda: [0.3, 0.4, 0.3])
 
-    # Penalty weights
+    # Penalty weights (defaults - will be overridden by mode in __post_init__)
     dd_pen_weight: float = 2.0
     risk_pen_weight: float = 0.1
     tail_pen_weight: float = 0.5
@@ -59,12 +134,32 @@ class RewardConfig:
     confidence_decay: float = 0.98
     performance_smoothing: float = 0.95
     adaptive_learning_rate: float = 0.01
+    
+    # Mode override flag (set to False to use static values)
+    use_mode_aware_defaults: bool = True
 
     # ─────────────────────────────────────────────────────────────
     # Lifecycle
     # ─────────────────────────────────────────────────────────────
     def __post_init__(self) -> None:
+        # Apply mode-aware defaults if enabled
+        if self.use_mode_aware_defaults:
+            self._apply_mode_defaults()
         self._validate_and_normalize()
+    
+    def _apply_mode_defaults(self) -> None:
+        """Apply mode-aware default values for penalty/bonus weights."""
+        params = get_reward_params()
+        
+        # Only override if using default values (not explicitly set)
+        # This allows explicit overrides to take precedence
+        self.dd_pen_weight = params.get("dd_pen_weight", self.dd_pen_weight)
+        self.risk_pen_weight = params.get("risk_pen_weight", self.risk_pen_weight)
+        self.tail_pen_weight = params.get("tail_pen_weight", self.tail_pen_weight)
+        self.mistake_pen_weight = params.get("mistake_pen_weight", self.mistake_pen_weight)
+        self.no_trade_penalty_weight = params.get("no_trade_penalty_weight", self.no_trade_penalty_weight)
+        self.win_bonus_weight = params.get("win_bonus_weight", self.win_bonus_weight)
+        self.trade_frequency_bonus = params.get("trade_frequency_bonus", self.trade_frequency_bonus)
 
     # ─────────────────────────────────────────────────────────────
     # Public API

@@ -2,6 +2,9 @@
 """
 Voting system constants and enumerations.
 Single source of truth for thresholds, defaults, and configuration values.
+
+MODE-AWARE: Thresholds automatically switch between LIVE (conservative)
+and TRAINING (exploratory) modes. Call set_voting_mode() at startup.
 """
 
 from enum import Enum
@@ -49,20 +52,130 @@ class VotingQuality(str, Enum):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Top-Level Constants (for direct import)
+# MODE-AWARE THRESHOLD SYSTEM
 # ═══════════════════════════════════════════════════════════════════
 
-# Confidence thresholds
+# Global mode flag
+_VOTING_MODE: str = "TRAINING"  # "LIVE" or "TRAINING"
+
+# ───────────────────────────────────────────────────────────────────
+# LIVE MODE THRESHOLDS (Conservative - protect capital)
+# ───────────────────────────────────────────────────────────────────
+_LIVE_THRESHOLDS = {
+    # Confidence (high requirements)
+    "CONFIDENCE_THRESHOLD": 0.45,
+    "HIGH_CONFIDENCE_THRESHOLD": 0.80,
+    "MIN_SIGNAL_STRENGTH": 0.25,
+    
+    # Consensus (strong agreement required)
+    "CONSENSUS_THRESHOLD": 0.70,
+    "STRONG_CONSENSUS_THRESHOLD": 0.85,
+    "WEAK_CONSENSUS_THRESHOLD": 0.50,
+    
+    # Arbiter (strict filtering)
+    "ARBITER_CONFIDENCE_FLOOR": 0.40,
+    "ARBITER_INTENSITY_FLOOR": 0.30,
+}
+
+# ───────────────────────────────────────────────────────────────────
+# TRAINING MODE THRESHOLDS (Exploratory - allow learning)
+# ───────────────────────────────────────────────────────────────────
+_TRAINING_THRESHOLDS = {
+    # Confidence (lower requirements for exploration)
+    "CONFIDENCE_THRESHOLD": 0.30,
+    "HIGH_CONFIDENCE_THRESHOLD": 0.70,
+    "MIN_SIGNAL_STRENGTH": 0.15,
+    
+    # Consensus (easier agreement)
+    "CONSENSUS_THRESHOLD": 0.55,
+    "STRONG_CONSENSUS_THRESHOLD": 0.75,
+    "WEAK_CONSENSUS_THRESHOLD": 0.35,
+    
+    # Arbiter (more permissive)
+    "ARBITER_CONFIDENCE_FLOOR": 0.20,
+    "ARBITER_INTENSITY_FLOOR": 0.15,
+}
+
+
+def set_voting_mode(mode: str) -> None:
+    """
+    Set the global voting mode. Call this at startup based on config.
+    
+    Args:
+        mode: "LIVE" for conservative real-money trading,
+              "TRAINING" for exploratory learning mode
+    """
+    global _VOTING_MODE
+    mode = mode.upper().strip()
+    if mode not in ("LIVE", "TRAINING"):
+        mode = "TRAINING"  # Default to exploratory mode
+    _VOTING_MODE = mode
+
+
+def get_voting_mode() -> str:
+    """Get the current voting mode."""
+    return _VOTING_MODE
+
+
+def get_thresholds() -> Dict[str, float]:
+    """Get the current thresholds based on voting mode."""
+    if _VOTING_MODE == "LIVE":
+        return _LIVE_THRESHOLDS.copy()
+    return _TRAINING_THRESHOLDS.copy()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Mode-Aware Threshold Accessors
+# (These return the appropriate value based on current mode)
+# ═══════════════════════════════════════════════════════════════════
+
+# Backward-compatible constants (now functions that check mode)
+def CONFIDENCE_THRESHOLD_F() -> float:
+    return get_thresholds()["CONFIDENCE_THRESHOLD"]
+
+def HIGH_CONFIDENCE_THRESHOLD_F() -> float:
+    return get_thresholds()["HIGH_CONFIDENCE_THRESHOLD"]
+
+def MIN_SIGNAL_STRENGTH_F() -> float:
+    return get_thresholds()["MIN_SIGNAL_STRENGTH"]
+
+def CONSENSUS_THRESHOLD_F() -> float:
+    return get_thresholds()["CONSENSUS_THRESHOLD"]
+
+def STRONG_CONSENSUS_THRESHOLD_F() -> float:
+    return get_thresholds()["STRONG_CONSENSUS_THRESHOLD"]
+
+def WEAK_CONSENSUS_THRESHOLD_F() -> float:
+    return get_thresholds()["WEAK_CONSENSUS_THRESHOLD"]
+
+def ARBITER_CONFIDENCE_FLOOR_F() -> float:
+    return get_thresholds()["ARBITER_CONFIDENCE_FLOOR"]
+
+def ARBITER_INTENSITY_FLOOR_F() -> float:
+    return get_thresholds()["ARBITER_INTENSITY_FLOOR"]
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Static Constants (for backward compatibility - use mode-aware defaults)
+# These are evaluated once at import time with TRAINING mode defaults
+# For dynamic mode-aware values, use the _F() functions above
+# ═══════════════════════════════════════════════════════════════════
+
+# Confidence thresholds (defaults to TRAINING mode values for backward compat)
 CONFIDENCE_THRESHOLD = 0.30
 HIGH_CONFIDENCE_THRESHOLD = 0.70
 MIN_SIGNAL_STRENGTH = 0.15
 
 # Consensus thresholds
-CONSENSUS_THRESHOLD = 0.60
-STRONG_CONSENSUS_THRESHOLD = 0.80
-WEAK_CONSENSUS_THRESHOLD = 0.40
+CONSENSUS_THRESHOLD = 0.55
+STRONG_CONSENSUS_THRESHOLD = 0.75
+WEAK_CONSENSUS_THRESHOLD = 0.35
 
-# Collusion detection
+# Arbiter thresholds
+ARBITER_CONFIDENCE_FLOOR = 0.20
+ARBITER_INTENSITY_FLOOR = 0.15
+
+# Collusion detection (static - not mode-aware)
 COLLUSION_THRESHOLD = 0.85
 MAX_CORRELATION = 0.90
 MIN_EXPERT_DIVERSITY = 0.30
@@ -81,10 +194,6 @@ QUORUM_RATIO = 0.5
 FRAGILITY_THRESHOLD = 0.70
 MAX_UNCERTAINTY = 0.50
 MONTE_CARLO_SAMPLES = 100
-
-# Arbiter thresholds
-ARBITER_CONFIDENCE_FLOOR = 0.25
-ARBITER_INTENSITY_FLOOR = 0.20
 
 # Performance
 MAX_PROCESSING_TIME_MS = 100.0
