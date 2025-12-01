@@ -46,22 +46,24 @@ smart_position:
   reversal_signal_threshold: 0.5
 
 # Stop Loss / Take Profit Settings (in pips)
-# These are critical for protecting positions if network disconnects
+# IMPORTANT: These are EMERGENCY safety nets only!
+# Real exit logic is handled by SmartPositionManager based on voting signals.
+# Set SL wide enough to avoid noise, TP disabled to let winners run.
 sl_tp_settings:
   # Default values per instrument (in pips)
   EURUSD:
-    stop_loss_pips: 50      # 50 pips SL
-    take_profit_pips: 100   # 100 pips TP (2:1 reward/risk)
+    stop_loss_pips: 200     # Emergency SL only: 200 pips = 0.0200 (~$40 at 0.2 lots)
+    take_profit_pips: 0     # DISABLED - SmartPositionManager handles exits
   XAUUSD:
-    stop_loss_pips: 200     # $2.00 for gold (200 points = $2)
-    take_profit_pips: 400   # $4.00 for gold (2:1 reward/risk)
+    stop_loss_pips: 2000    # Emergency SL only: $20.00 for gold (safety net)
+    take_profit_pips: 0     # DISABLED - SmartPositionManager handles exits
   # Default fallback for any other symbol
   default:
-    stop_loss_pips: 50
-    take_profit_pips: 100
+    stop_loss_pips: 200     # Wide emergency SL
+    take_profit_pips: 0     # Disabled - let smart system handle
   # Enable/disable automatic SL/TP on new orders
-  auto_sl_enabled: true
-  auto_tp_enabled: true
+  auto_sl_enabled: true     # Keep emergency SL for safety
+  auto_tp_enabled: false    # Disable fixed TP - SmartPositionManager decides
   # Modify existing positions without SL/TP
   fix_missing_sl_tp: true
 

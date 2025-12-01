@@ -5,7 +5,7 @@ import time
 import math
 import yaml
 from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 from .base_adapter import BaseLiveAdapter, LiveAdapterConfig
 from modules.utils.audit_utils import RotatingLogger
@@ -34,30 +34,37 @@ def _load_sl_tp_config() -> Dict[str, Any]:
     try:
         config_path = Path("config/risk_policy.yaml")
         if config_path.exists():
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding='utf-8') as f:
                 config = yaml.safe_load(f) or {}
                 return config.get('sl_tp_settings', {})
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[MT5Adapter] Warning: Failed to load SL/TP config: {e}")
     return {}
 
 
-def _get_sl_tp_pips(symbol: str) -> tuple:
-    """Get SL/TP pips for a symbol from config"""
+def _get_sl_tp_pips(symbol: str) -> Tuple[float, float]:
+    """
+    Get SL/TP pips for a symbol from config.
+    
+    NOTE: These are EMERGENCY safety nets only.
+    Real exit logic is handled by SmartPositionManager based on voting signals.
+    """
     config = _load_sl_tp_config()
     
     # Check if auto SL/TP is enabled
     if not config.get('auto_sl_enabled', True):
         sl_pips = 0
     else:
-        sl_pips = config.get(symbol, config.get('default', {})).get('stop_loss_pips', 50)
+        symbol_config = config.get(symbol, config.get('default', {}))
+        sl_pips = symbol_config.get('stop_loss_pips', 200)  # Wide emergency SL
     
-    if not config.get('auto_tp_enabled', True):
+    if not config.get('auto_tp_enabled', False):  # Default OFF - SmartPositionManager handles
         tp_pips = 0
     else:
-        tp_pips = config.get(symbol, config.get('default', {})).get('take_profit_pips', 100)
+        symbol_config = config.get(symbol, config.get('default', {}))
+        tp_pips = symbol_config.get('take_profit_pips', 0)
     
-    return (sl_pips, tp_pips)
+    return (float(sl_pips), float(tp_pips))
 
 
 def _pips_to_price(symbol: str, pips: float) -> float:
