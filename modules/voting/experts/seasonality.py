@@ -10,8 +10,12 @@ This expert analyzes seasonal and temporal patterns including:
 - Economic calendar awareness (high-impact event windows)
 - Rollover and swap timing
 
-Actions: seasonal_long_bias, seasonal_short_bias, seasonal_neutral,
-         session_optimal, session_avoid, high_impact_caution
+Per-Instrument Voting:
+- Different assets have different seasonal patterns
+- Gold has different seasonality than EURUSD
+- Each instrument gets its own vote based on asset-specific patterns
+
+Actions: long, short, flat
 """
 
 import numpy as np
@@ -22,6 +26,20 @@ import calendar
 from modules.contracts import module_args
 from modules.core.module_base import BaseModule, module
 from modules.utils.info_bus import InfoBusManager
+from modules.voting.core.per_instrument import PerInstrumentVote, InstrumentProposal
+
+
+def normalize_instrument(symbol: str) -> str:
+    """Normalize instrument symbol to standard format."""
+    if not symbol:
+        return ""
+    s = symbol.upper().replace("/", "").replace("_", "").replace("-", "").strip()
+    mapping = {
+        "EURUSD": "EURUSD",
+        "XAUUSD": "XAUUSD",
+        "GOLDUSD": "XAUUSD",
+    }
+    return mapping.get(s, s)
 
 
 @module(**module_args("SeasonalityRiskExpert"))
@@ -37,6 +55,17 @@ class SeasonalityRiskExpert(BaseModule):
         """Initialize the seasonality expert with configuration."""
         self.smart_bus = InfoBusManager.get_instance()
         self.module_name = self.__class__.__name__
+        
+        # Instruments to analyze (from config or default)
+        self.instruments = self.config.get('instruments', ['EURUSD', 'XAUUSD'])
+        
+        # Asset class mapping for different seasonal patterns
+        self.asset_classes = {
+            'EURUSD': 'forex',
+            'XAUUSD': 'commodity',
+            'GBPUSD': 'forex',
+            'USDJPY': 'forex',
+        }
         
         # Session times (UTC)
         self.sessions = {
@@ -101,13 +130,16 @@ class SeasonalityRiskExpert(BaseModule):
             'asian': 0.8
         }
         
-        self.logger.info("SeasonalityRiskExpert initialized with temporal analysis")
+        self.logger.info(f"SeasonalityRiskExpert initialized with temporal analysis, instruments: {self.instruments}")
     
     async def process(self, **inputs) -> Dict[str, Any]:
         """
-        Process temporal data to determine seasonal biases and timing.
+        Process temporal data to determine seasonal biases and timing PER INSTRUMENT.
         
-        Returns voting proposal with time-based action and confidence.
+        NEW: Analyzes each instrument separately since different assets have
+        different seasonal patterns (e.g., Gold vs EURUSD).
+        
+        Returns voting proposal with per-instrument actions and confidence.
         """
         try:
             # Get current time (use system time or from market data)
@@ -116,103 +148,196 @@ class SeasonalityRiskExpert(BaseModule):
             market_data = self.smart_bus.get("market_data", self.module_name, default={})
             features = self.smart_bus.get("features", self.module_name, default={})
             
-            # Analyze all temporal components
+            # Analyze all temporal components (these are GLOBAL - time is the same for all instruments)
             session_analysis = self._analyze_session(current_time)
             dow_analysis = self._analyze_day_of_week(current_time)
             monthly_analysis = self._analyze_monthly_pattern(current_time)
             hour_analysis = self._analyze_hour_patterns(current_time)
             
-            # Check special conditions
+            # Check special conditions (GLOBAL)
             rollover_risk = self._check_rollover_risk(current_time)
             weekend_risk = self._check_weekend_risk(current_time)
             high_impact_window = self._check_high_impact_window(current_time)
             
-            # Calculate historical pattern score if we have price data
-            historical_score = self._calculate_historical_pattern_score(
-                current_time, market_data, features
-            )
+            # ========== Per-Instrument Analysis ==========
+            per_instrument_vote = PerInstrumentVote(member=self.module_name)
+            per_instrument_analysis: Dict[str, Dict] = {}
             
-            # Calculate composite temporal score
-            composite_score = self._calculate_composite_score(
-                session_analysis,
-                dow_analysis,
-                monthly_analysis,
-                hour_analysis,
-                historical_score
-            )
+            for inst in self.instruments:
+                inst_norm = normalize_instrument(inst)
+                asset_class = self.asset_classes.get(inst_norm, 'forex')
+                
+                # Extract instrument-specific market data for historical pattern
+                inst_market = self._extract_instrument_data(market_data, inst)
+                inst_features = self._extract_instrument_data(features, inst)
+                
+                # Calculate historical pattern score for THIS instrument
+                historical_score = self._calculate_historical_pattern_score(
+                    current_time, inst_market, inst_features, inst
+                )
+                
+                # Calculate composite temporal score
+                composite_score = self._calculate_composite_score(
+                    session_analysis,
+                    dow_analysis,
+                    monthly_analysis,
+                    hour_analysis,
+                    historical_score
+                )
+                
+                # Select action based on analysis FOR THIS INSTRUMENT
+                action, confidence, thesis = self._select_seasonal_action(
+                    composite_score,
+                    session_analysis,
+                    dow_analysis,
+                    monthly_analysis,
+                    rollover_risk,
+                    weekend_risk,
+                    high_impact_window,
+                    instrument=inst_norm,
+                    asset_class=asset_class
+                )
+                
+                # Create per-instrument proposal
+                per_instrument_vote.set_proposal(InstrumentProposal(
+                    instrument=inst_norm,
+                    action=action,
+                    confidence=confidence,
+                    magnitude=confidence,
+                    rationale=thesis,
+                ))
+                
+                # Store analysis for this instrument
+                per_instrument_analysis[inst_norm] = {
+                    'session': session_analysis['current_session'],
+                    'dow_bias': dow_analysis['bias'],
+                    'monthly_pattern': monthly_analysis['pattern'],
+                    'composite_score': composite_score,
+                    'historical_score': historical_score,
+                    'action': action,
+                    'confidence': confidence,
+                }
+                
+                self.logger.debug(
+                    f"[SEASONALITY] {inst}: session={session_analysis['current_session']}, "
+                    f"action={action}, conf={confidence:.2f}"
+                )
             
-            # Select action based on analysis
-            action, confidence, thesis = self._select_seasonal_action(
-                composite_score,
-                session_analysis,
-                dow_analysis,
-                monthly_analysis,
-                rollover_risk,
-                weekend_risk,
-                high_impact_window
-            )
+            # ========== Calculate Global Summary (backward compat) ==========
+            # Use highest confidence vote as global
+            if per_instrument_vote.proposals:
+                best_proposal = max(per_instrument_vote.proposals.values(), key=lambda p: p.confidence)
+                global_action = best_proposal.action
+                global_confidence = best_proposal.confidence
+                global_thesis = best_proposal.rationale
+            else:
+                global_action = 'flat'
+                global_confidence = 0.1
+                global_thesis = "No instrument data available"
             
-            # Build proposal dict for voting
+            # Build per-instrument proposals dict for CommitteeCoordinator
+            proposals_dict = {}
+            for inst, proposal in per_instrument_vote.proposals.items():
+                proposals_dict[inst] = {
+                    'action': proposal.action,
+                    'confidence': proposal.confidence,
+                    'magnitude': proposal.magnitude,
+                    'rationale': proposal.rationale,
+                }
+            
+            # Build proposal dict for voting (with per-instrument proposals)
             proposal = {
-                "action": action,
-                "signal_strength": confidence,
-                "reason": thesis
+                "action": global_action,
+                "signal_strength": global_confidence,
+                "reason": global_thesis,
+                "proposals": proposals_dict,  # NEW: Per-instrument proposals for committee
             }
             
             # Publish to SmartInfoBus for CommitteeCoordinator discovery
             name = self.__class__.__name__
             try:
-                self.smart_bus.set('SeasonalityRiskExpert_voting_proposal', proposal, module=name, thesis=thesis)
-                self.smart_bus.set('SeasonalityRiskExpert_confidence', confidence, module=name, thesis=f'Confidence: {confidence:.1%}')
-                self.smart_bus.set('seasonality_voting_proposal', proposal, module=name, thesis=thesis)
-                self.smart_bus.set('seasonality_confidence', confidence, module=name, thesis=f'Seasonality confidence: {confidence:.1%}')
+                self.smart_bus.set('SeasonalityRiskExpert_voting_proposal', proposal, module=name, thesis=global_thesis)
+                self.smart_bus.set('SeasonalityRiskExpert_confidence', global_confidence, module=name, thesis=f'Confidence: {global_confidence:.1%}')
+                self.smart_bus.set('seasonality_voting_proposal', proposal, module=name, thesis=global_thesis)
+                self.smart_bus.set('seasonality_confidence', global_confidence, module=name, thesis=f'Seasonality confidence: {global_confidence:.1%}')
+                
+                # NEW: Publish per-instrument votes for CommitteeCoordinator
+                per_inst_votes_dict = {inst: p.to_dict() for inst, p in per_instrument_vote.proposals.items()}
+                self.smart_bus.set(
+                    'SeasonalityRiskExpert_per_instrument_votes',
+                    per_inst_votes_dict,
+                    module=name,
+                    thesis=f'Per-instrument seasonality votes: {list(per_inst_votes_dict.keys())}'
+                )
             except Exception:
                 pass
             
             return {
                 "SeasonalityRiskExpert_voting_proposal": proposal,
-                "SeasonalityRiskExpert_confidence": confidence,
+                "SeasonalityRiskExpert_confidence": global_confidence,
+                "SeasonalityRiskExpert_per_instrument_votes": {inst: p.to_dict() for inst, p in per_instrument_vote.proposals.items()},
+                "per_instrument_votes": per_instrument_vote,  # PerInstrumentVote object
                 "seasonality_voting_proposal": proposal,   # Alias for contract compatibility
-                "seasonality_confidence": confidence,     # Alias for contract compatibility
+                "seasonality_confidence": global_confidence,     # Alias for contract compatibility
                 "seasonal_voting_proposal": proposal,       # Additional alias
-                "seasonal_confidence": confidence,        # Additional alias
+                "seasonal_confidence": global_confidence,        # Additional alias
                 "seasonality_risk_analysis": {            # Required by contract
                     "session": session_analysis['current_session'],
                     "dow_bias": dow_analysis['bias'],
                     "monthly_pattern": monthly_analysis['pattern'],
-                    "composite_score": composite_score,
+                    "composite_score": per_instrument_analysis.get(
+                        self.instruments[0] if self.instruments else 'EURUSD', {}
+                    ).get('composite_score', 0.5),
                     "rollover_risk": rollover_risk,
                     "weekend_risk": weekend_risk,
-                    "action": action,
-                    "confidence": confidence
+                    "action": global_action,
+                    "confidence": global_confidence,
+                    "per_instrument": per_instrument_analysis,  # NEW
                 },
                 "seasonality_analysis": {                 # Alias
                     "session": session_analysis['current_session'],
                     "dow_bias": dow_analysis['bias'],
                     "monthly_pattern": monthly_analysis['pattern'],
-                    "composite_score": composite_score
+                    "composite_score": 0.5,
+                    "per_instrument": per_instrument_analysis,
                 },
                 "seasonality_expert_analysis": {          # Backward compat alias
                     "session": session_analysis['current_session'],
                     "dow_bias": dow_analysis['bias'],
                     "monthly_pattern": monthly_analysis['pattern'],
-                    "composite_score": composite_score,
+                    "composite_score": 0.5,
                     "rollover_risk": rollover_risk,
-                    "weekend_risk": weekend_risk
+                    "weekend_risk": weekend_risk,
+                    "per_instrument": per_instrument_analysis,
                 },
-                "seasonality_expert_thesis": thesis,      # Backward compat alias
+                "seasonality_expert_thesis": global_thesis,      # Backward compat alias
                 "seasonal_session": session_analysis['current_session'],
                 "seasonal_dow_bias": dow_analysis['bias'],
                 "seasonal_monthly_pattern": monthly_analysis['pattern'],
-                "seasonal_composite_score": composite_score,
+                "seasonal_composite_score": 0.5,
                 "seasonal_rollover_risk": rollover_risk,
                 "seasonal_weekend_risk": weekend_risk,
-                "_thesis": thesis
+                "_thesis": global_thesis
             }
             
         except Exception as e:
             self.logger.error(f"SeasonalityRiskExpert error: {e}")
             return self._neutral_output(f"Processing error: {str(e)}")
+    
+    def _extract_instrument_data(self, data: Dict, instrument: str) -> Dict:
+        """Extract data for a specific instrument from nested market data."""
+        if not isinstance(data, dict):
+            return {}
+        
+        inst_norm = normalize_instrument(instrument)
+        
+        # Try direct instrument key
+        for key in [instrument, inst_norm, instrument.upper(), instrument.lower()]:
+            if key in data:
+                return data[key] if isinstance(data[key], dict) else data
+        
+        # Return full data if no instrument-specific found (legacy format)
+        return data
     
     def _analyze_session(self, current_time: datetime) -> Dict[str, Any]:
         """
@@ -445,12 +570,13 @@ class SeasonalityRiskExpert(BaseModule):
         self,
         current_time: datetime,
         market_data: Dict,
-        features: Dict
+        features: Dict,
+        instrument: str = ''
     ) -> float:
         """
         Calculate score based on historical performance at similar times.
         """
-        close_prices = self._extract_prices(market_data, features, 'close')
+        close_prices = self._extract_prices(market_data, features, 'close', instrument)
         
         if len(close_prices) < 50:
             return 0.5
@@ -479,9 +605,17 @@ class SeasonalityRiskExpert(BaseModule):
         self, 
         market_data: Dict, 
         features: Dict, 
-        price_type: str
+        price_type: str,
+        instrument: str = ''
     ) -> np.ndarray:
-        """Extract price array from market data, features, or InfoBus."""
+        """Extract price array from market data, features, or InfoBus.
+        
+        Args:
+            market_data: Instrument-specific market data (may be pre-filtered)
+            features: Instrument-specific features (may be pre-filtered)
+            price_type: 'close', 'high', 'low', 'open'
+            instrument: Target instrument (e.g., 'EURUSD', 'XAUUSD') for historical lookup
+        """
         if isinstance(market_data, dict):
             if price_type in market_data:
                 data = market_data[price_type]
@@ -507,11 +641,20 @@ class SeasonalityRiskExpert(BaseModule):
             historical = None
 
         if isinstance(historical, dict):
+            # Map instrument to bus key aliases
+            inst_aliases = {
+                "EURUSD": ["EUR_USD", "EURUSD"],
+                "XAUUSD": ["XAU_USD", "XAUUSD", "GOLDUSD"],
+            }
+            aliases = inst_aliases.get(instrument.upper(), [instrument, instrument.replace("USD", "_USD")])
+            
             symbol = None
-            for candidate in ("XAU_USD", "EUR_USD"):
-                if candidate in historical:
-                    symbol = candidate
+            for alias in aliases:
+                if alias in historical:
+                    symbol = alias
                     break
+            
+            # Fallback to first available if no instrument match
             if symbol is None and historical:
                 symbol = next(iter(historical.keys()))
 
@@ -578,19 +721,32 @@ class SeasonalityRiskExpert(BaseModule):
         monthly_analysis: Dict,
         rollover_risk: bool,
         weekend_risk: bool,
-        high_impact_window: bool
+        high_impact_window: bool,
+        instrument: str = '',
+        asset_class: str = 'forex'
     ) -> Tuple[str, float, str]:
         """
         Select trading action based on seasonal analysis.
         
+        NEW: Now instrument-aware. Gold has different seasonal patterns.
+        
         Returns: (action, confidence, thesis) - action is 'long', 'short', or 'flat'
         """
-        # High-impact caution: stay flat
+        inst_norm = normalize_instrument(instrument) if instrument else ''
+        is_gold = inst_norm in ['XAUUSD', 'GOLD']
+        
+        # High-impact caution: stay flat (but Gold may get safe-haven bid)
         if high_impact_window:
+            if is_gold:
+                return (
+                    "long",
+                    0.5,
+                    f"{inst_norm}: Safe haven bid during high-impact window"
+                )
             return (
                 "flat",  # Standard neutral action
                 0.7,
-                f"High-impact event window detected, recommending caution"
+                f"{inst_norm}: High-impact event window, recommending caution"
             )
         
         # Weekend risk: stay flat
@@ -598,7 +754,7 @@ class SeasonalityRiskExpert(BaseModule):
             return (
                 "flat",  # Standard neutral action
                 0.75,
-                "Weekend gap risk - Friday late session, avoid new positions"
+                f"{inst_norm}: Weekend gap risk - Friday late session"
             )
         
         # Rollover caution: stay flat
@@ -606,54 +762,87 @@ class SeasonalityRiskExpert(BaseModule):
             return (
                 "flat",  # Standard neutral action
                 0.6,
-                "Rollover window - wider spreads and reduced liquidity expected"
+                f"{inst_norm}: Rollover window - wider spreads"
             )
         
-        # Poor session quality: stay flat
-        if session_analysis['session_quality'] < 0.3:  # Lowered threshold
-            return (
-                "flat",  # Standard neutral action
-                0.55,
-                f"Low session quality ({session_analysis['current_session']}), "
-                f"reduced liquidity expected"
-            )
+        # Poor session quality: stay flat (but Gold has 24h market)
+        if session_analysis['session_quality'] < 0.3:
+            # Gold trades better in Asian session than forex
+            if is_gold and session_analysis['current_session'] == 'asian':
+                pass  # Don't return flat for Gold in Asian session
+            else:
+                return (
+                    "flat",  # Standard neutral action
+                    0.55,
+                    f"{inst_norm}: Low session quality ({session_analysis['current_session']})"
+                )
         
-        # Strong seasonal long bias
-        if monthly_analysis['risk_on'] and composite_score > 0.6:  # Lowered threshold
+        # ========== Asset-specific seasonal patterns ==========
+        
+        # Gold seasonal patterns (typically strong in Jan, Aug-Sep, year-end)
+        if is_gold:
+            month = monthly_analysis.get('month', 0)
+            if month in [1, 8, 9, 12]:  # Strong gold months
+                confidence = self.base_confidence + 0.2
+                return (
+                    "long",
+                    np.clip(confidence, 0.5, 0.75),
+                    f"{inst_norm}: Favorable gold seasonality ({monthly_analysis['month_name']})"
+                )
+            elif month in [3, 4, 5]:  # Weak gold months
+                confidence = self.base_confidence
+                return (
+                    "short",
+                    np.clip(confidence, 0.4, 0.65),
+                    f"{inst_norm}: Weak gold seasonality ({monthly_analysis['month_name']})"
+                )
+        
+        # Strong seasonal long bias (forex)
+        if monthly_analysis['risk_on'] and composite_score > 0.6:
             confidence = self.base_confidence + (composite_score - 0.5) * 0.6
             return (
                 "long",  # Standard bullish action
                 np.clip(confidence, 0.5, 0.8),
-                f"Favorable seasonal conditions: {monthly_analysis['month_name']} "
-                f"(risk-on period), composite: {composite_score:.2f}"
+                f"{inst_norm}: Favorable seasonal ({monthly_analysis['month_name']}, risk-on)"
             )
         
-        # Cautious seasonal short bias
-        if not monthly_analysis['risk_on'] and composite_score < 0.45:  # Raised threshold
+        # Cautious seasonal short bias (forex)
+        if not monthly_analysis['risk_on'] and composite_score < 0.45:
             confidence = self.base_confidence + (0.5 - composite_score) * 0.6
+            # Gold in risk-off months tends to be LONG (safe haven)
+            if is_gold:
+                return (
+                    "long",
+                    np.clip(confidence, 0.5, 0.75),
+                    f"{inst_norm}: Safe haven in risk-off season"
+                )
             return (
                 "short",  # Standard bearish action
                 np.clip(confidence, 0.5, 0.75),
-                f"Unfavorable seasonal conditions: {monthly_analysis['month_name']} "
-                f"(risk-off period), composite: {composite_score:.2f}"
+                f"{inst_norm}: Unfavorable seasonal ({monthly_analysis['month_name']}, risk-off)"
             )
         
         # Optimal session - use dow bias for direction
         if session_analysis['current_session'] in ['overlap_eu_us', 'european']:
-            if dow_analysis['trend_continuation'] > 0.55:  # Lowered threshold
-                # Use day-of-week bias for direction
+            if dow_analysis['trend_continuation'] > 0.55:
                 dow_bias = dow_analysis.get('bias', 'neutral')
                 if dow_bias == 'bullish':
                     return (
                         "long",
                         0.55,
-                        f"Optimal session + bullish {dow_analysis['day_name']} bias"
+                        f"{inst_norm}: Optimal session + bullish {dow_analysis['day_name']}"
                     )
                 elif dow_bias == 'bearish':
+                    if is_gold:
+                        return (
+                            "flat",
+                            0.4,
+                            f"{inst_norm}: Bearish DOW but gold - neutral"
+                        )
                     return (
                         "short",
                         0.55,
-                        f"Optimal session + bearish {dow_analysis['day_name']} bias"
+                        f"{inst_norm}: Optimal session + bearish {dow_analysis['day_name']}"
                     )
         
         # Month-end/quarter-end effects - stay flat
@@ -661,36 +850,41 @@ class SeasonalityRiskExpert(BaseModule):
             return (
                 "flat",  # Standard neutral action
                 0.4,
-                "Quarter-end rebalancing period - expect unusual flows"
+                f"{inst_norm}: Quarter-end rebalancing"
             )
         
         if monthly_analysis['is_month_end']:
             return (
                 "flat",  # Standard neutral action
                 0.35,
-                "Month-end positioning - potential for unusual volatility"
+                f"{inst_norm}: Month-end positioning"
             )
         
-        # Default: use composite score for direction with lower threshold
+        # Default: use composite score for direction
         if composite_score > 0.52:
             return (
                 "long",
                 0.45,
-                f"Slight bullish seasonal conditions - composite: {composite_score:.2f}"
+                f"{inst_norm}: Slight bullish seasonal (composite: {composite_score:.2f})"
             )
         elif composite_score < 0.48:
+            if is_gold:
+                return (
+                    "flat",
+                    0.35,
+                    f"{inst_norm}: Slight bearish but gold - neutral"
+                )
             return (
                 "short",
                 0.45,
-                f"Slight bearish seasonal conditions - composite: {composite_score:.2f}"
+                f"{inst_norm}: Slight bearish seasonal (composite: {composite_score:.2f})"
             )
         
-        # True neutral only when composite is very close to 0.5
+        # True neutral
         return (
             "flat",  # Standard neutral action
             0.3,
-            f"Neutral seasonal conditions - session: {session_analysis['current_session']}, "
-            f"day: {dow_analysis['day_name']}, composite: {composite_score:.2f}"
+            f"{inst_norm}: Neutral seasonal - session: {session_analysis['current_session']}"
         )
     
     def _neutral_output(self, reason: str) -> Dict[str, Any]:

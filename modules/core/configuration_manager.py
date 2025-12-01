@@ -951,18 +951,20 @@ class ConfigurationManager:
         self.module_specs['MarketDataProvider'] = ModuleConfigSpec(
             name='MarketDataProvider',
             category='external',
-            config_section='modules.MarketDataProvider.config',
+            config_section='execution.MarketDataProvider.config',
             default_config={
                 'update_frequency': 1.0,
                 'data_sources': ['primary', 'backup'],
                 'cache_duration': 60,
                 'quality_threshold': 0.95,
-                'timeout_ms': 200
+                'timeout_ms': 200,
+                'window_min': 100,
+                'window_max': 200
             },
             required_keys=['update_frequency'],
             validation_rules={
                 'update_frequency': lambda x: x > 0,
-                'quality_threshold': lambda x: 0 < x < 1
+                'quality_threshold': lambda x: 0 < x <= 1
             }
         )
 

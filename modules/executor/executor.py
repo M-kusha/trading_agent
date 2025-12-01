@@ -1060,6 +1060,31 @@ class Executor(BaseModule):
                     except Exception:
                         pass
                     continue
+                
+                # ANTI-HEDGE CHECK: Prevent opening opposite direction while position exists
+                if action in ("open_long", "open_short"):
+                    try:
+                        all_positions = self.adapter.sync_positions() if self.adapter else {}
+                        if inst in all_positions:
+                            pos = all_positions[inst]
+                            existing_side = int(pos.get('side', 0))
+                            if existing_side != 0:
+                                is_buy = existing_side > 0
+                                # Block if trying to open opposite direction
+                                if (existing_side > 0 and side < 0) or (existing_side < 0 and side > 0):
+                                    self.logger.warning(
+                                        f"[LIVE] 🚫 BLOCKED HEDGE: {inst} wanted={action} but existing={'BUY' if is_buy else 'SELL'}"
+                                    )
+                                    continue
+                                # Block if already have same-direction position
+                                if (existing_side > 0 and side > 0) or (existing_side < 0 and side < 0):
+                                    self.logger.info(
+                                        f"[LIVE] ⏸️ BLOCKED DUPLICATE: {inst} wanted={action}, already have {'BUY' if is_buy else 'SELL'}"
+                                    )
+                                    continue
+                    except Exception as e:
+                        self.logger.warning(f"[LIVE] Position check failed: {e}")
+                
                 r = self.adapter.market_order(inst, side, lots)
                 try:
                     self.logger.info(f"[LIVE] market_order result: {r}")
@@ -1287,8 +1312,24 @@ class Executor(BaseModule):
                             vote_action = str(trade_vote.get("action", "")).upper()
                             vote_confidence = float(trade_vote.get("confidence", trade_vote.get("intensity", 0.5)) or 0.0)
                             vote_consensus = float(trade_vote.get("consensus_score", 0.0) or 0.0)
-                            # Require a minimum confidence/consensus to use global vote
-                            if vote_confidence >= 0.35 and vote_consensus >= 0.55 and vote_action in ("BUY", "SELL"):
+                            
+                            # IMPORTANT: For existing positions, be MORE cautious about global votes
+                            # Global SELL shouldn't close profitable LONG positions on weak signals
+                            is_global_vote = not vote_symbol  # No specific symbol = global
+                            position_is_long = position.side > 0 if position else False
+                            position_is_profitable = (position.unrealized_pnl > 5.0) if position else False
+                            
+                            # Require HIGHER confidence for global opposing signals on profitable positions
+                            min_confidence = 0.35
+                            min_consensus = 0.55
+                            if is_global_vote and position_is_profitable:
+                                if (position_is_long and vote_action == "SELL") or \
+                                   (not position_is_long and vote_action == "BUY"):
+                                    # Opposing global signal on profitable position - need higher bar
+                                    min_confidence = 0.60  # Much higher confidence required
+                                    min_consensus = 0.70   # Much higher consensus required
+                            
+                            if vote_confidence >= min_confidence and vote_consensus >= min_consensus and vote_action in ("BUY", "SELL"):
                                 if vote_action == "BUY":
                                     signal_direction = 1
                                 elif vote_action == "SELL":
@@ -1466,6 +1507,49 @@ class Executor(BaseModule):
                 continue
             
             if decision.action in (PositionAction.OPEN_LONG, PositionAction.OPEN_SHORT):
+                # CRITICAL: Double-check with MT5 for existing positions to prevent hedging
+                # This catches race conditions where SmartPositionManager sync is stale
+                try:
+                    all_positions = self.adapter.sync_positions() if self.adapter else {}
+                    if inst in all_positions:
+                        pos = all_positions[inst]
+                        # sync_positions returns {'side': +1/-1, 'units': float, ...}
+                        existing_side = int(pos.get('side', 0))
+                        
+                        if existing_side != 0:
+                            # There IS an existing position for this symbol in MT5!
+                            is_buy = existing_side > 0
+                            
+                            # If we're trying to open opposite direction, BLOCK IT
+                            if (existing_side > 0 and decision.side < 0) or (existing_side < 0 and decision.side > 0):
+                                self.logger.warning(
+                                    format_operator_message(
+                                        "🚫",
+                                        "BLOCKED_HEDGE",
+                                        symbol=inst,
+                                        wanted=decision.action.value,
+                                        existing="BUY" if is_buy else "SELL",
+                                        reason="Would create hedge position",
+                                    )
+                                )
+                                continue  # Skip this intent entirely
+                            
+                            # If we're trying to open same direction, also block (no duplicate positions)
+                            if (existing_side > 0 and decision.side > 0) or (existing_side < 0 and decision.side < 0):
+                                self.logger.info(
+                                    format_operator_message(
+                                        "⏸️",
+                                        "BLOCKED_DUPLICATE",
+                                        symbol=inst,
+                                        wanted=decision.action.value,
+                                        existing="BUY" if is_buy else "SELL",
+                                        reason="Already have position in same direction",
+                                    )
+                                )
+                                continue  # Skip - already have this position
+                except Exception as e:
+                    self.logger.warning(f"[SMART] MT5 position check failed: {e}")
+                
                 # Calculate lots
                 lots = decision.lots
                 if lots <= 0:

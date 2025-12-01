@@ -26,6 +26,14 @@ from modules.voting.core.constants import (
     MAX_STALENESS_SECONDS,
     VotingAction,
 )
+# Per-instrument voting infrastructure
+from modules.voting.core.per_instrument import (
+    PerInstrumentVote,
+    InstrumentProposal,
+    DEFAULT_INSTRUMENTS,
+    aggregate_all_instruments,
+    normalize_instrument,
+)
 
 
 # Singleton instance for committee reuse
@@ -98,7 +106,7 @@ class CommitteeCoordinator(VotingModuleBase):
         
         # Warmup configuration - wait for experts to have enough data before trading
         self.warmup_ticks = int(self.config.get('warmup_ticks', 50))  # Wait 50 ticks before trading
-        self.min_directional_votes = int(self.config.get('min_directional_votes', 3))  # Need at least 3 long/short votes
+        self.min_directional_votes = int(self.config.get('min_directional_votes', 1))  # Need at least 1 long/short vote (PPOAgent usually provides one)
         self.warmup_complete = False
         self._tick_count = 0
         
@@ -721,6 +729,104 @@ class CommitteeCoordinator(VotingModuleBase):
         except Exception as e:
             return f"Committee thesis failed: {e}"
     
+    # ============ Per-Instrument Voting ============
+    
+    def _convert_to_per_instrument_votes(
+        self, 
+        expert_votes: List[Dict[str, Any]]
+    ) -> List[PerInstrumentVote]:
+        """
+        Convert expert votes to PerInstrumentVote format.
+        
+        Handles both:
+        - New format: votes with 'proposals' dict keyed by instrument
+        - Legacy format: single global vote (applied to all instruments)
+        """
+        per_inst_votes = []
+        
+        for vote_data in expert_votes:
+            try:
+                expert_name = str(vote_data.get('expert', 'unknown'))
+                vote = vote_data.get('vote', {})
+                confidence = float(vote_data.get('confidence', 0.5))
+                
+                # Check if this vote has per-instrument proposals
+                if 'proposals' in vote_data and isinstance(vote_data['proposals'], dict):
+                    # New per-instrument format
+                    piv = PerInstrumentVote.from_dict({
+                        'member': expert_name,
+                        'proposals': vote_data['proposals'],
+                        'action': vote_data.get('action', 'flat'),
+                        'confidence': confidence,
+                    })
+                elif 'proposals' in vote and isinstance(vote['proposals'], dict):
+                    # Proposals nested in vote dict
+                    piv = PerInstrumentVote.from_dict({
+                        'member': expert_name,
+                        'proposals': vote['proposals'],
+                        'action': vote.get('action', 'flat'),
+                        'confidence': confidence,
+                    })
+                else:
+                    # Legacy global vote - apply to all instruments
+                    action = str(vote.get('action', 'flat')).lower()
+                    magnitude = float(vote.get('signal_strength', vote.get('magnitude', confidence)))
+                    
+                    piv = PerInstrumentVote(member=expert_name)
+                    for inst in DEFAULT_INSTRUMENTS:
+                        piv.set_proposal(InstrumentProposal(
+                            instrument=inst,
+                            action=action,
+                            confidence=confidence,
+                            magnitude=magnitude,
+                            rationale=f"Legacy vote from {expert_name}",
+                        ))
+                
+                per_inst_votes.append(piv)
+                
+            except Exception as e:
+                self.logger.warning(f"Failed to convert vote to per-instrument: {e}")
+        
+        return per_inst_votes
+    
+    async def _aggregate_per_instrument(
+        self,
+        expert_votes: List[Dict[str, Any]],
+        expert_weights: Dict[str, float],
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Aggregate votes per instrument.
+        
+        Returns:
+            Dict mapping instrument -> aggregated decision dict
+        """
+        # Convert to PerInstrumentVote format
+        per_inst_votes = self._convert_to_per_instrument_votes(expert_votes)
+        
+        # Aggregate all instruments
+        aggregated = aggregate_all_instruments(
+            votes=per_inst_votes,
+            instruments=DEFAULT_INSTRUMENTS,
+            weights=expert_weights,
+        )
+        
+        # Convert to dict format
+        result = {}
+        for inst, decision in aggregated.items():
+            result[inst] = {
+                'action': decision.action,
+                'confidence': decision.confidence,
+                'consensus_score': decision.consensus_score,
+                'vote_count': decision.vote_count,
+                'long_votes': decision.long_votes,
+                'short_votes': decision.short_votes,
+                'flat_votes': decision.flat_votes,
+                'weighted_score': decision.weighted_score,
+                'instrument': inst,
+            }
+        
+        return result
+
     # ============ Main Processing ============
     
     async def process(self, **inputs) -> Dict[str, Any]:
@@ -797,11 +903,22 @@ class CommitteeCoordinator(VotingModuleBase):
                     
                     return self._warmup_output(warmup_reason, decision_id)
             
-            # Make decisions
+            # Make decisions (global)
             decision = await self._determine_committee_decision(expert_votes, expert_weights)
             consensus = await self._analyze_voting_consensus(expert_votes, expert_weights)
             confidence = await self._calculate_committee_confidence(expert_votes, expert_weights, consensus)
             thesis = await self._generate_committee_thesis(decision, confidence, consensus, expert_votes)
+            
+            # ========== NEW: Per-instrument decisions ==========
+            per_instrument_decisions = await self._aggregate_per_instrument(expert_votes, expert_weights)
+            
+            # Publish per-instrument decisions to bus
+            self.smart_bus.set(
+                'committee_decisions_by_instrument',
+                per_instrument_decisions,
+                module=name,
+                thesis=f"Per-instrument decisions for {len(per_instrument_decisions)} instruments"
+            )
             
             # Build analytics surfaces
             committee_members = [v.get('expert', 'unknown') for v in expert_votes]
@@ -878,6 +995,9 @@ class CommitteeCoordinator(VotingModuleBase):
                 'raw_proposals': raw_proposals,
                 'member_confidences': member_confidences_map,
                 'voting_weights': expert_weights,
+                
+                # ========== NEW: Per-instrument decisions ==========
+                'committee_decisions_by_instrument': per_instrument_decisions,
                 
                 # Backward compatibility (old EnhancedVotingCommitteeCoordinator keys)
                 'votes': committee_votes,

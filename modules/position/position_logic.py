@@ -210,16 +210,54 @@ class PositionManager(PositionManagerBase):
             rationale["factors"].append(f"Signal {sig_strength:.3f} below threshold {min_sig:.2f}")
             return self._finalize_decision(instrument, decision, 0.0, 0.0, 0.5, rationale, risk_factors, context)
 
-        # Use voting direction when available, fallback to signal direction
-        trade_vote = self.smart_bus.get("trade_vote_v2", "PositionManager")
+        # ============================================================
+        # VOTING DIRECTION: Use instrument-specific signals (priority) or global vote (fallback)
+        # ============================================================
         voting_direction = None
-        if isinstance(trade_vote, dict) and trade_vote.get("action") in ("BUY", "buy", "SELL", "sell"):
-            vote_action = str(trade_vote.get("action", "")).upper()
-            voting_direction = 1 if vote_action == "BUY" else -1
-            rationale["factors"].append(f"Using voting direction: {vote_action}")
+        voting_confidence = 0.0
+        
+        # 1. First try per-instrument signal from FinalArbiter (preferred)
+        instrument_signals = self.smart_bus.get("instrument_signals", "PositionManager") or {}
+        inst_signal = instrument_signals.get(instrument, {})
+        
+        if isinstance(inst_signal, dict):
+            inst_action = str(inst_signal.get("action", "")).upper()
+            inst_confidence = float(inst_signal.get("confidence", 0) or 0)
+            
+            if inst_action in ("BUY", "SELL") and inst_confidence > 0.3:
+                voting_direction = 1 if inst_action == "BUY" else -1
+                voting_confidence = inst_confidence
+                rationale["factors"].append(f"Using per-instrument signal: {inst_action} (conf={inst_confidence:.2f})")
+            elif inst_action == "HOLD":
+                rationale["stage"] = "instrument_hold"
+                rationale["factors"].append(f"Per-instrument signal is HOLD for {instrument}")
+                return self._finalize_decision(instrument, decision, 0.0, 0.0, 0.4, rationale, risk_factors, context)
+        
+        # 2. Fallback to global trade_vote_v2 if no per-instrument signal
+        if voting_direction is None:
+            trade_vote = self.smart_bus.get("trade_vote_v2", "PositionManager")
+            if isinstance(trade_vote, dict) and trade_vote.get("action") in ("BUY", "buy", "SELL", "sell"):
+                vote_action = str(trade_vote.get("action", "")).upper()
+                voting_direction = 1 if vote_action == "BUY" else -1
+                voting_confidence = float(trade_vote.get("confidence", 0.5) or 0.5)
+                rationale["factors"].append(f"Using global vote (fallback): {vote_action}")
         
         # Use voting direction if available and confident, else fallback to signal
         effective_direction = voting_direction if voting_direction is not None else context.market_direction
+        
+        # ============================================================
+        # HEDGE PREVENTION: Don't open opposite direction if portfolio has existing positions
+        # This prevents the system from hedging (BUY one instrument while SELL another)
+        # ============================================================
+        portfolio_direction = self._get_portfolio_direction()
+        if portfolio_direction != 0 and portfolio_direction != effective_direction:
+            rationale["stage"] = "hedge_prevention"
+            rationale["factors"].append(
+                f"Blocked: Portfolio is {'LONG' if portfolio_direction > 0 else 'SHORT'}, "
+                f"signal is {'LONG' if effective_direction > 0 else 'SHORT'} - hedging not allowed"
+            )
+            return self._finalize_decision(instrument, decision, 0.0, 0.0, 0.3, rationale, risk_factors, context)
+        
         decision = PositionDecision.OPEN_LONG if effective_direction > 0 else PositionDecision.OPEN_SHORT
         intensity = sig_strength
         confidence = self._calculate_confidence(context, decision)
@@ -246,6 +284,31 @@ class PositionManager(PositionManagerBase):
     # ==========================================================
     # Decision helpers
     # ==========================================================
+    def _get_portfolio_direction(self) -> int:
+        """
+        Get the net direction of all open positions.
+        
+        Returns:
+            1 if portfolio is net LONG (any position has positive size)
+           -1 if portfolio is net SHORT (any position has negative size)
+            0 if no positions
+        """
+        if not self.open_positions:
+            return 0
+        
+        # Check all positions - if ANY is long, portfolio is long; if ANY is short, portfolio is short
+        for pos_data in self.open_positions.values():
+            try:
+                size = float(pos_data.get("size", 0.0))
+                if size > 0:
+                    return 1  # Portfolio has a LONG position
+                elif size < 0:
+                    return -1  # Portfolio has a SHORT position
+            except (ValueError, TypeError):
+                continue
+        
+        return 0  # No valid positions
+
     def _finalize_decision(
         self,
         instrument: str,

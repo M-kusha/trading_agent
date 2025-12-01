@@ -9,8 +9,12 @@ This expert analyzes macro themes and market regimes including:
 - Sentiment aggregation (composite scoring)
 - Risk-on/Risk-off scoring
 
-Actions: long_risk_assets, safe_haven_rotation, volatility_hedging,
-         trend_following, mean_reversion, breakout, theme_neutral
+Per-Instrument Voting:
+- Analyzes each instrument separately to produce per-instrument votes
+- Different asset classes (FX, commodities) may have different regimes
+- Each instrument gets its own action/confidence based on its own data
+
+Actions: long, short, flat
 """
 
 import numpy as np
@@ -20,6 +24,21 @@ from datetime import datetime
 from modules.contracts import module_args
 from modules.core.module_base import BaseModule, module
 from modules.utils.info_bus import InfoBusManager
+from modules.voting.core.per_instrument import PerInstrumentVote, InstrumentProposal
+
+
+def normalize_instrument(symbol: str) -> str:
+    """Normalize instrument symbol to standard format."""
+    if not symbol:
+        return ""
+    s = symbol.upper().replace("/", "").replace("_", "").replace("-", "").strip()
+    # Map common variations
+    mapping = {
+        "EURUSD": "EURUSD",
+        "XAUUSD": "XAUUSD",
+        "GOLDUSD": "XAUUSD",
+    }
+    return mapping.get(s, s)
 
 
 @module(**module_args("ThemeExpert"))
@@ -35,6 +54,17 @@ class ThemeExpert(BaseModule):
         """Initialize the theme expert with configuration."""
         self.smart_bus = InfoBusManager.get_instance()
         self.module_name = self.__class__.__name__
+        
+        # Instruments to analyze (from config or default)
+        self.instruments = self.config.get('instruments', ['EURUSD', 'XAUUSD'])
+        
+        # Asset class mapping for different regime interpretations
+        self.asset_classes = {
+            'EURUSD': 'forex',
+            'XAUUSD': 'commodity',
+            'GBPUSD': 'forex',
+            'USDJPY': 'forex',
+        }
         
         # Volatility configuration
         self.atr_period = 20
@@ -77,13 +107,16 @@ class ThemeExpert(BaseModule):
         self.max_confidence = 0.95
         self.min_confidence = 0.15
         
-        self.logger.info(f"ThemeExpert initialized with ATR period {self.atr_period}")
+        self.logger.info(f"ThemeExpert initialized with ATR period {self.atr_period}, instruments: {self.instruments}")
     
     async def process(self, **inputs) -> Dict[str, Any]:
         """
-        Process market data to determine macro theme and regime.
+        Process market data to determine macro theme and regime PER INSTRUMENT.
         
-        Returns voting proposal with theme-based action and confidence.
+        NEW: Analyzes each instrument separately to produce per-instrument votes.
+        Different assets may have different volatility regimes and trends.
+        
+        Returns voting proposal with per-instrument actions and confidence.
         """
         try:
             market_data = self.smart_bus.get("market_data", self.module_name, default={})
@@ -93,109 +126,239 @@ class ThemeExpert(BaseModule):
                 self.logger.warning("[THEME] No market data or features available")
                 return self._neutral_output("No market data available")
             
-            close_prices = self._extract_prices(market_data, features, 'close')
-            high_prices = self._extract_prices(market_data, features, 'high')
-            low_prices = self._extract_prices(market_data, features, 'low')
-            volume = self._extract_prices(market_data, features, 'volume')
+            # ========== Per-Instrument Analysis ==========
+            # Build a single PerInstrumentVote containing all instrument proposals
+            per_instrument_vote = PerInstrumentVote(member=self.module_name)
+            per_instrument_analysis: Dict[str, Dict] = {}
             
-            if len(close_prices) < self.vol_lookback:
-                self.logger.warning(f"[THEME] Insufficient price history: {len(close_prices)} prices (need {self.vol_lookback})")
-                return self._neutral_output("Insufficient price history")
+            for inst in self.instruments:
+                inst_norm = normalize_instrument(inst)
+                
+                # Extract instrument-specific data
+                inst_market = self._extract_instrument_data(market_data, inst)
+                inst_features = self._extract_instrument_data(features, inst)
+                
+                # Get price arrays for this instrument
+                close_prices = self._extract_prices(inst_market, inst_features, 'close', inst)
+                high_prices = self._extract_prices(inst_market, inst_features, 'high', inst)
+                low_prices = self._extract_prices(inst_market, inst_features, 'low', inst)
+                
+                if len(close_prices) < self.vol_lookback:
+                    self.logger.debug(f"[THEME] Insufficient data for {inst}, using fallback")
+                    # Create neutral proposal for this instrument
+                    per_instrument_vote.set_proposal(InstrumentProposal(
+                        instrument=inst_norm,
+                        action='flat',
+                        confidence=0.1,
+                        magnitude=0.0,
+                        rationale=f"Insufficient data for {inst}",
+                    ))
+                    per_instrument_analysis[inst_norm] = {
+                        'volatility_regime': 'unknown',
+                        'trend_regime': 'unknown',
+                        'risk_regime': 'unknown',
+                        'composite_score': 0.5,
+                    }
+                    continue
+                
+                # Calculate all regime components for THIS instrument
+                vol_regime, vol_score = self._analyze_volatility_regime(
+                    close_prices, high_prices, low_prices
+                )
+                
+                trend_regime, trend_score = self._analyze_trend_regime(
+                    close_prices, high_prices, low_prices
+                )
+                
+                corr_regime, corr_score = self._analyze_correlation_regime(
+                    close_prices, inst_market
+                )
+                
+                breadth_score = self._calculate_market_breadth(
+                    close_prices, high_prices, low_prices
+                )
+                
+                momentum_score = self._calculate_momentum_score(close_prices)
+                
+                # Aggregate sentiment for this instrument
+                composite_score = self._calculate_composite_sentiment(
+                    vol_score, trend_score, corr_score, breadth_score, momentum_score
+                )
+                
+                # Determine risk regime (with asset class consideration)
+                asset_class = self.asset_classes.get(inst_norm, 'forex')
+                risk_regime = self._determine_risk_regime(
+                    vol_regime, trend_regime, composite_score, asset_class
+                )
+                
+                # Select theme action FOR THIS INSTRUMENT
+                action, confidence, thesis = self._select_theme_action(
+                    vol_regime, trend_regime, risk_regime,
+                    vol_score, trend_score, composite_score,
+                    instrument=inst_norm
+                )
+                
+                # Create per-instrument proposal
+                per_instrument_vote.set_proposal(InstrumentProposal(
+                    instrument=inst_norm,
+                    action=action,
+                    confidence=confidence,
+                    magnitude=confidence,
+                    rationale=thesis,
+                ))
+                
+                # Store analysis for this instrument
+                per_instrument_analysis[inst_norm] = {
+                    'volatility_regime': vol_regime,
+                    'trend_regime': trend_regime,
+                    'risk_regime': risk_regime,
+                    'vol_score': vol_score,
+                    'trend_score': trend_score,
+                    'composite_score': composite_score,
+                    'action': action,
+                    'confidence': confidence,
+                }
+                
+                self.logger.debug(
+                    f"[THEME] {inst}: vol={vol_regime}, trend={trend_regime}, "
+                    f"action={action}, conf={confidence:.2f}"
+                )
             
-            # Calculate all regime components
-            vol_regime, vol_score = self._analyze_volatility_regime(
-                close_prices, high_prices, low_prices
-            )
+            # ========== Calculate Global Summary (backward compat) ==========
+            # Use first instrument or average for global values
+            if per_instrument_analysis:
+                first_inst = list(per_instrument_analysis.keys())[0]
+                global_analysis = per_instrument_analysis[first_inst]
+            else:
+                global_analysis = {
+                    'volatility_regime': 'unknown',
+                    'trend_regime': 'unknown',
+                    'risk_regime': 'unknown',
+                    'composite_score': 0.5,
+                }
             
-            trend_regime, trend_score = self._analyze_trend_regime(
-                close_prices, high_prices, low_prices
-            )
+            # Calculate primary global vote (for backward compat)
+            if per_instrument_vote.proposals:
+                # Use the proposal with highest confidence as the global
+                best_proposal = max(per_instrument_vote.proposals.values(), key=lambda p: p.confidence)
+                global_action = best_proposal.action
+                global_confidence = best_proposal.confidence
+                global_thesis = best_proposal.rationale
+            else:
+                global_action = 'flat'
+                global_confidence = 0.1
+                global_thesis = "No instrument data available"
             
-            corr_regime, corr_score = self._analyze_correlation_regime(
-                close_prices, market_data
-            )
+            # Build per-instrument proposals dict for CommitteeCoordinator
+            proposals_dict = {}
+            for inst, proposal in per_instrument_vote.proposals.items():
+                proposals_dict[inst] = {
+                    'action': proposal.action,
+                    'confidence': proposal.confidence,
+                    'magnitude': proposal.magnitude,
+                    'rationale': proposal.rationale,
+                }
             
-            breadth_score = self._calculate_market_breadth(
-                close_prices, high_prices, low_prices
-            )
-            
-            momentum_score = self._calculate_momentum_score(close_prices)
-            
-            # Aggregate sentiment
-            composite_score = self._calculate_composite_sentiment(
-                vol_score, trend_score, corr_score, breadth_score, momentum_score
-            )
-            
-            # Determine risk regime
-            risk_regime = self._determine_risk_regime(
-                vol_regime, trend_regime, composite_score
-            )
-            
-            # Select theme action
-            action, confidence, thesis = self._select_theme_action(
-                vol_regime, trend_regime, risk_regime,
-                vol_score, trend_score, composite_score
-            )
-            
-            # Apply regime persistence filter
-            action, confidence = self._apply_persistence_filter(action, confidence)
-            
-            # Build proposal dict for voting
+            # Build proposal dict for voting (with per-instrument proposals)
             proposal = {
-                "action": action,
-                "signal_strength": confidence,
-                "reason": thesis
+                "action": global_action,
+                "signal_strength": global_confidence,
+                "reason": global_thesis,
+                "proposals": proposals_dict,  # NEW: Per-instrument proposals for committee
             }
             
             # Publish to SmartInfoBus for CommitteeCoordinator discovery
             name = self.__class__.__name__
             try:
-                self.smart_bus.set('ThemeExpert_voting_proposal', proposal, module=name, thesis=thesis)
-                self.smart_bus.set('ThemeExpert_confidence', confidence, module=name, thesis=f'Confidence: {confidence:.1%}')
-                self.smart_bus.set('theme_voting_proposal', proposal, module=name, thesis=thesis)
-                self.smart_bus.set('theme_confidence', confidence, module=name, thesis=f'Theme confidence: {confidence:.1%}')
+                self.smart_bus.set('ThemeExpert_voting_proposal', proposal, module=name, thesis=global_thesis)
+                self.smart_bus.set('ThemeExpert_confidence', global_confidence, module=name, thesis=f'Confidence: {global_confidence:.1%}')
+                self.smart_bus.set('theme_voting_proposal', proposal, module=name, thesis=global_thesis)
+                self.smart_bus.set('theme_confidence', global_confidence, module=name, thesis=f'Theme confidence: {global_confidence:.1%}')
+                
+                # NEW: Publish per-instrument votes for CommitteeCoordinator
+                per_inst_votes_dict = {inst: prop.to_dict() for inst, prop in per_instrument_vote.proposals.items()}
+                self.smart_bus.set(
+                    'ThemeExpert_per_instrument_votes', 
+                    per_inst_votes_dict, 
+                    module=name, 
+                    thesis=f'Per-instrument theme votes: {list(per_inst_votes_dict.keys())}'
+                )
             except Exception:
                 pass
             
             return {
                 "ThemeExpert_voting_proposal": proposal,
-                "ThemeExpert_confidence": confidence,
+                "ThemeExpert_confidence": global_confidence,
+                "ThemeExpert_per_instrument_votes": {inst: prop.to_dict() for inst, prop in per_instrument_vote.proposals.items()},
+                "per_instrument_votes": per_instrument_vote,  # PerInstrumentVote object with all proposals
                 "theme_voting_proposal": proposal,  # Alias for contract compatibility
-                "theme_confidence": confidence,   # Alias for contract compatibility
+                "theme_confidence": global_confidence,   # Alias for contract compatibility
                 "theme_analysis": {               # Required by contract
-                    "volatility_regime": vol_regime,
-                    "trend_regime": trend_regime,
-                    "risk_regime": risk_regime,
-                    "composite_score": composite_score,
-                    "action": action,
-                    "confidence": confidence
+                    "volatility_regime": global_analysis.get('volatility_regime', 'unknown'),
+                    "trend_regime": global_analysis.get('trend_regime', 'unknown'),
+                    "risk_regime": global_analysis.get('risk_regime', 'unknown'),
+                    "composite_score": global_analysis.get('composite_score', 0.5),
+                    "action": global_action,
+                    "confidence": global_confidence,
+                    "per_instrument": per_instrument_analysis,  # NEW
                 },
-                "agreement_score": confidence,    # Required by contract
+                "agreement_score": global_confidence,    # Required by contract
                 "theme_expert_analysis": {        # Backward compat alias
-                    "volatility_regime": vol_regime,
-                    "trend_regime": trend_regime,
-                    "risk_regime": risk_regime,
-                    "composite_score": composite_score
+                    "volatility_regime": global_analysis.get('volatility_regime', 'unknown'),
+                    "trend_regime": global_analysis.get('trend_regime', 'unknown'),
+                    "risk_regime": global_analysis.get('risk_regime', 'unknown'),
+                    "composite_score": global_analysis.get('composite_score', 0.5),
+                    "per_instrument": per_instrument_analysis,
                 },
-                "theme_expert_thesis": thesis,    # Backward compat alias
-                "theme_volatility_regime": vol_regime,
-                "theme_trend_regime": trend_regime,
-                "theme_risk_regime": risk_regime,
-                "theme_composite_score": composite_score,
-                "_thesis": thesis
+                "theme_expert_thesis": global_thesis,    # Backward compat alias
+                "theme_volatility_regime": global_analysis.get('volatility_regime', 'unknown'),
+                "theme_trend_regime": global_analysis.get('trend_regime', 'unknown'),
+                "theme_risk_regime": global_analysis.get('risk_regime', 'unknown'),
+                "theme_composite_score": global_analysis.get('composite_score', 0.5),
+                "_thesis": global_thesis
             }
             
         except Exception as e:
             self.logger.error(f"ThemeExpert error: {e}")
             return self._neutral_output(f"Processing error: {str(e)}")
     
+    def _extract_instrument_data(self, data: Dict, instrument: str) -> Dict:
+        """Extract data for a specific instrument from nested market data."""
+        if not isinstance(data, dict):
+            return {}
+        
+        inst_norm = normalize_instrument(instrument)
+        
+        # Try direct instrument key
+        for key in [instrument, inst_norm, instrument.upper(), instrument.lower()]:
+            if key in data:
+                return data[key] if isinstance(data[key], dict) else data
+        
+        # Try with separators
+        for sep in ['_', '/', '-', '']:
+            for pair in [f"EUR{sep}USD", f"XAU{sep}USD"]:
+                norm_pair = normalize_instrument(pair)
+                if norm_pair == inst_norm and pair in data:
+                    return data[pair] if isinstance(data[pair], dict) else data
+        
+        # Return full data if no instrument-specific found (legacy format)
+        return data
+    
     def _extract_prices(
         self, 
         market_data: Dict, 
         features: Dict, 
-        price_type: str
+        price_type: str,
+        instrument: str = ''
     ) -> np.ndarray:
-        """Extract price array from market data, features, or InfoBus."""
+        """Extract price array from market data, features, or InfoBus.
+        
+        Args:
+            market_data: Instrument-specific market data (may be pre-filtered)
+            features: Instrument-specific features (may be pre-filtered)
+            price_type: 'close', 'high', 'low', 'open'
+            instrument: Target instrument (e.g., 'EURUSD', 'XAUUSD') for historical lookup
+        """
         if isinstance(market_data, dict):
             if price_type in market_data:
                 data = market_data[price_type]
@@ -223,11 +386,20 @@ class ThemeExpert(BaseModule):
             historical = None
 
         if isinstance(historical, dict):
+            # Map instrument to bus key aliases
+            inst_aliases = {
+                "EURUSD": ["EUR_USD", "EURUSD"],
+                "XAUUSD": ["XAU_USD", "XAUUSD", "GOLDUSD"],
+            }
+            aliases = inst_aliases.get(instrument.upper(), [instrument, instrument.replace("USD", "_USD")])
+            
             symbol = None
-            for candidate in ("XAU_USD", "EUR_USD"):
-                if candidate in historical:
-                    symbol = candidate
+            for alias in aliases:
+                if alias in historical:
+                    symbol = alias
                     break
+            
+            # Fallback to first available if no instrument match
             if symbol is None and historical:
                 symbol = next(iter(historical.keys()))
 
@@ -601,9 +773,15 @@ class ThemeExpert(BaseModule):
         self,
         vol_regime: str,
         trend_regime: str,
-        composite_score: float
+        composite_score: float,
+        asset_class: str = 'forex'
     ) -> str:
-        """Determine overall risk regime."""
+        """
+        Determine overall risk regime.
+        
+        For commodities (like Gold), risk-off can mean LONG (safe haven).
+        For forex, risk-off typically means cautious/neutral.
+        """
         if vol_regime == "extreme_vol":
             return "risk_off"
         
@@ -625,20 +803,34 @@ class ThemeExpert(BaseModule):
         risk_regime: str,
         vol_score: float,
         trend_score: float,
-        composite_score: float
+        composite_score: float,
+        instrument: str = ''
     ) -> Tuple[str, float, str]:
         """
         Select trading theme action based on regime analysis.
         
+        NEW: Now instrument-aware. Gold behaves as safe-haven in risk-off.
+        
         Returns: (action, confidence, thesis) - action is 'long', 'short', or 'flat'
         """
+        inst_norm = normalize_instrument(instrument) if instrument else ''
+        is_safe_haven = inst_norm in ['XAUUSD', 'GOLD']  # Gold is safe haven
+        
         # Extreme volatility: stay flat/hedge
         if vol_regime == "extreme_vol":
+            # Exception: Gold can be LONG in extreme vol (safe haven flow)
+            if is_safe_haven:
+                confidence = 0.6 + (vol_score - 0.9) * 2
+                return (
+                    "long",
+                    np.clip(confidence, 0.5, 0.75),
+                    f"{inst_norm}: Safe haven bid during extreme volatility (vol: {vol_score:.2f})"
+                )
             confidence = 0.7 + (vol_score - 0.9) * 3
             return (
                 "flat",  # Standard neutral action
                 np.clip(confidence, 0.6, 0.9),
-                f"Extreme volatility detected (score: {vol_score:.2f}), defensive positioning"
+                f"{inst_norm}: Extreme volatility (score: {vol_score:.2f}), defensive positioning"
             )
         
         # Strong uptrend: go long
@@ -647,16 +839,23 @@ class ThemeExpert(BaseModule):
             return (
                 "long",  # Standard bullish action
                 np.clip(confidence, 0.5, 0.85),
-                f"Strong uptrend (ADX score: {abs(trend_score):.2f}), trend following mode"
+                f"{inst_norm}: Strong uptrend (ADX: {abs(trend_score):.2f}), trend following"
             )
         
-        # Strong downtrend: go short
+        # Strong downtrend: go short (but Gold may be long as safe haven)
         if trend_regime == "strong_downtrend":
             confidence = self.base_confidence + abs(trend_score) * 0.4
+            # Safe haven exception: Gold in strong downtrend of risk assets
+            if is_safe_haven and risk_regime in ["risk_off", "cautious"]:
+                return (
+                    "long",
+                    np.clip(confidence * 0.8, 0.4, 0.7),
+                    f"{inst_norm}: Safe haven bid during risk-off (trend: {trend_score:.2f})"
+                )
             return (
                 "short",  # Standard bearish action
                 np.clip(confidence, 0.5, 0.85),
-                f"Strong downtrend (ADX score: {abs(trend_score):.2f}), defensive rotation"
+                f"{inst_norm}: Strong downtrend (ADX: {abs(trend_score):.2f}), bearish"
             )
         
         # Risk-on environment: go long
@@ -665,16 +864,23 @@ class ThemeExpert(BaseModule):
             return (
                 "long",  # Standard bullish action
                 np.clip(confidence, 0.5, 0.8),
-                f"Risk-on environment (composite: {composite_score:.2f}), bullish positioning"
+                f"{inst_norm}: Risk-on (composite: {composite_score:.2f}), bullish"
             )
         
-        # Risk-off environment: go short
-        if risk_regime in ["risk_off", "cautious"] and composite_score < 0.45:  # Raised threshold
+        # Risk-off environment
+        if risk_regime in ["risk_off", "cautious"] and composite_score < 0.45:
             confidence = self.base_confidence + (0.5 - composite_score) * 0.6
+            # Safe haven: LONG in risk-off
+            if is_safe_haven:
+                return (
+                    "long",
+                    np.clip(confidence, 0.5, 0.75),
+                    f"{inst_norm}: Safe haven bid in risk-off (composite: {composite_score:.2f})"
+                )
             return (
                 "short",  # Standard bearish action
                 np.clip(confidence, 0.5, 0.8),
-                f"Risk-off environment (composite: {composite_score:.2f}), defensive positioning"
+                f"{inst_norm}: Risk-off (composite: {composite_score:.2f}), bearish"
             )
         
         # Weak uptrend: cautious long
@@ -682,15 +888,21 @@ class ThemeExpert(BaseModule):
             return (
                 "long",
                 0.45,
-                f"Weak uptrend detected, cautious bullish positioning"
+                f"{inst_norm}: Weak uptrend, cautious bullish"
             )
         
         # Weak downtrend: cautious short
         if trend_regime == "weak_downtrend":
+            if is_safe_haven:
+                return (
+                    "flat",
+                    0.35,
+                    f"{inst_norm}: Weak downtrend but safe haven - neutral"
+                )
             return (
                 "short",
                 0.45,
-                f"Weak downtrend detected, cautious bearish positioning"
+                f"{inst_norm}: Weak downtrend, cautious bearish"
             )
         
         # Ranging market: use composite score for direction
@@ -699,19 +911,19 @@ class ThemeExpert(BaseModule):
                 return (
                     "long",
                     0.35,
-                    f"Ranging market with slight bullish bias (composite: {composite_score:.2f})"
+                    f"{inst_norm}: Ranging with bullish bias (composite: {composite_score:.2f})"
                 )
             elif composite_score < 0.5:
                 return (
                     "short",
                     0.35,
-                    f"Ranging market with slight bearish bias (composite: {composite_score:.2f})"
+                    f"{inst_norm}: Ranging with bearish bias (composite: {composite_score:.2f})"
                 )
             else:
                 return (
                     "flat",
                     0.3,
-                    f"Ranging market - neutral composite"
+                    f"{inst_norm}: Ranging - neutral composite"
                 )
         
         # Default: use composite score for direction
@@ -719,20 +931,20 @@ class ThemeExpert(BaseModule):
             return (
                 "long",
                 0.3,
-                f"Mixed signals favoring long (composite: {composite_score:.2f})"
+                f"{inst_norm}: Mixed signals favoring long (composite: {composite_score:.2f})"
             )
         elif composite_score < 0.5:
             return (
                 "short",
                 0.3,
-                f"Mixed signals favoring short (composite: {composite_score:.2f})"
+                f"{inst_norm}: Mixed signals favoring short (composite: {composite_score:.2f})"
             )
         
         # Truly neutral - rare
         return (
             "flat",
             0.25,
-            f"Truly neutral - vol: {vol_regime}, trend: {trend_regime}, risk: {risk_regime}"
+            f"{inst_norm}: Neutral - vol: {vol_regime}, trend: {trend_regime}, risk: {risk_regime}"
         )
     
     def _apply_persistence_filter(

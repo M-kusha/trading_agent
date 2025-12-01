@@ -389,8 +389,8 @@ class MarketDataConfig:
     log_every_n: int = 250               # 1 = log every tick
     ndjson_every_n: int = 0              # 0 = off; 1 = every tick; N = every Nth tick
 
-    # Window size caps
-    window_min: int = 20
+    # Window size caps (experts like MomentumExpert need 55+ bars)
+    window_min: int = 100
     window_max: int = 200
     
     # Symbol format mapping (MT5 -> internal)

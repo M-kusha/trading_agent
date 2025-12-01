@@ -14,6 +14,10 @@ by analyzing:
 - Volume-weighted momentum
 - Multi-timeframe alignment
 - Momentum divergence patterns
+
+Per-Instrument Voting:
+- Analyzes each instrument separately to produce per-instrument votes
+- Each instrument gets its own action/confidence based on its own data
 """
 
 from __future__ import annotations
@@ -27,6 +31,16 @@ import numpy as np
 from modules.contracts import module_args
 from modules.core.module_base import module
 from modules.voting.experts.base import VotingExpertBase
+from modules.voting.core.per_instrument import PerInstrumentVote, InstrumentProposal
+
+
+def normalize_instrument(symbol: str) -> str:
+    """Normalize instrument symbol to standard format."""
+    if not symbol:
+        return ""
+    s = symbol.upper().replace("/", "").replace("_", "").replace("-", "").strip()
+    mapping = {"EURUSD": "EURUSD", "XAUUSD": "XAUUSD", "GOLDUSD": "XAUUSD"}
+    return mapping.get(s, s)
 
 
 @module(**module_args("MomentumExpert"))
@@ -63,6 +77,9 @@ class MomentumExpert(VotingExpertBase):
     def _expert_specific_init(self) -> None:
         """Initialize advanced momentum analysis state."""
         # ═══════════════════════════ CONFIGURATION ═══════════════════════════
+        # Instruments to analyze (from config or default)
+        self.instruments = self.config.get('instruments', ['EURUSD', 'XAUUSD'])
+        
         # ROC periods for multi-scale analysis
         self.roc_periods = [5, 10, 20, 50]
         self.roc_weights = [0.35, 0.30, 0.20, 0.15]  # Short-term weighted higher
@@ -98,15 +115,46 @@ class MomentumExpert(VotingExpertBase):
         self.min_confluence_score = float(self.config.get('min_confluence', 0.15))
         self.strong_signal_confluence = float(self.config.get('strong_confluence', 0.5))
         
-        # ═══════════════════════════ STATE ═══════════════════════════
-        # Price/volume history
+        # ═══════════════════════════ PER-INSTRUMENT STATE ═══════════════════════════
+        # Each instrument gets its own history and indicators
+        self.instrument_state: Dict[str, Dict[str, Any]] = {}
+        for inst in self.instruments:
+            inst_norm = normalize_instrument(inst)
+            self.instrument_state[inst_norm] = {
+                'price_history': deque(maxlen=200),
+                'high_history': deque(maxlen=200),
+                'low_history': deque(maxlen=200),
+                'volume_history': deque(maxlen=200),
+                'close_history': deque(maxlen=200),
+                'rsi_value': 50.0,
+                'rsi_history': deque(maxlen=50),
+                'macd_line': 0.0,
+                'macd_signal_line': 0.0,
+                'macd_histogram': 0.0,
+                'macd_histogram_history': deque(maxlen=30),
+                'stoch_k': 50.0,
+                'stoch_d': 50.0,
+                'obv': 0.0,
+                'obv_history': deque(maxlen=50),
+                'roc_values': {p: 0.0 for p in self.roc_periods},
+                'composite_momentum': 0.0,
+                'momentum_direction': 0,
+                'momentum_acceleration': 0.0,
+                'divergence_signal': None,
+                'volume_confirmation': 0.5,
+                'momentum_history': deque(maxlen=100),
+                'bullish_divergence_count': 0,
+                'bearish_divergence_count': 0,
+            }
+        
+        # Legacy single-instrument state (for backward compat)
         self.price_history: deque = deque(maxlen=200)
         self.high_history: deque = deque(maxlen=200)
         self.low_history: deque = deque(maxlen=200)
         self.volume_history: deque = deque(maxlen=200)
         self.close_history: deque = deque(maxlen=200)
         
-        # Indicator values
+        # Indicator values (legacy)
         self.rsi_value: float = 50.0
         self.rsi_history: deque = deque(maxlen=50)
         self.macd_line: float = 0.0
@@ -145,7 +193,7 @@ class MomentumExpert(VotingExpertBase):
         
         self.log_info(
             f"[MOMENTUM] Advanced MomentumExpert initialized | "
-            f"ROC periods={self.roc_periods} | "
+            f"instruments={self.instruments} | ROC periods={self.roc_periods} | "
             f"RSI={self.rsi_period} | MACD={self.macd_fast}/{self.macd_slow}/{self.macd_signal}"
         )
         
@@ -722,53 +770,486 @@ class MomentumExpert(VotingExpertBase):
             return 0.4
     
     async def process(self, **inputs) -> Dict[str, Any]:
-        """Process with comprehensive momentum outputs."""
-        base = await super().process(**inputs)
+        """
+        Process market data to determine momentum signals PER INSTRUMENT.
+        
+        NEW: Analyzes each instrument separately to produce per-instrument votes.
+        Each instrument gets its own action/confidence based on its own momentum analysis.
+        """
+        # Get market data from InfoBus
+        market_data = self.smart_bus.get("market_data", self.__class__.__name__, default={})
+        features = self.smart_bus.get("features", self.__class__.__name__, default={})
+        
+        if not market_data and not features:
+            self.log_warning("[MOMENTUM] No market data or features available")
+            return self._neutral_output("No market data available")
+        
+        # ========== Per-Instrument Analysis ==========
+        per_instrument_vote = PerInstrumentVote(member=self.__class__.__name__)
+        per_instrument_analysis: Dict[str, Dict] = {}
+        
+        for inst in self.instruments:
+            inst_norm = normalize_instrument(inst)
+            
+            # Extract instrument-specific data
+            inst_market = self._extract_instrument_data(market_data, inst)
+            inst_features = self._extract_instrument_data(features, inst)
+            
+            # Get price arrays for this instrument (pass instrument for lookup)
+            close_prices = self._extract_prices(inst_market, inst_features, 'close', inst)
+            high_prices = self._extract_prices(inst_market, inst_features, 'high', inst)
+            low_prices = self._extract_prices(inst_market, inst_features, 'low', inst)
+            volumes = self._extract_prices(inst_market, inst_features, 'volume', inst)
+            
+            # Get instrument state
+            state = self.instrument_state.get(inst_norm, {})
+            if not state:
+                state = self.instrument_state.setdefault(inst_norm, {
+                    'price_history': deque(maxlen=200),
+                    'rsi_history': deque(maxlen=50),
+                    'macd_histogram_history': deque(maxlen=30),
+                    'obv_history': deque(maxlen=50),
+                    'momentum_history': deque(maxlen=100),
+                })
+            
+            # Update price history for this instrument
+            if len(close_prices) > 0:
+                state['price_history'] = deque(close_prices[-200:], maxlen=200)
+                state['high_history'] = deque(high_prices[-200:] if len(high_prices) > 0 else close_prices[-200:], maxlen=200)
+                state['low_history'] = deque(low_prices[-200:] if len(low_prices) > 0 else close_prices[-200:], maxlen=200)
+                state['volume_history'] = deque(volumes[-200:] if len(volumes) > 0 else [1.0] * min(200, len(close_prices)), maxlen=200)
+            
+            prices = list(state.get('price_history', []))
+            
+            if len(prices) < max(self.roc_periods) + 5:
+                self.log_debug(f"[MOMENTUM] Insufficient data for {inst}: {len(prices)} bars")
+                # Create neutral proposal for this instrument
+                per_instrument_vote.set_proposal(InstrumentProposal(
+                    instrument=inst_norm,
+                    action='flat',
+                    confidence=0.1,
+                    magnitude=0.0,
+                    rationale=f"Insufficient data for {inst}: {len(prices)} bars",
+                ))
+                per_instrument_analysis[inst_norm] = {
+                    'composite_momentum': 0.0,
+                    'direction': 0,
+                    'action': 'flat',
+                    'confidence': 0.1,
+                }
+                continue
+            
+            # Calculate momentum indicators for this instrument
+            highs = list(state.get('high_history', prices))
+            lows = list(state.get('low_history', prices))
+            vols = list(state.get('volume_history', [1.0] * len(prices)))
+            
+            # Calculate all indicators
+            roc_values = self._calculate_multi_period_roc(prices)
+            weighted_roc = sum(roc_values.get(p, 0) * w for p, w in zip(self.roc_periods, self.roc_weights))
+            
+            rsi_value = self._calculate_rsi(prices, self.rsi_period)
+            macd_line, macd_signal_line, macd_histogram = self._calculate_macd_for_instrument(prices, state)
+            stoch_k, stoch_d = self._calculate_stochastic(prices, highs, lows)
+            obv = self._calculate_obv(prices, vols)
+            
+            # OBV momentum
+            obv_history = state.setdefault('obv_history', deque(maxlen=50))
+            obv_history.append(obv)
+            obv_momentum = 0.0
+            if len(obv_history) > 5:
+                obv_recent = list(obv_history)[-5:]
+                obv_momentum = (obv_recent[-1] - obv_recent[0]) / (abs(obv_recent[0]) + 1e-10)
+            
+            volume_confirmation = self._calculate_volume_confirmation(prices, vols)
+            
+            # Divergence detection
+            rsi_history = state.setdefault('rsi_history', deque(maxlen=50))
+            rsi_history.append(rsi_value)
+            divergence_signal = self._detect_divergence(prices[-len(rsi_history):], list(rsi_history))
+            
+            # Calculate confluence scores
+            bullish_score, bearish_score, total_weight = self._calculate_confluence_scores(
+                weighted_roc, rsi_value, macd_line, macd_signal_line, macd_histogram,
+                stoch_k, obv_momentum, divergence_signal, volume_confirmation
+            )
+            
+            bullish_confluence = bullish_score / total_weight if total_weight > 0 else 0
+            bearish_confluence = bearish_score / total_weight if total_weight > 0 else 0
+            net_momentum = bullish_confluence - bearish_confluence
+            
+            # Track momentum history for acceleration
+            momentum_history = state.setdefault('momentum_history', deque(maxlen=100))
+            momentum_history.append({'momentum': net_momentum, 'timestamp': datetime.datetime.now().isoformat()})
+            
+            momentum_acceleration = 0.0
+            if len(momentum_history) > 5:
+                recent_mom = [h['momentum'] for h in list(momentum_history)[-5:]]
+                momentum_acceleration = (recent_mom[-1] - recent_mom[0]) / 5
+            
+            # Determine action for this instrument
+            action, confidence, signal_strength = self._determine_momentum_action(
+                net_momentum, bullish_confluence, bearish_confluence, momentum_acceleration
+            )
+            
+            thesis = f"{inst_norm}: Momentum {action} (net={net_momentum:.2%}, conf={confidence:.1%})"
+            
+            # Create per-instrument proposal
+            per_instrument_vote.set_proposal(InstrumentProposal(
+                instrument=inst_norm,
+                action=action,
+                confidence=confidence,
+                magnitude=signal_strength,
+                rationale=thesis,
+            ))
+            
+            # Store analysis
+            per_instrument_analysis[inst_norm] = {
+                'composite_momentum': net_momentum,
+                'bullish_confluence': bullish_confluence,
+                'bearish_confluence': bearish_confluence,
+                'momentum_acceleration': momentum_acceleration,
+                'roc_weighted': weighted_roc,
+                'rsi': rsi_value,
+                'macd_histogram': macd_histogram,
+                'stochastic_k': stoch_k,
+                'obv_momentum': obv_momentum,
+                'divergence': divergence_signal,
+                'volume_confirmation': volume_confirmation,
+                'action': action,
+                'confidence': confidence,
+            }
+            
+            self.log_debug(f"[MOMENTUM] {inst}: action={action}, conf={confidence:.2f}, momentum={net_momentum:.2%}")
+        
+        # ========== Calculate Global Summary (backward compat) ==========
+        if per_instrument_vote.proposals:
+            best_proposal = max(per_instrument_vote.proposals.values(), key=lambda p: p.confidence)
+            global_action = best_proposal.action
+            global_confidence = best_proposal.confidence
+            global_thesis = best_proposal.rationale
+        else:
+            global_action = 'flat'
+            global_confidence = 0.1
+            global_thesis = "No instrument data available"
+        
+        # Build proposal dict with per-instrument proposals
+        proposals_dict = {}
+        for inst, proposal in per_instrument_vote.proposals.items():
+            proposals_dict[inst] = {
+                'action': proposal.action,
+                'confidence': proposal.confidence,
+                'magnitude': proposal.magnitude,
+                'rationale': proposal.rationale,
+            }
+        
+        proposal = {
+            "action": global_action,
+            "signal_strength": global_confidence,
+            "reason": global_thesis,
+            "proposals": proposals_dict,
+        }
         
         name = self.__class__.__name__
-        proposal = dict(base.get('voting_proposal') or {})
-        confidence = float(base.get('confidence', 0.0))
-        thesis = base.get('_thesis', '')
+        
+        # Publish to SmartInfoBus
+        try:
+            self.smart_bus.set('MomentumExpert_voting_proposal', proposal, module=name, thesis=global_thesis)
+            self.smart_bus.set('MomentumExpert_confidence', global_confidence, module=name, thesis=f'Confidence: {global_confidence:.1%}')
+            self.smart_bus.set('momentum_voting_proposal', proposal, module=name, thesis=global_thesis)
+            self.smart_bus.set('momentum_confidence', global_confidence, module=name, thesis=f'Momentum confidence: {global_confidence:.1%}')
+            
+            # NEW: Publish per-instrument votes for CommitteeCoordinator
+            per_inst_votes_dict = {inst: prop.to_dict() for inst, prop in per_instrument_vote.proposals.items()}
+            self.smart_bus.set(
+                'MomentumExpert_per_instrument_votes',
+                per_inst_votes_dict,
+                module=name,
+                thesis=f'Per-instrument momentum votes: {list(per_inst_votes_dict.keys())}'
+            )
+        except Exception as e:
+            self.log_warning(f"[MOMENTUM] Failed to publish to bus: {e}")
         
         # Comprehensive momentum analysis
         momentum_analysis = {
             'composite_momentum': self.composite_momentum,
             'direction': self.momentum_direction,
             'acceleration': self.momentum_acceleration,
-            'divergence_signal': self.divergence_signal,
-            'volume_confirmation': self.volume_confirmation,
-            'roc_values': dict(self.roc_values),
-            'rsi': self.rsi_value,
-            'macd': {
-                'line': self.macd_line,
-                'signal': self.macd_signal_line,
-                'histogram': self.macd_histogram,
-            },
-            'stochastic': {'k': self.stoch_k, 'd': self.stoch_d},
-            'divergence_stats': {
-                'bullish_count': self.bullish_divergence_count,
-                'bearish_count': self.bearish_divergence_count,
-            },
+            'per_instrument': per_instrument_analysis,
             'performance': dict(self.momentum_performance),
-            'data_points': len(self.price_history),
         }
         
-        # Publish to bus
+        return {
+            'MomentumExpert_voting_proposal': proposal,
+            'MomentumExpert_confidence': global_confidence,
+            'MomentumExpert_per_instrument_votes': {inst: prop.to_dict() for inst, prop in per_instrument_vote.proposals.items()},
+            'per_instrument_votes': per_instrument_vote,
+            'momentum_voting_proposal': proposal,
+            'momentum_confidence': global_confidence,
+            'momentum_analysis': momentum_analysis,
+            'voting_proposal': proposal,
+            'confidence': global_confidence,
+            '_thesis': global_thesis,
+        }
+    
+    def _extract_instrument_data(self, data: Dict, instrument: str) -> Dict:
+        """Extract data for a specific instrument from nested market data."""
+        if not isinstance(data, dict):
+            return {}
+        
+        inst_norm = normalize_instrument(instrument)
+        
+        # Try direct instrument key
+        for key in [instrument, inst_norm, instrument.upper(), instrument.lower()]:
+            if key in data:
+                return data[key] if isinstance(data[key], dict) else data
+        
+        # Try with separators
+        for sep in ['_', '/', '-', '']:
+            for pair in [f"EUR{sep}USD", f"XAU{sep}USD"]:
+                norm_pair = normalize_instrument(pair)
+                if norm_pair == inst_norm and pair in data:
+                    return data[pair] if isinstance(data[pair], dict) else data
+        
+        # Return full data if no instrument-specific found (legacy format)
+        return data
+    
+    def _extract_prices(self, market_data: Dict, features: Dict, price_type: str, instrument: str = '') -> np.ndarray:
+        """Extract price array from market data or features for a specific instrument."""
+        # Normalize instrument name for matching
+        inst_norm = normalize_instrument(instrument) if instrument else ''
+        inst_variations = [instrument, inst_norm, f"{inst_norm[:3]}_{inst_norm[3:]}" if len(inst_norm) >= 6 else inst_norm]
+        
+        # Try market_data first
+        if isinstance(market_data, dict):
+            if price_type in market_data:
+                data = market_data[price_type]
+                if isinstance(data, (list, np.ndarray)):
+                    return np.array(data, dtype=float)
+            
+            # Try nested structure
+            for tf in ['H1', 'H4', 'D1']:
+                if tf in market_data and isinstance(market_data[tf], dict):
+                    if price_type in market_data[tf]:
+                        data = market_data[tf][price_type]
+                        if isinstance(data, (list, np.ndarray)):
+                            return np.array(data, dtype=float)
+        
+        # Try features
+        if isinstance(features, dict):
+            if price_type in features:
+                data = features[price_type]
+                if isinstance(data, (list, np.ndarray)):
+                    return np.array(data, dtype=float)
+        
+        # Try InfoBus historical_prices - look for specific instrument
         try:
+            historical = self.smart_bus.get("historical_prices", self.__class__.__name__, default=None)
+        except Exception:
+            historical = None
+        
+        if isinstance(historical, dict):
+            # Find the matching symbol key (handles XAU_USD vs XAUUSD)
+            matched_symbol = None
+            for sym in historical.keys():
+                sym_norm = normalize_instrument(sym)
+                if sym_norm == inst_norm or sym in inst_variations:
+                    matched_symbol = sym
+                    break
+            
+            if matched_symbol and matched_symbol in historical:
+                sym_block = historical[matched_symbol]
+                if isinstance(sym_block, dict):
+                    # Try each timeframe
+                    for tf in ["H4", "H1", "D1"]:
+                        tf_rec = sym_block.get(tf)
+                        if isinstance(tf_rec, dict):
+                            seq = tf_rec.get(price_type)
+                            if isinstance(seq, (list, np.ndarray)) and len(seq) > 0:
+                                return np.array(seq, dtype=float)
+        
+        return np.array([])
+    
+    def _calculate_macd_for_instrument(self, prices: List[float], state: Dict) -> Tuple[float, float, float]:
+        """Calculate MACD for a specific instrument using its state."""
+        if len(prices) < self.macd_slow + self.macd_signal:
+            return 0.0, 0.0, 0.0
+        
+        try:
+            def ema(data: List[float], period: int) -> float:
+                if len(data) < period:
+                    return sum(data) / len(data) if data else 0.0
+                multiplier = 2 / (period + 1)
+                ema_val = sum(data[:period]) / period
+                for price in data[period:]:
+                    ema_val = (price - ema_val) * multiplier + ema_val
+                return ema_val
+            
+            fast_ema = ema(prices, self.macd_fast)
+            slow_ema = ema(prices, self.macd_slow)
+            macd_line = fast_ema - slow_ema
+            
+            # Use instrument-specific MACD history
+            macd_history = state.setdefault('macd_histogram_history', deque(maxlen=30))
+            macd_history.append(macd_line)
+            macd_values = list(macd_history)
+            
+            if len(macd_values) >= self.macd_signal:
+                signal_line = ema(macd_values, self.macd_signal)
+            else:
+                signal_line = sum(macd_values) / len(macd_values) if macd_values else 0.0
+            
+            histogram = macd_line - signal_line
+            return float(macd_line), float(signal_line), float(histogram)
+        except Exception:
+            return 0.0, 0.0, 0.0
+    
+    def _calculate_confluence_scores(
+        self, weighted_roc: float, rsi_value: float, macd_line: float,
+        macd_signal_line: float, macd_histogram: float, stoch_k: float,
+        obv_momentum: float, divergence_signal: Optional[str], volume_confirmation: float
+    ) -> Tuple[float, float, float]:
+        """Calculate bullish and bearish confluence scores."""
+        bullish_score = 0.0
+        bearish_score = 0.0
+        total_weight = 0.0
+        
+        # ROC score (weight: 2.0)
+        roc_weight = 2.0
+        total_weight += roc_weight
+        if weighted_roc > self.momentum_threshold:
+            bullish_score += roc_weight * min(1.0, weighted_roc / (self.momentum_threshold * 3))
+        elif weighted_roc < -self.momentum_threshold:
+            bearish_score += roc_weight * min(1.0, abs(weighted_roc) / (self.momentum_threshold * 3))
+        
+        # RSI score (weight: 1.5)
+        rsi_weight = 1.5
+        total_weight += rsi_weight
+        if rsi_value > 50:
+            if rsi_value < self.rsi_overbought:
+                bullish_score += rsi_weight * ((rsi_value - 50) / 30)
+            elif rsi_value >= self.rsi_extreme_overbought:
+                bearish_score += rsi_weight * 0.3
+        else:
+            if rsi_value > self.rsi_oversold:
+                bearish_score += rsi_weight * ((50 - rsi_value) / 30)
+            elif rsi_value <= self.rsi_extreme_oversold:
+                bullish_score += rsi_weight * 0.3
+        
+        # MACD score (weight: 1.8)
+        macd_weight = 1.8
+        total_weight += macd_weight
+        if macd_histogram > 0:
+            macd_strength = min(1.0, abs(macd_histogram) * 100)
+            if macd_line > macd_signal_line:
+                bullish_score += macd_weight * macd_strength
+        else:
+            macd_strength = min(1.0, abs(macd_histogram) * 100)
+            if macd_line < macd_signal_line:
+                bearish_score += macd_weight * macd_strength
+        
+        # Stochastic score (weight: 1.2)
+        stoch_weight = 1.2
+        total_weight += stoch_weight
+        if stoch_k > 50 and stoch_k < self.stoch_overbought:
+            bullish_score += stoch_weight * ((stoch_k - 50) / 50)
+        elif stoch_k < 50 and stoch_k > self.stoch_oversold:
+            bearish_score += stoch_weight * ((50 - stoch_k) / 50)
+        elif stoch_k >= self.stoch_overbought:
+            bearish_score += stoch_weight * 0.4
+        elif stoch_k <= self.stoch_oversold:
+            bullish_score += stoch_weight * 0.4
+        
+        # OBV momentum score (weight: 1.0)
+        obv_weight = 1.0
+        total_weight += obv_weight
+        if obv_momentum > 0.01:
+            bullish_score += obv_weight * min(1.0, obv_momentum * 10)
+        elif obv_momentum < -0.01:
+            bearish_score += obv_weight * min(1.0, abs(obv_momentum) * 10)
+        
+        # Divergence bonus (weight: 1.5)
+        div_weight = 1.5
+        total_weight += div_weight
+        if divergence_signal == 'bullish':
+            bullish_score += div_weight
+        elif divergence_signal == 'bearish':
+            bearish_score += div_weight
+        
+        # Volume confirmation adjustment
+        bullish_score *= (0.7 + volume_confirmation * 0.6)
+        bearish_score *= (0.7 + volume_confirmation * 0.6)
+        
+        return bullish_score, bearish_score, total_weight
+    
+    def _determine_momentum_action(
+        self, net_momentum: float, bullish_confluence: float,
+        bearish_confluence: float, momentum_acceleration: float
+    ) -> Tuple[str, float, float]:
+        """Determine action, confidence and signal strength from momentum analysis."""
+        if net_momentum > 0.01:
+            action = 'long'
+            if bullish_confluence >= self.strong_signal_confluence:
+                signal_strength = min(1.0, bullish_confluence * 1.2)
+            elif bullish_confluence >= self.min_confluence_score:
+                signal_strength = min(0.8, bullish_confluence)
+            else:
+                signal_strength = max(0.2, bullish_confluence * 0.5)
+            
+            if momentum_acceleration > 0.02:
+                signal_strength = min(1.0, signal_strength * 1.1)
+            
+            confidence = 0.3 + signal_strength * 0.5
+            
+        elif net_momentum < -0.01:
+            action = 'short'
+            if bearish_confluence >= self.strong_signal_confluence:
+                signal_strength = min(1.0, bearish_confluence * 1.2)
+            elif bearish_confluence >= self.min_confluence_score:
+                signal_strength = min(0.8, bearish_confluence)
+            else:
+                signal_strength = max(0.2, bearish_confluence * 0.5)
+            
+            if momentum_acceleration < -0.02:
+                signal_strength = min(1.0, signal_strength * 1.1)
+            
+            confidence = 0.3 + signal_strength * 0.5
+            
+        else:
+            action = 'flat'
+            signal_strength = 0.1
+            confidence = 0.2
+        
+        return action, float(np.clip(confidence, 0.15, 0.95)), float(signal_strength)
+    
+    def _neutral_output(self, reason: str) -> Dict[str, Any]:
+        """Generate neutral output with explanation."""
+        thesis = f"Momentum flat: {reason}"
+        name = self.__class__.__name__
+        
+        proposal = {
+            "action": "flat",
+            "signal_strength": 0.1,
+            "reason": thesis,
+            "proposals": {},
+        }
+        
+        try:
+            self.smart_bus.set('MomentumExpert_voting_proposal', proposal, module=name, thesis=thesis)
+            self.smart_bus.set('MomentumExpert_confidence', 0.1, module=name, thesis=f'Confidence: 10%')
             self.smart_bus.set('momentum_voting_proposal', proposal, module=name, thesis=thesis)
-            self.smart_bus.set('momentum_confidence', confidence, module=name, thesis=f'Confidence: {confidence:.1%}')
-            self.smart_bus.set('momentum_analysis', momentum_analysis, module=name, thesis=f'Momentum: {self.composite_momentum:.2%}')
+            self.smart_bus.set('momentum_confidence', 0.1, module=name, thesis=f'Momentum confidence: 10%')
         except Exception:
             pass
         
         return {
-            **base,
-            # Standard naming convention
             'MomentumExpert_voting_proposal': proposal,
-            'MomentumExpert_confidence': confidence,
-            # Alias keys for backward compatibility
+            'MomentumExpert_confidence': 0.1,
+            'MomentumExpert_per_instrument_votes': {},
             'momentum_voting_proposal': proposal,
-            'momentum_confidence': confidence,
-            'momentum_analysis': momentum_analysis,
+            'momentum_confidence': 0.1,
+            'momentum_analysis': {'composite_momentum': 0.0, 'per_instrument': {}},
+            'voting_proposal': proposal,
+            'confidence': 0.1,
             '_thesis': thesis,
         }

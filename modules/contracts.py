@@ -414,6 +414,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         file='voting/experts/theme.py',
         provides=[
             'ThemeExpert_voting_proposal', 'ThemeExpert_confidence',
+            'ThemeExpert_per_instrument_votes',  # NEW: Per-instrument votes
             'theme_voting_proposal', 'theme_confidence',
             'theme_analysis', 'agreement_score',
             'theme_volatility_regime', 'theme_trend_regime',
@@ -423,7 +424,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         requires=['market_data', 'features'],
         meta={'is_voting_member': True, 'thesis_required': True, 'explainable': True,
               'health_monitoring': True, 'performance_tracking': True,
-              'category': 'voting', 'version': '5.1.0'}
+              'category': 'voting', 'version': '5.2.0'}  # Version bump
     ),
 
     'SeasonalityRiskExpert': ModuleContract(
@@ -431,6 +432,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         file='voting/experts/seasonality.py',
         provides=[
             'SeasonalityRiskExpert_voting_proposal', 'SeasonalityRiskExpert_confidence',
+            'SeasonalityRiskExpert_per_instrument_votes',  # NEW: Per-instrument votes
             'seasonality_voting_proposal', 'seasonality_confidence',
             'seasonal_voting_proposal', 'seasonal_confidence',
             'seasonal_session', 'seasonal_dow_bias', 'seasonal_monthly_pattern',
@@ -441,7 +443,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         requires=['market_data', 'features'],
         meta={'is_voting_member': True, 'thesis_required': True, 'explainable': True,
               'health_monitoring': True, 'performance_tracking': True,
-              'category': 'voting', 'version': '5.1.0'}
+              'category': 'voting', 'version': '5.2.0'}  # Version bump
     ),
 
     'MomentumExpert': ModuleContract(
@@ -449,13 +451,14 @@ CONTRACTS: Dict[str, ModuleContract] = {
         file='voting/experts/momentum.py',
         provides=[
             'MomentumExpert_voting_proposal', 'MomentumExpert_confidence',
+            'MomentumExpert_per_instrument_votes',  # NEW: Per-instrument votes
             'momentum_voting_proposal', 'momentum_confidence',
             'momentum_analysis'
         ],
         requires=['market_data', 'prices', 'technical_indicators'],
         meta={'is_voting_member': True, 'thesis_required': True, 'explainable': True,
               'health_monitoring': True, 'performance_tracking': True,
-              'category': 'voting', 'version': '5.0.0'}
+              'category': 'voting', 'version': '5.1.0'}  # Version bump
     ),
 
     'TrendExpert': ModuleContract(
@@ -463,13 +466,14 @@ CONTRACTS: Dict[str, ModuleContract] = {
         file='voting/experts/trend.py',
         provides=[
             'TrendExpert_voting_proposal', 'TrendExpert_confidence',
+            'TrendExpert_per_instrument_votes',  # NEW: Per-instrument votes
             'trend_voting_proposal', 'trend_confidence',
             'trend_analysis'
         ],
         requires=['market_data', 'prices', 'technical_indicators'],
         meta={'is_voting_member': True, 'thesis_required': True, 'explainable': True,
               'health_monitoring': True, 'performance_tracking': True,
-              'category': 'voting', 'version': '5.0.0'}
+              'category': 'voting', 'version': '5.1.0'}  # Version bump
     ),
 
     'CommitteeCoordinator': ModuleContract(
@@ -708,17 +712,18 @@ CONTRACTS: Dict[str, ModuleContract] = {
         file='position/position_logic.py',
         # FIX: Renamed position_data → position_manager_data to avoid conflict with Executor's canonical position_data
         # NOTE: Memory signals used for veto gate and position sizing intelligence
-        # FIX: Uses trade_vote_v2 from SlimVotingKernel as primary signal source
+        # FIX: Uses instrument_signals (per-instrument) from FinalArbiter as primary signal source
+        # FIX: Falls back to trade_vote_v2 from SlimVotingKernel if no per-instrument signal
         # NOTE: Removed market_conditions - uses market_context fallback
         provides=['position_decisions', 'position_health', 'portfolio_state', 'order_queue', 'position_manager_data'],
-        requires=['trade_vote_v2', 'kernel_decision', 'environment_config', 'indicators', 'liquidity_capabilities', 'liquidity_score',
+        requires=['instrument_signals', 'trade_vote_v2', 'kernel_decision', 'environment_config', 'indicators', 'liquidity_capabilities', 'liquidity_score',
                   'market_context', 'market_data', 'market_liquidity',
                   'market_regime', 'price_data', 'prices', 'technical_indicators',
                   'time_risk_analysis', 'volatility_data',
                   'memory_gate', 'playbook_recall', 'intuition_vector', 'danger_zones', 'mistake_avoidance'],
         meta={'is_voting_member': False, 'thesis_required': True, 'explainable': True,
               'health_monitoring': True, 'performance_tracking': True,
-              'category': 'position', 'version': '3.1.2'}
+              'category': 'position', 'version': '3.1.3'}
     ),
 
     'Executor': ModuleContract(

@@ -26,6 +26,16 @@ from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
 
+# Per-instrument voting infrastructure
+from modules.voting.core.per_instrument import (
+    PerInstrumentVote,
+    InstrumentProposal,
+    DEFAULT_INSTRUMENTS,
+    extract_instrument_data,
+    analyze_instrument_trend,
+    normalize_instrument,
+)
+
 
 @dataclass
 class PPOConfig:
@@ -303,6 +313,10 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
         self._last_obs_vec: Optional[np.ndarray] = None
         self._last_action_std: Optional[List[float]] = None
         self._recent_rewards = deque(maxlen=100)
+
+        # Voting direction hysteresis to prevent flip-flopping
+        self._last_direction: str = 'flat'  # Tracks last emitted direction for hysteresis
+        self._direction_hold_count: int = 0  # How many ticks we've held this direction
 
         # Neural performance metrics
         self._neural_performance = {
@@ -1508,15 +1522,18 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
     async def vote(self, observation: Any = None, action_vec: Optional[Union[List[float], np.ndarray]] = None,
                    thesis: Optional[str] = None, **inputs) -> Dict[str, Any]:
         """
-        Produce a normalized voting payload from the latest action or a fresh proposal:
-          - direction: 'long'|'short'|'flat'
-          - magnitude: 0..1 (size/strength)
-          - confidence: 0..1
+        Produce per-instrument voting proposals.
+        
+        Each instrument (EURUSD, XAUUSD) gets its own vote based on:
+        1. Global policy direction (from action vector)
+        2. Per-instrument market data alignment
+        3. Per-instrument trend analysis
+        
+        Returns dict with both per-instrument 'proposals' and legacy global fields.
         """
         try:
             # 1) Get an action vector to base the vote on
             if action_vec is None:
-                # Try to generate via policy mean (deterministic) for stability
                 obs_vec = self._normalize_observation(observation)
                 with torch.no_grad():
                     action_mean, _, _ = self.network(torch.from_numpy(obs_vec).to(self.device).unsqueeze(0))
@@ -1524,60 +1541,156 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             else:
                 action_vec = np.array(action_vec, dtype=np.float32)
 
-            # 2) Normalize to direction/magnitude (ensure ndarray for type safety)
+            # 2) Normalize to global direction/magnitude
             action_arr = action_vec if isinstance(action_vec, np.ndarray) else np.asarray(action_vec, dtype=np.float32)
-            direction, magnitude, raw_score = self._normalize_signal(action_arr)
+            global_direction, global_magnitude, raw_score = self._normalize_signal(action_arr)
 
-            # 3) Confidence
+            # 3) Base confidence
             conf_inputs = {'action': {'action': action_arr.tolist()}}
             base_conf = await self.calculate_confidence(**conf_inputs)
-            # Penalize if circuit breaker is open or health is weak
             if self.circuit_breaker['state'] == 'OPEN':
                 base_conf = float(max(0.05, base_conf * 0.5))
             if self._health_status != 'healthy':
                 base_conf = float(max(0.1, base_conf * 0.7))
+            base_conf = float(np.clip(base_conf, 0.0, 1.0))
 
-            payload = {
-                'member': 'PPOAgent',
-                'action': direction,  # Standard action field for committee compatibility
-                'proposal': {
-                    'direction': direction,         # 'long' | 'short' | 'flat'
-                    'magnitude': float(magnitude),  # 0..1
-                    'horizon': 'intraday',
-                    # optional: attach vector if downstream wants to reconstruct
-                    'raw_score': float(raw_score),
-                },
-                'confidence': float(np.clip(base_conf, 0.0, 1.0)),
-                'rationale': thesis or "PPO policy-derived signal",
-                'timestamp': datetime.now().isoformat(),
-                'meta': {
-                    'avg_reward': self.training_stats.get('avg_episode_reward', 0.0),
-                    'explained_variance': self.training_stats.get('explained_variance', 0.0),
-                    'exploration_level': self.action_statistics.get('exploration_level', 0.5),
-                    'health': self._health_status,
-                    'circuit_breaker': self.circuit_breaker['state']
-                }
+            # 4) Get per-instrument market data
+            market_data = inputs.get('market_data') or self.smart_bus.get('market_data', 'PPOAgent') or {}
+            price_data = self.smart_bus.get('price_data', 'PPOAgent') or {}
+            indicators = self.smart_bus.get('technical_indicators', 'PPOAgent') or {}
+            
+            # 5) Generate per-instrument proposals
+            vote = PerInstrumentVote(member='PPOAgent')
+            
+            for instrument in DEFAULT_INSTRUMENTS:
+                inst_proposal = self._generate_instrument_proposal(
+                    instrument=instrument,
+                    global_direction=global_direction,
+                    global_magnitude=global_magnitude,
+                    base_conf=base_conf,
+                    market_data=market_data,
+                    price_data=price_data,
+                    indicators=indicators,
+                    thesis=thesis,
+                )
+                vote.set_proposal(inst_proposal)
+            
+            # 6) Build payload with both per-instrument and legacy format
+            payload = vote.to_dict()
+            payload['meta'] = {
+                'avg_reward': self.training_stats.get('avg_episode_reward', 0.0),
+                'explained_variance': self.training_stats.get('explained_variance', 0.0),
+                'exploration_level': self.action_statistics.get('exploration_level', 0.5),
+                'health': self._health_status,
+                'circuit_breaker': self.circuit_breaker['state'],
+                'raw_score': float(raw_score),
             }
+            payload['rationale'] = thesis or "PPO per-instrument policy signals"
+            
             return payload
 
         except Exception as e:
             self.logger.error(f"PPO vote() failed: {e}")
-            return {
-                'member': 'PPOAgent',
-                'action': 'flat',  # Standard action field for committee compatibility
-                'proposal': {'direction': 'flat', 'magnitude': 0.0, 'horizon': 'intraday'},
-                'confidence': 0.1,
-                'rationale': f'Vote fallback due to error: {e}',
-                'timestamp': datetime.now().isoformat()
-            }
+            # Return flat vote for all instruments on error
+            from modules.voting.core.per_instrument import create_flat_vote
+            error_vote = create_flat_vote('PPOAgent')
+            payload = error_vote.to_dict()
+            payload['rationale'] = f'Vote fallback due to error: {e}'
+            return payload
+    
+    def _generate_instrument_proposal(
+        self,
+        instrument: str,
+        global_direction: str,
+        global_magnitude: float,
+        base_conf: float,
+        market_data: Dict[str, Any],
+        price_data: Dict[str, Any],
+        indicators: Dict[str, Any],
+        thesis: Optional[str] = None,
+    ) -> InstrumentProposal:
+        """
+        Generate a voting proposal for a specific instrument.
+        
+        Combines global policy direction with instrument-specific market analysis.
+        """
+        try:
+            # Extract instrument-specific data
+            inst_market = extract_instrument_data(market_data, instrument)
+            inst_price = extract_instrument_data(price_data, instrument)
+            inst_indicators = extract_instrument_data(indicators, instrument)
+            
+            # Analyze instrument trend
+            inst_trend, inst_strength = analyze_instrument_trend(inst_price, inst_indicators)
+            
+            # Determine final direction for this instrument
+            # If global and instrument trends agree, use global with full confidence
+            # If they disagree, reduce confidence or go flat
+            if global_direction == 'flat':
+                # No global signal - use instrument trend if strong enough
+                if inst_strength > 0.3:
+                    final_direction = inst_trend
+                    final_confidence = base_conf * inst_strength
+                    final_magnitude = inst_strength
+                else:
+                    final_direction = 'flat'
+                    final_confidence = base_conf * 0.3
+                    final_magnitude = 0.0
+            elif inst_trend == global_direction:
+                # Agreement - boost confidence
+                final_direction = global_direction
+                final_confidence = min(1.0, base_conf * (1.0 + inst_strength * 0.3))
+                final_magnitude = min(1.0, global_magnitude * (1.0 + inst_strength * 0.2))
+            elif inst_trend == 'flat':
+                # No instrument signal - use global with reduced confidence
+                final_direction = global_direction
+                final_confidence = base_conf * 0.7
+                final_magnitude = global_magnitude * 0.8
+            else:
+                # Disagreement - this instrument says opposite of global
+                # Go flat for this instrument (don't fight the instrument trend)
+                final_direction = 'flat'
+                final_confidence = base_conf * 0.3
+                final_magnitude = 0.0
+            
+            return InstrumentProposal(
+                instrument=instrument,
+                action=final_direction,
+                confidence=round(final_confidence, 4),
+                magnitude=round(final_magnitude, 4),
+                horizon='intraday',
+                rationale=f"PPO: global={global_direction}, {instrument}_trend={inst_trend}, strength={inst_strength:.2f}",
+                meta={
+                    'global_direction': global_direction,
+                    'instrument_trend': inst_trend,
+                    'instrument_strength': inst_strength,
+                },
+            )
+        
+        except Exception as e:
+            self.logger.warning(f"Failed to generate proposal for {instrument}: {e}")
+            return InstrumentProposal(
+                instrument=instrument,
+                action='flat',
+                confidence=0.2,
+                magnitude=0.0,
+                rationale=f"Fallback: {e}",
+            )
 
     def _normalize_signal(self, action_vec: Optional[Union[List[float], np.ndarray]]) -> Tuple[str, float, float]:
         """
         Map a continuous action vector to (direction, magnitude, raw_score).
+        Uses HYSTERESIS to prevent flip-flopping between long/short on tiny signal changes.
+        
         Heuristic:
           - raw_score = mean(action_vec)
-          - direction = sign(raw_score) with deadband
+          - direction = sign(raw_score) with deadband + hysteresis
           - magnitude = clipped L2 norm scaled by vector length
+        
+        Hysteresis logic:
+          - Need to cross entry_threshold (0.10) to change from 'flat'
+          - Need to cross reversal_threshold (0.15) to flip from long→short or short→long
+          - Small changes within thresholds maintain current direction (stability)
         """
         if action_vec is None or len(action_vec) == 0:
             return 'flat', 0.0, 0.0
@@ -1585,13 +1698,46 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
         action_vec = np.array(action_vec, dtype=np.float32).reshape(-1)
         raw_score = float(np.mean(action_vec))
 
-        deadband = 0.02  # small neutrality band
-        if raw_score > deadband:
-            direction = 'long'
-        elif raw_score < -deadband:
-            direction = 'short'
+        # Hysteresis thresholds - larger values = more stability, less flip-flopping
+        entry_threshold = 0.10    # Threshold to enter long/short from flat
+        reversal_threshold = 0.15  # Threshold to reverse direction (long→short or vice versa)
+        exit_threshold = 0.03      # Threshold to exit back to flat
+
+        # Get last direction (with fallback)
+        last_dir = getattr(self, '_last_direction', 'flat')
+
+        # Determine new direction with hysteresis
+        if last_dir == 'flat':
+            # From flat: need strong signal to enter a position
+            if raw_score > entry_threshold:
+                direction = 'long'
+            elif raw_score < -entry_threshold:
+                direction = 'short'
+            else:
+                direction = 'flat'
+        elif last_dir == 'long':
+            # From long: need strong reversal to go short, small reversal to go flat
+            if raw_score < -reversal_threshold:
+                direction = 'short'  # Strong reversal
+            elif raw_score < -exit_threshold:
+                direction = 'flat'   # Weak reversal - go neutral
+            else:
+                direction = 'long'   # Stay long (hysteresis)
+        else:  # last_dir == 'short'
+            # From short: need strong reversal to go long, small reversal to go flat
+            if raw_score > reversal_threshold:
+                direction = 'long'   # Strong reversal
+            elif raw_score > exit_threshold:
+                direction = 'flat'   # Weak reversal - go neutral
+            else:
+                direction = 'short'  # Stay short (hysteresis)
+
+        # Update hysteresis state
+        if direction != last_dir:
+            self._direction_hold_count = 0
         else:
-            direction = 'flat'
+            self._direction_hold_count = getattr(self, '_direction_hold_count', 0) + 1
+        self._last_direction = direction
 
         # magnitude from norm, scaled to ~0..1
         norm = float(np.linalg.norm(action_vec))

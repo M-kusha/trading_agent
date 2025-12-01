@@ -101,6 +101,8 @@ execution:
       primary_timeframe: "H4"
       update_frequency: 0.0  # Always update on every call - no throttling to prevent stale data
       buffer_size: 5000
+      window_min: 100         # Minimum historical bars to provide (experts need 55-65 bars)
+      window_max: 200         # Maximum historical bars to provide
       enable_technical_indicators: true
       timeout_ms: 5000  # Generous timeout for data loading and processing
 

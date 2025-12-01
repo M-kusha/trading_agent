@@ -14,6 +14,10 @@ This expert is designed to identify and follow trends with precision using:
 - Support/Resistance levels
 - Trend channels and slopes
 - Multi-timeframe trend alignment
+
+Per-Instrument Voting:
+- Analyzes each instrument separately to produce per-instrument votes
+- Each instrument gets its own action/confidence based on its own trend analysis
 """
 
 from __future__ import annotations
@@ -27,6 +31,16 @@ import numpy as np
 from modules.contracts import module_args
 from modules.core.module_base import module
 from modules.voting.experts.base import VotingExpertBase
+from modules.voting.core.per_instrument import PerInstrumentVote, InstrumentProposal
+
+
+def normalize_instrument(symbol: str) -> str:
+    """Normalize instrument symbol to standard format."""
+    if not symbol:
+        return ""
+    s = symbol.upper().replace("/", "").replace("_", "").replace("-", "").strip()
+    mapping = {"EURUSD": "EURUSD", "XAUUSD": "XAUUSD", "GOLDUSD": "XAUUSD"}
+    return mapping.get(s, s)
 
 
 @module(**module_args("TrendExpert"))
@@ -64,6 +78,9 @@ class TrendExpert(VotingExpertBase):
     def _expert_specific_init(self) -> None:
         """Initialize advanced trend analysis state."""
         # ═══════════════════════════ CONFIGURATION ═══════════════════════════
+        # Instruments to analyze (from config or default)
+        self.instruments = self.config.get('instruments', ['EURUSD', 'XAUUSD'])
+        
         # Triple MA configuration
         self.fast_period = int(self.config.get('fast_period', 8))
         self.medium_period = int(self.config.get('medium_period', 21))
@@ -90,8 +107,36 @@ class TrendExpert(VotingExpertBase):
         self.sr_lookback = int(self.config.get('sr_lookback', 50))
         self.sr_threshold = float(self.config.get('sr_threshold', 0.005))  # 0.5% proximity
         
-        # ═══════════════════════════ STATE ═══════════════════════════
-        # Price/volume history
+        # ═══════════════════════════ PER-INSTRUMENT STATE ═══════════════════════════
+        self.instrument_state: Dict[str, Dict[str, Any]] = {}
+        for inst in self.instruments:
+            inst_norm = normalize_instrument(inst)
+            self.instrument_state[inst_norm] = {
+                'price_history': deque(maxlen=200),
+                'high_history': deque(maxlen=200),
+                'low_history': deque(maxlen=200),
+                'close_history': deque(maxlen=200),
+                'fast_ma': 0.0,
+                'medium_ma': 0.0,
+                'slow_ma': 0.0,
+                'ma_history': deque(maxlen=50),
+                'adx_value': 0.0,
+                'plus_di': 0.0,
+                'minus_di': 0.0,
+                'adx_history': deque(maxlen=30),
+                'sar_value': 0.0,
+                'sar_direction': 0,
+                'current_trend': 'neutral',
+                'trend_strength': 0.0,
+                'trend_slope': 0.0,
+                'trend_duration': 0,
+                'ma_alignment': 0,
+                'support_levels': [],
+                'resistance_levels': [],
+                'trend_history': deque(maxlen=100),
+            }
+        
+        # Legacy single-instrument state (for backward compat)
         self.price_history: deque = deque(maxlen=200)
         self.high_history: deque = deque(maxlen=200)
         self.low_history: deque = deque(maxlen=200)
@@ -139,7 +184,7 @@ class TrendExpert(VotingExpertBase):
         
         self.log_info(
             f"[TREND] Advanced TrendExpert initialized | "
-            f"MA periods={self.fast_period}/{self.medium_period}/{self.slow_period} | "
+            f"instruments={self.instruments} | MA periods={self.fast_period}/{self.medium_period}/{self.slow_period} | "
             f"ADX period={self.adx_period} | ADX threshold={self.adx_trending_threshold}"
         )
         
@@ -762,61 +807,460 @@ class TrendExpert(VotingExpertBase):
             return 0.4
     
     async def process(self, **inputs) -> Dict[str, Any]:
-        """Process with comprehensive trend outputs."""
-        base = await super().process(**inputs)
+        """
+        Process market data to determine trend signals PER INSTRUMENT.
+        
+        NEW: Analyzes each instrument separately to produce per-instrument votes.
+        Each instrument gets its own action/confidence based on its own trend analysis.
+        """
+        # Get market data from InfoBus
+        market_data = self.smart_bus.get("market_data", self.__class__.__name__, default={})
+        features = self.smart_bus.get("features", self.__class__.__name__, default={})
+        
+        if not market_data and not features:
+            self.log_warning("[TREND] No market data or features available")
+            return self._neutral_output("No market data available")
+        
+        # ========== Per-Instrument Analysis ==========
+        per_instrument_vote = PerInstrumentVote(member=self.__class__.__name__)
+        per_instrument_analysis: Dict[str, Dict] = {}
+        
+        for inst in self.instruments:
+            inst_norm = normalize_instrument(inst)
+            
+            # Extract instrument-specific data
+            inst_market = self._extract_instrument_data(market_data, inst)
+            inst_features = self._extract_instrument_data(features, inst)
+            
+            # Get price arrays for this instrument (pass instrument for lookup)
+            close_prices = self._extract_prices(inst_market, inst_features, 'close', inst)
+            high_prices = self._extract_prices(inst_market, inst_features, 'high', inst)
+            low_prices = self._extract_prices(inst_market, inst_features, 'low', inst)
+            
+            # Get instrument state
+            state = self.instrument_state.get(inst_norm, {})
+            if not state:
+                state = self.instrument_state.setdefault(inst_norm, {
+                    'price_history': deque(maxlen=200),
+                    'high_history': deque(maxlen=200),
+                    'low_history': deque(maxlen=200),
+                    'trend_history': deque(maxlen=100),
+                    'trend_duration': 0,
+                })
+            
+            # Update price history for this instrument
+            if len(close_prices) > 0:
+                state['price_history'] = deque(close_prices[-200:], maxlen=200)
+                state['high_history'] = deque(high_prices[-200:] if len(high_prices) > 0 else close_prices[-200:], maxlen=200)
+                state['low_history'] = deque(low_prices[-200:] if len(low_prices) > 0 else close_prices[-200:], maxlen=200)
+            
+            prices = list(state.get('price_history', []))
+            
+            if len(prices) < self.slow_period + 10:
+                self.log_debug(f"[TREND] Insufficient data for {inst}: {len(prices)} bars")
+                # Create neutral proposal for this instrument
+                per_instrument_vote.set_proposal(InstrumentProposal(
+                    instrument=inst_norm,
+                    action='flat',
+                    confidence=0.1,
+                    magnitude=0.0,
+                    rationale=f"Insufficient data for {inst}: {len(prices)} bars",
+                ))
+                per_instrument_analysis[inst_norm] = {
+                    'current_trend': 'unknown',
+                    'trend_strength': 0.0,
+                    'action': 'flat',
+                    'confidence': 0.1,
+                }
+                continue
+            
+            current_price = prices[-1]
+            highs = list(state.get('high_history', prices))
+            lows = list(state.get('low_history', prices))
+            
+            # Calculate trend indicators for this instrument
+            fast_ma, medium_ma, slow_ma, ma_alignment = self._calculate_triple_ma(prices)
+            adx_value, plus_di, minus_di = self._calculate_adx(highs, lows, prices)
+            sar_value, sar_direction = self._calculate_parabolic_sar(highs, lows)
+            trend_slope = self._calculate_trend_slope(prices, 20)
+            support_levels, resistance_levels = self._find_support_resistance(highs, lows)
+            near_support, near_resistance = self._check_sr_proximity(current_price, support_levels, resistance_levels)
+            
+            # MA spreads
+            ma_spread_fast_medium = (fast_ma - medium_ma) / medium_ma if medium_ma else 0
+            ma_spread_medium_slow = (medium_ma - slow_ma) / slow_ma if slow_ma else 0
+            price_vs_fast = (current_price - fast_ma) / fast_ma if fast_ma else 0
+            price_vs_slow = (current_price - slow_ma) / slow_ma if slow_ma else 0
+            
+            # Calculate confluence scores
+            bullish_score, bearish_score, total_weight = self._calculate_trend_confluence(
+                ma_alignment, ma_spread_fast_medium, ma_spread_medium_slow,
+                price_vs_fast, price_vs_slow, adx_value, plus_di, minus_di,
+                sar_direction, trend_slope, near_support, near_resistance
+            )
+            
+            bullish_confluence = bullish_score / total_weight if total_weight > 0 else 0
+            bearish_confluence = bearish_score / total_weight if total_weight > 0 else 0
+            net_trend = bullish_confluence - bearish_confluence
+            
+            # Track trend history for duration
+            trend_history = state.setdefault('trend_history', deque(maxlen=100))
+            trend_history.append({
+                'bullish': bullish_confluence,
+                'bearish': bearish_confluence,
+                'timestamp': datetime.datetime.now().isoformat()
+            })
+            
+            # Calculate trend duration
+            trend_duration = state.get('trend_duration', 0)
+            if len(trend_history) > 1:
+                prev = trend_history[-2]
+                prev_dir = 'up' if prev['bullish'] > prev['bearish'] else 'down' if prev['bearish'] > prev['bullish'] else 'flat'
+                curr_dir = 'up' if bullish_confluence > bearish_confluence else 'down' if bearish_confluence > bullish_confluence else 'flat'
+                if curr_dir == prev_dir and curr_dir != 'flat':
+                    trend_duration += 1
+                else:
+                    trend_duration = 1
+                state['trend_duration'] = trend_duration
+            
+            # Determine action for this instrument
+            action, confidence, signal_strength, current_trend = self._determine_trend_action(
+                net_trend, bullish_confluence, bearish_confluence,
+                adx_value, trend_duration
+            )
+            
+            thesis = f"{inst_norm}: Trend {action} ({current_trend}, ADX={adx_value:.1f}, conf={confidence:.1%})"
+            
+            # Create per-instrument proposal
+            per_instrument_vote.set_proposal(InstrumentProposal(
+                instrument=inst_norm,
+                action=action,
+                confidence=confidence,
+                magnitude=signal_strength,
+                rationale=thesis,
+            ))
+            
+            # Store analysis
+            per_instrument_analysis[inst_norm] = {
+                'current_trend': current_trend,
+                'trend_strength': abs(net_trend),
+                'trend_slope': trend_slope,
+                'trend_duration': trend_duration,
+                'bullish_confluence': bullish_confluence,
+                'bearish_confluence': bearish_confluence,
+                'ma_alignment': ma_alignment,
+                'adx': adx_value,
+                'plus_di': plus_di,
+                'minus_di': minus_di,
+                'sar_direction': sar_direction,
+                'near_support': near_support,
+                'near_resistance': near_resistance,
+                'action': action,
+                'confidence': confidence,
+            }
+            
+            self.log_debug(f"[TREND] {inst}: action={action}, conf={confidence:.2f}, trend={current_trend}")
+        
+        # ========== Calculate Global Summary (backward compat) ==========
+        if per_instrument_vote.proposals:
+            best_proposal = max(per_instrument_vote.proposals.values(), key=lambda p: p.confidence)
+            global_action = best_proposal.action
+            global_confidence = best_proposal.confidence
+            global_thesis = best_proposal.rationale
+        else:
+            global_action = 'flat'
+            global_confidence = 0.1
+            global_thesis = "No instrument data available"
+        
+        # Build proposal dict with per-instrument proposals
+        proposals_dict = {}
+        for inst, proposal in per_instrument_vote.proposals.items():
+            proposals_dict[inst] = {
+                'action': proposal.action,
+                'confidence': proposal.confidence,
+                'magnitude': proposal.magnitude,
+                'rationale': proposal.rationale,
+            }
+        
+        proposal = {
+            "action": global_action,
+            "signal_strength": global_confidence,
+            "reason": global_thesis,
+            "proposals": proposals_dict,
+        }
         
         name = self.__class__.__name__
-        proposal = dict(base.get('voting_proposal') or {})
-        confidence = float(base.get('confidence', 0.0))
-        thesis = base.get('_thesis', '')
+        
+        # Publish to SmartInfoBus
+        try:
+            self.smart_bus.set('TrendExpert_voting_proposal', proposal, module=name, thesis=global_thesis)
+            self.smart_bus.set('TrendExpert_confidence', global_confidence, module=name, thesis=f'Confidence: {global_confidence:.1%}')
+            self.smart_bus.set('trend_voting_proposal', proposal, module=name, thesis=global_thesis)
+            self.smart_bus.set('trend_confidence', global_confidence, module=name, thesis=f'Trend confidence: {global_confidence:.1%}')
+            
+            # NEW: Publish per-instrument votes for CommitteeCoordinator
+            per_inst_votes_dict = {inst: prop.to_dict() for inst, prop in per_instrument_vote.proposals.items()}
+            self.smart_bus.set(
+                'TrendExpert_per_instrument_votes',
+                per_inst_votes_dict,
+                module=name,
+                thesis=f'Per-instrument trend votes: {list(per_inst_votes_dict.keys())}'
+            )
+        except Exception as e:
+            self.log_warning(f"[TREND] Failed to publish to bus: {e}")
         
         # Comprehensive trend analysis
         trend_analysis = {
             'current_trend': self.current_trend,
             'trend_strength': self.trend_strength,
-            'trend_slope': self.trend_slope,
-            'trend_duration': self.trend_duration,
-            'ma_alignment': self.ma_alignment,
-            'moving_averages': {
-                'fast': self.fast_ma,
-                'medium': self.medium_ma,
-                'slow': self.slow_ma,
-            },
-            'adx': {
-                'value': self.adx_value,
-                'plus_di': self.plus_di,
-                'minus_di': self.minus_di,
-            },
-            'sar': {
-                'value': self.sar_value,
-                'direction': self.sar_direction,
-            },
-            'sr_levels': {
-                'support': self.support_levels[:3],
-                'resistance': self.resistance_levels[:3],
-                'near_support': self.near_support,
-                'near_resistance': self.near_resistance,
-            },
+            'per_instrument': per_instrument_analysis,
             'performance': dict(self.trend_performance),
-            'data_points': len(self.price_history),
         }
         
-        # Publish to bus
+        return {
+            'TrendExpert_voting_proposal': proposal,
+            'TrendExpert_confidence': global_confidence,
+            'TrendExpert_per_instrument_votes': {inst: prop.to_dict() for inst, prop in per_instrument_vote.proposals.items()},
+            'per_instrument_votes': per_instrument_vote,
+            'trend_voting_proposal': proposal,
+            'trend_confidence': global_confidence,
+            'trend_analysis': trend_analysis,
+            'voting_proposal': proposal,
+            'confidence': global_confidence,
+            '_thesis': global_thesis,
+        }
+    
+    def _extract_instrument_data(self, data: Dict, instrument: str) -> Dict:
+        """Extract data for a specific instrument from nested market data."""
+        if not isinstance(data, dict):
+            return {}
+        
+        inst_norm = normalize_instrument(instrument)
+        
+        for key in [instrument, inst_norm, instrument.upper(), instrument.lower()]:
+            if key in data:
+                return data[key] if isinstance(data[key], dict) else data
+        
+        for sep in ['_', '/', '-', '']:
+            for pair in [f"EUR{sep}USD", f"XAU{sep}USD"]:
+                norm_pair = normalize_instrument(pair)
+                if norm_pair == inst_norm and pair in data:
+                    return data[pair] if isinstance(data[pair], dict) else data
+        
+        return data
+    
+    def _extract_prices(self, market_data: Dict, features: Dict, price_type: str, instrument: str = '') -> np.ndarray:
+        """Extract price array from market data or features for a specific instrument."""
+        # Normalize instrument name for matching
+        inst_norm = normalize_instrument(instrument) if instrument else ''
+        inst_variations = [instrument, inst_norm, f"{inst_norm[:3]}_{inst_norm[3:]}" if len(inst_norm) >= 6 else inst_norm]
+        
+        if isinstance(market_data, dict):
+            if price_type in market_data:
+                data = market_data[price_type]
+                if isinstance(data, (list, np.ndarray)):
+                    return np.array(data, dtype=float)
+            
+            for tf in ['H1', 'H4', 'D1']:
+                if tf in market_data and isinstance(market_data[tf], dict):
+                    if price_type in market_data[tf]:
+                        data = market_data[tf][price_type]
+                        if isinstance(data, (list, np.ndarray)):
+                            return np.array(data, dtype=float)
+        
+        if isinstance(features, dict):
+            if price_type in features:
+                data = features[price_type]
+                if isinstance(data, (list, np.ndarray)):
+                    return np.array(data, dtype=float)
+        
+        # Try InfoBus historical_prices - look for specific instrument
         try:
+            historical = self.smart_bus.get("historical_prices", self.__class__.__name__, default=None)
+        except Exception:
+            historical = None
+        
+        if isinstance(historical, dict):
+            # Find the matching symbol key (handles XAU_USD vs XAUUSD)
+            matched_symbol = None
+            for sym in historical.keys():
+                sym_norm = normalize_instrument(sym)
+                if sym_norm == inst_norm or sym in inst_variations:
+                    matched_symbol = sym
+                    break
+            
+            if matched_symbol and matched_symbol in historical:
+                sym_block = historical[matched_symbol]
+                if isinstance(sym_block, dict):
+                    for tf in ["H4", "H1", "D1"]:
+                        tf_rec = sym_block.get(tf)
+                        if isinstance(tf_rec, dict):
+                            seq = tf_rec.get(price_type)
+                            if isinstance(seq, (list, np.ndarray)) and len(seq) > 0:
+                                return np.array(seq, dtype=float)
+        
+        return np.array([])
+    
+    def _calculate_trend_confluence(
+        self, ma_alignment: int, ma_spread_fm: float, ma_spread_ms: float,
+        price_vs_fast: float, price_vs_slow: float, adx_value: float,
+        plus_di: float, minus_di: float, sar_direction: int,
+        trend_slope: float, near_support: bool, near_resistance: bool
+    ) -> Tuple[float, float, float]:
+        """Calculate bullish and bearish trend confluence scores."""
+        bullish_score = 0.0
+        bearish_score = 0.0
+        total_weight = 0.0
+        
+        # MA Alignment (weight: 2.5)
+        ma_weight = 2.5
+        total_weight += ma_weight
+        if ma_alignment == 1:
+            bullish_score += ma_weight
+        elif ma_alignment == -1:
+            bearish_score += ma_weight
+        
+        # MA Spread confirmation (weight: 1.5)
+        spread_weight = 1.5
+        total_weight += spread_weight
+        if ma_spread_fm > self.trend_threshold and ma_spread_ms > self.trend_threshold:
+            bullish_score += spread_weight * min(1.0, (ma_spread_fm + ma_spread_ms) * 50)
+        elif ma_spread_fm < -self.trend_threshold and ma_spread_ms < -self.trend_threshold:
+            bearish_score += spread_weight * min(1.0, abs(ma_spread_fm + ma_spread_ms) * 50)
+        
+        # Price position (weight: 1.5)
+        pos_weight = 1.5
+        total_weight += pos_weight
+        if price_vs_fast > 0 and price_vs_slow > 0:
+            bullish_score += pos_weight * min(1.0, (price_vs_fast + price_vs_slow) * 20)
+        elif price_vs_fast < 0 and price_vs_slow < 0:
+            bearish_score += pos_weight * min(1.0, abs(price_vs_fast + price_vs_slow) * 20)
+        
+        # ADX Trend Strength (weight: 2.0)
+        adx_weight = 2.0
+        total_weight += adx_weight
+        if adx_value >= self.adx_trending_threshold:
+            trend_strength_factor = min(1.0, adx_value / self.adx_strong_threshold)
+            if plus_di > minus_di:
+                bullish_score += adx_weight * trend_strength_factor
+            else:
+                bearish_score += adx_weight * trend_strength_factor
+        
+        # SAR Direction (weight: 1.2)
+        sar_weight = 1.2
+        total_weight += sar_weight
+        if sar_direction == 1:
+            bullish_score += sar_weight
+        elif sar_direction == -1:
+            bearish_score += sar_weight
+        
+        # Trend Slope (weight: 1.8)
+        slope_weight = 1.8
+        total_weight += slope_weight
+        if trend_slope > self.trend_threshold:
+            bullish_score += slope_weight * min(1.0, trend_slope / (self.trend_threshold * 3))
+        elif trend_slope < -self.trend_threshold:
+            bearish_score += slope_weight * min(1.0, abs(trend_slope) / (self.trend_threshold * 3))
+        
+        # S/R Level awareness (weight: 1.0)
+        sr_weight = 1.0
+        total_weight += sr_weight
+        if near_support and ma_alignment >= 0:
+            bullish_score += sr_weight * 0.8
+        elif near_resistance and ma_alignment <= 0:
+            bearish_score += sr_weight * 0.8
+        
+        return bullish_score, bearish_score, total_weight
+    
+    def _determine_trend_action(
+        self, net_trend: float, bullish_confluence: float,
+        bearish_confluence: float, adx_value: float, trend_duration: int
+    ) -> Tuple[str, float, float, str]:
+        """Determine action, confidence, signal strength and trend label."""
+        adx_gate = adx_value >= (self.adx_trending_threshold * 0.5)
+        
+        if net_trend > 0.01 and adx_gate:
+            action = 'long'
+            current_trend = 'uptrend'
+            if bullish_confluence >= self.strong_signal_confluence:
+                signal_strength = min(1.0, bullish_confluence * 1.2)
+            elif bullish_confluence >= self.min_confluence_score:
+                signal_strength = min(0.8, bullish_confluence)
+            else:
+                signal_strength = max(0.2, bullish_confluence * 0.5)
+            
+            if adx_value >= self.adx_strong_threshold:
+                signal_strength = min(1.0, signal_strength * 1.15)
+            if trend_duration >= 5:
+                signal_strength = min(1.0, signal_strength * 1.1)
+            
+            confidence = 0.3 + signal_strength * 0.5
+            
+        elif net_trend < -0.01 and adx_gate:
+            action = 'short'
+            current_trend = 'downtrend'
+            if bearish_confluence >= self.strong_signal_confluence:
+                signal_strength = min(1.0, bearish_confluence * 1.2)
+            elif bearish_confluence >= self.min_confluence_score:
+                signal_strength = min(0.8, bearish_confluence)
+            else:
+                signal_strength = max(0.2, bearish_confluence * 0.5)
+            
+            if adx_value >= self.adx_strong_threshold:
+                signal_strength = min(1.0, signal_strength * 1.15)
+            if trend_duration >= 5:
+                signal_strength = min(1.0, signal_strength * 1.1)
+            
+            confidence = 0.3 + signal_strength * 0.5
+            
+        elif net_trend > 0.01:
+            action = 'long'
+            current_trend = 'weak_uptrend'
+            signal_strength = max(0.15, bullish_confluence * 0.3)
+            confidence = 0.25 + signal_strength * 0.3
+            
+        elif net_trend < -0.01:
+            action = 'short'
+            current_trend = 'weak_downtrend'
+            signal_strength = max(0.15, bearish_confluence * 0.3)
+            confidence = 0.25 + signal_strength * 0.3
+            
+        else:
+            action = 'flat'
+            current_trend = 'neutral'
+            signal_strength = 0.1
+            confidence = 0.2
+        
+        return action, float(np.clip(confidence, 0.15, 0.95)), float(signal_strength), current_trend
+    
+    def _neutral_output(self, reason: str) -> Dict[str, Any]:
+        """Generate neutral output with explanation."""
+        thesis = f"Trend flat: {reason}"
+        name = self.__class__.__name__
+        
+        proposal = {
+            "action": "flat",
+            "signal_strength": 0.1,
+            "reason": thesis,
+            "proposals": {},
+        }
+        
+        try:
+            self.smart_bus.set('TrendExpert_voting_proposal', proposal, module=name, thesis=thesis)
+            self.smart_bus.set('TrendExpert_confidence', 0.1, module=name, thesis=f'Confidence: 10%')
             self.smart_bus.set('trend_voting_proposal', proposal, module=name, thesis=thesis)
-            self.smart_bus.set('trend_confidence', confidence, module=name, thesis=f'Confidence: {confidence:.1%}')
-            self.smart_bus.set('trend_analysis', trend_analysis, module=name, thesis=f'Trend: {self.current_trend} ({self.trend_strength:.2%})')
+            self.smart_bus.set('trend_confidence', 0.1, module=name, thesis=f'Trend confidence: 10%')
         except Exception:
             pass
         
         return {
-            **base,
-            # Standard naming convention
             'TrendExpert_voting_proposal': proposal,
-            'TrendExpert_confidence': confidence,
-            # Alias keys for backward compatibility
+            'TrendExpert_confidence': 0.1,
+            'TrendExpert_per_instrument_votes': {},
             'trend_voting_proposal': proposal,
-            'trend_confidence': confidence,
-            'trend_analysis': trend_analysis,
+            'trend_confidence': 0.1,
+            'trend_analysis': {'current_trend': 'unknown', 'per_instrument': {}},
+            'voting_proposal': proposal,
+            'confidence': 0.1,
             '_thesis': thesis,
         }

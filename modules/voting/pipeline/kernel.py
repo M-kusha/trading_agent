@@ -94,6 +94,11 @@ class SlimVotingKernel(VotingModuleBase):
         self._pipeline_run_count: int = 0
         self._last_decision_id: Optional[str] = None
         
+        # Hysteresis for final action to prevent BUY/SELL flip-flopping
+        self._last_final_action: str = 'HOLD'
+        self._action_hold_count: int = 0
+        self._min_hold_ticks: int = 5  # Minimum ticks to hold a direction before allowing reversal
+        
         # Stage skip configuration
         self._skip_stages: Set[PipelineStage] = set()
         config = getattr(self, 'config', None) or {}
@@ -222,6 +227,9 @@ class SlimVotingKernel(VotingModuleBase):
             # Translate semantic action to trading action (BUY/SELL/HOLD)
             action = translate_action(raw_action)
             
+            # Apply hysteresis to prevent BUY/SELL flip-flopping
+            action = self._apply_action_hysteresis(action, confidence, consensus_score)
+            
             # Debug: log raw vs translated action
             if raw_action != action.lower():
                 self.log_info(f"Action translated: '{raw_action}' → '{action}'")
@@ -307,6 +315,54 @@ class SlimVotingKernel(VotingModuleBase):
         parts.append(f"Decision: {action.upper()} with {confidence:.1%} confidence.")
         
         return " ".join(parts)
+    
+    def _apply_action_hysteresis(self, new_action: str, confidence: float, consensus_score: float) -> str:
+        """
+        Apply hysteresis to prevent BUY/SELL flip-flopping.
+        
+        Rules:
+        1. If confidence < 20% and consensus < 50%, stay with last action
+        2. Must hold current direction for min_hold_ticks before reversing
+        3. Reversals (BUY→SELL or SELL→BUY) require higher confidence than staying
+        4. Going to HOLD is always allowed (safety)
+        
+        Returns:
+            Final action after hysteresis is applied
+        """
+        last_action = getattr(self, '_last_final_action', 'HOLD')
+        hold_count = getattr(self, '_action_hold_count', 0)
+        min_hold = getattr(self, '_min_hold_ticks', 5)
+        
+        # Low confidence/consensus: stay with last action (avoid noise)
+        if confidence < 0.20 and consensus_score < 0.50 and last_action != 'HOLD':
+            self._action_hold_count = hold_count + 1
+            return last_action
+        
+        # Check for direction reversal (BUY↔SELL)
+        is_reversal = (
+            (last_action == 'BUY' and new_action == 'SELL') or
+            (last_action == 'SELL' and new_action == 'BUY')
+        )
+        
+        # Reversals need higher confidence OR enough hold time
+        if is_reversal:
+            if hold_count < min_hold and confidence < 0.40:
+                # Too soon and too weak - stay with current direction
+                self._action_hold_count = hold_count + 1
+                self.log_info(
+                    f"Hysteresis: Blocked reversal {last_action}→{new_action} "
+                    f"(hold={hold_count}/{min_hold}, conf={confidence:.1%})"
+                )
+                return last_action
+        
+        # Action is allowed - update state
+        if new_action != last_action:
+            self._action_hold_count = 0
+            self._last_final_action = new_action
+        else:
+            self._action_hold_count = hold_count + 1
+        
+        return new_action
     
     # =========================================================================
     # Helper Methods

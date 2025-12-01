@@ -110,9 +110,9 @@ class SmartPositionConfig:
     max_lot_size: float = 1.0
     
     # Profit-taking thresholds
-    profit_take_activation_eur: float = 30.0  # Start trailing after €30 profit
-    profit_take_trail_pct: float = 0.25  # Close if drops 25% from peak
-    momentum_exit_profit_eur: float = 15.0  # Take profit on signal reversal above this
+    profit_take_activation_eur: float = 50.0  # Start trailing after €50 profit (was €30)
+    profit_take_trail_pct: float = 0.35  # Close if drops 35% from peak (was 25%)
+    momentum_exit_profit_eur: float = 40.0  # Take profit on signal reversal above €40 (was €15)
     
     # Loss-cutting thresholds
     hard_stop_loss_eur: float = 100.0  # Absolute max loss
@@ -130,9 +130,9 @@ class SmartPositionConfig:
     reversal_cooldown_seconds: float = 120.0  # 2 min after reversal
     
     # Signal thresholds
-    min_signal_strength: float = 0.3
-    strong_signal_threshold: float = 0.6
-    reversal_signal_threshold: float = 0.5
+    min_signal_strength: float = 0.4  # Raised from 0.3 - require stronger signals
+    strong_signal_threshold: float = 0.7  # Raised from 0.6 - harder to trigger reversal
+    reversal_signal_threshold: float = 0.65  # Raised from 0.5 - need strong signal to exit profitable position
 
 
 class SmartPositionManager:
@@ -458,6 +458,30 @@ class SmartPositionManager:
     ) -> SmartDecision:
         """Decide on opening a new position."""
         cfg = self.config
+        
+        # CRITICAL: Check if we already have a position in ANY direction for this symbol
+        # This catches race conditions where sync hasn't propagated yet
+        existing = self._positions.get(symbol)
+        if existing is not None:
+            # We have a position! This shouldn't reach here normally but catches race conditions
+            if (existing.side > 0 and signal_direction < 0) or (existing.side < 0 and signal_direction > 0):
+                # Opposing signal - DON'T open new position, this should be CLOSE not OPEN
+                reasons.append(f"BLOCKED: Existing {existing.direction} position exists, won't open opposing position")
+                return SmartDecision(
+                    action=PositionAction.HOLD,  # Block the open, let decide() handle the close logic
+                    symbol=symbol,
+                    confidence=0.5,
+                    reasons=reasons,
+                )
+            else:
+                # Same direction - already have position, this should be SCALE not OPEN
+                reasons.append(f"BLOCKED: Already have {existing.direction} position, use scale instead")
+                return SmartDecision(
+                    action=PositionAction.HOLD,
+                    symbol=symbol,
+                    confidence=0.5,
+                    reasons=reasons,
+                )
         
         # Check signal strength threshold
         if signal_strength < cfg.min_signal_strength:

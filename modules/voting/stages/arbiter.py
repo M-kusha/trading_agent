@@ -26,6 +26,12 @@ from modules.voting.core.constants import (
     CONSENSUS_THRESHOLD,
     VotingAction,
 )
+# Per-instrument voting infrastructure
+from modules.voting.core.per_instrument import (
+    DEFAULT_INSTRUMENTS,
+    normalize_instrument,
+    extract_instrument_data,
+)
 
 
 @module(**module_args("FinalArbiter"))
@@ -368,22 +374,343 @@ class FinalArbiter(VotingModuleBase):
         decision: Dict[str, Any], 
         data: Dict[str, Any]
     ) -> Dict[str, Dict[str, Any]]:
-        """Generate per-instrument trading signals."""
+        """
+        Generate per-instrument trading signals.
+        
+        NEW ARCHITECTURE (v2.0):
+        - Reads per-instrument committee decisions from 'committee_decisions_by_instrument'
+        - Each instrument gets its OWN direction based on expert votes for that instrument
+        - Falls back to global decision + alignment filtering if per-instrument not available
+        
+        This allows EURUSD to be LONG while XAUUSD is SHORT if the experts voted differently.
+        """
         signals = {}
+        name = self.__class__.__name__
+        
+        # ========== Try per-instrument committee decisions first ==========
+        per_inst_decisions = self.smart_bus.get('committee_decisions_by_instrument', name) or {}
+        
+        if per_inst_decisions:
+            # NEW: Use per-instrument decisions from CommitteeCoordinator
+            self.logger.debug(f"[ARBITER] Using per-instrument decisions: {list(per_inst_decisions.keys())}")
+            
+            collusion_score = float(data.get('collusion_score', 0.0))
+            fragility = float(data.get('fragility', 0.5))
+            market_regime = str(data.get('market_regime', 'UNKNOWN'))
+            
+            for inst in self.instruments:
+                inst_normalized = normalize_instrument(inst)
+                inst_decision = per_inst_decisions.get(inst_normalized) or per_inst_decisions.get(inst, {})
+                
+                if inst_decision:
+                    inst_action = str(inst_decision.get('action', 'flat')).upper()
+                    inst_confidence = float(inst_decision.get('confidence', 0.0))
+                    inst_consensus = float(inst_decision.get('consensus_score', 0.0))
+                    
+                    # Apply gate criteria per instrument
+                    gate_passed = self._check_instrument_gate(
+                        instrument=inst,
+                        action=inst_action,
+                        confidence=inst_confidence,
+                        consensus_score=inst_consensus,
+                        collusion_score=collusion_score,
+                        fragility=fragility,
+                        market_regime=market_regime,
+                    )
+                    
+                    if gate_passed and inst_action in ('LONG', 'SHORT'):
+                        # Convert to BUY/SELL format
+                        final_action = 'BUY' if inst_action == 'LONG' else 'SELL'
+                        signals[inst] = {
+                            'action': final_action,
+                            'confidence': round(inst_confidence, 4),
+                            'size_multiplier': round(inst_confidence, 4),
+                            'instrument': inst,
+                            'consensus_score': inst_consensus,
+                            'gate_passed': True,
+                            'reason': f'Per-instrument decision: {final_action} (conf={inst_confidence:.2f})',
+                            'source': 'per_instrument_committee',
+                        }
+                    else:
+                        signals[inst] = {
+                            'action': 'HOLD',
+                            'confidence': 0.0,
+                            'size_multiplier': 0.0,
+                            'instrument': inst,
+                            'gate_passed': False,
+                            'reason': f'Gate blocked or flat signal (action={inst_action}, gate={gate_passed})',
+                            'source': 'per_instrument_committee',
+                        }
+                else:
+                    # No decision for this instrument
+                    signals[inst] = {
+                        'action': 'HOLD',
+                        'confidence': 0.0,
+                        'size_multiplier': 0.0,
+                        'instrument': inst,
+                        'reason': 'No committee decision for instrument',
+                        'source': 'fallback',
+                    }
+            
+            self.logger.info(
+                f"[ARBITER] Per-instrument signals: " +
+                ", ".join(f"{k}={v['action']}" for k, v in signals.items())
+            )
+            return signals
+        
+        # ========== Fallback: Use global decision with alignment filtering ==========
+        self.logger.debug("[ARBITER] Falling back to global decision + alignment")
         
         action = decision.get('action', 'abstain')
-        confidence = decision.get('confidence', 0.0)
+        base_confidence = decision.get('confidence', 0.0)
+        
+        # For HOLD/ABSTAIN, no instrument should trade
+        if action.lower() in ('hold', 'abstain', 'unknown', 'flat'):
+            for inst in self.instruments:
+                signals[inst] = {
+                    'action': 'HOLD',
+                    'confidence': 0.0,
+                    'size_multiplier': 0.0,
+                    'instrument': inst,
+                    'reason': f'Global decision is {action}',
+                    'source': 'global_fallback',
+                }
+            return signals
+        
+        # Get market data for instrument filtering
+        market_data = self.smart_bus.get('market_data', name) or {}
+        price_data = self.smart_bus.get('price_data', name) or {}
+        indicators = self.smart_bus.get('technical_indicators', name) or {}
+        
+        # Determine which instruments align with the global action
+        aligned_instruments = []
+        instrument_scores = {}
         
         for inst in self.instruments:
-            # Basic signal (could be instrument-specific in future)
-            signals[inst] = {
-                'action': action,
-                'confidence': confidence,
-                'size_multiplier': confidence,  # Simple sizing by confidence
-                'instrument': inst,
-            }
+            inst_market = extract_instrument_data(market_data, inst)
+            inst_price = extract_instrument_data(price_data, inst)
+            inst_indicators = extract_instrument_data(indicators, inst)
+            
+            # Calculate instrument-specific alignment score
+            alignment_score = self._calculate_instrument_alignment(
+                inst, action, inst_market, inst_price, inst_indicators
+            )
+            instrument_scores[inst] = alignment_score
+            
+            if alignment_score > 0.3:  # Threshold for including instrument
+                aligned_instruments.append(inst)
+        
+        # If no instruments align, force the one with highest score (but mark low confidence)
+        if not aligned_instruments and instrument_scores:
+            best_inst = max(instrument_scores, key=lambda k: instrument_scores.get(k, 0.0))
+            aligned_instruments = [best_inst]
+            base_confidence *= 0.5  # Reduce confidence if forcing
+        
+        # Generate signals for each instrument
+        for inst in self.instruments:
+            if inst in aligned_instruments:
+                inst_confidence = base_confidence * instrument_scores.get(inst, 0.5)
+                signals[inst] = {
+                    'action': action,
+                    'confidence': round(inst_confidence, 4),
+                    'size_multiplier': round(inst_confidence, 4),
+                    'instrument': inst,
+                    'alignment_score': instrument_scores.get(inst, 0.5),
+                    'reason': f'Aligned with global {action}',
+                    'source': 'global_with_alignment',
+                }
+            else:
+                signals[inst] = {
+                    'action': 'HOLD',
+                    'confidence': 0.0,
+                    'size_multiplier': 0.0,
+                    'instrument': inst,
+                    'alignment_score': instrument_scores.get(inst, 0.0),
+                    'reason': f'Not aligned with global {action} (score={instrument_scores.get(inst, 0):.2f})'
+                }
+        
+        self.logger.debug(f"[ARBITER] Instrument signals: aligned={aligned_instruments}, scores={instrument_scores}")
         
         return signals
+    
+    def _calculate_instrument_alignment(
+        self,
+        instrument: str,
+        action: str,
+        market_data: Dict[str, Any],
+        price_data: Dict[str, Any],
+        indicators: Dict[str, Any]
+    ) -> float:
+        """
+        Calculate how well an instrument aligns with the proposed action.
+        
+        Uses instrument-specific candle data and indicators to determine
+        if this instrument should trade in the proposed direction.
+        
+        Returns:
+            Alignment score 0.0-1.0 (higher = better alignment)
+        """
+        try:
+            is_buy = action.upper() == 'BUY'
+            scores = []
+            weights = []
+            
+            # 1. Candle direction (most important - actual price movement)
+            open_price = float(market_data.get('open', price_data.get('open', 0)) or 0)
+            close_price = float(market_data.get('close', price_data.get('close', 0)) or 0)
+            
+            if open_price > 0 and close_price > 0:
+                candle_direction = 1 if close_price > open_price else -1
+                # For BUY: green candle is good; For SELL: red candle is good
+                if is_buy:
+                    candle_score = 0.8 if candle_direction > 0 else 0.3
+                else:
+                    candle_score = 0.8 if candle_direction < 0 else 0.3
+                scores.append(candle_score)
+                weights.append(2.0)  # High weight for candle direction
+            
+            # 2. Trend alignment (using momentum/RSI if available)
+            momentum = float(indicators.get('momentum', indicators.get('roc', 0.0)) or 0.0)
+            rsi = float(indicators.get('rsi', 50.0) or 50.0)
+            
+            # For BUY: positive momentum and RSI < 70 is good
+            # For SELL: negative momentum and RSI > 30 is good
+            if is_buy:
+                momentum_score = 0.5 + min(0.5, max(-0.5, momentum / 10))  # Normalize momentum
+                rsi_score = 1.0 if rsi < 70 else max(0.0, 1.0 - (rsi - 70) / 30)
+            else:
+                momentum_score = 0.5 - min(0.5, max(-0.5, momentum / 10))
+                rsi_score = 1.0 if rsi > 30 else max(0.0, (rsi) / 30)
+            
+            scores.extend([momentum_score, rsi_score])
+            weights.extend([1.0, 1.0])
+            
+            # 2. Price position (relative to recent range)
+            high = float(price_data.get('high', 0) or 0)
+            low = float(price_data.get('low', 0) or 0)
+            close = float(price_data.get('close', price_data.get('last', 0)) or 0)
+            
+            if high > low and close > 0:
+                price_position = (close - low) / (high - low)  # 0=at low, 1=at high
+                # For BUY: prefer lower price position; For SELL: prefer higher
+                if is_buy:
+                    position_score = 1.0 - price_position * 0.5  # Max 1.0, min 0.5
+                else:
+                    position_score = 0.5 + price_position * 0.5  # Max 1.0, min 0.5
+                scores.append(position_score)
+                weights.append(0.8)  # Medium weight for price position
+            
+            # 3. Volatility check (very high volatility reduces score)
+            atr = float(indicators.get('atr', indicators.get('volatility', 0)) or 0)
+            if atr > 0 and close > 0:
+                atr_pct = atr / close
+                if atr_pct > 0.02:  # High volatility (>2% ATR)
+                    vol_score = max(0.3, 1.0 - (atr_pct - 0.02) / 0.03)
+                else:
+                    vol_score = 1.0
+                scores.append(vol_score)
+                weights.append(0.5)  # Lower weight for volatility
+            
+            # Calculate weighted average
+            if scores and weights:
+                total_weight = sum(weights[:len(scores)])
+                weighted_sum = sum(s * w for s, w in zip(scores, weights[:len(scores)]))
+                return weighted_sum / total_weight if total_weight > 0 else 0.5
+            elif scores:
+                return sum(scores) / len(scores)
+            else:
+                return 0.5  # Default moderate alignment
+                
+        except Exception as e:
+            self.logger.warning(f"[ARBITER] Error calculating alignment for {instrument}: {e}")
+            return 0.5  # Default moderate alignment
+    
+    def _check_instrument_gate(
+        self,
+        instrument: str,
+        action: str,
+        confidence: float,
+        consensus_score: float,
+        collusion_score: float = 0.0,
+        fragility: float = 0.5,
+        market_regime: str = "UNKNOWN"
+    ) -> bool:
+        """
+        Check if an instrument-specific trade should pass through the gate.
+        
+        This is a simplified gate check for per-instrument decisions since
+        the committee has already done much of the aggregation work.
+        
+        Args:
+            instrument: The instrument being evaluated
+            action: Proposed action (BUY/SELL/HOLD)
+            confidence: Committee confidence for this instrument
+            consensus_score: How much agreement among voters
+            collusion_score: Risk of collusion (too much agreement)
+            fragility: How fragile/risky the decision is
+            market_regime: Current market regime
+            
+        Returns:
+            True if the trade should proceed, False to block
+        """
+        try:
+            # HOLD always passes (it's a non-trade)
+            if action.upper() == 'HOLD':
+                return True
+            
+            # Base confidence threshold
+            min_confidence = self.min_confidence
+            
+            # Adjust threshold based on regime
+            regime_adjustments = {
+                'TRENDING': -0.05,      # Lower threshold in trends
+                'MEAN_REVERTING': 0.0,  # Normal threshold
+                'VOLATILE': 0.1,        # Higher threshold in volatility
+                'UNKNOWN': 0.05,        # Slightly higher for unknown
+            }
+            min_confidence += regime_adjustments.get(market_regime.upper(), 0.0)
+            
+            # Check confidence threshold
+            if confidence < min_confidence:
+                self.logger.debug(
+                    f"[ARBITER] Gate BLOCKED {instrument} {action}: "
+                    f"confidence {confidence:.2f} < threshold {min_confidence:.2f}"
+                )
+                return False
+            
+            # Check consensus (don't trade if disagreement is too high)
+            if consensus_score < 0.3:
+                self.logger.debug(
+                    f"[ARBITER] Gate BLOCKED {instrument} {action}: "
+                    f"low consensus {consensus_score:.2f}"
+                )
+                return False
+            
+            # Check collusion (too much agreement is suspicious)
+            if collusion_score > 0.85:
+                self.logger.debug(
+                    f"[ARBITER] Gate BLOCKED {instrument} {action}: "
+                    f"high collusion {collusion_score:.2f}"
+                )
+                return False
+            
+            # Check fragility
+            if fragility > 0.8:
+                self.logger.debug(
+                    f"[ARBITER] Gate BLOCKED {instrument} {action}: "
+                    f"high fragility {fragility:.2f}"
+                )
+                return False
+            
+            self.logger.debug(
+                f"[ARBITER] Gate PASSED {instrument} {action}: "
+                f"conf={confidence:.2f}, consensus={consensus_score:.2f}"
+            )
+            return True
+            
+        except Exception as e:
+            self.logger.warning(f"[ARBITER] Error in instrument gate check for {instrument}: {e}")
+            return False  # Block on error for safety
     
     def _summarize_inputs(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Summarize voting inputs for analysis."""

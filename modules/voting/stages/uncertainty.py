@@ -210,10 +210,8 @@ class UncertaintySampler(VotingModuleBase):
         base_confidences = data.get('member_confidences') or []
         
         if not base_vectors:
-            # Create synthetic base if no vectors
-            dim = self.dim if not self.auto_dim else max(self.dim, 2)
-            base_vectors = [[0.0] * dim]
-            base_confidences = [0.5]
+            # No real data - return empty samples (fragility will use neutral defaults)
+            return []
         
         # Determine dimension
         if self.auto_dim and base_vectors:
@@ -297,6 +295,21 @@ class UncertaintySampler(VotingModuleBase):
                 'uncertainty_score': 0.5,
                 'fragility_score': 0.5,
                 'outcome_variance': 0.0,
+            }
+        
+        # If no meaningful proposal vectors, return neutral fragility
+        # This prevents fragility=1.0 when experts have no data yet
+        proposal_vectors = data.get('proposal_vectors', [])
+        if not proposal_vectors or len(proposal_vectors) == 0:
+            return {
+                'uncertainty_score': 0.5,
+                'fragility_score': 0.5,
+                'flip_rate': 0.0,
+                'outcome_variance': 0.0,
+                'n_samples': len(samples),
+                'original_action': data.get('committee_decision', {}).get('action', 'abstain'),
+                'sample_actions': [],
+                'reason': 'No proposal vectors available - using neutral defaults',
             }
         
         # Get original decision
