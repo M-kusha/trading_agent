@@ -40,13 +40,13 @@ smart_position:
   max_lot_size: 1.0
   
   # Profit-taking thresholds (EUR)
-  profit_take_activation_eur: 30.0   # Start trailing after €30 profit
-  profit_take_trail_pct: 0.25        # Close if drops 25% from peak
-  momentum_exit_profit_eur: 15.0     # Take profit on signal reversal
+  profit_take_activation_eur: 50.0   # Start trailing after €50 profit (was 30)
+  profit_take_trail_pct: 0.35        # Close if drops 35% from peak (was 25%)
+  momentum_exit_profit_eur: 30.0     # Take profit on signal reversal (was 15)
   
   # Loss-cutting thresholds (EUR)
   hard_stop_loss_eur: 100.0          # Absolute max loss (always exit)
-  soft_stop_loss_eur: 30.0           # Cut early if signal against
+  soft_stop_loss_eur: 50.0           # Cut early if signal against (was 30)
   time_decay_stop_eur: 50.0          # Cut if losing AND position old
   time_decay_hours: 4.0              # Position age threshold
   
@@ -60,9 +60,9 @@ smart_position:
   reversal_cooldown_seconds: 120.0        # 2 min after reversal
   
   # Signal thresholds
-  min_signal_strength: 0.3
+  min_signal_strength: 0.4           # Raised from 0.3 - need stronger signals
   strong_signal_threshold: 0.6
-  reversal_signal_threshold: 0.5
+  reversal_signal_threshold: 0.6     # Raised from 0.5 - need stronger reversal to exit
 
 # Stop Loss / Take Profit Settings (in pips)
 # IMPORTANT: These are EMERGENCY safety nets only!

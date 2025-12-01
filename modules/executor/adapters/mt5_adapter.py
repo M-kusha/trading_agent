@@ -117,6 +117,9 @@ class MT5Adapter(BaseLiveAdapter):
                 def error(self, *a, **k):
                     pass
 
+                def debug(self, *a, **k):
+                    pass
+
             self.log = _Dummy()
 
     # ─────────────────────────────────────────────────────
@@ -558,51 +561,73 @@ class MT5Adapter(BaseLiveAdapter):
 
                 price = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
 
-                # Build close request WITH position ticket (required for hedging accounts)
-                request = {
-                    "action": mt5.TRADE_ACTION_DEAL,
-                    "symbol": instrument,
-                    "volume": float(lots),
-                    "type": close_type,
-                    "position": ticket,  # CRITICAL: specify ticket for hedging accounts
-                    "price": price,
-                    "deviation": 20,
-                    "magic": 424242,
-                    "comment": "close_position",
-                    "type_filling": self._pick_filling_mode(instrument),
-                    "type_time": mt5.ORDER_TIME_GTC,
-                }
-
-                self.log.info(
-                    f"[MT5] close_position: ticket={ticket} sym={instrument} "
-                    f"lots={lots:.4f} type={'SELL' if close_type == mt5.ORDER_TYPE_SELL else 'BUY'}"
-                )
-
-                r = mt5.order_send(request)
-                if r is None:
-                    self.log.error(f"[MT5] close_position: order_send returned None for ticket {ticket}")
-                    return {"ok": False, "error": "order_send_none"}
-
+                # Try multiple filling modes - brokers vary in what they support
+                filling_modes = [
+                    getattr(mt5, "ORDER_FILLING_IOC", 1),
+                    getattr(mt5, "ORDER_FILLING_FOK", 0),
+                    getattr(mt5, "ORDER_FILLING_RETURN", 2),
+                ]
+                
                 ret_ok = getattr(mt5, "TRADE_RETCODE_DONE", 10009)
                 ret_no_prices = 10021  # Market closed / no quotes
                 ret_market_closed = 10018
+                ret_invalid_fill = 10030  # Unsupported filling mode
                 
-                if r.retcode == ret_ok:
-                    last_px = _sf(getattr(r, "price", 0.0), last_px)
-                    self.log.info(f"[MT5] close_position: ✅ Closed ticket {ticket} @ {last_px:.5f}")
-                elif r.retcode in (ret_no_prices, ret_market_closed):
-                    # Market closed - don't spam errors, just return gracefully
-                    self.log.warning(
-                        f"[MT5] close_position: Market closed for {instrument} "
-                        f"(retcode={r.retcode}). Will retry when market opens."
+                success = False
+                last_error = None
+                
+                for fill_mode in filling_modes:
+                    # Build close request WITH position ticket (required for hedging accounts)
+                    request = {
+                        "action": mt5.TRADE_ACTION_DEAL,
+                        "symbol": instrument,
+                        "volume": float(lots),
+                        "type": close_type,
+                        "position": ticket,  # CRITICAL: specify ticket for hedging accounts
+                        "price": price,
+                        "deviation": 20,
+                        "magic": 424242,
+                        "comment": "close_position",
+                        "type_filling": fill_mode,
+                        "type_time": mt5.ORDER_TIME_GTC,
+                    }
+
+                    self.log.info(
+                        f"[MT5] close_position: ticket={ticket} sym={instrument} "
+                        f"lots={lots:.4f} type={'SELL' if close_type == mt5.ORDER_TYPE_SELL else 'BUY'} "
+                        f"fill_mode={fill_mode}"
                     )
-                    return {"ok": False, "error": "market_closed", "retcode": r.retcode}
-                else:
-                    self.log.error(
-                        f"[MT5] close_position: ❌ Failed ticket {ticket}: "
-                        f"retcode={r.retcode} comment={getattr(r, 'comment', '')}"
-                    )
-                    return {"ok": False, "error": f"retcode_{r.retcode}"}
+
+                    r = mt5.order_send(request)
+                    if r is None:
+                        last_error = "order_send_none"
+                        continue
+
+                    if r.retcode == ret_ok:
+                        last_px = _sf(getattr(r, "price", 0.0), last_px)
+                        self.log.info(f"[MT5] close_position: ✅ Closed ticket {ticket} @ {last_px:.5f}")
+                        success = True
+                        break
+                    elif r.retcode == ret_invalid_fill:
+                        # Try next filling mode
+                        self.log.debug(f"[MT5] close_position: fill_mode={fill_mode} not supported, trying next")
+                        last_error = f"retcode_{r.retcode}"
+                        continue
+                    elif r.retcode in (ret_no_prices, ret_market_closed):
+                        # Market closed - don't spam errors
+                        self.log.warning(
+                            f"[MT5] close_position: Market closed for {instrument} "
+                            f"(retcode={r.retcode}). Will retry when market opens."
+                        )
+                        return {"ok": False, "error": "market_closed", "retcode": r.retcode}
+                    else:
+                        last_error = f"retcode_{r.retcode}: {getattr(r, 'comment', '')}"
+                        self.log.error(f"[MT5] close_position: ❌ Failed ticket {ticket}: {last_error}")
+                        break  # Don't try other fill modes for non-fill errors
+                
+                if not success:
+                    self.log.error(f"[MT5] close_position: All filling modes failed for ticket {ticket}")
+                    return {"ok": False, "error": last_error or "all_fills_failed"}
 
             return {"ok": True, "price": last_px}
         except Exception as e:
