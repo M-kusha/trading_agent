@@ -1,4 +1,3 @@
-# modules/executor/shared/utils.py
 from __future__ import annotations
 
 import threading
@@ -15,6 +14,7 @@ def _as_decimal(x: Union[int, float, str]) -> Decimal:
         return Decimal(str(x))
     except Exception:
         return Decimal(0)
+
 
 def round_to_step(
     x: float,
@@ -43,9 +43,17 @@ def round_to_step(
             else:
                 q = X / S
                 if mode == "down":
-                    q_rounded = q.to_integral_value(rounding=ROUND_FLOOR) if q >= 0 else q.to_integral_value(rounding=ROUND_CEILING)
+                    q_rounded = (
+                        q.to_integral_value(rounding=ROUND_FLOOR)
+                        if q >= 0
+                        else q.to_integral_value(rounding=ROUND_CEILING)
+                    )
                 elif mode == "up":
-                    q_rounded = q.to_integral_value(rounding=ROUND_CEILING) if q >= 0 else q.to_integral_value(rounding=ROUND_FLOOR)
+                    q_rounded = (
+                        q.to_integral_value(rounding=ROUND_CEILING)
+                        if q >= 0
+                        else q.to_integral_value(rounding=ROUND_FLOOR)
+                    )
                 else:
                     # nearest, ties away from zero (works for +/-)
                     q_rounded = q.quantize(Decimal(1), rounding=ROUND_HALF_UP)
@@ -74,9 +82,11 @@ def canonical(inst: str) -> str:
     out = "".join(ch for ch in inst if ch.isalnum())
     return out.upper()
 
+
 def _fx_slash_form(inst: str) -> str:
     c = canonical(inst)
     return f"{c[:3]}/{c[3:]}" if len(c) == 6 else inst.upper().replace("_", "/")
+
 
 def resolve_symbol(
     inst: str,
@@ -145,7 +155,12 @@ class SafeBus:
         try:
             with self._lock:
                 try:
-                    self.bus.set(key, value, module=self._module, thesis=thesis or key)  # (key, value, module=..., thesis=...)
+                    self.bus.set(
+                        key,
+                        value,
+                        module=self._module,
+                        thesis=thesis or key,
+                    )  # (key, value, module=..., thesis=...)
                 except TypeError:
                     self.bus.set(key, value)  # (key, value)
         except Exception:

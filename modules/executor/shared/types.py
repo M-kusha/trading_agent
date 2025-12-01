@@ -1,10 +1,12 @@
-# modules/executor/shared/types.py
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
 import math
 import time
 import datetime as _dt
+
+
+DEFAULT_CONTRACT_SIZE = 100_000.0  # default FX contract
 
 
 def _sf(v: Any, default: float = 0.0) -> float:
@@ -29,6 +31,34 @@ def _iso(ts: Union[str, int, float, None]) -> Optional[str]:
         return _dt.datetime.utcfromtimestamp(t).isoformat(timespec="seconds") + "Z"
     except Exception:
         return None
+
+
+def _contract_size_for_symbol(symbol: str) -> float:
+    """
+    Symbol-specific contract size (units per 1.0 lot).
+
+    This mirrors the logic used in Executor and MT5Adapter:
+    - XAU*/GOLD* : 100 oz per lot
+    - XAG*/SILVER*: 5000 oz per lot
+    - BTC*/ETH*  : 1 unit per lot
+    - else       : 100,000 units (standard FX)
+    """
+    s = (symbol or "").upper().replace("_", "").replace("/", "")
+    if not s:
+        return DEFAULT_CONTRACT_SIZE
+
+    # Metals
+    if "XAU" in s or "GOLD" in s:
+        return 100.0
+    if "XAG" in s or "SILVER" in s:
+        return 5000.0
+
+    # Crypto
+    if "BTC" in s or "ETH" in s:
+        return 1.0
+
+    # Default FX
+    return DEFAULT_CONTRACT_SIZE
 
 
 @dataclass(slots=True)
@@ -67,8 +97,9 @@ class PositionSnap:
             pos_type = "SELL"
             action = "SHORT"
 
-        # Calculate lot size (assuming standard forex contract size)
-        lot_size = u / 100000.0 if u > 0 else 0.0
+        # Contract size & lots (symbol-aware: FX, XAU, XAG, BTC, ETH)
+        cs = _contract_size_for_symbol(self.instrument)
+        lot_size = u / cs if (u > 0.0 and cs > 0.0) else 0.0
 
         out: Dict[str, Any] = {
             "instrument": self.instrument,
@@ -85,14 +116,20 @@ class PositionSnap:
             "type": pos_type,
             "action": action,
             "current_price": float(lp),
-            "price": float(lp),  # alias
-            "pnl": float(upnl),  # alias for unrealized_pnl
-            "profit": float(upnl),  # alias
+            "price": float(lp),        # alias
+            "pnl": float(upnl),        # alias for unrealized_pnl
+            "profit": float(upnl),     # alias
+
+            # Contract / lot details
+            "contract_size": float(cs),
             "lot_size": float(lot_size),
-            "volume": float(lot_size),  # alias
-            "lots": float(lot_size),  # alias
+            "volume": float(lot_size),  # alias (MT5 convention: volume=lots)
+            "lots": float(lot_size),    # alias
+
+            # Simple identifiers (sim-mode tickets)
             "id": self.entry_step if self.entry_step is not None else hash(self.instrument) % 10000,
             "ticket": self.entry_step if self.entry_step is not None else hash(self.instrument) % 10000,
+
             "open_price": float(ep),  # alias
             "entry_time": _iso(self.open_time) if self.open_time else time.time(),
         }
@@ -131,6 +168,10 @@ class TradeFill:
         notional = _sf(self.notional_eur) or (u * px)
         rpnl = _sf(self.realized_pnl)
 
+        # Contract-aware lot computation (aligned with positions)
+        cs = _contract_size_for_symbol(self.instrument)
+        lots = u / cs if (u > 0.0 and cs > 0.0) else 0.0
+
         out: Dict[str, Any] = {
             "id": self.id,
             "ts": float(_sf(self.ts, time.time())),
@@ -148,6 +189,11 @@ class TradeFill:
             "pnl_eur": rpnl,                  # alias
             "origin_id": self.origin_id,
             "comment": self.comment,
+
+            # Contract / lot info for fills (matches PositionSnap)
+            "contract_size": float(cs),
+            "lots": float(lots),
+            "volume": float(lots),            # alias
         }
         if self.ticket is not None:
             out["ticket"] = self.ticket

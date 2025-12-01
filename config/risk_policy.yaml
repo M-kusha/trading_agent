@@ -10,6 +10,25 @@ controls:
   position_monitoring_enabled: true
 
 # ═══════════════════════════════════════════════════════════════
+# POSITION MANAGER EMERGENCY THRESHOLDS
+# These control when PositionManager triggers emergency closes
+# ═══════════════════════════════════════════════════════════════
+position_manager:
+  # Emergency exposure trigger (0.95 = 95% of balance exposed)
+  # Set high because normal positions can use 30-85% of balance
+  # Only trigger emergency when nearly ALL balance is at risk
+  emergency_exposure_trigger: 0.95
+  
+  # Emergency drawdown trigger (15% drawdown = emergency)
+  emergency_drawdown_trigger: 0.15
+  
+  # Max consecutive losses before emergency
+  max_consecutive_losses: 5
+  
+  # Max concentration per instrument (for risk scoring, NOT emergency)
+  max_instrument_concentration: 0.30
+
+# ═══════════════════════════════════════════════════════════════
 # SMART POSITION MANAGEMENT
 # Professional net position system with intelligent exits
 # ═══════════════════════════════════════════════════════════════

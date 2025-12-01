@@ -61,10 +61,10 @@ class MomentumExpert(VotingExpertBase):
     7. Momentum divergence patterns (bullish/bearish)
     8. Momentum acceleration/deceleration
     
-    Voting Actions:
-    - momentum_long: Strong bullish momentum confluence
-    - momentum_short: Strong bearish momentum confluence
-    - momentum_neutral: No clear momentum direction
+    Voting Actions (canonical):
+    - long: Strong bullish momentum confluence
+    - short: Strong bearish momentum confluence
+    - flat: No clear momentum direction / no trade
     
     Features:
     - Adaptive thresholds based on volatility
@@ -205,7 +205,11 @@ class MomentumExpert(VotingExpertBase):
         try:
             self.smart_bus.set(
                 'momentum_voting_proposal',
-                {'action': 'momentum_neutral', 'signal_strength': 0.0},
+                {
+                    'action': 'flat',
+                    'signal_strength': 0.0,
+                    'reason': 'Momentum baseline',
+                },
                 module='MomentumExpert',
                 thesis='Momentum baseline'
             )
@@ -755,7 +759,7 @@ class MomentumExpert(VotingExpertBase):
             
             # Momentum acceleration alignment
             accel = proposal.get('momentum_acceleration', 0.0)
-            if (action == 'momentum_long' and accel > 0) or (action == 'momentum_short' and accel < 0):
+            if (action == 'long' and accel > 0) or (action == 'short' and accel < 0):
                 base *= 1.08
             
             # Historical performance adjustment

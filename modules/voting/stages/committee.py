@@ -25,6 +25,7 @@ from modules.voting.core.constants import (
     CONSENSUS_THRESHOLD,
     MAX_STALENESS_SECONDS,
     VotingAction,
+    VotingBusKeys,
 )
 # Per-instrument voting infrastructure
 from modules.voting.core.per_instrument import (
@@ -150,13 +151,13 @@ class CommitteeCoordinator(VotingModuleBase):
                 thesis='Baseline expert votes'
             )
             self.smart_bus.set(
-                'committee_votes', 
+                VotingBusKeys.COMMITTEE_VOTES, 
                 [], 
                 module=self.__class__.__name__, 
                 thesis='Baseline committee votes'
             )
             self.smart_bus.set(
-                'votes', 
+                VotingBusKeys.VOTES, 
                 [], 
                 module=self.__class__.__name__, 
                 thesis='Baseline raw votes'
@@ -249,7 +250,9 @@ class CommitteeCoordinator(VotingModuleBase):
     
     def _voter_key_pairs(self, name: str) -> List[Tuple[str, str]]:
         """Get (proposal_key, confidence_key) pairs for a voter."""
-        pairs = [(f'{name}_voting_proposal', f'{name}_confidence')]
+        pairs = [
+            (VotingBusKeys.expert_proposal(name), VotingBusKeys.expert_confidence(name))
+        ]
         
         # Add alternate keys for known experts
         if name in ['EnhancedThemeExpert', 'ThemeExpert']:
@@ -986,12 +989,12 @@ class CommitteeCoordinator(VotingModuleBase):
             
             return {
                 # Primary outputs (new v5.0)
-                'committee_decision': decision,
-                'committee_consensus': consensus,
-                'committee_confidence': confidence,
-                'committee_votes': committee_votes,
+                VotingBusKeys.COMMITTEE_DECISION: decision,
+                VotingBusKeys.COMMITTEE_CONSENSUS: consensus,
+                VotingBusKeys.COMMITTEE_CONFIDENCE: confidence,
+                VotingBusKeys.COMMITTEE_VOTES: committee_votes,
                 'committee_summary': committee_summary,
-                'committee_decision_id': decision_id,
+                VotingBusKeys.COMMITTEE_DECISION_ID: decision_id,
                 'raw_proposals': raw_proposals,
                 'member_confidences': member_confidences_map,
                 'voting_weights': expert_weights,
@@ -1000,9 +1003,9 @@ class CommitteeCoordinator(VotingModuleBase):
                 'committee_decisions_by_instrument': per_instrument_decisions,
                 
                 # Backward compatibility (old EnhancedVotingCommitteeCoordinator keys)
-                'votes': committee_votes,
-                'voting_summary': voting_summary,
-                'strategy_arbiter_weights': expert_weights,
+                VotingBusKeys.VOTES: committee_votes,
+                VotingBusKeys.VOTING_SUMMARY: voting_summary,
+                VotingBusKeys.STRATEGY_ARBITER_WEIGHTS: expert_weights,
                 'expert_votes': expert_votes,
                 'expert_weights': expert_weights,
                 'committee_analytics': dict(self.committee_analytics),
@@ -1054,9 +1057,25 @@ class CommitteeCoordinator(VotingModuleBase):
         try:
             name = self.__class__.__name__
             
-            self.smart_bus.set('committee_decision', decision, module=name, thesis=thesis, confidence=confidence)
-            self.smart_bus.set('committee_consensus', consensus, module=name, thesis='Committee consensus')
-            self.smart_bus.set('committee_confidence', confidence, module=name, thesis=f'Confidence: {confidence:.1%}')
+            self.smart_bus.set(
+                VotingBusKeys.COMMITTEE_DECISION,
+                decision,
+                module=name,
+                thesis=thesis,
+                confidence=confidence,
+            )
+            self.smart_bus.set(
+                VotingBusKeys.COMMITTEE_CONSENSUS,
+                consensus,
+                module=name,
+                thesis='Committee consensus',
+            )
+            self.smart_bus.set(
+                VotingBusKeys.COMMITTEE_CONFIDENCE,
+                confidence,
+                module=name,
+                thesis=f'Confidence: {confidence:.1%}',
+            )
             self.smart_bus.set('expert_votes', list(expert_votes), module=name, thesis='Expert votes snapshot')
             
             # Simplified committee votes
@@ -1068,13 +1087,28 @@ class CommitteeCoordinator(VotingModuleBase):
                 }
                 for v in expert_votes
             ]
-            self.smart_bus.set('committee_votes', simplified, module=name, thesis='Committee votes')
+            self.smart_bus.set(
+                VotingBusKeys.COMMITTEE_VOTES,
+                simplified,
+                module=name,
+                thesis='Committee votes',
+            )
             
             # Analytics surfaces
             self.smart_bus.set('committee_members', committee_members, module=name, thesis='Members list')
             self.smart_bus.set('committee_proposal_vectors', proposal_vectors, module=name, thesis='Proposal vectors')
-            self.smart_bus.set('committee_member_confidences', list(member_confidences_map.values()), module=name, thesis='Member confidences')
-            self.smart_bus.set('committee_decision_id', decision_id, module=name, thesis='Decision ID')
+            self.smart_bus.set(
+                VotingBusKeys.MEMBER_CONFIDENCES,
+                list(member_confidences_map.values()),
+                module=name,
+                thesis='Member confidences',
+            )
+            self.smart_bus.set(
+                VotingBusKeys.COMMITTEE_DECISION_ID,
+                decision_id,
+                module=name,
+                thesis='Decision ID',
+            )
             self.smart_bus.set('committee_analytics', dict(self.committee_analytics), module=name, thesis='Analytics')
             
         except Exception as e:
@@ -1115,10 +1149,14 @@ class CommitteeCoordinator(VotingModuleBase):
         warmup_thesis = f"WARMUP: {reason}"
         return {
             # Primary outputs (new v5.0)
-            'committee_decision': {'action': 'abstain', 'reason': reason},
-            'committee_consensus': {'consensus_exists': False, 'warmup': True, 'reason': reason},
-            'committee_confidence': 0.0,
-            'committee_votes': [],
+            VotingBusKeys.COMMITTEE_DECISION: {'action': 'abstain', 'reason': reason},
+            VotingBusKeys.COMMITTEE_CONSENSUS: {
+                'consensus_exists': False,
+                'warmup': True,
+                'reason': reason,
+            },
+            VotingBusKeys.COMMITTEE_CONFIDENCE: 0.0,
+            VotingBusKeys.COMMITTEE_VOTES: [],
             'committee_summary': {
                 'warmup': True,
                 'total_members': 0,
@@ -1127,15 +1165,15 @@ class CommitteeCoordinator(VotingModuleBase):
                 'tick_count': self._tick_count,
                 'warmup_ticks': self.warmup_ticks
             },
-            'committee_decision_id': decision_id,
+            VotingBusKeys.COMMITTEE_DECISION_ID: decision_id,
             'raw_proposals': {},
             'member_confidences': {},
             'voting_weights': {},
             
             # Backward compatibility
-            'votes': [],
-            'voting_summary': {'action': 'abstain', 'warmup': True, 'reason': reason},
-            'strategy_arbiter_weights': {},
+            VotingBusKeys.VOTES: [],
+            VotingBusKeys.VOTING_SUMMARY: {'action': 'abstain', 'warmup': True, 'reason': reason},
+            VotingBusKeys.STRATEGY_ARBITER_WEIGHTS: {},
             'expert_votes': [],
             'expert_weights': {},
             'committee_analytics': dict(self.committee_analytics),
@@ -1163,20 +1201,20 @@ class CommitteeCoordinator(VotingModuleBase):
         """Return contract-compliant error output."""
         return {
             # Primary outputs (new v5.0)
-            'committee_decision': {'action': 'abstain', 'reason': f'error: {error}'},
-            'committee_consensus': {'consensus_exists': False, 'error': error},
-            'committee_confidence': 0.1,
-            'committee_votes': [],
+            VotingBusKeys.COMMITTEE_DECISION: {'action': 'abstain', 'reason': f'error: {error}'},
+            VotingBusKeys.COMMITTEE_CONSENSUS: {'consensus_exists': False, 'error': error},
+            VotingBusKeys.COMMITTEE_CONFIDENCE: 0.1,
+            VotingBusKeys.COMMITTEE_VOTES: [],
             'committee_summary': {'error': error, 'total_members': 0, 'decision': 'abstain'},
-            'committee_decision_id': None,
+            VotingBusKeys.COMMITTEE_DECISION_ID: None,
             'raw_proposals': {},
             'member_confidences': {},
             'voting_weights': {},
             
             # Backward compatibility
-            'votes': [],
-            'voting_summary': {'action': 'abstain', 'error': error},
-            'strategy_arbiter_weights': {},
+            VotingBusKeys.VOTES: [],
+            VotingBusKeys.VOTING_SUMMARY: {'action': 'abstain', 'error': error},
+            VotingBusKeys.STRATEGY_ARBITER_WEIGHTS: {},
             'expert_votes': [],
             'expert_weights': {},
             'committee_analytics': {'error': error},

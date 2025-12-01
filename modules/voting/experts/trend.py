@@ -61,10 +61,10 @@ class TrendExpert(VotingExpertBase):
     7. Support/Resistance proximity
     8. Trend momentum (rate of price change)
     
-    Voting Actions:
-    - trend_bullish: Strong uptrend with confirmation
-    - trend_bearish: Strong downtrend with confirmation
-    - trend_neutral: No clear trend / ranging market
+    Voting Actions (canonical):
+    - long: Strong uptrend with confirmation
+    - short: Strong downtrend with confirmation
+    - flat: No clear trend / ranging market
     
     Features:
     - Adaptive trend detection based on volatility
@@ -196,7 +196,11 @@ class TrendExpert(VotingExpertBase):
         try:
             self.smart_bus.set(
                 'trend_voting_proposal',
-                {'action': 'trend_neutral', 'signal_strength': 0.0},
+                {
+                    'action': 'flat',
+                    'signal_strength': 0.0,
+                    'reason': 'Trend baseline',
+                },
                 module='TrendExpert',
                 thesis='Trend baseline'
             )

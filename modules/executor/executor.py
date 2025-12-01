@@ -25,10 +25,8 @@ from .unified_logger import UnifiedExecutorLogger, ExecutionCycleEntry
 
 # Smart Position Management
 from modules.position.smart_position_manager import (
-    SmartPositionManager, 
-    SmartDecision, 
+    SmartPositionManager,
     PositionAction,
-    SmartPositionConfig,
 )
 
 
@@ -279,7 +277,6 @@ class Executor(BaseModule):
             "ts": time.time(),
         }
 
-
     async def process(self, **inputs: Any) -> Dict[str, Any]:
         t0 = time.time()
         try:
@@ -495,7 +492,7 @@ class Executor(BaseModule):
             "current_positions": current_positions,
             "pnl_data": pnl_data,
             "live_adapter_status": live_adapter_status,
-            "closed_positions": list(self.closed_positions),  # For win rate tracking
+            "closed_positions": list(self.closed_positions),  # For win rate tracking (sim)
             "balance": float(self.balance),
             "equity": float(self.equity),
             "current_pnl": float(step_pnl),
@@ -509,7 +506,6 @@ class Executor(BaseModule):
             "order_queue": [],
             "processing_time_ms": (time.time() - t0) * 1000.0,
         }
-
 
     # ─────────────────────────────────────────────────────────
     # intents
@@ -555,14 +551,13 @@ class Executor(BaseModule):
                     })
                 elif self._passes_filters(intent):
                     if intent["id"] not in self._seen_ids:
-                        accepted.append(intent); self._seen_ids.add(intent["id"])
+                        accepted.append(intent)
+                        self._seen_ids.add(intent["id"])
                     else:
                         rejected.append({"reason": "duplicate_id", "intent": intent})
                 else:
                     reason = self._filter_reason(intent)
                     rejected.append({"reason": reason, "intent": intent})
-
-        # consume queue: keep consumption internal to Executor (no write-back here)
 
         # fallback: position_decision_* (look under PositionManager as well)
         if self.cfg.read_position_decisions:
@@ -599,7 +594,8 @@ class Executor(BaseModule):
                         "size_eur": size_eur,
                     }
                     if self._passes_filters(intent) and intent["id"] not in self._seen_ids:
-                        accepted.append(intent); self._seen_ids.add(intent["id"])
+                        accepted.append(intent)
+                        self._seen_ids.add(intent["id"])
                     else:
                         rejected.append({"reason": self._filter_reason(intent), "intent": intent})
 
@@ -613,7 +609,6 @@ class Executor(BaseModule):
 
         # Trim _seen_ids to prevent memory leak
         if len(self._seen_ids) > self._max_seen_ids:
-            # Keep most recent IDs by converting to list, taking last N, and converting back
             ids_list = list(self._seen_ids)
             self._seen_ids = set(ids_list[-(self._max_seen_ids // 2):])
 
@@ -638,7 +633,6 @@ class Executor(BaseModule):
                 filtered.append(item)
             if len(filtered) != len(q):
                 try:
-                    # Best-effort pruning; tolerate owner discipline if enforced
                     self.bus.set("order_queue", filtered, thesis="Executor pruned consumed orders")
                 except Exception:
                     pass
@@ -690,9 +684,9 @@ class Executor(BaseModule):
         if act == "hold" and self.cfg.ignore_hold:
             return "ignore_hold"
         if float(intent.get("confidence", 0.0)) < self.cfg.min_confidence:
-            return f"low_confidence<{self.cfg.min_confidence}"
+            return f"low_confidence<{self.cfg.min_confidence}>"
         if abs(float(intent.get("intensity", 0.0))) < self.cfg.min_intensity and act not in ("close", "emergency_close"):
-            return f"low_intensity<{self.cfg.min_intensity}"
+            return f"low_intensity<{self.cfg.min_intensity}>"
         if intent.get("id") in self._seen_ids:
             return "duplicate_id"
         return "filtered"
@@ -703,17 +697,17 @@ class Executor(BaseModule):
     def _get_contract_size(self, symbol: str) -> float:
         """Get contract size for a symbol (units per 1.0 lot)."""
         sym_upper = (symbol or "").upper().replace("_", "").replace("/", "")
-        
+
         # Gold/Silver/Crypto have different contract sizes
-        if 'XAU' in sym_upper or 'GOLD' in sym_upper:
+        if "XAU" in sym_upper or "GOLD" in sym_upper:
             return 100.0  # Gold: 100 oz per lot
-        if 'XAG' in sym_upper or 'SILVER' in sym_upper:
+        if "XAG" in sym_upper or "SILVER" in sym_upper:
             return 5000.0  # Silver: 5000 oz per lot
-        if 'BTC' in sym_upper:
+        if "BTC" in sym_upper:
             return 1.0  # Bitcoin: 1 BTC per lot
-        if 'ETH' in sym_upper:
+        if "ETH" in sym_upper:
             return 1.0  # Ethereum: 1 ETH per lot
-        
+
         # Default: Forex 100,000 units per lot
         return float(self.cfg.contract_size)
 
@@ -722,11 +716,11 @@ class Executor(BaseModule):
     # ─────────────────────────────────────────────────────────
     def _sim_price(self, inst: str, side: int) -> Optional[float]:
         sp = (self.bus.get("prices", "Executor", default=None)
-            or self.bus.get("prices", "PositionManager", default={})
-            or {})
+              or self.bus.get("prices", "PositionManager", default={})
+              or {})
         pd = (self.bus.get("price_data", "Executor", default=None)
-            or self.bus.get("price_data", "PositionManager", default={})
-            or {})
+              or self.bus.get("price_data", "PositionManager", default={})
+              or {})
         px = None
         try:
             node = None
@@ -744,7 +738,8 @@ class Executor(BaseModule):
                     for k in ("last", "close", "price", "bid", "ask"):
                         val = v.get(k)
                         if isinstance(val, (int, float)):
-                            px = float(val); break
+                            px = float(val)
+                            break
         except Exception:
             px = None
         if px is None:
@@ -756,7 +751,6 @@ class Executor(BaseModule):
             px += self.cfg.slippage_pts * (+1 if side > 0 else -1)
         return px
 
-
     def _units_from(self, size_eur: float, units: float, price: float) -> float:
         if units and units > 0:
             return float(units)
@@ -765,7 +759,7 @@ class Executor(BaseModule):
         return 0.0
 
     def _track_closed_position(self, position: "PositionSnap", close_price: float, realized_pnl: float, close_reason: str) -> None:
-        """Track a fully closed position for win rate and analytics."""
+        """Track a fully closed position for win rate and analytics (sim only)."""
         closed_record = {
             "instrument": position.instrument,
             "side": position.side,
@@ -827,7 +821,8 @@ class Executor(BaseModule):
                         origin_id=origin_id,
                         comment="reverse",
                     ).as_bus()
-                    self.trades.append(fill); fills.append(fill)
+                    self.trades.append(fill)
+                    fills.append(fill)
                     self._track_closed_position(p, price, realized, "reverse")
                     del self.positions[inst]
 
@@ -837,7 +832,7 @@ class Executor(BaseModule):
                         inst, side_from_action, add_units, price,
                         notional_eur=notional,
                         open_time=time.time(),
-                        entry_step=self.step_idx
+                        entry_step=self.step_idx,
                     )
                     fill = TradeFill(
                         id=f"fill-{uuid.uuid4().hex[:10]}",
@@ -853,7 +848,8 @@ class Executor(BaseModule):
                         origin_id=origin_id,
                         comment="open",
                     ).as_bus()
-                    self.trades.append(fill); fills.append(fill)
+                    self.trades.append(fill)
+                    fills.append(fill)
 
             elif action == "scale_up":
                 if add_units <= 0:
@@ -864,7 +860,7 @@ class Executor(BaseModule):
                         inst, +1, add_units, price,
                         notional_eur=notional,
                         open_time=time.time(),
-                        entry_step=self.step_idx
+                        entry_step=self.step_idx,
                     )
                     fill = TradeFill(
                         id=f"fill-{uuid.uuid4().hex[:10]}",
@@ -879,7 +875,8 @@ class Executor(BaseModule):
                         origin_id=origin_id,
                         comment="scale_up_open",
                     ).as_bus()
-                    self.trades.append(fill); fills.append(fill)
+                    self.trades.append(fill)
+                    fills.append(fill)
                 else:
                     p = self.positions[inst]
                     if p.side < 0:
@@ -905,7 +902,8 @@ class Executor(BaseModule):
                             origin_id=origin_id,
                             comment="reduce",
                         ).as_bus()
-                        self.trades.append(fill); fills.append(fill)
+                        self.trades.append(fill)
+                        fills.append(fill)
                     else:
                         new_u = p.units + add_units
                         p.entry_price = (p.entry_price * p.units + price * add_units) / new_u
@@ -924,7 +922,8 @@ class Executor(BaseModule):
                             origin_id=origin_id,
                             comment="scale",
                         ).as_bus()
-                        self.trades.append(fill); fills.append(fill)
+                        self.trades.append(fill)
+                        fills.append(fill)
 
             elif action == "scale_down":
                 if inst not in self.positions or add_units <= 0:
@@ -956,7 +955,8 @@ class Executor(BaseModule):
                     origin_id=origin_id,
                     comment="reduce",
                 ).as_bus()
-                self.trades.append(fill); fills.append(fill)
+                self.trades.append(fill)
+                fills.append(fill)
 
             elif action in ("close", "emergency_close"):
                 if inst in self.positions:
@@ -977,7 +977,8 @@ class Executor(BaseModule):
                         origin_id=origin_id,
                         comment="close",
                     ).as_bus()
-                    self.trades.append(fill); fills.append(fill)
+                    self.trades.append(fill)
+                    fills.append(fill)
                     self._track_closed_position(p, price, realized, action)
                     del self.positions[inst]
 
@@ -1009,7 +1010,7 @@ class Executor(BaseModule):
         return fills, step_pnl, 0.0, 0.0  # not used
 
     # ─────────────────────────────────────────────────────────
-    # LIVE execution
+    # LIVE execution (legacy, direct)
     # ─────────────────────────────────────────────────────────
     def _execute_live(self, intents: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], float]:
         fills: List[Dict[str, Any]] = []
@@ -1023,9 +1024,12 @@ class Executor(BaseModule):
         except Exception:
             pass
 
+        norm_positions = self._normalized_adapter_positions()
+
         for intent in intents:
             inst_src = intent["instrument"]
             inst = resolve_symbol(inst_src, self.cfg.symbol_overrides, broker=self.cfg.live_broker)
+            norm_inst = self._normalize_symbol(inst)
             action = str(intent["action"]).lower()
             side = {"open_long": +1, "scale_up": +1, "open_short": -1, "scale_down": -1}.get(action, 0)
 
@@ -1034,14 +1038,12 @@ class Executor(BaseModule):
             size_eur = float(intent.get("size_eur", 0.0) or 0.0)
             if units <= 0 and size_eur > 0 and price_hint > 0:
                 units = size_eur / price_hint
-            
+
             # Use symbol-specific contract size
             contract_size = self._get_contract_size(inst)
             lots = max(units / contract_size, 0.0)
             lots = round_to_step(lots, self.adapter.cfg.lot_step)
             lots = max(lots, self.adapter.cfg.min_lot) if lots > 0 else 0.0
-            # If the order carries positive size (units/size_eur) but rounding drove lots to 0,
-            # enforce the broker min lot so we don't silently drop accepted intents.
             if lots <= 0 and (units > 0 or size_eur > 0):
                 try:
                     self.logger.info(
@@ -1060,14 +1062,13 @@ class Executor(BaseModule):
                     except Exception:
                         pass
                     continue
-                
+
                 # ANTI-HEDGE CHECK: Prevent opening opposite direction while position exists
                 if action in ("open_long", "open_short"):
                     try:
-                        all_positions = self.adapter.sync_positions() if self.adapter else {}
-                        if inst in all_positions:
-                            pos = all_positions[inst]
-                            existing_side = int(pos.get('side', 0))
+                        pos_snap = norm_positions.get(norm_inst)
+                        if pos_snap:
+                            existing_side = self._position_side_from_snapshot(pos_snap)
                             if existing_side != 0:
                                 is_buy = existing_side > 0
                                 # Block if trying to open opposite direction
@@ -1084,7 +1085,7 @@ class Executor(BaseModule):
                                     continue
                     except Exception as e:
                         self.logger.warning(f"[LIVE] Position check failed: {e}")
-                
+
                 r = self.adapter.market_order(inst, side, lots)
                 try:
                     self.logger.info(f"[LIVE] market_order result: {r}")
@@ -1106,7 +1107,8 @@ class Executor(BaseModule):
                         origin_id=origin_id,
                         comment="live",
                     ).as_bus()
-                    self.trades.append(fill); fills.append(fill)
+                    self.trades.append(fill)
+                    fills.append(fill)
             elif action == "scale_down":
                 if lots <= 0:
                     try:
@@ -1135,7 +1137,8 @@ class Executor(BaseModule):
                         origin_id=origin_id,
                         comment="live_reduce",
                     ).as_bus()
-                    self.trades.append(fill); fills.append(fill)
+                    self.trades.append(fill)
+                    fills.append(fill)
             elif action in ("close", "emergency_close"):
                 r = self.adapter.close_position(inst)
                 try:
@@ -1169,7 +1172,7 @@ class Executor(BaseModule):
     def _execute_live_smart(self, intents: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], float]:
         """
         Smart live execution with position consolidation and intelligent management.
-        
+
         Key features:
         1. Syncs actual MT5 positions before any decision
         2. Prevents duplicate positions (max 1 per symbol)
@@ -1183,7 +1186,7 @@ class Executor(BaseModule):
 
         acct_before = self.adapter.get_account_info()
         eq_before = float(acct_before.get("equity", 0.0) or 0.0)
-        
+
         try:
             self.logger.info(
                 format_operator_message(
@@ -1218,7 +1221,7 @@ class Executor(BaseModule):
                 for p in raw_positions
             ]
             self.smart_position_manager.sync_positions(mt5_positions)
-            
+
             if mt5_positions:
                 self.logger.info(
                     format_operator_message(
@@ -1255,12 +1258,25 @@ class Executor(BaseModule):
                             result = self._close_position_by_ticket(ticket, symbol)
                             if result.get("ok"):
                                 self.logger.info(f"[SMART] ✅ Closed hedge ticket {ticket} on {symbol}")
-                                fills.append({
-                                    "action": "hedge_cleanup",
-                                    "symbol": symbol,
-                                    "ticket": ticket,
-                                    "ok": True,
-                                })
+                                # Create proper TradeFill for hedge cleanup
+                                fill = TradeFill(
+                                    id=f"fill-{uuid.uuid4().hex[:10]}",
+                                    ts=time.time(),
+                                    step=self.step_idx,
+                                    instrument=symbol,
+                                    action="hedge_cleanup",
+                                    side=0,  # Unknown side for hedge cleanup
+                                    units=float(pos.get("volume", 0.0) or 0.0),
+                                    price=float(result.get("price", 0) or 0),
+                                    notional_eur=0.0,
+                                    realized_pnl=float(pos.get("profit", 0.0) or 0.0),
+                                    origin_id=f"hedge-{ticket}",
+                                    comment="hedge_cleanup",
+                                ).as_bus()
+                                self.trades.append(fill)
+                                fills.append(fill)
+                                # Record trade to update cooldowns
+                                self.smart_position_manager.record_trade(symbol)
                                 closed_count += 1
                             else:
                                 error = result.get("error", "unknown")
@@ -1272,7 +1288,7 @@ class Executor(BaseModule):
                     else:
                         self.logger.warning(f"[SMART] ⚠️ Invalid position data - ticket={ticket}, symbol={symbol}")
                         failed_count += 1
-                
+
                 if closed_count > 0 or failed_count > 0:
                     self.logger.info(f"[SMART] Hedge cleanup: {closed_count} closed, {failed_count} failed")
         except Exception as e:
@@ -1280,16 +1296,20 @@ class Executor(BaseModule):
 
         # ─────────────────────────────────────────────────────
         # Step 3: Check existing positions for exits AND scales
-        # Read signal from InfoBus since PositionManager may emit HOLD
         # ─────────────────────────────────────────────────────
-        for symbol, position in self.smart_position_manager.get_all_positions().items():
-            # Get current signal from InfoBus - MUST be per-symbol!
+        smart_positions = self.smart_position_manager.get_all_positions()
+
+        for raw_symbol, position in smart_positions.items():
+            symbol = raw_symbol  # raw broker symbol as used inside SmartPM
+            canonical_symbol = self._normalize_symbol(symbol)
+
+            # Get current signal from intents for this specific symbol
             signal_direction = 0
             signal_strength = 0.0
-            
-            # First check intents for this specific symbol (most accurate)
+
             for intent in intents:
-                if self._normalize_symbol(intent.get("instrument", "")) == symbol:
+                inst_intent = self._normalize_symbol(intent.get("instrument", ""))
+                if inst_intent == canonical_symbol:
                     action = str(intent.get("action", "")).lower()
                     if action in ("open_long", "scale_up"):
                         signal_direction = 1
@@ -1297,55 +1317,50 @@ class Executor(BaseModule):
                         signal_direction = -1
                     signal_strength = float(intent.get("intensity", intent.get("confidence", 0.5)) or 0.5)
                     break
-            
-            # Fallback to trade_vote_v2 ONLY if it matches this symbol
+
+            # Fallback to trade_vote_v2 ONLY if it explicitly targets this symbol
             if signal_direction == 0:
                 try:
                     trade_vote = self.bus.get("trade_vote_v2", "Executor")
                     if isinstance(trade_vote, dict):
-                        # Check if this vote is for our symbol or is symbol-agnostic
                         vote_symbol = trade_vote.get("symbol", trade_vote.get("instrument", ""))
-                        vote_symbol_normalized = self._normalize_symbol(vote_symbol) if vote_symbol else ""
-                        
-                        # Only apply global vote if no symbol specified or matches
-                        if not vote_symbol or vote_symbol_normalized == symbol:
-                            vote_action = str(trade_vote.get("action", "")).upper()
-                            vote_confidence = float(trade_vote.get("confidence", trade_vote.get("intensity", 0.5)) or 0.0)
-                            vote_consensus = float(trade_vote.get("consensus_score", 0.0) or 0.0)
-                            
-                            # IMPORTANT: For existing positions, be MORE cautious about global votes
-                            # Global SELL shouldn't close profitable LONG positions on weak signals
-                            is_global_vote = not vote_symbol  # No specific symbol = global
-                            position_is_long = position.side > 0 if position else False
-                            position_is_profitable = (position.unrealized_pnl > 5.0) if position else False
-                            
-                            # Require HIGHER confidence for global opposing signals on profitable positions
-                            min_confidence = 0.35
-                            min_consensus = 0.55
-                            if is_global_vote and position_is_profitable:
-                                if (position_is_long and vote_action == "SELL") or \
-                                   (not position_is_long and vote_action == "BUY"):
-                                    # Opposing global signal on profitable position - need higher bar
-                                    min_confidence = 0.60  # Much higher confidence required
-                                    min_consensus = 0.70   # Much higher consensus required
-                            
-                            if vote_confidence >= min_confidence and vote_consensus >= min_consensus and vote_action in ("BUY", "SELL"):
-                                if vote_action == "BUY":
-                                    signal_direction = 1
-                                elif vote_action == "SELL":
-                                    signal_direction = -1
-                                signal_strength = vote_confidence
+                        if vote_symbol:
+                            vote_symbol_normalized = self._normalize_symbol(vote_symbol)
+                            if vote_symbol_normalized == canonical_symbol:
+                                vote_action = str(trade_vote.get("action", "")).upper()
+                                vote_confidence = float(trade_vote.get("confidence", trade_vote.get("intensity", 0.5)) or 0.0)
+                                vote_consensus = float(trade_vote.get("consensus_score", 0.0) or 0.0)
+
+                                position_side = getattr(position, "side", 0)
+                                position_is_long = position_side > 0
+                                raw_unreal = getattr(position, "unrealized_pnl", getattr(position, "pnl", 0.0))
+                                position_is_profitable = raw_unreal > 5.0
+
+                                min_confidence = 0.35
+                                min_consensus = 0.55
+                                # Slightly stricter bar if profitable and vote is opposing
+                                if position_is_profitable:
+                                    if (position_is_long and vote_action == "SELL") or \
+                                       (not position_is_long and vote_action == "BUY"):
+                                        min_confidence = 0.50
+                                        min_consensus = 0.65
+
+                                if vote_confidence >= min_confidence and vote_consensus >= min_consensus and vote_action in ("BUY", "SELL"):
+                                    if vote_action == "BUY":
+                                        signal_direction = 1
+                                    elif vote_action == "SELL":
+                                        signal_direction = -1
+                                    signal_strength = vote_confidence
                 except Exception:
                     pass
-            
-            # Get smart decision for this position
+
             decision = self.smart_position_manager.decide(
                 symbol=symbol,
                 signal_direction=signal_direction,
                 signal_strength=signal_strength,
                 consensus_confidence=signal_strength,
             )
-            
+
             # Execute CLOSE/REVERSE decisions
             if decision.action in (PositionAction.CLOSE, PositionAction.REVERSE):
                 self.logger.info(
@@ -1366,7 +1381,7 @@ class Executor(BaseModule):
                         "ok": True,
                     })
                     self.smart_position_manager.record_trade(symbol)
-            
+
             # Execute SCALE_UP decisions
             elif decision.action == PositionAction.SCALE_UP and decision.lots > 0:
                 self.logger.info(
@@ -1399,7 +1414,7 @@ class Executor(BaseModule):
                     self.trades.append(fill)
                     fills.append(fill)
                     self.smart_position_manager.record_trade(symbol, is_scale=True)
-            
+
             # Execute SCALE_DOWN decisions
             elif decision.action == PositionAction.SCALE_DOWN and decision.lots > 0:
                 self.logger.info(
@@ -1411,8 +1426,7 @@ class Executor(BaseModule):
                         reasons=decision.reasons[:2],
                     )
                 )
-                # Scale down = close partial position (opposite side order)
-                close_side = -decision.side  # Opposite to reduce
+                close_side = -decision.side  # Opposite side to reduce
                 result = self.adapter.market_order(symbol, close_side, decision.lots)
                 if result.get("ok"):
                     px = float(result.get("price", 0) or 0)
@@ -1438,124 +1452,127 @@ class Executor(BaseModule):
         # ─────────────────────────────────────────────────────
         # Step 4: Process new entry intents with smart filtering
         # ─────────────────────────────────────────────────────
+        smart_positions = self.smart_position_manager.get_all_positions()
+        smart_pos_by_norm: Dict[str, Tuple[str, Any]] = {}
+        try:
+            for sym, pos in smart_positions.items():
+                smart_pos_by_norm[self._normalize_symbol(sym)] = (sym, pos)
+        except Exception:
+            smart_pos_by_norm = {}
+
+        adapter_positions_norm = self._normalized_adapter_positions()
+
         for intent in intents:
             inst_src = intent.get("instrument", "")
             inst = resolve_symbol(inst_src, self.cfg.symbol_overrides, broker=self.cfg.live_broker)
+            inst_norm = self._normalize_symbol(inst)
+            exec_symbol = smart_pos_by_norm.get(inst_norm, (inst, None))[0]
+
             action = str(intent.get("action", "")).lower()
-            
-            # Handle explicit close actions from order_queue (e.g., from PositionManager)
+
+            # Explicit close actions from order_queue
             if action in ("close", "emergency_close"):
-                # Check if we have a position in this instrument
-                existing_positions = self.smart_position_manager.get_all_positions()
-                if inst in existing_positions:
-                    position = self.positions.get(inst)  # Get our sim position for tracking
-                    self.logger.info(
+                # Use smart_symbol if known, otherwise use exec_symbol directly
+                # This handles hedged positions that net to 0 (not in smart_pos_by_norm)
+                close_symbol = exec_symbol
+                if inst_norm in smart_pos_by_norm:
+                    close_symbol, _ = smart_pos_by_norm[inst_norm]
+                
+                self.logger.info(
+                    format_operator_message(
+                        "🎯",
+                        "EXPLICIT_CLOSE",
+                        action=action.upper(),
+                        symbol=close_symbol,
+                        source="order_queue",
+                        in_smart_pm=inst_norm in smart_pos_by_norm,
+                    )
+                )
+                result = self.adapter.close_position(close_symbol)
+                if result.get("ok"):
+                    fills.append({
+                        "action": action,
+                        "symbol": close_symbol,
+                        "source": "order_queue",
+                        "realized_pnl": 0.0,  # Live PnL comes from broker
+                        "ok": True,
+                    })
+                    self.smart_position_manager.record_trade(close_symbol)
+                else:
+                    self.logger.warning(
                         format_operator_message(
-                            "🎯",
-                            "EXPLICIT_CLOSE",
-                            action=action.upper(),
-                            symbol=inst,
-                            source="order_queue",
+                            "⚠️",
+                            "CLOSE_FAILED",
+                            symbol=close_symbol,
+                            error=result.get("error", "unknown"),
                         )
                     )
-                    result = self.adapter.close_position(inst)
-                    if result.get("ok"):
-                        # Track the close with proper details
-                        close_price = float(result.get("price", 0) or 0)
-                        realized_pnl = 0.0
-                        if position:
-                            realized_pnl = (close_price - position.entry_price) * position.side * position.units
-                            self._track_closed_position(position, close_price, realized_pnl, action)
-                            # Remove from positions and update balance
-                            if inst in self.positions:
-                                del self.positions[inst]
-                            self.balance += realized_pnl
-                        
-                        fills.append({
-                            "action": action,
-                            "symbol": inst,
-                            "source": "order_queue",
-                            "realized_pnl": realized_pnl,
-                            "ok": True,
-                        })
-                        self.smart_position_manager.record_trade(inst)
                 continue
-            
+
             # Determine signal from intent
             signal_direction = {"open_long": 1, "scale_up": 1, "open_short": -1, "scale_down": -1}.get(action, 0)
             signal_strength = float(intent.get("intensity", intent.get("confidence", 0.5)) or 0.5)
-            
-            # Get smart decision
+
             decision = self.smart_position_manager.decide(
-                symbol=inst,
+                symbol=exec_symbol,
                 signal_direction=signal_direction,
                 signal_strength=signal_strength,
                 consensus_confidence=signal_strength,
             )
-            
-            # Only execute if smart manager approves
+
             if decision.action == PositionAction.HOLD:
                 self.logger.info(
                     format_operator_message(
                         "⏸️",
                         "SMART_HOLD",
-                        symbol=inst,
+                        symbol=exec_symbol,
                         original_action=action,
                         reasons=decision.reasons[:2],
                     )
                 )
                 continue
-            
+
+            # New opens: enforce anti-hedge at MT5 level (in case SmartPM is stale)
             if decision.action in (PositionAction.OPEN_LONG, PositionAction.OPEN_SHORT):
-                # CRITICAL: Double-check with MT5 for existing positions to prevent hedging
-                # This catches race conditions where SmartPositionManager sync is stale
                 try:
-                    all_positions = self.adapter.sync_positions() if self.adapter else {}
-                    if inst in all_positions:
-                        pos = all_positions[inst]
-                        # sync_positions returns {'side': +1/-1, 'units': float, ...}
-                        existing_side = int(pos.get('side', 0))
-                        
+                    pos_snap = adapter_positions_norm.get(inst_norm)
+                    if pos_snap:
+                        existing_side = self._position_side_from_snapshot(pos_snap)
                         if existing_side != 0:
-                            # There IS an existing position for this symbol in MT5!
                             is_buy = existing_side > 0
-                            
-                            # If we're trying to open opposite direction, BLOCK IT
                             if (existing_side > 0 and decision.side < 0) or (existing_side < 0 and decision.side > 0):
                                 self.logger.warning(
                                     format_operator_message(
                                         "🚫",
                                         "BLOCKED_HEDGE",
-                                        symbol=inst,
+                                        symbol=exec_symbol,
                                         wanted=decision.action.value,
                                         existing="BUY" if is_buy else "SELL",
                                         reason="Would create hedge position",
                                     )
                                 )
-                                continue  # Skip this intent entirely
-                            
-                            # If we're trying to open same direction, also block (no duplicate positions)
+                                continue
                             if (existing_side > 0 and decision.side > 0) or (existing_side < 0 and decision.side < 0):
                                 self.logger.info(
                                     format_operator_message(
                                         "⏸️",
                                         "BLOCKED_DUPLICATE",
-                                        symbol=inst,
+                                        symbol=exec_symbol,
                                         wanted=decision.action.value,
                                         existing="BUY" if is_buy else "SELL",
                                         reason="Already have position in same direction",
                                     )
                                 )
-                                continue  # Skip - already have this position
+                                continue
                 except Exception as e:
                     self.logger.warning(f"[SMART] MT5 position check failed: {e}")
-                
+
                 # Calculate lots
                 lots = decision.lots
                 if lots <= 0:
-                    price_hint = (self.adapter.get_prices(inst) or {}).get("mid", 1.0) or 1.0
+                    price_hint = (self.adapter.get_prices(exec_symbol) or {}).get("mid", 1.0) or 1.0
                     size_eur = float(intent.get("size_eur", 0.0) or 0.0)
-                    contract_size = self._get_contract_size(inst)
+                    contract_size = self._get_contract_size(exec_symbol)
                     if size_eur > 0:
                         units = size_eur / price_hint
                         lots = max(units / contract_size, 0.0)
@@ -1563,27 +1580,27 @@ class Executor(BaseModule):
                         lots = max(lots, self.adapter.cfg.min_lot) if lots > 0 else self.adapter.cfg.min_lot
                     else:
                         lots = self.adapter.cfg.min_lot
-                
+
                 self.logger.info(
                     format_operator_message(
                         "🚀",
                         "SMART_OPEN",
                         action=decision.action.value,
-                        symbol=inst,
+                        symbol=exec_symbol,
                         lots=f"{lots:.2f}",
                         reasons=decision.reasons[:2],
                     )
                 )
-                
-                result = self.adapter.market_order(inst, decision.side, lots)
+
+                result = self.adapter.market_order(exec_symbol, decision.side, lots)
                 if result.get("ok"):
                     px = float(result.get("price", 0) or 0)
-                    contract_size = self._get_contract_size(inst)
+                    contract_size = self._get_contract_size(exec_symbol)
                     fill = TradeFill(
                         id=f"fill-{uuid.uuid4().hex[:10]}",
                         ts=time.time(),
                         step=self.step_idx,
-                        instrument=inst,
+                        instrument=exec_symbol,
                         action=decision.action.value.lower(),
                         side=decision.side,
                         units=lots * contract_size,
@@ -1595,30 +1612,30 @@ class Executor(BaseModule):
                     ).as_bus()
                     self.trades.append(fill)
                     fills.append(fill)
-                    self.smart_position_manager.record_trade(inst)
-            
+                    self.smart_position_manager.record_trade(exec_symbol)
+
             elif decision.action == PositionAction.SCALE_UP:
                 lots = decision.lots or self.adapter.cfg.min_lot
-                
+
                 self.logger.info(
                     format_operator_message(
                         "📈",
                         "SMART_SCALE_UP",
-                        symbol=inst,
+                        symbol=exec_symbol,
                         lots=f"{lots:.2f}",
                         reasons=decision.reasons[:2],
                     )
                 )
-                
-                result = self.adapter.market_order(inst, decision.side, lots)
+
+                result = self.adapter.market_order(exec_symbol, decision.side, lots)
                 if result.get("ok"):
                     px = float(result.get("price", 0) or 0)
-                    contract_size = self._get_contract_size(inst)
+                    contract_size = self._get_contract_size(exec_symbol)
                     fill = TradeFill(
                         id=f"fill-{uuid.uuid4().hex[:10]}",
                         ts=time.time(),
                         step=self.step_idx,
-                        instrument=inst,
+                        instrument=exec_symbol,
                         action="scale_up",
                         side=decision.side,
                         units=lots * contract_size,
@@ -1630,7 +1647,7 @@ class Executor(BaseModule):
                     ).as_bus()
                     self.trades.append(fill)
                     fills.append(fill)
-                    self.smart_position_manager.record_trade(inst, is_scale=True)
+                    self.smart_position_manager.record_trade(exec_symbol, is_scale=True)
 
         # ─────────────────────────────────────────────────────
         # Step 5: Update account state
@@ -1652,43 +1669,118 @@ class Executor(BaseModule):
                 fills=len(fills),
             )
         )
-        
+
         # Trim trades list to prevent memory leak
         if len(self.trades) > self._max_trades:
             self.trades = self.trades[-self._max_trades:]
-        
+
         return fills, step_pnl
 
+    # ─────────────────────────────────────────────────────────
+    # Symbol helpers / adapter position helpers
+    # ─────────────────────────────────────────────────────────
     def _normalize_symbol(self, symbol: str) -> str:
-        """Normalize symbol for comparison."""
-        return symbol.replace("/", "").replace("_", "").upper()
+        """Normalize symbol for comparison (no separators, upper-case)."""
+        return (symbol or "").replace("/", "").replace("_", "").upper()
+
+    def _normalized_adapter_positions(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Return adapter positions keyed by normalized symbol.
+
+        Handles both dict and list-of-dicts shapes defensively.
+        """
+        if not self.adapter or not self.adapter.is_connected():
+            return {}
+        try:
+            raw: Any = self.adapter.sync_positions()
+        except Exception:
+            return {}
+
+        if raw is None:
+            return {}
+
+        norm: Dict[str, Dict[str, Any]] = {}
+
+        iterable: List[Tuple[str, Dict[str, Any]]] = []
+        if isinstance(raw, dict):
+            iterable = list(raw.items())
+        elif isinstance(raw, list):
+            for p in raw:
+                if not isinstance(p, dict):
+                    continue
+                sym = p.get("instrument") or p.get("symbol")
+                if sym:
+                    iterable.append((sym, p))
+
+        for sym, snap in iterable:
+            try:
+                norm[self._normalize_symbol(sym)] = snap
+            except Exception:
+                continue
+        return norm
+
+    def _position_side_from_snapshot(self, snap: Dict[str, Any]) -> int:
+        """
+        Extract side from a position snapshot.
+
+        Priority:
+        - explicit "side" field (+1/-1)
+        - MT5-style "type" field (0=BUY, 1=SELL)
+        - string "direction" field
+        """
+        side = 0
+        try:
+            side = int(snap.get("side", 0) or 0)
+        except Exception:
+            side = 0
+        if side:
+            return 1 if side > 0 else -1
+
+        t = snap.get("type", None)
+        if t is not None:
+            try:
+                t_int = int(t)
+                # Common MT5 mapping: 0=BUY, 1=SELL
+                if t_int == 0:
+                    return 1
+                if t_int == 1:
+                    return -1
+            except Exception:
+                pass
+
+        d = str(snap.get("direction", "")).lower()
+        if d in ("buy", "long", "1", "+1"):
+            return 1
+        if d in ("sell", "short", "-1"):
+            return -1
+        return 0
 
     def _close_position_by_ticket(self, ticket: int, symbol: str) -> Dict[str, Any]:
         """Close a specific position by ticket number."""
         self.logger.debug(f"[CLOSE_TICKET] Attempting to close ticket {ticket} on {symbol}")
-        
+
         if not self.adapter or not self.adapter.is_connected():
-            self.logger.warning(f"[CLOSE_TICKET] Adapter not connected")
+            self.logger.warning("[CLOSE_TICKET] Adapter not connected")
             return {"ok": False, "error": "not_connected"}
-        
+
         try:
             import MetaTrader5 as mt5  # type: ignore[import]
-            
+
             # Get position info
             position = mt5.positions_get(ticket=ticket)  # type: ignore[attr-defined]
             if not position:
                 self.logger.warning(f"[CLOSE_TICKET] Position {ticket} not found in MT5")
                 return {"ok": False, "error": "position_not_found"}
-            
+
             pos = position[0]
             lots = getattr(pos, "volume", 0.0)
             pos_type = getattr(pos, "type", 0)
-            
+
             self.logger.info(f"[CLOSE_TICKET] Found position: ticket={ticket}, lots={lots}, type={pos_type}")
-            
+
             # Close by opening opposite
             close_type = mt5.ORDER_TYPE_SELL if pos_type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
-            
+
             request = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": symbol,
@@ -1699,17 +1791,17 @@ class Executor(BaseModule):
                 "comment": "smart_close",
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }
-            
+
             # Get price
             tick = mt5.symbol_info_tick(symbol)  # type: ignore[attr-defined]
             if tick:
                 request["price"] = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
             else:
                 self.logger.warning(f"[CLOSE_TICKET] No tick data for {symbol}")
-            
+
             self.logger.info(f"[CLOSE_TICKET] Sending close request: {request}")
             result = mt5.order_send(request)  # type: ignore[attr-defined]
-            
+
             if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                 self.logger.info(f"[CLOSE_TICKET] ✅ Successfully closed ticket {ticket}")
                 return {"ok": True, "price": getattr(result, "price", 0)}
@@ -1718,15 +1810,14 @@ class Executor(BaseModule):
                 comment = getattr(result, "comment", "") if result else ""
                 self.logger.error(f"[CLOSE_TICKET] ❌ MT5 rejected close: retcode={retcode}, comment={comment}")
                 return {"ok": False, "error": f"{retcode}: {comment}"}
-        
+
         except Exception as e:
             self.logger.error(f"[CLOSE_TICKET] Exception: {e}")
             return {"ok": False, "error": str(e)}
 
-
     # ─────────────────────────────────────────────────────────
     # bus publishing
-        # ─────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────
     def _publish_all(
         self,
         *,
@@ -1736,7 +1827,7 @@ class Executor(BaseModule):
         step_pnl: float,
         realized_step: float = 0.0,
         unrealized: float = 0.0,
-        reason: str = ""
+        reason: str = "",
     ) -> None:
         pos_snap: Dict[str, Any] = {}
         mode = self._resolve_mode()
@@ -1771,10 +1862,8 @@ class Executor(BaseModule):
         self.bus.set("execution_data", execution_data, thesis="Fills this step (executor)")
         self.bus.set("execution_reports", exec_fills, thesis="Fills alias (executor)")
 
-        # CRITICAL: Also publish current step fills for memory system
-        # Memory needs access to ALL fills including opens (not just closes with pnl)
+        # CRITICAL: also publish current step fills for memory system
         self.bus.set("current_fills", exec_fills, thesis="Current step fills (executor)")
-        # Alias for readers expecting 'trade_data'
         try:
             self.bus.set("trade_data", trade_ledger, thesis="alias: trade_data (executor)")
         except Exception:
@@ -1782,7 +1871,6 @@ class Executor(BaseModule):
         self.bus.set("portfolio_metrics", portfolio_metrics, thesis="Portfolio metrics (executor)")
         self.bus.set("trading_result", {"pnl": float(step_pnl)}, thesis="Per-step Δequity (executor)")
         self.bus.set("market_state", market_state, thesis="Market state (executor)")
-        # direct alias for simple consumers
         try:
             self.bus.set("current_pnl", float(step_pnl), thesis="alias: current_pnl (executor)")
         except Exception:
@@ -1791,12 +1879,16 @@ class Executor(BaseModule):
         # Baselines for downstream consumers
         try:
             self.bus.set("pending_orders", order_data.get("accepted", []), thesis="Orders pending execution (baseline)")
-            self.bus.set("account_state", {
-                "balance": float(self.balance),
-                "equity": float(self.equity),
-                "initial_balance": float(self.initial_balance),
-                "step": int(self.step_idx)
-            }, thesis="Account state (executor)")
+            self.bus.set(
+                "account_state",
+                {
+                    "balance": float(self.balance),
+                    "equity": float(self.equity),
+                    "initial_balance": float(self.initial_balance),
+                    "step": int(self.step_idx),
+                },
+                thesis="Account state (executor)",
+            )
         except Exception:
             pass
 
@@ -1807,7 +1899,7 @@ class Executor(BaseModule):
         # compact snapshot for consumers that want one read
         self.bus.set("account_snapshot", self._account_snapshot(pos_snap), thesis="Account snapshot (executor)")
 
-        # Helpful aliases (write to bus regardless of cfg to satisfy strict readers)
+        # Helpful aliases
         self.bus.set("current_positions", pos_snap, thesis="alias: current_positions")
         self.bus.set(
             "pnl_data",
@@ -1826,13 +1918,11 @@ class Executor(BaseModule):
         try:
             pos_list = []
             for inst, p in (pos_snap or {}).items():
-                # ‘size’ uses notional if present, else units*entry_price, else units
                 notional = float(p.get("notional_eur", 0.0) or 0.0)
                 units = float(p.get("units", 0.0) or 0.0)
                 entry_price = float(p.get("entry_price", 0.0) or 0.0)
                 size = abs(notional) if abs(notional) > 0 else (abs(units * entry_price) if (units and entry_price) else abs(units))
                 entry = {"instrument": inst, "size": float(size)}
-                # include rest of snapshot for richer consumers
                 for k, v in p.items():
                     if k != "instrument":
                         entry[k] = v
@@ -1841,7 +1931,7 @@ class Executor(BaseModule):
         except Exception as e:
             self.debugger.record_error(f"position_data_alias_error: {e}")
 
-        # Simple snapshot log (keep for quick reference)
+        # Simple snapshot log
         self.logger.info(
             format_operator_message(
                 "[EXECUTOR]", "SNAPSHOT",
@@ -1874,34 +1964,26 @@ class Executor(BaseModule):
         step_pnl: float,
         processing_ms: float,
     ) -> None:
-        """Generate unified execution cycle log"""
-        from collections import Counter, defaultdict
+        """Generate unified execution cycle log."""
+        from collections import Counter
 
-        # Detect position changes
+        # For sim, positions_before reflects actual PositionSnap map.
+        # For live, self.positions is empty (we rely on broker), so this is best-effort.
         positions_before = {k: v for k, v in self.positions.items()}
-        positions_opened = []
-        positions_closed = []
-        positions_modified = []
-
-        # Positions that existed before
         before_keys = set(positions_before.keys())
         after_keys = set(positions_after.keys())
 
         positions_opened = list(after_keys - before_keys)
         positions_closed = list(before_keys - after_keys)
-        positions_modified = [k for k in (after_keys & before_keys)
-                            if positions_after.get(k, {}).get('units') != positions_before.get(k, PositionSnap('', 0, 0, 0)).units]
+        positions_modified = [
+            k for k in (after_keys & before_keys)
+            if positions_after.get(k, {}).get("units") != positions_before.get(k, PositionSnap("", 0, 0, 0)).units
+        ]
 
-        # Rejection reasons
-        rejection_reasons = Counter([r.get('reason', 'unknown') for r in rejected])
+        rejection_reasons = Counter([r.get("reason", "unknown") for r in rejected])
+        fills_by_instrument = Counter([f.get("instrument", "N/A") for f in fills])
+        total_notional = sum(abs(float(f.get("notional_eur", 0.0))) for f in fills)
 
-        # Fills by instrument
-        fills_by_instrument = Counter([f.get('instrument', 'N/A') for f in fills])
-
-        # Total notional
-        total_notional = sum(abs(float(f.get('notional_eur', 0.0))) for f in fills)
-
-        # Detect issues
         issues = []
         if accepted and not fills:
             issues.append("accepted_but_no_fills")
@@ -1910,7 +1992,6 @@ class Executor(BaseModule):
         if float(step_pnl) < 0 and float(self.equity) > float(equity_before):
             issues.append("pnl_negative_but_equity_up")
 
-        # Build entry
         entry = ExecutionCycleEntry(
             step=self.step_idx,
             mode=mode,
@@ -1934,7 +2015,7 @@ class Executor(BaseModule):
             realized_pnl=realized_step,
             unrealized_pnl=unreal_after,
             step_pnl=step_pnl,
-            trades_this_step=[f for f in fills if f.get('realized_pnl', 0.0) != 0],
+            trades_this_step=[f for f in fills if f.get("realized_pnl", 0.0) != 0],
             execution_time_ms=processing_ms,
             issues=issues,
             accepted_details=accepted[:10],
@@ -1942,17 +2023,15 @@ class Executor(BaseModule):
             fill_details=fills[:20],
         )
 
-        # Log it
         self.unified_logger.log_execution_cycle(entry)
 
     # ─────────────────────────────────────────────────────────
     # State Persistence - Save/Load executor state
     # ─────────────────────────────────────────────────────────
-    
     def _get_custom_state(self) -> Dict[str, Any]:
         """
         Get custom state for persistence.
-        
+
         Saves:
         - Balance and equity
         - Trade history (last 500 trades)
@@ -1964,28 +2043,28 @@ class Executor(BaseModule):
             "equity": float(self.equity),
             "step_idx": int(self.step_idx),
             "trades": list(self.trades[-500:]) if self.trades else [],
-            "positions": {k: v.as_bus() if hasattr(v, 'as_bus') else v for k, v in self.positions.items()},
+            "positions": {k: v.as_bus() if hasattr(v, "as_bus") else v for k, v in self.positions.items()},
             "_last_equity": float(self._last_equity),
             "_cumulative_pnl": float(self._cumulative_pnl),
         }
-    
+
     def _set_custom_state(self, state: Dict[str, Any]) -> None:
         """
         Restore custom state from persistence.
         """
         if not state:
             return
-        
+
         self.balance = float(state.get("balance", self.balance))
         self.equity = float(state.get("equity", self.equity))
         self.step_idx = int(state.get("step_idx", self.step_idx))
         self._last_equity = float(state.get("_last_equity", self.equity))
         self._cumulative_pnl = float(state.get("_cumulative_pnl", 0.0))
-        
-        # Restore trades
+
         trades = state.get("trades", [])
         if trades:
             self.trades = list(trades)
             self.logger.info(f"📂 Restored {len(self.trades)} trades from state")
-        
-        # Note: positions are synced from MT5 in live mode, so we don't restore them
+
+        # Note: positions are synced from MT5 in live mode, so we do not restore them here
+        # to avoid conflicts; for sim, positions can be restored externally if needed.

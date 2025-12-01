@@ -3,25 +3,34 @@
 # Unified Position Manager Logging System
 #
 # Consolidates all position decision logging into clean,
-# professional, well-organized summaries with voting signals
+# professional, well-organized summaries with voting signals.
 # -------------------------------------------------------------
 
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from modules.utils.info_bus import InfoBusManager
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from modules.utils.info_bus import SmartInfoBus
 
 
+# =====================================================================
+# DATA MODEL
+# =====================================================================
+
 @dataclass
 class PositionLogEntry:
-    """Complete position decision log entry with all context"""
+    """
+    Complete position decision log entry with all important context.
+
+    This is what PositionManager passes in a single call, and the logger
+    turns it into a human-readable, structured summary.
+    """
+
     # Core decision
     instrument: str
     decision: str
@@ -56,37 +65,52 @@ class PositionLogEntry:
     will_execute: bool = True
     blocked_reason: Optional[str] = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.factors is None:
             self.factors = []
         if self.risk_factors is None:
             self.risk_factors = {}
 
 
+# =====================================================================
+# UNIFIED POSITION LOGGER
+# =====================================================================
+
 class UnifiedPositionLogger:
     """
     Unified logging system for position decisions.
 
-    Creates clean, professional log summaries with:
-    - Decision summary
-    - Market analysis
-    - Portfolio state
-    - Voting signals
-    - Risk assessment
-    - Execution status
+    Produces one cohesive, “operator-friendly” block that covers:
+      - Decision overview
+      - Market context
+      - Voting signals (if any)
+      - Portfolio state
+      - Risk assessment
+      - Rationale and execution status
     """
 
-    def __init__(self, logger, smart_bus: Optional[Any] = None):
+    BOX_WIDTH = 78     # internal width
+    PAD_WIDTH = 77     # width of text area inside borders
+
+    def __init__(self, logger: Any, smart_bus: Optional[Any] = None) -> None:
+        """
+        Parameters:
+            logger:    RotatingLogger-like instance (info/debug available).
+            smart_bus: SmartInfoBus or InfoBusManager; if None, global instance.
+        """
         self.logger = logger
         self.smart_bus = smart_bus if smart_bus is not None else InfoBusManager.get_instance()
         self.session_start = dt.datetime.utcnow()
         self.decision_count = 0
 
+    # -----------------------------------------------------------------
+    # MAIN ENTRYPOINT
+    # -----------------------------------------------------------------
     def log_decision_summary(self, entry: PositionLogEntry) -> None:
         """
         Log a complete, unified decision summary with all context.
 
-        Format:
+        Format (80 columns total):
         ╔══════════════════════════════════════════════════════════════════╗
         ║                    POSITION DECISION SUMMARY                     ║
         ╠══════════════════════════════════════════════════════════════════╣
@@ -96,146 +120,253 @@ class UnifiedPositionLogger:
         self.decision_count += 1
         timestamp = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
-        # Build the unified log
-        lines = []
+        lines: List[str] = []
+        pad = self.PAD_WIDTH
+        box = self.BOX_WIDTH
+
+        # Header
         lines.append("")
-        lines.append("╔" + "═" * 78 + "╗")
-        lines.append("║" + "POSITION DECISION SUMMARY".center(78) + "║")
-        lines.append("╠" + "═" * 78 + "╣")
+        lines.append("╔" + "═" * box + "╗")
+        lines.append("║" + "POSITION DECISION SUMMARY".center(box) + "║")
+        lines.append("╠" + "═" * box + "╣")
 
         # Section 1: Decision Overview
-        lines.append("║ " + "📊 DECISION OVERVIEW".ljust(77) + "║")
-        lines.append("║ " + "─" * 77 + "║")
-        lines.append("║ " + f"Instrument:  {entry.instrument}".ljust(77) + "║")
-        lines.append("║ " + f"Decision:    {self._format_decision(entry.decision)} ({entry.decision})".ljust(77) + "║")
-        lines.append("║ " + f"Size:        €{entry.size_eur:,.2f}".ljust(77) + "║")
-        lines.append("║ " + f"Confidence:  {entry.confidence:.1%} {'█' * int(entry.confidence * 20)}".ljust(77) + "║")
-        lines.append("║ " + f"Timestamp:   {timestamp}".ljust(77) + "║")
-        lines.append("║" + " " * 78 + "║")
+        self._section_title(lines, "📊 DECISION OVERVIEW")
+        lines.append("║ " + f"Instrument:  {entry.instrument}".ljust(pad) + "║")
+        lines.append(
+            "║ "
+            + f"Decision:    {self._format_decision(entry.decision)} ({entry.decision})".ljust(pad)
+            + "║"
+        )
+        lines.append("║ " + f"Size:        €{entry.size_eur:,.2f}".ljust(pad) + "║")
+        conf_bar = "█" * int(max(min(entry.confidence, 1.0), 0.0) * 20)
+        lines.append(
+            "║ "
+            + f"Confidence:  {entry.confidence:.1%} {conf_bar}".ljust(pad)
+            + "║"
+        )
+        lines.append("║ " + f"Timestamp:   {timestamp}".ljust(pad) + "║")
+        self._section_blank(lines)
 
         # Section 2: Market Analysis
-        lines.append("║ " + "📈 MARKET ANALYSIS".ljust(77) + "║")
-        lines.append("║ " + "─" * 77 + "║")
-        lines.append("║ " + f"Signal Strength:  {entry.signal_strength:+.3f} {self._get_signal_bar(entry.signal_strength)}".ljust(77) + "║")
-        lines.append("║ " + f"Trend Strength:   {entry.trend_strength:+.3f}".ljust(77) + "║")
-        lines.append("║ " + f"Volatility:       {entry.volatility:.4f} ({self._volatility_level(entry.volatility)})".ljust(77) + "║")
-        lines.append("║ " + f"Current Price:    {entry.current_price:.5f}".ljust(77) + "║")
-        lines.append("║" + " " * 78 + "║")
+        self._section_title(lines, "📈 MARKET ANALYSIS")
+        lines.append(
+            "║ "
+            + f"Signal Strength:  {entry.signal_strength:+.3f} {self._get_signal_bar(entry.signal_strength)}".ljust(pad)
+            + "║"
+        )
+        lines.append(
+            "║ "
+            + f"Trend Strength:   {entry.trend_strength:+.3f}".ljust(pad)
+            + "║"
+        )
+        lines.append(
+            "║ "
+            + f"Volatility:       {entry.volatility:.4f} ({self._volatility_level(entry.volatility)})".ljust(pad)
+            + "║"
+        )
+        lines.append(
+            "║ "
+            + f"Current Price:    {entry.current_price:.5f}".ljust(pad)
+            + "║"
+        )
+        self._section_blank(lines)
 
-        # Section 3: Voting Signals (if available)
+        # Section 3: Voting Signals
         if entry.committee_consensus or entry.trade_vote or entry.consensus_strength is not None:
-            lines.append("║ " + "🗳️  VOTING SIGNALS".ljust(77) + "║")
-            lines.append("║ " + "─" * 77 + "║")
+            self._section_title(lines, "🗳️  VOTING SIGNALS")
 
             if entry.committee_consensus:
                 cc = entry.committee_consensus
-                exists = cc.get('consensus_exists', False)
-                strength = cc.get('consensus_strength', 0.0)
-                action = cc.get('consensus_action', 'N/A')
-                lines.append("║ " + f"Committee:        {'✅ CONSENSUS' if exists else '❌ NO CONSENSUS'}".ljust(77) + "║")
-                lines.append("║ " + f"  └─ Strength:    {strength:.1%} {'█' * int(strength * 20)}".ljust(77) + "║")
-                lines.append("║ " + f"  └─ Action:      {action}".ljust(77) + "║")
+                exists = bool(cc.get("consensus_exists", False))
+                strength = float(cc.get("consensus_strength", 0.0))
+                action = cc.get("consensus_action", "N/A")
+                lines.append(
+                    "║ "
+                    + f"Committee:        {'✅ CONSENSUS' if exists else '❌ NO CONSENSUS'}".ljust(pad)
+                    + "║"
+                )
+                lines.append(
+                    "║ "
+                    + f"  └─ Strength:    {strength:.1%} {'█' * int(strength * 20)}".ljust(pad)
+                    + "║"
+                )
+                lines.append(
+                    "║ "
+                    + f"  └─ Action:      {action}".ljust(pad)
+                    + "║"
+                )
 
             if entry.trade_vote:
                 tv = entry.trade_vote
-                vote_action = tv.get('action', 'HOLD')
-                vote_conf = tv.get('confidence', 0.0)
-                lines.append("║ " + f"Trade Vote:       {vote_action} (conf: {vote_conf:.1%})".ljust(77) + "║")
+                vote_action = tv.get("action", "HOLD")
+                vote_conf = float(tv.get("confidence", 0.0))
+                lines.append(
+                    "║ "
+                    + f"Trade Vote:       {vote_action} (conf: {vote_conf:.1%})".ljust(pad)
+                    + "║"
+                )
 
             if entry.consensus_strength is not None:
-                lines.append("║ " + f"Consensus Str:    {entry.consensus_strength:.1%}".ljust(77) + "║")
+                cs = float(entry.consensus_strength)
+                lines.append(
+                    "║ "
+                    + f"Consensus Str:    {cs:.1%}".ljust(pad)
+                    + "║"
+                )
 
-            lines.append("║" + " " * 78 + "║")
+            self._section_blank(lines)
 
-        # Section 4: Portfolio Health
-        lines.append("║ " + "💼 PORTFOLIO STATE".ljust(77) + "║")
-        lines.append("║ " + "─" * 77 + "║")
-        lines.append("║ " + f"Health Score:     {entry.portfolio_health:.1%} {self._health_indicator(entry.portfolio_health)}".ljust(77) + "║")
-        lines.append("║ " + f"Exposure Ratio:   {entry.exposure_ratio:.1%}".ljust(77) + "║")
-        lines.append("║ " + f"Balance:          €{entry.balance:,.2f}".ljust(77) + "║")
-        lines.append("║ " + f"Drawdown:         {entry.drawdown:.1%} {self._drawdown_indicator(entry.drawdown)}".ljust(77) + "║")
-        lines.append("║" + " " * 78 + "║")
+        # Section 4: Portfolio State
+        self._section_title(lines, "💼 PORTFOLIO STATE")
+        lines.append(
+            "║ "
+            + f"Health Score:     {entry.portfolio_health:.1%} {self._health_indicator(entry.portfolio_health)}".ljust(pad)
+            + "║"
+        )
+        lines.append(
+            "║ "
+            + f"Exposure Ratio:   {entry.exposure_ratio:.1%}".ljust(pad)
+            + "║"
+        )
+        lines.append(
+            "║ "
+            + f"Balance:          €{entry.balance:,.2f}".ljust(pad)
+            + "║"
+        )
+        lines.append(
+            "║ "
+            + f"Drawdown:         {entry.drawdown:.1%} {self._drawdown_indicator(entry.drawdown)}".ljust(pad)
+            + "║"
+        )
+        self._section_blank(lines)
 
         # Section 5: Risk Assessment
-        lines.append("║ " + "⚠️  RISK ASSESSMENT".ljust(77) + "║")
-        lines.append("║ " + "─" * 77 + "║")
-        lines.append("║ " + f"Risk Score:       {entry.risk_score:.1%} {self._risk_indicator(entry.risk_score)}".ljust(77) + "║")
+        self._section_title(lines, "⚠️  RISK ASSESSMENT")
+        lines.append(
+            "║ "
+            + f"Risk Score:       {entry.risk_score:.1%} {self._risk_indicator(entry.risk_score)}".ljust(pad)
+            + "║"
+        )
+
         if entry.risk_factors:
+            # show first few risk factors
             for name, value in list(entry.risk_factors.items())[:4]:
-                lines.append("║ " + f"  • {name.capitalize():15s} {value:.1%}".ljust(77) + "║")
-        lines.append("║" + " " * 78 + "║")
+                label = name.replace("_", " ").capitalize()
+                lines.append(
+                    "║ "
+                    + f"  • {label:15s} {value:.1%}".ljust(pad)
+                    + "║"
+                )
+
+        self._section_blank(lines)
 
         # Section 6: Decision Rationale
-        lines.append("║ " + "💡 RATIONALE".ljust(77) + "║")
-        lines.append("║ " + "─" * 77 + "║")
-        lines.append("║ " + f"Stage:            {entry.stage}".ljust(77) + "║")
+        self._section_title(lines, "💡 RATIONALE")
+        lines.append(
+            "║ "
+            + f"Stage:            {entry.stage}".ljust(pad)
+            + "║"
+        )
+
         if entry.factors:
-            lines.append("║ " + "Key Factors:".ljust(77) + "║")
+            lines.append("║ " + "Key Factors:".ljust(pad) + "║")
             for factor in entry.factors[:3]:
-                # Split long factors into multiple lines
-                factor_lines = self._wrap_text(f"  • {factor}", 75)
-                for fline in factor_lines:
-                    lines.append("║ " + fline.ljust(77) + "║")
-        lines.append("║" + " " * 78 + "║")
+                for fline in self._wrap_text(f"  • {factor}", pad):
+                    lines.append("║ " + fline.ljust(pad) + "║")
+
+        self._section_blank(lines)
 
         # Section 7: Execution Status
-        lines.append("║ " + "⚡ EXECUTION STATUS".ljust(77) + "║")
-        lines.append("║ " + "─" * 77 + "║")
+        self._section_title(lines, "⚡ EXECUTION STATUS")
         if entry.will_execute:
-            lines.append("║ " + "Status:           ✅ WILL EXECUTE".ljust(77) + "║")
+            lines.append("║ " + "Status:           ✅ WILL EXECUTE".ljust(pad) + "║")
         else:
-            lines.append("║ " + "Status:           ❌ BLOCKED".ljust(77) + "║")
+            lines.append("║ " + "Status:           ❌ BLOCKED".ljust(pad) + "║")
             if entry.blocked_reason:
-                reason_lines = self._wrap_text(f"Reason: {entry.blocked_reason}", 75)
-                for rline in reason_lines:
-                    lines.append("║ " + rline.ljust(77) + "║")
+                for rline in self._wrap_text(f"Reason: {entry.blocked_reason}", pad):
+                    lines.append("║ " + rline.ljust(pad) + "║")
 
-        lines.append("╚" + "═" * 78 + "╝")
+        # Footer
+        lines.append("╚" + "═" * box + "╝")
         lines.append("")
 
-        # Log the complete summary
-        summary = "\n".join(lines)
-        self.logger.info(summary)
+        self.logger.info("\n".join(lines))
 
+    # -----------------------------------------------------------------
+    # ADDITIONAL LOGGING HELPERS
+    # -----------------------------------------------------------------
     def log_order_build(self, instrument: str, order: Dict[str, Any]) -> None:
-        """Log order build in clean format"""
-        lines = []
-        lines.append("")
-        lines.append("┌─ ORDER BUILD " + "─" * 64)
-        lines.append(f"│ Instrument:    {instrument}")
-        lines.append(f"│ Side:          {self._format_side(order.get('side', 0))}")
-        lines.append(f"│ Intent:        {order.get('intent', 'N/A').upper()}")
-        lines.append(f"│ Size:          €{order.get('size_eur', 0):.2f}")
-        lines.append(f"│ Confidence:    {order.get('confidence', 0):.1%}")
-        lines.append(f"│ Reduce Only:   {'Yes' if order.get('reduce_only') else 'No'}")
-        lines.append(f"│ Order ID:      {order.get('id', 'N/A')[:40]}")
-        lines.append("└" + "─" * 78)
-        lines.append("")
+        """
+        Log the order that will be sent (or considered) by the executor.
+
+        Keeps it compact, human-readable, and aligned.
+        """
+        side = self._format_side(order.get("side", 0))
+        intent = str(order.get("intent", "N/A")).upper()
+        size_eur = float(order.get("size_eur", 0.0) or 0.0)
+        confidence = float(order.get("confidence", 0.0) or 0.0)
+        reduce_only = bool(order.get("reduce_only", False))
+        order_id = str(order.get("id", "N/A"))[:40]
+
+        lines = [
+            "",
+            "┌─ ORDER BUILD " + "─" * 64,
+            f"│ Instrument:    {instrument}",
+            f"│ Side:          {side}",
+            f"│ Intent:        {intent}",
+            f"│ Size:          €{size_eur:.2f}",
+            f"│ Confidence:    {confidence:.1%}",
+            f"│ Reduce Only:   {'Yes' if reduce_only else 'No'}",
+            f"│ Order ID:      {order_id}",
+            "└" + "─" * 78,
+            "",
+        ]
 
         self.logger.info("\n".join(lines))
 
     def log_portfolio_stats(self, health: Dict[str, float]) -> None:
-        """Log portfolio statistics summary"""
-        lines = []
-        lines.append("")
-        lines.append("┌─ PORTFOLIO STATISTICS " + "─" * 55)
-        lines.append(f"│ Health Score:      {health.get('overall_health', 0):.1%} {self._health_indicator(health.get('overall_health', 0))}")
-        lines.append(f"│ Exposure Ratio:    {health.get('exposure_ratio', 0):.1%}")
-        lines.append(f"│ Total Exposure:    €{health.get('total_exposure', 0):,.2f}")
-        lines.append(f"│ Balance:           €{health.get('balance', 0):,.2f}")
-        lines.append(f"│ Drawdown:          {health.get('drawdown', 0):.1%}")
-        lines.append(f"│ DD Health:         {health.get('drawdown_health', 0):.1%}")
-        lines.append(f"│ Exposure Health:   {health.get('exposure_health', 0):.1%}")
-        lines.append(f"│ Streak Health:     {health.get('streak_health', 0):.1%}")
-        lines.append(f"│ Risk Health:       {health.get('risk_health', 0):.1%}")
-        lines.append("└" + "─" * 78)
-        lines.append("")
+        """
+        Log a compact portfolio statistics block.
+
+        Expects `health` to contain:
+          - overall_health, exposure_ratio, total_exposure, balance,
+            drawdown, drawdown_health, exposure_health,
+            streak_health, risk_health.
+        """
+        h = lambda k, default=0.0: float(health.get(k, default) or 0.0)
+
+        lines = [
+            "",
+            "┌─ PORTFOLIO STATISTICS " + "─" * 55,
+            f"│ Health Score:      {h('overall_health'):.1%} {self._health_indicator(h('overall_health'))}",
+            f"│ Exposure Ratio:    {h('exposure_ratio'):.1%}",
+            f"│ Total Exposure:    €{h('total_exposure'):,.2f}",
+            f"│ Balance:           €{h('balance'):,.2f}",
+            f"│ Drawdown:          {h('drawdown'):.1%}",
+            f"│ DD Health:         {h('drawdown_health'):.1%}",
+            f"│ Exposure Health:   {h('exposure_health'):.1%}",
+            f"│ Streak Health:     {h('streak_health'):.1%}",
+            f"│ Risk Health:       {h('risk_health'):.1%}",
+            "└" + "─" * 78,
+            "",
+        ]
 
         self.logger.info("\n".join(lines))
 
-    def log_signal_mapping(self, instrument: str, source: str, intensity: float,
-                          volatility: float, trend: float, momentum: float) -> None:
-        """Log signal mapping in clean format"""
+    def log_signal_mapping(
+        self,
+        instrument: str,
+        source: str,
+        intensity: float,
+        volatility: float,
+        trend: float,
+        momentum: float,
+    ) -> None:
+        """
+        Log how raw signals (agent / arbiter / market) are mapped
+        into a unified intensity for an instrument.
+        """
         self.logger.debug(
             f"[SIGNAL] {instrument:10s} | "
             f"Src: {source:8s} | "
@@ -245,128 +376,154 @@ class UnifiedPositionLogger:
             f"Mom: {momentum:+.3f}"
         )
 
-    # Helper methods for formatting
+    # -----------------------------------------------------------------
+    # FORMATTING HELPERS
+    # -----------------------------------------------------------------
+    def _section_title(self, lines: List[str], title: str) -> None:
+        """Append a titled section header block."""
+        pad = self.PAD_WIDTH
+        lines.append("║ " + title.ljust(pad) + "║")
+        lines.append("║ " + "─" * pad + "║")
+
+    def _section_blank(self, lines: List[str]) -> None:
+        """Append a blank spacer line."""
+        lines.append("║" + " " * (self.BOX_WIDTH + 0) + "║".replace("║" + " " * (self.BOX_WIDTH + 0) + "║", "║" + " " * self.BOX_WIDTH + "║"))  # safety
+
     def _format_decision(self, decision: str) -> str:
-        """Format decision with emoji"""
+        """Format decision with emoji prefix (high-level meaning)."""
         mapping = {
-            'open_long': '🟢 LONG',
-            'open_short': '🔴 SHORT',
-            'scale_up': '📈 ADD',
-            'scale_down': '📉 REDUCE',
-            'close': '🔒 CLOSE',
-            'emergency_close': '🚨 EMERGENCY',
-            'hold': '⏸️  HOLD'
+            "open_long": "🟢 LONG",
+            "open_short": "🔴 SHORT",
+            "scale_up": "📈 ADD",
+            "scale_down": "📉 REDUCE",
+            "close": "🔒 CLOSE",
+            "emergency_close": "🚨 EMERGENCY",
+            "hold": "⏸️  HOLD",
         }
         return mapping.get(decision.lower(), decision.upper())
 
     def _format_side(self, side: int) -> str:
-        """Format order side"""
+        """Format order side with icon."""
         if side > 0:
             return "🟢 BUY"
-        elif side < 0:
+        if side < 0:
             return "🔴 SELL"
         return "⚪ NEUTRAL"
 
     def _get_signal_bar(self, signal: float) -> str:
-        """Visual bar for signal strength"""
-        bars = int(abs(signal) * 10)
+        """Visual bar for signal strength (direction + bar length)."""
+        bars = int(min(abs(signal), 1.0) * 10)
         direction = "🟢" if signal > 0 else "🔴" if signal < 0 else "⚪"
         return f"{direction} {'█' * bars}"
 
     def _health_indicator(self, health: float) -> str:
-        """Health indicator emoji"""
+        """Health indicator emoji + text."""
         if health >= 0.8:
             return "🟢 Excellent"
-        elif health >= 0.6:
+        if health >= 0.6:
             return "🟡 Good"
-        elif health >= 0.4:
+        if health >= 0.4:
             return "🟠 Fair"
-        else:
-            return "🔴 Poor"
+        return "🔴 Poor"
 
     def _drawdown_indicator(self, drawdown: float) -> str:
-        """Drawdown indicator"""
+        """Drawdown severity indicator."""
         if drawdown < 0.05:
             return "🟢 Minimal"
-        elif drawdown < 0.10:
+        if drawdown < 0.10:
             return "🟡 Moderate"
-        elif drawdown < 0.15:
+        if drawdown < 0.15:
             return "🟠 High"
-        else:
-            return "🔴 Critical"
+        return "🔴 Critical"
 
     def _risk_indicator(self, risk: float) -> str:
-        """Risk level indicator"""
+        """Risk level indicator."""
         if risk < 0.3:
             return "🟢 Low"
-        elif risk < 0.6:
+        if risk < 0.6:
             return "🟡 Medium"
-        elif risk < 0.8:
+        if risk < 0.8:
             return "🟠 High"
-        else:
-            return "🔴 Very High"
+        return "🔴 Very High"
 
     def _volatility_level(self, vol: float) -> str:
-        """Volatility level description"""
+        """Simple volatility regime label."""
         if vol < 0.015:
             return "Low"
-        elif vol < 0.03:
+        if vol < 0.03:
             return "Normal"
-        elif vol < 0.05:
+        if vol < 0.05:
             return "Elevated"
-        else:
-            return "High"
+        return "High"
 
     def _wrap_text(self, text: str, max_width: int) -> List[str]:
-        """Wrap long text into multiple lines"""
+        """
+        Wrap long text into multiple lines, indented where appropriate.
+
+        Used for rationale factors and blocked reasons.
+        """
         if len(text) <= max_width:
             return [text]
 
         words = text.split()
-        lines = []
-        current_line = ""
+        lines: List[str] = []
+        current = ""
 
         for word in words:
-            if len(current_line) + len(word) + 1 <= max_width:
-                current_line += (word + " ")
+            if len(current) + len(word) + 1 <= max_width:
+                current += word + " "
             else:
-                if current_line:
-                    lines.append(current_line.rstrip())
-                current_line = "  " + word + " "
+                if current:
+                    lines.append(current.rstrip())
+                # indent continuation lines slightly
+                current = "  " + word + " "
 
-        if current_line:
-            lines.append(current_line.rstrip())
+        if current:
+            lines.append(current.rstrip())
 
-        return lines if lines else [text[:max_width]]
+        return lines or [text[:max_width]]
 
+    # -----------------------------------------------------------------
+    # BUS-INTEGRATED SIGNAL SNAPSHOT
+    # -----------------------------------------------------------------
     def get_voting_signals(self) -> Dict[str, Any]:
-        """Fetch current voting signals from InfoBus"""
-        signals = {}
+        """
+        Fetch current voting signals from the SmartInfoBus.
+
+        Returns a dict with (if present):
+          - committee_consensus
+          - trade_vote
+          - consensus_strength
+        """
+        signals: Dict[str, Any] = {}
 
         try:
             bus = self.smart_bus
-            if not hasattr(bus, 'get'):
+            if not hasattr(bus, "get"):
                 return signals
 
             # Committee consensus
             cc = bus.get("committee_consensus", "PositionManager")  # type: ignore
-            if cc and isinstance(cc, dict):
-                signals['committee_consensus'] = cc
+            if isinstance(cc, dict) and cc:
+                signals["committee_consensus"] = cc
 
-            # Trade vote (trade_vote_v2 is the canonical key from VotingKernel)
+            # Trade vote (canonical: trade_vote_v2)
             tv = bus.get("trade_vote_v2", "PositionManager")  # type: ignore
-            if tv and isinstance(tv, dict):
-                signals['trade_vote'] = tv
+            if isinstance(tv, dict) and tv:
+                signals["trade_vote"] = tv
 
-            # Consensus strength
+            # Consensus strength (can be scalar or dict)
             cs = bus.get("consensus_score", "PositionManager")  # type: ignore
             if cs is not None:
                 if isinstance(cs, dict):
-                    signals['consensus_strength'] = cs.get('strength', cs.get('score', 0.0))
+                    signals["consensus_strength"] = float(
+                        cs.get("strength", cs.get("score", 0.0))
+                    )
                 elif isinstance(cs, (int, float)):
-                    signals['consensus_strength'] = float(cs)
+                    signals["consensus_strength"] = float(cs)
 
         except Exception:
+            # Logging here would risk recursion; keep it silent.
             pass
 
         return signals

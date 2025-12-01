@@ -889,13 +889,23 @@ class SeasonalityRiskExpert(BaseModule):
     
     def _neutral_output(self, reason: str) -> Dict[str, Any]:
         """Generate neutral output with explanation."""
+        action = "flat"
+        confidence = 0.1
+        thesis = f"Seasonal flat: {reason}"
+        proposal = {
+            "action": action,
+            "signal_strength": confidence,
+            "reason": thesis,
+            "proposals": {},
+        }
+
         return {
-            "SeasonalityRiskExpert_voting_proposal": "flat",
-            "SeasonalityRiskExpert_confidence": 0.1,
-            "seasonality_voting_proposal": "flat",   # Alias for contract compatibility
-            "seasonality_confidence": 0.1,                        # Alias for contract compatibility
-            "seasonal_voting_proposal": "flat",       # Additional alias
-            "seasonal_confidence": 0.1,                           # Additional alias
+            "SeasonalityRiskExpert_voting_proposal": proposal,
+            "SeasonalityRiskExpert_confidence": confidence,
+            "seasonality_voting_proposal": proposal,   # Alias for contract compatibility
+            "seasonality_confidence": confidence,      # Alias for contract compatibility
+            "seasonal_voting_proposal": proposal,      # Additional alias
+            "seasonal_confidence": confidence,         # Additional alias
             "seasonality_risk_analysis": {                        # Required by contract
                 "session": "unknown",
                 "dow_bias": "unknown",
@@ -903,8 +913,8 @@ class SeasonalityRiskExpert(BaseModule):
                 "composite_score": 0.5,
                 "rollover_risk": False,
                 "weekend_risk": False,
-                "action": "flat",
-                "confidence": 0.1
+                "action": action,
+                "confidence": confidence
             },
             "seasonality_analysis": {                             # Alias
                 "session": "unknown",
@@ -920,14 +930,14 @@ class SeasonalityRiskExpert(BaseModule):
                 "rollover_risk": False,
                 "weekend_risk": False
             },
-            "seasonality_expert_thesis": f"Seasonal flat: {reason}",  # Backward compat alias
+            "seasonality_expert_thesis": thesis,  # Backward compat alias
             "seasonal_session": "unknown",
             "seasonal_dow_bias": "unknown",
             "seasonal_monthly_pattern": "unknown",
             "seasonal_composite_score": 0.5,
             "seasonal_rollover_risk": False,
             "seasonal_weekend_risk": False,
-            "_thesis": f"Seasonal neutral: {reason}"
+            "_thesis": thesis
         }
 
 

@@ -335,8 +335,9 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             # Pattern 1: Position size escalation after losses
             recent_losses = [t for t in recent_trades[-5:] if t.get('pnl', 0) < 0]
             if len(recent_losses) >= 2:
-                sizes = [abs(t.get('size', 0)) for t in recent_losses]
-                if len(sizes) >= 2 and sizes[-1] > sizes[0] * 1.5:
+                # TradeFill.as_bus() uses 'notional' or 'units' for position size
+                sizes = [abs(t.get('notional', 0) or t.get('units', 0) or t.get('lots', 0) * 100000) for t in recent_losses]
+                if len(sizes) >= 2 and sizes[0] > 0 and sizes[-1] > sizes[0] * 1.5:
                     escalation_factor = min(1.0, (sizes[-1] / sizes[0] - 1.0) * 0.5)
                     factors.append('position_size_escalation')
                     
@@ -858,55 +859,237 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     def _is_recent_trade(self, trade: Dict, minutes: int = 60, hours: int = 0) -> bool:
         """Check if trade is within specified time window"""
         try:
-            # Simplified implementation - in production would parse actual timestamps
-            return True  # Placeholder for time-based filtering
+            trade_ts = trade.get('ts', 0)
+            if not trade_ts:
+                return True  # Assume recent if no timestamp
+            
+            total_seconds = (hours * 3600) + (minutes * 60)
+            current_time = time.time()
+            
+            return (current_time - trade_ts) <= total_seconds
         except Exception:
-            return False
+            return True  # Default to recent on error
 
     def _analyze_risk_escalation_pattern(self, trades: List[Dict]) -> float:
         """Analyze risk escalation patterns in recent trades"""
-        # Placeholder implementation
-        return 0.0
+        try:
+            if len(trades) < 3:
+                return 0.0
+            
+            # Get position sizes from last N trades
+            sizes = []
+            for t in trades[-10:]:
+                size = abs(t.get('notional', 0) or t.get('units', 0) or t.get('lots', 0) * 100000)
+                if size > 0:
+                    sizes.append(size)
+            
+            if len(sizes) < 3:
+                return 0.0
+            
+            # Check if sizes are increasing (risk escalation)
+            increases = sum(1 for i in range(1, len(sizes)) if sizes[i] > sizes[i-1] * 1.1)
+            escalation_ratio = increases / (len(sizes) - 1)
+            
+            return min(1.0, escalation_ratio)
+        except Exception:
+            return 0.0
 
     def _analyze_position_size_trends(self, trades: List[Dict]) -> float:
-        """Analyze position size reduction trends"""
-        # Placeholder implementation
-        return 0.0
+        """Analyze position size reduction trends (fear indicator)"""
+        try:
+            if len(trades) < 3:
+                return 0.0
+            
+            # Get position sizes
+            sizes = []
+            for t in trades[-10:]:
+                size = abs(t.get('notional', 0) or t.get('units', 0) or t.get('lots', 0) * 100000)
+                if size > 0:
+                    sizes.append(size)
+            
+            if len(sizes) < 3:
+                return 0.0
+            
+            # Check if sizes are decreasing (fear-based reduction)
+            decreases = sum(1 for i in range(1, len(sizes)) if sizes[i] < sizes[i-1] * 0.9)
+            reduction_ratio = decreases / (len(sizes) - 1)
+            
+            return min(1.0, reduction_ratio)
+        except Exception:
+            return 0.0
 
     def _detect_premature_profit_taking(self, trades: List[Dict]) -> float:
-        """Detect premature profit-taking patterns"""
-        # Placeholder implementation
-        return 0.0
+        """Detect premature profit-taking patterns (fear indicator)"""
+        try:
+            if len(trades) < 3:
+                return 0.0
+            
+            # Count trades with very small profits vs average
+            profits = [t.get('pnl', 0) for t in trades[-20:] if t.get('pnl', 0) > 0]
+            
+            if len(profits) < 2:
+                return 0.0
+            
+            avg_profit = np.mean(profits)
+            if avg_profit <= 0:
+                return 0.0
+            
+            # Count small profits (< 30% of average)
+            small_profits = sum(1 for p in profits if p < avg_profit * 0.3)
+            small_profit_ratio = small_profits / len(profits)
+            
+            return min(1.0, small_profit_ratio)
+        except Exception:
+            return 0.0
 
     def _analyze_stop_loss_discipline(self, trades: List[Dict]) -> float:
-        """Analyze stop-loss discipline degradation"""
-        # Placeholder implementation
-        return 0.5
+        """Analyze stop-loss discipline (greed indicator if low)"""
+        try:
+            if len(trades) < 3:
+                return 0.5  # Neutral
+            
+            # Look at losses - are they controlled (good discipline) or large (poor discipline)?
+            losses = [abs(t.get('pnl', 0)) for t in trades[-20:] if t.get('pnl', 0) < 0]
+            profits = [t.get('pnl', 0) for t in trades[-20:] if t.get('pnl', 0) > 0]
+            
+            if not losses or not profits:
+                return 0.5
+            
+            avg_loss = np.mean(losses)
+            avg_profit = np.mean(profits)
+            
+            # Risk/reward ratio - good discipline means avg_loss < avg_profit
+            if avg_profit > 0:
+                rr_ratio = float(avg_loss / avg_profit)
+                # High ratio = poor discipline (letting losses run)
+                discipline = max(0.0, 1.0 - (rr_ratio / 2.0))
+                return float(discipline)
+            
+            return 0.5
+        except Exception:
+            return 0.5
 
     def _analyze_market_timing_confidence(self, trades: List[Dict]) -> float:
-        """Analyze overconfident market timing patterns"""
-        # Placeholder implementation
-        return 0.0
+        """Analyze overconfident market timing patterns (greed indicator)"""
+        try:
+            if len(trades) < 5:
+                return 0.0
+            
+            # After wins, are position sizes increasing? (overconfidence)
+            winning_streak = 0
+            max_streak = 0
+            for t in trades[-15:]:
+                if t.get('pnl', 0) > 0:
+                    winning_streak += 1
+                    max_streak = max(max_streak, winning_streak)
+                else:
+                    winning_streak = 0
+            
+            # Long winning streaks can lead to overconfidence
+            if max_streak >= 5:
+                return min(1.0, max_streak / 7.0)
+            elif max_streak >= 3:
+                return min(0.5, max_streak / 6.0)
+            
+            return 0.0
+        except Exception:
+            return 0.0
 
     def _analyze_entry_timing_quality(self, trades: List[Dict]) -> float:
-        """Analyze quality of entry timing"""
-        # Placeholder implementation
-        return 0.0
+        """Analyze quality of entry timing (FOMO indicator if poor)"""
+        try:
+            if len(trades) < 5:
+                return 0.0
+            
+            # FOMO indicator: high percentage of immediate losses after entry
+            recent = trades[-15:]
+            immediate_losses = 0
+            
+            for t in recent:
+                # If trade closed at a loss quickly, might indicate chasing
+                pnl = t.get('pnl', 0)
+                if pnl < 0:
+                    immediate_losses += 1
+            
+            loss_ratio = immediate_losses / len(recent)
+            
+            # High loss ratio suggests poor entry timing (chasing/FOMO)
+            return min(1.0, loss_ratio)
+        except Exception:
+            return 0.0
 
     def _detect_strategy_abandonment(self, trades: List[Dict]) -> float:
-        """Detect strategy abandonment patterns"""
-        # Placeholder implementation
-        return 0.0
+        """Detect strategy abandonment patterns (FOMO indicator)"""
+        try:
+            if len(trades) < 5:
+                return 0.0
+            
+            # Look for erratic trading patterns - rapid alternating between instruments
+            recent = trades[-10:]
+            instruments = [t.get('instrument', t.get('symbol', '')) for t in recent]
+            
+            if len(instruments) < 3:
+                return 0.0
+            
+            # Count instrument switches
+            switches = sum(1 for i in range(1, len(instruments)) if instruments[i] != instruments[i-1])
+            switch_ratio = switches / (len(instruments) - 1)
+            
+            # High switch ratio suggests chasing different markets (strategy abandonment)
+            return min(1.0, switch_ratio)
+        except Exception:
+            return 0.0
 
     def _analyze_round_number_bias(self, trades: List[Dict]) -> float:
-        """Analyze bias toward round number price levels"""
-        # Placeholder implementation
-        return 0.0
+        """Analyze bias toward round number price levels (anchoring indicator)"""
+        try:
+            if len(trades) < 3:
+                return 0.0
+            
+            prices = [t.get('price', 0) for t in trades[-15:] if t.get('price', 0) > 0]
+            
+            if len(prices) < 3:
+                return 0.0
+            
+            # Check for round number clustering
+            round_count = 0
+            for p in prices:
+                # Check if price is near a round number (within 0.1%)
+                for round_level in [10, 50, 100, 500, 1000]:
+                    remainder = p % round_level
+                    if remainder < round_level * 0.01 or remainder > round_level * 0.99:
+                        round_count += 1
+                        break
+            
+            round_ratio = round_count / len(prices)
+            return min(1.0, round_ratio)
+        except Exception:
+            return 0.0
 
     def _analyze_historical_price_bias(self, trades: List[Dict]) -> float:
-        """Analyze bias toward historical price references"""
-        # Placeholder implementation
-        return 0.0
+        """Analyze bias toward historical price references (anchoring indicator)"""
+        try:
+            if len(trades) < 5:
+                return 0.0
+            
+            prices = [t.get('price', 0) for t in trades[-20:] if t.get('price', 0) > 0]
+            
+            if len(prices) < 5:
+                return 0.0
+            
+            # Check for price clustering (trading at similar levels repeatedly)
+            avg_price = np.mean(prices)
+            if avg_price <= 0:
+                return 0.0
+            
+            # Count prices within 1% of average (clustering)
+            clustered = sum(1 for p in prices if abs(p - avg_price) / avg_price < 0.01)
+            cluster_ratio = clustered / len(prices)
+            
+            # High clustering suggests anchoring to historical levels
+            return min(1.0, cluster_ratio)
+        except Exception:
+            return 0.0
 
     # ═══════════════════════════════════════════════════════════════════
     # UTILITY AND STATE MANAGEMENT METHODS

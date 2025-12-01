@@ -978,9 +978,15 @@ class ThemeExpert(BaseModule):
     
     def _neutral_output(self, reason: str) -> Dict[str, Any]:
         """Generate neutral output with explanation."""
-        proposal = "flat"
+        action = "flat"
         confidence = 0.1
         thesis = f"Theme flat: {reason}"
+        proposal = {
+            "action": action,
+            "signal_strength": confidence,
+            "reason": thesis,
+            "proposals": {},
+        }
         
         # Publish to SmartInfoBus even when neutral (prevents stale keys)
         try:
@@ -1005,7 +1011,7 @@ class ThemeExpert(BaseModule):
                 "trend_regime": "unknown",
                 "risk_regime": "unknown",
                 "composite_score": 0.5,
-                "action": proposal,
+                "action": action,
                 "confidence": confidence
             },
             "agreement_score": confidence,                    # Required by contract

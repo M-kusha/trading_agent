@@ -47,18 +47,40 @@ class VotingProposal:
         return VotingAction.from_string(self.action)
     
     @property
+    def canonical_action(self) -> str:
+        """
+        Canonical action string ('long', 'short', 'hold', 'abstain').
+        
+        Legacy aliases such as 'flat' or 'neutral' are normalized via
+        VotingAction.from_string() and treated as neutral actions.
+        """
+        return self.voting_action.value
+    
+    @property
     def is_directional(self) -> bool:
         """True if this is a long or short signal."""
         return self.voting_action.is_directional
     
     @property
     def is_valid(self) -> bool:
-        """Check if proposal has minimum required data."""
+        """
+        Check if proposal has minimum required data.
+        
+        Uses VotingAction normalization so that legacy aliases like 'flat' or
+        'neutral' are treated as valid neutral actions instead of being
+        rejected outright.
+        """
+        action_enum = self.voting_action
         return (
-            self.action in ('long', 'short', 'hold', 'abstain') and
-            0.0 <= self.confidence <= 1.0 and
-            0.0 <= self.signal_strength <= 1.0 and
-            bool(self.expert)
+            action_enum in (
+                VotingAction.LONG,
+                VotingAction.SHORT,
+                VotingAction.HOLD,
+                VotingAction.ABSTAIN,
+            )
+            and 0.0 <= self.confidence <= 1.0
+            and 0.0 <= self.signal_strength <= 1.0
+            and bool(self.expert)
         )
     
     def to_dict(self) -> Dict[str, Any]:

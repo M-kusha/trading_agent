@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 import math
 from dataclasses import dataclass, asdict
-from typing import Any, Dict, Optional, Tuple, Callable
+from typing import Any, Dict, Optional
 
 
 # ─────────────────────────────────────────────────────────
@@ -18,7 +18,7 @@ class LiveAdapterConfig:
     # contract sizing
     lot_step: float = 0.01
     min_lot: float = 0.01
-    contract_size: float = 100_000.0  # units per 1.0 lot (FX)
+    contract_size: float = 100_000.0  # default units per 1.0 lot (FX)
     price_decimals: int = 5
 
     # execution policy
@@ -114,11 +114,37 @@ class BaseLiveAdapter:
         ov = self.cfg.symbol_overrides or {}
         return ov.get(instrument, instrument).replace("/", "").replace("_", "")
 
-    def lots_to_units(self, lots: float) -> float:
-        return _safe_float(lots) * _safe_float(self.cfg.contract_size, 100_000.0)
+    def contract_size_for(self, instrument: str) -> float:
+        """
+        Symbol-specific contract size.
 
-    def units_to_lots(self, units: float) -> float:
+        This logic is aligned with Executor._get_contract_size so that
+        units/lot calculations are consistent across the system.
+        """
+        sym = (instrument or "").upper().replace("_", "").replace("/", "")
+
+        # Metals
+        if "XAU" in sym or "GOLD" in sym:
+            return 100.0          # 100 oz per lot
+        if "XAG" in sym or "SILVER" in sym:
+            return 5000.0         # 5000 oz per lot
+
+        # Crypto
+        if "BTC" in sym:
+            return 1.0
+        if "ETH" in sym:
+            return 1.0
+
+        # Default FX
         cs = _safe_float(self.cfg.contract_size, 100_000.0)
+        return cs if cs > 0 else 100_000.0
+
+    def lots_to_units(self, lots: float, instrument: Optional[str] = None) -> float:
+        cs = self.contract_size_for(instrument or "")
+        return _safe_float(lots) * cs
+
+    def units_to_lots(self, units: float, instrument: Optional[str] = None) -> float:
+        cs = self.contract_size_for(instrument or "")
         if cs <= 0:
             return 0.0
         return _safe_float(units) / cs
@@ -131,7 +157,7 @@ class BaseLiveAdapter:
         return lots
 
     def apply_fallback_slippage(self, side: int, price: float) -> float:
-        """If broker didn't return an execution price, bias by slippage."""
+        """If broker did not return an execution price, bias by configured slippage."""
         slip = _safe_float(self.cfg.price_slippage, 0.0)
         if slip == 0.0:
             return price
@@ -224,10 +250,13 @@ class BaseLiveAdapter:
             if self.cfg.price_staleness_sec > 0 and (_now() - ts) > self.cfg.price_staleness_sec:
                 return {}
 
-            out = {}
-            if bid is not None: out["bid"] = _safe_float(bid)
-            if ask is not None: out["ask"] = _safe_float(ask)
-            if mid is not None: out["mid"] = _safe_float(mid)
+            out: Dict[str, float] = {}
+            if bid is not None:
+                out["bid"] = _safe_float(bid)
+            if ask is not None:
+                out["ask"] = _safe_float(ask)
+            if mid is not None:
+                out["mid"] = _safe_float(mid)
             out["ts"] = ts
             return out
         except Exception:
@@ -242,7 +271,13 @@ class BaseLiveAdapter:
         Place a market order. Return:
           {'ok': bool, 'instrument': str, 'side': int, 'lots': float, 'price': float, 'ticket': Any? , 'error': str?}
         """
-        result = {"ok": False, "instrument": instrument, "side": int(math.copysign(1, side)) if side != 0 else 0, "lots": 0.0, "price": 0.0}
+        result: Dict[str, Any] = {
+            "ok": False,
+            "instrument": instrument,
+            "side": int(math.copysign(1, side)) if side != 0 else 0,
+            "lots": 0.0,
+            "price": 0.0,
+        }
         if not self._ensure_ready():
             result["error"] = "not_connected_or_circuit_open"
             return result
@@ -264,24 +299,31 @@ class BaseLiveAdapter:
         price_hint = q.get("mid") or q.get("bid") or q.get("ask") or 0.0
 
         delay = int(self.cfg.initial_backoff_ms)
-        last_err = None
+        last_err: Optional[str] = None
         for attempt in range(self.cfg.max_retries + 1):
             try:
-                raw = self._market_order_impl(sym, int(math.copysign(1, side)) if side != 0 else 0, lots) or {}
+                raw = self._market_order_impl(
+                    sym,
+                    int(math.copysign(1, side)) if side != 0 else 0,
+                    lots,
+                ) or {}
                 ok = bool(raw.get("ok", False))
                 px = _safe_float(raw.get("price", 0.0))
                 if px <= 0.0 and price_hint > 0.0:
                     px = self.apply_fallback_slippage(side, price_hint)
 
-                result.update({
-                    "ok": ok,
-                    "instrument": sym,
-                    "side": int(math.copysign(1, side)) if side != 0 else 0,
-                    "lots": lots,
-                    "price": px,
-                })
+                result.update(
+                    {
+                        "ok": ok,
+                        "instrument": sym,
+                        "side": int(math.copysign(1, side)) if side != 0 else 0,
+                        "lots": lots,
+                        "price": px,
+                    }
+                )
                 if ok:
-                    if "ticket" in raw: result["ticket"] = raw["ticket"]
+                    if "ticket" in raw:
+                        result["ticket"] = raw["ticket"]
                     self._cb_reset()
                     return result
                 last_err = raw.get("error", "unknown_error")
@@ -301,7 +343,13 @@ class BaseLiveAdapter:
         Reduce an existing position (close part of it).
         Return shape mirrors market_order().
         """
-        result = {"ok": False, "instrument": instrument, "side": int(math.copysign(1, side)) if side != 0 else 0, "lots": 0.0, "price": 0.0}
+        result: Dict[str, Any] = {
+            "ok": False,
+            "instrument": instrument,
+            "side": int(math.copysign(1, side)) if side != 0 else 0,
+            "lots": 0.0,
+            "price": 0.0,
+        }
         if not self._ensure_ready():
             result["error"] = "not_connected_or_circuit_open"
             return result
@@ -319,17 +367,30 @@ class BaseLiveAdapter:
         price_hint = q.get("mid") or q.get("bid") or q.get("ask") or 0.0
 
         delay = int(self.cfg.initial_backoff_ms)
-        last_err = None
+        last_err: Optional[str] = None
         for attempt in range(self.cfg.max_retries + 1):
             try:
-                raw = self._reduce_position_impl(sym, lots, int(math.copysign(1, side)) if side != 0 else 0) or {}
+                raw = self._reduce_position_impl(
+                    sym,
+                    lots,
+                    int(math.copysign(1, side)) if side != 0 else 0,
+                ) or {}
                 ok = bool(raw.get("ok", False))
                 px = _safe_float(raw.get("price", 0.0))
                 if px <= 0.0 and price_hint > 0.0:
                     px = self.apply_fallback_slippage(side, price_hint)
-                result.update({"ok": ok, "instrument": sym, "side": int(math.copysign(1, side)) if side != 0 else 0, "lots": lots, "price": px})
+                result.update(
+                    {
+                        "ok": ok,
+                        "instrument": sym,
+                        "side": int(math.copysign(1, side)) if side != 0 else 0,
+                        "lots": lots,
+                        "price": px,
+                    }
+                )
                 if ok:
-                    if "ticket" in raw: result["ticket"] = raw["ticket"]
+                    if "ticket" in raw:
+                        result["ticket"] = raw["ticket"]
                     self._cb_reset()
                     return result
                 last_err = raw.get("error", "unknown_error")
@@ -349,7 +410,7 @@ class BaseLiveAdapter:
         Close an entire position in 'instrument'.
         Return {'ok', 'instrument', 'price', 'ticket'?, 'error'?}
         """
-        result = {"ok": False, "instrument": instrument, "price": 0.0}
+        result: Dict[str, Any] = {"ok": False, "instrument": instrument, "price": 0.0}
         if not self._ensure_ready():
             result["error"] = "not_connected_or_circuit_open"
             return result
@@ -362,17 +423,19 @@ class BaseLiveAdapter:
         price_hint = q.get("mid") or q.get("bid") or q.get("ask") or 0.0
 
         delay = int(self.cfg.initial_backoff_ms)
-        last_err = None
+        last_err: Optional[str] = None
         for attempt in range(self.cfg.max_retries + 1):
             try:
                 raw = self._close_position_impl(sym) or {}
                 ok = bool(raw.get("ok", False))
                 px = _safe_float(raw.get("price", 0.0))
                 if px <= 0.0 and price_hint > 0.0:
-                    px = self.apply_fallback_slippage(+1, price_hint)  # side doesn’t matter much for full close
+                    # side is irrelevant for full close here
+                    px = self.apply_fallback_slippage(+1, price_hint)
                 result.update({"ok": ok, "instrument": sym, "price": px})
                 if ok:
-                    if "ticket" in raw: result["ticket"] = raw["ticket"]
+                    if "ticket" in raw:
+                        result["ticket"] = raw["ticket"]
                     self._cb_reset()
                     return result
                 last_err = raw.get("error", "unknown_error")
@@ -408,24 +471,26 @@ class BaseLiveAdapter:
         try:
             raw = self._sync_positions_impl() or {}
             out: Dict[str, Dict[str, Any]] = {}
-            for k, v in (raw.items() if isinstance(raw, dict) else []):
-                try:
-                    inst = str(k)
-                    node = dict(v)
-                    side = int(math.copysign(1, _safe_float(node.get("side", 0)))) if _safe_float(node.get("side", 0)) != 0 else 0
-                    units = _safe_float(node.get("units", node.get("volume", 0.0)))
-                    entry = _safe_float(node.get("entry_price", node.get("price", 0.0)))
-                    notional = _safe_float(node.get("notional_eur", units * entry))
-                    out[inst] = {
-                        "instrument": inst,
-                        "side": side,
-                        "units": units,
-                        "entry_price": entry,
-                        "notional_eur": notional,
-                        "open_time": node.get("open_time", node.get("time", None)),
-                    }
-                except Exception:
-                    continue
+            if isinstance(raw, dict):
+                for k, v in raw.items():
+                    try:
+                        inst = str(k)
+                        node = dict(v)
+                        side_raw = _safe_float(node.get("side", 0))
+                        side = int(math.copysign(1, side_raw)) if side_raw != 0 else 0
+                        units = _safe_float(node.get("units", node.get("volume", 0.0)))
+                        entry = _safe_float(node.get("entry_price", node.get("price", 0.0)))
+                        notional = _safe_float(node.get("notional_eur", units * entry))
+                        out[inst] = {
+                            "instrument": inst,
+                            "side": side,
+                            "units": units,
+                            "entry_price": entry,
+                            "notional_eur": notional,
+                            "open_time": node.get("open_time", node.get("time", None)),
+                        }
+                    except Exception:
+                        continue
             self._cb_reset()
             return out
         except Exception:
@@ -491,6 +556,10 @@ class BaseLiveAdapter:
         self._cb_opened_at = 0.0
 
     def _ensure_ready(self) -> bool:
+        """
+        Ensure adapter is connected and circuit is not open.
+        Will attempt to (re)connect if needed.
+        """
         if self.connected and not self._circuit_open():
             return True
         return self.connect()
