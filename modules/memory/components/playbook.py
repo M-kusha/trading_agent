@@ -43,6 +43,9 @@ class PlaybookComponent(MemoryComponent):
         self.contexts: List[Dict[str, Any]] = []
         self.timestamps: List[float] = []
         self.trade_metadata: List[Dict[str, Any]] = []
+        
+        # Track processed trade IDs to avoid double-counting
+        self._processed_trade_ids: set = set()
 
         # Pattern stats
         self.pattern_effectiveness: Dict[str, Dict[str, Any]] = defaultdict(
@@ -108,9 +111,31 @@ class PlaybookComponent(MemoryComponent):
         prices: Dict[str, Any] = context.get("prices", {}) or {}
 
         processed = 0
+        skipped = 0
         for trade in trades[-self._RECENT_WINDOW :]:
             if not isinstance(trade, dict) or "pnl" not in trade:
                 continue
+            
+            # Generate unique trade ID to avoid double-counting
+            trade_id = trade.get("id") or trade.get("trade_id") or trade.get("ticket")
+            if trade_id is None:
+                # Fallback: create ID from trade properties
+                inst = trade.get("instrument") or trade.get("symbol") or ""
+                ts = trade.get("ts") or trade.get("timestamp") or trade.get("close_time") or ""
+                pnl_val = trade.get("pnl", 0)
+                trade_id = f"{inst}_{ts}_{pnl_val}"
+            
+            # Skip if already processed
+            if trade_id in self._processed_trade_ids:
+                skipped += 1
+                continue
+            
+            # Mark as processed
+            self._processed_trade_ids.add(trade_id)
+            
+            # Limit set size to prevent memory bloat
+            if len(self._processed_trade_ids) > 1000:
+                self._processed_trade_ids = set(list(self._processed_trade_ids)[-500:])
 
             feats = self._extract_trade_features(trade, market_context, prices)
             action = self._extract_trade_action(trade)
@@ -119,7 +144,7 @@ class PlaybookComponent(MemoryComponent):
             await self._store_trade(feats, action, pnl, market_context, trade)
             processed += 1
 
-        return {"trades_processed": processed, "memory_size": len(self.features)}
+        return {"trades_processed": processed, "trades_skipped": skipped, "memory_size": len(self.features)}
 
     def _extract_trade_features(
         self, trade: Dict[str, Any], market_context: Dict[str, Any], prices: Dict[str, Any]

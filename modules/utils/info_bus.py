@@ -144,8 +144,36 @@ class InfoBusConfig:
     persist_write_interval_seconds: float = 1.0
     persistence_file: str = "state/infobus_data.json"
     persist_keys: Optional[List[str]] = None  # If None, persist all keys
+    # Keys that should NOT be loaded from persistence on startup (memory learning data)
+    # These keys accumulate incorrectly across sessions if loaded
+    no_load_keys: List[str] = None  # type: ignore  # Will be set in __post_init__
 
     def __post_init__(self):
+        # Set default no_load_keys if not provided
+        # These are memory-learning keys that accumulate incorrectly across sessions
+        if self.no_load_keys is None:
+            self.no_load_keys = [
+                # Pattern/memory learning data - must start fresh each session
+                "pattern_memory",
+                "pattern_effectiveness", 
+                "playbook_recall",
+                "playbook_quality",
+                "playbook_memory",
+                "memory_analytics",
+                "loss_prevention",
+                "danger_zones",
+                "mistake_memory",
+                "mistake_avoidance",
+                "intervention_recommendation",
+                "loss_risk_assessment",
+                "neural_memory",
+                "memory_embedding",
+                "memory_compression",
+                # Trade history - each session should track its own trades
+                "recent_trades",
+                "trades",
+                "trade_history",
+            ]
         self._validate_config()
 
     def _validate_config(self):
@@ -816,15 +844,29 @@ class SmartInfoBus:
 
 
     def _load_persisted_data(self) -> None:
-        """Load persisted data from file on startup."""
+        """Load persisted data from file on startup.
+        
+        Note: Keys in config.no_load_keys are skipped to prevent accumulation
+        of stale memory-learning data across sessions.
+        """
         try:
             persist_file = getattr(self.config, 'persistence_file', self._persistence_file)
             if os.path.exists(persist_file):
                 persisted_data = self._safe_read_json_file(persist_file)
-                self.logger.info(f"[PERSISTENCE] Loading {len(persisted_data)} keys from {persist_file}")
-
+                
+                # Get keys that should NOT be loaded (memory learning data)
+                no_load_keys = set(getattr(self.config, 'no_load_keys', []) or [])
+                
+                loaded_count = 0
+                skipped_count = 0
+                
                 # Load persisted data into memory store if not already present
                 for key, data in persisted_data.items():
+                    # Skip memory-learning keys that accumulate incorrectly across sessions
+                    if key in no_load_keys:
+                        skipped_count += 1
+                        continue
+                        
                     if key not in self._data_store:
                         try:
                             # Create a minimal DataVersion for persisted data
@@ -838,8 +880,11 @@ class SmartInfoBus:
                             )
                             self._data_store[key] = data_version
                             self._data_timestamps[key] = data_version.timestamp
+                            loaded_count += 1
                         except Exception as e:
                             self.logger.warning(f"[PERSISTENCE] Failed to load persisted key '{key}': {e}")
+                
+                self.logger.info(f"[PERSISTENCE] Loaded {loaded_count} keys, skipped {skipped_count} memory-learning keys (fresh session)")
 
         except Exception as e:
             self.logger.warning(f"[PERSISTENCE] Failed to load persisted data: {e}")
