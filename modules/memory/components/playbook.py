@@ -116,6 +116,13 @@ class PlaybookComponent(MemoryComponent):
             if not isinstance(trade, dict) or "pnl" not in trade:
                 continue
             
+            # Only process CLOSED trades with actual realized PnL
+            # Skip open trades (pnl=0, action contains 'open')
+            pnl_val = float(trade.get("pnl", 0) or trade.get("realized_pnl", 0) or 0)
+            action = str(trade.get("action", "")).lower()
+            if pnl_val == 0 or "open" in action:
+                continue  # Skip open trades - they have no outcome yet
+            
             # Generate unique trade ID to avoid double-counting
             trade_id = trade.get("id") or trade.get("trade_id") or trade.get("ticket")
             if trade_id is None:
@@ -276,10 +283,12 @@ class PlaybookComponent(MemoryComponent):
 
         self.context_patterns[key] += 1
         data = self.pattern_effectiveness[key]
+        # Only count actual wins/losses (non-zero pnl)
         if pnl > 0.0:
             data["wins"] += 1
-        else:
+        elif pnl < 0.0:
             data["losses"] += 1
+        # Skip pnl == 0 (open trades) for win/loss counting
         data["total_pnl"] += float(pnl)
 
         # Keep pattern_effectiveness dict reasonably bounded

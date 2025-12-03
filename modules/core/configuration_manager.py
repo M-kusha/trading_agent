@@ -1378,6 +1378,173 @@ class ConfigurationManager:
                 'max_trade_history': lambda x: x > 0
             }
         )
+
+        # New Modular Voting System Components
+        # These are the slim/focused versions used in the new voting pipeline
+        self.module_specs['MomentumExpert'] = ModuleConfigSpec(
+            name='MomentumExpert',
+            category='voting',
+            config_section='modules.MomentumExpert.config',
+            default_config={
+                'lookback_periods': [5, 10, 20],
+                'momentum_threshold': 0.02,
+                'confidence_scaling': True,
+                'timeout_ms': 300
+            },
+            required_keys=[],
+            validation_rules={
+                'momentum_threshold': lambda x: x > 0
+            }
+        )
+
+        self.module_specs['TrendExpert'] = ModuleConfigSpec(
+            name='TrendExpert',
+            category='voting',
+            config_section='modules.TrendExpert.config',
+            default_config={
+                'trend_periods': [20, 50, 200],
+                'trend_strength_threshold': 0.6,
+                'use_ema': True,
+                'timeout_ms': 300
+            },
+            required_keys=[],
+            validation_rules={
+                'trend_strength_threshold': lambda x: 0 < x < 1
+            }
+        )
+
+        self.module_specs['ThemeExpert'] = ModuleConfigSpec(
+            name='ThemeExpert',
+            category='voting',
+            config_section='modules.ThemeExpert.config',
+            default_config={
+                'theme_detection_threshold': 0.7,
+                'theme_categories': ['bullish', 'bearish', 'neutral'],
+                'timeout_ms': 300
+            },
+            required_keys=[],
+            validation_rules={
+                'theme_detection_threshold': lambda x: 0 < x < 1
+            }
+        )
+
+        self.module_specs['SeasonalityRiskExpert'] = ModuleConfigSpec(
+            name='SeasonalityRiskExpert',
+            category='voting',
+            config_section='modules.SeasonalityRiskExpert.config',
+            default_config={
+                'seasonal_patterns': ['daily', 'weekly', 'monthly'],
+                'risk_adjustment_factor': 0.8,
+                'timeout_ms': 300
+            },
+            required_keys=[],
+            validation_rules={
+                'risk_adjustment_factor': lambda x: 0 < x <= 1
+            }
+        )
+
+        self.module_specs['SlimVotingKernel'] = ModuleConfigSpec(
+            name='SlimVotingKernel',
+            category='voting',
+            config_section='modules.SlimVotingKernel.config',
+            default_config={
+                'min_votes_required': 2,
+                'consensus_threshold': 0.6,
+                'timeout_ms': 800
+            },
+            required_keys=[],
+            validation_rules={
+                'consensus_threshold': lambda x: 0 < x < 1
+            }
+        )
+
+        self.module_specs['FinalArbiter'] = ModuleConfigSpec(
+            name='FinalArbiter',
+            category='voting',
+            config_section='modules.FinalArbiter.config',
+            default_config={
+                'decision_threshold': 0.5,
+                'veto_threshold': 0.8,
+                'require_unanimous': False,
+                'timeout_ms': 400
+            },
+            required_keys=[],
+            validation_rules={
+                'decision_threshold': lambda x: 0 < x < 1
+            }
+        )
+
+        self.module_specs['CommitteeCoordinator'] = ModuleConfigSpec(
+            name='CommitteeCoordinator',
+            category='voting',
+            config_section='modules.CommitteeCoordinator.config',
+            default_config={
+                'coordination_strategy': 'weighted',
+                'max_members': 10,
+                'timeout_ms': 500
+            },
+            required_keys=[],
+            validation_rules={}
+        )
+
+        self.module_specs['ConsensusAnalyzer'] = ModuleConfigSpec(
+            name='ConsensusAnalyzer',
+            category='voting',
+            config_section='modules.ConsensusAnalyzer.config',
+            default_config={
+                'agreement_threshold': 0.7,
+                'dissent_penalty': 0.1,
+                'timeout_ms': 300
+            },
+            required_keys=[],
+            validation_rules={
+                'agreement_threshold': lambda x: 0 < x < 1
+            }
+        )
+
+        self.module_specs['CollusionDetector'] = ModuleConfigSpec(
+            name='CollusionDetector',
+            category='voting',
+            config_section='modules.CollusionDetector.config',
+            default_config={
+                'correlation_threshold': 0.9,
+                'detection_window': 50,
+                'timeout_ms': 300
+            },
+            required_keys=[],
+            validation_rules={
+                'correlation_threshold': lambda x: 0 < x < 1
+            }
+        )
+
+        self.module_specs['HorizonAligner'] = ModuleConfigSpec(
+            name='HorizonAligner',
+            category='voting',
+            config_section='modules.HorizonAligner.config',
+            default_config={
+                'horizons': ['short', 'medium', 'long'],
+                'alignment_weight': 0.5,
+                'timeout_ms': 300
+            },
+            required_keys=[],
+            validation_rules={}
+        )
+
+        self.module_specs['UncertaintySampler'] = ModuleConfigSpec(
+            name='UncertaintySampler',
+            category='voting',
+            config_section='modules.UncertaintySampler.config',
+            default_config={
+                'sample_count': 100,
+                'uncertainty_threshold': 0.3,
+                'timeout_ms': 300
+            },
+            required_keys=[],
+            validation_rules={
+                'uncertainty_threshold': lambda x: 0 < x < 1
+            }
+        )
+
         # --- END your existing specs block ---
 
         self.logger.info(f"Initialized {len(self.module_specs)} module specifications")
