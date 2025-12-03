@@ -1522,8 +1522,9 @@ class ConfigurationManager:
             category='voting',
             config_section='modules.HorizonAligner.config',
             default_config={
-                'horizons': ['short', 'medium', 'long'],
-                'alignment_weight': 0.5,
+                'horizons': [1, 5, 15, 30, 60, 120, 240],  # Time horizons in minutes
+                'adaptive_scaling': True,
+                'regime_awareness': True,
                 'timeout_ms': 300
             },
             required_keys=[],
