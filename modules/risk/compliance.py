@@ -32,6 +32,37 @@ from modules.monitoring.performance_tracker import PerformanceTracker
 # ─────────────────────────────────────────────────────────────
 # Typed, lint-safe config + namespaced health/status keys
 # ─────────────────────────────────────────────────────────────
+def _load_compliance_config_from_yaml() -> Dict[str, Any]:
+    """Load compliance config values from risk_policy.yaml."""
+    import yaml
+    import os
+    defaults = {}
+    try:
+        config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "risk_policy.yaml")
+        if os.path.exists(config_path):
+            with open(config_path, "r") as f:
+                policy = yaml.safe_load(f) or {}
+            
+            # Map risk_policy.yaml values to ComplianceConfig fields
+            limits = policy.get("limits", {})
+            lot_sizing = policy.get("lot_sizing", {})
+            prop_firm = policy.get("prop_firm", {})
+            
+            # Core limits from risk_policy.yaml
+            defaults["max_leverage"] = float(limits.get("max_leverage", 30.0))
+            defaults["max_position_risk"] = float(limits.get("max_position_size", 0.05))
+            defaults["max_total_risk"] = float(limits.get("max_exposure_pct", 0.05) * 2)  # Total = 2x position
+            defaults["max_drawdown"] = float(limits.get("max_drawdown", 0.085))
+            defaults["max_daily_loss"] = float(limits.get("max_daily_loss", 0.042))
+            
+            # Lot sizing constraints
+            defaults["min_trade_size"] = float(lot_sizing.get("min_lot", 0.01))
+            defaults["max_trade_size"] = float(lot_sizing.get("max_lot", 10.0))
+    except Exception:
+        pass  # Fall back to dataclass defaults
+    return defaults
+
+
 @dataclass
 class ComplianceConfig:
     # Monitoring / health
@@ -41,20 +72,28 @@ class ComplianceConfig:
     status_key: str = "compliance_module_status"
     health_key: str = "compliance_module_health"
 
-    # Core limits (sensible defaults)
-    max_leverage: float = 30.0
-    max_position_risk: float = 0.20
-    max_total_risk: float = 0.50
+    # Core limits - defaults loaded from risk_policy.yaml
+    max_leverage: float = 5.0          # From limits.max_leverage
+    max_position_risk: float = 0.05    # From limits.max_position_size
+    max_total_risk: float = 0.10       # 2x max_position_size
     max_daily_trades: int = 100
-    min_trade_size: float = 0.01
-    max_trade_size: float = 10.0
-    # Drawdown limit (fraction, e.g., 0.15 = 15%) to expose to Environment via risk_limits
-    max_drawdown: float = 0.15
+    min_trade_size: float = 0.01       # From lot_sizing.min_lot
+    max_trade_size: float = 10.0       # From lot_sizing.max_lot
+    # Drawdown limit from risk_policy.yaml limits.max_drawdown
+    max_drawdown: float = 0.085
+    max_daily_loss: float = 0.042      # From limits.max_daily_loss
 
     # Flags
     enabled: bool = True
     dynamic_limits: bool = True
     regime_aware: bool = True
+    
+    def __post_init__(self):
+        """Override defaults with values from risk_policy.yaml."""
+        yaml_config = _load_compliance_config_from_yaml()
+        for key, value in yaml_config.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
 
 
 # ─────────────────────────────────────────────────────────────

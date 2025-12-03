@@ -162,19 +162,43 @@ CONTRACTS: Dict[str, ModuleContract] = {
         provides=['automation_decisions', 'automation_metrics', 'meta_performance', 'system_mode',
                   'MetaAgent_voting_proposal', 'MetaAgent_confidence'],
         requires=['market_context', 'risk_signals', 'system_performance', 'time_risk_analysis', 'training_metrics'],
-        meta={'is_voting_member': True, 'thesis_required': True, 'health_monitoring': True,
+        # NOTE: is_voting_member=False - MetaAgent outputs risk gate signals (proceed/caution/halt),
+        # NOT directional trading signals (long/short). It monitors system health, not market direction.
+        meta={'is_voting_member': False, 'thesis_required': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'meta', 'version': '3.0.0'}
     ),
 
     'PPOAgent': ModuleContract(
         name='PPOAgent',
         file='meta/ppo_agent.py',
+        # PPOAgent is now the INTELLIGENT ARBITER - makes final trading decisions
+        # It consumes committee consensus, expert signals, risk, memory and decides:
+        # 1. Whether to trade (GO/NO-GO)
+        # 2. Position sizing based on confidence
+        # 3. Override committee when it detects danger
         provides=['actions', 'agent_performance', 'observations', 'policy_actions', 'policy_gradients', 'rewards',
                   'training_data', 'training_metrics', 'training_signals',
+                  # Final decision outputs (consumed by Executor)
+                  'ppo_final_decision', 'ppo_gate_passed', 'ppo_position_size',
+                  # Legacy voting outputs (for committee, but with low weight)
                   'PPOAgent_voting_proposal', 'PPOAgent_confidence'],
-        requires=['market_data'],
-        meta={'is_voting_member': True, 'thesis_required': True, 'health_monitoring': True,
-              'performance_tracking': True, 'category': 'meta', 'version': '3.0.0'}
+        # Runs AFTER committee consensus to make informed final decision
+        requires=['market_data', 'market_regime', 'regime_strength',
+                  # Committee consensus (aggregated expert votes)
+                  'committee_decision', 'committee_confidence', 'consensus_score',
+                  # Individual expert signals (for override decisions)
+                  'TrendExpert_voting_proposal', 'TrendExpert_confidence',
+                  'MomentumExpert_voting_proposal', 'MomentumExpert_confidence', 
+                  'ThemeExpert_voting_proposal', 'ThemeExpert_confidence',
+                  'SeasonalityRiskExpert_voting_proposal', 'SeasonalityRiskExpert_confidence',
+                  # Risk signals
+                  'risk_data', 'portfolio_risk', 'fragility',
+                  # Memory signals
+                  'memory_gate', 'danger_zones'],
+        meta={'is_voting_member': False,  # No longer a voter - it's the arbiter
+              'is_final_arbiter': True,   # New role: intelligent final decision maker
+              'thesis_required': True, 'health_monitoring': True,
+              'performance_tracking': True, 'category': 'meta', 'version': '4.0.0'}
     ),
 
     'PPOLagAgent': ModuleContract(
@@ -486,16 +510,15 @@ CONTRACTS: Dict[str, ModuleContract] = {
             # Backward compatibility
             'committee_decision', 'committee_confidence', 'votes', 'voting_summary',
             'strategy_arbiter_weights', 'committee_consensus'
-        ],
-        requires=[
-            'ThemeExpert_voting_proposal', 'ThemeExpert_confidence',
-            'SeasonalityRiskExpert_voting_proposal', 'SeasonalityRiskExpert_confidence',
-            'MomentumExpert_voting_proposal', 'MomentumExpert_confidence',
-            'TrendExpert_voting_proposal', 'TrendExpert_confidence',
-            'DynamicRiskController_voting_proposal', 'DynamicRiskController_confidence',
-            'PPOAgent_voting_proposal', 'PPOAgent_confidence',
-            'market_regime', 'volatility_data'
-        ],
+          ],
+          requires=[
+              'ThemeExpert_voting_proposal', 'ThemeExpert_confidence',
+              'SeasonalityRiskExpert_voting_proposal', 'SeasonalityRiskExpert_confidence',
+              'MomentumExpert_voting_proposal', 'MomentumExpert_confidence',
+              'TrendExpert_voting_proposal', 'TrendExpert_confidence',
+              'DynamicRiskController_voting_proposal', 'DynamicRiskController_confidence',
+              'market_regime', 'volatility_data'
+          ],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'voting', 'version': '5.0.0'}
     ),
@@ -555,6 +578,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
         provides=[
             'uncertainty_result', 'sampling_uncertainty', 'fragility_score',
             'effective_samples', 'uncertainty_thesis',
+            # Per-instrument outputs
+            'instrument_fragility', 'instrument_uncertainty',
             # Backward compatibility
             'alternative_samples', 'confidence_bounds', 'diversity_score',
             'sampling_decision_id', 'sampling_fragility', 'fragility'
@@ -578,7 +603,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         ],
         requires=['consensus_result', 'collusion_result', 'uncertainty_result',
                   'horizon_alignment', 'market_regime', 'volatility_data',
-                  'memory_gate', 'danger_zones'],
+                  'memory_gate', 'danger_zones', 'instrument_fragility'],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'voting', 'version': '5.0.0'}
     ),
@@ -714,13 +739,16 @@ CONTRACTS: Dict[str, ModuleContract] = {
         # NOTE: Memory signals used for veto gate and position sizing intelligence
         # FIX: Uses instrument_signals (per-instrument) from FinalArbiter as primary signal source
         # FIX: Falls back to trade_vote_v2 from SlimVotingKernel if no per-instrument signal
+        # FIX: Checks ppo_gate_passed for final GO/NO-GO from intelligent arbiter
         # NOTE: Removed market_conditions - uses market_context fallback
         provides=['position_decisions', 'position_health', 'portfolio_state', 'order_queue', 'position_manager_data'],
         requires=['instrument_signals', 'trade_vote_v2', 'kernel_decision', 'environment_config', 'indicators', 'liquidity_capabilities', 'liquidity_score',
                   'market_context', 'market_data', 'market_liquidity',
                   'market_regime', 'price_data', 'prices', 'technical_indicators',
                   'time_risk_analysis', 'volatility_data',
-                  'memory_gate', 'playbook_recall', 'intuition_vector', 'danger_zones', 'mistake_avoidance'],
+                  'memory_gate', 'playbook_recall', 'intuition_vector', 'danger_zones', 'mistake_avoidance',
+                  # PPOAgent intelligent arbiter outputs (final gate)
+                  'ppo_final_decision', 'ppo_gate_passed', 'ppo_position_size'],
         meta={'is_voting_member': False, 'thesis_required': True, 'explainable': True,
               'health_monitoring': True, 'performance_tracking': True,
               'category': 'position', 'version': '3.1.3'}

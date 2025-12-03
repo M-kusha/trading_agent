@@ -125,9 +125,22 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
 
     def _initialize(self):
         """Initialize module - required by BaseModule"""
-        # Module-specific initialization already done in __init__
-        # This method is required by BaseModule abstract interface
-        pass
+        # Load default balance from risk_policy.yaml
+        self._default_balance = 100000.0
+        try:
+            import yaml
+            import os
+            config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "risk_policy.yaml")
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    policy = yaml.safe_load(f) or {}
+                self._default_balance = float(
+                    policy.get("prop_firm", {}).get("account_size")
+                    or policy.get("lot_sizing", {}).get("account_balance")
+                    or 100000.0
+                )
+        except Exception:
+            pass
 
     async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
         """Calculate confidence in visualization data quality and completeness."""
@@ -450,8 +463,9 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
                 elif isinstance(perf.get('initial_balance'), (int, float)):
                     balance_val = float(perf['initial_balance']); fallback_sources['balance_fallback'] = 'performance_data.initial_balance'
             if balance_val is None:
-                # Align hard default with system config default (3,000)
-                balance_val = 3000.0; fallback_sources['balance_fallback'] = 'hard_default_3000'
+                # Use default from risk_policy.yaml loaded in _initialize
+                balance_val = getattr(self, '_default_balance', 100000.0)
+                fallback_sources['balance_fallback'] = 'risk_policy_yaml_default'
 
             equity_val = (risk_data.get('equity') if isinstance(risk_data.get('equity'), (int, float)) else None)
             if equity_val is None and isinstance(top_equity, (int, float)):
@@ -630,7 +644,8 @@ class VisualizationInterface(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusS
         elif isinstance(perf.get('initial_balance'), (int, float)):
             base_bal = float(perf['initial_balance'])
         else:
-            base_bal = 3000.0
+            # Use default from risk_policy.yaml loaded in _initialize
+            base_bal = getattr(self, '_default_balance', 100000.0)
 
         return {
             'balance': base_bal,

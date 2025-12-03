@@ -72,10 +72,12 @@ class UnifiedFeatureExtractor:
         }
 
         # Canonical session one-hot (asian, european, american, closed)
+        # "us" is an alias for "american" for compatibility
         self.session_map: Dict[str, np.ndarray] = {
             "asian": np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
             "european": np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32),
             "american": np.array([0.0, 0.0, 1.0, 0.0], dtype=np.float32),
+            "us": np.array([0.0, 0.0, 1.0, 0.0], dtype=np.float32),  # alias for american
             "closed": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
             "unknown": np.array([0.25, 0.25, 0.25, 0.25], dtype=np.float32),
         }

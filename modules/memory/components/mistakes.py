@@ -54,11 +54,13 @@ class MistakeComponent(MemoryComponent):
         self.danger_zones: List[Dict[str, Any]] = []  # centers in LOSS-scaled space
         self.profit_zones: List[Dict[str, Any]] = []  # centers in WIN-scaled space
 
-        # State
-        self.consecutive_losses: int = 0
+        # State - Per-instrument loss tracking
+        self.consecutive_losses: int = 0  # Global counter (legacy, for compatibility)
+        self.consecutive_losses_by_instrument: Dict[str, int] = {}  # Per-instrument counters
         self.avoidance_signal: float = 0.0
         self._processed_trade_ids: set = set()  # Track processed trade IDs to avoid duplicates
         self._veto_start_time: float = 0.0  # When veto was triggered
+        self._veto_start_by_instrument: Dict[str, float] = {}  # Per-instrument veto timers
         self._veto_timeout_seconds: float = 60.0  # Veto expires after 60 seconds (allows recovery)
         self._ticks_since_last_trade: int = 0  # Ticks since last trade for decay
 
@@ -150,22 +152,32 @@ class MistakeComponent(MemoryComponent):
             if features is None:
                 continue
 
+            # Get instrument for per-instrument tracking
+            instrument = trade.get("instrument") or trade.get("symbol") or "UNKNOWN"
+            
             pnl = float(trade["pnl"])
             if pnl < -self.profit_threshold / 2.0:
                 self._process_loss_trade(features, abs(pnl), trade)
                 losses_learned += 1
+                # Update both global and per-instrument counters
                 self.consecutive_losses += 1
+                self.consecutive_losses_by_instrument[instrument] = \
+                    self.consecutive_losses_by_instrument.get(instrument, 0) + 1
             elif pnl > self.profit_threshold:
                 self._process_win_trade(features, pnl, trade)
                 wins_learned += 1
+                # Reset both global and per-instrument counters
                 self.consecutive_losses = 0
+                self.consecutive_losses_by_instrument[instrument] = 0
                 self._veto_start_time = 0.0  # Reset veto timer on win
+                self._veto_start_by_instrument[instrument] = 0.0  # Reset per-instrument timer
 
         return {
             "losses_learned": losses_learned,
             "wins_learned": wins_learned,
             "total_loss_memories": len(self.loss_buffer),
             "total_win_memories": len(self.win_buffer),
+            "consecutive_losses_by_instrument": dict(self.consecutive_losses_by_instrument),
         }
 
     def _extract_trade_features(self, trade: Dict[str, Any], market_context: Dict[str, Any]) -> Optional[np.ndarray]:
@@ -188,8 +200,8 @@ class MistakeComponent(MemoryComponent):
                 vol = (list(vol.values()) or [0.5])[0]
             features.append(safe_float(vol, 0.5))
 
-            # Session encoding
-            session_map = {"asian": 0.0, "european": 0.5, "us": 1.0}
+            # Session encoding (consistent across all memory components)
+            session_map = {"asian": 0.0, "european": 0.5, "american": 1.0, "us": 1.0}  # us is alias for american
             session = str(market_context.get("session", "unknown")).lower()
             features.append(float(session_map.get(session, 0.25)))
 
@@ -465,6 +477,7 @@ class MistakeComponent(MemoryComponent):
             - veto: Boolean recommending trade rejection
             - confidence: Confidence in the gate decision [0, 1]
             - reasons: List of reasons for the gate decision
+            - vetoed_instruments: List of instruments currently vetoed (per-instrument)
         """
         # Risk multiplier: increases with danger, decreases with profit proximity
         # risk_multiplier = 1 + 1.5 * max(0, danger_similarity - profit_similarity)
@@ -477,20 +490,44 @@ class MistakeComponent(MemoryComponent):
         veto_threshold_avoidance = 0.6
         veto = bool(danger_similarity > veto_threshold_danger and avoidance_signal > veto_threshold_avoidance)
         
-        # Additional veto conditions with timeout recovery
+        # Per-instrument veto tracking
+        vetoed_instruments: List[str] = []
+        current_time = time.time()
+        
+        # Check per-instrument loss streaks
+        for inst, losses in self.consecutive_losses_by_instrument.items():
+            if losses >= 5:
+                # Check if veto should expire (timeout recovery)
+                veto_start = self._veto_start_by_instrument.get(inst, 0.0)
+                if veto_start == 0.0:
+                    self._veto_start_by_instrument[inst] = current_time
+                    vetoed_instruments.append(inst)
+                else:
+                    elapsed = current_time - veto_start
+                    if elapsed < self._veto_timeout_seconds:
+                        vetoed_instruments.append(inst)
+                    else:
+                        # Veto expired - decay consecutive losses to allow recovery
+                        self.consecutive_losses_by_instrument[inst] = max(0, losses - 2)
+                        self._veto_start_by_instrument[inst] = 0.0
+                        self._log_debug("veto_timeout_recovery_instrument", details={
+                            "instrument": inst,
+                            "new_consecutive_losses": self.consecutive_losses_by_instrument[inst],
+                            "elapsed_seconds": elapsed
+                        })
+        
+        # Legacy global veto (for backwards compatibility) - only if ALL instruments are struggling
         if self.consecutive_losses >= 5:
-            # Check if veto should expire (timeout recovery)
-            current_time = time.time()
             if self._veto_start_time == 0.0:
-                self._veto_start_time = current_time  # Start timeout timer
+                self._veto_start_time = current_time
             
             elapsed = current_time - self._veto_start_time
             if elapsed < self._veto_timeout_seconds:
-                veto = True  # Still in veto period
+                veto = True  # Global veto still in effect
             else:
                 # Veto expired - decay consecutive losses to allow recovery
-                self.consecutive_losses = max(0, self.consecutive_losses - 2)  # Reduce by 2
-                self._veto_start_time = 0.0  # Reset timer
+                self.consecutive_losses = max(0, self.consecutive_losses - 2)
+                self._veto_start_time = 0.0
                 self._log_debug("veto_timeout_recovery", details={
                     "new_consecutive_losses": self.consecutive_losses,
                     "elapsed_seconds": elapsed
@@ -519,7 +556,18 @@ class MistakeComponent(MemoryComponent):
                 },
             })
         
-        if self.consecutive_losses >= 3:
+        # Add per-instrument streak reasons
+        for inst, losses in self.consecutive_losses_by_instrument.items():
+            if losses >= 3:
+                reasons.append({
+                    "type": "streak",
+                    "instrument": inst,
+                    "consecutive_losses": losses,
+                    "message": f"Loss streak of {losses} detected for {inst}",
+                })
+        
+        # Legacy global streak reason (if no per-instrument reasons)
+        if self.consecutive_losses >= 3 and not any(r.get("type") == "streak" for r in reasons):
             reasons.append({
                 "type": "streak",
                 "consecutive_losses": self.consecutive_losses,
@@ -541,6 +589,8 @@ class MistakeComponent(MemoryComponent):
             "danger_similarity": float(danger_similarity),
             "profit_similarity": float(profit_similarity),
             "avoidance_signal": float(avoidance_signal),
+            "vetoed_instruments": vetoed_instruments,
+            "consecutive_losses_by_instrument": dict(self.consecutive_losses_by_instrument),
         }
     
     def _get_nearest_pattern_info(self, features: Optional[np.ndarray]) -> Dict[str, Any]:

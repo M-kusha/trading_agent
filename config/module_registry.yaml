@@ -192,14 +192,12 @@ modules:
     - SeasonalityRiskExpert_confidence
     - MomentumExpert_voting_proposal
     - MomentumExpert_confidence
-    - TrendExpert_voting_proposal
-    - TrendExpert_confidence
-    - DynamicRiskController_voting_proposal
-    - DynamicRiskController_confidence
-    - PPOAgent_voting_proposal
-    - PPOAgent_confidence
-    - market_regime
-    - volatility_data
+      - TrendExpert_voting_proposal
+      - TrendExpert_confidence
+      - DynamicRiskController_voting_proposal
+      - DynamicRiskController_confidence
+      - market_regime
+      - volatility_data
 
   ConsensusAnalyzer:
     category: voting

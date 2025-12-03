@@ -60,8 +60,38 @@ class AnomalyVote(Enum):
 
 
 # Typed config (lint-safe) + namespaced health keys
+def _load_anomaly_detector_config_from_yaml() -> Dict[str, Any]:
+    """Load anomaly detector config values from risk_policy.yaml."""
+    import yaml
+    import os
+    defaults = {}
+    try:
+        config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "risk_policy.yaml")
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                policy = yaml.safe_load(f) or {}
+            
+            escalation = policy.get("escalation", {})
+            modules_cfg = policy.get("modules", {}).get("AnomalyDetector", {})
+            
+            # Map from escalation thresholds
+            defaults["emergency_threshold"] = float(escalation.get("emergency_threshold", 0.042))
+            defaults["critical_threshold"] = float(escalation.get("critical_threshold", 0.035))
+            defaults["warning_threshold"] = float(escalation.get("warning_threshold", 0.025))
+            
+            # Module-specific overrides
+            for key in ["pnl_limit", "volume_zscore", "price_zscore", "observation_zscore",
+                       "history_size", "learning_rate", "max_processing_time_ms"]:
+                if key in modules_cfg:
+                    defaults[key] = modules_cfg[key]
+    except Exception:
+        pass
+    return defaults
+
+
 @dataclass
 class AnomalyDetectorConfig:
+    """Configuration loaded from risk_policy.yaml"""
     # Core thresholds
     pnl_limit: float = 1000.0
     # Ignore tiny absolute PnL moves (account currency)
@@ -91,14 +121,21 @@ class AnomalyDetectorConfig:
     max_processing_time_ms: float = 50.0
     circuit_breaker_threshold: int = 5
     min_detection_quality: float = 0.7
-    # Risk bands
-    critical_threshold: float = 0.8
-    warning_threshold: float = 0.5
-    emergency_threshold: float = 0.9
+    # Risk bands - from escalation thresholds in risk_policy.yaml
+    critical_threshold: float = 0.035  # From escalation.critical_threshold
+    warning_threshold: float = 0.025   # From escalation.warning_threshold  
+    emergency_threshold: float = 0.042 # From escalation.emergency_threshold
     # Monitoring
     health_check_interval: int = 30
     performance_window: int = 100
     false_positive_threshold: float = 0.3
+    
+    def __post_init__(self):
+        """Load values from risk_policy.yaml after init."""
+        yaml_config = _load_anomaly_detector_config_from_yaml()
+        for key, value in yaml_config.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
     # Status/health (namespaced)
     status_key: str = "anomaly_detector_status"
     health_key: str = "anomaly_detector_health"

@@ -25,6 +25,7 @@ from modules.voting.core.constants import (
     CONFIDENCE_THRESHOLD,
     CONSENSUS_THRESHOLD,
     VotingAction,
+    is_training_mode,
 )
 # Per-instrument voting infrastructure
 from modules.voting.core.per_instrument import (
@@ -59,12 +60,16 @@ class FinalArbiter(VotingModuleBase):
         # Configuration
         self.min_confidence = float(self.config.get('min_confidence', CONFIDENCE_THRESHOLD))
         self.consensus_threshold = float(self.config.get('consensus_threshold', CONSENSUS_THRESHOLD))
-        self.max_fragility = float(self.config.get('max_fragility', 0.7))
+        self.max_fragility = float(self.config.get('max_fragility', 0.9))  # Relaxed from 0.7
         self.max_collusion = float(self.config.get('max_collusion', 0.8))
         self.bootstrap_steps = int(self.config.get('bootstrap_steps', 50))
+
+        # Technical override: default OFF so agent/committee has full power
+        self.technical_override_enabled = bool(self.config.get('technical_override_enabled', False))
         
         # Gate criteria weights
-        self.criteria_weights = self.config.get('criteria_weights', 
+        self.criteria_weights = self.config.get(
+            'criteria_weights',
             [0.25, 0.20, 0.20, 0.20, 0.15]  # strength, consensus, reliability, risk, novelty
         )
         
@@ -102,7 +107,8 @@ class FinalArbiter(VotingModuleBase):
         self.logger.info(
             f"[ARBITER] FinalArbiter initialized | "
             f"min_conf={self.min_confidence:.2f} | "
-            f"consensus_thresh={self.consensus_threshold:.2f}"
+            f"consensus_thresh={self.consensus_threshold:.2f} | "
+            f"technical_override_enabled={self.technical_override_enabled}"
         )
         
         # Publish baseline
@@ -167,7 +173,7 @@ class FinalArbiter(VotingModuleBase):
             # Evaluate gate criteria
             gate_result = await self._evaluate_gate(data)
             
-            # Generate final decision
+            # Generate final decision (global)
             final_decision = await self._generate_final_decision(data, gate_result)
             
             # Generate per-instrument signals
@@ -244,6 +250,8 @@ class FinalArbiter(VotingModuleBase):
             # Uncertainty inputs
             'fragility': float(self.smart_bus.get('fragility', name) or 0.5),
             'uncertainty_score': float(self.smart_bus.get('uncertainty_score', name) or 0.5),
+            # Per-instrument fragility from UncertaintySampler
+            'instrument_fragility': self.smart_bus.get('instrument_fragility', name) or {},
             
             # Horizon inputs
             'horizon_alignment': self.smart_bus.get('horizon_alignment', name) or {},
@@ -260,7 +268,7 @@ class FinalArbiter(VotingModuleBase):
         }
     
     async def _evaluate_gate(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Evaluate gate criteria."""
+        """Evaluate gate criteria (global gate)."""
         self._step_count += 1
         self._gate_attempts += 1
         
@@ -329,7 +337,7 @@ class FinalArbiter(VotingModuleBase):
         data: Dict[str, Any], 
         gate_result: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Generate final trading decision."""
+        """Generate final trading decision (global)."""
         committee = data.get('committee_decision', {})
         trade_vote = data.get('trade_vote_v2', {})
         
@@ -352,7 +360,7 @@ class FinalArbiter(VotingModuleBase):
         # Adjust confidence by gate score
         adjusted_confidence = confidence * gate_result['weighted_score']
         
-        # Apply fragility penalty
+        # Apply global fragility penalty
         fragility = data.get('fragility', 0.5)
         if fragility > 0.5:
             adjusted_confidence *= (1.0 - (fragility - 0.5))
@@ -384,18 +392,20 @@ class FinalArbiter(VotingModuleBase):
         
         This allows EURUSD to be LONG while XAUUSD is SHORT if the experts voted differently.
         """
-        signals = {}
+        signals: Dict[str, Dict[str, Any]] = {}
         name = self.__class__.__name__
         
-        # ========== Try per-instrument committee decisions first ==========
+        # ========== Try per-instrument committee decisions first ========== #
         per_inst_decisions = self.smart_bus.get('committee_decisions_by_instrument', name) or {}
         
         if per_inst_decisions:
-            # NEW: Use per-instrument decisions from CommitteeCoordinator
+            # Use per-instrument decisions from CommitteeCoordinator
             self.logger.debug(f"[ARBITER] Using per-instrument decisions: {list(per_inst_decisions.keys())}")
             
             collusion_score = float(data.get('collusion_score', 0.0))
-            fragility = float(data.get('fragility', 0.5))
+            global_fragility = float(data.get('fragility', 0.5))
+            # Use per-instrument fragility if available from UncertaintySampler
+            instrument_fragility_map = data.get('instrument_fragility', {}) or {}
             market_regime = str(data.get('market_regime', 'UNKNOWN'))
             
             for inst in self.instruments:
@@ -407,35 +417,46 @@ class FinalArbiter(VotingModuleBase):
                     inst_confidence = float(inst_decision.get('confidence', 0.0))
                     inst_consensus = float(inst_decision.get('consensus_score', 0.0))
                     
-                    # Apply gate criteria per instrument
-                    gate_passed = self._check_instrument_gate(
+                    # Get per-instrument fragility or fall back to global
+                    inst_fragility = float(instrument_fragility_map.get(inst, global_fragility))
+                    
+                    # Apply gate criteria per instrument (may override action)
+                    gate_passed, final_action, final_confidence = self._check_instrument_gate(
                         instrument=inst,
                         action=inst_action,
                         confidence=inst_confidence,
                         consensus_score=inst_consensus,
                         collusion_score=collusion_score,
-                        fragility=fragility,
+                        fragility=inst_fragility,
                         market_regime=market_regime,
                     )
                     
-                    if gate_passed and inst_action in ('LONG', 'SHORT'):
+                    if gate_passed and final_action.upper() in ('LONG', 'SHORT', 'BUY', 'SELL'):
                         # Convert to BUY/SELL format
-                        final_action = 'BUY' if inst_action == 'LONG' else 'SELL'
+                        if final_action.upper() in ('LONG', 'BUY'):
+                            output_action = 'BUY'
+                            intensity = round(final_confidence, 4)  # Positive for BUY
+                        else:
+                            output_action = 'SELL'
+                            intensity = round(-final_confidence, 4)  # Negative for SELL
                         signals[inst] = {
-                            'action': final_action,
-                            'confidence': round(inst_confidence, 4),
-                            'size_multiplier': round(inst_confidence, 4),
+                            'action': output_action,
+                            'confidence': round(final_confidence, 4),
+                            'size_multiplier': round(final_confidence, 4),
+                            'intensity': intensity,  # For PositionManager compatibility
                             'instrument': inst,
                             'consensus_score': inst_consensus,
                             'gate_passed': True,
-                            'reason': f'Per-instrument decision: {final_action} (conf={inst_confidence:.2f})',
+                            'reason': f'Per-instrument decision: {output_action} (conf={final_confidence:.2f})',
                             'source': 'per_instrument_committee',
+                            'original_action': inst_action,  # Track if overridden
                         }
                     else:
                         signals[inst] = {
                             'action': 'HOLD',
                             'confidence': 0.0,
                             'size_multiplier': 0.0,
+                            'intensity': 0.0,  # Zero intensity for HOLD
                             'instrument': inst,
                             'gate_passed': False,
                             'reason': f'Gate blocked or flat signal (action={inst_action}, gate={gate_passed})',
@@ -447,6 +468,7 @@ class FinalArbiter(VotingModuleBase):
                         'action': 'HOLD',
                         'confidence': 0.0,
                         'size_multiplier': 0.0,
+                        'intensity': 0.0,  # Zero intensity for no decision
                         'instrument': inst,
                         'reason': 'No committee decision for instrument',
                         'source': 'fallback',
@@ -458,7 +480,7 @@ class FinalArbiter(VotingModuleBase):
             )
             return signals
         
-        # ========== Fallback: Use global decision with alignment filtering ==========
+        # ========== Fallback: Use global decision with alignment filtering ========== #
         self.logger.debug("[ARBITER] Falling back to global decision + alignment")
         
         action = decision.get('action', 'abstain')
@@ -483,8 +505,8 @@ class FinalArbiter(VotingModuleBase):
         indicators = self.smart_bus.get('technical_indicators', name) or {}
         
         # Determine which instruments align with the global action
-        aligned_instruments = []
-        instrument_scores = {}
+        aligned_instruments: List[str] = []
+        instrument_scores: Dict[str, float] = {}
         
         for inst in self.instruments:
             inst_market = extract_instrument_data(market_data, inst)
@@ -510,10 +532,18 @@ class FinalArbiter(VotingModuleBase):
         for inst in self.instruments:
             if inst in aligned_instruments:
                 inst_confidence = base_confidence * instrument_scores.get(inst, 0.5)
+                # Intensity: positive for BUY, negative for SELL
+                if action.upper() in ('BUY', 'LONG'):
+                    intensity = round(inst_confidence, 4)
+                elif action.upper() in ('SELL', 'SHORT'):
+                    intensity = round(-inst_confidence, 4)
+                else:
+                    intensity = 0.0
                 signals[inst] = {
                     'action': action,
                     'confidence': round(inst_confidence, 4),
                     'size_multiplier': round(inst_confidence, 4),
+                    'intensity': intensity,  # For PositionManager compatibility
                     'instrument': inst,
                     'alignment_score': instrument_scores.get(inst, 0.5),
                     'reason': f'Aligned with global {action}',
@@ -524,6 +554,7 @@ class FinalArbiter(VotingModuleBase):
                     'action': 'HOLD',
                     'confidence': 0.0,
                     'size_multiplier': 0.0,
+                    'intensity': 0.0,  # Zero intensity for HOLD
                     'instrument': inst,
                     'alignment_score': instrument_scores.get(inst, 0.0),
                     'reason': f'Not aligned with global {action} (score={instrument_scores.get(inst, 0):.2f})'
@@ -552,8 +583,8 @@ class FinalArbiter(VotingModuleBase):
         """
         try:
             is_buy = action.upper() == 'BUY'
-            scores = []
-            weights = []
+            scores: List[float] = []
+            weights: List[float] = []
             
             # 1. Candle direction (most important - actual price movement)
             open_price = float(market_data.get('open', price_data.get('open', 0)) or 0)
@@ -585,7 +616,7 @@ class FinalArbiter(VotingModuleBase):
             scores.extend([momentum_score, rsi_score])
             weights.extend([1.0, 1.0])
             
-            # 2. Price position (relative to recent range)
+            # 3. Price position (relative to recent range)
             high = float(price_data.get('high', 0) or 0)
             low = float(price_data.get('low', 0) or 0)
             close = float(price_data.get('close', price_data.get('last', 0)) or 0)
@@ -600,7 +631,7 @@ class FinalArbiter(VotingModuleBase):
                 scores.append(position_score)
                 weights.append(0.8)  # Medium weight for price position
             
-            # 3. Volatility check (very high volatility reduces score)
+            # 4. Volatility check (very high volatility reduces score)
             atr = float(indicators.get('atr', indicators.get('volatility', 0)) or 0)
             if atr > 0 and close > 0:
                 atr_pct = atr / close
@@ -625,6 +656,86 @@ class FinalArbiter(VotingModuleBase):
             self.logger.warning(f"[ARBITER] Error calculating alignment for {instrument}: {e}")
             return 0.5  # Default moderate alignment
     
+    def _check_technical_override(self, instrument: str, action: str) -> tuple:
+        """
+        Check if technical experts (Momentum + Trend) should override this trade.
+        
+        If BOTH MomentumExpert AND TrendExpert vote OPPOSITE to the proposed action
+        with HIGH confidence, flip the direction. This protects capital while the
+        PPO agent is still learning, but doesn't completely choke the agent.
+        
+        Override only happens when:
+        - Both technical experts agree with each other
+        - Both disagree with the proposed direction  
+        - Both have confidence > 50% (strong technical signal)
+        
+        Returns:
+            tuple: (should_override: bool, new_action: str, avg_confidence: float)
+        """
+        try:
+            name = self.__class__.__name__
+            inst_normalized = normalize_instrument(instrument)
+            
+            # Get per-instrument votes from technical experts
+            momentum_votes = self.smart_bus.get('MomentumExpert_per_instrument_votes', name) or {}
+            trend_votes = self.smart_bus.get('TrendExpert_per_instrument_votes', name) or {}
+            
+            # Get vote for this specific instrument
+            momentum_vote = momentum_votes.get(inst_normalized, {})
+            trend_vote = trend_votes.get(inst_normalized, {})
+            
+            momentum_action = str(momentum_vote.get('action', 'flat')).upper()
+            trend_action = str(trend_vote.get('action', 'flat')).upper()
+            momentum_conf = float(momentum_vote.get('confidence', 0.0))
+            trend_conf = float(trend_vote.get('confidence', 0.0))
+            
+            # Normalize actions
+            proposed = action.upper()
+            if proposed in ('BUY', 'LONG'):
+                proposed_direction = 'LONG'
+            elif proposed in ('SELL', 'SHORT'):
+                proposed_direction = 'SHORT'
+            else:
+                return (False, action, 0.0)  # No override for HOLD/FLAT
+            
+            # Check if both technical experts agree WITH EACH OTHER and disagree with proposal
+            momentum_dir = 'LONG' if momentum_action == 'LONG' else 'SHORT' if momentum_action == 'SHORT' else None
+            trend_dir = 'LONG' if trend_action == 'LONG' else 'SHORT' if trend_action == 'SHORT' else None
+            
+            # Both must have a directional opinion and agree with each other
+            if momentum_dir and trend_dir and momentum_dir == trend_dir:
+                # They agree with each other - check if they disagree with the proposal
+                if momentum_dir != proposed_direction:
+                    # Technical experts say opposite! 
+                    # Only override if BOTH have strong confidence (>50%)
+                    min_override_conf = 0.50  # Higher threshold - only strong technical signals
+                    
+                    if momentum_conf >= min_override_conf and trend_conf >= min_override_conf:
+                        avg_conf = (momentum_conf + trend_conf) / 2
+                        new_action = 'BUY' if momentum_dir == 'LONG' else 'SELL'
+                        
+                        self.logger.warning(
+                            f"[ARBITER] TECHNICAL OVERRIDE for {instrument}: "
+                            f"Flipping {proposed_direction} → {momentum_dir} | "
+                            f"Momentum={momentum_action}({momentum_conf:.2f}), "
+                            f"Trend={trend_action}({trend_conf:.2f}) | "
+                            f"Reason: Both technical experts have strong opposing signals"
+                        )
+                        return (True, new_action, avg_conf)
+                    else:
+                        # Technical experts disagree but not strongly enough
+                        self.logger.info(
+                            f"[ARBITER] Technical disagreement noted but NOT overriding {instrument} {proposed_direction}: "
+                            f"Momentum={momentum_action}({momentum_conf:.2f}), "
+                            f"Trend={trend_action}({trend_conf:.2f}) - confidence too low for override"
+                        )
+            
+            return (False, action, 0.0)  # No override
+            
+        except Exception as e:
+            self.logger.warning(f"[ARBITER] Error checking technical override: {e}")
+            return (False, action, 0.0)  # Don't override on error
+    
     def _check_instrument_gate(
         self,
         instrument: str,
@@ -634,40 +745,66 @@ class FinalArbiter(VotingModuleBase):
         collusion_score: float = 0.0,
         fragility: float = 0.5,
         market_regime: str = "UNKNOWN"
-    ) -> bool:
+    ) -> tuple:
         """
         Check if an instrument-specific trade should pass through the gate.
         
         This is a simplified gate check for per-instrument decisions since
         the committee has already done much of the aggregation work.
         
-        Args:
-            instrument: The instrument being evaluated
-            action: Proposed action (BUY/SELL/HOLD)
-            confidence: Committee confidence for this instrument
-            consensus_score: How much agreement among voters
-            collusion_score: Risk of collusion (too much agreement)
-            fragility: How fragile/risky the decision is
-            market_regime: Current market regime
-            
+        NOTE:
+        - Technical override is now optional (self.technical_override_enabled).
+        - By default it is DISABLED so the agent/committee has full power.
+        
         Returns:
-            True if the trade should proceed, False to block
+            tuple: (gate_passed: bool, final_action: str, final_confidence: float)
         """
         try:
             # HOLD always passes (it's a non-trade)
-            if action.upper() == 'HOLD':
-                return True
+            if action.upper() in ('HOLD', 'FLAT'):
+                return (True, 'HOLD', 0.0)
+            
+            # ========== Technical Override Check (optional) ==========
+            if self.technical_override_enabled:
+                should_override, override_action, override_conf = self._check_technical_override(
+                    instrument,
+                    action
+                )
+                if should_override:
+                    # Use technical experts' direction instead
+                    action = override_action
+                    confidence = max(confidence * 0.8, override_conf)
+                    self.logger.info(
+                        f"[ARBITER] Using technical override: {instrument} → {action} "
+                        f"(conf={confidence:.2f})"
+                    )
+            else:
+                # Explicit debug so we know agent/committee is in control
+                self.logger.debug(
+                    f"[ARBITER] Technical override DISABLED – "
+                    f"using committee/agent action for {instrument}: {action}"
+                )
             
             # Base confidence threshold
             min_confidence = self.min_confidence
             
-            # Adjust threshold based on regime
-            regime_adjustments = {
-                'TRENDING': -0.05,      # Lower threshold in trends
-                'MEAN_REVERTING': 0.0,  # Normal threshold
-                'VOLATILE': 0.1,        # Higher threshold in volatility
-                'UNKNOWN': 0.05,        # Slightly higher for unknown
-            }
+            # Adjust threshold based on regime (reduced in TRAINING mode for exploration)
+            if is_training_mode():
+                # TRAINING: minimal regime adjustments to allow more trades for learning
+                regime_adjustments = {
+                    'TRENDING': -0.05,      # Lower threshold in trends
+                    'MEAN_REVERTING': 0.0,  # Normal threshold
+                    'VOLATILE': 0.0,        # No penalty in training - let it learn
+                    'UNKNOWN': 0.0,         # No penalty in training
+                }
+            else:
+                # LIVE: conservative adjustments to protect capital
+                regime_adjustments = {
+                    'TRENDING': -0.05,      # Lower threshold in trends
+                    'MEAN_REVERTING': 0.0,  # Normal threshold
+                    'VOLATILE': 0.1,        # Higher threshold in volatility
+                    'UNKNOWN': 0.05,        # Slightly higher for unknown
+                }
             min_confidence += regime_adjustments.get(market_regime.upper(), 0.0)
             
             # Check confidence threshold
@@ -676,7 +813,7 @@ class FinalArbiter(VotingModuleBase):
                     f"[ARBITER] Gate BLOCKED {instrument} {action}: "
                     f"confidence {confidence:.2f} < threshold {min_confidence:.2f}"
                 )
-                return False
+                return (False, action, confidence)
             
             # Check consensus (don't trade if disagreement is too high)
             if consensus_score < 0.3:
@@ -684,7 +821,7 @@ class FinalArbiter(VotingModuleBase):
                     f"[ARBITER] Gate BLOCKED {instrument} {action}: "
                     f"low consensus {consensus_score:.2f}"
                 )
-                return False
+                return (False, action, confidence)
             
             # Check collusion (too much agreement is suspicious)
             if collusion_score > 0.85:
@@ -692,25 +829,25 @@ class FinalArbiter(VotingModuleBase):
                     f"[ARBITER] Gate BLOCKED {instrument} {action}: "
                     f"high collusion {collusion_score:.2f}"
                 )
-                return False
+                return (False, action, confidence)
             
-            # Check fragility
-            if fragility > 0.8:
+            # Check fragility (relaxed - fragility is often high due to noisy sampling)
+            if fragility > 0.95:
                 self.logger.debug(
                     f"[ARBITER] Gate BLOCKED {instrument} {action}: "
-                    f"high fragility {fragility:.2f}"
+                    f"extreme fragility {fragility:.2f}"
                 )
-                return False
+                return (False, action, confidence)
             
             self.logger.debug(
                 f"[ARBITER] Gate PASSED {instrument} {action}: "
                 f"conf={confidence:.2f}, consensus={consensus_score:.2f}"
             )
-            return True
+            return (True, action, confidence)
             
         except Exception as e:
             self.logger.warning(f"[ARBITER] Error in instrument gate check for {instrument}: {e}")
-            return False  # Block on error for safety
+            return (False, action, confidence)  # Block on error for safety
     
     def _summarize_inputs(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Summarize voting inputs for analysis."""
@@ -833,5 +970,3 @@ class FinalArbiter(VotingModuleBase):
             'member_weights': {},
             '_thesis': f'Arbiter error: {error}',
         }
-
-

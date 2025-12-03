@@ -931,6 +931,14 @@ class ModernTradingEnv(gym.Env):
                 d1 = (cur - past) / max(abs(past), 1e-12)
             feats.extend([h1, h4, d1, 1.0 if (h1 > 0 and h4 > 0 and d1 > 0) else 0.0, 1.0 if (h1 < 0 and h4 < 0 and d1 < 0) else 0.0])
 
+        # Add prop firm features (AI needs to see how close to limits)
+        prop_firm_feats = self._get_prop_firm_observation_features()
+        feats.extend(prop_firm_feats)
+
+        # Add memory features (AI learns from memory signals)
+        memory_feats = self._get_memory_observation_features()
+        feats.extend(memory_feats)
+
         arr = np.asarray(feats, dtype=np.float32)
         if arr.size < expected_size:
             out = np.zeros(expected_size, dtype=np.float32)
@@ -938,11 +946,140 @@ class ModernTradingEnv(gym.Env):
             return out
         return arr[:expected_size]
 
+    def _get_prop_firm_observation_features(self) -> List[float]:
+        """
+        Get prop firm-related features for observation.
+        
+        These help the AI understand:
+        1. How close to daily DD limit (0-1, 1=at limit)
+        2. How close to max DD limit (0-1, 1=at limit)  
+        3. Profit progress toward target (0-1, 1=target reached)
+        4. Can trade flag (0 or 1)
+        """
+        # Default values (safe to trade, no progress)
+        daily_dd_ratio = 0.0
+        max_dd_ratio = 0.0
+        profit_progress = 0.0
+        can_trade = 1.0
+        
+        try:
+            if self.smart_bus:
+                prop_status = self.smart_bus.get("prop_firm_status", "Environment")
+                if isinstance(prop_status, dict):
+                    # Daily DD used ratio (0 to 1+)
+                    daily_limit = prop_status.get("daily_dd_remaining", 0.05) + prop_status.get("daily_dd_used", 0.0)
+                    if daily_limit > 0:
+                        daily_dd_ratio = prop_status.get("daily_dd_used", 0.0) / daily_limit
+                    
+                    # Max DD used ratio (0 to 1+)
+                    max_limit = prop_status.get("max_dd_remaining", 0.10) + prop_status.get("max_dd_used", 0.0)
+                    if max_limit > 0:
+                        max_dd_ratio = prop_status.get("max_dd_used", 0.0) / max_limit
+                    
+                    # Can trade (0 or 1)
+                    can_trade = 1.0 if prop_status.get("can_trade", True) else 0.0
+            
+            # Calculate profit progress from balance
+            initial = float(self.config.initial_balance)
+            current = float(self.market_state.balance)
+            profit_target = float(getattr(self.config, "profit_target", 0.10))  # From risk_policy.yaml
+            
+            if initial > 0 and profit_target > 0:
+                current_profit = (current - initial) / initial
+                profit_progress = max(0.0, current_profit / profit_target)
+        except Exception:
+            pass
+        
+        return [
+            float(np.clip(daily_dd_ratio, 0.0, 1.5)),    # Daily DD ratio (allow >1 to show breach)
+            float(np.clip(max_dd_ratio, 0.0, 1.5)),      # Max DD ratio
+            float(np.clip(profit_progress, 0.0, 2.0)),   # Profit progress (allow >1 for over-target)
+            can_trade,                                     # Can trade flag
+        ]
+
+    def _get_memory_observation_features(self) -> List[float]:
+        """
+        Get memory-related features for observation.
+        
+        These help the AI learn from memory signals:
+        1. risk_multiplier: 0-1, lower = memory thinks setup is riskier
+        2. danger_similarity: 0-1, how similar to past losing trades
+        3. loss_prob: 0-1, neural network's P(loss) prediction
+        4. veto_active: 0 or 1, whether memory wants to block
+        5. signed_bias: -1 to 1, playbook's directional recommendation
+        6. playbook_confidence: 0-1, confidence in playbook recall
+        7. consecutive_losses_norm: 0-1, normalized loss streak (0=none, 1=5+)
+        8. neural_risk_hint: 0-1, attention-based risk estimate
+        
+        NOTE: The hard veto is still applied in PPO arbiter - these features
+        let the AI LEARN from memory, but memory can still override if certain.
+        """
+        # Default neutral values (no memory influence)
+        risk_multiplier = 1.0
+        danger_similarity = 0.0
+        loss_prob = 0.0
+        veto_active = 0.0
+        signed_bias = 0.0
+        playbook_confidence = 0.5
+        consecutive_losses_norm = 0.0
+        neural_risk_hint = 0.5
+        
+        try:
+            if self.smart_bus:
+                # Memory gate (main risk signal)
+                memory_gate = self.smart_bus.get("memory_gate", "Environment")
+                if isinstance(memory_gate, dict):
+                    risk_multiplier = float(memory_gate.get("risk_multiplier", 1.0))
+                    danger_similarity = float(memory_gate.get("danger_similarity", 0.0))
+                    loss_prob = float(memory_gate.get("loss_prob", 0.0))
+                    veto_active = 1.0 if memory_gate.get("veto", False) else 0.0
+                    
+                    # Per-instrument info (sum vetoed instruments)
+                    vetoed = memory_gate.get("vetoed_instruments", [])
+                    if isinstance(vetoed, list) and len(vetoed) > 0:
+                        veto_active = max(veto_active, len(vetoed) / 2.0)  # 0-1 scale
+                    
+                    # Consecutive losses (normalize: 5+ = 1.0)
+                    consec = memory_gate.get("consecutive_losses_by_instrument", {})
+                    if isinstance(consec, dict) and consec:
+                        max_streak = max(consec.values()) if consec.values() else 0
+                        consecutive_losses_norm = min(1.0, max_streak / 5.0)
+                
+                # Memory vote (playbook signal)
+                memory_vote = self.smart_bus.get("memory_vote", "Environment")
+                if isinstance(memory_vote, dict):
+                    signed_bias = float(memory_vote.get("signed_bias", 0.0))
+                    playbook_confidence = float(memory_vote.get("confidence", 0.5))
+                    neural_risk_hint = float(memory_vote.get("neural_risk_hint", 0.5))
+                
+                # Fallback: try neural_risk_hint directly from bus
+                if neural_risk_hint == 0.5:
+                    direct_hint = self.smart_bus.get("neural_risk_hint", "Environment")
+                    if direct_hint is not None:
+                        try:
+                            neural_risk_hint = float(direct_hint)
+                        except (TypeError, ValueError):
+                            pass
+                            
+        except Exception:
+            pass
+        
+        return [
+            float(np.clip(risk_multiplier, 0.0, 1.0)),       # 1: Risk multiplier (inverted: 0=risky, 1=safe)
+            float(np.clip(danger_similarity, 0.0, 1.0)),     # 2: Danger zone similarity
+            float(np.clip(loss_prob, 0.0, 1.0)),             # 3: Neural P(loss)
+            float(np.clip(veto_active, 0.0, 1.0)),           # 4: Memory veto active
+            float(np.clip(signed_bias, -1.0, 1.0)),          # 5: Playbook directional bias
+            float(np.clip(playbook_confidence, 0.0, 1.0)),   # 6: Playbook confidence
+            float(np.clip(consecutive_losses_norm, 0.0, 1.0)), # 7: Loss streak (normalized)
+            float(np.clip(neural_risk_hint, 0.0, 1.0)),      # 8: Neural attention risk
+        ]
+
     # ──────────────────────────────────────────────────────────────
     # Limits & misc
     # ──────────────────────────────────────────────────────────────
     def _check_termination(self) -> Tuple[bool, bool]:
-        """Bus-first termination: emergency_mode / bus limits override config where available."""
+        """Bus-first termination: emergency_mode / bus limits / prop firm rules override config."""
         # 1) Emergency mode (if any module raised it)
         if self.smart_bus and self.halt_on_emergency:
             try:
@@ -957,7 +1094,20 @@ class ModernTradingEnv(gym.Env):
             except Exception:
                 pass
 
-        # 2) Bus-provided limits (e.g., ComplianceModule / PortfolioRiskSystem)
+        # 2) Prop firm limit check (from UnifiedLotCalculator via bus)
+        if self.smart_bus and self.prefer_bus_limits:
+            try:
+                prop_firm_status = self.smart_bus.get("prop_firm_status", "Environment")
+                if isinstance(prop_firm_status, dict):
+                    # Must close all = prop firm rule breach (hard termination)
+                    if bool(prop_firm_status.get("must_close_all", False)):
+                        return True, False
+                    # Can't trade = at daily limit but not breached yet
+                    # Don't terminate, but lot calculator will block new trades
+            except Exception:
+                pass
+
+        # 3) Bus-provided limits (e.g., ComplianceModule / PortfolioRiskSystem)
         bus_max_dd = None
         if self.smart_bus and self.prefer_bus_limits:
             try:
@@ -984,7 +1134,7 @@ class ModernTradingEnv(gym.Env):
 
         dd_limit = float(bus_max_dd) if bus_max_dd is not None else float(self.config.max_drawdown)
 
-        # 3) Apply limits and step bounds
+        # 4) Apply limits and step bounds
         if self.market_state.current_drawdown > dd_limit:
             return True, False
         # Respect dataset boundary to avoid premature resets when max_steps is large

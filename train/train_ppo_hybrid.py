@@ -375,6 +375,72 @@ def create_ppo_model(env, config: TradingConfig):
     return model
 
 # ───────────────────────────────────────────────────────────────────
+# TRANSFER LEARNING VALIDATION
+# ───────────────────────────────────────────────────────────────────
+def _validate_pretrained_model(model_path: str, config: TradingConfig) -> bool:
+    """Validate that a pretrained model is compatible with the current config."""
+    import json
+    
+    # Check for metadata file from simple mode training
+    metadata_path = model_path.replace(".zip", "_metadata.json").replace(
+        "simple_ppo_final", "simple_ppo_metadata"
+    )
+    # Also try the direct metadata path
+    model_dir = os.path.dirname(model_path)
+    alt_metadata_path = os.path.join(model_dir, "simple_ppo_metadata.json")
+    
+    for meta_path in [metadata_path, alt_metadata_path]:
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path) as f:
+                    metadata = json.load(f)
+                
+                # Check observation size
+                model_obs = metadata.get("observation_size", 256)
+                config_obs = getattr(config, "environment_observation_size", 256)
+                if model_obs != config_obs:
+                    print(f"[WARN] Obs size mismatch: model={model_obs}, config={config_obs}")
+                    print("       Consider setting environment_observation_size to match.")
+                
+                # Check action shape - should be [n_instruments * 2]
+                # Both SimpleTradingEnv and ModernTradingEnv use (2 * n_instruments,) action space
+                model_action = metadata.get("action_shape", [4])
+                model_instruments = metadata.get("instruments", ["EUR_USD", "XAU_USD"])
+                expected_action_dim = len(model_instruments) * 2
+                
+                if model_action != [expected_action_dim]:
+                    print(f"[WARN] Action shape: {model_action} (expected [{expected_action_dim}] for {len(model_instruments)} instruments)")
+                
+                # Check policy architecture
+                hyperparams = metadata.get("hyperparameters", {})
+                policy_hidden = metadata.get("policy_hidden", 256)
+                value_hidden = metadata.get("value_hidden", 256)
+                
+                print(f"\n[INFO] ✅ TRANSFER LEARNING - Pretrained model metadata:")
+                print(f"       Type:         {metadata.get('model_type', 'unknown')}")
+                print(f"       Timesteps:    {metadata.get('total_timesteps', 'N/A'):,}")
+                print(f"       Created:      {metadata.get('created_at', 'N/A')}")
+                print(f"       Obs Size:     {model_obs}")
+                print(f"       Action Shape: {model_action}")
+                print(f"       Instruments:  {model_instruments}")
+                print(f"       Policy Net:   [{policy_hidden}, {policy_hidden // 2}]")
+                print(f"       Value Net:    [{value_hidden}, {value_hidden // 2}]")
+                if hyperparams:
+                    print(f"       LR:           {hyperparams.get('learning_rate', 'N/A')}")
+                    print(f"       Gamma:        {hyperparams.get('gamma', 'N/A')}")
+                print(f"       Transfer OK:  {metadata.get('transfer_compatible', False)}")
+                
+                return True
+                
+            except Exception as e:
+                print(f"[WARN] Could not read metadata: {e}")
+    
+    # No metadata - just warn and proceed
+    print("[INFO] No metadata found for pretrained model - proceeding anyway")
+    return True
+
+
+# ───────────────────────────────────────────────────────────────────
 # TRAINING
 # ───────────────────────────────────────────────────────────────────
 def train_modern_ppo(config: TradingConfig, data_source: str, pretrained_model_path: Optional[str] = None):
@@ -400,6 +466,7 @@ def train_modern_ppo(config: TradingConfig, data_source: str, pretrained_model_p
     # Model (new vs checkpoint)
     if pretrained_model_path and os.path.exists(pretrained_model_path):
         print(f"[LOAD] {pretrained_model_path}")
+        _validate_pretrained_model(pretrained_model_path, config)
         model = PPO.load(pretrained_model_path, env=train_env)
     else:
         model = create_ppo_model(train_env, config)
@@ -500,38 +567,11 @@ def main():
     os.makedirs("checkpoints", exist_ok=True)
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
 
-    # Initialize the ModuleOrchestrator
-    orchestrator = ModuleOrchestrator.get_instance()
-    orchestrator.initialize()
-
-    # Bus observability (optional; keep types as Any to avoid arg-type mismatches)
-    bus_inspector = None
-    try:
-        if DependencyInspector_Cls is not None and ENHANCED_LOGGING:
-            bus = InfoBusManager.get_instance()
-            Path("logs/monitoring/dependency").mkdir(parents=True, exist_ok=True)
-            session_logger = RotatingLogger_Cls(
-                name="DependencyInspector",
-                log_path=f"logs/monitoring/dependency/Training_{datetime.now():%Y%m%d_%H%M%S}.log",
-                max_lines=20000,
-                operator_mode=True,
-                plain_english=True,
-            )
-            try:
-                # Type of "log" is external; we deliberately avoid annotations to please Pylance
-                bus_inspector = DependencyInspector_Cls(bus=bus, log=session_logger)  # type: ignore[arg-type]
-                if hasattr(bus_inspector, "attach_live_taps"):
-                    bus_inspector.attach_live_taps(show_values=True, max_preview=160)
-                if hasattr(bus_inspector, "emit_report"):
-                    bus_inspector.emit_report("Training start")
-            except Exception:
-                pass
-    except Exception:
-        pass
-
+    # Parse args first to check if exploration mode
     p = argparse.ArgumentParser(description="Modern PPO Training")
     p.add_argument("--mode", choices=["offline", "online", "test"], default="offline")
-    p.add_argument("--preset", choices=["conservative", "aggressive", "research", "production"])
+    p.add_argument("--preset", choices=["conservative", "aggressive", "research", "production", "exploration"],
+                   help="Config preset: 'exploration' disables modules for free exploration")
     p.add_argument("--timesteps", type=int)
     p.add_argument("--lr", type=float)
     p.add_argument("--batch_size", type=int)
@@ -559,10 +599,51 @@ def main():
     )
     args = p.parse_args()
 
+    # Determine if exploration mode (no modules)
+    exploration_mode = (args.preset == "exploration")
+    
+    # Initialize the ModuleOrchestrator ONLY if not in exploration mode
+    orchestrator = None
+    bus_inspector = None
+    if not exploration_mode:
+        orchestrator = ModuleOrchestrator.get_instance()
+        orchestrator.initialize()
+
+        # Bus observability (optional; keep types as Any to avoid arg-type mismatches)
+        try:
+            if DependencyInspector_Cls is not None and ENHANCED_LOGGING:
+                bus = InfoBusManager.get_instance()
+                Path("logs/monitoring/dependency").mkdir(parents=True, exist_ok=True)
+                session_logger = RotatingLogger_Cls(
+                    name="DependencyInspector",
+                    log_path=f"logs/monitoring/dependency/Training_{datetime.now():%Y%m%d_%H%M%S}.log",
+                    max_lines=20000,
+                    operator_mode=True,
+                    plain_english=True,
+                )
+                try:
+                    bus_inspector = DependencyInspector_Cls(bus=bus, log=session_logger)  # type: ignore[arg-type]
+                    if hasattr(bus_inspector, "attach_live_taps"):
+                        bus_inspector.attach_live_taps(show_values=True, max_preview=160)
+                    if hasattr(bus_inspector, "emit_report"):
+                        bus_inspector.emit_report("Training start")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    else:
+        print("\n" + "="*70)
+        print("  EXPLORATION MODE - Modules disabled for free exploration")
+        print("  Use 'python train/train_simple_mode.py' for a cleaner experience")
+        print("="*70 + "\n")
+
     # Config
     if args.mode == "online":
         config = ConfigPresets.conservative_live()
         config.live_mode = True
+    elif args.preset == "exploration":
+        config = ConfigPresets.exploration_mode()
+        print("[INFO] Using EXPLORATION preset - modules disabled for free exploration")
     elif args.preset == "conservative":
         config = ConfigPresets.conservative_live()
     elif args.preset == "aggressive":
@@ -604,13 +685,23 @@ def main():
     if args.pretrained:
         pretrained_path = args.pretrained
     elif args.auto_pretrained:
-        # 1) Prefer final model
+        # Search order:
+        # 1) Final model in standard location
+        # 2) Simple mode pretrained (exploration phase)
+        # 3) Latest checkpoint
+        
         auto_path = os.path.join(getattr(config, "model_dir", "models"), "modern_ppo_final.zip")
+        simple_path = "models/simple/simple_ppo_final.zip"
+        
         if os.path.exists(auto_path):
             pretrained_path = auto_path
             print(f"[AUTO] Using final model as pretrained: {pretrained_path}")
+        elif os.path.exists(simple_path):
+            pretrained_path = simple_path
+            print(f"[AUTO] Using SIMPLE MODE pretrained model: {pretrained_path}")
+            print("       (This model was trained without modules - good foundation!)")
         else:
-            # 2) Fall back to latest checkpoint in checkpoint_dir
+            # Fall back to latest checkpoint in checkpoint_dir
             ckpt_dir = getattr(config, "checkpoint_dir", "checkpoints")
             if os.path.isdir(ckpt_dir):
                 candidates = [

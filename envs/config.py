@@ -52,7 +52,7 @@ class TradingConfig:
     # ===================================================================
     # Core Environment Parameters (fallbacks)
     # ===================================================================
-    initial_balance: float = 3000.0
+    initial_balance: float = 100_000.0  # 100k for prop firm simulation
     max_steps: int = 100000  # increase default episode length to reduce frequent resets
     debug: bool = True
     init_seed: int = 42
@@ -186,6 +186,7 @@ class TradingConfig:
     max_total_exposure: float = 0.35     # Reduced from 0.50 - less total exposure
     max_drawdown: float = 0.15           # Reduced from 0.20 - tighter DD limit
     max_correlation: float = 0.7         # Reduced from 0.8 - less correlated risk
+    profit_target: float = 0.10          # From prop_firm.profit_target (10% default)
 
     # Position Management Specific (fallbacks)
     max_consecutive_losses: int = 5
@@ -285,6 +286,12 @@ class TradingConfig:
         object.__setattr__(self, "max_steps_per_episode", int(self.max_steps))
 
         # ═══════════════════════════════════════════════════════════════
+        # LOAD FROM risk_policy.yaml (single source of truth for risk params)
+        # Only applies defaults - explicit overrides in constructor take precedence
+        # ═══════════════════════════════════════════════════════════════
+        self._load_from_risk_policy()
+
+        # ═══════════════════════════════════════════════════════════════
         # AUTO-SET TRADING MODE based on live_mode flag
         # This propagates to all mode-aware subsystems (gates, voting, rewards)
         # ═══════════════════════════════════════════════════════════════
@@ -348,6 +355,78 @@ class TradingConfig:
         ]
         for directory in module_log_dirs:
             _ensure_dir(directory)
+
+    def _load_from_risk_policy(self) -> None:
+        """
+        Load risk parameters from config/risk_policy.yaml.
+        
+        This ensures TradingConfig uses the same values as risk modules,
+        avoiding duplication and keeping risk_policy.yaml as single source of truth.
+        """
+        try:
+            import yaml
+            risk_policy_path = Path("config/risk_policy.yaml")
+            if not risk_policy_path.exists():
+                return
+            
+            with open(risk_policy_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            
+            prop_firm = cfg.get("prop_firm", {})
+            lot_sizing = cfg.get("lot_sizing", {})
+            limits = cfg.get("limits", {})
+            position_manager = cfg.get("position_manager", {})
+            smart_position = cfg.get("smart_position", {})
+            escalation = cfg.get("escalation", {})
+            
+            # Account balance (prop_firm.account_size or lot_sizing.account_balance)
+            balance = prop_firm.get("account_size") or lot_sizing.get("account_balance")
+            if balance and float(balance) > 0:
+                self.initial_balance = float(balance)
+            
+            # Risk limits
+            if "max_daily_loss" in limits:
+                # Use daily loss as max_drawdown (more conservative)
+                self.max_drawdown = float(limits["max_daily_loss"])
+            elif "max_drawdown" in limits:
+                self.max_drawdown = float(limits["max_drawdown"])
+            
+            if "max_position_size" in limits:
+                self.max_position_pct = float(limits["max_position_size"])
+            
+            if "max_exposure_pct" in limits:
+                self.max_total_exposure = float(limits["max_exposure_pct"])
+            
+            if "max_correlation" in limits:
+                self.max_correlation = float(limits["max_correlation"])
+            
+            # Position manager settings
+            if "max_consecutive_losses" in position_manager:
+                self.max_consecutive_losses = int(position_manager["max_consecutive_losses"])
+            
+            if "emergency_drawdown_trigger" in position_manager:
+                self.emergency_drawdown_trigger = float(position_manager["emergency_drawdown_trigger"])
+            
+            # Smart position settings
+            if "hard_stop_loss_eur" in smart_position:
+                self.hard_loss_eur = float(smart_position["hard_stop_loss_eur"])
+            
+            if "min_signal_strength" in smart_position:
+                self.min_signal_threshold = float(smart_position["min_signal_strength"])
+            
+            if "profit_take_trail_pct" in smart_position:
+                self.trail_pct = float(smart_position["profit_take_trail_pct"])
+            
+            # Escalation thresholds
+            if "shutdown_threshold" in escalation:
+                self.emergency_close_threshold = float(escalation["shutdown_threshold"])
+            
+            # Profit target from prop firm
+            if "profit_target" in prop_firm:
+                self.profit_target = float(prop_firm["profit_target"])
+                
+        except Exception:
+            pass  # Keep defaults if config load fails
 
     # ------------------------------------------------------------------
     # Structured views
@@ -503,6 +582,101 @@ class EpisodeMetrics:
 # ─────────────────────────────────────────────────────────
 class ConfigPresets:
     """Enhanced preset configurations for InfoBus-integrated environment"""
+
+    @staticmethod
+    def exploration_mode() -> TradingConfig:
+        """
+        NO MODULES configuration for initial exploration/pretraining.
+        
+        Use this to train the agent on raw price data BEFORE adding modules.
+        This lets the agent freely explore market dynamics without module constraints.
+        
+        Workflow:
+          1. Train with exploration_mode() first (e.g., 100k-500k steps)
+          2. Then fine-tune with production_backtest() using --pretrained
+        
+        Example:
+          python train/train_simple_mode.py --timesteps 200000
+          python train/train_ppo_hybrid.py --pretrained models/simple/simple_ppo_final.zip
+        """
+        return TradingConfig(
+            # ═══════════════════════════════════════════════════════════════
+            # DISABLE ALL MODULE/BUS FEATURES - PURE EXPLORATION
+            # ═══════════════════════════════════════════════════════════════
+            bus_first=False,
+            prefer_bus_data=False,
+            prefer_bus_features=False,
+            prefer_bus_rewards=False,
+            prefer_bus_metrics=False,
+            prefer_bus_limits=False,
+            allow_module_overrides=False,
+            halt_on_emergency=False,
+            
+            # Disable InfoBus & Orchestrator
+            info_bus_enabled=False,
+            info_bus_validation=False,
+            orchestrator_init_timeout=0.0,
+            orchestrator_sync_wait_ms=0.0,
+            
+            # ═══════════════════════════════════════════════════════════════
+            # PERMISSIVE RISK SETTINGS FOR EXPLORATION
+            # (initial_balance loaded from risk_policy.yaml in __post_init__)
+            # ═══════════════════════════════════════════════════════════════
+            initial_balance=100000.0,       # Overridden from risk_policy.yaml
+            max_position_pct=0.20,          # 20% positions allowed
+            max_total_exposure=0.50,        # 50% total exposure
+            max_drawdown=0.30,              # 30% DD before termination
+            
+            # No consensus requirements (agent is on its own)
+            consensus_min=0.0,
+            consensus_max=1.0,
+            min_confidence=0.0,
+            min_intensity=0.0,
+            
+            # ═══════════════════════════════════════════════════════════════
+            # TRAINING SETTINGS - OPTIMIZED FOR EXPLORATION
+            # ═══════════════════════════════════════════════════════════════
+            learning_rate=3e-4,
+            n_steps=2048,
+            batch_size=64,
+            n_epochs=10,
+            gamma=0.99,
+            gae_lambda=0.95,
+            clip_range=0.2,
+            ent_coef=0.02,                  # Higher entropy for exploration
+            vf_coef=0.5,
+            max_grad_norm=0.5,
+            target_kl=0.015,
+            
+            # Network (smaller for faster exploration)
+            policy_hidden_size=128,
+            value_hidden_size=128,
+            
+            # Environment
+            max_steps=10000,                # Long episodes
+            environment_observation_size=128,
+            min_required_data_bars=50,
+            
+            # Training
+            final_training_steps=100000,
+            checkpoint_freq=10000,
+            eval_freq=5000,
+            n_eval_episodes=5,
+            
+            # Mode flags
+            live_mode=False,
+            test_mode=False,
+            debug=True,
+            
+            # Data
+            instruments=["EUR_USD", "XAU_USD"],
+            timeframes=["H1", "H4", "D1"],
+            
+            # No execution costs for clean exploration
+            default_spread=0.0,
+            slippage_pts=0.0,
+            commission_per_million=0.0,
+        )
 
     @staticmethod
     def conservative_live() -> TradingConfig:

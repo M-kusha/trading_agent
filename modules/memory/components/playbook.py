@@ -220,6 +220,10 @@ class PlaybookComponent(MemoryComponent):
         self.contexts.append(dict(market_context))
         now = time.time()
         self.timestamps.append(now)
+        
+        # Get instrument from trade or context
+        instrument = trade.get("instrument") or trade.get("symbol") or "UNKNOWN"
+        
         self.trade_metadata.append(
             {
                 "timestamp": now,
@@ -227,21 +231,23 @@ class PlaybookComponent(MemoryComponent):
                 "regime": market_context.get("regime"),
                 "volatility": market_context.get("volatility_level"),
                 "session": market_context.get("session"),
+                "instrument": instrument,
             }
         )
 
-        # Pattern tracking
-        self._update_pattern_tracking(market_context, float(pnl))
-
+        # Pattern tracking (includes instrument for per-instrument analysis)
+        self._update_pattern_tracking(market_context, float(pnl), instrument)
+        
         # Model is now stale until re-fit (we fit lazily in process)
         self.knn_fitted = False
 
-    def _update_pattern_tracking(self, context: Dict[str, Any], pnl: float) -> None:
-        """Update effectiveness stats keyed by (regime_vol_session)."""
+    def _update_pattern_tracking(self, context: Dict[str, Any], pnl: float, instrument: str = "UNKNOWN") -> None:
+        """Update effectiveness stats keyed by (instrument_regime_vol_session)."""
         regime = str(context.get("regime", "unknown")).lower()
         vol = str(context.get("volatility_level", "medium")).lower()
         session = str(context.get("session", "unknown")).lower()
-        key = f"{regime}_{vol}_{session}"
+        # Include instrument for per-instrument pattern tracking
+        key = f"{instrument}_{regime}_{vol}_{session}"
 
         self.context_patterns[key] += 1
         data = self.pattern_effectiveness[key]

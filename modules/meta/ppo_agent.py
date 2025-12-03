@@ -130,18 +130,28 @@ class EnhancedPPONetwork(nn.Module):
 
 @module(**module_args(
     "PPOAgent",
-    description="Advanced PPO agent with SmartInfoBus integration for autonomous trading (now a voting member)",
+    description="Intelligent PPO arbiter - consumes committee consensus and makes final GO/NO-GO trading decisions",
     error_handling=True,
     hot_reload=True,
     timeout_ms=3000,
-    # --- Voting additions ---
-    is_voting_member=True,  # explicit (also true in registry)
+    # PPOAgent is now the INTELLIGENT ARBITER, not a voter
+    is_voting_member=False,
+    is_final_arbiter=True,
 ))
 class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
-    Advanced PPO agent with SmartInfoBus integration.
-    Provides robust policy optimization with comprehensive monitoring and automation.
-    Also acts as a voting member by emitting a normalized proposal + confidence each cycle.
+    Intelligent PPO Arbiter with SmartInfoBus integration.
+
+    ROLE: Final decision-maker that consumes:
+    - Committee consensus (aggregated expert votes)
+    - Individual expert signals (for override decisions)
+    - Risk signals (portfolio risk, fragility)
+    - Memory signals (danger zones, patterns)
+
+    Outputs:
+    - ppo_final_decision: The final trading decision (direction, confidence, reasoning, gate_passed, position_size)
+    - ppo_gate_passed: Whether to execute the trade (GO/NO-GO)
+    - ppo_position_size: Recommended position size based on confidence
     """
 
     # typed members for Pylance
@@ -360,6 +370,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
 
     def _start_monitoring(self):
         """Start background monitoring"""
+
         def monitoring_loop():
             while getattr(self, '_monitoring_active', True):
                 try:
@@ -374,8 +385,10 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
         monitor_thread.start()
 
     def _initialize(self):
-        """Initialize module (called by BaseModule early). Safe even if advanced systems
-        aren't ready yet — we simply defer until __init__ finishes."""
+        """
+        Initialize module (called by BaseModule early). Safe even if advanced systems
+        aren't ready yet — we simply defer until __init__ finishes.
+        """
         try:
             # If BaseModule calls us before our own __init__ finishes, smart_bus may not exist yet.
             if not hasattr(self, "smart_bus"):
@@ -403,7 +416,6 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                 self.logger.error(f"Initialization failed: {e}")
             else:
                 print(f"[PPOAgent] Initialization failed (pre-logger): {e}")
-
 
     async def process(self, **inputs) -> Dict[str, Any]:
         """Process PPO agent operations"""
@@ -437,8 +449,23 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             # Always include thesis to satisfy explainability contract
             result['_thesis'] = thesis
 
-            # --- Voting additions: build + attach proposal & confidence ---
-            # Prefer the just-selected action; otherwise use last_action/fallback
+            # ═══════════════════════════════════════════════════════════════════
+            # INTELLIGENT ARBITER: Make final GO/NO-GO decision
+            # PPOAgent consumes committee consensus and decides whether to trade
+            # ═══════════════════════════════════════════════════════════════════
+            arbiter_result = await self.make_final_decision(
+                observation=ppo_data.get('observation'),
+                **inputs
+            )
+            result.update(arbiter_result)
+
+            # Update thesis with arbiter decision
+            arbiter_decision = arbiter_result.get('ppo_final_decision', {})
+            thesis = f"{thesis} | ARBITER: {arbiter_decision.get('reasoning', 'N/A')}"
+            result['_thesis'] = thesis
+
+            # --- Legacy voting outputs (for backward compatibility) ---
+            # PPOAgent is no longer a primary voter, but we still publish for compatibility
             action_vec = result.get('action', None)
             vote_payload = await self.vote(
                 observation=ppo_data.get('observation'),
@@ -447,9 +474,9 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                 thesis=thesis
             )
             result['PPOAgent_voting_proposal'] = vote_payload
-            result['PPOAgent_confidence'] = float(vote_payload.get('confidence', 0.0))
+            result['PPOAgent_confidence'] = float(vote_payload.get('confidence', 0.0)) if isinstance(vote_payload, dict) else 0.0
 
-            # Update SmartInfoBus (now also publishes voting keys)
+            # Update SmartInfoBus (also publishes arbiter keys)
             await self._update_ppo_smart_bus(result, thesis)
 
             # Ensure required outputs are always present in the returned dict
@@ -636,6 +663,10 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             except Exception:
                 self._last_obs_vec = None
             self._update_action_statistics()
+
+            # Keep last log_prob/value so record_step has them
+            self._last_log_prob = log_prob_np
+            self._last_value = value_np
 
             # Update neural performance
             self._neural_performance['forward_passes'] += 1
@@ -1095,6 +1126,88 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                 except Exception:
                     pass
 
+            # ═══════════════════════════════════════════════════════════════════
+            # INTELLIGENT ARBITER: Publish final decision keys
+            # These are the authoritative GO/NO-GO signals consumed by PositionManager/Executor
+            # ═══════════════════════════════════════════════════════════════════
+            if 'ppo_final_decision' in result:
+                final_dec = result['ppo_final_decision'] or {}
+
+                # Canonical arbiter payload
+                try:
+                    self.smart_bus.set(
+                        'ppo_final_decision',
+                        final_dec,
+                        module='PPOAgent',
+                        thesis=final_dec.get('reasoning', 'PPOAgent final GO/NO-GO decision')
+                    )
+                except Exception:
+                    pass
+
+                gate_val = bool(final_dec.get('gate_passed', False))
+                direction_val = final_dec.get('direction', 'HOLD')
+                pos_size_val = float(final_dec.get('position_size', result.get('ppo_position_size', 0.0)))
+
+                # Namespaced gate + size (for PositionManager)
+                try:
+                    self.smart_bus.set(
+                        'ppo_gate_passed',
+                        gate_val,
+                        module='PPOAgent',
+                        thesis='Whether PPOAgent approved the trade'
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    self.smart_bus.set(
+                        'ppo_position_size',
+                        pos_size_val,
+                        module='PPOAgent',
+                        thesis=f"PPOAgent position size: {pos_size_val:.4f}"
+                    )
+                except Exception:
+                    pass
+
+                # Global aliases for other consumers
+                try:
+                    self.smart_bus.set(
+                        'gate_passed',
+                        gate_val,
+                        module='PPOAgent',
+                        thesis='Global arbiter gate (alias)'
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    self.smart_bus.set(
+                        'trading_signal',
+                        direction_val,
+                        module='PPOAgent',
+                        thesis=f"PPOAgent trading direction: {direction_val}"
+                    )
+                except Exception:
+                    pass
+
+                # Combined arbiter decision object
+                try:
+                    self.smart_bus.set(
+                        'arbiter_decision',
+                        {
+                            'approved': gate_val,
+                            'direction': direction_val,
+                            'confidence': float(final_dec.get('confidence', 0.0)),
+                            'position_size': pos_size_val,
+                            'reasoning': final_dec.get('reasoning', ''),
+                            'source': 'PPOAgent'
+                        },
+                        module='PPOAgent',
+                        thesis='Arbiter decision payload for downstream modules'
+                    )
+                except Exception:
+                    pass
+
         except Exception as e:
             self.logger.error(f"Failed to update SmartInfoBus: {e}")
 
@@ -1106,7 +1219,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
         act_size = int(getattr(self._cfg, 'act_size', 2) or 2)
         obs_size = int(getattr(self._cfg, 'obs_size', 10) or 10)
         last_action = (
-            self.last_action.tolist() if hasattr(self, 'last_action') and hasattr(self, 'last_action') and hasattr(self.last_action, 'tolist') else [0.0] * act_size
+            self.last_action.tolist() if hasattr(self, 'last_action') and hasattr(self.last_action, 'tolist') else [0.0] * act_size
         )
         observations = None
         try:
@@ -1117,14 +1230,30 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
         except Exception:
             observations = None
 
-        # --- Voting additions (fallback) ---
+        # Voting fallback
         fallback_vote = {
             'member': 'PPOAgent',
-            'action': 'flat',  # Standard action field for committee compatibility
+            'action': 'flat',
             'proposal': {'direction': 'flat', 'magnitude': 0.0, 'horizon': 'intraday'},
             'confidence': 0.2,
             'rationale': thesis,
             'timestamp': datetime.now().isoformat()
+        }
+
+        # Arbiter fallback: safe HOLD
+        final_decision = {
+            'direction': 'hold',
+            'confidence': 0.0,
+            'reasoning': 'No PPO data available, arbiter in safe HOLD mode',
+            'trust_score': 0.0,
+            'committee_action': 'hold',
+            'committee_confidence': 0.0,
+            'expert_consensus': 'flat',
+            'expert_confidence': 0.0,
+            'regime': 'unknown',
+            'value_estimate': 0.0,
+            'gate_passed': False,
+            'position_size': 0.0,
         }
 
         return {
@@ -1174,6 +1303,10 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             # Voting fallbacks
             'PPOAgent_voting_proposal': fallback_vote,
             'PPOAgent_confidence': 0.2,
+            # Arbiter fallbacks
+            'ppo_final_decision': final_decision,
+            'ppo_gate_passed': False,
+            'ppo_position_size': 0.0,
             # Helpful extras
             '_thesis': thesis,
             'fallback_reason': 'no_ppo_data'
@@ -1234,15 +1367,31 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
         except Exception:
             network_params = 0
 
-        # --- Voting additions (error fallback) ---
+        # Voting fallback
         vote_payload = {
             'member': 'PPOAgent',
-            'action': 'flat',  # Standard action field for committee compatibility
+            'action': 'flat',
             'proposal': {'direction': 'flat', 'magnitude': 0.0, 'horizon': 'intraday'},
             'confidence': 0.1,
             'rationale': thesis,
             'timestamp': datetime.now().isoformat(),
             'meta': {'circuit_breaker': self.circuit_breaker['state']}
+        }
+
+        # Arbiter fallback: safe HOLD
+        final_decision = {
+            'direction': 'hold',
+            'confidence': 0.0,
+            'reasoning': f'Error in arbiter/ppo: {reason}',
+            'trust_score': 0.0,
+            'committee_action': 'hold',
+            'committee_confidence': 0.0,
+            'expert_consensus': 'flat',
+            'expert_confidence': 0.0,
+            'regime': 'unknown',
+            'value_estimate': 0.0,
+            'gate_passed': False,
+            'position_size': 0.0,
         }
 
         return {
@@ -1292,6 +1441,10 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             # Voting
             'PPOAgent_voting_proposal': vote_payload,
             'PPOAgent_confidence': 0.1,
+            # Arbiter
+            'ppo_final_decision': final_decision,
+            'ppo_gate_passed': False,
+            'ppo_position_size': 0.0,
             # Helpful extras
             '_thesis': thesis,
             'circuit_breaker_state': self.circuit_breaker['state'],
@@ -1519,20 +1672,423 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
         return float((performance_confidence + exploration_confidence) / 2.0)
 
     # --- Voting additions: core voting interface ---------------------------------
+
+    def _gather_expert_signals(self) -> Dict[str, Any]:
+        """
+        Gather all expert voting signals from the bus.
+        PPOAgent now runs AFTER experts, so these signals are available.
+
+        Returns dict with expert proposals, confidences, risk signals, and memory.
+        """
+        name = 'PPOAgent'
+
+        def _expert_block(vote_key: str, conf_key: str) -> Dict[str, Any]:
+            raw = self.smart_bus.get(vote_key, name) or 'flat'
+            conf = self.smart_bus.get(conf_key, name)
+            try:
+                conf_val = float(conf) if conf is not None else 0.0
+            except Exception:
+                conf_val = 0.0
+            return {
+                'proposal': raw,
+                'confidence': conf_val,
+            }
+
+        expert_signals = {
+            'trend': _expert_block('TrendExpert_voting_proposal', 'TrendExpert_confidence'),
+            'momentum': _expert_block('MomentumExpert_voting_proposal', 'MomentumExpert_confidence'),
+            'theme': _expert_block('ThemeExpert_voting_proposal', 'ThemeExpert_confidence'),
+            'seasonality': _expert_block('SeasonalityRiskExpert_voting_proposal', 'SeasonalityRiskExpert_confidence'),
+        }
+
+        # Market regime context
+        market_context = {
+            'regime': self.smart_bus.get('market_regime', name) or 'unknown',
+            'regime_strength': float(self.smart_bus.get('regime_strength', name) or 0.5),
+        }
+
+        # Risk signals
+        risk_signals = {
+            'risk_data': self.smart_bus.get('risk_data', name) or {},
+            'portfolio_risk': self.smart_bus.get('portfolio_risk', name) or {},
+        }
+
+        # Memory signals (danger zones, playbook recall)
+        raw_memory_gate = self.smart_bus.get('memory_gate', name)
+        raw_danger_zones = self.smart_bus.get('danger_zones', name)
+
+        # Normalize memory_gate to a numeric multiplier + metadata dict
+        memory_gate_value: float
+        memory_gate_meta: Dict[str, Any]
+        if isinstance(raw_memory_gate, dict):
+            try:
+                memory_gate_value = float(raw_memory_gate.get('risk_multiplier', 1.0))
+            except Exception:
+                memory_gate_value = 1.0
+            memory_gate_meta = raw_memory_gate
+        else:
+            try:
+                memory_gate_value = float(raw_memory_gate) if raw_memory_gate is not None else 1.0
+            except Exception:
+                memory_gate_value = 1.0
+            memory_gate_meta = {
+                'risk_multiplier': memory_gate_value,
+                'veto': False,
+                'reasons': [],
+            }
+
+        # Normalize danger_zones into a uniform dict so callers can reliably
+        # check zone_count instead of just truthiness of the container.
+        if isinstance(raw_danger_zones, dict):
+            dz_dict = raw_danger_zones
+        elif isinstance(raw_danger_zones, list):
+            dz_dict = {
+                'zones': raw_danger_zones,
+                'zone_count': len(raw_danger_zones),
+            }
+        else:
+            dz_dict = {
+                'zones': [],
+                'zone_count': 0,
+            }
+        try:
+            dz_count = int(dz_dict.get('zone_count', 0))
+        except Exception:
+            dz_count = len(dz_dict.get('zones', [])) if isinstance(dz_dict.get('zones'), list) else 0
+        dz_dict['zone_count'] = dz_count
+
+        memory_signals = {
+            'memory_gate': memory_gate_meta,
+            'memory_gate_value': memory_gate_value,
+            'danger_zones': dz_dict,
+        }
+
+        return {
+            'experts': expert_signals,
+            'market': market_context,
+            'risk': risk_signals,
+            'memory': memory_signals,
+        }
+
+    def _compute_expert_consensus(self, expert_signals: Dict[str, Any]) -> Tuple[str, float]:
+        """
+        Compute consensus direction and confidence from expert signals.
+
+        Returns (consensus_direction, consensus_confidence)
+        """
+        experts = expert_signals.get('experts', {})
+
+        long_score = 0.0
+        short_score = 0.0
+        total_weight = 0.0
+
+        for expert_name, sig in experts.items():
+            raw_prop = sig.get('proposal', 'flat')
+            conf = float(sig.get('confidence', 0.0))
+
+            # Extract direction from possible dict / structured payload
+            direction = None
+            if isinstance(raw_prop, dict):
+                direction = raw_prop.get('direction') or raw_prop.get('action') or raw_prop.get('global_direction')
+            elif isinstance(raw_prop, str):
+                direction = raw_prop
+            else:
+                direction = str(raw_prop)
+
+            proposal = str(direction or 'flat').lower()
+
+            # Weight by confidence
+            if proposal in ('long', 'buy', 'bullish'):
+                long_score += conf
+            elif proposal in ('short', 'sell', 'bearish'):
+                short_score += conf
+
+            total_weight += max(conf, 0.0)
+
+        if total_weight < 1e-6:
+            return 'flat', 0.0
+
+        # Determine consensus direction
+        if long_score > short_score + 0.2:
+            direction = 'long'
+            consensus_conf = long_score / total_weight
+        elif short_score > long_score + 0.2:
+            direction = 'short'
+            consensus_conf = short_score / total_weight
+        else:
+            direction = 'flat'
+            consensus_conf = 0.3  # low confidence when split
+
+        return direction, float(np.clip(consensus_conf, 0.0, 1.0))
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # INTELLIGENT ARBITER: Final GO/NO-GO Decision
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _gather_committee_consensus(self) -> Dict[str, Any]:
+        """
+        Gather committee consensus from the bus.
+        Committee has already aggregated expert votes.
+        """
+        name = 'PPOAgent'
+
+        committee_decision = self.smart_bus.get('committee_decision', name) or {}
+        if isinstance(committee_decision, str):
+            committee_decision = {'action': committee_decision}
+
+        return {
+            'action': str(committee_decision.get('action', 'hold')).lower(),
+            'confidence': float(self.smart_bus.get('committee_confidence', name) or 0.5),
+            'consensus_score': float(self.smart_bus.get('consensus_score', name) or 0.5),
+            'fragility': float(self.smart_bus.get('fragility', name) or 0.5),
+        }
+
+    async def make_final_decision(self, observation: Any = None, **inputs) -> Dict[str, Any]:
+        """
+        INTELLIGENT ARBITER: Make the final GO/NO-GO trading decision.
+
+        This is the core decision-making function that:
+        1. Gathers committee consensus (what experts collectively recommend)
+        2. Gathers risk and memory signals (danger zones, fragility)
+        3. Uses PPO policy to evaluate whether to TRUST or OVERRIDE committee
+        4. Outputs final decision with position sizing
+
+        Returns:
+            ppo_final_decision: {direction, confidence, gate_passed, position_size, reasoning, ...}
+            ppo_gate_passed: bool (GO/NO-GO)
+            ppo_position_size: float (0.0 to 1.0)
+        """
+        try:
+            # 1) Gather all inputs
+            committee = self._gather_committee_consensus()
+            expert_signals = self._gather_expert_signals()
+            expert_consensus, expert_confidence = self._compute_expert_consensus(expert_signals)
+
+            # Extract memory gate safely
+            memory_gate = expert_signals['memory'].get('memory_gate', 1.0)
+            if isinstance(memory_gate, dict):
+                memory_gate = float(memory_gate.get('risk_multiplier', memory_gate.get('value', 1.0)))
+            memory_gate = float(memory_gate)
+
+            danger_zones = expert_signals['memory'].get('danger_zones', [])
+            regime = expert_signals['market'].get('regime', 'unknown')
+            fragility = committee.get('fragility', 0.5)
+
+            # 2) Build observation for PPO policy (what the agent "sees")
+            # NOTE: for best results, the training environment should train on
+            # the same feature schema as _build_arbiter_observation().
+            arbiter_obs = self._build_arbiter_observation(
+                committee=committee,
+                expert_signals=expert_signals,
+                expert_consensus=expert_consensus,
+                expert_confidence=expert_confidence,
+                memory_gate=memory_gate,
+                fragility=fragility,
+            )
+
+            # 3) Get PPO policy output
+            obs_vec = self._normalize_observation(arbiter_obs)
+            with torch.no_grad():
+                action_mean, action_log_std, value = self.network(
+                    torch.from_numpy(obs_vec).to(self.device).unsqueeze(0)
+                )
+                # Action[0] = trust_committee_score (-1 to 1, positive = trust, negative = override)
+                # Action[1] = position_size_score (-1 to 1, maps to 0-1 position size)
+                action_vec = action_mean.squeeze(0).cpu().numpy()
+
+            trust_score = float(action_vec[0]) if len(action_vec) > 0 else 0.0
+            size_score = float(action_vec[1]) if len(action_vec) > 1 else 0.0
+
+            # 4) Interpret policy output into decision
+            committee_action = committee.get('action', 'hold')
+            committee_confidence = committee.get('confidence', 0.5)
+
+            # Trust score determines if we follow committee or override
+            if trust_score > 0.3:
+                # TRUST: Follow committee recommendation
+                final_action = committee_action
+                final_confidence = committee_confidence * (0.7 + 0.3 * trust_score)
+                reasoning = f"PPO trusts committee ({trust_score:.2f}): {committee_action}"
+                gate_passed = committee_action in ('long', 'short', 'buy', 'sell')
+            elif trust_score < -0.3:
+                # OVERRIDE: PPO disagrees with committee
+                final_action = 'hold'  # Default to staying out
+                final_confidence = 0.3
+                reasoning = f"PPO overrides committee ({trust_score:.2f}): going flat"
+                gate_passed = False
+            else:
+                # UNCERTAIN: Apply caution, reduce confidence
+                final_action = committee_action
+                final_confidence = committee_confidence * 0.5
+                reasoning = f"PPO uncertain ({trust_score:.2f}): following committee with reduced confidence"
+                gate_passed = committee_action in ('long', 'short', 'buy', 'sell') and final_confidence > 0.4
+
+            # 5) Apply risk/memory gates (soft adjustments - hard veto is in Executor)
+            # NOTE: Executor has the authoritative memory veto check (memory_gate.veto == True)
+            # PPO should use memory signals to ADJUST confidence/size, not duplicate the veto.
+            # This lets PPO learn from memory while Executor enforces the hard block.
+            
+            # Soft confidence adjustment based on risk_multiplier
+            if memory_gate < 0.7:
+                # Memory is cautious - reduce confidence proportionally
+                final_confidence *= memory_gate
+                reasoning += f" | MEMORY_CAUTION (risk_mult={memory_gate:.2f})"
+            
+            # Only treat danger zones as informational (reduce confidence, don't hard block)
+            # Hard blocking on danger zones is too aggressive during learning
+            danger_zone_count = 0
+            if isinstance(danger_zones, dict):
+                try:
+                    danger_zone_count = int(danger_zones.get('zone_count', 0))
+                except Exception:
+                    zones = danger_zones.get('zones', [])
+                    danger_zone_count = len(zones) if isinstance(zones, list) else 0
+            elif isinstance(danger_zones, list):
+                danger_zone_count = len(danger_zones)
+
+            if danger_zone_count > 0:
+                # Reduce confidence when near danger zones, but let Executor decide on veto
+                final_confidence *= 0.7
+                reasoning += f" | DANGER_ZONE_NEARBY (n={danger_zone_count})"
+
+            # NOTE: Fragility is handled by FinalArbiter on a per-instrument basis.
+            # PPO should not block on global fragility since:
+            # 1. Global fragility is often high (1.0) due to Monte Carlo sampling noise
+            # 2. Individual instruments may have low fragility even when global is high
+            # 3. Double-blocking creates a "nothing ever trades" situation
+            # We only log elevated fragility for debugging purposes.
+            if fragility > 0.90:
+                # Log but don't block - arbiter handles per-instrument fragility
+                reasoning += f" | (fragility={fragility:.2f})"
+
+            # 6) Calculate position size
+            # Map size_score from [-1, 1] to [0, 1], then apply confidence
+            raw_size = (size_score + 1.0) / 2.0  # 0 to 1
+            position_size = float(np.clip(raw_size * max(final_confidence, 0.0), 0.0, 1.0))
+
+            if not gate_passed:
+                position_size = 0.0
+
+            # 7) Build final decision
+            final_decision = {
+                'direction': final_action,
+                'confidence': float(max(final_confidence, 0.0)),
+                'reasoning': reasoning,
+                'trust_score': trust_score,
+                'committee_action': committee_action,
+                'committee_confidence': committee_confidence,
+                'expert_consensus': expert_consensus,
+                'expert_confidence': expert_confidence,
+                'regime': regime,
+                'value_estimate': float(value.item()),
+                'gate_passed': bool(gate_passed),
+                'position_size': position_size,
+            }
+
+            self.logger.info(
+                f"[PPO ARBITER] {final_action.upper()} | gate={'PASS' if gate_passed else 'BLOCK'} | "
+                f"conf={final_decision['confidence']:.2f} | size={position_size:.2%} | {reasoning}"
+            )
+
+            return {
+                'ppo_final_decision': final_decision,
+                'ppo_gate_passed': bool(gate_passed),
+                'ppo_position_size': position_size,
+            }
+
+        except Exception as e:
+            self.logger.error(f"[PPO ARBITER] Decision failed: {e}")
+            # Safe fallback: block trade
+            fallback = {
+                'direction': 'hold',
+                'confidence': 0.0,
+                'reasoning': f'Error in arbiter: {e}',
+                'trust_score': 0.0,
+                'committee_action': 'hold',
+                'committee_confidence': 0.0,
+                'expert_consensus': 'flat',
+                'expert_confidence': 0.0,
+                'regime': 'unknown',
+                'value_estimate': 0.0,
+                'gate_passed': False,
+                'position_size': 0.0,
+            }
+            return {
+                'ppo_final_decision': fallback,
+                'ppo_gate_passed': False,
+                'ppo_position_size': 0.0,
+            }
+
+    def _build_arbiter_observation(
+        self,
+        committee: Dict[str, Any],
+        expert_signals: Dict[str, Any],
+        expert_consensus: str,
+        expert_confidence: float,
+        memory_gate: float,
+        fragility: float,
+    ) -> Dict[str, float]:
+        """
+        Build observation vector for the arbiter policy.
+
+        Features the agent learns to interpret:
+        1. Committee signal strength and direction
+        2. Expert agreement level
+        3. Risk indicators (memory gate, fragility)
+        4. Market regime
+        """
+        # Committee features
+        committee_action = committee.get('action', 'hold')
+        committee_dir = 1.0 if committee_action in ('long', 'buy') else (-1.0 if committee_action in ('short', 'sell') else 0.0)
+        committee_conf = committee.get('confidence', 0.5)
+        consensus_score = committee.get('consensus_score', 0.5)
+
+        # Expert agreement (do experts agree with committee?)
+        expert_dir = 1.0 if expert_consensus in ('long', 'buy') else (-1.0 if expert_consensus in ('short', 'sell') else 0.0)
+        agreement = 1.0 if (committee_dir * expert_dir > 0) else (0.0 if expert_dir == 0 else -1.0)
+
+        # Regime encoding
+        regime = expert_signals['market'].get('regime', 'unknown')
+        regime_val = {'trending': 0.8, 'mean_reverting': 0.5, 'volatile': -0.5, 'unknown': 0.0}.get(str(regime).lower(), 0.0)
+
+        return {
+            'committee_direction': committee_dir,
+            'committee_confidence': committee_conf,
+            'consensus_score': consensus_score,
+            'expert_direction': expert_dir,
+            'expert_confidence': expert_confidence,
+            'expert_committee_agreement': agreement,
+            'memory_gate': memory_gate,
+            'fragility': 1.0 - fragility,  # Invert so higher = better
+            'regime': regime_val,
+            'regime_strength': expert_signals['market'].get('regime_strength', 0.5),
+        }
+
     async def vote(self, observation: Any = None, action_vec: Optional[Union[List[float], np.ndarray]] = None,
                    thesis: Optional[str] = None, **inputs) -> Dict[str, Any]:
         """
         Produce per-instrument voting proposals.
-        
-        Each instrument (EURUSD, XAUUSD) gets its own vote based on:
-        1. Global policy direction (from action vector)
-        2. Per-instrument market data alignment
-        3. Per-instrument trend analysis
-        
+
+        PPOAgent is now an INFORMED decision-maker that:
+        1. Gathers expert signals (Trend, Momentum, Theme, Seasonality)
+        2. Considers risk signals and memory danger zones
+        3. Combines expert consensus with its own policy output
+
         Returns dict with both per-instrument 'proposals' and legacy global fields.
         """
         try:
-            # 1) Get an action vector to base the vote on
+            # 0) Gather expert signals FIRST (PPOAgent now runs after experts)
+            expert_signals = self._gather_expert_signals()
+            expert_consensus, expert_confidence = self._compute_expert_consensus(expert_signals)
+
+            # Log what we're seeing from experts
+            self.logger.debug(
+                f"[PPO] Expert consensus: {expert_consensus} (conf={expert_confidence:.2f}) | "
+                f"Regime: {expert_signals['market']['regime']} | "
+                f"Memory gate: {expert_signals['memory'].get('memory_gate', 1.0)}"
+            )
+
+            # 1) Get an action vector from our policy
             if action_vec is None:
                 obs_vec = self._normalize_observation(observation)
                 with torch.no_grad():
@@ -1543,25 +2099,83 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
 
             # 2) Normalize to global direction/magnitude
             action_arr = action_vec if isinstance(action_vec, np.ndarray) else np.asarray(action_vec, dtype=np.float32)
-            global_direction, global_magnitude, raw_score = self._normalize_signal(action_arr)
+            policy_direction, policy_magnitude, raw_score = self._normalize_signal(action_arr)
 
-            # 3) Base confidence
+            # 3) INFORMED DECISION: Blend policy with expert consensus
+            # NOTE: memory_gate on the bus may be a scalar or a dict with richer info.
+            # We normalize it to a float in [0, 1] here.
+            raw_memory_gate = expert_signals['memory'].get('memory_gate', 1.0)
+            if isinstance(raw_memory_gate, dict):
+                raw_memory_gate = raw_memory_gate.get(
+                    'risk_multiplier',
+                    raw_memory_gate.get('value', 1.0),
+                )
+            try:
+                memory_gate = float(raw_memory_gate)
+            except (TypeError, ValueError):
+                memory_gate = 1.0
+
+            # Determine final direction
+            if expert_confidence > 0.6 and policy_direction != expert_consensus:
+                # Experts are confident and we disagree - defer to experts or go flat
+                if expert_confidence > 0.75:
+                    global_direction = expert_consensus  # Strong expert consensus overrides
+                    global_magnitude = policy_magnitude * 0.7  # Reduce magnitude
+                    self.logger.info(f"[PPO] Deferring to strong expert consensus: {expert_consensus}")
+                else:
+                    global_direction = 'flat'  # Conflict - stay out
+                    global_magnitude = 0.3
+            else:
+                # Policy agrees with experts or experts are uncertain - use policy
+                global_direction = policy_direction
+                global_magnitude = policy_magnitude
+
+                # Boost confidence when aligned with experts
+                if policy_direction == expert_consensus and expert_confidence > 0.5:
+                    global_magnitude = min(1.0, global_magnitude * 1.2)
+
+            # 4) Apply risk/memory gates
+            if memory_gate < 0.5:
+                # Memory says danger - reduce exposure
+                global_magnitude *= memory_gate
+                self.logger.debug(f"[PPO] Memory gate reduced magnitude: {memory_gate:.2f}")
+
+            # Check for danger zones - must check zone_count, not just truthiness
+            danger_zones = expert_signals['memory'].get('danger_zones', {})
+            danger_zone_count = 0
+            if isinstance(danger_zones, dict):
+                danger_zone_count = int(danger_zones.get('zone_count', 0))
+            elif isinstance(danger_zones, list):
+                danger_zone_count = len(danger_zones)
+            
+            if danger_zone_count > 0:
+                global_magnitude *= 0.7
+                self.logger.debug(f"[PPO] Danger zones detected ({danger_zone_count} zones), reducing magnitude")
+
+            # 5) Base confidence (now informed by expert alignment)
             conf_inputs = {'action': {'action': action_arr.tolist()}}
             base_conf = await self.calculate_confidence(**conf_inputs)
+
+            # Boost confidence when aligned with experts
+            if policy_direction == expert_consensus:
+                base_conf = min(1.0, base_conf * (1.0 + expert_confidence * 0.3))
+            else:
+                base_conf *= 0.7  # Reduce confidence when disagreeing
+
             if self.circuit_breaker['state'] == 'OPEN':
                 base_conf = float(max(0.05, base_conf * 0.5))
             if self._health_status != 'healthy':
                 base_conf = float(max(0.1, base_conf * 0.7))
             base_conf = float(np.clip(base_conf, 0.0, 1.0))
 
-            # 4) Get per-instrument market data
+            # 6) Get per-instrument market data
             market_data = inputs.get('market_data') or self.smart_bus.get('market_data', 'PPOAgent') or {}
             price_data = self.smart_bus.get('price_data', 'PPOAgent') or {}
             indicators = self.smart_bus.get('technical_indicators', 'PPOAgent') or {}
-            
-            # 5) Generate per-instrument proposals
+
+            # 7) Generate per-instrument proposals
             vote = PerInstrumentVote(member='PPOAgent')
-            
+
             for instrument in DEFAULT_INSTRUMENTS:
                 inst_proposal = self._generate_instrument_proposal(
                     instrument=instrument,
@@ -1574,8 +2188,8 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                     thesis=thesis,
                 )
                 vote.set_proposal(inst_proposal)
-            
-            # 6) Build payload with both per-instrument and legacy format
+
+            # 8) Build payload with both per-instrument and legacy format
             payload = vote.to_dict()
             payload['meta'] = {
                 'avg_reward': self.training_stats.get('avg_episode_reward', 0.0),
@@ -1584,9 +2198,13 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                 'health': self._health_status,
                 'circuit_breaker': self.circuit_breaker['state'],
                 'raw_score': float(raw_score),
+                'expert_consensus': expert_consensus,
+                'expert_confidence': expert_confidence,
+                'policy_direction': policy_direction,
+                'aligned_with_experts': policy_direction == expert_consensus,
             }
-            payload['rationale'] = thesis or "PPO per-instrument policy signals"
-            
+            payload['rationale'] = thesis or f"PPO informed decision (experts: {expert_consensus}, policy: {policy_direction})"
+
             return payload
 
         except Exception as e:
@@ -1597,7 +2215,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             payload = error_vote.to_dict()
             payload['rationale'] = f'Vote fallback due to error: {e}'
             return payload
-    
+
     def _generate_instrument_proposal(
         self,
         instrument: str,
@@ -1611,7 +2229,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
     ) -> InstrumentProposal:
         """
         Generate a voting proposal for a specific instrument.
-        
+
         Combines global policy direction with instrument-specific market analysis.
         """
         try:
@@ -1619,13 +2237,11 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             inst_market = extract_instrument_data(market_data, instrument)
             inst_price = extract_instrument_data(price_data, instrument)
             inst_indicators = extract_instrument_data(indicators, instrument)
-            
+
             # Analyze instrument trend
             inst_trend, inst_strength = analyze_instrument_trend(inst_price, inst_indicators)
-            
+
             # Determine final direction for this instrument
-            # If global and instrument trends agree, use global with full confidence
-            # If they disagree, reduce confidence or go flat
             if global_direction == 'flat':
                 # No global signal - use instrument trend if strong enough
                 if inst_strength > 0.3:
@@ -1648,11 +2264,10 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                 final_magnitude = global_magnitude * 0.8
             else:
                 # Disagreement - this instrument says opposite of global
-                # Go flat for this instrument (don't fight the instrument trend)
                 final_direction = 'flat'
                 final_confidence = base_conf * 0.3
                 final_magnitude = 0.0
-            
+
             return InstrumentProposal(
                 instrument=instrument,
                 action=final_direction,
@@ -1666,7 +2281,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                     'instrument_strength': inst_strength,
                 },
             )
-        
+
         except Exception as e:
             self.logger.warning(f"Failed to generate proposal for {instrument}: {e}")
             return InstrumentProposal(
@@ -1681,12 +2296,12 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
         """
         Map a continuous action vector to (direction, magnitude, raw_score).
         Uses HYSTERESIS to prevent flip-flopping between long/short on tiny signal changes.
-        
+
         Heuristic:
           - raw_score = mean(action_vec)
           - direction = sign(raw_score) with deadband + hysteresis
           - magnitude = clipped L2 norm scaled by vector length
-        
+
         Hysteresis logic:
           - Need to cross entry_threshold (0.10) to change from 'flat'
           - Need to cross reversal_threshold (0.15) to flip from long→short or short→long
@@ -1698,17 +2313,16 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
         action_vec = np.array(action_vec, dtype=np.float32).reshape(-1)
         raw_score = float(np.mean(action_vec))
 
-        # Hysteresis thresholds - larger values = more stability, less flip-flopping
-        entry_threshold = 0.10    # Threshold to enter long/short from flat
-        reversal_threshold = 0.15  # Threshold to reverse direction (long→short or vice versa)
-        exit_threshold = 0.03      # Threshold to exit back to flat
+        # Hysteresis thresholds
+        entry_threshold = 0.10      # Threshold to enter long/short from flat
+        reversal_threshold = 0.15   # Threshold to reverse direction (long→short or vice versa)
+        exit_threshold = 0.03       # Threshold to exit back to flat
 
         # Get last direction (with fallback)
         last_dir = getattr(self, '_last_direction', 'flat')
 
         # Determine new direction with hysteresis
         if last_dir == 'flat':
-            # From flat: need strong signal to enter a position
             if raw_score > entry_threshold:
                 direction = 'long'
             elif raw_score < -entry_threshold:
@@ -1716,21 +2330,19 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             else:
                 direction = 'flat'
         elif last_dir == 'long':
-            # From long: need strong reversal to go short, small reversal to go flat
             if raw_score < -reversal_threshold:
-                direction = 'short'  # Strong reversal
+                direction = 'short'
             elif raw_score < -exit_threshold:
-                direction = 'flat'   # Weak reversal - go neutral
+                direction = 'flat'
             else:
-                direction = 'long'   # Stay long (hysteresis)
+                direction = 'long'
         else:  # last_dir == 'short'
-            # From short: need strong reversal to go long, small reversal to go flat
             if raw_score > reversal_threshold:
-                direction = 'long'   # Strong reversal
+                direction = 'long'
             elif raw_score > exit_threshold:
-                direction = 'flat'   # Weak reversal - go neutral
+                direction = 'flat'
             else:
-                direction = 'short'  # Stay short (hysteresis)
+                direction = 'short'
 
         # Update hysteresis state
         if direction != last_dir:
@@ -1747,6 +2359,7 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             magnitude = 0.0
 
         return direction, magnitude, raw_score
+
     # ------------------------------------------------------------------------------
 
     async def propose_action(self, **inputs) -> Dict[str, Any]:
@@ -1855,10 +2468,12 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
             return 0.5
 
     def _normalize_observation(self, observation: Any) -> np.ndarray:
-        """Normalize raw observation into a fixed-length float32 vector.
+        """
+        Normalize raw observation into a fixed-length float32 vector.
+
         - Handles None by returning zeros of length config.obs_size.
         - Accepts arrays/lists/tuples and pads/truncates to obs_size.
-        - If dict, uses numeric values; if scalar, wraps and pads.
+        - If dict, uses numeric values in insertion order.
         - Replaces NaN/Inf with 0.
         """
         obs_size = int(getattr(self._cfg, 'obs_size', 10) or 10)
@@ -1867,8 +2482,8 @@ class PPOAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Smar
                 return np.zeros(obs_size, dtype=np.float32)
             # Dict: try numeric values
             if isinstance(observation, dict):
-                # Prefer numeric values in insertion order
-                keys = [k for k in observation.keys() if isinstance(observation[k], (int, float, np.number))]
+                keys = [k for k in observation.keys()
+                        if isinstance(observation[k], (int, float, np.number))]
                 arr = np.array([float(observation[k]) for k in keys], dtype=np.float32) if keys else np.array([], dtype=np.float32)
             else:
                 # Generic array-like

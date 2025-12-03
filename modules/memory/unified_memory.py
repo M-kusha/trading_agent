@@ -385,6 +385,10 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         self._total_memories_processed = 0
         self._last_optimization = time.time()
         
+        # Trade deduplication - prevent storing same trade multiple times
+        self._processed_trade_ids: set = set()
+        self._max_processed_ids = 1000  # Limit set size to prevent memory bloat
+        
         # Step-based throttling for performance (skip expensive components most steps)
         self._step_count = 0
         self._throttle_interval = 5  # Run expensive components every 5 steps
@@ -495,6 +499,8 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                 "risk_score": 0.0,
                 "danger_similarity": 0.0,
                 "loss_prob": 0.0,
+                "vetoed_instruments": [],  # Per-instrument veto list
+                "consecutive_losses_by_instrument": {},  # Per-instrument loss tracking
             }
             self.smart_bus.set("memory_gate", default_gate, module="UnifiedMemory",
                                thesis="Default memory gate (pre-initialization)")
@@ -799,6 +805,24 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                 invalid_type += 1
                 continue
 
+            # Generate unique trade ID for deduplication
+            trade_id = trade.get("id") or trade.get("trade_id") or trade.get("ticket")
+            if trade_id is None:
+                # Fallback: create ID from trade properties
+                trade_id = f"{trade.get('symbol', trade.get('instrument', ''))}_{trade.get('ts', '')}_{trade.get('pnl', 0)}"
+            
+            # Skip if already processed
+            if trade_id in self._processed_trade_ids:
+                continue
+            
+            # Mark as processed
+            self._processed_trade_ids.add(trade_id)
+            
+            # Limit set size to prevent memory bloat
+            if len(self._processed_trade_ids) > self._max_processed_ids:
+                # Remove oldest entries (convert to list, slice, convert back)
+                self._processed_trade_ids = set(list(self._processed_trade_ids)[-500:])
+
             # Accept trades with any P&L field (pnl, realized_pnl, unrealized_pnl)
             # This allows storing both trade fills and position snapshots
             has_pnl = any(k in trade for k in ["pnl", "realized_pnl", "realised_pnl", "unrealized_pnl"])
@@ -865,6 +889,9 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                     enhanced_perf = self.smart_bus.get("enhanced_performance", "UnifiedMemory") or {}
                     episode = enhanced_perf.get("episode", enhanced_perf.get("episodes", self._episode_count))
 
+                # Extract instrument from trade
+                instrument = trade.get("instrument") or trade.get("symbol") or "UNKNOWN"
+                
                 entry = {
                     "timestamp": time.time(),
                     "features": trade_features,
@@ -872,6 +899,7 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                     "pnl": pnl_value,
                     "importance": importance,
                     "context": context["market_context"],
+                    "instrument": instrument,  # Store instrument for per-instrument analysis
                     "metadata": {
                         "regime": context["market_context"].get("regime"),
                         "volatility": volatility,
@@ -879,6 +907,7 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                         "session": context["market_context"].get("session"),
                         "episode": episode,
                         "pattern_label": pattern_label,  # NEW: for intervention linkage
+                        "instrument": instrument,  # Also in metadata for consistency
                     },
                 }
                 batch.append(entry)
@@ -1175,6 +1204,10 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         intervention_strength = safe_float(intervention_rec.get("strength", 0.0) if intervention_rec else 0.0, 0.0)
         intervention_veto = bool(intervention_rec.get("veto_recommended", False) if intervention_rec else False)
         
+        # === Extract per-instrument veto info from gate_snippet ===
+        vetoed_instruments = gate_snippet.get("vetoed_instruments", []) if gate_snippet else []
+        consecutive_losses_by_instrument = gate_snippet.get("consecutive_losses_by_instrument", {}) if gate_snippet else {}
+        
         # === Compute fused risk_score ===
         # risk_score = max(loss_prob, danger_similarity) as per enhance.md
         risk_score = max(loss_prob, danger_similarity)
@@ -1190,6 +1223,8 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                 "risk_score": risk_score,
                 "danger_similarity": danger_similarity,
                 "loss_prob": loss_prob,
+                "vetoed_instruments": vetoed_instruments,
+                "consecutive_losses_by_instrument": consecutive_losses_by_instrument,
             }
         else:
             # Fallback: compute gate from raw signals
@@ -1239,6 +1274,8 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                 "risk_score": round(risk_score, 3),
                 "danger_similarity": round(danger_similarity, 3),
                 "loss_prob": round(loss_prob, 3),
+                "vetoed_instruments": vetoed_instruments,
+                "consecutive_losses_by_instrument": consecutive_losses_by_instrument,
             }
         
         # === Compose memory_vote ===

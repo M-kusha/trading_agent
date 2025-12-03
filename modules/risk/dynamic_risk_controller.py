@@ -39,17 +39,42 @@ class RiskControlMode(Enum):
     RECOVERY = "recovery"
 
 
+def _load_dynamic_risk_config_from_yaml() -> Dict[str, Any]:
+    """Load dynamic risk config values from risk_policy.yaml."""
+    import yaml
+    import os
+    defaults = {}
+    try:
+        config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "risk_policy.yaml")
+        if os.path.exists(config_path):
+            with open(config_path, "r") as f:
+                policy = yaml.safe_load(f) or {}
+            
+            limits = policy.get("limits", {})
+            modules_cfg = policy.get("modules", {}).get("DynamicRiskController", {})
+            escalation = policy.get("escalation", {})
+            
+            # Core from limits and module-specific config
+            defaults["dd_threshold"] = float(limits.get("max_drawdown", 0.085))
+            defaults["base_risk_scale"] = float(modules_cfg.get("base_risk_scale", 1.0))
+            defaults["emergency_scaling"] = float(modules_cfg.get("emergency_scaling", 0.3))
+            defaults["recovery_multiplier"] = float(modules_cfg.get("recovery_multiplier", 1.2))
+    except Exception:
+        pass  # Fall back to dataclass defaults
+    return defaults
+
+
 @dataclass
 class DynamicRiskConfig:
-    """Configuration for Dynamic Risk Controller"""
+    """Configuration for Dynamic Risk Controller - values loaded from risk_policy.yaml"""
     # Core scales
     base_risk_scale: float = 1.0
     min_risk_scale: float = 0.1
     max_risk_scale: float = 1.5
 
-    # Histories / thresholds
+    # Histories / thresholds - dd_threshold from limits.max_drawdown
     vol_history_len: int = 30
-    dd_threshold: float = 0.15
+    dd_threshold: float = 0.085           # From limits.max_drawdown
     vol_ratio_threshold: float = 2.0
 
     # Dynamics
@@ -58,6 +83,10 @@ class DynamicRiskConfig:
     adaptive_scaling: bool = True
     regime_sensitivity: float = 1.0
     correlation_sensitivity: float = 0.8
+    
+    # From modules.DynamicRiskController
+    emergency_scaling: float = 0.3
+    recovery_multiplier: float = 1.2
 
     # Performance thresholds
     max_processing_time_ms: float = 100
@@ -71,6 +100,13 @@ class DynamicRiskConfig:
     # Adaptation parameters
     adaptive_learning_rate: float = 0.02
     risk_adaptation_speed: float = 1.0
+    
+    def __post_init__(self):
+        """Override defaults with values from risk_policy.yaml."""
+        yaml_config = _load_dynamic_risk_config_from_yaml()
+        for key, value in yaml_config.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
 
 
 @module(**module_args(

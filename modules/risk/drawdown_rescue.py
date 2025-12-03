@@ -32,13 +32,39 @@ from modules.utils.circuit_breaker_utils import migrate_dict_breaker
 # ─────────────────────────────────────────────────────────────
 # Typed, lint-safe config + namespaced health/status keys
 # ─────────────────────────────────────────────────────────────
+def _load_drawdown_rescue_config_from_yaml() -> Dict[str, Any]:
+    """Load drawdown rescue config values from risk_policy.yaml."""
+    import yaml
+    import os
+    defaults = {}
+    try:
+        config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "risk_policy.yaml")
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                policy = yaml.safe_load(f) or {}
+            
+            limits = policy.get("limits", {})
+            escalation = policy.get("escalation", {})
+            modules_cfg = policy.get("modules", {}).get("DrawdownRescue", {})
+            
+            # Map escalation thresholds to rescue thresholds
+            defaults["dd_limit"] = float(limits.get("max_drawdown", 0.085))
+            defaults["warning_dd"] = float(escalation.get("warning_threshold", 0.025))
+            defaults["info_dd"] = float(escalation.get("alert_threshold", 0.015))
+            defaults["recovery_threshold"] = float(modules_cfg.get("recovery_target", 0.05))
+    except Exception:
+        pass
+    return defaults
+
+
 @dataclass
 class DrawdownRescueConfig:
-    # Thresholds (fractions 0..1)
-    dd_limit: float = 0.25          # critical drawdown threshold (25%)
-    warning_dd: float = 0.15        # warning drawdown threshold (15%)
-    info_dd: float = 0.08           # info drawdown threshold (8%)
-    recovery_threshold: float = 0.50  # portion of max DD recovered to count as milestone
+    """Configuration loaded from risk_policy.yaml"""
+    # Thresholds (fractions 0..1) - from risk_policy.yaml
+    dd_limit: float = 0.085         # From limits.max_drawdown
+    warning_dd: float = 0.025       # From escalation.warning_threshold
+    info_dd: float = 0.015          # From escalation.alert_threshold
+    recovery_threshold: float = 0.05  # From modules.DrawdownRescue.recovery_target
 
     # Windows & dynamics
     velocity_window: int = 10       # steps for velocity history
@@ -62,6 +88,13 @@ class DrawdownRescueConfig:
     # Monitoring / health
     health_check_interval: int = 30
     circuit_breaker_threshold: int = 5
+    
+    def __post_init__(self):
+        """Load values from risk_policy.yaml after init."""
+        yaml_config = _load_drawdown_rescue_config_from_yaml()
+        for key, value in yaml_config.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
     circuit_breaker_cooldown_sec: float = 20.0
     max_processing_time_ms: float = 60.0
     status_key: str = "drawdown_rescue_status"

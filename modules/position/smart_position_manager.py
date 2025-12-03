@@ -35,6 +35,19 @@ def load_config_from_yaml() -> Dict[str, Any]:
     return {}
 
 
+def load_lot_config_from_yaml() -> Dict[str, Any]:
+    """Load unified lot sizing config from risk_policy.yaml."""
+    config_path = Path(__file__).parent.parent.parent / "config" / "risk_policy.yaml"
+    try:
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                policy = yaml.safe_load(f) or {}
+            return policy.get("lot_sizing", {})
+    except Exception as e:
+        print(f"[SmartPositionManager] Failed to load lot config: {e}")
+    return {}
+
+
 class PositionAction(Enum):
     """Clean action types for position management."""
     HOLD = "HOLD"
@@ -102,12 +115,20 @@ class SmartDecision:
 
 @dataclass
 class SmartPositionConfig:
-    """Configuration for smart position management."""
+    """
+    Configuration for smart position management.
+    
+    NOTE: Lot sizing now uses UnifiedLotCalculator as the single source of truth.
+    The default_lot_size and max_lot_size here are fallbacks only.
+    """
     # Position limits
     max_positions_per_symbol: int = 1
     max_total_positions: int = 4
-    default_lot_size: float = 0.2
-    max_lot_size: float = 1.0
+    
+    # Lot sizing - these are FALLBACKS, actual sizing uses UnifiedLotCalculator
+    default_lot_size: float = 0.01     # Fallback only - calculator determines actual size
+    max_lot_size: float = 50.0         # From unified lot_sizing config
+    use_unified_calculator: bool = True  # Use UnifiedLotCalculator for lot sizing
 
     # Profit-taking thresholds
     profit_take_activation_eur: float = 50.0  # Start trailing after €50 profit
@@ -144,6 +165,7 @@ class SmartPositionManager:
       2. Prevent duplicate/hedge positions.
       3. Smart entry/exit decisions based on signals + P&L.
       4. Time-aware position management.
+      5. Use UnifiedLotCalculator for all lot sizing decisions.
     """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
@@ -151,12 +173,23 @@ class SmartPositionManager:
         if config is None:
             config = load_config_from_yaml()
         self.config = SmartPositionConfig(**config) if config else SmartPositionConfig()
+        
+        # Load unified lot sizing config
+        lot_config = load_lot_config_from_yaml()
+        if lot_config:
+            # Override local config with unified values
+            if "max_lot" in lot_config:
+                self.config.max_lot_size = float(lot_config["max_lot"])
+        
         self.logger = RotatingLogger(
             "SmartPositionManager",
             log_path="logs/position/smart_manager.log",
             operator_mode=True,
             max_lines=5000,
         )
+        
+        # Initialize unified lot calculator (singleton)
+        self._lot_calculator = None
 
         # State tracking
         self._positions: Dict[str, LivePosition] = {}      # Net positions per symbol
@@ -165,6 +198,17 @@ class SmartPositionManager:
         self._last_trade_time: Dict[str, float] = {}       # Per-symbol cooldown
         self._last_scale_time: Dict[str, float] = {}       # Per-symbol scale cooldown
         self._last_sync_time: float = 0
+
+    @property
+    def lot_calculator(self):
+        """Lazy-load the unified lot calculator."""
+        if self._lot_calculator is None:
+            try:
+                from modules.utils.lot_calculator import UnifiedLotCalculator
+                self._lot_calculator = UnifiedLotCalculator.get_instance()
+            except Exception as e:
+                self.logger.warning(f"Failed to load UnifiedLotCalculator: {e}")
+        return self._lot_calculator
 
     # =========================================================
     # Position Sync - Core of the system
@@ -636,8 +680,30 @@ class SmartPositionManager:
 
         # All checks passed - open position
         action = PositionAction.OPEN_LONG if signal_direction > 0 else PositionAction.OPEN_SHORT
-        raw_lots = cfg.default_lot_size * signal_strength
-        lots = min(max(raw_lots, 0.01), cfg.max_lot_size)  # enforce broker min lot ~0.01
+        
+        # ═══════════════════════════════════════════════════════════════
+        # UNIFIED LOT CALCULATION - Use the central lot calculator
+        # ═══════════════════════════════════════════════════════════════
+        lots = 0.0
+        if self.lot_calculator and self.config.use_unified_calculator:
+            try:
+                lots, lot_details = self.lot_calculator.calculate_lots(
+                    symbol=symbol,
+                    signal_strength=signal_strength,
+                )
+                self.logger.info(
+                    f"[SMART_PM] 📊 UNIFIED_LOT: {symbol} | signal={signal_strength:.2f} | "
+                    f"lots={lots:.2f} | balance=€{lot_details.get('balance', 0):.0f} | "
+                    f"risk={lot_details.get('risk_pct', 0)*100:.1f}%"
+                )
+            except Exception as e:
+                self.logger.warning(f"[SMART_PM] Unified lot calc failed: {e}, using fallback")
+                lots = 0.0
+        
+        # Fallback if unified calculator unavailable or failed
+        if lots <= 0:
+            raw_lots = cfg.default_lot_size * signal_strength
+            lots = min(max(raw_lots, 0.01), cfg.max_lot_size)
 
         reasons.append(
             f"OPEN {action.value}: signal={signal_strength:.2f}, "
@@ -674,12 +740,31 @@ class SmartPositionManager:
             and scale_cooldown_ok
             and position.lots < cfg.max_lot_size
         ):
-            add_lots = min(
-                cfg.default_lot_size * 0.5,  # Conservative add
-                cfg.max_lot_size - position.lots,
-            )
+            # ═══════════════════════════════════════════════════════════════
+            # UNIFIED LOT CALCULATION for scale-up
+            # ═══════════════════════════════════════════════════════════════
+            add_lots = 0.0
+            if self.lot_calculator and self.config.use_unified_calculator:
+                try:
+                    # Use lower signal strength for scale-ups (more conservative)
+                    scale_signal = signal_strength * 0.5
+                    add_lots, _ = self.lot_calculator.calculate_lots(
+                        symbol=symbol,
+                        signal_strength=scale_signal,
+                    )
+                    # Cap by remaining capacity
+                    add_lots = min(add_lots, cfg.max_lot_size - position.lots)
+                except Exception:
+                    add_lots = 0.0
+            
+            # Fallback
+            if add_lots <= 0:
+                add_lots = min(
+                    cfg.default_lot_size * 0.5,  # Conservative add
+                    cfg.max_lot_size - position.lots,
+                )
 
-            if add_lots >= 0.1:
+            if add_lots >= 0.01:  # Lowered from 0.1 to allow smaller scales
                 reasons.append(
                     f"SCALE UP: +€{position.unrealized_pnl:.2f} profit, "
                     f"strong signal ({signal_strength:.2f})"
@@ -696,11 +781,11 @@ class SmartPositionManager:
         # Scale DOWN conditions: losing with aligning signal (reduce exposure)
         if (
             position.unrealized_pnl <= -cfg.scale_down_trigger_loss_eur
-            and position.lots > cfg.default_lot_size
+            and position.lots > 0.01  # Changed from default_lot_size to allow more flexibility
         ):
-            reduce_lots = min(position.lots * 0.5, position.lots - cfg.default_lot_size)
+            reduce_lots = min(position.lots * 0.5, max(position.lots - 0.01, 0.0))
 
-            if reduce_lots >= 0.1:
+            if reduce_lots >= 0.01:
                 reasons.append(
                     f"SCALE DOWN: -€{abs(position.unrealized_pnl):.2f} loss, "
                     f"reducing exposure"

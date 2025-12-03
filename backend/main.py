@@ -277,7 +277,7 @@ class PPOTrainingConfig(BaseModel):
     eval_freq: int = Field(default=5000, ge=1000, le=50000)
     num_envs: int = Field(default=1, ge=1, le=8)
     data_dir: str = Field(default="data/processed", description="Directory with CSV files for offline mode")
-    initial_balance: float = Field(default=3000.0, gt=0)
+    initial_balance: float = Field(default=100000.0, gt=0, description="Account balance - loaded from risk_policy.yaml")
     pretrained_model: Optional[str] = Field(default=None, description="Path to pretrained model")
     auto_pretrained: bool = Field(default=False, description="Auto-load latest model if available")
     debug: bool = False
@@ -1895,7 +1895,7 @@ async def startup_event():
         # Set default simulation mode
         default_env_config = {
             "instruments": [],
-            "initial_balance": 3000.0,
+            "initial_balance": 100000.0,
             "mode": "sim",  # STANDBY mode = simulation
             "max_steps": 100000,
             "bus_data_active": False,
@@ -2152,12 +2152,26 @@ async def get_system_configuration():
     try:
         # Load system config from YAML
         config_path = Path(__file__).parent.parent / "config" / "system_config.yaml"
+        risk_policy_path = Path(__file__).parent.parent / "config" / "risk_policy.yaml"
 
         if config_path.exists():
             with open(config_path, 'r', encoding='utf-8') as f:
                 system_config = yaml.safe_load(f)
         else:
             system_config = {}
+        
+        # Load risk policy for initial_balance
+        risk_policy = {}
+        if risk_policy_path.exists():
+            with open(risk_policy_path, 'r', encoding='utf-8') as f:
+                risk_policy = yaml.safe_load(f) or {}
+        
+        # Get initial_balance from risk_policy.yaml
+        initial_balance = float(
+            risk_policy.get("prop_firm", {}).get("account_size")
+            or risk_policy.get("lot_sizing", {}).get("account_balance")
+            or 100000.0
+        )
 
         # Extract relevant configuration sections
         response = {
@@ -2189,7 +2203,7 @@ async def get_system_configuration():
                 "eval_freq": 5000,
                 "num_envs": 1,
                 "data_dir": "data/processed",
-                "initial_balance": 3000.0,
+                "initial_balance": initial_balance,  # From risk_policy.yaml
                 "pretrained_model": None,
                 "auto_pretrained": False,
                 "debug": False

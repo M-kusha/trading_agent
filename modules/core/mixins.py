@@ -287,15 +287,8 @@ class SmartInfoBusRiskMixin(ABC):
         self._risk_theses = deque(maxlen=50)
         self._risk_history = deque(maxlen=1000)
 
-        # Risk limits and thresholds
-        defaults = {
-            'max_drawdown': 0.15,
-            'max_position_size': 0.1,
-            'max_sector_exposure': 0.3,
-            'max_leverage': 2.0,
-            'var_limit': 0.05,
-            'stress_test_limit': 0.1
-        }
+        # Load risk limits from risk_policy.yaml
+        defaults = self._load_risk_limits_from_yaml()
         self._risk_limits = {**defaults, **getattr(self, "_risk_limits", {})}
 
         # State manager
@@ -317,6 +310,40 @@ class SmartInfoBusRiskMixin(ABC):
         self.logger.info(
             format_operator_message("[SAFE]", "RISK MIXIN INITIALIZED", context="mixin_init")
         )
+    
+    def _load_risk_limits_from_yaml(self) -> Dict[str, Any]:
+        """Load risk limits from risk_policy.yaml with hardcoded fallbacks."""
+        import yaml
+        import os
+        
+        # Hardcoded fallbacks (prop firm safe)
+        defaults = {
+            'max_drawdown': 0.085,
+            'max_position_size': 0.05,
+            'max_sector_exposure': 0.10,
+            'max_leverage': 5.0,
+            'var_limit': 0.015,
+            'stress_test_limit': 0.05
+        }
+        
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "risk_policy.yaml")
+            if os.path.exists(config_path):
+                with open(config_path, "r") as f:
+                    policy = yaml.safe_load(f) or {}
+                
+                limits = policy.get("limits", {})
+                lot_sizing = policy.get("lot_sizing", {})
+                
+                defaults['max_drawdown'] = float(limits.get("max_drawdown", defaults['max_drawdown']))
+                defaults['max_position_size'] = float(limits.get("max_position_size", defaults['max_position_size']))
+                defaults['max_sector_exposure'] = float(limits.get("max_exposure_pct", defaults['max_sector_exposure']) * 2)
+                defaults['max_leverage'] = float(limits.get("max_leverage", defaults['max_leverage']))
+                defaults['var_limit'] = float(limits.get("max_portfolio_var", defaults['var_limit']))
+        except Exception:
+            pass  # Use fallback defaults
+        
+        return defaults
 
     def get_state(self) -> Dict[str, Any]:
         """Get risk mixin state for persistence"""

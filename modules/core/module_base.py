@@ -78,6 +78,8 @@ class ModuleMetadata:
     health_monitoring: bool = False
     performance_tracking: bool = False
     error_handling: bool = False
+    # Optional role flags (used by some meta/voting modules; keep backwards compatible)
+    is_final_arbiter: bool = False
     readiness_grace_s: float | None = None  # Optional per-module micro grace
 
     VALID_CATEGORIES = [

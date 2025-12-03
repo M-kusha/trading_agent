@@ -42,14 +42,40 @@ class ControllerMode(Enum):
     OPTIMIZATION = "optimization"
 
 
+def _load_controller_config_from_yaml() -> Dict[str, Any]:
+    """Load controller config values from risk_policy.yaml."""
+    import yaml
+    import os
+    defaults = {}
+    try:
+        config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "risk_policy.yaml")
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                policy = yaml.safe_load(f) or {}
+            
+            prop_firm = policy.get("prop_firm", {})
+            escalation = policy.get("escalation", {})
+            
+            account_size = float(prop_firm.get("account_size", 100000.0))
+            profit_target_pct = float(prop_firm.get("profit_target", 0.10))
+            
+            # Scale to EUR amounts based on account size
+            defaults["profit_target"] = account_size * profit_target_pct * 0.01  # Daily target
+            defaults["retraining_trigger_loss"] = -account_size * float(escalation.get("warning_threshold", 0.025))
+            defaults["emergency_stop_loss"] = -account_size * float(escalation.get("emergency_threshold", 0.042))
+    except Exception:
+        pass
+    return defaults
+
+
 @dataclass
 class ControllerConfig:
-    """Configuration for Meta RL Controller"""
+    """Configuration for Meta RL Controller - values loaded from risk_policy.yaml"""
     obs_size: int = 64
     act_size: int = 2
     method: str = "ppo"  # Changed from ppo-lag (removed module)
     device: str = "cpu"
-    profit_target: float = 150.0
+    profit_target: float = 1000.0        # Loaded from risk_policy.yaml
     training_episodes: int = 1000
     validation_episodes: int = 100
     
@@ -58,13 +84,20 @@ class ControllerConfig:
     circuit_breaker_threshold: int = 3
     min_convergence_threshold: float = 0.8
     
-    # Automation parameters
+    # Automation parameters - loaded from risk_policy.yaml
     min_training_episodes: int = 50
     validation_success_rate: float = 0.6
     live_trading_confidence: float = 0.7
-    retraining_trigger_loss: float = -50.0
-    emergency_stop_loss: float = -100.0
+    retraining_trigger_loss: float = -2500.0   # From escalation.warning_threshold
+    emergency_stop_loss: float = -4200.0       # From escalation.emergency_threshold
     optimization_interval: int = 500
+    
+    def __post_init__(self):
+        """Override defaults with values from risk_policy.yaml."""
+        yaml_config = _load_controller_config_from_yaml()
+        for key, value in yaml_config.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
 
 
 class AgentPerformanceTracker:

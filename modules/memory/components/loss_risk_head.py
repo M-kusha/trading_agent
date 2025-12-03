@@ -109,7 +109,8 @@ class LossRiskHeadComponent(MemoryComponent):
     _MIN_SAMPLES_FOR_TRAINING: int = 20
     _TRAINING_BATCH_SIZE: int = 16
     _LOSS_THRESHOLD: float = 5.0  # τ: PnL threshold for "significant loss"
-    _INPUT_DIM: int = 48  # features(32) + action(2) + regime(4) + vol(1) + session(4) + extra(5)
+    # Updated: features(32) + action(2) + regime(4) + vol(1) + session(4) + instrument(2) + extra(3)
+    _INPUT_DIM: int = 48
     _REGIME_ENCODING: Dict[str, List[float]] = {
         "trending": [1.0, 0.0, 0.0, 0.0],
         "volatile": [0.0, 1.0, 0.0, 0.0],
@@ -120,8 +121,17 @@ class LossRiskHeadComponent(MemoryComponent):
         "asian": [1.0, 0.0, 0.0, 0.0],
         "european": [0.0, 1.0, 0.0, 0.0],
         "american": [0.0, 0.0, 1.0, 0.0],
+        "us": [0.0, 0.0, 1.0, 0.0],  # alias for american
         "closed": [0.0, 0.0, 0.0, 1.0],
         "unknown": [0.25, 0.25, 0.25, 0.25],
+    }
+    # Instrument encoding (2 dims) for per-instrument risk learning
+    _INSTRUMENT_ENCODING: Dict[str, List[float]] = {
+        "EUR_USD": [1.0, 0.0],
+        "EURUSD": [1.0, 0.0],  # alias
+        "XAU_USD": [0.0, 1.0],
+        "XAUUSD": [0.0, 1.0],  # alias
+        "UNKNOWN": [0.5, 0.5],
     }
     
     def _initialize_component(self) -> None:
@@ -299,18 +309,19 @@ class LossRiskHeadComponent(MemoryComponent):
             session_enc = self._SESSION_ENCODING.get(session, self._SESSION_ENCODING["unknown"])
             parts.extend(session_enc)
             
-            # 6. Extra features (5 dims) - trade characteristics using safe_float from shared utils
+            # 6. Instrument encoding (2 dims) - for per-instrument risk learning
+            instrument = str(trade.get("instrument") or trade.get("symbol") or "UNKNOWN").upper().replace("/", "_")
+            instrument_enc = self._INSTRUMENT_ENCODING.get(instrument, self._INSTRUMENT_ENCODING["UNKNOWN"])
+            parts.extend(instrument_enc)
+            
+            # 7. Extra features (3 dims) - trade characteristics using safe_float from shared utils
             confidence = safe_float(trade.get("confidence", 0.5), 0.5)
             size = safe_float(trade.get("size", 0.0), 0.0)
             duration = safe_float(trade.get("duration", 1.0), 1.0)
-            drawdown_pct = safe_float(market_context.get("drawdown_pct", 0.0), 0.0)
-            exposure_pct = safe_float(market_context.get("exposure_pct", 0.0), 0.0)
             
             parts.append(confidence)
             parts.append(size / 10.0)
             parts.append(duration / 100.0)
-            parts.append(drawdown_pct / 100.0)
-            parts.append(exposure_pct / 100.0)
             
             # Pad/trim to input dim
             arr = np.asarray(parts, dtype=np.float32)

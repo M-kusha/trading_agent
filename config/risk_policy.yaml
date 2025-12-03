@@ -1,6 +1,73 @@
 # Risk Policy Configuration
 # Used by risk category modules (DynamicRiskController, PortfolioRiskSystem, etc.)
 
+# ═══════════════════════════════════════════════════════════════
+# PROP FIRM CONFIGURATION
+# Configure your prop firm rules here - system will enforce them
+# ═══════════════════════════════════════════════════════════════
+prop_firm:
+  enabled: true                      # Enable prop firm mode
+  firm_name: "FTMO"                  # For logging/reference
+
+  # CRITICAL: Drawdown limits (% of starting balance / equity base)
+  daily_drawdown_limit: 0.05         # 5% daily loss = challenge failed
+  max_drawdown_limit: 0.10           # 10% total loss = challenge failed
+
+  # Trailing drawdown (some firms use this)
+  trailing_drawdown: false           # FTMO=false, E8/TFT=true
+  trailing_locks_at_breakeven: true  # Does trailing lock when you reach breakeven?
+
+  # Profit target (for evaluation phases)
+  profit_target: 0.10                # 10% profit target
+
+  # Trading rules
+  allow_weekend_holding: false       # Close positions before weekend?
+  min_trading_days: 4                # Minimum days required
+  max_daily_profit_pct: 0.40         # Consistency rule: no day > 40% of target
+
+  # Safety buffers (stop BEFORE hitting actual limit)
+  daily_dd_safety_buffer: 0.008      # Stop trading at 4.2% daily (5% - 0.8%)
+  max_dd_safety_buffer: 0.015        # Stop trading at 8.5% total (10% - 1.5%)
+
+  # Account details
+  account_size: 100000.0             # €100,000 challenge account
+  phase: "evaluation"                # "evaluation", "verification", "funded"
+
+# ═══════════════════════════════════════════════════════════════
+# UNIFIED LOT SIZING - PROP FIRM OPTIMIZED
+# Conservative sizing to protect against drawdown limits
+# ═══════════════════════════════════════════════════════════════
+lot_sizing:
+  # Account parameters
+  account_balance: 100000.0          # €100,000 account (should match prop_firm.account_size)
+  account_leverage: 100.0            # 100:1 leverage
+  account_currency: "EUR"
+
+  # Risk parameters - CONSERVATIVE for prop firms
+  risk_per_trade_pct: 0.005          # 0.5% risk per trade (€500 at €100k)
+  max_risk_per_trade_pct: 0.01       # Hard cap: 1% max (€1,000)
+
+  # With 0.5% risk and 5% daily limit, you can have:
+  # - 10 consecutive full losers before daily limit
+  # - 20 consecutive full losers before max drawdown
+
+  # Lot constraints
+  min_lot: 0.01                      # Broker minimum
+  max_lot: 10.0                      # Reduced max for prop firm safety
+  lot_step: 0.01                     # Lot increment precision
+
+  # Position limits - STRICT for prop firms
+  max_positions: 2                   # Max 2 concurrent (diversify but don't overexpose)
+
+  # Global exposure cap (used by UnifiedLotCalculator)
+  # This is the fraction of equity allowed as margin usage
+  max_exposure_pct: 0.05             # Max 5% margin used (very conservative)
+
+  # Dynamic scaling toggles
+  volatility_scaling: true           # Scale lots by volatility
+  drawdown_scaling: true             # Reduce lots during drawdown
+  signal_strength_scaling: true      # Scale by signal confidence
+
 # Global Risk Controls
 controls:
   stop_loss_enabled: true
@@ -10,97 +77,105 @@ controls:
   position_monitoring_enabled: true
 
 # ═══════════════════════════════════════════════════════════════
-# POSITION MANAGER EMERGENCY THRESHOLDS
+# POSITION MANAGER EMERGENCY THRESHOLDS - PROP FIRM TUNED
 # These control when PositionManager triggers emergency closes
+# CRITICAL: Must be BELOW prop firm limits!
 # ═══════════════════════════════════════════════════════════════
 position_manager:
-  # Emergency exposure trigger (0.95 = 95% of balance exposed)
-  # Set high because normal positions can use 30-85% of balance
-  # Only trigger emergency when nearly ALL balance is at risk
-  emergency_exposure_trigger: 0.95
-  
-  # Emergency drawdown trigger (15% drawdown = emergency)
-  emergency_drawdown_trigger: 0.15
-  
+  # Emergency exposure trigger - lower for prop firm safety
+  emergency_exposure_trigger: 0.20   # 20% exposure = emergency
+
+  # Emergency drawdown trigger - WELL BELOW daily limit
+  emergency_drawdown_trigger: 0.035  # 3.5% drawdown = emergency (daily limit is 5%)
+
   # Max consecutive losses before emergency
-  max_consecutive_losses: 5
-  
-  # Max concentration per instrument (for risk scoring, NOT emergency)
-  max_instrument_concentration: 0.30
+  max_consecutive_losses: 3          # Reduced from 5 - prop firm can't afford long streaks
+
+  # Max concentration per instrument
+  max_instrument_concentration: 0.50 # Allow concentration in high-confidence setups
 
 # ═══════════════════════════════════════════════════════════════
-# SMART POSITION MANAGEMENT
-# Professional net position system with intelligent exits
+# SMART POSITION MANAGEMENT - PROP FIRM TUNED
+# Tighter stops and faster exits to protect drawdown
 # ═══════════════════════════════════════════════════════════════
 smart_position:
   # Position limits
-  max_positions_per_symbol: 1      # ONE position per symbol (no stacking)
-  max_total_positions: 4           # Max across all symbols
-  default_lot_size: 0.2
-  max_lot_size: 1.0
-  
-  # Profit-taking thresholds (EUR)
-  profit_take_activation_eur: 50.0   # Start trailing after €50 profit (was 30)
-  profit_take_trail_pct: 0.35        # Close if drops 35% from peak (was 25%)
-  momentum_exit_profit_eur: 30.0     # Take profit on signal reversal (was 15)
-  
-  # Loss-cutting thresholds (EUR)
-  hard_stop_loss_eur: 100.0          # Absolute max loss (always exit)
-  soft_stop_loss_eur: 50.0           # Cut early if signal against (was 30)
-  time_decay_stop_eur: 50.0          # Cut if losing AND position old
-  time_decay_hours: 4.0              # Position age threshold
-  
-  # Scaling rules
-  scale_up_min_profit_eur: 10.0      # Only add if in profit
-  scale_up_cooldown_seconds: 300.0   # 5 min between scale-ups
-  scale_down_trigger_loss_eur: 20.0  # Scale down if losing
-  
-  # Trade cooldowns
-  same_direction_cooldown_seconds: 300.0  # 5 min between same-direction
-  reversal_cooldown_seconds: 120.0        # 2 min after reversal
-  
-  # Signal thresholds
-  min_signal_strength: 0.4           # Raised from 0.3 - need stronger signals
-  strong_signal_threshold: 0.6
-  reversal_signal_threshold: 0.6     # Raised from 0.5 - need stronger reversal to exit
+  max_positions_per_symbol: 1        # ONE position per symbol
+  max_total_positions: 2             # Max 2 positions total (prop firm safe)
+
+  # Lot sizing - USES UNIFIED CALCULATOR (lot_sizing section above)
+  default_lot_size: 0.01             # Fallback only
+  max_lot_size: 10.0                 # Reduced for prop firm
+  use_unified_calculator: true       # Always use UnifiedLotCalculator
+
+  # Profit-taking thresholds (EUR) - TIGHTER for prop firms
+  # Goal: Lock in profits frequently, don't let winners turn to losers
+  profit_take_activation_eur: 100.0  # Start trailing after €100 profit
+  profit_take_trail_pct: 0.30        # Close if drops 30% from peak
+  momentum_exit_profit_eur: 60.0     # Take profit on signal reversal
+
+  # Loss-cutting thresholds (EUR) - STRICT for prop firms
+  # CRITICAL: Cut losses fast to protect daily/max drawdown
+  hard_stop_loss_eur: 150.0          # Max loss €150 (0.15% of account)
+  soft_stop_loss_eur: 80.0           # Cut early if signal against €80
+  time_decay_stop_eur: 60.0          # Cut if losing AND position old €60
+  time_decay_hours: 4.0              # Position age threshold (was 8)
+
+  # Scaling rules - MORE CONSERVATIVE for prop firms
+  scale_up_min_profit_eur: 50.0      # Only add if in decent profit
+  scale_up_cooldown_seconds: 900.0   # 15 min between scale-ups
+  scale_down_trigger_loss_eur: 40.0  # Scale down faster if losing
+
+  # Trade cooldowns - LONGER to avoid overtrading
+  same_direction_cooldown_seconds: 900.0  # 15 min between same-direction entries
+  reversal_cooldown_seconds: 600.0        # 10 min after reversal
+
+  # Signal thresholds - HIGHER quality signals only
+  min_signal_strength: 0.50          # Need 50%+ confidence to trade
+  strong_signal_threshold: 0.70      # Strong signal = 70%+
+  reversal_signal_threshold: 0.70    # Need strong reversal to exit
 
 # Stop Loss / Take Profit Settings (in pips)
-# IMPORTANT: These are EMERGENCY safety nets only!
-# Real exit logic is handled by SmartPositionManager based on voting signals.
-# Set SL wide enough to avoid noise, TP disabled to let winners run.
+# IMPORTANT: Emergency safety nets - TIGHTER for prop firms
 sl_tp_settings:
   # Default values per instrument (in pips)
   EURUSD:
-    stop_loss_pips: 200     # Emergency SL only: 200 pips = 0.0200 (~$40 at 0.2 lots)
-    take_profit_pips: 0     # DISABLED - SmartPositionManager handles exits
+    stop_loss_pips: 100     # 100 pips SL (~€100 at 0.1 lots)
+    take_profit_pips: 150   # TP for prop firm consistency
   XAUUSD:
-    stop_loss_pips: 2000    # Emergency SL only: $20.00 for gold (safety net)
-    take_profit_pips: 0     # DISABLED - SmartPositionManager handles exits
+    stop_loss_pips: 1000    # Gold SL: $10 (1000 pips at 0.01)
+    take_profit_pips: 1500  # Gold TP: $15 (1500 pips at 0.01)
+
   # Default fallback for any other symbol
   default:
-    stop_loss_pips: 200     # Wide emergency SL
-    take_profit_pips: 0     # Disabled - let smart system handle
-  # Enable/disable automatic SL/TP on new orders
-  auto_sl_enabled: true     # Keep emergency SL for safety
-  auto_tp_enabled: false    # Disable fixed TP - SmartPositionManager decides
-  # Modify existing positions without SL/TP
+    stop_loss_pips: 100     # Tight emergency SL
+    take_profit_pips: 150   # TP for consistency
+
+  # Enable automatic SL/TP on new orders
+  auto_sl_enabled: true     # ALWAYS have emergency SL
+  auto_tp_enabled: true     # Enable TP for prop firm consistency
   fix_missing_sl_tp: true
 
-# Risk Escalation Thresholds
+# Risk Escalation Thresholds - PROP FIRM TUNED
+# CRITICAL: These must trigger BEFORE prop firm limits
 escalation:
-  alert_threshold: 0.03
-  warning_threshold: 0.04
-  shutdown_threshold: 0.05
-  emergency_threshold: 0.08
+  alert_threshold: 0.015     # 1.5% loss = alert
+  warning_threshold: 0.025   # 2.5% loss = warning
+  shutdown_threshold: 0.035  # 3.5% loss = shutdown trading
+  emergency_threshold: 0.042 # 4.2% loss = emergency close all (below 5% daily)
 
-# Portfolio Risk Limits
+# Portfolio Risk Limits - PROP FIRM STRICT
 limits:
-  max_daily_loss: 0.02
-  max_drawdown: 0.05
-  max_position_size: 0.1
-  max_portfolio_var: 0.025
-  max_leverage: 10.0
-  max_correlation: 0.8
+  max_daily_loss: 0.042      # Stop at 4.2% (buffer below 5% limit)
+  max_drawdown: 0.085        # Stop at 8.5% (buffer below 10% limit)
+
+  # This value is also used as default for lot_sizing.max_exposure_pct
+  max_position_size: 0.05    # Max 5% margin exposure per position/system
+  max_exposure_pct: 0.05     # Explicit exposure cap for calculators
+
+  max_portfolio_var: 0.015   # Tighter VaR (was 2.5%)
+  max_leverage: 5.0          # Effective leverage cap (was 10)
+  max_correlation: 0.70      # Avoid correlated positions (was 0.8)
 
 # Risk Module Specific Overrides
 modules:
@@ -112,7 +187,7 @@ modules:
   PortfolioRiskSystem:
     var_confidence: 0.95
     correlation_window: 30
-    rebalance_frequency: 'daily'
+    rebalance_frequency: "daily"
 
   DrawdownRescue:
     activation_threshold: 0.10
@@ -123,5 +198,5 @@ modules:
 assessment:
   lookback_period_days: 30
   confidence_interval: 0.95
-  stress_test_scenarios: ['market_crash', 'liquidity_crisis', 'volatility_spike']
+  stress_test_scenarios: ["market_crash", "liquidity_crisis", "volatility_spike"]
   monte_carlo_simulations: 1000

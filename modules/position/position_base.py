@@ -735,14 +735,22 @@ class PositionManagerBase(
 
         try:
             # Risk-aware modifiers (fragility/collusion dampen thresholds)
+            # Prefer per-instrument fragility (use min across instruments) over global
             fragility = 0.0
             collusion_score = 0.0
             try:
-                fragility = float(
-                    self.smart_bus.get("fragility", "PositionManager")
-                    or self.smart_bus.get("sampling_fragility", "PositionManager")
-                    or 0.0
-                )
+                # Try per-instrument fragility first (more accurate)
+                inst_frag = self.smart_bus.get("instrument_fragility", "PositionManager")
+                if isinstance(inst_frag, dict) and inst_frag:
+                    # Use minimum fragility across instruments (most favorable)
+                    fragility = min(inst_frag.values())
+                else:
+                    # Fallback to global fragility
+                    fragility = float(
+                        self.smart_bus.get("fragility", "PositionManager")
+                        or self.smart_bus.get("sampling_fragility", "PositionManager")
+                        or 0.0
+                    )
                 collusion_score = float(
                     self.smart_bus.get("collusion_score", "PositionManager") or 0.0
                 )
@@ -750,7 +758,26 @@ class PositionManagerBase(
                 pass
 
             risk_factor = 1.0 + 0.6 * fragility + 0.5 * collusion_score
-            risk_block = (fragility >= 0.85) or (collusion_score >= 0.85)
+            
+            # During training/simulation, be more lenient on collusion 
+            # (experts often agree on clear signals, which is fine)
+            # During live trading, be stricter
+            exec_mode = "simulation"
+            try:
+                exec_mode = str(
+                    self.smart_bus.get("execution_mode", "PositionManager") or "simulation"
+                ).lower()
+            except Exception:
+                pass
+            
+            # Thresholds based on mode
+            if exec_mode in ("live", "paper"):
+                # Live mode: Block on extreme fragility (>=0.95) or very high collusion (>=0.95)
+                risk_block = (fragility >= 0.95) or (collusion_score >= 0.95)
+            else:
+                # Training/sim mode: Only block on truly extreme values
+                # High collusion during training usually means experts agree on a clear signal
+                risk_block = (fragility >= 0.98) or (collusion_score >= 0.99)
 
             # Define action categories
             RISK_BLOCK_ACTIONS = {"halt", "emergency", "reduce_risk", "block"}

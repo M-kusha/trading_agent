@@ -448,6 +448,23 @@ class BeautifulTrainingVisualizer:
         self.terminal_width = terminal_width or size.columns
         self.terminal_height = size.lines
         self.session_start = datetime.now()
+        
+        # Load default balance from risk_policy.yaml
+        self._default_balance = 100000.0
+        try:
+            import yaml
+            from pathlib import Path
+            config_path = Path(__file__).parent.parent / "config" / "risk_policy.yaml"
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    policy = yaml.safe_load(f) or {}
+                self._default_balance = float(
+                    policy.get("prop_firm", {}).get("account_size")
+                    or policy.get("lot_sizing", {}).get("account_balance")
+                    or 100000.0
+                )
+        except Exception:
+            pass
 
         # Data stores
         self.price_history: Deque[float] = deque(maxlen=50)
@@ -548,8 +565,10 @@ class BeautifulTrainingVisualizer:
         self._add("")
 
     def _render_performance_metrics(self, data: Dict[str, Any]) -> None:
-        balance = float(data.get('balance') or 3000)
-        initial = float(data.get('initial_balance') or 3000)
+        # Use default from risk_policy.yaml loaded in __init__
+        default_bal = getattr(self, '_default_balance', 100000.0)
+        balance = float(data.get('balance') or default_bal)
+        initial = float(data.get('initial_balance') or default_bal)
         pnl = balance - initial
         pnl_pct = ((balance / initial) - 1) * 100 if initial > 0 else 0.0
 
@@ -770,6 +789,32 @@ class BeautifulTrainingVisualizer:
             voting_content.append(f"  {color}{action_type:5}{Colors.RESET} {bar} {Colors.GRAY}{count}/{base_total}{Colors.RESET} {Colors.GRAY}{pct:5.1f}%{Colors.RESET}")
         voting_content.append('')
         voting_content.append(f"  {Colors.GRAY}Total Votes:{Colors.RESET} {total_votes}/{base_total}")
+
+        # Add per-instrument signals display
+        instrument_signals = decision_data.get('instrument_signals') or {}
+        if instrument_signals and isinstance(instrument_signals, dict):
+            voting_content.append('')
+            voting_content.append(self._center(f"{Colors.GRAY}─── Per-Instrument ───{Colors.RESET}", signal_width))
+            for inst, sig_data in sorted(instrument_signals.items()):
+                if isinstance(sig_data, dict):
+                    action = sig_data.get('action', sig_data.get('direction', 'HOLD'))
+                    conf = sig_data.get('confidence', sig_data.get('intensity', 0.0))
+                else:
+                    action = str(sig_data) if sig_data else 'HOLD'
+                    conf = 0.0
+                action_str = str(action).upper()
+                if action_str.startswith('BUY') or action_str.startswith('LONG'):
+                    action_display = f"{Colors.BUY_GREEN}BUY{Colors.RESET}"
+                elif action_str.startswith('SELL') or action_str.startswith('SHORT'):
+                    action_display = f"{Colors.SELL_RED}SELL{Colors.RESET}"
+                else:
+                    action_display = f"{Colors.GOLD}HOLD{Colors.RESET}"
+                inst_short = inst[:7] if len(inst) > 7 else inst
+                try:
+                    conf_val = float(conf) * 100 if float(conf) <= 1 else float(conf)
+                except (TypeError, ValueError):
+                    conf_val = 0.0
+                voting_content.append(f"  {Colors.GRAY}{inst_short:7}{Colors.RESET} {action_display} {Colors.GRAY}{conf_val:5.1f}%{Colors.RESET}")
 
         signal_card = self._card('TRADING SIGNAL', signal_content, signal_width, Colors.CYAN)
         voting_card = self._card('VOTING ANALYSIS', voting_content, signal_width, Colors.PURPLE)
@@ -1267,6 +1312,13 @@ class BeautifulTrainingVisualizer:
             None
         )
         trading_performance = self._safe_bus_get(smart_bus, 'trading_performance', {}) or {}
+        # Fetch per-instrument signals from arbiter
+        instrument_signals = self._bus_get_multi(
+            smart_bus,
+            'instrument_signals',
+            ['FinalArbiter', 'VotingKernel', 'StrategyArbiter'],
+            {}
+        ) or {}
 
         # Build dashboard sections
         self._render_header({
@@ -1284,11 +1336,11 @@ class BeautifulTrainingVisualizer:
         if current_balance is None or current_balance == 0:
             current_balance = training_metrics.get('env_equity')
         if current_balance is None:
-            current_balance = 3000  # Default fallback
+            current_balance = 100000  # Default fallback (from risk_policy.yaml)
 
         initial_balance = account_state.get('initial_balance') if account_state else None
         if initial_balance is None or initial_balance == 0:
-            initial_balance = 3000  # Default
+            initial_balance = 100000  # Default (from risk_policy.yaml)
 
         self._render_performance_metrics({
             'balance': current_balance,
@@ -1351,6 +1403,7 @@ class BeautifulTrainingVisualizer:
                 'trade_vote': trade_vote,
                 'session_risk': session_risk_snapshot,
                 'dynamic_risk': dynamic_risk_snapshot,
+                'instrument_signals': instrument_signals,  # Per-instrument signals
             },
             {
                 'votes': committee_votes if committee_votes else votes,

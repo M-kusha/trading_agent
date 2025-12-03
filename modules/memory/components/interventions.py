@@ -84,8 +84,9 @@ class InterventionsComponent(MemoryComponent):
         self.intervention_threshold: float = float(getattr(cfg, "intervention_threshold", 0.6))
         self.veto_threshold: float = float(getattr(cfg, "veto_threshold", 0.8))
         
-        # Intervention table: (pattern_label, regime) -> InterventionRecord
-        self.intervention_table: Dict[Tuple[str, str], InterventionRecord] = {}
+        # Intervention table: (instrument, pattern_label, regime) -> InterventionRecord
+        # Changed from (pattern_label, regime) to include instrument for per-instrument tracking
+        self.intervention_table: Dict[Tuple[str, str, str], InterventionRecord] = {}
         
         # Historical trades buffer for learning
         self.trade_history: deque[Dict[str, Any]] = deque(
@@ -147,6 +148,9 @@ class InterventionsComponent(MemoryComponent):
             if not isinstance(trade, dict) or "pnl" not in trade:
                 continue
             
+            # Extract instrument for per-instrument tracking
+            instrument = trade.get("instrument") or trade.get("symbol") or "UNKNOWN"
+            
             # Extract pattern label
             pattern_label = self._extract_pattern_label(trade, context)
             regime = str(market_context.get("regime", "unknown")).lower()
@@ -154,6 +158,7 @@ class InterventionsComponent(MemoryComponent):
             # Store trade with metadata
             trade_record = {
                 "pnl": float(trade["pnl"]),
+                "instrument": instrument,
                 "pattern_label": pattern_label,
                 "regime": regime,
                 "size": safe_float(trade.get("size", 1.0), 1.0),
@@ -165,8 +170,8 @@ class InterventionsComponent(MemoryComponent):
             self.trade_history.append(trade_record)
             trades_processed += 1
             
-            # Update intervention table with outcome
-            self._update_intervention_stats(pattern_label, regime, trade_record)
+            # Update intervention table with outcome (now includes instrument)
+            self._update_intervention_stats(instrument, pattern_label, regime, trade_record)
         
         return {
             "trades_processed": trades_processed,
@@ -222,9 +227,9 @@ class InterventionsComponent(MemoryComponent):
         
         return "-".join(features) if features else "UNKNOWN"
     
-    def _update_intervention_stats(self, pattern_label: str, regime: str, trade_record: Dict[str, Any]) -> None:
-        """Update intervention table stats for a (pattern, regime) key."""
-        key = (pattern_label, regime)
+    def _update_intervention_stats(self, instrument: str, pattern_label: str, regime: str, trade_record: Dict[str, Any]) -> None:
+        """Update intervention table stats for a (instrument, pattern, regime) key."""
+        key = (instrument, pattern_label, regime)
         
         if key not in self.intervention_table:
             if len(self.intervention_table) >= self._MAX_PATTERNS:
@@ -332,6 +337,9 @@ class InterventionsComponent(MemoryComponent):
         """Generate intervention recommendation for current context."""
         market_context = context.get("market_context", {}) or {}
         
+        # Get current instrument (try multiple sources)
+        current_instrument = context.get("instrument") or context.get("symbol") or "UNKNOWN"
+        
         # Get current pattern label (from context or generate)
         current_pattern = context.get("pattern_label")
         if current_pattern is None:
@@ -339,7 +347,8 @@ class InterventionsComponent(MemoryComponent):
             current_pattern = self._infer_current_pattern(context)
         
         regime = str(market_context.get("regime", "unknown")).lower()
-        key = (str(current_pattern), regime)
+        # 3-tuple key: (instrument, pattern_label, regime)
+        key = (str(current_instrument), str(current_pattern), regime)
         
         # Check if we have intervention data for this key
         if key in self.intervention_table:
@@ -351,6 +360,7 @@ class InterventionsComponent(MemoryComponent):
                     "strength": record.strength,
                     "best_alt": record.best_alt,
                     "exp_delta": record.exp_delta,
+                    "instrument": current_instrument,
                     "pattern_label": current_pattern,
                     "regime": regime,
                     "sample_count": record.n,
@@ -368,6 +378,27 @@ class InterventionsComponent(MemoryComponent):
                 
                 return {"recommendation": recommendation, "recommendation_available": True}
         
+        # Also check for cross-instrument patterns (instrument="ALL")
+        fallback_key = ("ALL", str(current_pattern), regime)
+        if fallback_key in self.intervention_table:
+            record = self.intervention_table[fallback_key]
+            if record.n >= self._MIN_SAMPLES_FOR_RECOMMENDATION and record.strength > 0.1:
+                recommendation = {
+                    "intervention": record.intervention,
+                    "strength": record.strength * 0.8,  # Reduce confidence for cross-instrument
+                    "best_alt": record.best_alt,
+                    "exp_delta": record.exp_delta * 0.8,
+                    "instrument": current_instrument,
+                    "pattern_label": current_pattern,
+                    "regime": regime,
+                    "sample_count": record.n,
+                    "veto_recommended": record.intervention == "avoid" and record.strength > self.veto_threshold,
+                    "cross_instrument": True,  # Flag indicating this is a cross-instrument recommendation
+                }
+                recommendation.update(self._intervention_to_multipliers(record))
+                self.current_recommendation = recommendation
+                return {"recommendation": recommendation, "recommendation_available": True}
+        
         # No recommendation available
         default_rec = {
             "intervention": "none",
@@ -378,6 +409,7 @@ class InterventionsComponent(MemoryComponent):
             "sl_mult": 1.0,
             "tp_mult": 1.0,
             "veto_recommended": False,
+            "instrument": current_instrument,
         }
         self.current_recommendation = default_rec
         
@@ -469,7 +501,7 @@ class InterventionsComponent(MemoryComponent):
         """Format output to match contract requirements."""
         recommendation = self.current_recommendation or {}
         
-        # Get top interventions by strength
+        # Get top interventions by strength (now using 3-tuple keys: instrument, pattern, regime)
         top_interventions: List[Dict[str, Any]] = []
         for key, record in sorted(
             self.intervention_table.items(),
@@ -477,8 +509,9 @@ class InterventionsComponent(MemoryComponent):
             reverse=True
         )[:5]:
             top_interventions.append({
-                "pattern": key[0],
-                "regime": key[1],
+                "instrument": key[0],  # First element is now instrument
+                "pattern": key[1],     # Second element is pattern_label
+                "regime": key[2],      # Third element is regime
                 "intervention": record.intervention,
                 "strength": record.strength,
                 "exp_delta": record.exp_delta,

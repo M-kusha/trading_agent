@@ -118,6 +118,7 @@ class PositionManager(PositionManagerBase):
         Position decision logic.
 
         Handles:
+        0. PPOAgent intelligent arbiter gate (final GO/NO-GO decision).
         1. Memory veto / danger-zone gating (pre-entry).
         2. Emergency conditions (hard exits / no new exposure).
         3. Trailing take-profit exits (via ProfitTracker).
@@ -134,6 +135,32 @@ class PositionManager(PositionManagerBase):
         confidence = 0.5
         rationale: Dict[str, Any] = {"stage": "initial", "factors": []}
         risk_factors: Dict[str, float] = {}
+
+        # ======================================================
+        # PPO INTELLIGENT ARBITER GATE (highest priority)
+        # PPOAgent has seen committee consensus, risk, memory and made final decision
+        # ======================================================
+        ppo_gate_passed = self.smart_bus.get("ppo_gate_passed", "PositionManager", default=True)
+        ppo_final_decision = self.smart_bus.get("ppo_final_decision", "PositionManager", default={})
+        ppo_position_size = self.smart_bus.get("ppo_position_size", "PositionManager", default=None)
+        
+        # If PPOAgent explicitly blocked the trade, respect that decision
+        if ppo_gate_passed is False and not has_position:
+            rationale["stage"] = "ppo_arbiter_veto"
+            rationale["factors"].append(
+                f"PPOAgent intelligent arbiter vetoed: {ppo_final_decision.get('reasoning', 'No reason provided')}"
+            )
+            rationale["ppo_decision"] = ppo_final_decision
+            return self._finalize_decision(
+                instrument,
+                decision,
+                0.0,
+                0.0,
+                0.3,  # Low confidence in holding
+                rationale,
+                risk_factors,
+                context,
+            )
 
         # ======================================================
         # MEMORY INTEGRATION: Read all memory signals upfront
@@ -1075,6 +1102,25 @@ class PositionManager(PositionManagerBase):
                                 reasons=memory_gate.get("reasons", [])[:2],
                             )
                         )
+        except Exception:
+            pass
+
+        # PPO INTELLIGENT ARBITER: Apply PPO position sizing recommendation
+        try:
+            ppo_position_size = self.smart_bus.get("ppo_position_size", "PositionManager")
+            if ppo_position_size is not None and ppo_position_size > 0:
+                # PPOAgent provides a multiplier (0.0 to 1.0) based on confidence
+                ppo_mult = float(np.clip(ppo_position_size, 0.0, 1.0))
+                adjusted_size *= ppo_mult
+                if self.debug:
+                    self.logger.info(
+                        format_operator_message(
+                            icon="🤖",
+                            message="PPO_ARBITER_SIZE_ADJUSTMENT",
+                            multiplier=f"{ppo_mult:.2f}x",
+                            source="intelligent arbiter confidence scaling",
+                        )
+                    )
         except Exception:
             pass
 

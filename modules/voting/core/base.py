@@ -9,13 +9,13 @@ from __future__ import annotations
 import time
 from abc import abstractmethod
 from datetime import datetime
-from typing import Dict, Any, Optional, List, TYPE_CHECKING, Any, cast
+from typing import Dict, Any, Optional, List, TYPE_CHECKING, cast
 from pathlib import Path
 
 import numpy as np
 
 # Core module system
-from modules.core.module_base import BaseModule, module
+from modules.core.module_base import BaseModule, module  # noqa: F401
 from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
 
 # Utilities
@@ -26,7 +26,7 @@ try:
 except ImportError:
     InfoBusManager = None
     RotatingLogger = None
-    format_operator_message = lambda **kw: str(kw.get("message", ""))
+    format_operator_message = lambda **kw: str(kw.get("message", ""))  # type: ignore[assignment]
     SMARTINFOBUS_AVAILABLE = False
 
 try:
@@ -44,7 +44,12 @@ except ImportError:
     PerformanceTracker = None
     PERFORMANCE_TRACKING_AVAILABLE = False
 
-from .constants import VOTING_DEFAULTS, VotingBusKeys
+from .constants import (
+    VOTING_DEFAULTS,
+    VotingBusKeys,
+    MAX_PROCESSING_TIME_MS,
+    CIRCUIT_BREAKER_THRESHOLD,
+)
 
 if TYPE_CHECKING:
     from modules.utils.info_bus import SmartInfoBus  # pragma: no cover
@@ -54,7 +59,7 @@ if TYPE_CHECKING:
 class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
     """
     Unified base class for all voting system modules.
-    
+
     Provides:
     - SmartInfoBus integration (get/set with thesis)
     - Rotating logger setup
@@ -62,16 +67,17 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
     - Performance tracking
     - Standard initialization pattern
     - Decision ID coordination helpers
-    
+    - Basic health & circuit-breaker semantics
+
     Subclasses only need to implement:
     - _module_specific_init(): One-time setup
     - process(): Main processing logic
     """
-    
+
     # ═══════════════════════════════════════════════════════════════
     # Initialization
     # ═══════════════════════════════════════════════════════════════
-    
+
     smart_bus: "SmartInfoBus"
     logger: Any
     error_pinpointer: Optional[Any]
@@ -84,29 +90,29 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
         Sets up all common infrastructure, then delegates to subclass.
         """
         self._init_start_time = time.perf_counter()
-        
+
         # Core references
         self._module_name = self.__class__.__name__
         self._voting_defaults = VOTING_DEFAULTS.copy()
-        
+
         # Setup infrastructure in order
         self._setup_smart_bus()
         self._setup_logging()
         self._setup_error_handling()
         self._setup_performance_tracking()
         self._setup_state_tracking()
-        
+
         # Delegate to subclass for module-specific init
         self._module_specific_init()
-        
+
         # Log successful initialization
         init_time_ms = (time.perf_counter() - self._init_start_time) * 1000
         self._log_info(f"Initialized in {init_time_ms:.1f}ms")
-    
+
     def _setup_smart_bus(self) -> None:
         """Initialize SmartInfoBus connection."""
         self.smart_bus_enabled = False
-        
+
         if SMARTINFOBUS_AVAILABLE and InfoBusManager is not None:
             try:
                 self.smart_bus = InfoBusManager.get_instance()
@@ -117,16 +123,16 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
         else:
             # Keep type stable but surface failure loudly if used
             self.smart_bus = cast("SmartInfoBus", _UnavailableSmartBus())
-    
+
     def _setup_logging(self) -> None:
         """Initialize rotating logger."""
         self.logger = None
-        
+
         log_dir = Path("logs/voting")
         log_dir.mkdir(parents=True, exist_ok=True)
-        
+
         log_file = log_dir / f"{self._module_name.lower()}.log"
-        
+
         if SMARTINFOBUS_AVAILABLE and RotatingLogger is not None:
             try:
                 self.logger = RotatingLogger(
@@ -138,162 +144,172 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
                 )
             except Exception as e:
                 self._fallback_log(f"RotatingLogger init failed: {e}")
-        
+
         # Fallback to standard logging if needed
         if self.logger is None:
             import logging
+
             self.logger = logging.getLogger(self._module_name)
             if not self.logger.handlers:
                 handler = logging.StreamHandler()
-                handler.setFormatter(logging.Formatter('[%(name)s] %(message)s'))
+                handler.setFormatter(logging.Formatter("[%(name)s] %(message)s"))
                 self.logger.addHandler(handler)
                 self.logger.setLevel(logging.INFO)
-    
+
     def _setup_error_handling(self) -> None:
         """Initialize error pinpointer and handler."""
         self.error_pinpointer = None
         self.error_handler = None
-        
+
         if ERROR_HANDLING_AVAILABLE and ErrorPinpointer is not None:
             try:
                 if create_error_handler is None:
                     raise RuntimeError("create_error_handler unavailable")
                 self.error_pinpointer = ErrorPinpointer()
-                self.error_handler = create_error_handler(self._module_name, self.error_pinpointer)
+                self.error_handler = create_error_handler(
+                    self._module_name, self.error_pinpointer
+                )
             except Exception as e:
                 self._fallback_log(f"Error handler init failed: {e}")
-    
+
     def _setup_performance_tracking(self) -> None:
         """Initialize performance tracker."""
         self.performance_tracker = None
-        
+
         if PERFORMANCE_TRACKING_AVAILABLE and PerformanceTracker is not None:
             try:
                 self.performance_tracker = PerformanceTracker(orchestrator=None)
             except Exception as e:
                 self._fallback_log(f"Performance tracker init failed: {e}")
-        
+
         # Fallback stub if performance tracker unavailable
         if self.performance_tracker is None:
             self.performance_tracker = _NullPerformanceTracker()
-    
+
     def _setup_state_tracking(self) -> None:
         """Initialize internal state tracking."""
-        self._process_count = 0
-        self._last_process_time = None
-        self._consecutive_failures = 0
-        self._last_decision_id = None
-        self._health_status = "ok"
+        self._process_count: int = 0
+        self._last_process_time: Optional[str] = None
+        self._consecutive_failures: int = 0
+        self._last_decision_id: Optional[str] = None
+        self._health_status: str = "ok"
         self._cached_data: Dict[str, Any] = {}
-    
+
     @abstractmethod
     def _module_specific_init(self) -> None:
         """
         Override in subclasses for module-specific initialization.
         Called after all base infrastructure is set up.
         """
-        pass
-    
+        raise NotImplementedError
+
     # ═══════════════════════════════════════════════════════════════
     # Logging Helpers
     # ═══════════════════════════════════════════════════════════════
-    
-    def log_info(self, message: str, **kwargs) -> None:
+
+    def log_info(self, message: str, **kwargs: Any) -> None:
         """Log info message with optional context."""
         self._log_info(message, **kwargs)
-    
-    def log_debug(self, message: str, **kwargs) -> None:
+
+    def log_debug(self, message: str, **kwargs: Any) -> None:
         """Log debug message."""
         self._log_debug(message, **kwargs)
-    
-    def log_warning(self, message: str, **kwargs) -> None:
+
+    def log_warning(self, message: str, **kwargs: Any) -> None:
         """Log warning message."""
         self._log_warning(message, **kwargs)
-    
-    def log_error(self, message: str, error: Optional[Exception] = None, **kwargs) -> None:
+
+    def log_error(
+        self, message: str, error: Optional[Exception] = None, **kwargs: Any
+    ) -> None:
         """Log error message with optional exception."""
         self._log_error(message, error, **kwargs)
-    
-    def _log_info(self, message: str, **kwargs) -> None:
+
+    def _log_info(self, message: str, **kwargs: Any) -> None:
         """Log info message with optional context."""
         try:
             logger = self.logger
-            if logger and hasattr(logger, 'info'):
+            if logger and hasattr(logger, "info"):
                 if SMARTINFOBUS_AVAILABLE and format_operator_message:
                     formatted = format_operator_message(
                         message=message,
                         icon="[INFO]",
-                        **kwargs
+                        **kwargs,
                     )
                     logger.info(formatted)
                 else:
                     logger.info(f"{message} {kwargs}" if kwargs else message)
         except Exception:
             self._fallback_log(f"INFO: {message}")
-    
-    def _log_warning(self, message: str, **kwargs) -> None:
+
+    def _log_warning(self, message: str, **kwargs: Any) -> None:
         """Log warning message."""
         try:
             logger = self.logger
-            if logger and hasattr(logger, 'warning'):
+            if logger and hasattr(logger, "warning"):
                 if SMARTINFOBUS_AVAILABLE and format_operator_message:
                     formatted = format_operator_message(
                         message=message,
                         icon="[WARN]",
-                        **kwargs
+                        **kwargs,
                     )
                     logger.warning(formatted)
                 else:
                     logger.warning(f"{message} {kwargs}" if kwargs else message)
         except Exception:
             self._fallback_log(f"WARNING: {message}")
-    
-    def _log_debug(self, message: str, **kwargs) -> None:
+
+    def _log_debug(self, message: str, **kwargs: Any) -> None:
         """Log debug message."""
         try:
             logger = self.logger
-            if logger and hasattr(logger, 'debug'):
+            if logger and hasattr(logger, "debug"):
                 logger.debug(f"{message} {kwargs}" if kwargs else message)
         except Exception:
-            pass  # Debug logs can be silently dropped
-    
-    def _log_error(self, message: str, error: Optional[Exception] = None, **kwargs) -> None:
+            # Debug logs can be silently dropped
+            pass
+
+    def _log_error(
+        self, message: str, error: Optional[Exception] = None, **kwargs: Any
+    ) -> None:
         """Log error message with optional exception."""
         try:
             if error and self.error_pinpointer:
-                pinpointed = self.error_pinpointer.analyze_error(error, self._module_name)
+                pinpointed = self.error_pinpointer.analyze_error(
+                    error, self._module_name
+                )
                 message = f"{message}: {pinpointed}"
-            
+
             logger = self.logger
-            if logger and hasattr(logger, 'error'):
+            if logger and hasattr(logger, "error"):
                 if SMARTINFOBUS_AVAILABLE and format_operator_message:
                     formatted = format_operator_message(
                         message=message,
                         icon="[ERROR]",
-                        **kwargs
+                        **kwargs,
                     )
                     logger.error(formatted)
                 else:
                     logger.error(f"{message} {kwargs}" if kwargs else message)
         except Exception:
             self._fallback_log(f"ERROR: {message}")
-    
+
     def _fallback_log(self, message: str) -> None:
         """Fallback logging when logger unavailable."""
         print(f"[{self._module_name}] {message}")
-    
+
     # ═══════════════════════════════════════════════════════════════
     # SmartInfoBus Helpers
     # ═══════════════════════════════════════════════════════════════
-    
+
     def bus_get(self, key: str, default: Any = None) -> Any:
         """Get value from SmartInfoBus with fallback (public alias)."""
         return self._bus_get(key, default)
-    
+
     def bus_set(self, key: str, value: Any, thesis: str = "") -> bool:
         """Set value on SmartInfoBus with thesis (public alias)."""
         return self._bus_set(key, value, thesis)
-    
+
     def _bus_get(self, key: str, default: Any = None) -> Any:
         """Get value from SmartInfoBus with fallback."""
         if not self.smart_bus_enabled or not self.smart_bus:
@@ -303,65 +319,119 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             return value if value is not None else default
         except Exception:
             return default
-    
+
     def _bus_set(self, key: str, value: Any, thesis: str = "") -> bool:
         """Set value on SmartInfoBus with thesis."""
         if not self.smart_bus_enabled or not self.smart_bus:
             return False
         try:
             self.smart_bus.set(
-                key, 
-                value, 
+                key,
+                value,
                 module=self._module_name,
-                thesis=thesis or f"{self._module_name} output"
+                thesis=thesis or f"{self._module_name} output",
             )
             return True
         except Exception as e:
             self._log_warning(f"Bus set failed for {key}: {e}")
             return False
-    
-    def _bus_get_multi(self, keys: List[str], default: Any = None) -> Dict[str, Any]:
+
+    def _bus_get_multi(
+        self, keys: List[str], default: Any = None
+    ) -> Dict[str, Any]:
         """Get multiple values from bus."""
-        result = {}
+        result: Dict[str, Any] = {}
         for key in keys:
             result[key] = self._bus_get(key, default)
         return result
-    
+
     # ═══════════════════════════════════════════════════════════════
     # Decision Coordination Helpers
     # ═══════════════════════════════════════════════════════════════
-    
+
     def _get_current_decision_id(self) -> Optional[str]:
         """Get current decision ID from bus."""
         return self._bus_get(VotingBusKeys.DECISION_ID)
-    
+
     def _get_current_tick_ts(self) -> Optional[str]:
         """Get current tick timestamp from bus."""
         return self._bus_get(VotingBusKeys.TICK_TS)
-    
+
     def _is_same_decision_cycle(self, decision_id: str) -> bool:
         """Check if we're in the same decision cycle."""
         return decision_id == self._last_decision_id
-    
-    def _check_data_freshness(self, timestamp: str, max_age_seconds: Optional[float] = None) -> bool:
+
+    def _check_data_freshness(
+        self, timestamp: str, max_age_seconds: Optional[float] = None
+    ) -> bool:
         """Check if data is fresh enough."""
         if not timestamp:
             return False
-        
-        max_age = max_age_seconds or self._voting_defaults.get("max_staleness_seconds", 15.0)
-        
+
+        max_age = max_age_seconds or self._voting_defaults.get(
+            "max_staleness_seconds", 15.0
+        )
+
         try:
             ts = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-            age = (datetime.now(ts.tzinfo) if ts.tzinfo else datetime.now()) - ts
+            now = datetime.now(ts.tzinfo) if ts.tzinfo else datetime.now()
+            age = now - ts
             return age.total_seconds() < max_age
         except Exception:
-            return True  # Be permissive on parse failure
-    
+            # If parsing fails, be permissive but warn
+            self._log_warning("Failed to parse timestamp for freshness check", ts=timestamp)
+            return True
+
+    def get_decision_context(self) -> Dict[str, Any]:
+        """
+        Convenience helper: fetch decision_id and tick_ts from the bus,
+        check staleness, and update internal last_decision_id.
+
+        Returned dict:
+            {
+                "decision_id": str | None,
+                "tick_ts": str | None,
+                "is_fresh": bool | None,
+            }
+        """
+        decision_id = self._get_current_decision_id()
+        tick_ts = self._get_current_tick_ts()
+
+        context: Dict[str, Any] = {
+            "decision_id": decision_id,
+            "tick_ts": tick_ts,
+            "is_fresh": None,
+        }
+
+        if decision_id is None or tick_ts is None:
+            self._log_warning(
+                "Missing decision context on bus",
+                decision_id=decision_id,
+                tick_ts=tick_ts,
+            )
+        else:
+            is_fresh = self._check_data_freshness(
+                tick_ts,
+                self._voting_defaults.get("max_staleness_seconds", 15.0),
+            )
+            context["is_fresh"] = is_fresh
+            if not is_fresh:
+                self._log_warning(
+                    "Stale decision context detected",
+                    tick_ts=tick_ts,
+                    decision_id=decision_id,
+                )
+
+        self._last_decision_id = decision_id
+        return context
+
     # ═══════════════════════════════════════════════════════════════
     # Performance Tracking
     # ═══════════════════════════════════════════════════════════════
-    
-    def _record_performance(self, metric_name: str, value: float, success: bool = True) -> None:
+
+    def _record_performance(
+        self, metric_name: str, value: float, success: bool = True
+    ) -> None:
         """Record performance metric."""
         if self.performance_tracker:
             try:
@@ -369,19 +439,19 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
                     self._module_name,
                     metric_name,
                     value,
-                    success
+                    success,
                 )
             except Exception:
                 pass
-    
+
     def _time_operation(self, operation_name: str) -> "_OperationTimer":
         """Context manager for timing operations."""
         return _OperationTimer(self, operation_name)
-    
+
     # ═══════════════════════════════════════════════════════════════
-    # Health & Status
+    # Health & Status / Circuit Breaker
     # ═══════════════════════════════════════════════════════════════
-    
+
     def get_health_status(self) -> Dict[str, Any]:
         """Get current health status."""
         return {
@@ -391,27 +461,45 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             "consecutive_failures": self._consecutive_failures,
             "last_process_time": self._last_process_time,
             "smart_bus_enabled": self.smart_bus_enabled,
+            "circuit_open": self.circuit_open,
         }
-    
+
+    @property
+    def circuit_open(self) -> bool:
+        """
+        Returns True if this module has reached the circuit breaker threshold
+        of consecutive failures and should be considered unsafe to trade
+        until reset.
+        """
+        return self._consecutive_failures >= CIRCUIT_BREAKER_THRESHOLD
+
     def _mark_success(self) -> None:
         """Mark successful processing."""
         self._consecutive_failures = 0
         self._health_status = "ok"
         self._process_count += 1
         self._last_process_time = datetime.now().isoformat()
-    
+
     def _mark_failure(self, error: Optional[str] = None) -> None:
         """Mark failed processing."""
         self._consecutive_failures += 1
-        if self._consecutive_failures >= 5:
-            self._health_status = "degraded"
-        if self._consecutive_failures >= 10:
+
+        if self._consecutive_failures >= CIRCUIT_BREAKER_THRESHOLD:
             self._health_status = "critical"
-    
+        elif self._consecutive_failures >= 5:
+            self._health_status = "degraded"
+
+        if error:
+            self._log_warning(
+                "Processing failure",
+                error=error,
+                consecutive_failures=self._consecutive_failures,
+            )
+
     # ═══════════════════════════════════════════════════════════════
     # Utilities
     # ═══════════════════════════════════════════════════════════════
-    
+
     @staticmethod
     def _safe_float(value: Any, default: float = 0.0) -> float:
         """Safely convert to float."""
@@ -420,7 +508,7 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             return f if np.isfinite(f) else default
         except (TypeError, ValueError):
             return default
-    
+
     @staticmethod
     def _safe_clip(value: float, low: float, high: float) -> float:
         """Safely clip value to range."""
@@ -428,7 +516,7 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             return float(np.clip(value, low, high))
         except Exception:
             return (low + high) / 2
-    
+
     @staticmethod
     def _utcnow() -> str:
         """Get current UTC timestamp as ISO string."""
@@ -437,11 +525,13 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
 
 class _NullPerformanceTracker:
     """Stub performance tracker when the real one is unavailable."""
-    
-    def record_metric(self, module: str, metric: str, value: float, success: bool = True) -> None:
+
+    def record_metric(
+        self, module: str, metric: str, value: float, success: bool = True
+    ) -> None:
         """No-op metric recording."""
-        pass
-    
+        return
+
     def get_metrics(self, module: Optional[str] = None) -> Dict[str, Any]:
         """Return empty metrics."""
         return {}
@@ -456,20 +546,32 @@ class _UnavailableSmartBus:
     def __getattr__(self, item: str) -> Any:
         raise RuntimeError("SmartInfoBus is unavailable in this context")
 
+
 class _OperationTimer:
     """Context manager for timing operations."""
-    
+
     def __init__(self, module: VotingModuleBase, operation_name: str):
         self.module = module
         self.operation_name = operation_name
         self.start_time: Optional[float] = None
-    
-    def __enter__(self):
+
+    def __enter__(self) -> "_OperationTimer":
         self.start_time = time.perf_counter()
         return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
         if self.start_time is not None:
-            elapsed_ms = (time.perf_counter() - self.start_time) * 1000
-            self.module._record_performance(self.operation_name, elapsed_ms, exc_type is None)
-        return False  # Don't suppress exceptions
+            elapsed_ms = (time.perf_counter() - self.start_time) * 1000.0
+            self.module._record_performance(
+                self.operation_name, elapsed_ms, exc_type is None
+            )
+            # Warn if processing is too slow for voting timeliness
+            if elapsed_ms > MAX_PROCESSING_TIME_MS:
+                self.module._log_warning(
+                    "Operation exceeded max processing time",
+                    operation=self.operation_name,
+                    elapsed_ms=elapsed_ms,
+                    max_ms=MAX_PROCESSING_TIME_MS,
+                )
+        # Do not suppress exceptions
+        return False

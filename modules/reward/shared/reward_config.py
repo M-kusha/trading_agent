@@ -21,6 +21,30 @@ class RewardMode(Enum):
     OPTIMIZATION = "optimization"
 
 
+def _load_reward_config_from_yaml() -> Dict[str, Any]:
+    """Load reward config values from risk_policy.yaml."""
+    import yaml
+    import os
+    defaults = {}
+    try:
+        config_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "config", "risk_policy.yaml")
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                policy = yaml.safe_load(f) or {}
+            
+            prop_firm = policy.get("prop_firm", {})
+            limits = policy.get("limits", {})
+            
+            # Prop firm limits
+            defaults["daily_dd_limit"] = float(prop_firm.get("daily_drawdown_limit", 0.05))
+            defaults["max_dd_limit"] = float(prop_firm.get("max_drawdown_limit", 0.10))
+            defaults["profit_target"] = float(prop_firm.get("profit_target", 0.10))
+            defaults["prop_firm_enabled"] = bool(prop_firm.get("enabled", True))
+    except Exception:
+        pass  # Fall back to dataclass defaults
+    return defaults
+
+
 # ═══════════════════════════════════════════════════════════════════
 # MODE-AWARE REWARD PARAMETERS
 # ═══════════════════════════════════════════════════════════════════
@@ -39,6 +63,11 @@ _LIVE_REWARD_PARAMS = {
     "mistake_pen_weight": 0.5,      # Strong mistake penalty
     "no_trade_penalty_weight": 0.02,  # Very low - don't force trading
     
+    # Prop firm penalties (critical for funded accounts)
+    "prop_firm_dd_penalty_weight": 5.0,    # Heavy penalty near DD limits
+    "prop_firm_violation_penalty": 10.0,   # Severe penalty for rule breach
+    "profit_target_bonus_weight": 2.0,     # Bonus for reaching targets
+    
     # Bonus weights (conservative)
     "win_bonus_weight": 0.8,        # Lower win bonus
     "trade_frequency_bonus": 0.1,   # Low frequency bonus
@@ -54,6 +83,11 @@ _TRAINING_REWARD_PARAMS = {
     "tail_pen_weight": 0.5,         # Moderate tail risk penalty
     "mistake_pen_weight": 0.3,      # Moderate mistake penalty
     "no_trade_penalty_weight": 0.05,  # Encourage trading to learn
+    
+    # Prop firm penalties (learn to respect limits)
+    "prop_firm_dd_penalty_weight": 3.0,    # Progressive penalty near DD limits
+    "prop_firm_violation_penalty": 5.0,    # Learn to avoid rule breaches
+    "profit_target_bonus_weight": 1.5,     # Incentive for profit targets
     
     # Bonus weights (encourage exploration)
     "win_bonus_weight": 1.0,        # Full win bonus
@@ -125,6 +159,15 @@ class RewardConfig:
     regime_bonus_weight: float = 0.2
     momentum_bonus_weight: float = 0.1
 
+    # Prop firm parameters (read from risk_policy.yaml via bus)
+    prop_firm_enabled: bool = True
+    prop_firm_dd_penalty_weight: float = 3.0     # Progressive penalty as DD approaches limits
+    prop_firm_violation_penalty: float = 5.0     # Penalty for violating prop firm rules
+    profit_target_bonus_weight: float = 1.5      # Bonus for progress toward profit target
+    daily_dd_limit: float = 0.05                 # 5% daily drawdown limit
+    max_dd_limit: float = 0.10                   # 10% max drawdown limit
+    profit_target: float = 0.10                  # 10% profit target for challenge
+
     # Performance thresholds
     max_processing_time_ms: float = 100.0
     circuit_breaker_threshold: int = 5
@@ -142,10 +185,19 @@ class RewardConfig:
     # Lifecycle
     # ─────────────────────────────────────────────────────────────
     def __post_init__(self) -> None:
+        # Load prop firm values from risk_policy.yaml
+        self._load_from_risk_policy()
         # Apply mode-aware defaults if enabled
         if self.use_mode_aware_defaults:
             self._apply_mode_defaults()
         self._validate_and_normalize()
+    
+    def _load_from_risk_policy(self) -> None:
+        """Load prop firm parameters from risk_policy.yaml."""
+        yaml_config = _load_reward_config_from_yaml()
+        for key, value in yaml_config.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
     
     def _apply_mode_defaults(self) -> None:
         """Apply mode-aware default values for penalty/bonus weights."""
@@ -160,6 +212,10 @@ class RewardConfig:
         self.no_trade_penalty_weight = params.get("no_trade_penalty_weight", self.no_trade_penalty_weight)
         self.win_bonus_weight = params.get("win_bonus_weight", self.win_bonus_weight)
         self.trade_frequency_bonus = params.get("trade_frequency_bonus", self.trade_frequency_bonus)
+        # Prop firm parameters
+        self.prop_firm_dd_penalty_weight = params.get("prop_firm_dd_penalty_weight", self.prop_firm_dd_penalty_weight)
+        self.prop_firm_violation_penalty = params.get("prop_firm_violation_penalty", self.prop_firm_violation_penalty)
+        self.profit_target_bonus_weight = params.get("profit_target_bonus_weight", self.profit_target_bonus_weight)
 
     # ─────────────────────────────────────────────────────────────
     # Public API
@@ -180,6 +236,10 @@ class RewardConfig:
             'volatility_adjustment': self.volatility_adjustment,
             'regime_bonus_weight': self.regime_bonus_weight,
             'momentum_bonus_weight': self.momentum_bonus_weight,
+            # Prop firm weights
+            'prop_firm_dd_penalty_weight': self.prop_firm_dd_penalty_weight,
+            'prop_firm_violation_penalty': self.prop_firm_violation_penalty,
+            'profit_target_bonus_weight': self.profit_target_bonus_weight,
         }
 
     def apply_genome(self, genome: Dict[str, Any]) -> None:

@@ -17,6 +17,12 @@ from typing import Any, Dict, Optional
 
 from modules.voting.core.base import VotingModuleBase
 from modules.voting.core.types import VotingProposal
+from modules.voting.core.constants import (
+    VotingBusKeys,
+    CONFIDENCE_THRESHOLD_F,
+    MIN_SIGNAL_STRENGTH_F,
+    HIGH_CONFIDENCE_THRESHOLD_F,
+)
 
 
 class VotingExpertBase(VotingModuleBase):
@@ -25,20 +31,27 @@ class VotingExpertBase(VotingModuleBase):
     
     Provides:
     - Standard proposal/confidence publication to SmartInfoBus
+    - Mode-aware gating of weak/noisy signals
     - Action history tracking
     - Market context management
     - Intelligence parameters (adjustable signals)
     - Expert analytics (success tracking)
     
     Subclasses must implement:
-    - _module_specific_init(): Initialize expert-specific state
+    - _expert_specific_init(): Initialize expert-specific state
     - _generate_expert_specific_proposal(): Generate the actual proposal
     - _calculate_expert_specific_confidence(): Calculate expert confidence
     """
     
-    # Template method pattern: child classes override these
+    # ────────────────────────────────────────────────────────────────
+    # Template methods for subclasses
+    # ────────────────────────────────────────────────────────────────
+    
     @abstractmethod
-    async def _generate_expert_specific_proposal(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def _generate_expert_specific_proposal(
+        self, 
+        market_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Generate expert-specific voting proposal. Must be implemented by subclass."""
         raise NotImplementedError
     
@@ -50,6 +63,10 @@ class VotingExpertBase(VotingModuleBase):
     ) -> float:
         """Calculate expert-specific confidence. Must be implemented by subclass."""
         raise NotImplementedError
+    
+    # ────────────────────────────────────────────────────────────────
+    # Initialization
+    # ────────────────────────────────────────────────────────────────
     
     def _module_specific_init(self) -> None:
         """
@@ -64,7 +81,7 @@ class VotingExpertBase(VotingModuleBase):
             'regime': 'unknown',
             'volatility_level': 'medium',
             'trend_strength': 0.0,
-            'session': 'unknown'
+            'session': 'unknown',
         }
         
         # Intelligence parameters (adjustable signal generation)
@@ -72,7 +89,7 @@ class VotingExpertBase(VotingModuleBase):
             'signal_threshold': float(self.config.get('signal_threshold', 0.3)),
             'confidence_decay': float(self.config.get('confidence_decay', 0.95)),
             'history_weight': float(self.config.get('history_weight', 0.3)),
-            'regime_sensitivity': float(self.config.get('regime_sensitivity', 0.8))
+            'regime_sensitivity': float(self.config.get('regime_sensitivity', 0.8)),
         }
         
         # Expert analytics (success tracking)
@@ -81,10 +98,10 @@ class VotingExpertBase(VotingModuleBase):
             'successful_actions': 0,
             'avg_confidence': 0.5,
             'last_action': None,
-            'last_action_time': None
+            'last_action_time': None,
         }
         
-        # Signal strength limits
+        # Signal strength limits (expert-local)
         self.max_signal_strength = float(self.config.get('max_signal_strength', 1.0))
         self.min_signal_strength = float(self.config.get('min_signal_strength', 0.1))
         
@@ -104,6 +121,10 @@ class VotingExpertBase(VotingModuleBase):
         Called after common expert setup.
         """
         pass
+    
+    # ────────────────────────────────────────────────────────────────
+    # Circuit breaker
+    # ────────────────────────────────────────────────────────────────
     
     def _check_circuit_breaker(self) -> bool:
         """
@@ -141,6 +162,10 @@ class VotingExpertBase(VotingModuleBase):
         """Record a successful operation, reset error count."""
         self._consecutive_errors = 0
     
+    # ────────────────────────────────────────────────────────────────
+    # Market context
+    # ────────────────────────────────────────────────────────────────
+    
     def _update_market_context(self, market_data: Dict[str, Any]) -> None:
         """Update market context from incoming market data."""
         if not isinstance(market_data, dict):
@@ -148,12 +173,12 @@ class VotingExpertBase(VotingModuleBase):
         
         # Read from SmartInfoBus for authoritative values
         self.market_context['regime'] = (
-            self.smart_bus.get('market_regime', self.__class__.__name__, default='unknown') or
-            market_data.get('market_regime', 'unknown')
+            self.smart_bus.get('market_regime', self.__class__.__name__, default='unknown')
+            or market_data.get('market_regime', 'unknown')
         )
         self.market_context['volatility_level'] = (
-            market_data.get('volatility_level') or
-            market_data.get('volatility', 'medium')
+            market_data.get('volatility_level')
+            or market_data.get('volatility', 'medium')
         )
         self.market_context['trend_strength'] = float(
             market_data.get('trend_strength', 0.0) or 0.0
@@ -161,13 +186,22 @@ class VotingExpertBase(VotingModuleBase):
         
         # Session from bus or data
         session = (
-            self.smart_bus.get('session_canonical', self.__class__.__name__) or
-            market_data.get('current_session') or
-            market_data.get('session_type', 'unknown')
+            self.smart_bus.get('session_canonical', self.__class__.__name__)
+            or market_data.get('current_session')
+            or market_data.get('session_type', 'unknown')
         )
         self.market_context['session'] = str(session).lower()
     
-    def _record_action(self, action: str, confidence: float, proposal: Dict[str, Any]) -> None:
+    # ────────────────────────────────────────────────────────────────
+    # Analytics / history
+    # ────────────────────────────────────────────────────────────────
+    
+    def _record_action(
+        self, 
+        action: str, 
+        confidence: float, 
+        proposal: Dict[str, Any]
+    ) -> None:
         """Record an action for history tracking."""
         record = {
             'timestamp': datetime.datetime.now().isoformat(),
@@ -177,8 +211,8 @@ class VotingExpertBase(VotingModuleBase):
             'session': self.market_context.get('session', 'unknown'),
             'proposal_summary': {
                 'action': proposal.get('action'),
-                'signal_strength': proposal.get('signal_strength', 0.0)
-            }
+                'signal_strength': proposal.get('signal_strength', 0.0),
+            },
         }
         self.action_history.append(record)
         
@@ -198,67 +232,74 @@ class VotingExpertBase(VotingModuleBase):
         Called during initialization.
         """
         name = self.__class__.__name__
+        proposal_key = VotingBusKeys.expert_proposal(name)
+        confidence_key = VotingBusKeys.expert_confidence(name)
+        
         try:
             baseline_proposal = {
                 'action': 'abstain',
                 'signal_strength': 0.0,
                 'position_size': 0.0,
                 'duration': 'short',
-                'reason': 'baseline'
+                'reason': 'baseline',
             }
             self.smart_bus.set(
-                f'{name}_voting_proposal', 
-                baseline_proposal, 
-                module=name, 
-                thesis=f'Baseline proposal for {name}'
+                proposal_key,
+                baseline_proposal,
+                module=name,
+                thesis=f'Baseline proposal for {name}',
             )
             self.smart_bus.set(
-                f'{name}_confidence', 
-                0.1, 
-                module=name, 
-                thesis=f'{name} baseline confidence: 10%'
+                confidence_key,
+                0.1,
+                module=name,
+                thesis=f'{name} baseline confidence: 10%',
             )
             self.smart_bus.set(
-                f'{name}_market_context', 
-                self.market_context, 
-                module=name, 
-                thesis=f'Baseline market context for {name}'
+                f'{name}_market_context',
+                self.market_context,
+                module=name,
+                thesis=f'Baseline market context for {name}',
             )
             self.smart_bus.set(
-                f'{name}_analytics', 
-                self.expert_analytics, 
-                module=name, 
-                thesis=f'Baseline analytics for {name}'
+                f'{name}_analytics',
+                self.expert_analytics,
+                module=name,
+                thesis=f'Baseline analytics for {name}',
             )
         except Exception as e:
             self.logger.debug(f"Baseline key publication skipped: {e}")
-
+    
+    # ────────────────────────────────────────────────────────────────
+    # Market data canonicalization
+    # ────────────────────────────────────────────────────────────────
+    
     def _build_market_data(self, raw_market_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Build a canonical market_data view from SmartInfoBus so all experts
         see the same OHLCV snapshot per step.
         """
         name = self.__class__.__name__
-
         market_data: Dict[str, Any] = {}
+        
         if isinstance(raw_market_data, dict):
             market_data.update(raw_market_data)
-
+        
         try:
             historical = self.smart_bus.get('historical_prices', name, default=None)
         except Exception:
             historical = None
-
+        
         try:
             price_data = self.smart_bus.get('price_data', name, default=None)
         except Exception:
             price_data = None
-
+        
         try:
             prices = self.smart_bus.get('prices', name, default=None)
         except Exception:
             prices = None
-
+        
         primary_symbol = self.config.get('primary_symbol')
         if not isinstance(primary_symbol, str) or not primary_symbol:
             if isinstance(historical, dict):
@@ -275,9 +316,10 @@ class VotingExpertBase(VotingModuleBase):
                         break
                 if not primary_symbol:
                     primary_symbol = next(iter(price_data.keys()))
-
+        
         primary_tf = str(self.config.get('primary_timeframe', 'H4') or 'H4')
-
+        
+        # OHLCV snapshot
         if 'ohlcv' not in market_data:
             ohlcv: Dict[str, Any] = {}
             if isinstance(historical, dict) and isinstance(primary_symbol, str) and primary_symbol in historical:
@@ -302,7 +344,8 @@ class VotingExpertBase(VotingModuleBase):
                 market_data['ohlcv'] = ohlcv
                 if 'close' in ohlcv and 'close_prices' not in market_data:
                     market_data['close_prices'] = ohlcv['close']
-
+        
+        # Prices array
         if 'prices' not in market_data:
             if isinstance(prices, dict) and prices:
                 value = None
@@ -318,7 +361,8 @@ class VotingExpertBase(VotingModuleBase):
                 close_seq = market_data['ohlcv'].get('close')
                 if isinstance(close_seq, list):
                     market_data['prices'] = close_seq
-
+        
+        # Current price
         if 'current_price' not in market_data:
             value = None
             if isinstance(price_data, dict) and price_data:
@@ -338,7 +382,8 @@ class VotingExpertBase(VotingModuleBase):
                     market_data['current_price'] = float(value)
                 except Exception:
                     pass
-
+        
+        # Volume / high / low last values
         if 'volume' not in market_data and isinstance(market_data.get('ohlcv'), dict):
             vol_seq = market_data['ohlcv'].get('volume')
             if isinstance(vol_seq, list) and vol_seq:
@@ -346,7 +391,7 @@ class VotingExpertBase(VotingModuleBase):
                     market_data['volume'] = float(vol_seq[-1])
                 except Exception:
                     pass
-
+        
         if 'high' not in market_data and isinstance(market_data.get('ohlcv'), dict):
             high_seq = market_data['ohlcv'].get('high')
             if isinstance(high_seq, list) and high_seq:
@@ -354,7 +399,7 @@ class VotingExpertBase(VotingModuleBase):
                     market_data['high'] = float(high_seq[-1])
                 except Exception:
                     pass
-
+        
         if 'low' not in market_data and isinstance(market_data.get('ohlcv'), dict):
             low_seq = market_data['ohlcv'].get('low')
             if isinstance(low_seq, list) and low_seq:
@@ -362,8 +407,12 @@ class VotingExpertBase(VotingModuleBase):
                     market_data['low'] = float(low_seq[-1])
                 except Exception:
                     pass
-
+        
         return market_data
+    
+    # ────────────────────────────────────────────────────────────────
+    # Main process
+    # ────────────────────────────────────────────────────────────────
     
     async def process(self, **inputs) -> Dict[str, Any]:
         """
@@ -374,60 +423,80 @@ class VotingExpertBase(VotingModuleBase):
         3. Update market context
         4. Generate proposal (subclass method)
         5. Calculate confidence (subclass method)
-        6. Publish to SmartInfoBus
-        7. Record action
-        8. Return contract-compliant output
+        6. Apply mode-aware gating / normalization
+        7. Publish to SmartInfoBus
+        8. Record action
+        9. Return contract-compliant output
         """
         start = time.time()
         name = self.__class__.__name__
+        proposal_key = VotingBusKeys.expert_proposal(name)
+        confidence_key = VotingBusKeys.expert_confidence(name)
         
         try:
-            # 1. Circuit breaker check
+            # 1. Circuit breaker
             if self._check_circuit_breaker():
                 return self._degraded_output("circuit_breaker_open")
             
+            # 2. Market data
             raw_market_data = (
-                inputs.get('market_data') or
-                self.smart_bus.get('market_data', name) or
-                {}
+                inputs.get('market_data')
+                or self.smart_bus.get('market_data', name)
+                or {}
             )
             market_data = self._build_market_data(raw_market_data)
             
-            # 3. Update context
+            # 3. Context
             self._update_market_context(market_data)
             
-            # 4. Generate proposal (subclass)
+            # 4. Expert-specific proposal
             proposal = await self._generate_expert_specific_proposal(market_data)
             if not isinstance(proposal, dict):
                 proposal = {'action': 'abstain', 'reason': 'invalid_proposal_type'}
             
-            # 5. Calculate confidence (subclass)
-            confidence = await self._calculate_expert_specific_confidence(proposal, market_data)
+            # 5. Expert-specific confidence
+            confidence = await self._calculate_expert_specific_confidence(
+                proposal, market_data
+            )
             confidence = max(0.0, min(1.0, float(confidence)))
             
-            # 6. Publish to SmartInfoBus
-            thesis = self._generate_thesis(proposal, confidence)
-            self.smart_bus.set(
-                f'{name}_voting_proposal', 
-                proposal, 
-                module=name, 
-                thesis=thesis,
-                confidence=confidence
-            )
-            self.smart_bus.set(
-                f'{name}_confidence', 
-                confidence, 
-                module=name, 
-                thesis=f'{name} confidence: {confidence:.1%}'
+            # 6. Mode-aware gating / normalization
+            proposal, confidence = self._postprocess_proposal_for_voting(
+                proposal, confidence
             )
             
-            # 7. Record action
+            # 7. Publish to SmartInfoBus
+            thesis = self._generate_thesis(proposal, confidence)
+            self.smart_bus.set(
+                proposal_key,
+                proposal,
+                module=name,
+                thesis=thesis,
+                confidence=confidence,
+            )
+            self.smart_bus.set(
+                confidence_key,
+                confidence,
+                module=name,
+                thesis=f'{name} confidence: {confidence:.1%}',
+            )
+            
+            # 8. Record action
             self._record_action(proposal.get('action', 'unknown'), confidence, proposal)
             self._record_success()
             
-            # 8. Build output
+            # 9. Performance metrics
             elapsed_ms = (time.time() - start) * 1000
-            self.performance_tracker.record_metric(name, 'process', elapsed_ms, True)
+            try:
+                self.performance_tracker.record_metric(
+                    name, 'process', elapsed_ms, True
+                )
+            except Exception:
+                pass
+            
+            # 10. Build output payload with per-instrument votes for contract compliance
+            per_instrument_key = f"{name}_per_instrument_votes"
+            per_instrument_votes = proposal.get('proposals', proposal.get('per_instrument', {}))
             
             return {
                 'voting_proposal': proposal,
@@ -437,13 +506,15 @@ class VotingExpertBase(VotingModuleBase):
                 'expert_analytics': self.expert_analytics.copy(),
                 'emergency_status': {'emergency_active': False},
                 'health_metrics': {'processing_time_ms': elapsed_ms},
-                f'{name}_voting_proposal': proposal,
-                f'{name}_confidence': confidence,
-                '_thesis': thesis
+                proposal_key: proposal,
+                confidence_key: confidence,
+                per_instrument_key: per_instrument_votes,  # Per-instrument votes for contract
+                '_thesis': thesis,
             }
         
         except Exception as e:
             self._record_error(e)
+            name = self.__class__.__name__
             if self.error_pinpointer is not None:
                 error_context = self.error_pinpointer.analyze_error(e, f"{name}_process")
                 msg = str(error_context)
@@ -452,11 +523,122 @@ class VotingExpertBase(VotingModuleBase):
             self.logger.error(f"[{name}] Process error: {msg}")
             return self._degraded_output(msg)
     
+    # ────────────────────────────────────────────────────────────────
+    # Proposal post-processing / gating
+    # ────────────────────────────────────────────────────────────────
+    
+    def _postprocess_proposal_for_voting(
+        self, 
+        proposal: Dict[str, Any], 
+        confidence: float,
+    ) -> tuple[Dict[str, Any], float]:
+        """
+        Normalize and gate the proposal using mode-aware thresholds.
+        
+        - Ensures signal_strength is in [0, 1]
+        - Ensures position_size respects max_signal_strength
+        - Soft-kills weak directional signals (turns into 'flat')
+        - Keeps per-instrument payloads intact (we only touch top-level fields)
+        """
+        # Extract and normalize action
+        action_raw = str(proposal.get('action', 'abstain')).lower().strip()
+        if not action_raw:
+            action_raw = 'abstain'
+        
+        # Extract signal strength (experts may use 'magnitude')
+        sig = proposal.get('signal_strength', proposal.get('magnitude', 0.0))
+        try:
+            sig_f = float(sig or 0.0)
+        except Exception:
+            sig_f = 0.0
+        sig_f = max(0.0, min(1.0, sig_f))
+        
+        proposal['signal_strength'] = sig_f
+        
+        # Ensure position_size exists and is bounded
+        if 'position_size' in proposal:
+            try:
+                ps = float(proposal['position_size'])
+            except Exception:
+                ps = 0.0
+        else:
+            ps = sig_f
+        ps = max(0.0, min(self.max_signal_strength, ps))
+        proposal['position_size'] = ps
+        
+        # Mode-aware thresholds
+        min_strength = MIN_SIGNAL_STRENGTH_F()
+        conf_floor = CONFIDENCE_THRESHOLD_F()
+        high_conf = HIGH_CONFIDENCE_THRESHOLD_F()
+        
+        confidence = max(0.0, min(1.0, confidence))
+        
+        # Classify action
+        is_long = (action_raw == 'long')
+        is_short = (action_raw == 'short')
+        is_directional = is_long or is_short
+        is_flat_like = action_raw in ('flat', 'hold')
+        is_abstain_like = action_raw in ('abstain', 'none', 'skip')
+        
+        # Directional signals: apply hard gating
+        if is_directional:
+            if sig_f < min_strength or confidence < conf_floor:
+                # Demote to flat; keep raw in metadata for debugging
+                proposal.setdefault('raw_action', action_raw)
+                proposal.setdefault('raw_signal_strength', sig_f)
+                proposal.setdefault('raw_confidence', confidence)
+                
+                proposal['action'] = 'flat'
+                proposal['signal_strength'] = min(sig_f, min_strength * 0.5)
+                proposal['position_size'] = min(
+                    proposal['signal_strength'], self.max_signal_strength
+                )
+                
+                # Confidence becomes "we are fairly sure this is neutral"
+                confidence = max(0.15, min(confidence, conf_floor * 0.9))
+            else:
+                # Good directional signal – keep but clip to sane range
+                proposal['action'] = action_raw
+                proposal['signal_strength'] = max(sig_f, min_strength)
+                proposal['position_size'] = min(
+                    proposal['signal_strength'], self.max_signal_strength
+                )
+                confidence = max(conf_floor, min(confidence, high_conf))
+        
+        # Flat-like or abstain: keep weak, low-strength
+        elif is_flat_like:
+            proposal['action'] = 'flat'
+            proposal['signal_strength'] = min(sig_f, min_strength * 0.5)
+            proposal['position_size'] = min(
+                proposal['signal_strength'], self.max_signal_strength
+            )
+            confidence = min(confidence, conf_floor * 0.9)
+        
+        elif is_abstain_like:
+            proposal['action'] = 'abstain'
+            proposal['signal_strength'] = 0.0
+            proposal['position_size'] = 0.0
+            confidence = min(confidence, conf_floor * 0.8)
+        
+        else:
+            # Unknown action string – treat as abstain but keep raw for debugging
+            proposal.setdefault('raw_action', action_raw)
+            proposal['action'] = 'abstain'
+            proposal['signal_strength'] = 0.0
+            proposal['position_size'] = 0.0
+            confidence = max(0.05, min(confidence, conf_floor * 0.7))
+        
+        return proposal, confidence
+    
+    # ────────────────────────────────────────────────────────────────
+    # Misc helpers
+    # ────────────────────────────────────────────────────────────────
+    
     def _generate_thesis(self, proposal: Dict[str, Any], confidence: float) -> str:
         """Generate a thesis string explaining the proposal."""
         name = self.__class__.__name__
         action = proposal.get('action', 'unknown')
-        signal = proposal.get('signal_strength', 0.0)
+        signal = float(proposal.get('signal_strength', 0.0) or 0.0)
         regime = self.market_context.get('regime', 'unknown')
         
         return (
@@ -467,7 +649,16 @@ class VotingExpertBase(VotingModuleBase):
     def _degraded_output(self, reason: str) -> Dict[str, Any]:
         """Return a contract-compliant degraded output."""
         name = self.__class__.__name__
-        proposal = {'action': 'abstain', 'reason': reason, 'signal_strength': 0.0}
+        proposal_key = VotingBusKeys.expert_proposal(name)
+        confidence_key = VotingBusKeys.expert_confidence(name)
+        per_instrument_key = f"{name}_per_instrument_votes"
+        
+        proposal = {
+            'action': 'abstain',
+            'reason': reason,
+            'signal_strength': 0.0,
+            'position_size': 0.0,
+        }
         
         return {
             'voting_proposal': proposal,
@@ -477,9 +668,10 @@ class VotingExpertBase(VotingModuleBase):
             'expert_analytics': self.expert_analytics.copy(),
             'emergency_status': {'emergency_active': True, 'reason': reason},
             'health_metrics': {'degraded': True},
-            f'{name}_voting_proposal': proposal,
-            f'{name}_confidence': 0.1,
-            '_thesis': f'{name} degraded: {reason}'
+            proposal_key: proposal,
+            confidence_key: 0.1,
+            per_instrument_key: {},  # Empty per-instrument votes for contract compliance
+            '_thesis': f'{name} degraded: {reason}',
         }
     
     def create_proposal(
@@ -488,7 +680,7 @@ class VotingExpertBase(VotingModuleBase):
         signal_strength: float,
         confidence: float,
         reason: str = "",
-        **extra_fields
+        **extra_fields,
     ) -> VotingProposal:
         """
         Create a standardized VotingProposal.

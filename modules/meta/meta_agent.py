@@ -43,13 +43,55 @@ class MetaMode(Enum):
     OPTIMIZATION = "optimization"
 
 
+def _load_meta_agent_config_from_yaml() -> Dict[str, Any]:
+    """Load meta agent config values from risk_policy.yaml."""
+    import yaml
+    import os
+    defaults = {}
+    try:
+        config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "risk_policy.yaml")
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                policy = yaml.safe_load(f) or {}
+            
+            prop_firm = policy.get("prop_firm", {})
+            limits = policy.get("limits", {})
+            smart_position = policy.get("smart_position", {})
+            escalation = policy.get("escalation", {})
+            
+            # Account-based thresholds (scale from % to EUR based on account size)
+            account_size = float(prop_firm.get("account_size", 100000.0))
+            
+            # Profit target from prop_firm profit_target (10% = €10,000 for €100k account)
+            profit_target_pct = float(prop_firm.get("profit_target", 0.10))
+            defaults["profit_target"] = account_size * profit_target_pct * 0.01  # Daily target = 1% of full target
+            
+            # Retrain threshold - trigger retraining at warning level
+            warning_pct = float(escalation.get("warning_threshold", 0.025))
+            defaults["retrain_threshold"] = -account_size * warning_pct  # e.g., -€2,500 at 2.5%
+            
+            # Emergency threshold - must be BELOW prop firm daily limit
+            emergency_pct = float(escalation.get("emergency_threshold", 0.042))
+            defaults["emergency_threshold"] = -account_size * emergency_pct  # e.g., -€4,200 at 4.2%
+            
+            # Hard stop loss from smart_position
+            hard_loss = float(smart_position.get("hard_stop_loss_eur", 150.0))
+            defaults["hard_stop_loss_eur"] = hard_loss
+            
+    except Exception:
+        pass  # Fall back to dataclass defaults
+    return defaults
+
+
 @dataclass
 class MetaAgentConfig:
-    """Configuration for Meta Agent"""
+    """Configuration for Meta Agent - values loaded from risk_policy.yaml"""
     window: int = 20
-    profit_target: float = 150.0
-    retrain_threshold: float = -50.0
-    emergency_threshold: float = -100.0
+    # Profit/loss thresholds - scaled from risk_policy.yaml account size
+    profit_target: float = 1000.0           # Daily profit target (1% of €100k)
+    retrain_threshold: float = -2500.0      # Retrain at 2.5% loss
+    emergency_threshold: float = -4200.0    # Emergency at 4.2% (below 5% daily limit)
+    hard_stop_loss_eur: float = 150.0       # From smart_position
     confidence_threshold: float = 0.7
 
     # Automation parameters
@@ -69,6 +111,13 @@ class MetaAgentConfig:
     confidence_decay: float = 0.98
     performance_smoothing: float = 0.95
     decision_history_size: int = 100
+    
+    def __post_init__(self):
+        """Override defaults with values from risk_policy.yaml."""
+        yaml_config = _load_meta_agent_config_from_yaml()
+        for key, value in yaml_config.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
 
 @module(**module_args(
     "MetaAgent",

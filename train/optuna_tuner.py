@@ -107,6 +107,20 @@ class PrunerType(Enum):
     HYPERBAND = "hyperband"
 
 
+def _load_optuna_initial_balance() -> float:
+    """Load initial balance from risk_policy.yaml."""
+    import yaml
+    try:
+        config_path = os.path.join(os.path.dirname(__file__), "..", "config", "risk_policy.yaml")
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                policy = yaml.safe_load(f) or {}
+            return float(policy.get("prop_firm", {}).get("account_size", 100000.0))
+    except Exception:
+        pass
+    return 100000.0
+
+
 @dataclass
 class OptunaTunerConfig:
     """Configuration for the Optuna hyperparameter tuner."""
@@ -123,7 +137,7 @@ class OptunaTunerConfig:
 
     # Environment settings
     data_dir: str = "data/processed"
-    initial_balance: float = 3000.0
+    initial_balance: float = 100000.0  # Loaded from risk_policy.yaml in __post_init__
 
     # Study settings
     study_name: str = "ppo_trading_optimization"
@@ -147,6 +161,9 @@ class OptunaTunerConfig:
 
     def __post_init__(self) -> None:
         """Validate and normalize configuration."""
+        # Load initial_balance from risk_policy.yaml
+        self.initial_balance = _load_optuna_initial_balance()
+        
         self.n_trials = max(1, self.n_trials)
         self.timesteps_per_trial = max(1000, self.timesteps_per_trial)
         self.eval_freq = max(100, min(self.eval_freq, self.timesteps_per_trial // 2))
@@ -1058,8 +1075,8 @@ Examples:
         help="Directory containing training data (default: data/processed)",
     )
     env_group.add_argument(
-        "--balance", type=float, default=3000.0,
-        help="Initial account balance (default: 3000)",
+        "--balance", type=float, default=100000.0,
+        help="Initial account balance (default: 100000 from risk_policy.yaml)",
     )
 
     # Study settings

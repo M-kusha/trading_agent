@@ -7,6 +7,7 @@ Consensus scoring, diversity indices, and statistical helpers.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -197,7 +198,7 @@ def calculate_weighted_consensus(
     )
     consensus_score = consensus_weight / total_weight
     
-    # Calculate weighted average confidence
+    # Calculate average confidence (kept unweighted for backwards compatibility)
     confidences = [safe_float(p.get("confidence", 0.5)) for p in proposals]
     weighted_confidence = safe_mean(confidences)
     
@@ -401,7 +402,7 @@ def calculate_pairwise_correlations(
     Returns:
         Dict of (expert1, expert2) -> correlation
     """
-    correlations = {}
+    correlations: Dict[Tuple[str, str], float] = {}
     experts = list(expert_histories.keys())
     
     for i, exp1 in enumerate(experts):
@@ -430,7 +431,7 @@ def detect_suspicious_correlations(
     Returns:
         List of (expert1, expert2, correlation) tuples
     """
-    suspicious = []
+    suspicious: List[Tuple[str, str, float]] = []
     
     for (exp1, exp2), corr in correlations.items():
         if abs(corr) >= threshold:
@@ -443,12 +444,12 @@ def detect_suspicious_correlations(
 
 
 # =============================================================================
-# Quality Metrics
+# Quality / Collusion / Fragility
 # =============================================================================
 
 def calculate_collusion_score(
     proposals: List[Dict[str, Any]],
-    correlation_threshold: float = 0.85
+    correlation_threshold: float = 0.85  # kept for API compatibility
 ) -> float:
     """
     Calculate a collusion score based on voting patterns.
@@ -459,6 +460,7 @@ def calculate_collusion_score(
     Args:
         proposals: List of proposal dicts
         correlation_threshold: Threshold for suspicious correlation
+                               (currently unused; reserved for future extension)
         
     Returns:
         Collusion score [0.0, 1.0], higher = more suspicious
@@ -475,7 +477,7 @@ def calculate_collusion_score(
         action_uniformity = 0.8
     else:
         # Calculate how uniform actions are
-        action_counts = {}
+        action_counts: Dict[str, int] = {}
         for a in actions:
             action_counts[a] = action_counts.get(a, 0) + 1
         max_count = max(action_counts.values())
@@ -617,3 +619,96 @@ def calculate_voting_quality(
             "collusion": collusion,
         },
     }
+
+
+# =============================================================================
+# Per-Instrument Helpers
+# =============================================================================
+
+def group_proposals_by_instrument(
+    proposals: List[Dict[str, Any]],
+    instrument_key: str = "instrument",
+) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Group proposals by instrument in a simple, dependency-free way.
+    
+    Instruments are normalized to uppercase strings. Proposals without
+    an instrument key are grouped under "_unknown".
+    """
+    groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    
+    for p in proposals:
+        inst_raw = p.get(instrument_key)
+        if inst_raw is None:
+            groups["_unknown"].append(p)
+            continue
+        
+        inst = str(inst_raw).strip().upper()
+        if not inst:
+            inst = "_unknown"
+        
+        groups[inst].append(p)
+    
+    return dict(groups)
+
+
+def calculate_per_instrument_metrics(
+    proposals: List[Dict[str, Any]],
+    instrument_key: str = "instrument",
+    weight_key: str = "confidence",
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Calculate consensus / diversity / collusion / quality per instrument.
+    
+    This is the per-instrument analogue of the global metrics above and is
+    intended to be used by CommitteeCoordinator / FinalArbiter when operating
+    in per-instrument mode.
+    
+    Returns:
+        {
+          "EURUSD": {
+              "consensus": {...},
+              "directional": {...},
+              "diversity": float,
+              "collusion": float,
+              "quality": {...},
+          },
+          "XAUUSD": {...},
+          ...
+        }
+    """
+    if not proposals:
+        return {}
+    
+    grouped = group_proposals_by_instrument(proposals, instrument_key=instrument_key)
+    total = max(1, len(proposals))
+    
+    per_inst: Dict[str, Dict[str, Any]] = {}
+    
+    for inst, inst_props in grouped.items():
+        if not inst_props:
+            continue
+        
+        consensus = calculate_weighted_consensus(inst_props, weight_key=weight_key)
+        directional = calculate_directional_consensus(inst_props)
+        diversity = calculate_expert_diversity(inst_props)
+        collusion = calculate_collusion_score(inst_props)
+        
+        participation_ratio = len(inst_props) / total
+        
+        quality = calculate_voting_quality(
+            consensus_score=consensus.get("consensus_score", 0.0),
+            diversity_score=diversity,
+            participation_ratio=participation_ratio,
+            collusion_score=collusion,
+        )
+        
+        per_inst[inst] = {
+            "consensus": consensus,
+            "directional": directional,
+            "diversity": diversity,
+            "collusion": collusion,
+            "quality": quality,
+        }
+    
+    return per_inst

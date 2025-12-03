@@ -15,6 +15,7 @@ from modules.contracts import module_args
 from modules.core.module_base import BaseModule, module
 from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.lot_calculator import UnifiedLotCalculator, RiskLevel
 
 from .shared.types import PositionSnap, TradeFill
 from .shared.utils import SafeBus, round_to_step, resolve_symbol
@@ -35,8 +36,11 @@ class ExecutorConfig:
     execution_mode: str = "sim"        # 'sim' | 'live'
     live_broker: str = "mt5"
     symbol_overrides: Optional[Dict[str, str]] = None
+    
+    # Lot sizing now handled by UnifiedLotCalculator
+    # These are fallbacks only - the calculator is the source of truth
     lot_step: float = 0.01
-    min_lot: float = 0.20              # Minimum 0.20 lots for meaningful trades
+    min_lot: float = 0.01              # Use UnifiedLotCalculator for actual min
     contract_size: float = 100000.0
     price_decimals: int = 5
 
@@ -104,8 +108,20 @@ class Executor(BaseModule):
                     _cfg_ib = pm.get("balance", None)
             except Exception:
                 pass
-        # Final fallback aligns with environment default (envs/config.py: initial_balance=3000.0)
-        self.initial_balance: float = float(3000.0 if _cfg_ib is None else _cfg_ib)
+        # Try risk_policy.yaml as source of truth before hardcoded fallback
+        if _cfg_ib is None:
+            try:
+                import yaml
+                from pathlib import Path
+                risk_policy = Path("config/risk_policy.yaml")
+                if risk_policy.exists():
+                    with open(risk_policy, "r", encoding="utf-8") as f:
+                        rp = yaml.safe_load(f) or {}
+                    _cfg_ib = rp.get("prop_firm", {}).get("account_size") or rp.get("lot_sizing", {}).get("account_balance")
+            except Exception:
+                pass
+        # Final fallback (should rarely be reached now)
+        self.initial_balance: float = float(100_000.0 if _cfg_ib is None else _cfg_ib)
         self.balance: float = float(self.initial_balance)
         self.equity: float = float(self.balance)
         self._last_equity: float = float(self.equity)
@@ -134,6 +150,10 @@ class Executor(BaseModule):
         # Smart Position Manager for intelligent live trading
         # Config is loaded from config/risk_policy.yaml -> smart_position section
         self.smart_position_manager = SmartPositionManager()
+        
+        # UNIFIED LOT CALCULATOR - Single source of truth for lot sizing
+        self.lot_calculator = UnifiedLotCalculator.get_instance()
+        self.lot_calculator.publish_lot_config_to_bus()
 
         # seed bus with empty snapshots
         self._publish_all(exec_fills=[], accepted=[], rejected=[], step_pnl=0.0, realized_step=0.0, unrealized=0.0, reason="startup")
@@ -521,18 +541,39 @@ class Executor(BaseModule):
         # ==========================================================
         memory_veto = False
         memory_veto_reasons: List[str] = []
+        vetoed_instruments: List[str] = []  # Per-instrument vetoes
         try:
             memory_gate = self.bus.get("memory_gate", "Executor", default=None)
-            if isinstance(memory_gate, dict) and memory_gate.get("veto", False):
-                memory_veto = True
-                memory_veto_reasons = memory_gate.get("reasons", ["Memory system vetoed"])
-                self.logger.warning(format_operator_message(
-                    icon="🧠",
-                    message="MEMORY_VETO_ACTIVE",
-                    reasons=memory_veto_reasons[:3],
-                ))
+            if isinstance(memory_gate, dict):
+                # Global veto
+                if memory_gate.get("veto", False):
+                    memory_veto = True
+                    memory_veto_reasons = memory_gate.get("reasons", ["Memory system vetoed"])
+                    self.logger.warning(format_operator_message(
+                        icon="🧠",
+                        message="MEMORY_VETO_ACTIVE",
+                        reasons=memory_veto_reasons[:3],
+                    ))
+                
+                # Per-instrument vetoes (from memory's loss streak tracking)
+                vetoed_inst_raw = memory_gate.get("vetoed_instruments", [])
+                if isinstance(vetoed_inst_raw, list):
+                    vetoed_instruments = [str(inst).upper().replace("/", "_") for inst in vetoed_inst_raw]
+                    if vetoed_instruments:
+                        self.logger.warning(format_operator_message(
+                            icon="🧠",
+                            message="MEMORY_INSTRUMENT_VETO",
+                            instruments=vetoed_instruments,
+                        ))
         except Exception:
             pass
+
+        # Helper to check if instrument is vetoed
+        def _is_instrument_vetoed(inst: str) -> bool:
+            if memory_veto:
+                return True  # Global veto blocks all
+            normalized = str(inst).upper().replace("/", "_")
+            return normalized in vetoed_instruments
 
         # explicit order_queue
         oq = self.bus.get("order_queue", "Executor", default=[])
@@ -542,13 +583,26 @@ class Executor(BaseModule):
                 intent = self._normalize_order_item(item)
                 if not intent:
                     rejected.append({"reason": "bad_order_queue_item", "raw": item})
-                # Memory veto check - reject new opening orders
-                elif memory_veto and intent.get("action", "").lower() in ("open_long", "open_short", "buy", "sell"):
-                    rejected.append({
-                        "reason": "memory_veto",
-                        "intent": intent,
-                        "memory_reasons": memory_veto_reasons
-                    })
+                # Memory veto check - reject new opening orders (global OR per-instrument)
+                elif intent.get("action", "").lower() in ("open_long", "open_short", "buy", "sell"):
+                    inst = intent.get("instrument", "")
+                    if _is_instrument_vetoed(inst):
+                        rejected.append({
+                            "reason": "memory_veto",
+                            "intent": intent,
+                            "memory_reasons": memory_veto_reasons if memory_veto else [f"Instrument {inst} on loss streak"],
+                            "vetoed_instrument": inst,
+                        })
+                        continue
+                    if self._passes_filters(intent):
+                        if intent["id"] not in self._seen_ids:
+                            accepted.append(intent)
+                            self._seen_ids.add(intent["id"])
+                        else:
+                            rejected.append({"reason": "duplicate_id", "intent": intent})
+                    else:
+                        reason = self._filter_reason(intent)
+                        rejected.append({"reason": reason, "intent": intent})
                 elif self._passes_filters(intent):
                     if intent["id"] not in self._seen_ids:
                         accepted.append(intent)
@@ -710,6 +764,45 @@ class Executor(BaseModule):
 
         # Default: Forex 100,000 units per lot
         return float(self.cfg.contract_size)
+
+    def _get_current_volatility(self, symbol: str) -> Optional[float]:
+        """
+        Get current volatility for a symbol from InfoBus.
+        
+        Tries multiple sources: volatility_by_instrument, market_conditions, feature data.
+        Returns None if unavailable (lot calculator will use defaults).
+        """
+        try:
+            norm_symbol = self._normalize_symbol(symbol)
+            
+            # Try volatility_by_instrument
+            vol_map = self.bus.get("volatility_by_instrument", "Executor", default=None)
+            if isinstance(vol_map, dict):
+                for key, val in vol_map.items():
+                    if self._normalize_symbol(key) == norm_symbol:
+                        if isinstance(val, (int, float)):
+                            return float(val)
+            
+            # Try market_conditions
+            mc = self.bus.get("market_conditions", "Executor", default=None)
+            if isinstance(mc, dict):
+                vol = mc.get("volatility")
+                if isinstance(vol, (int, float)):
+                    return float(vol)
+            
+            # Try price_data for ATR
+            pd = self.bus.get("price_data", "Executor", default=None)
+            if isinstance(pd, dict):
+                inst_data = pd.get(symbol) or pd.get(norm_symbol)
+                if isinstance(inst_data, dict):
+                    atr = inst_data.get("atr") or inst_data.get("volatility")
+                    if isinstance(atr, (int, float)):
+                        return float(atr)
+            
+        except Exception:
+            pass
+        
+        return None
 
     # ─────────────────────────────────────────────────────────
     # SIM execution
@@ -1034,26 +1127,33 @@ class Executor(BaseModule):
             side = {"open_long": +1, "scale_up": +1, "open_short": -1, "scale_down": -1}.get(action, 0)
 
             price_hint = (self.adapter.get_prices(inst) or {}).get("mid", 0.0) or 1.0
-            units = float(intent.get("units", 0.0) or 0.0)
-            size_eur = float(intent.get("size_eur", 0.0) or 0.0)
-            if units <= 0 and size_eur > 0 and price_hint > 0:
-                units = size_eur / price_hint
-
-            # Use symbol-specific contract size
-            contract_size = self._get_contract_size(inst)
-            lots = max(units / contract_size, 0.0)
-            lots = round_to_step(lots, self.adapter.cfg.lot_step)
-            lots = max(lots, self.adapter.cfg.min_lot) if lots > 0 else 0.0
-            if lots <= 0 and (units > 0 or size_eur > 0):
-                try:
-                    self.logger.info(
-                        f"[LIVE] Enforce min lot: computed_lots=0 -> min_lot={self.adapter.cfg.min_lot:.4f} for {inst}"
-                    )
-                except Exception:
-                    pass
-                lots = self.adapter.cfg.min_lot
+            
+            # Get signal strength and volatility for unified lot calculation
+            signal_strength = float(intent.get("confidence", intent.get("intensity", 0.5)) or 0.5)
+            volatility = self._get_current_volatility(inst)
+            
+            # ═══════════════════════════════════════════════════════════════
+            # UNIFIED LOT CALCULATION - Use the central lot calculator
+            # ═══════════════════════════════════════════════════════════════
+            lots, lot_details = self.lot_calculator.calculate_lots(
+                symbol=inst,
+                signal_strength=signal_strength,
+                volatility=volatility,
+            )
+            
+            # Log the lot calculation details
+            try:
+                self.logger.info(
+                    f"[LIVE] 📊 LOT_CALC: {inst} | signal={signal_strength:.2f} | "
+                    f"lots={lots:.2f} | balance=€{lot_details.get('balance', 0):.0f} | "
+                    f"risk={lot_details.get('risk_pct', 0)*100:.1f}% | "
+                    f"adjustments={lot_details.get('adjustments', [])}"
+                )
+            except Exception:
+                pass
 
             origin_id = intent.get("id", "")
+            contract_size = self._get_contract_size(inst)
 
             if action in ("open_long", "open_short", "scale_up"):
                 if lots <= 0:
@@ -1567,19 +1667,25 @@ class Executor(BaseModule):
                 except Exception as e:
                     self.logger.warning(f"[SMART] MT5 position check failed: {e}")
 
-                # Calculate lots
-                lots = decision.lots
-                if lots <= 0:
-                    price_hint = (self.adapter.get_prices(exec_symbol) or {}).get("mid", 1.0) or 1.0
-                    size_eur = float(intent.get("size_eur", 0.0) or 0.0)
-                    contract_size = self._get_contract_size(exec_symbol)
-                    if size_eur > 0:
-                        units = size_eur / price_hint
-                        lots = max(units / contract_size, 0.0)
-                        lots = round_to_step(lots, self.adapter.cfg.lot_step)
-                        lots = max(lots, self.adapter.cfg.min_lot) if lots > 0 else self.adapter.cfg.min_lot
-                    else:
-                        lots = self.adapter.cfg.min_lot
+                # ═══════════════════════════════════════════════════════════════
+                # UNIFIED LOT CALCULATION - Use the central lot calculator
+                # ═══════════════════════════════════════════════════════════════
+                volatility = self._get_current_volatility(exec_symbol)
+                lots, lot_details = self.lot_calculator.calculate_lots(
+                    symbol=exec_symbol,
+                    signal_strength=signal_strength,
+                    volatility=volatility,
+                )
+                
+                # Log the unified lot calculation
+                try:
+                    self.logger.info(
+                        f"[SMART] 📊 UNIFIED_LOT_CALC: {exec_symbol} | signal={signal_strength:.2f} | "
+                        f"lots={lots:.2f} | balance=€{lot_details.get('balance', 0):.0f} | "
+                        f"risk={lot_details.get('risk_pct', 0)*100:.1f}%"
+                    )
+                except Exception:
+                    pass
 
                 self.logger.info(
                     format_operator_message(

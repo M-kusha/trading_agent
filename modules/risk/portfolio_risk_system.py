@@ -34,21 +34,53 @@ class RiskMode(Enum):
     EMERGENCY = "emergency"
 
 
+def _load_portfolio_risk_config_from_yaml() -> Dict[str, Any]:
+    """Load portfolio risk config values from risk_policy.yaml."""
+    import yaml
+    import os
+    defaults = {}
+    try:
+        config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "risk_policy.yaml")
+        if os.path.exists(config_path):
+            with open(config_path, "r") as f:
+                policy = yaml.safe_load(f) or {}
+            
+            # Map risk_policy.yaml values to PortfolioRiskConfig fields
+            limits = policy.get("limits", {})
+            lot_sizing = policy.get("lot_sizing", {})
+            escalation = policy.get("escalation", {})
+            modules_cfg = policy.get("modules", {}).get("PortfolioRiskSystem", {})
+            
+            # Core limits from risk_policy.yaml
+            defaults["dd_limit"] = float(limits.get("max_drawdown", 0.085))
+            defaults["max_position_pct"] = float(limits.get("max_position_size", 0.05))
+            defaults["max_portfolio_exposure"] = float(limits.get("max_exposure_pct", 0.05) * 4)  # Portfolio can be 4x position
+            defaults["risk_budget_daily"] = float(limits.get("max_daily_loss", 0.042))
+            defaults["correlation_threshold"] = float(limits.get("max_correlation", 0.70))
+            
+            # Module-specific overrides
+            defaults["var_confidence"] = float(modules_cfg.get("var_confidence", 0.95))
+            defaults["correlation_window"] = int(modules_cfg.get("correlation_window", 30))
+    except Exception:
+        pass  # Fall back to dataclass defaults
+    return defaults
+
+
 @dataclass
 class PortfolioRiskConfig:
-    """Configuration for Portfolio Risk System"""
+    """Configuration for Portfolio Risk System - values loaded from risk_policy.yaml"""
     var_window: int = 20
-    dd_limit: float = 0.20
+    dd_limit: float = 0.085           # From limits.max_drawdown
     risk_mult: float = 2.0
     min_position_pct: float = 0.01
-    max_position_pct: float = 0.25
-    correlation_window: int = 50
+    max_position_pct: float = 0.05    # From limits.max_position_size
+    correlation_window: int = 30       # From modules.PortfolioRiskSystem
     bootstrap_trades: int = 10
-    var_confidence: float = 0.95
-    max_portfolio_exposure: float = 1.0
-    correlation_threshold: float = 0.8
+    var_confidence: float = 0.95       # From modules.PortfolioRiskSystem
+    max_portfolio_exposure: float = 0.20  # 4x position size
+    correlation_threshold: float = 0.70   # From limits.max_correlation
     volatility_lookback: int = 30
-    risk_budget_daily: float = 0.02
+    risk_budget_daily: float = 0.042   # From limits.max_daily_loss
 
     # Performance thresholds
     max_processing_time_ms: float = 200
@@ -58,6 +90,13 @@ class PortfolioRiskConfig:
     # Adaptation parameters
     adaptive_learning_rate: float = 0.01
     risk_sensitivity: float = 1.0
+    
+    def __post_init__(self):
+        """Override defaults with values from risk_policy.yaml."""
+        yaml_config = _load_portfolio_risk_config_from_yaml()
+        for key, value in yaml_config.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
 
 
 @module(**module_args(

@@ -100,6 +100,7 @@ class MT5Adapter(BaseLiveAdapter):
 
     def __init__(self, cfg: LiveAdapterConfig):
         super().__init__(cfg)
+        self._working_fill_mode: Dict[str, int] = {}  # Cache working fill modes per symbol
         try:
             self.log = RotatingLogger(
                 "MT5Adapter",
@@ -561,12 +562,17 @@ class MT5Adapter(BaseLiveAdapter):
 
                 price = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
 
-                # Try multiple filling modes - brokers vary in what they support
-                filling_modes = [
+                # Use cached filling mode first, then try others
+                all_modes = [
                     getattr(mt5, "ORDER_FILLING_IOC", 1),
                     getattr(mt5, "ORDER_FILLING_FOK", 0),
                     getattr(mt5, "ORDER_FILLING_RETURN", 2),
                 ]
+                cached_mode = self._working_fill_mode.get(instrument)
+                if cached_mode is not None:
+                    filling_modes = [cached_mode] + [m for m in all_modes if m != cached_mode]
+                else:
+                    filling_modes = all_modes
                 
                 ret_ok = getattr(mt5, "TRADE_RETCODE_DONE", 10009)
                 ret_no_prices = 10021  # Market closed / no quotes
@@ -606,6 +612,7 @@ class MT5Adapter(BaseLiveAdapter):
                     if r.retcode == ret_ok:
                         last_px = _sf(getattr(r, "price", 0.0), last_px)
                         self.log.info(f"[MT5] close_position: ✅ Closed ticket {ticket} @ {last_px:.5f}")
+                        self._working_fill_mode[instrument] = fill_mode  # Cache working mode
                         success = True
                         break
                     elif r.retcode == ret_invalid_fill:

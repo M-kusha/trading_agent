@@ -20,6 +20,7 @@ import numpy as np
 from modules.contracts import module_args
 from modules.core.module_base import module
 from modules.voting.core.base import VotingModuleBase
+from modules.voting.core.constants import VotingBusKeys
 
 
 @module(**module_args("UncertaintySampler"))
@@ -32,11 +33,16 @@ class UncertaintySampler(VotingModuleBase):
     - Outcome uncertainty
     - Confidence calibration
     
-    Publishes:
+    Publishes (global):
     - uncertainty_score
     - fragility_score
     - alternative_outcomes
     - uncertainty_analysis
+    
+    Publishes (per instrument, if data available):
+    - instrument_fragility: {symbol -> fragility}
+    - instrument_uncertainty: {symbol -> uncertainty}
+    - fragility_<SYMBOL> on the bus for convenience
     """
     
     def _module_specific_init(self) -> None:
@@ -98,17 +104,36 @@ class UncertaintySampler(VotingModuleBase):
     def _publish_uncertainty_baseline(self) -> None:
         """Publish baseline uncertainty keys."""
         try:
+            name = self.__class__.__name__
             self.smart_bus.set(
                 'uncertainty_score',
                 0.5,
-                module='UncertaintySampler',
+                module=name,
                 thesis='Baseline uncertainty score'
             )
             self.smart_bus.set(
                 'fragility_score',
                 0.5,
-                module='UncertaintySampler',
+                module=name,
                 thesis='Baseline fragility score'
+            )
+            self.smart_bus.set(
+                'fragility',
+                0.5,
+                module=name,
+                thesis='Baseline fragility alias'
+            )
+            self.smart_bus.set(
+                'instrument_fragility',
+                {},
+                module=name,
+                thesis='Baseline per-instrument fragility'
+            )
+            self.smart_bus.set(
+                'instrument_uncertainty',
+                {},
+                module=name,
+                thesis='Baseline per-instrument uncertainty'
             )
         except Exception:
             pass
@@ -122,20 +147,20 @@ class UncertaintySampler(VotingModuleBase):
             # Get decision ID
             decision_id = self.smart_bus.get('kernel_decision_id', name)
             
-            # Get voting data
+            # Get voting data (global + per instrument)
             data = await self._get_voting_data()
             
             # Adapt sigma if needed
             if self.adaptive_sigma:
                 await self._adapt_sigma(data)
             
-            # Generate samples
+            # Generate samples (global, expert-level space)
             samples = await self._generate_samples(data)
             
-            # Calculate uncertainty metrics
+            # Calculate uncertainty metrics (global + per instrument)
             analysis = await self._analyze_uncertainty(samples, data)
             
-            # Generate thesis
+            # Generate thesis (global)
             thesis = self._generate_thesis(analysis)
             
             # Publish to bus
@@ -155,9 +180,12 @@ class UncertaintySampler(VotingModuleBase):
                 'uncertainty_analysis': analysis,
                 'sampling_statistics': dict(self.sampling_stats),
                 'quality_metrics': dict(self.quality_metrics),
-                'current_sigma': self.current_sigma,
+                'current_sigma': float(self.current_sigma),
                 'decision_id': decision_id,
                 'uncertainty_decision_id': decision_id,
+                # Per-instrument outputs
+                'instrument_fragility': analysis.get('instrument_fragility', {}),
+                'instrument_uncertainty': analysis.get('instrument_uncertainty', {}),
                 # Contract-expected keys
                 'uncertainty_result': analysis,
                 'sampling_uncertainty': analysis.get('uncertainty_score', 0.5),
@@ -181,17 +209,43 @@ class UncertaintySampler(VotingModuleBase):
     
     async def _get_voting_data(self) -> Dict[str, Any]:
         """Get voting data from SmartInfoBus."""
+        name = self.__class__.__name__
+        
+        proposal_vectors = self.smart_bus.get('committee_proposal_vectors', name) or []
+        
+        # Member confidences: use canonical bus key with fallback
+        member_confidences = (
+            self.smart_bus.get(VotingBusKeys.MEMBER_CONFIDENCES, name, default=None)
+            or self.smart_bus.get('committee_member_confidences', name)
+            or []
+        )
+        
+        # Global committee decision
+        committee_decision = (
+            self.smart_bus.get(VotingBusKeys.COMMITTEE_DECISION, name, default=None)
+            or self.smart_bus.get('committee_decision', name)
+            or {}
+        )
+        
+        # Per-instrument decisions (from CommitteeCoordinator)
+        per_instrument_decisions = (
+            self.smart_bus.get('committee_decisions_by_instrument', name) or {}
+        )
+        
+        market_regime = self.smart_bus.get('market_regime', name) or 'unknown'
+        
         return {
-            'proposal_vectors': self.smart_bus.get('committee_proposal_vectors', self.__class__.__name__) or [],
-            'member_confidences': self.smart_bus.get('committee_member_confidences', self.__class__.__name__) or [],
-            'committee_decision': self.smart_bus.get('committee_decision', self.__class__.__name__) or {},
-            'market_regime': self.smart_bus.get('market_regime', self.__class__.__name__) or 'unknown',
+            'proposal_vectors': proposal_vectors,
+            'member_confidences': member_confidences,
+            'committee_decision': committee_decision,
+            'committee_decisions_by_instrument': per_instrument_decisions,
+            'market_regime': market_regime,
         }
     
     async def _adapt_sigma(self, data: Dict[str, Any]) -> None:
         """Adapt sampling sigma based on market conditions."""
         regime = str(data.get('market_regime', 'unknown')).lower()
-        mult = self.regime_multipliers.get(regime, 1.0)
+        mult = float(self.regime_multipliers.get(regime, 1.0))
         
         # Adapt sigma
         target_sigma = self.base_sigma * mult
@@ -199,13 +253,13 @@ class UncertaintySampler(VotingModuleBase):
         
         # Smooth adaptation
         alpha = 0.2
-        self.current_sigma = alpha * target_sigma + (1 - alpha) * self.current_sigma
+        self.current_sigma = float(alpha * target_sigma + (1 - alpha) * self.current_sigma)
         
         if abs(self.current_sigma - target_sigma) > 0.01:
             self.sampling_stats['sigma_adaptations'] += 1
     
     async def _generate_samples(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Generate alternative voting scenarios."""
+        """Generate alternative voting scenarios (global expert space)."""
         base_vectors = data.get('proposal_vectors') or []
         base_confidences = data.get('member_confidences') or []
         
@@ -219,7 +273,7 @@ class UncertaintySampler(VotingModuleBase):
         else:
             dim = self.dim
         
-        samples = []
+        samples: List[Dict[str, Any]] = []
         base_array = np.array(base_vectors, dtype=np.float64)
         
         for i in range(self.n_samples):
@@ -247,7 +301,7 @@ class UncertaintySampler(VotingModuleBase):
         vectors: np.ndarray, 
         confidences: List[float]
     ) -> Dict[str, Any]:
-        """Calculate voting outcome from perturbed vectors."""
+        """Calculate voting outcome from perturbed vectors (global)."""
         try:
             # Simple aggregation: mean direction weighted by confidence
             if len(vectors) == 0:
@@ -258,11 +312,11 @@ class UncertaintySampler(VotingModuleBase):
             
             # Weight by confidences
             if confidences:
-                weights = np.array(confidences[:len(directions)])
+                weights = np.array(confidences[:len(directions)], dtype=np.float64)
                 weights = weights / (weights.sum() + 1e-8)
-                weighted_dir = np.dot(directions, weights)
+                weighted_dir = float(np.dot(directions, weights))
             else:
-                weighted_dir = np.mean(directions)
+                weighted_dir = float(np.mean(directions))
             
             # Determine action
             if weighted_dir > 0.1:
@@ -289,18 +343,39 @@ class UncertaintySampler(VotingModuleBase):
         samples: List[Dict[str, Any]], 
         data: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Analyze uncertainty from samples."""
+        """
+        Analyze uncertainty from samples.
+        
+        Global:
+            - Uses expert proposal_vectors and committee_decision.
+        Per-instrument:
+            - Uses committee_decisions_by_instrument, Monte-Carlo around each instrument's signed score.
+        """
+        # ---------------------------- Global branch ---------------------------- #
         if not samples:
+            # If we have no samples at all, return neutral global + optional per-instrument neutral
+            inst_decisions = data.get('committee_decisions_by_instrument') or {}
+            instrument_fragility = {inst: 0.5 for inst in inst_decisions.keys()}
+            instrument_uncertainty = {inst: 0.5 for inst in inst_decisions.keys()}
             return {
                 'uncertainty_score': 0.5,
                 'fragility_score': 0.5,
+                'flip_rate': 0.0,
                 'outcome_variance': 0.0,
+                'n_samples': 0,
+                'original_action': data.get('committee_decision', {}).get('action', 'abstain'),
+                'sample_actions': [],
+                'instrument_fragility': instrument_fragility,
+                'instrument_uncertainty': instrument_uncertainty,
+                'reason': 'No samples generated - using neutral defaults',
             }
         
         # If no meaningful proposal vectors, return neutral fragility
-        # This prevents fragility=1.0 when experts have no data yet
         proposal_vectors = data.get('proposal_vectors', [])
         if not proposal_vectors or len(proposal_vectors) == 0:
+            inst_decisions = data.get('committee_decisions_by_instrument') or {}
+            instrument_fragility = {inst: 0.5 for inst in inst_decisions.keys()}
+            instrument_uncertainty = {inst: 0.5 for inst in inst_decisions.keys()}
             return {
                 'uncertainty_score': 0.5,
                 'fragility_score': 0.5,
@@ -309,23 +384,24 @@ class UncertaintySampler(VotingModuleBase):
                 'n_samples': len(samples),
                 'original_action': data.get('committee_decision', {}).get('action', 'abstain'),
                 'sample_actions': [],
+                'instrument_fragility': instrument_fragility,
+                'instrument_uncertainty': instrument_uncertainty,
                 'reason': 'No proposal vectors available - using neutral defaults',
             }
         
-        # Get original decision
+        # Global original decision
         original = data.get('committee_decision', {})
         original_action = original.get('action', 'abstain')
         
-        # Count outcome changes
         actions = [s['outcome']['action'] for s in samples]
         confidences = [s['outcome']['confidence'] for s in samples]
         
-        # How many samples flipped the decision?
+        # How many samples flipped the global decision?
         flips = sum(1 for a in actions if a != original_action)
         flip_rate = flips / len(samples)
         
-        # Fragility: how easily does decision flip?
-        fragility = float(min(1.0, flip_rate * 2.0))
+        # Fragility: gentler mapping (avoid everything becoming 1.0)
+        fragility = float(min(1.0, max(0.0, (flip_rate - 0.3) * 1.5)))
         
         # Confidence variance
         conf_variance = float(np.var(confidences)) if len(confidences) > 1 else 0.0
@@ -345,6 +421,66 @@ class UncertaintySampler(VotingModuleBase):
             0.5 * (1.0 - uncertainty)
         )
         
+        # ---------------------- Per-instrument branch ------------------------- #
+        per_inst_decisions: Dict[str, Dict[str, Any]] = (
+            data.get('committee_decisions_by_instrument') or {}
+        )
+        
+        instrument_fragility: Dict[str, float] = {}
+        instrument_uncertainty: Dict[str, float] = {}
+        
+        # Simple Monte-Carlo around each instrument's signed score
+        for inst, d in per_inst_decisions.items():
+            action = str(d.get('action', 'flat')).lower()
+            conf = float(d.get('confidence', 0.0))
+            weighted_score = float(d.get('weighted_score', 0.0))
+            
+            # Derive a base signed score per instrument
+            if action in ('long', 'buy'):
+                base_score = max(0.0, conf)
+            elif action in ('short', 'sell'):
+                base_score = -max(0.0, conf)
+            else:
+                # Flat / neutral instruments are inherently low-fragility for direction
+                instrument_fragility[inst] = 0.3
+                instrument_uncertainty[inst] = 0.3
+                continue
+            
+            # Include weighted_score if available (keeps direction but gives magnitude)
+            if weighted_score != 0.0:
+                # Blend the two: 70% weight on confidence, 30% on committee weighted score
+                base_score = 0.7 * base_score + 0.3 * float(weighted_score)
+            
+            # Monte-Carlo perturbations around base_score
+            num_inst_samples = max(4, self.n_samples)  # do not go below 4
+            flips_inst = 0
+            directions: List[float] = []
+            
+            for _ in range(num_inst_samples):
+                noise = float(self._rng.normal(0, self.current_sigma))
+                s = base_score + noise
+                directions.append(s)
+                
+                if base_score > 0 and s <= 0:
+                    flips_inst += 1
+                elif base_score < 0 and s >= 0:
+                    flips_inst += 1
+            
+            flip_rate_inst = flips_inst / float(num_inst_samples)
+            # Similar fragility mapping as global, but per instrument
+            frag_i = float(min(1.0, max(0.0, (flip_rate_inst - 0.3) * 1.5)))
+            
+            # Uncertainty_i combines fragility with variance of directions
+            var_i = float(np.var(directions)) if len(directions) > 1 else 0.0
+            unc_i = float(0.6 * frag_i + 0.4 * min(1.0, var_i * 4.0))
+            
+            instrument_fragility[inst] = frag_i
+            instrument_uncertainty[inst] = unc_i
+        
+        # Confidence bounds (rough global interval)
+        lower = max(0.0, 0.5 - uncertainty * 0.5)
+        upper = min(1.0, 0.5 + uncertainty * 0.5)
+        
         return {
             'uncertainty_score': float(max(0.0, min(1.0, uncertainty))),
             'fragility_score': float(max(0.0, min(1.0, fragility))),
@@ -353,13 +489,17 @@ class UncertaintySampler(VotingModuleBase):
             'n_samples': len(samples),
             'original_action': original_action,
             'sample_actions': actions,
+            'instrument_fragility': instrument_fragility,
+            'instrument_uncertainty': instrument_uncertainty,
+            'confidence_bounds': {'lower': lower, 'upper': upper},
+            'diversity_score': float(sample_div),
         }
     
     def _generate_thesis(self, analysis: Dict[str, Any]) -> str:
-        """Generate uncertainty thesis."""
-        unc = analysis.get('uncertainty_score', 0.5)
-        frag = analysis.get('fragility_score', 0.5)
-        n = analysis.get('n_samples', 0)
+        """Generate uncertainty thesis (global)."""
+        unc = float(analysis.get('uncertainty_score', 0.5))
+        frag = float(analysis.get('fragility_score', 0.5))
+        n = int(analysis.get('n_samples', 0))
         
         label = 'HIGH' if unc > 0.6 else 'MODERATE' if unc > 0.3 else 'LOW'
         
@@ -373,21 +513,24 @@ class UncertaintySampler(VotingModuleBase):
         try:
             name = self.__class__.__name__
             
+            unc = float(analysis.get('uncertainty_score', 0.5))
+            frag = float(analysis.get('fragility_score', 0.5))
+            
             self.smart_bus.set(
                 'uncertainty_score',
-                analysis.get('uncertainty_score', 0.5),
+                unc,
                 module=name,
                 thesis=thesis
             )
             self.smart_bus.set(
                 'fragility_score',
-                analysis.get('fragility_score', 0.5),
+                frag,
                 module=name,
-                thesis=f'Fragility: {analysis.get("fragility_score", 0.5):.2f}'
+                thesis=f'Fragility: {frag:.2f}'
             )
             self.smart_bus.set(
                 'fragility',
-                analysis.get('fragility_score', 0.5),
+                frag,
                 module=name,
                 thesis='Fragility alias'
             )
@@ -397,6 +540,33 @@ class UncertaintySampler(VotingModuleBase):
                 module=name,
                 thesis='Uncertainty analysis results'
             )
+            
+            # Per-instrument publication
+            inst_frag = analysis.get('instrument_fragility', {}) or {}
+            inst_unc = analysis.get('instrument_uncertainty', {}) or {}
+            
+            self.smart_bus.set(
+                'instrument_fragility',
+                inst_frag,
+                module=name,
+                thesis='Per-instrument fragility map'
+            )
+            self.smart_bus.set(
+                'instrument_uncertainty',
+                inst_unc,
+                module=name,
+                thesis='Per-instrument uncertainty map'
+            )
+            
+            # Convenience per-instrument keys: fragility_<SYMBOL>
+            for inst, f in inst_frag.items():
+                key = f'fragility_{inst}'
+                self.smart_bus.set(
+                    key,
+                    float(f),
+                    module=name,
+                    thesis=f'Fragility for {inst}'
+                )
         except Exception as e:
             self.logger.warning(f"Bus update failed: {e}")
     
@@ -410,9 +580,12 @@ class UncertaintySampler(VotingModuleBase):
             'uncertainty_analysis': {'error': error},
             'sampling_statistics': dict(self.sampling_stats),
             'quality_metrics': dict(self.quality_metrics),
-            'current_sigma': self.current_sigma,
+            'current_sigma': float(self.current_sigma),
             'decision_id': None,
             'uncertainty_decision_id': None,
+            # Per-instrument error defaults
+            'instrument_fragility': {},
+            'instrument_uncertainty': {},
             # Contract-expected keys
             'uncertainty_result': {'error': error, 'uncertainty_score': 0.5},
             'sampling_uncertainty': 0.5,
@@ -425,5 +598,3 @@ class UncertaintySampler(VotingModuleBase):
             'sampling_fragility': 0.5,
             '_thesis': f'Uncertainty sampling error: {error}',
         }
-
-

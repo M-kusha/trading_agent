@@ -181,12 +181,14 @@ class RewardCalculator:
             'tail_penalty': 0.0,
             'mistake_penalty': 0.0,
             'no_trade_penalty': 0.0,
+            'prop_firm_penalty': 0.0,
             'win_bonus': 0.0,
             'activity_bonus': 0.0,
             'consistency_bonus': 0.0,
             'sharpe_bonus': 0.0,
             'regime_bonus': 0.0,
             'volatility_adjustment': 0.0,
+            'profit_target_bonus': 0.0,
         }
 
     def _calculate_realised_pnl(self, trades: List[Dict[str, Any]]) -> float:
@@ -285,6 +287,15 @@ class RewardCalculator:
             )
             if no_trade_penalty > 0:
                 penalties['no_trade_penalty'] = no_trade_penalty
+
+        # Prop firm penalty (progressive as approaching DD limits)
+        prop_firm_penalty = self._calculate_prop_firm_penalty(
+            components['drawdown'],
+            reward_data.get('daily_dd_used', 0.0),
+            reward_data.get('prop_firm_limits')
+        )
+        if prop_firm_penalty > 0:
+            penalties['prop_firm_penalty'] = prop_firm_penalty
 
         return penalties
 
@@ -438,6 +449,66 @@ class RewardCalculator:
 
         return float(penalty)
 
+    def _calculate_prop_firm_penalty(
+        self,
+        current_dd: float,
+        daily_dd_used: float,
+        prop_firm_limits: Optional[Dict[str, Any]] = None
+    ) -> float:
+        """
+        Calculate progressive prop firm penalty as drawdown approaches limits.
+        
+        This teaches the AI to:
+        1. Be cautious as DD approaches limits (progressive penalty)
+        2. Severely penalize actual limit breaches
+        3. Consider both daily and max DD limits
+        """
+        if not getattr(self.cfg, 'prop_firm_enabled', True):
+            return 0.0
+        
+        # Get limits from config or override from reward_data
+        daily_limit = float(getattr(self.cfg, 'daily_dd_limit', 0.05))
+        max_limit = float(getattr(self.cfg, 'max_dd_limit', 0.10))
+        
+        if prop_firm_limits and isinstance(prop_firm_limits, dict):
+            daily_limit = float(prop_firm_limits.get('daily_dd_limit', daily_limit))
+            max_limit = float(prop_firm_limits.get('max_dd_limit', max_limit))
+        
+        try:
+            current_dd = float(current_dd)
+            daily_dd_used = float(daily_dd_used) if daily_dd_used else current_dd
+        except Exception:
+            return 0.0
+        
+        penalty = 0.0
+        weight = float(getattr(self.cfg, 'prop_firm_dd_penalty_weight', 3.0))
+        violation_weight = float(getattr(self.cfg, 'prop_firm_violation_penalty', 5.0))
+        
+        # Daily DD penalty (progressive)
+        if daily_limit > 0:
+            daily_ratio = daily_dd_used / daily_limit
+            if daily_ratio >= 1.0:
+                # Violation! Severe penalty
+                penalty += violation_weight * (1.0 + (daily_ratio - 1.0) * 2.0)
+            elif daily_ratio > 0.7:
+                # Approaching limit - progressive quadratic penalty
+                # At 70%: 0.09 * weight, at 90%: 0.81 * weight
+                proximity = (daily_ratio - 0.7) / 0.3  # 0 to 1
+                penalty += (proximity ** 2) * weight
+        
+        # Max DD penalty (progressive, stacks with daily)
+        if max_limit > 0:
+            max_ratio = current_dd / max_limit
+            if max_ratio >= 1.0:
+                # Violation! Severe penalty
+                penalty += violation_weight * (1.0 + (max_ratio - 1.0) * 2.0)
+            elif max_ratio > 0.6:
+                # Start warning earlier for max DD (60%)
+                proximity = (max_ratio - 0.6) / 0.4  # 0 to 1
+                penalty += (proximity ** 2) * weight * 0.8  # Slightly lower than daily
+        
+        return float(penalty)
+
     # ─────────────────────────────────────────────────────────────
     # Bonus Calculations
     # ─────────────────────────────────────────────────────────────
@@ -489,6 +560,15 @@ class RewardCalculator:
         )
         if vol_adjustment != 0:
             bonuses['volatility_adjustment'] = vol_adjustment
+
+        # Profit target bonus (prop firm progress)
+        profit_bonus = self._calculate_profit_target_bonus(
+            components['balance_now'],
+            components['baseline_balance'],
+            reward_data.get('prop_firm_limits')
+        )
+        if profit_bonus > 0:
+            bonuses['profit_target_bonus'] = profit_bonus
 
         return bonuses
 
@@ -708,6 +788,63 @@ class RewardCalculator:
         adaptive_factor = float(self.state.adaptive_params.get('risk_tolerance', 1.0))
 
         return float(base * float(self.cfg.volatility_adjustment) * adaptive_factor)
+
+    def _calculate_profit_target_bonus(
+        self,
+        balance_now: float,
+        baseline_balance: float,
+        prop_firm_limits: Optional[Dict[str, Any]] = None
+    ) -> float:
+        """
+        Calculate bonus for progress toward prop firm profit target.
+        
+        Incentivizes:
+        1. Making consistent progress toward profit target
+        2. Extra bonus when crossing milestones (25%, 50%, 75%, 100%)
+        3. Encourages profitable but controlled trading
+        """
+        if not getattr(self.cfg, 'prop_firm_enabled', True):
+            return 0.0
+        
+        profit_target = float(getattr(self.cfg, 'profit_target', 0.10))
+        if prop_firm_limits and isinstance(prop_firm_limits, dict):
+            profit_target = float(prop_firm_limits.get('profit_target', profit_target))
+        
+        if profit_target <= 0 or baseline_balance <= 0:
+            return 0.0
+        
+        try:
+            balance_now = float(balance_now)
+            baseline_balance = float(baseline_balance)
+        except Exception:
+            return 0.0
+        
+        # Calculate profit progress (0.0 to 1.0+)
+        current_profit_pct = (balance_now - baseline_balance) / baseline_balance
+        progress_ratio = current_profit_pct / profit_target if profit_target > 0 else 0.0
+        
+        if progress_ratio <= 0:
+            return 0.0
+        
+        weight = float(getattr(self.cfg, 'profit_target_bonus_weight', 1.5))
+        bonus = 0.0
+        
+        # Base progress bonus (diminishing returns via sqrt)
+        bonus += np.sqrt(min(progress_ratio, 1.0)) * weight * 0.3
+        
+        # Milestone bonuses (one-time per episode would be ideal, but stateless here)
+        # So we use a small continuous bonus for being past milestones
+        if progress_ratio >= 0.25:
+            bonus += 0.05 * weight
+        if progress_ratio >= 0.50:
+            bonus += 0.1 * weight
+        if progress_ratio >= 0.75:
+            bonus += 0.15 * weight
+        if progress_ratio >= 1.0:
+            # Target reached! Big bonus
+            bonus += 0.5 * weight
+        
+        return float(min(bonus, 2.0))  # Cap to prevent runaway
 
     # ─────────────────────────────────────────────────────────────
     # State & Logging

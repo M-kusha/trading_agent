@@ -17,15 +17,52 @@ class VotingAction(str, Enum):
     SHORT = "short"
     HOLD = "hold"
     ABSTAIN = "abstain"
-    
+
     @classmethod
-    def from_string(cls, value: str) -> "VotingAction":
-        """Parse string to VotingAction with fallback to ABSTAIN."""
-        try:
-            return cls(value.lower().strip())
-        except (ValueError, AttributeError):
+    def from_string(cls, value: Any) -> "VotingAction":
+        """
+        Parse arbitrary input into a VotingAction.
+
+        Accepts:
+        - VotingAction enums (idempotent)
+        - Strings with various legacy aliases:
+          - 'buy', 'bull', 'bullish'    -> LONG
+          - 'sell', 'bear', 'bearish'   -> SHORT
+          - 'flat', 'neutral', 'none',
+            'no_trade', 'no-trade'      -> HOLD
+          - 'abstain', 'skip', 'ignore' -> ABSTAIN
+
+        Unknown values fall back to ABSTAIN.
+        """
+        # Already an enum
+        if isinstance(value, cls):
+            return value
+
+        if value is None:
             return cls.ABSTAIN
-    
+
+        try:
+            s = str(value).lower().strip()
+        except Exception:
+            return cls.ABSTAIN
+
+        # Explicit mappings first (legacy compatibility)
+        if s in {"long", "buy", "bull", "bullish"}:
+            return cls.LONG
+        if s in {"short", "sell", "bear", "bearish"}:
+            return cls.SHORT
+        if s in {"hold", "flat", "neutral", "none", "no_trade", "no-trade"}:
+            # 'flat' / 'neutral' historically meant "no directional bias" → HOLD
+            return cls.HOLD
+        if s in {"abstain", "skip", "ignore"}:
+            return cls.ABSTAIN
+
+        # Fallback to enum value if exact match
+        try:
+            return cls(s)
+        except ValueError:
+            return cls.ABSTAIN
+
     @property
     def is_directional(self) -> bool:
         """Returns True if this is a directional signal (long/short)."""
@@ -61,17 +98,17 @@ _VOTING_MODE: str = "TRAINING"  # "LIVE" or "TRAINING"
 # ───────────────────────────────────────────────────────────────────
 # LIVE MODE THRESHOLDS (Conservative - protect capital)
 # ───────────────────────────────────────────────────────────────────
-_LIVE_THRESHOLDS = {
+_LIVE_THRESHOLDS: Dict[str, float] = {
     # Confidence (high requirements)
     "CONFIDENCE_THRESHOLD": 0.45,
     "HIGH_CONFIDENCE_THRESHOLD": 0.80,
     "MIN_SIGNAL_STRENGTH": 0.25,
-    
+
     # Consensus (strong agreement required)
     "CONSENSUS_THRESHOLD": 0.70,
     "STRONG_CONSENSUS_THRESHOLD": 0.85,
     "WEAK_CONSENSUS_THRESHOLD": 0.50,
-    
+
     # Arbiter (strict filtering)
     "ARBITER_CONFIDENCE_FLOOR": 0.40,
     "ARBITER_INTENSITY_FLOOR": 0.30,
@@ -80,17 +117,17 @@ _LIVE_THRESHOLDS = {
 # ───────────────────────────────────────────────────────────────────
 # TRAINING MODE THRESHOLDS (Exploratory - allow learning)
 # ───────────────────────────────────────────────────────────────────
-_TRAINING_THRESHOLDS = {
+_TRAINING_THRESHOLDS: Dict[str, float] = {
     # Confidence (lower requirements for exploration)
     "CONFIDENCE_THRESHOLD": 0.30,
     "HIGH_CONFIDENCE_THRESHOLD": 0.70,
     "MIN_SIGNAL_STRENGTH": 0.15,
-    
+
     # Consensus (easier agreement)
     "CONSENSUS_THRESHOLD": 0.55,
     "STRONG_CONSENSUS_THRESHOLD": 0.75,
     "WEAK_CONSENSUS_THRESHOLD": 0.35,
-    
+
     # Arbiter (more permissive)
     "ARBITER_CONFIDENCE_FLOOR": 0.20,
     "ARBITER_INTENSITY_FLOOR": 0.15,
@@ -100,13 +137,13 @@ _TRAINING_THRESHOLDS = {
 def set_voting_mode(mode: str) -> None:
     """
     Set the global voting mode. Call this at startup based on config.
-    
+
     Args:
         mode: "LIVE" for conservative real-money trading,
               "TRAINING" for exploratory learning mode
     """
     global _VOTING_MODE
-    mode = mode.upper().strip()
+    mode = (mode or "").upper().strip()
     if mode not in ("LIVE", "TRAINING"):
         mode = "TRAINING"  # Default to exploratory mode
     _VOTING_MODE = mode
@@ -115,6 +152,16 @@ def set_voting_mode(mode: str) -> None:
 def get_voting_mode() -> str:
     """Get the current voting mode."""
     return _VOTING_MODE
+
+
+def is_live_mode() -> bool:
+    """Convenience helper: True when voting mode is LIVE."""
+    return _VOTING_MODE == "LIVE"
+
+
+def is_training_mode() -> bool:
+    """Convenience helper: True when voting mode is TRAINING."""
+    return _VOTING_MODE == "TRAINING"
 
 
 def get_thresholds() -> Dict[str, float]:
@@ -133,23 +180,30 @@ def get_thresholds() -> Dict[str, float]:
 def CONFIDENCE_THRESHOLD_F() -> float:
     return get_thresholds()["CONFIDENCE_THRESHOLD"]
 
+
 def HIGH_CONFIDENCE_THRESHOLD_F() -> float:
     return get_thresholds()["HIGH_CONFIDENCE_THRESHOLD"]
+
 
 def MIN_SIGNAL_STRENGTH_F() -> float:
     return get_thresholds()["MIN_SIGNAL_STRENGTH"]
 
+
 def CONSENSUS_THRESHOLD_F() -> float:
     return get_thresholds()["CONSENSUS_THRESHOLD"]
+
 
 def STRONG_CONSENSUS_THRESHOLD_F() -> float:
     return get_thresholds()["STRONG_CONSENSUS_THRESHOLD"]
 
+
 def WEAK_CONSENSUS_THRESHOLD_F() -> float:
     return get_thresholds()["WEAK_CONSENSUS_THRESHOLD"]
 
+
 def ARBITER_CONFIDENCE_FLOOR_F() -> float:
     return get_thresholds()["ARBITER_CONFIDENCE_FLOOR"]
+
 
 def ARBITER_INTENSITY_FLOOR_F() -> float:
     return get_thresholds()["ARBITER_INTENSITY_FLOOR"]
@@ -232,43 +286,43 @@ VOTING_DEFAULTS: Dict[str, Any] = {
     "confidence_threshold": CONFIDENCE_THRESHOLD,
     "high_confidence_threshold": HIGH_CONFIDENCE_THRESHOLD,
     "min_signal_strength": MIN_SIGNAL_STRENGTH,
-    
+
     # Consensus thresholds
     "consensus_threshold": CONSENSUS_THRESHOLD,
     "strong_consensus_threshold": STRONG_CONSENSUS_THRESHOLD,
     "weak_consensus_threshold": WEAK_CONSENSUS_THRESHOLD,
-    
+
     # Collusion detection
     "collusion_threshold": COLLUSION_THRESHOLD,
     "max_correlation": MAX_CORRELATION,
     "min_expert_diversity": MIN_EXPERT_DIVERSITY,
-    
+
     # Timing
     "max_staleness_seconds": MAX_STALENESS_SECONDS,
     "decision_timeout_ms": DECISION_TIMEOUT_MS,
     "cache_ttl_seconds": CACHE_TTL_SECONDS,
-    
+
     # Committee
     "min_voters_required": MIN_VOTERS_REQUIRED,
     "max_voters": MAX_VOTERS,
     "quorum_ratio": QUORUM_RATIO,
-    
+
     # Uncertainty sampling
     "fragility_threshold": FRAGILITY_THRESHOLD,
     "max_uncertainty": MAX_UNCERTAINTY,
     "monte_carlo_samples": MONTE_CARLO_SAMPLES,
-    
+
     # Time horizon alignment
     "horizon_weights": {
         "short": 0.4,
         "medium": 0.35,
         "long": 0.25,
     },
-    
+
     # Arbiter thresholds
     "arbiter_confidence_floor": ARBITER_CONFIDENCE_FLOOR,
     "arbiter_intensity_floor": ARBITER_INTENSITY_FLOOR,
-    
+
     # Performance
     "max_processing_time_ms": MAX_PROCESSING_TIME_MS,
     "circuit_breaker_threshold": CIRCUIT_BREAKER_THRESHOLD,
@@ -284,7 +338,7 @@ class VotingBusKeys:
     Standard bus key names for voting system.
     Single source of truth - use these constants instead of hardcoded strings.
     """
-    
+
     # ─────────────────────────────────────────────────────────────────
     # Decision Coordination
     # ─────────────────────────────────────────────────────────────────
@@ -292,7 +346,7 @@ class VotingBusKeys:
     KERNEL_DECISION_ID = "kernel_decision_id"
     TICK_TS = "tick_ts"
     KERNEL_TICK_TS = "kernel_tick_ts"
-    
+
     # ─────────────────────────────────────────────────────────────────
     # Market Data Inputs
     # ─────────────────────────────────────────────────────────────────
@@ -300,7 +354,7 @@ class VotingBusKeys:
     MARKET_REGIME = "market_regime"
     VOLATILITY_DATA = "volatility_data"
     SESSION_TYPE = "session_type"
-    
+
     # ─────────────────────────────────────────────────────────────────
     # Committee Stage Outputs
     # ─────────────────────────────────────────────────────────────────
@@ -317,7 +371,7 @@ class VotingBusKeys:
     VOTING_SUMMARY = "voting_summary"
     STRATEGY_ARBITER_WEIGHTS = "strategy_arbiter_weights"
     VOTE_BUNDLE = "vote_bundle"  # Used by SlimVotingKernel
-    
+
     # ─────────────────────────────────────────────────────────────────
     # Consensus Stage Outputs
     # ─────────────────────────────────────────────────────────────────
@@ -327,7 +381,7 @@ class VotingBusKeys:
     CONSENSUS_DIRECTION = "consensus_direction"
     CONSENSUS_CONFIDENCE = "consensus_confidence"
     CONSENSUS_QUALITY = "consensus_quality"
-    
+
     # ─────────────────────────────────────────────────────────────────
     # Collusion Stage Outputs
     # ─────────────────────────────────────────────────────────────────
@@ -335,21 +389,21 @@ class VotingBusKeys:
     COLLUSION_SCORE = "collusion_score"
     COLLUSION_DETECTED = "collusion_detected"
     SUSPICIOUS_PAIRS = "suspicious_pairs"
-    
+
     # ─────────────────────────────────────────────────────────────────
     # Horizon Stage Outputs
     # ─────────────────────────────────────────────────────────────────
     HORIZON_RESULT = "horizon_result"
     HORIZON_ALIGNMENT = "horizon_alignment"
     ALIGNED_WEIGHTS = "aligned_weights"
-    
+
     # ─────────────────────────────────────────────────────────────────
     # Uncertainty Stage Outputs
     # ─────────────────────────────────────────────────────────────────
     UNCERTAINTY_RESULT = "uncertainty_result"
     FRAGILITY = "fragility"
     FRAGILITY_SCORE = "fragility_score"
-    
+
     # ─────────────────────────────────────────────────────────────────
     # Arbiter/Final Decision Outputs
     # ─────────────────────────────────────────────────────────────────
@@ -358,7 +412,7 @@ class VotingBusKeys:
     TRADE_VOTE = "trade_vote"
     TRADE_VOTE_V2 = "trade_vote_v2"
     ARBITER_DECISION = "arbiter_decision"
-    
+
     # ─────────────────────────────────────────────────────────────────
     # Pipeline/Kernel Outputs
     # ─────────────────────────────────────────────────────────────────
@@ -369,13 +423,13 @@ class VotingBusKeys:
     CONSENSUS_SUMMARY = "consensus_summary"
     VOTING_METRICS = "voting_metrics"
     PIPELINE_STATUS = "pipeline_status"
-    
+
     # ─────────────────────────────────────────────────────────────────
     # Memory Integration
     # ─────────────────────────────────────────────────────────────────
     MEMORY_GATE = "memory_gate"
     DANGER_ZONES = "danger_zones"
-    
+
     # ─────────────────────────────────────────────────────────────────
     # Helper Methods
     # ─────────────────────────────────────────────────────────────────
@@ -383,7 +437,7 @@ class VotingBusKeys:
     def expert_proposal(expert_name: str) -> str:
         """Get the voting proposal key for an expert."""
         return f"{expert_name}_voting_proposal"
-    
+
     @staticmethod
     def expert_confidence(expert_name: str) -> str:
         """Get the confidence key for an expert."""

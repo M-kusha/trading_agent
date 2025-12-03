@@ -20,7 +20,6 @@ import numpy as np
 from modules.contracts import module_args
 from modules.core.module_base import module
 from modules.voting.core.base import VotingModuleBase
-from modules.voting.core.types import ConsensusResult
 
 
 @module(**module_args("ConsensusAnalyzer"))
@@ -54,7 +53,8 @@ class ConsensusAnalyzer(VotingModuleBase):
         self.consensus_history: deque = deque(maxlen=150)
         
         # Dimension scores
-        self.directional_consensus: float = 0.0
+        self.directional_consensus: float = 0.0     # 0–1 magnitude agreement
+        self.directional_consensus_sign: float = 0.0  # -1 short, 0 neutral, +1 long
         self.magnitude_consensus: float = 0.0
         self.confidence_consensus: float = 0.0
         self.temporal_stability: float = 0.0
@@ -76,7 +76,7 @@ class ConsensusAnalyzer(VotingModuleBase):
             'avg_consensus': 0.5,
         }
         
-        # Member contributions
+        # Member contributions (placeholder for future enhancement)
         self.member_contributions: Dict[str, Dict[str, float]] = defaultdict(
             lambda: {
                 'avg_alignment': 0.5,
@@ -132,6 +132,14 @@ class ConsensusAnalyzer(VotingModuleBase):
             
             elapsed_ms = (time.time() - start) * 1000
             self.performance_tracker.record_metric(name, 'process', elapsed_ms, True)
+
+            # Derive a symbolic consensus direction from the stored sign
+            direction_label = 'neutral'
+            if analysis.get('consensus_exists', False):
+                if self.directional_consensus_sign > 0:
+                    direction_label = 'long'
+                elif self.directional_consensus_sign < 0:
+                    direction_label = 'short'
             
             return {
                 'consensus_score': analysis['consensus_score'],
@@ -148,9 +156,8 @@ class ConsensusAnalyzer(VotingModuleBase):
                 # Contract-expected keys
                 'consensus_result': analysis,
                 'agreement_score': analysis.get('consensus_score', 0.0),
-                'consensus_direction': 'long' if self.directional_consensus > 0.5 else 'short' if self.directional_consensus < -0.5 else 'neutral',
+                'consensus_direction': direction_label,
                 'consensus_confidence': analysis.get('consensus_score', 0.0),
-                'consensus_thesis': thesis,
                 'consensus_components': {
                     'directional': self.directional_consensus,
                     'magnitude': self.magnitude_consensus,
@@ -158,6 +165,7 @@ class ConsensusAnalyzer(VotingModuleBase):
                     'temporal': self.temporal_stability
                 },
                 'consensus_quality': quality,
+                'consensus_thesis': thesis,
                 '_thesis': thesis,
             }
         
@@ -185,6 +193,11 @@ class ConsensusAnalyzer(VotingModuleBase):
         confidences = data.get('member_confidences') or []
         
         if len(vectors) < 2:
+            # Reset sign in case of sparse data
+            self.directional_consensus_sign = 0.0
+            self.directional_consensus = 0.0
+            self.magnitude_consensus = 0.0
+            self.confidence_consensus = 0.0
             return {
                 'consensus_score': 0.0,
                 'consensus_exists': False,
@@ -215,12 +228,14 @@ class ConsensusAnalyzer(VotingModuleBase):
         else:
             consensus_score = raw_score
         
+        consensus_score = max(0.0, min(1.0, consensus_score))
         self.last_consensus = consensus_score
         
         return {
-            'consensus_score': max(0.0, min(1.0, consensus_score)),
+            'consensus_score': consensus_score,
             'consensus_exists': consensus_score >= self.threshold,
             'directional_consensus': self.directional_consensus,
+            'direction_sign': self.directional_consensus_sign,
             'magnitude_consensus': self.magnitude_consensus,
             'confidence_consensus': self.confidence_consensus,
             'temporal_stability': self.temporal_stability,
@@ -229,13 +244,15 @@ class ConsensusAnalyzer(VotingModuleBase):
         }
     
     def _calculate_directional_consensus(self, vectors: List[List[float]]) -> float:
-        """Calculate directional consensus using sign agreement."""
+        """Calculate directional consensus using sign agreement (0–1 magnitude) 
+        and store the majority direction sign (-1/0/+1)."""
         try:
             if len(vectors) < 2:
+                self.directional_consensus_sign = 0.0
                 return 0.0
             
             # Extract direction signs from vectors
-            directions = []
+            directions: List[int] = []
             for v in vectors:
                 if isinstance(v, (list, tuple)) and len(v) > 0:
                     val = float(v[0])
@@ -247,20 +264,29 @@ class ConsensusAnalyzer(VotingModuleBase):
                         directions.append(0)
             
             if not directions:
+                self.directional_consensus_sign = 0.0
                 return 0.0
             
-            # Calculate agreement (what fraction agree with majority)
             from collections import Counter
             counts = Counter(directions)
             most_common = counts.most_common(1)
-            if most_common:
-                majority_count = most_common[0][1]
-                agreement = majority_count / len(directions)
-                return agreement
+            if not most_common:
+                self.directional_consensus_sign = 0.0
+                return 0.0
             
-            return 0.0
+            majority_value, majority_count = most_common[0]
+            
+            # If the majority is "neutral" (0), treat as no directional consensus
+            if majority_value == 0:
+                self.directional_consensus_sign = 0.0
+                return 0.0
+            
+            self.directional_consensus_sign = float(majority_value)
+            agreement = majority_count / len(directions)
+            return float(max(0.0, min(1.0, agreement)))
         
         except Exception:
+            self.directional_consensus_sign = 0.0
             return 0.0
     
     def _calculate_magnitude_consensus(self, vectors: List[List[float]]) -> float:
@@ -269,8 +295,8 @@ class ConsensusAnalyzer(VotingModuleBase):
             if len(vectors) < 2:
                 return 0.0
             
-            # Extract magnitudes
-            magnitudes = []
+            # Extract magnitudes (absolute directional strength)
+            magnitudes: List[float] = []
             for v in vectors:
                 if isinstance(v, (list, tuple)) and len(v) > 0:
                     magnitudes.append(abs(float(v[0])))
@@ -278,7 +304,6 @@ class ConsensusAnalyzer(VotingModuleBase):
             if len(magnitudes) < 2:
                 return 0.0
             
-            # Calculate inverse CV (low CV = high consensus)
             mean = float(np.mean(magnitudes))
             std = float(np.std(magnitudes))
             
@@ -286,14 +311,14 @@ class ConsensusAnalyzer(VotingModuleBase):
                 return 0.5
             
             cv: float = std / mean
-            # Map CV to consensus (CV of 0 = 1.0, CV of 1 = 0.0)
+            # Map CV to consensus (CV of 0 = 1.0, CV of 1 = 0.0, clamp)
             return float(max(0.0, min(1.0, 1.0 - cv)))
         
         except Exception:
             return 0.0
     
     def _calculate_confidence_consensus(self, confidences: List[float]) -> float:
-        """Calculate confidence consensus."""
+        """Calculate confidence consensus via coefficient of variation."""
         try:
             if len(confidences) < 2:
                 return 0.0
@@ -339,8 +364,11 @@ class ConsensusAnalyzer(VotingModuleBase):
             else:
                 stability = 0.5
             
-            # Diversity: inverse of extreme agreement (too high might be suspicious)
-            diversity = float(1.0 - abs(score - 0.5) * 2) if score > 0.5 else 0.5
+            # Diversity: inverse of “too extreme” consensus
+            if score > 0.5:
+                diversity = float(1.0 - abs(score - 0.5) * 2)
+            else:
+                diversity = 0.5
             
             # Overall effectiveness
             effectiveness = float((coherence + stability + diversity) / 3.0)
@@ -359,8 +387,8 @@ class ConsensusAnalyzer(VotingModuleBase):
             return self.consensus_quality_metrics
     
     def _update_history(self, analysis: Dict[str, Any]) -> None:
-        """Update consensus history."""
-        score = analysis.get('consensus_score', 0.0)
+        """Update consensus history and stats."""
+        score = float(analysis.get('consensus_score', 0.0))
         self.consensus_history.append(score)
         
         # Update stats
@@ -371,13 +399,13 @@ class ConsensusAnalyzer(VotingModuleBase):
             self.consensus_stats['low_consensus_count'] += 1
         
         n = self.consensus_stats['total_computations']
-        old_avg = self.consensus_stats['avg_consensus']
+        old_avg = float(self.consensus_stats['avg_consensus'])
         self.consensus_stats['avg_consensus'] = (old_avg * (n - 1) + score) / n
     
     def _generate_thesis(self, analysis: Dict[str, Any], quality: Dict[str, float]) -> str:
-        """Generate consensus thesis."""
-        score = analysis.get('consensus_score', 0.0)
-        exists = analysis.get('consensus_exists', False)
+        """Generate consensus thesis string."""
+        score = float(analysis.get('consensus_score', 0.0))
+        exists = bool(analysis.get('consensus_exists', False))
         
         label = 'STRONG' if score > 0.7 else 'MODERATE' if score > 0.4 else 'WEAK'
         
@@ -444,5 +472,3 @@ class ConsensusAnalyzer(VotingModuleBase):
             'consensus_quality': self.consensus_quality_metrics,
             '_thesis': f'Consensus error: {error}',
         }
-
-

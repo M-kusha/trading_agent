@@ -40,3 +40,12 @@ frontend/package-lock.json
 
 # Ignore runtime state snapshots
 state/
+
+# Ignore test folder
+tests/
+
+# Ignore docs folder
+docs/
+
+# Ignore optuna results
+optuna_results/
