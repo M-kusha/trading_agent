@@ -188,16 +188,47 @@ class SmartPositionManager:
             max_lines=5000,
         )
         
+        # InfoBus for state persistence
+        try:
+            from modules.utils.info_bus import InfoBusManager
+            self._smart_bus = InfoBusManager.get_instance()
+        except Exception:
+            self._smart_bus = None
+        
         # Initialize unified lot calculator (singleton)
         self._lot_calculator = None
 
         # State tracking
         self._positions: Dict[str, LivePosition] = {}      # Net positions per symbol
         self._actual_mt5_position_count: int = 0           # Actual count of MT5 positions (before netting)
-        self._profit_peaks: Dict[str, float] = {}          # Track peak profit per symbol
+        self._profit_peaks: Dict[str, float] = self._load_peaks_from_bus()  # Track peak profit per symbol (persisted)
         self._last_trade_time: Dict[str, float] = {}       # Per-symbol cooldown
         self._last_scale_time: Dict[str, float] = {}       # Per-symbol scale cooldown
         self._last_sync_time: float = 0
+    
+    def _load_peaks_from_bus(self) -> Dict[str, float]:
+        """Load persisted profit peaks from InfoBus (survives restarts)."""
+        try:
+            if self._smart_bus:
+                peaks = self._smart_bus.get("smart_position_peaks", "SmartPositionManager")
+                if isinstance(peaks, dict):
+                    return {k: float(v) for k, v in peaks.items()}
+        except Exception:
+            pass
+        return {}
+    
+    def _persist_peaks_to_bus(self) -> None:
+        """Persist profit peaks to InfoBus for restart survival."""
+        try:
+            if self._smart_bus and self._profit_peaks:
+                self._smart_bus.set(
+                    "smart_position_peaks",
+                    self._profit_peaks.copy(),
+                    module="SmartPositionManager",
+                    thesis="Persisted peak PnL for trailing stop logic"
+                )
+        except Exception:
+            pass
 
     @property
     def lot_calculator(self):
@@ -248,6 +279,9 @@ class SmartPositionManager:
         closed_symbols = set(self._profit_peaks.keys()) - set(self._positions.keys())
         for symbol in closed_symbols:
             del self._profit_peaks[symbol]
+
+        # Persist peaks to InfoBus for restart survival
+        self._persist_peaks_to_bus()
 
         self._last_sync_time = time.time()
         return self._positions.copy()

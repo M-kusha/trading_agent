@@ -283,9 +283,16 @@ class Executor(BaseModule):
                 pos_snap = self.adapter.sync_positions()
             else:
                 # Pass current price to as_bus() for proper display
+                # Also update peak_unrealized for trailing profit tracking
                 pos_snap = {}
                 for k, v in self.positions.items():
                     current_price = self._sim_price(k, v.side)
+                    # Calculate current unrealized PnL
+                    if current_price is not None and current_price > 0 and v.entry_price > 0 and v.units > 0:
+                        current_pnl = (current_price - v.entry_price) * v.side * v.units
+                        # Update peak if current PnL is higher
+                        if current_pnl > v.peak_unrealized:
+                            v.peak_unrealized = current_pnl
                     pos_snap[k] = v.as_bus(last_price=current_price)
 
         return {
@@ -341,9 +348,16 @@ class Executor(BaseModule):
                 fills, step_pnl, realized_step, unreal_after = self._execute_sim(accepted, want_breakdown=True)
                 self.debugger.end("execute_sim")
                 # Pass current price to as_bus() for proper display
+                # Also update peak_unrealized for trailing profit tracking
                 positions_after = {}
                 for k, v in self.positions.items():
                     current_price = self._sim_price(k, v.side)
+                    # Calculate current unrealized PnL
+                    if current_price is not None and current_price > 0 and v.entry_price > 0 and v.units > 0:
+                        current_pnl = (current_price - v.entry_price) * v.side * v.units
+                        # Update peak if current PnL is higher
+                        if current_pnl > v.peak_unrealized:
+                            v.peak_unrealized = current_pnl
                     positions_after[k] = v.as_bus(last_price=current_price)
 
             # publish to bus
@@ -568,12 +582,53 @@ class Executor(BaseModule):
         except Exception:
             pass
 
+        # ==========================================================
+        # PORTFOLIO RISK ENFORCEMENT: Block positions exceeding limits
+        # ==========================================================
+        risk_blocked_instruments: Set[str] = set()
+        try:
+            # Get current risk signals (published separately by PortfolioRiskSystem)
+            # Note: risk_signals is published as its own key, not nested in portfolio_risk
+            risk_signals = self.bus.get("risk_signals", "Executor", default=None)
+            if isinstance(risk_signals, dict):
+                violations = risk_signals.get("violations", [])
+                if isinstance(violations, list):
+                    for v in violations:
+                        # Parse violation like "XAU_USD position 7.5% > limit 5.0%"
+                        if isinstance(v, str) and "position" in v and ">" in v and "limit" in v:
+                            parts = v.split()
+                            if len(parts) >= 1:
+                                inst = parts[0].upper().replace("/", "_")
+                                risk_blocked_instruments.add(inst)
+                    
+                    if risk_blocked_instruments:
+                        self.logger.warning(format_operator_message(
+                            icon="🛑",
+                            message="RISK_LIMIT_ENFORCEMENT",
+                            blocked_instruments=list(risk_blocked_instruments),
+                            reason="Position size exceeds portfolio risk limit",
+                        ))
+        except Exception as e:
+            self.logger.debug(f"Risk check failed: {e}")
+
         # Helper to check if instrument is vetoed
         def _is_instrument_vetoed(inst: str) -> bool:
             if memory_veto:
                 return True  # Global veto blocks all
             normalized = str(inst).upper().replace("/", "_")
             return normalized in vetoed_instruments
+        
+        # Helper to check if instrument is blocked by risk limits
+        def _is_risk_blocked(inst: str, action: str) -> bool:
+            """Block new/scaling positions if instrument exceeds risk limits"""
+            normalized = str(inst).upper().replace("/", "_")
+            if normalized not in risk_blocked_instruments:
+                return False
+            # Only block actions that would INCREASE exposure
+            action_lower = action.lower()
+            if action_lower in ("open_long", "open_short", "buy", "sell", "scale_up"):
+                return True
+            return False
 
         # explicit order_queue
         oq = self.bus.get("order_queue", "Executor", default=[])
@@ -584,8 +639,10 @@ class Executor(BaseModule):
                 if not intent:
                     rejected.append({"reason": "bad_order_queue_item", "raw": item})
                 # Memory veto check - reject new opening orders (global OR per-instrument)
-                elif intent.get("action", "").lower() in ("open_long", "open_short", "buy", "sell"):
+                elif intent.get("action", "").lower() in ("open_long", "open_short", "buy", "sell", "scale_up"):
                     inst = intent.get("instrument", "")
+                    action = intent.get("action", "")
+                    # First check memory veto
                     if _is_instrument_vetoed(inst):
                         rejected.append({
                             "reason": "memory_veto",
@@ -593,6 +650,22 @@ class Executor(BaseModule):
                             "memory_reasons": memory_veto_reasons if memory_veto else [f"Instrument {inst} on loss streak"],
                             "vetoed_instrument": inst,
                         })
+                        continue
+                    # Then check portfolio risk limits
+                    if _is_risk_blocked(inst, action):
+                        rejected.append({
+                            "reason": "risk_limit_exceeded",
+                            "intent": intent,
+                            "blocked_instrument": inst,
+                            "message": f"{inst} position exceeds portfolio risk limit - cannot increase exposure",
+                        })
+                        self.logger.warning(format_operator_message(
+                            icon="🛑",
+                            message="ORDER_BLOCKED_RISK_LIMIT",
+                            instrument=inst,
+                            action=action,
+                            reason="Position size exceeds limit",
+                        ))
                         continue
                     if self._passes_filters(intent):
                         if intent["id"] not in self._seen_ids:

@@ -2,6 +2,10 @@
 # File: modules/position/position_logic.py
 # PositionManager — decision logic + sizing + profit rules
 # (subclasses PositionManagerBase from position_base.py)
+#
+# EXIT LOGIC: Uses unified ExitStrategyEngine for consistency
+# with SmartPositionManager (live trading). Both systems use the
+# same exit strategies configured in risk_policy.yaml.
 # -------------------------------------------------------------
 
 from __future__ import annotations
@@ -23,6 +27,13 @@ from .position_base import (
     SignalContext,
 )
 from .position_logger import UnifiedPositionLogger, PositionLogEntry
+from .exit_engine import (
+    ExitStrategyEngine,
+    ExitDecision,
+    ExitReason,
+    PositionContext,
+    get_exit_engine,
+)
 
 
 @module(
@@ -79,7 +90,8 @@ class PositionManager(PositionManagerBase):
                 if len(self.signal_history[instrument]) > 50:
                     self.signal_history[instrument].pop(0)
 
-                # Maintain trailing P&L peak
+                # Maintain trailing P&L peak (for analytics / logging only).
+                # ExitStrategyEngine is the single source of truth for exit peaks.
                 self.update_profit_tracker(instrument)
 
                 dr = self._make_position_decision(ctx)
@@ -121,13 +133,21 @@ class PositionManager(PositionManagerBase):
         0. PPOAgent intelligent arbiter gate (final GO/NO-GO decision).
         1. Memory veto / danger-zone gating (pre-entry).
         2. Emergency conditions (hard exits / no new exposure).
-        3. Trailing take-profit exits (via ProfitTracker).
+        3. Exit strategies (via unified ExitStrategyEngine).
         4. Agent-driven exits (direction flips, weak signals).
         5. New entries with portfolio health & hedge prevention.
         """
+        exit_engine = get_exit_engine()
         instrument = context.instrument
 
         has_position = self._has_position_for_instrument(instrument)
+
+        # If instrument is flat, clear any stale exit-engine peak.
+        if not has_position:
+            try:
+                exit_engine.reset_peak(instrument)
+            except Exception:
+                pass
 
         decision = PositionDecision.HOLD
         intensity = 0.0
@@ -143,7 +163,7 @@ class PositionManager(PositionManagerBase):
         ppo_gate_passed = self.smart_bus.get("ppo_gate_passed", "PositionManager", default=True)
         ppo_final_decision = self.smart_bus.get("ppo_final_decision", "PositionManager", default={})
         ppo_position_size = self.smart_bus.get("ppo_position_size", "PositionManager", default=None)
-        
+
         # If PPOAgent explicitly blocked the trade, respect that decision
         if ppo_gate_passed is False and not has_position:
             rationale["stage"] = "ppo_arbiter_veto"
@@ -195,6 +215,13 @@ class PositionManager(PositionManagerBase):
                 confidence = 0.95
                 rationale["stage"] = "emergency"
                 rationale["factors"].append("Emergency conditions detected")
+
+                # Reset exit engine peak because position will be force-closed.
+                try:
+                    exit_engine.reset_peak(instrument)
+                except Exception:
+                    pass
+
                 return self._finalize_decision(
                     instrument,
                     decision,
@@ -296,29 +323,35 @@ class PositionManager(PositionManagerBase):
                 except Exception:
                     pass
 
-            # -------- Trailing take-profit (PnL peak retrace + favor deterioration)
-            trailing_pct = float(self.Cval("take_profit_trailing_pct", 0.35))
-            min_activation_eur = float(self.Cval("take_profit_min_eur", 50.0))
-            favors_down = self.favors_trend_down(
-                instrument,
-                context.market_intensity,
-                lookback=5,
-                eps=0.05,
+            # ================================================================
+            # UNIFIED EXIT STRATEGY ENGINE
+            # Uses same logic as SmartPositionManager for consistency
+            # Strategies: hard_stop > soft_stop > time_decay > trailing > momentum > signal
+            # ================================================================
+            exit_decision = self._evaluate_exit_strategies(
+                instrument=instrument,
+                pos_data=pos_data,
+                position_side=position_side,
+                context=context,
             )
-            if self.should_close_for_trailing_profit(
-                instrument,
-                trailing_pct=trailing_pct,
-                min_activation_eur=min_activation_eur,
-                favors_down=favors_down,
-            ):
+
+            if exit_decision.should_exit:
                 decision = PositionDecision.CLOSE
-                intensity = 1.0
-                confidence = 0.85
-                rationale["stage"] = "trailing_profit"
+                intensity = exit_decision.urgency
+                confidence = exit_decision.confidence
+                rationale["stage"] = f"exit_{exit_decision.reason.name.lower()}"
                 rationale["factors"].append(
-                    "Trailing take-profit: unrealized P&L retraced from peak while favorability deteriorated"
+                    exit_decision.details.get("message", str(exit_decision.reason.name))
                 )
+                rationale["exit_details"] = exit_decision.to_dict()
                 close_notional = self._get_position_notional_eur(instrument)
+
+                # Reset exit engine peak tracking for this instrument
+                try:
+                    exit_engine.reset_peak(instrument)
+                except Exception:
+                    pass
+
                 return self._finalize_decision(
                     instrument,
                     decision,
@@ -330,54 +363,10 @@ class PositionManager(PositionManagerBase):
                     context,
                 )
 
-            # -------- Agent-driven exit: direction flips or very weak signal
-            agent_direction = int(context.market_direction)  # -1, 0, +1
-            exit_threshold = float(self.Cval("exit_signal_threshold", 0.10))
-
-            should_close = False
-            close_reason = ""
-
-            # Direction flip vs current position
-            if position_side > 0 and agent_direction < 0:
-                should_close = True
-                close_reason = (
-                    "Agent signaling SHORT while portfolio is LONG on this instrument"
-                )
-            elif position_side < 0 and agent_direction > 0:
-                should_close = True
-                close_reason = (
-                    "Agent signaling LONG while portfolio is SHORT on this instrument"
-                )
-
-            # Very weak agent signal => agent wants out
-            if not should_close and sig_strength < exit_threshold:
-                should_close = True
-                close_reason = (
-                    f"Agent signal weak ({sig_strength:.3f} < {exit_threshold:.3f}); exiting position"
-                )
-
-            if should_close:
-                decision = PositionDecision.CLOSE
-                intensity = 1.0
-                confidence = 0.7
-                rationale["stage"] = "agent_exit"
-                rationale["factors"].append(close_reason)
-                close_notional = self._get_position_notional_eur(instrument)
-                return self._finalize_decision(
-                    instrument,
-                    decision,
-                    intensity,
-                    close_notional,
-                    confidence,
-                    rationale,
-                    risk_factors,
-                    context,
-                )
-
-            # Otherwise HOLD – agent still aligned with current exposure
+            # Otherwise HOLD – no exit triggered
             rationale["stage"] = "hold_existing"
             rationale["factors"].append(
-                f"Holding position; agent_direction={agent_direction}, signal={sig_strength:.3f}"
+                f"Holding position; exit_check={exit_decision.reason.name}, signal={sig_strength:.3f}"
             )
             return self._finalize_decision(
                 instrument,
@@ -1030,11 +1019,27 @@ class PositionManager(PositionManagerBase):
         balance = max(float(balance), 100.0)
         drawdown = float(np.nan_to_num(drawdown, nan=0.0))
 
+        # Read max position % directly from risk_policy.yaml -> lot_sizing.max_exposure_pct
+        # This aligns with PortfolioRiskSystem's enforcement limit (single source of truth)
+        default_max_pct = 0.05  # 5% fallback
+        try:
+            from pathlib import Path
+            import yaml
+            risk_policy_path = Path("config/risk_policy.yaml")
+            if risk_policy_path.exists():
+                with open(risk_policy_path, "r", encoding="utf-8") as f:
+                    policy = yaml.safe_load(f) or {}
+                lot_sizing = policy.get("lot_sizing", {})
+                if lot_sizing.get("max_exposure_pct") is not None:
+                    default_max_pct = float(lot_sizing["max_exposure_pct"])
+        except Exception:
+            pass
+
         risk_pct = max(
             float(
                 self._adaptive_params.get(
                     "dynamic_max_pct",
-                    self.Cval("max_position_pct", 0.10),
+                    self.Cval("max_position_pct", default_max_pct),
                 )
             ),
             0.01,
@@ -1294,24 +1299,239 @@ class PositionManager(PositionManagerBase):
         return result
 
     # ==========================================================
+    # Unified Exit Strategy Evaluation
+    # ==========================================================
+    def _evaluate_exit_strategies(
+        self,
+        instrument: str,
+        pos_data: Optional[Dict[str, Any]],
+        position_side: int,
+        context: SignalContext,
+    ) -> ExitDecision:
+        """
+        Evaluate all exit strategies using the unified ExitStrategyEngine.
+
+        This ensures consistency with SmartPositionManager (live trading).
+        Both systems now use the same exit logic from risk_policy.yaml.
+        """
+        exit_engine = get_exit_engine()
+
+        # Extract position data
+        unrealized_pnl = 0.0
+        entry_price = 0.0
+        open_time = time.time() - 3600  # Default to 1 hour ago
+        lots = 0.0
+        position_id = ""
+
+        if isinstance(pos_data, dict):
+            unrealized_pnl = float(
+                pos_data.get("unrealized_pnl", pos_data.get("pnl", 0.0)) or 0.0
+            )
+            entry_price = float(
+                pos_data.get("entry_price", pos_data.get("price_open", 0.0)) or 0.0
+            )
+            # Robust open_time parsing - handle various formats
+            raw_open_time = pos_data.get("open_time", pos_data.get("time"))
+            if raw_open_time is None:
+                open_time = time.time() - 3600  # Default 1 hour ago
+            elif isinstance(raw_open_time, (int, float)):
+                open_time = float(raw_open_time)
+            elif isinstance(raw_open_time, str):
+                # Try parsing ISO format or numeric string
+                try:
+                    open_time = float(raw_open_time)
+                except ValueError:
+                    try:
+                        import datetime
+                        # Handle ISO format like "2025-12-04T10:30:00"
+                        dt = datetime.datetime.fromisoformat(raw_open_time.replace("Z", "+00:00"))
+                        open_time = dt.timestamp()
+                    except Exception:
+                        open_time = time.time() - 3600
+            else:
+                open_time = time.time() - 3600
+            lots = float(
+                pos_data.get("lots", pos_data.get("volume", pos_data.get("units", 0.0))) or 0.0
+            )
+            position_id = str(pos_data.get("ticket", ""))
+
+        # Get tracked peak from _profit_tracker for trailing profit logic
+        # This is the actual peak PnL seen since position opened
+        tracked_peak = self._profit_tracker.peak(instrument)
+        if tracked_peak <= 0.0:
+            tracked_peak = max(unrealized_pnl, 0.0)  # Fallback to current if no peak tracked
+        
+        # Engine peak for logging comparison
+        engine_peak = exit_engine.get_peak(instrument)
+        if engine_peak is None or engine_peak == 0.0:
+            engine_peak = tracked_peak
+
+        # Get current price
+        current_price = context.current_price if hasattr(context, "current_price") else 0.0
+        if current_price == 0.0:
+            try:
+                price_data = self.smart_bus.get("price_data", "PositionManager") or {}
+                inst_price = price_data.get(instrument, {})
+                if isinstance(inst_price, dict):
+                    current_price = float(inst_price.get("last", inst_price.get("close", 0.0)))
+                elif isinstance(inst_price, (int, float)):
+                    current_price = float(inst_price)
+            except Exception:
+                pass
+
+        # Get ATR for dynamic trailing
+        atr = None
+        try:
+            market_data = self.smart_bus.get("market_data", "PositionManager") or {}
+            inst_data = market_data.get(instrument, {})
+            if isinstance(inst_data, dict):
+                atr = inst_data.get("atr") or inst_data.get("ATR")
+
+            if atr is None:
+                indicators = self.smart_bus.get("technical_indicators", "PositionManager") or {}
+                inst_ind = indicators.get(instrument, {})
+                if isinstance(inst_ind, dict):
+                    atr = inst_ind.get("atr") or inst_ind.get("ATR")
+        except Exception:
+            pass
+
+        # Get market regime
+        regime = context.regime if hasattr(context, "regime") else "normal"
+        if not regime:
+            regime = self.smart_bus.get("market_regime", "PositionManager", default="normal") or "normal"
+
+        # Get account-level context for EMERGENCY exits
+        account_drawdown_pct = context.drawdown if hasattr(context, "drawdown") else None
+        daily_loss_eur = None
+        daily_loss_limit_eur = None
+        total_open_risk_eur = None
+        try:
+            # Daily P&L from bus
+            daily_pnl = self.smart_bus.get("daily_pnl", "PositionManager")
+            if daily_pnl is not None:
+                daily_loss_eur = float(daily_pnl)
+
+            # Daily loss limit
+            risk_limits = self.smart_bus.get("risk_limits", "PositionManager") or {}
+            if isinstance(risk_limits, dict):
+                daily_loss_limit_eur = risk_limits.get("daily_loss_limit_eur")
+                if daily_loss_limit_eur is not None:
+                    daily_loss_limit_eur = float(daily_loss_limit_eur)
+
+            # Total open risk (sum of negative unrealized P&L)
+            positions = self.smart_bus.get("positions", "PositionManager") or {}
+            if isinstance(positions, dict):
+                total_open_risk_eur = sum(
+                    abs(float(p.get("unrealized_pnl", 0) or 0))
+                    for p in positions.values()
+                    if isinstance(p, dict)
+                    and float(p.get("unrealized_pnl", 0) or 0) < 0
+                )
+        except Exception:
+            pass
+
+        # Consensus confidence from voting if available
+        consensus_confidence = float(min(max(abs(context.market_intensity), 0.0), 1.0))
+        try:
+            trade_vote = self.smart_bus.get("trade_vote_v2", "PositionManager")
+            if isinstance(trade_vote, dict):
+                conf = trade_vote.get("confidence") or trade_vote.get("consensus_confidence")
+                if conf is not None:
+                    consensus_confidence = float(conf)
+        except Exception:
+            pass
+
+        # Build position context for exit engine.
+        # peak_pnl uses tracked peak from _profit_tracker for proper trailing profit logic
+        pos_ctx = PositionContext(
+            symbol=instrument,
+            side=position_side,
+            unrealized_pnl=unrealized_pnl,
+            peak_pnl=tracked_peak,
+            entry_price=entry_price,
+            current_price=current_price,
+            open_time=open_time,
+            lots=lots,
+            position_id=position_id,
+            atr=float(atr) if atr is not None else None,
+            volatility=context.volatility,
+            regime=str(regime),
+            signal_direction=context.market_direction,
+            signal_strength=abs(context.market_intensity),
+            consensus_confidence=consensus_confidence,
+            account_drawdown_pct=account_drawdown_pct,
+            daily_loss_eur=daily_loss_eur,
+            daily_loss_limit_eur=daily_loss_limit_eur,
+            total_open_risk_eur=total_open_risk_eur,
+        )
+
+        # Evaluate all exit strategies
+        exit_decision = exit_engine.evaluate(pos_ctx)
+
+        # Log exit evaluation (non-HOLD only)
+        if self.debug and exit_decision.should_exit:
+            self.logger.info(
+                format_operator_message(
+                    icon="🚪",
+                    message="EXIT_TRIGGERED",
+                    instrument=instrument,
+                    reason=exit_decision.reason.name,
+                    confidence=f"{exit_decision.confidence:.2f}",
+                    urgency=f"{exit_decision.urgency:.2f}",
+                    pnl=f"€{unrealized_pnl:.2f}",
+                    peak=f"€{engine_peak:.2f}",
+                    details=exit_decision.details.get("message", "")[:80],
+                )
+            )
+
+        return exit_decision
+
+    # ==========================================================
+    # Emergency conditions
+    # ==========================================================
+    # ==========================================================
     # Emergency conditions
     # ==========================================================
     def _check_emergency_conditions(self, context: SignalContext) -> bool:
-        """Return True if any emergency condition is met (drawdown/loss streak/exposure/liquidity)."""
-        # Use a separate emergency_exposure_trigger config (default 0.95 = 95%)
-        # This is MUCH higher than max_instrument_concentration because normal positions
-        # can legitimately use 30-85% of balance. Emergency is for catastrophic over-exposure.
+        """
+        Fast local emergency gate (per-tick).
+
+        This is intentionally stricter and earlier than the account-level
+        EMERGENCY logic inside ExitStrategyEngine:
+
+        - Here we protect *per-tick* against:
+            * too much exposure on a single instrument,
+            * account drawdown getting close to prop limits,
+            * long loss streaks,
+            * trading in very illiquid conditions.
+
+        Thresholds are read from risk_policy.position_manager and fall back
+        to prop-firm friendly defaults if not configured.
+        """
+        # Prop-firm style defaults; will be overridden by risk_policy.yaml:
+        #   position_manager.emergency_exposure_trigger: 0.20
+        #   position_manager.emergency_drawdown_trigger: 0.035
+        #   position_manager.max_consecutive_losses: 3
         emergency_exposure_threshold = float(
-            self.Cval("emergency_exposure_trigger", 0.95)  # 95% default - only emergency if nearly all balance is exposed
+            self.Cval("emergency_exposure_trigger", 0.20)
         )
+        drawdown_trigger = float(
+            self.Cval("emergency_drawdown_trigger", 0.035)
+        )
+        max_losses = int(
+            self.Cval("max_consecutive_losses", 3)
+        )
+        liquidity_floor = float(
+            self.Cval("emergency_liquidity_threshold", 0.30)
+        )
+
         triggers = {
-            "drawdown": context.drawdown
-            > float(self.Cval("emergency_drawdown_trigger", 0.15)),
-            "loss_streak": self.consecutive_losses
-            >= int(self.Cval("max_consecutive_losses", 5)),
-            "exposure": context.current_exposure > emergency_exposure_threshold,
-            "liquidity": context.liquidity_score < 0.30,
+            "drawdown": context.drawdown >= drawdown_trigger,
+            "loss_streak": self.consecutive_losses >= max_losses,
+            "exposure": context.current_exposure >= emergency_exposure_threshold,
+            "liquidity": context.liquidity_score <= liquidity_floor,
         }
+
         active = bool(
             triggers["drawdown"]
             or triggers["loss_streak"]
@@ -1347,7 +1567,7 @@ class PositionManager(PositionManagerBase):
 
         suppress = bool(self.Cval("suppress_emergency_without_executor", True)) and not executor_active
 
-        # Log once per tick-ish
+        # Log once per approximate-tick (based on timestamp)
         stamp = getattr(self, "_last_emergency_diag_stamp", None)
         current_stamp = context.timestamp or f"t_{int(time.time())}"
         if stamp != current_stamp:
@@ -1358,13 +1578,15 @@ class PositionManager(PositionManagerBase):
                         message="Emergency condition evaluated"
                         + (" (SUPPRESSED)" if suppress else ""),
                         drawdown=f"{context.drawdown:.4f}",
+                        drawdown_trigger=drawdown_trigger,
                         consecutive_losses=self.consecutive_losses,
                         loss_streak_trigger=triggers["loss_streak"],
-                        drawdown_trigger=triggers["drawdown"],
                         exposure=f"{context.current_exposure:.4f}",
                         exposure_trigger=triggers["exposure"],
+                        exposure_threshold=emergency_exposure_threshold,
                         liquidity=f"{context.liquidity_score:.3f}",
                         liquidity_trigger=triggers["liquidity"],
+                        liquidity_floor=liquidity_floor,
                         executor_active=executor_active,
                         suppressed=suppress,
                     )
@@ -1374,3 +1596,5 @@ class PositionManager(PositionManagerBase):
             self._last_emergency_diag_stamp = current_stamp
 
         return False if suppress else True
+
+        
