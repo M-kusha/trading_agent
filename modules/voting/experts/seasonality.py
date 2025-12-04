@@ -829,7 +829,7 @@ class SeasonalityRiskExpert(VotingExpertBase):
                 if isinstance(data, (list, np.ndarray)):
                     return np.array(data, dtype=float)
 
-            for tf in ("H1", "H4", "D1"):
+            for tf in ("M15", "H1", "H4", "D1"):
                 if tf in market_data and isinstance(market_data[tf], dict):
                     if price_type in market_data[tf]:
                         data = market_data[tf][price_type]
@@ -869,7 +869,7 @@ class SeasonalityRiskExpert(VotingExpertBase):
             sym_block = historical.get(symbol)
             if isinstance(sym_block, dict):
                 tf_rec = None
-                for tf in ("H4", "H1", "D1"):
+                for tf in ("M15", "H4", "H1", "D1"):
                     candidate = sym_block.get(tf)
                     if isinstance(candidate, dict):
                         tf_rec = candidate

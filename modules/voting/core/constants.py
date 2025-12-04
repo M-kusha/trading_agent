@@ -96,22 +96,23 @@ class VotingQuality(str, Enum):
 _VOTING_MODE: str = "TRAINING"  # "LIVE" or "TRAINING"
 
 # ───────────────────────────────────────────────────────────────────
-# LIVE MODE THRESHOLDS (Conservative - protect capital)
+# LIVE MODE THRESHOLDS (Conservative - quality signals only)
+# Target: 3-5 trades per day with good expert consensus
 # ───────────────────────────────────────────────────────────────────
 _LIVE_THRESHOLDS: Dict[str, float] = {
-    # Confidence (high requirements)
-    "CONFIDENCE_THRESHOLD": 0.45,
-    "HIGH_CONFIDENCE_THRESHOLD": 0.80,
-    "MIN_SIGNAL_STRENGTH": 0.25,
+    # Confidence (high requirements - only trade when experts are confident)
+    "CONFIDENCE_THRESHOLD": 0.55,       # Requires 55%+ confidence
+    "HIGH_CONFIDENCE_THRESHOLD": 0.78,  # High confidence bonus threshold
+    "MIN_SIGNAL_STRENGTH": 0.32,        # Need decent signal magnitude
 
-    # Consensus (strong agreement required)
-    "CONSENSUS_THRESHOLD": 0.70,
-    "STRONG_CONSENSUS_THRESHOLD": 0.85,
-    "WEAK_CONSENSUS_THRESHOLD": 0.50,
+    # Consensus (good agreement required - experts should align)
+    "CONSENSUS_THRESHOLD": 0.70,        # Need 70% expert agreement (100% when 2 agree)
+    "STRONG_CONSENSUS_THRESHOLD": 0.85, # Strong consensus for best trades
+    "WEAK_CONSENSUS_THRESHOLD": 0.55,   # Weak consensus threshold
 
-    # Arbiter (strict filtering)
-    "ARBITER_CONFIDENCE_FLOOR": 0.40,
-    "ARBITER_INTENSITY_FLOOR": 0.30,
+    # Arbiter (moderate filtering - final gate)
+    "ARBITER_CONFIDENCE_FLOOR": 0.48,   # Arbiter confidence floor
+    "ARBITER_INTENSITY_FLOOR": 0.38,    # Intensity/conviction floor
 }
 
 # ───────────────────────────────────────────────────────────────────
@@ -143,10 +144,15 @@ def set_voting_mode(mode: str) -> None:
               "TRAINING" for exploratory learning mode
     """
     global _VOTING_MODE
+    old_mode = _VOTING_MODE
     mode = (mode or "").upper().strip()
     if mode not in ("LIVE", "TRAINING"):
         mode = "TRAINING"  # Default to exploratory mode
     _VOTING_MODE = mode
+    # Log mode changes for debugging
+    import logging
+    logger = logging.getLogger("voting.constants")
+    logger.warning(f"[VOTING MODE] Changed from {old_mode} → {_VOTING_MODE}")
 
 
 def get_voting_mode() -> str:

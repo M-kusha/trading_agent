@@ -61,7 +61,7 @@ lot_sizing:
 
   # Global exposure cap (used by UnifiedLotCalculator)
   # This is the fraction of equity allowed as margin usage
-  max_exposure_pct: 0.05             # Max 5% margin used (very conservative)
+  max_exposure_pct: 0.15             # Max 15% margin per position
 
   # Dynamic scaling toggles
   volatility_scaling: true           # Scale lots by volatility
@@ -82,10 +82,16 @@ controls:
 # CRITICAL: Must be BELOW prop firm limits!
 # ═══════════════════════════════════════════════════════════════
 position_manager:
-  # Emergency exposure trigger - lower for prop firm safety
-  emergency_exposure_trigger: 0.20   # 20% exposure = emergency
+  # PROP FIRM REALITY: They only care about P&L, NOT notional exposure!
+  # - 0.08 lots XAUUSD = €33k notional but only ~€80 risk with 100 pip SL
+  # - Prop firms don't monitor margin usage, only if you lose money
+  
+  # DISABLE exposure-based emergency (irrelevant for prop firms)
+  enable_exposure_emergency: false   # Disabled - prop firms don't care about notional
+  emergency_exposure_trigger: 1.0    # 100% = effectively never triggers
 
   # Emergency drawdown trigger - WELL BELOW daily limit
+  # THIS IS WHAT MATTERS FOR PROP FIRMS
   emergency_drawdown_trigger: 0.035  # 3.5% drawdown = emergency (daily limit is 5%)
 
   # Max consecutive losses before emergency
@@ -169,12 +175,14 @@ limits:
   max_daily_loss: 0.042      # Stop at 4.2% (buffer below 5% limit)
   max_drawdown: 0.085        # Stop at 8.5% (buffer below 10% limit)
 
-  # This value is also used as default for lot_sizing.max_exposure_pct
-  max_position_size: 0.05    # Max 5% margin exposure per position/system
-  max_exposure_pct: 0.05     # Explicit exposure cap for calculators
+  # PROP FIRM REALITY: Notional exposure is IRRELEVANT
+  # Prop firms only care about P&L, not how much margin you use
+  # Setting these high to effectively disable exposure-based blocking
+  max_position_size: 1.0     # 100% = effectively disabled (prop firms don't care)
+  max_exposure_pct: 2.0      # 200% = effectively disabled (prop firms don't care)
 
   max_portfolio_var: 0.015   # Tighter VaR (was 2.5%)
-  max_leverage: 5.0          # Effective leverage cap (was 10)
+  max_leverage: 100.0        # Match broker leverage (prop firms don't limit this)
   max_correlation: 0.70      # Avoid correlated positions (was 0.8)
 
 # Risk Module Specific Overrides

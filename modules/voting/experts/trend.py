@@ -52,9 +52,13 @@ class TrendExpert(VotingExpertBase):
         self.instruments = self.config.get("instruments", ["EURUSD", "XAUUSD"])
 
         # Triple MA configuration
+        # Use a slower long MA so TrendExpert only becomes active once
+        # we have substantially more than 50 bars of history (via MT5/MarketDataProvider).
         self.fast_period = int(self.config.get("fast_period", 8))
         self.medium_period = int(self.config.get("medium_period", 21))
-        self.slow_period = int(self.config.get("slow_period", 55))
+        # Default was 55; bump to 90 so the effective minimum bars (slow_period + 10)
+        # is ~100, matching the broader architecture's 100-bar windows.
+        self.slow_period = int(self.config.get("slow_period", 90))
 
         # ADX configuration
         self.adx_period = int(self.config.get("adx_period", 14))
@@ -86,6 +90,13 @@ class TrendExpert(VotingExpertBase):
 
         # Risk / signal caps
         self.max_signal_strength = float(self.config.get("max_signal_strength", 1.0))
+
+        # Multi-timeframe configuration (NEW: confirm H1 signals with H4/D1, M15 for micro-structure)
+        self.use_mtf_confirmation = bool(self.config.get("use_mtf_confirmation", True))
+        self.mtf_timeframes = ["M15", "H1", "H4", "D1"]  # M15 micro, H1 primary, H4/D1 confirmations
+        self.mtf_weights = {"M15": 0.15, "H1": 0.35, "H4": 0.30, "D1": 0.20}  # Weight for each TF
+        self.mtf_agreement_bonus = 0.15  # Confidence bonus when all TFs agree
+        self.mtf_disagreement_penalty = 0.20  # Confidence penalty when TFs disagree
 
         # ═══════════════════════════ PER-INSTRUMENT STATE ═══════════════════════════
         self.instrument_state: Dict[str, Dict[str, Any]] = {}
@@ -932,9 +943,60 @@ class TrendExpert(VotingExpertBase):
                         )
                     )
 
+                    # ═══════════════════════════════════════════════════════════════
+                    # MULTI-TIMEFRAME CONFIRMATION (NEW)
+                    # Check if higher timeframes (H4, D1) agree with the H1 signal
+                    # ═══════════════════════════════════════════════════════════════
+                    mtf_adjustment = 0.0
+                    mtf_info = ""
+                    
+                    if self.use_mtf_confirmation and action in ("long", "short"):
+                        mtf_analysis = self._analyze_multi_timeframe_trend(inst)
+                        
+                        if mtf_analysis.get("available"):
+                            dominant = mtf_analysis.get("dominant_direction", "neutral")
+                            alignment = mtf_analysis.get("alignment_score", 0.5)
+                            
+                            # Check if signal direction matches MTF dominant direction
+                            signal_is_bullish = action == "long"
+                            mtf_is_bullish = dominant == "bullish"
+                            mtf_is_bearish = dominant == "bearish"
+                            
+                            if signal_is_bullish and mtf_is_bullish:
+                                # LONG signal confirmed by higher timeframes - boost confidence
+                                mtf_adjustment = self.mtf_agreement_bonus * alignment
+                                mtf_info = f"MTF CONFIRMED ↑ (align={alignment:.2f})"
+                            elif not signal_is_bullish and mtf_is_bearish:
+                                # SHORT signal confirmed by higher timeframes - boost confidence
+                                mtf_adjustment = self.mtf_agreement_bonus * alignment
+                                mtf_info = f"MTF CONFIRMED ↓ (align={alignment:.2f})"
+                            elif (signal_is_bullish and mtf_is_bearish) or (not signal_is_bullish and mtf_is_bullish):
+                                # Signal CONTRADICTS higher timeframes - penalize heavily
+                                mtf_adjustment = -self.mtf_disagreement_penalty * alignment
+                                mtf_info = f"MTF DISAGREES (align={alignment:.2f})"
+                                # If strong disagreement, consider flipping to flat
+                                if alignment >= 0.7:
+                                    action = "flat"
+                                    confidence = 0.15
+                                    signal_strength = 0.05
+                                    current_trend = "mtf_conflict"
+                                    mtf_info = f"MTF OVERRIDE → flat (HTF disagrees strongly)"
+                            else:
+                                # Neutral HTF - slight reduction
+                                mtf_adjustment = -0.05
+                                mtf_info = f"MTF neutral (no confirmation)"
+                            
+                            # Apply MTF adjustment to confidence
+                            confidence = max(0.1, min(0.95, confidence + mtf_adjustment))
+                            
+                            # Store MTF info in analysis
+                            per_instrument_analysis[inst_norm] = per_instrument_analysis.get(inst_norm, {})
+                            per_instrument_analysis[inst_norm]["mtf_analysis"] = mtf_analysis
+                            per_instrument_analysis[inst_norm]["mtf_adjustment"] = mtf_adjustment
+
                     thesis = (
                         f"{inst_norm}: {current_trend} → {action} "
-                        f"(ADX={adx_value:.1f}, conf={confidence:.2f})"
+                        f"(ADX={adx_value:.1f}, conf={confidence:.2f}) {mtf_info}"
                     )
 
                     per_instrument_vote.set_proposal(
@@ -1140,7 +1202,7 @@ class TrendExpert(VotingExpertBase):
                 if isinstance(data, (list, np.ndarray)):
                     return np.array(data, dtype=float)
 
-            for tf in ["H1", "H4", "D1"]:
+            for tf in ["M15", "H1", "H4", "D1"]:
                 if tf in market_data and isinstance(market_data[tf], dict):
                     if price_type in market_data[tf]:
                         data = market_data[tf][price_type]
@@ -1171,7 +1233,7 @@ class TrendExpert(VotingExpertBase):
             if matched_symbol and matched_symbol in historical:
                 sym_block = historical[matched_symbol]
                 if isinstance(sym_block, dict):
-                    for tf in ["H4", "H1", "D1"]:
+                    for tf in ["M15", "H4", "H1", "D1"]:
                         tf_rec = sym_block.get(tf)
                         if isinstance(tf_rec, dict):
                             seq = tf_rec.get(price_type)
@@ -1271,6 +1333,203 @@ class TrendExpert(VotingExpertBase):
             bearish_score += sr_weight * 0.8
 
         return bullish_score, bearish_score, total_weight
+
+    def _analyze_multi_timeframe_trend(
+        self,
+        instrument: str,
+    ) -> Dict[str, Any]:
+        """
+        Analyze trend direction across multiple timeframes (H1, H4, D1).
+        
+        Returns trend direction and strength for each timeframe, plus
+        an alignment score indicating how well the timeframes agree.
+        
+        This is critical for quality signals:
+        - If H1 says LONG but H4/D1 say SHORT, don't trust the H1 signal
+        - If all timeframes agree, boost confidence significantly
+        """
+        name = self.__class__.__name__
+        inst_norm = normalize_instrument(instrument)
+        
+        mtf_trends: Dict[str, Dict[str, Any]] = {}
+        
+        try:
+            historical = self.smart_bus.get("historical_prices", name, default=None)
+        except Exception:
+            historical = None
+        
+        if not isinstance(historical, dict):
+            return {
+                "available": False,
+                "trends": {},
+                "alignment_score": 0.5,
+                "dominant_direction": "neutral",
+            }
+        
+        # Find the instrument in historical data
+        matched_symbol = None
+        for sym in historical.keys():
+            if normalize_instrument(sym) == inst_norm:
+                matched_symbol = sym
+                break
+        
+        if not matched_symbol or matched_symbol not in historical:
+            return {
+                "available": False,
+                "trends": {},
+                "alignment_score": 0.5,
+                "dominant_direction": "neutral",
+            }
+        
+        sym_block = historical[matched_symbol]
+        if not isinstance(sym_block, dict):
+            return {
+                "available": False,
+                "trends": {},
+                "alignment_score": 0.5,
+                "dominant_direction": "neutral",
+            }
+        
+        # Analyze each timeframe
+        for tf in self.mtf_timeframes:
+            tf_data = sym_block.get(tf)
+            if not isinstance(tf_data, dict):
+                continue
+            
+            close_arr = tf_data.get("close")
+            if not isinstance(close_arr, (list, np.ndarray)) or len(close_arr) < self.slow_period + 5:
+                continue
+            
+            prices = np.array(close_arr, dtype=float)
+            
+            # Calculate simple trend indicators for this timeframe
+            # Use EMA-based trend detection
+            fast_ma = self._ema(prices, min(self.fast_period, len(prices) - 1))
+            slow_ma = self._ema(prices, min(self.slow_period, len(prices) - 1))
+            
+            if fast_ma <= 0 or slow_ma <= 0:
+                continue
+            
+            # Trend direction: fast MA vs slow MA
+            ma_spread = (fast_ma - slow_ma) / slow_ma
+            current_price = float(prices[-1])
+            price_vs_slow = (current_price - slow_ma) / slow_ma if slow_ma > 0 else 0
+            
+            # Simple slope (last 10 bars or available)
+            slope_period = min(10, len(prices) - 1)
+            if slope_period > 1:
+                slope = (prices[-1] - prices[-slope_period]) / prices[-slope_period]
+            else:
+                slope = 0.0
+            
+            # Determine direction: bullish, bearish, or neutral
+            bullish_signals = 0
+            bearish_signals = 0
+            
+            if ma_spread > 0.001:  # Fast above slow
+                bullish_signals += 1
+            elif ma_spread < -0.001:
+                bearish_signals += 1
+            
+            if price_vs_slow > 0.002:  # Price above slow MA
+                bullish_signals += 1
+            elif price_vs_slow < -0.002:
+                bearish_signals += 1
+            
+            if slope > 0.001:
+                bullish_signals += 1
+            elif slope < -0.001:
+                bearish_signals += 1
+            
+            # Determine direction
+            if bullish_signals >= 2 and bullish_signals > bearish_signals:
+                direction = "bullish"
+                strength = min(1.0, abs(ma_spread) * 20 + abs(slope) * 10)
+            elif bearish_signals >= 2 and bearish_signals > bullish_signals:
+                direction = "bearish"
+                strength = min(1.0, abs(ma_spread) * 20 + abs(slope) * 10)
+            else:
+                direction = "neutral"
+                strength = 0.2
+            
+            mtf_trends[tf] = {
+                "direction": direction,
+                "strength": strength,
+                "ma_spread": ma_spread,
+                "slope": slope,
+                "price_vs_slow": price_vs_slow,
+            }
+        
+        if not mtf_trends:
+            return {
+                "available": False,
+                "trends": {},
+                "alignment_score": 0.5,
+                "dominant_direction": "neutral",
+            }
+        
+        # Calculate alignment score
+        directions = [t["direction"] for t in mtf_trends.values()]
+        bullish_count = directions.count("bullish")
+        bearish_count = directions.count("bearish")
+        total_tf = len(directions)
+        
+        # Weighted alignment calculation
+        weighted_bullish = sum(
+            self.mtf_weights.get(tf, 0.33) 
+            for tf, trend in mtf_trends.items() 
+            if trend["direction"] == "bullish"
+        )
+        weighted_bearish = sum(
+            self.mtf_weights.get(tf, 0.33) 
+            for tf, trend in mtf_trends.items() 
+            if trend["direction"] == "bearish"
+        )
+        
+        # Alignment score: how much the timeframes agree
+        # 1.0 = all agree, 0.0 = completely mixed
+        if bullish_count == total_tf:
+            alignment_score = 1.0
+            dominant = "bullish"
+        elif bearish_count == total_tf:
+            alignment_score = 1.0
+            dominant = "bearish"
+        elif bullish_count > bearish_count:
+            alignment_score = bullish_count / total_tf
+            dominant = "bullish" if weighted_bullish > weighted_bearish else "neutral"
+        elif bearish_count > bullish_count:
+            alignment_score = bearish_count / total_tf
+            dominant = "bearish" if weighted_bearish > weighted_bullish else "neutral"
+        else:
+            alignment_score = 0.33
+            dominant = "neutral"
+        
+        # Log MTF analysis
+        self.log_debug(
+            f"[TREND MTF] {inst_norm}: " +
+            ", ".join(f"{tf}={t['direction']}" for tf, t in mtf_trends.items()) +
+            f" | alignment={alignment_score:.2f}, dominant={dominant}"
+        )
+        
+        return {
+            "available": True,
+            "trends": mtf_trends,
+            "alignment_score": alignment_score,
+            "dominant_direction": dominant,
+            "weighted_bullish": weighted_bullish,
+            "weighted_bearish": weighted_bearish,
+        }
+    
+    def _ema(self, prices: np.ndarray, period: int) -> float:
+        """Calculate EMA for the given period."""
+        if len(prices) < period or period < 1:
+            return float(prices[-1]) if len(prices) > 0 else 0.0
+        
+        multiplier = 2.0 / (period + 1)
+        ema = float(prices[0])
+        for price in prices[1:]:
+            ema = (float(price) - ema) * multiplier + ema
+        return ema
 
     def _determine_trend_action(
         self,

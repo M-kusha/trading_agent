@@ -187,7 +187,7 @@ class SimpleConfig:
 
         # ═════ Data settings ═════
         self.instruments = kwargs.get("instruments", ["EUR_USD", "XAU_USD"])
-        self.timeframes = kwargs.get("timeframes", ["H1", "H4", "D1"])
+        self.timeframes = kwargs.get("timeframes", ["M15", "H1", "H4", "D1"])
 
         # Execution (no fees for pure exploration beyond spread/slippage)
         self.default_spread = 0.0
@@ -570,7 +570,7 @@ class SimpleTradingEnv(gym.Env):
 
         # Multi-TF market features (unchanged from v1)
         for inst in self.instruments:
-            for tf in ["H1", "H4", "D1"]:
+            for tf in ["M15", "H1", "H4", "D1"]:
                 if tf not in self.data[inst]:
                     features.extend([0.0] * 10)
                     continue

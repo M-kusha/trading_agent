@@ -414,7 +414,7 @@ class ModernTradingEnv(gym.Env):
         step = int(self.current_step)
         aggregated: Dict[str, Dict[str, Any]] = {}
         for instrument in self.instruments:
-            for timeframe in ["H1", "H4", "D1"]:
+            for timeframe in ["M15", "H1", "H4", "D1"]:
                 try:
                     if timeframe not in self.data[instrument]:
                         continue
@@ -878,7 +878,7 @@ class ModernTradingEnv(gym.Env):
         ])
 
         for instrument in self.instruments:
-            for timeframe in ["H1", "H4", "D1"]:
+            for timeframe in ["M15", "H1", "H4", "D1"]:
                 if timeframe in self.data[instrument]:
                     df = self.data[instrument][timeframe]
                     if self.current_step < len(df):
@@ -916,7 +916,11 @@ class ModernTradingEnv(gym.Env):
                     feats.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
 
         for instrument in self.instruments:
-            h1 = h4 = d1 = 0.0
+            m15 = h1 = h4 = d1 = 0.0
+            if "M15" in self.data[instrument] and 5 <= self.current_step < len(self.data[instrument]["M15"]):
+                df = self.data[instrument]["M15"]
+                cur, past = float(df["close"].iloc[self.current_step]), float(df["close"].iloc[self.current_step - 5])
+                m15 = (cur - past) / max(abs(past), 1e-12)
             if "H1" in self.data[instrument] and 5 <= self.current_step < len(self.data[instrument]["H1"]):
                 df = self.data[instrument]["H1"]
                 cur, past = float(df["close"].iloc[self.current_step]), float(df["close"].iloc[self.current_step - 5])
@@ -929,7 +933,7 @@ class ModernTradingEnv(gym.Env):
                 df = self.data[instrument]["D1"]
                 cur, past = float(df["close"].iloc[self.current_step]), float(df["close"].iloc[self.current_step - 5])
                 d1 = (cur - past) / max(abs(past), 1e-12)
-            feats.extend([h1, h4, d1, 1.0 if (h1 > 0 and h4 > 0 and d1 > 0) else 0.0, 1.0 if (h1 < 0 and h4 < 0 and d1 < 0) else 0.0])
+            feats.extend([m15, h1, h4, d1, 1.0 if (m15 > 0 and h1 > 0 and h4 > 0 and d1 > 0) else 0.0, 1.0 if (m15 < 0 and h1 < 0 and h4 < 0 and d1 < 0) else 0.0])
 
         # Add prop firm features (AI needs to see how close to limits)
         prop_firm_feats = self._get_prop_firm_observation_features()

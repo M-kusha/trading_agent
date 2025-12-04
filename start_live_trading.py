@@ -254,7 +254,7 @@ class LiveTradingLauncher:
             url = f"{self.backend_url}/api/trading/start"
             payload = {
                 "instruments": self.instruments,
-                "timeframes": ["H1", "H4", "D1"],
+                "timeframes": ["M15", "H1", "H4", "D1"],
                 "update_interval": 5,
                 "max_position_size": 0.05,
                 "max_total_exposure": 0.30,

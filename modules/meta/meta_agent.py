@@ -37,6 +37,8 @@ class MetaMode(Enum):
     TRAINING = "training"
     VALIDATION = "validation"
     LIVE_TRADING = "live_trading"
+    PAPER_TRADING = "paper_trading"
+    BACKTESTING = "backtesting"
     RETRAINING = "retraining"
     EVALUATION = "evaluation"
     EMERGENCY_STOP = "emergency_stop"
@@ -532,6 +534,17 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
             self._record_success(processing_time)
 
             # Ensure returned payload complies with provides contract and includes success
+            # Derive active_strategy from current mode
+            strategy_map = {
+                MetaMode.LIVE_TRADING: "live_trading",
+                MetaMode.PAPER_TRADING: "paper_trading",
+                MetaMode.BACKTESTING: "backtesting",
+                MetaMode.TRAINING: "training",
+                MetaMode.EMERGENCY_STOP: "emergency_stop",
+            }
+            active_strategy = strategy_map.get(self.current_mode, "unknown")
+            auto_mode = self.automation_score > 0.5 and self.system_confidence >= self.C.confidence_threshold
+            
             result.update(
                 {
                     "automation_decisions": automation_data,
@@ -542,6 +555,9 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
                     "MetaAgent_voting_proposal": proposal,
                     "MetaAgent_confidence": float(conf),
                     "voting": {"proposal": proposal, "confidence": conf},
+                    # FIX: Add contract-required active_strategy and auto_mode
+                    "active_strategy": active_strategy,
+                    "auto_mode": auto_mode,
                     "_thesis": thesis,
                     "success": True,
                 }
@@ -1340,6 +1356,32 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
                 thesis="Meta agent performance tracking and system health metrics",
             )
 
+            # FIX: Add active_strategy for VotingKernel and other consumers
+            # Derive strategy name from current mode
+            strategy_map = {
+                MetaMode.LIVE_TRADING: "live_trading",
+                MetaMode.PAPER_TRADING: "paper_trading", 
+                MetaMode.BACKTESTING: "backtesting",
+                MetaMode.TRAINING: "training",
+                MetaMode.EMERGENCY_STOP: "emergency_stop",
+            }
+            active_strategy = strategy_map.get(self.current_mode, "unknown")
+            self.smart_bus.set(
+                "active_strategy",
+                active_strategy,
+                module="MetaAgent",
+                thesis=f"Current active strategy: {active_strategy} based on system mode",
+            )
+            
+            # FIX: Add auto_mode flag for components that check automation state
+            auto_mode = self.automation_score > 0.5 and self.system_confidence >= self.C.confidence_threshold
+            self.smart_bus.set(
+                "auto_mode",
+                auto_mode,
+                module="MetaAgent", 
+                thesis=f"Auto-mode {'enabled' if auto_mode else 'disabled'} (automation_score={self.automation_score:.2f}, confidence={self.system_confidence:.2f})",
+            )
+
         except Exception as e:
             self.logger.error(f"Failed to update SmartInfoBus: {e}")
 
@@ -1421,6 +1463,9 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
             # Contract: expose flat voting keys in return payload
             "MetaAgent_voting_proposal": current_vote,
             "MetaAgent_confidence": float(current_conf),
+            # FIX: Add contract-required active_strategy and auto_mode
+            "active_strategy": "unknown",
+            "auto_mode": False,
             "_thesis": thesis,
             "success": True,
             "fallback_reason": "no_meta_data",
@@ -1533,6 +1578,9 @@ class MetaAgent(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, Sma
             # Contract: expose flat voting keys in return payload
             "MetaAgent_voting_proposal": current_vote,
             "MetaAgent_confidence": float(current_conf),
+            # FIX: Add contract-required active_strategy and auto_mode
+            "active_strategy": "emergency_stop",
+            "auto_mode": False,
             "_thesis": thesis,
             "success": False,
             "circuit_breaker_state": self.circuit_breaker["state"],

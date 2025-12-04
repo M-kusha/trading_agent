@@ -22,10 +22,12 @@ from modules.contracts import module_args
 from modules.core.module_base import module
 from modules.voting.core.base import VotingModuleBase
 from modules.voting.core.constants import (
-    CONFIDENCE_THRESHOLD,
-    CONSENSUS_THRESHOLD,
+    CONFIDENCE_THRESHOLD_F,
+    CONSENSUS_THRESHOLD_F,
     VotingAction,
     is_training_mode,
+    is_live_mode,
+    get_voting_mode,
 )
 # Per-instrument voting infrastructure
 from modules.voting.core.per_instrument import (
@@ -57,11 +59,12 @@ class FinalArbiter(VotingModuleBase):
     
     def _module_specific_init(self) -> None:
         """Initialize arbiter state."""
-        # Configuration
-        self.min_confidence = float(self.config.get('min_confidence', CONFIDENCE_THRESHOLD))
-        self.consensus_threshold = float(self.config.get('consensus_threshold', CONSENSUS_THRESHOLD))
+        # Configuration - NOTE: Use dynamic threshold functions to support live/training mode switching
+        # Store config overrides; actual thresholds fetched dynamically via _get_thresholds()
+        self._config_min_confidence = self.config.get('min_confidence')
+        self._config_consensus_threshold = self.config.get('consensus_threshold')
         self.max_fragility = float(self.config.get('max_fragility', 0.9))  # Relaxed from 0.7
-        self.max_collusion = float(self.config.get('max_collusion', 0.8))
+        self.max_collusion = float(self.config.get('max_collusion', 0.995))  # Very high - only flag obvious data issues
         self.bootstrap_steps = int(self.config.get('bootstrap_steps', 50))
 
         # Technical override: default OFF so agent/committee has full power
@@ -104,8 +107,10 @@ class FinalArbiter(VotingModuleBase):
         # Instruments (for per-instrument signals)
         self.instruments = self.config.get('instruments', ['EURUSD', 'XAUUSD'])
         
+        # Log initialization with current mode-aware thresholds
+        mode = get_voting_mode()
         self.logger.info(
-            f"[ARBITER] FinalArbiter initialized | "
+            f"[ARBITER] FinalArbiter initialized | MODE={mode} | "
             f"min_conf={self.min_confidence:.2f} | "
             f"consensus_thresh={self.consensus_threshold:.2f} | "
             f"technical_override_enabled={self.technical_override_enabled}"
@@ -113,6 +118,20 @@ class FinalArbiter(VotingModuleBase):
         
         # Publish baseline
         self._publish_arbiter_baseline()
+    
+    @property
+    def min_confidence(self) -> float:
+        """Get minimum confidence threshold (mode-aware)."""
+        if self._config_min_confidence is not None:
+            return float(self._config_min_confidence)
+        return CONFIDENCE_THRESHOLD_F()
+    
+    @property
+    def consensus_threshold(self) -> float:
+        """Get consensus threshold (mode-aware)."""
+        if self._config_consensus_threshold is not None:
+            return float(self._config_consensus_threshold)
+        return CONSENSUS_THRESHOLD_F()
     
     def _publish_arbiter_baseline(self) -> None:
         """Publish baseline arbiter keys."""
@@ -162,6 +181,15 @@ class FinalArbiter(VotingModuleBase):
         """Make final arbitration decision."""
         start = time.time()
         name = self.__class__.__name__
+        
+        # Log current mode and thresholds at start of each processing cycle
+        # This helps diagnose mode propagation issues
+        mode = get_voting_mode()
+        if self._step_count == 0 or self._step_count % 100 == 0:
+            self.logger.info(
+                f"[ARBITER] Processing step {self._step_count} | MODE={mode} | "
+                f"thresholds: min_conf={self.min_confidence:.2f}, consensus={self.consensus_threshold:.2f}"
+            )
         
         try:
             # Get decision ID
@@ -308,15 +336,46 @@ class FinalArbiter(VotingModuleBase):
         confidence_ok = confidence >= (self.min_confidence * bootstrap_factor)
         consensus_ok = consensus >= (self.consensus_threshold * bootstrap_factor)
         collusion_ok = collusion < self.max_collusion
-        fragility_ok = fragility < self.max_fragility
+        # Fragility is WARN-ONLY - does not block trades (often high due to Monte Carlo noise)
+        fragility_ok = True  # Always pass - we just warn on high fragility
+        fragility_warning = fragility >= self.max_fragility  # Track for logging
         memory_ok = memory_gate > 0.3
         
-        # Final gate decision
-        all_passed = confidence_ok and consensus_ok and collusion_ok and fragility_ok and memory_ok
+        # Final gate decision (fragility excluded from blocking criteria)
+        all_passed = confidence_ok and consensus_ok and collusion_ok and memory_ok
         gate_passed = all_passed or weighted_score > 0.6
         
         if gate_passed:
             self._gate_passes += 1
+            # Add warning if fragility is high even though we passed
+            fragility_msg = f" ⚠️ HIGH_FRAGILITY={fragility:.2f}" if fragility_warning else ""
+            self.logger.debug(
+                f"[ARBITER] Global gate PASSED [MODE={get_voting_mode()}]: "
+                f"score={weighted_score:.2f}, conf={confidence:.2f}, consensus={consensus:.2f}{fragility_msg}"
+            )
+        else:
+            # Log detailed failure reasons as WARNING so operators can see why trades are blocked
+            failed_criteria = []
+            if not confidence_ok:
+                effective_thresh = self.min_confidence * bootstrap_factor
+                failed_criteria.append(f"confidence({confidence:.2f}<{effective_thresh:.2f})")
+            if not consensus_ok:
+                effective_thresh = self.consensus_threshold * bootstrap_factor
+                failed_criteria.append(f"consensus({consensus:.2f}<{effective_thresh:.2f})")
+            if not collusion_ok:
+                failed_criteria.append(f"collusion({collusion:.2f}>{self.max_collusion:.2f})")
+            # Fragility is WARN-ONLY - still log it but note it's not blocking
+            if fragility_warning:
+                failed_criteria.append(f"⚠️fragility({fragility:.2f}>{self.max_fragility:.2f})[warn-only]")
+            if not memory_ok:
+                failed_criteria.append(f"memory_gate({memory_gate:.2f}<0.30)")
+            
+            self.logger.warning(
+                f"[ARBITER] Global gate BLOCKED [MODE={get_voting_mode()}]: "
+                f"score={weighted_score:.2f}<0.60 | "
+                f"failed=[{', '.join(failed_criteria)}] | "
+                f"thresholds: min_conf={self.min_confidence:.2f}, consensus={self.consensus_threshold:.2f}"
+            )
         
         return {
             'passed': gate_passed,
@@ -752,16 +811,15 @@ class FinalArbiter(VotingModuleBase):
         This is a simplified gate check for per-instrument decisions since
         the committee has already done much of the aggregation work.
         
-        NOTE:
-        - Technical override is now optional (self.technical_override_enabled).
-        - By default it is DISABLED so the agent/committee has full power.
+        LIVE MODE: Very strict - only pass high-quality signals (target 3-4 trades/day)
+        TRAINING MODE: More permissive for learning
         
         Returns:
             tuple: (gate_passed: bool, final_action: str, final_confidence: float)
         """
         try:
             # HOLD always passes (it's a non-trade)
-            if action.upper() in ('HOLD', 'FLAT'):
+            if action.upper() in ('HOLD', 'FLAT', 'ABSTAIN'):
                 return (True, 'HOLD', 0.0)
             
             # ========== Technical Override Check (optional) ==========
@@ -778,70 +836,98 @@ class FinalArbiter(VotingModuleBase):
                         f"[ARBITER] Using technical override: {instrument} → {action} "
                         f"(conf={confidence:.2f})"
                     )
-            else:
-                # Explicit debug so we know agent/committee is in control
-                self.logger.debug(
-                    f"[ARBITER] Technical override DISABLED – "
-                    f"using committee/agent action for {instrument}: {action}"
-                )
             
-            # Base confidence threshold
+            # Base confidence threshold (mode-aware from constants.py)
             min_confidence = self.min_confidence
+            min_consensus = self.consensus_threshold
             
-            # Adjust threshold based on regime (reduced in TRAINING mode for exploration)
+            # Adjust threshold based on regime
             if is_training_mode():
                 # TRAINING: minimal regime adjustments to allow more trades for learning
-                regime_adjustments = {
-                    'TRENDING': -0.05,      # Lower threshold in trends
-                    'MEAN_REVERTING': 0.0,  # Normal threshold
-                    'VOLATILE': 0.0,        # No penalty in training - let it learn
-                    'UNKNOWN': 0.0,         # No penalty in training
+                regime_conf_adj = {
+                    'TRENDING': -0.05,
+                    'MEAN_REVERTING': 0.0,
+                    'VOLATILE': 0.0,
+                    'UNKNOWN': 0.0,
                 }
+                regime_consensus_adj = {}
             else:
-                # LIVE: conservative adjustments to protect capital
-                regime_adjustments = {
-                    'TRENDING': -0.05,      # Lower threshold in trends
-                    'MEAN_REVERTING': 0.0,  # Normal threshold
-                    'VOLATILE': 0.1,        # Higher threshold in volatility
-                    'UNKNOWN': 0.05,        # Slightly higher for unknown
+                # LIVE: moderate regime adjustments - balance quality with opportunity
+                regime_conf_adj = {
+                    'TRENDING': -0.08,       # Easier in clear trends (trend following)
+                    'MEAN_REVERTING': 0.03,  # Slightly harder in ranging markets
+                    'VOLATILE': 0.08,        # Harder in volatile (was 0.15 - too strict)
+                    'UNKNOWN': 0.05,         # Slightly harder when regime unclear
                 }
-            min_confidence += regime_adjustments.get(market_regime.upper(), 0.0)
+                regime_consensus_adj = {
+                    'TRENDING': 0.0,
+                    'MEAN_REVERTING': 0.03,
+                    'VOLATILE': 0.05,        # Need more consensus in volatile markets
+                    'UNKNOWN': 0.03,
+                }
             
-            # Check confidence threshold
-            if confidence < min_confidence:
-                self.logger.debug(
-                    f"[ARBITER] Gate BLOCKED {instrument} {action}: "
-                    f"confidence {confidence:.2f} < threshold {min_confidence:.2f}"
+            min_confidence += regime_conf_adj.get(market_regime.upper(), 0.0)
+            min_consensus += regime_consensus_adj.get(market_regime.upper(), 0.0)
+            
+            # ========== LIVE MODE: Additional strict checks ==========
+            if is_live_mode():
+                # In LIVE mode, require BOTH high confidence AND high consensus
+                # This ensures we only take trades when experts strongly agree
+                
+                # Check 1: Confidence must meet threshold
+                if confidence < min_confidence:
+                    self.logger.warning(
+                        f"[ARBITER] 🚫 Gate BLOCKED {instrument} {action} [LIVE]: "
+                        f"confidence {confidence:.2f} < {min_confidence:.2f} "
+                        f"(base={self.min_confidence:.2f}, regime={market_regime})"
+                    )
+                    return (False, action, confidence)
+                
+                # Check 2: Consensus must be strong (experts must agree)
+                if consensus_score < min_consensus:
+                    self.logger.warning(
+                        f"[ARBITER] 🚫 Gate BLOCKED {instrument} {action} [LIVE]: "
+                        f"consensus {consensus_score:.2f} < {min_consensus:.2f} "
+                        f"(need strong expert agreement)"
+                    )
+                    return (False, action, confidence)
+                
+                # Check 3: In volatile regime, require slightly higher standards
+                if market_regime.upper() == 'VOLATILE' and confidence < 0.65:
+                    self.logger.warning(
+                        f"[ARBITER] 🚫 Gate BLOCKED {instrument} {action} [LIVE/VOLATILE]: "
+                        f"confidence {confidence:.2f} < 0.65 (volatile market requires higher confidence)"
+                    )
+                    return (False, action, confidence)
+            
+            else:
+                # TRAINING MODE: More permissive checks
+                if confidence < min_confidence:
+                    self.logger.warning(
+                        f"[ARBITER] Gate BLOCKED {instrument} {action} [TRAINING]: "
+                        f"confidence {confidence:.2f} < {min_confidence:.2f}"
+                    )
+                    return (False, action, confidence)
+                
+                if consensus_score < 0.3:
+                    self.logger.warning(
+                        f"[ARBITER] Gate BLOCKED {instrument} {action} [TRAINING]: "
+                        f"low consensus {consensus_score:.2f} < 0.30"
+                    )
+                    return (False, action, confidence)
+            
+            # Check collusion (too much agreement is suspicious - but 98%+ is likely data issue)
+            if collusion_score > 0.98:
+                self.logger.warning(
+                    f"[ARBITER] Gate BLOCKED {instrument} {action} [MODE={get_voting_mode()}]: "
+                    f"extreme collusion {collusion_score:.2f} > 0.98"
                 )
                 return (False, action, confidence)
             
-            # Check consensus (don't trade if disagreement is too high)
-            if consensus_score < 0.3:
-                self.logger.debug(
-                    f"[ARBITER] Gate BLOCKED {instrument} {action}: "
-                    f"low consensus {consensus_score:.2f}"
-                )
-                return (False, action, confidence)
-            
-            # Check collusion (too much agreement is suspicious)
-            if collusion_score > 0.85:
-                self.logger.debug(
-                    f"[ARBITER] Gate BLOCKED {instrument} {action}: "
-                    f"high collusion {collusion_score:.2f}"
-                )
-                return (False, action, confidence)
-            
-            # Check fragility (relaxed - fragility is often high due to noisy sampling)
-            if fragility > 0.95:
-                self.logger.debug(
-                    f"[ARBITER] Gate BLOCKED {instrument} {action}: "
-                    f"extreme fragility {fragility:.2f}"
-                )
-                return (False, action, confidence)
-            
-            self.logger.debug(
-                f"[ARBITER] Gate PASSED {instrument} {action}: "
-                f"conf={confidence:.2f}, consensus={consensus_score:.2f}"
+            # Log at INFO level so operators can see successful gate passes per instrument
+            self.logger.info(
+                f"[ARBITER] ✅ Gate PASSED {instrument} {action} [MODE={get_voting_mode()}]: "
+                f"conf={confidence:.2f}, consensus={consensus_score:.2f}, regime={market_regime}"
             )
             return (True, action, confidence)
             

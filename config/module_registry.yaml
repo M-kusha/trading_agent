@@ -713,6 +713,7 @@ modules:
     - intuition_vector
     - danger_zones
     - mistake_avoidance
+    - position_limits  # FIX: Ensures PortfolioRiskSystem runs first for dynamic limits
   PPOAgent:
     category: meta
     file_path: modules\meta\ppo_agent.py
@@ -927,9 +928,11 @@ modules:
     - indicators
     - liquidity_data
     - market_data
+    - market_data_EUR_USD_M15
     - market_data_EUR_USD_D1
     - market_data_EUR_USD_H1
     - market_data_EUR_USD_H4
+    - market_data_XAU_USD_M15
     - market_data_XAU_USD_D1
     - market_data_XAU_USD_H1
     - market_data_XAU_USD_H4

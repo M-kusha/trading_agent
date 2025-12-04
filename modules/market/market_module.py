@@ -806,6 +806,47 @@ class UnifiedMarketModule(
                         if isinstance(aggregated.get('_metadata'), dict) else [],
                 }
 
+            # FIX: Add missing per-instrument regime and analysis keys for downstream consumers
+            # market_regime_by_instrument - used by HorizonAligner
+            if 'market_regime_by_instrument' not in aggregated:
+                regime = aggregated.get('market_regime', 'unknown')
+                universe = aggregated.get('universe') or aggregated.get('watched_instruments') or ['EUR/USD', 'XAU/USD']
+                if not isinstance(universe, list):
+                    universe = ['EUR/USD', 'XAU/USD']
+                aggregated['market_regime_by_instrument'] = {
+                    inst.replace("/", "_").replace(" ", "_"): regime
+                    for inst in universe
+                }
+            
+            # regime_probabilities - probabilities for each regime state
+            aggregated.setdefault('regime_probabilities', {
+                'trending': float(aggregated.get('regime_strength', 0.3)),
+                'ranging': 1.0 - float(aggregated.get('regime_strength', 0.3)),
+                'volatile': float(aggregated.get('volatility_adjustment', 1.0)) / 2.0,
+            })
+            
+            # market_themes - active market themes/narratives
+            aggregated.setdefault('market_themes', {
+                'active_theme': int(aggregated.get('market_theme', 0)),
+                'theme_strength': float(aggregated.get('theme_strength', 0.0)),
+                'detected_patterns': [],
+            })
+            
+            # market_sentiment - overall sentiment analysis
+            aggregated.setdefault('market_sentiment', {
+                'direction': 'neutral' if abs(float(aggregated.get('trend_direction', 0.0))) < 0.3 else ('bullish' if float(aggregated.get('trend_direction', 0.0)) > 0 else 'bearish'),
+                'strength': abs(float(aggregated.get('trend_direction', 0.0))),
+                'confidence': float(aggregated.get('regime_strength', 0.5)),
+            })
+            
+            # volatility_analysis - comprehensive volatility metrics
+            aggregated.setdefault('volatility_analysis', {
+                'current_level': aggregated.get('volatility_level', 'medium'),
+                'adjustment_factor': float(aggregated.get('volatility_adjustment', 1.0)),
+                'historical_percentile': 0.5,
+                'regime_volatility': float(aggregated.get('regime_strength', 0.5)),
+            })
+
             return aggregated
         except Exception:
             # Ensure ALL critical keys are present even on error (full contract compliance)

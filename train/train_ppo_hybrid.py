@@ -208,7 +208,7 @@ class OrchestratorDataProvider:
         bus = InfoBusManager.get_instance()
         data: Dict[str, Dict[str, pd.DataFrame]] = {}
         instruments = getattr(config, "instruments", []) or []
-        timeframes = getattr(config, "timeframes", None) or ["H1", "H4", "D1"]
+        timeframes = getattr(config, "timeframes", None) or ["M15", "H1", "H4", "D1"]
         missing = []
         # Treat very short bus series as unusable for training; fall back to files for those
         min_bus_len = 100  # threshold to avoid 3-5 step episodes when bus publishes tiny windows

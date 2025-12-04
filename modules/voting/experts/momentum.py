@@ -75,6 +75,9 @@ class MomentumExpert(VotingExpertBase):
         self.instruments = self.config.get('instruments', ['EURUSD', 'XAUUSD'])
         
         # ROC periods for multi-scale analysis
+        # Keep 50-bar ROC but treat it as a true long-term window; combined with the
+        # per-instrument min-length gate (max_roc_period + 5), this means MomentumExpert
+        # only becomes active once we have comfortably more than 50 bars of history.
         self.roc_periods = [5, 10, 20, 50]
         self.roc_weights = [0.35, 0.30, 0.20, 0.15]  # Short-term weighted higher
         
@@ -109,6 +112,13 @@ class MomentumExpert(VotingExpertBase):
         # final filtering happens in VotingExpertBase._postprocess_proposal_for_voting
         self.min_confluence_score = float(self.config.get('min_confluence', 0.15))
         self.strong_signal_confluence = float(self.config.get('strong_confluence', 0.5))
+        
+        # Multi-timeframe configuration (NEW: M15 micro, H1 primary, H4/D1 confirmations)
+        self.use_mtf_confirmation = bool(self.config.get('use_mtf_confirmation', True))
+        self.mtf_timeframes = ['M15', 'H1', 'H4', 'D1']  # M15 micro, H1 primary, H4/D1 confirm
+        self.mtf_weights = {'M15': 0.15, 'H1': 0.35, 'H4': 0.30, 'D1': 0.20}  # Weight for each TF
+        self.mtf_agreement_bonus = 0.12  # Confidence bonus when all TFs agree
+        self.mtf_disagreement_penalty = 0.18  # Confidence penalty when TFs disagree
         
         # Per-instrument state
         self.instrument_state: Dict[str, Dict[str, Any]] = {}
@@ -465,7 +475,7 @@ class MomentumExpert(VotingExpertBase):
                 if isinstance(data, (list, np.ndarray)):
                     return np.array(data, dtype=float)
             # nested by timeframe
-            for tf in ['H1', 'H4', 'D1']:
+            for tf in ['M15', 'H1', 'H4', 'D1']:
                 if tf in market_data and isinstance(market_data[tf], dict):
                     if price_type in market_data[tf]:
                         data = market_data[tf][price_type]
@@ -498,7 +508,7 @@ class MomentumExpert(VotingExpertBase):
             if matched_symbol and matched_symbol in historical:
                 sym_block = historical[matched_symbol]
                 if isinstance(sym_block, dict):
-                    for tf in ["H4", "H1", "D1"]:
+                    for tf in ["M15", "H4", "H1", "D1"]:
                         tf_rec = sym_block.get(tf)
                         if isinstance(tf_rec, dict):
                             seq = tf_rec.get(price_type)
@@ -627,6 +637,176 @@ class MomentumExpert(VotingExpertBase):
             confidence = 0.2
         
         return action, float(np.clip(confidence, 0.15, 0.95)), float(signal_strength)
+
+    def _analyze_multi_timeframe_momentum(
+        self,
+        instrument: str,
+    ) -> Dict[str, Any]:
+        """
+        Analyze momentum direction across multiple timeframes (H1, H4, D1).
+        
+        Returns momentum direction for each timeframe, plus alignment score.
+        This helps confirm H1 momentum signals with higher timeframes.
+        """
+        name = self.__class__.__name__
+        inst_norm = normalize_instrument(instrument)
+        
+        mtf_momentum: Dict[str, Dict[str, Any]] = {}
+        
+        try:
+            historical = self.smart_bus.get('historical_prices', name, default=None)
+        except Exception:
+            historical = None
+        
+        if not isinstance(historical, dict):
+            return {
+                'available': False,
+                'momentum': {},
+                'alignment_score': 0.5,
+                'dominant_direction': 'neutral',
+            }
+        
+        # Find instrument in historical data
+        matched_symbol = None
+        for sym in historical.keys():
+            if normalize_instrument(sym) == inst_norm:
+                matched_symbol = sym
+                break
+        
+        if not matched_symbol or matched_symbol not in historical:
+            return {
+                'available': False,
+                'momentum': {},
+                'alignment_score': 0.5,
+                'dominant_direction': 'neutral',
+            }
+        
+        sym_block = historical[matched_symbol]
+        if not isinstance(sym_block, dict):
+            return {
+                'available': False,
+                'momentum': {},
+                'alignment_score': 0.5,
+                'dominant_direction': 'neutral',
+            }
+        
+        # Analyze momentum for each timeframe
+        for tf in self.mtf_timeframes:
+            tf_data = sym_block.get(tf)
+            if not isinstance(tf_data, dict):
+                continue
+            
+            close_arr = tf_data.get('close')
+            if not isinstance(close_arr, (list, np.ndarray)) or len(close_arr) < 20:
+                continue
+            
+            prices = np.array(close_arr, dtype=float)
+            
+            # Calculate ROC for this timeframe (10-period and 20-period)
+            roc_10 = 0.0
+            roc_20 = 0.0
+            if len(prices) > 10:
+                roc_10 = (prices[-1] - prices[-11]) / prices[-11] if prices[-11] != 0 else 0
+            if len(prices) > 20:
+                roc_20 = (prices[-1] - prices[-21]) / prices[-21] if prices[-21] != 0 else 0
+            
+            # Calculate simple RSI
+            rsi = self._calculate_rsi(list(prices), min(14, len(prices) - 1))
+            
+            # Determine momentum direction
+            bullish_signals = 0
+            bearish_signals = 0
+            
+            if roc_10 > 0.003:  # 0.3% positive momentum
+                bullish_signals += 1
+            elif roc_10 < -0.003:
+                bearish_signals += 1
+            
+            if roc_20 > 0.005:  # 0.5% positive momentum
+                bullish_signals += 1
+            elif roc_20 < -0.005:
+                bearish_signals += 1
+            
+            if rsi > 55:  # Bullish RSI
+                bullish_signals += 1
+            elif rsi < 45:
+                bearish_signals += 1
+            
+            # Determine direction
+            if bullish_signals >= 2 and bullish_signals > bearish_signals:
+                direction = 'bullish'
+                strength = min(1.0, (abs(roc_10) + abs(roc_20)) * 10)
+            elif bearish_signals >= 2 and bearish_signals > bullish_signals:
+                direction = 'bearish'
+                strength = min(1.0, (abs(roc_10) + abs(roc_20)) * 10)
+            else:
+                direction = 'neutral'
+                strength = 0.2
+            
+            mtf_momentum[tf] = {
+                'direction': direction,
+                'strength': strength,
+                'roc_10': roc_10,
+                'roc_20': roc_20,
+                'rsi': rsi,
+            }
+        
+        if not mtf_momentum:
+            return {
+                'available': False,
+                'momentum': {},
+                'alignment_score': 0.5,
+                'dominant_direction': 'neutral',
+            }
+        
+        # Calculate alignment score
+        directions = [m['direction'] for m in mtf_momentum.values()]
+        bullish_count = directions.count('bullish')
+        bearish_count = directions.count('bearish')
+        total_tf = len(directions)
+        
+        # Weighted alignment
+        weighted_bullish = sum(
+            self.mtf_weights.get(tf, 0.33)
+            for tf, mom in mtf_momentum.items()
+            if mom['direction'] == 'bullish'
+        )
+        weighted_bearish = sum(
+            self.mtf_weights.get(tf, 0.33)
+            for tf, mom in mtf_momentum.items()
+            if mom['direction'] == 'bearish'
+        )
+        
+        if bullish_count == total_tf:
+            alignment_score = 1.0
+            dominant = 'bullish'
+        elif bearish_count == total_tf:
+            alignment_score = 1.0
+            dominant = 'bearish'
+        elif bullish_count > bearish_count:
+            alignment_score = bullish_count / total_tf
+            dominant = 'bullish' if weighted_bullish > weighted_bearish else 'neutral'
+        elif bearish_count > bullish_count:
+            alignment_score = bearish_count / total_tf
+            dominant = 'bearish' if weighted_bearish > weighted_bullish else 'neutral'
+        else:
+            alignment_score = 0.33
+            dominant = 'neutral'
+        
+        self.log_debug(
+            f'[MOMENTUM MTF] {inst_norm}: ' +
+            ', '.join(f'{tf}={m["direction"]}' for tf, m in mtf_momentum.items()) +
+            f' | alignment={alignment_score:.2f}, dominant={dominant}'
+        )
+        
+        return {
+            'available': True,
+            'momentum': mtf_momentum,
+            'alignment_score': alignment_score,
+            'dominant_direction': dominant,
+            'weighted_bullish': weighted_bullish,
+            'weighted_bearish': weighted_bearish,
+        }
 
     # ═══════════════════════════ CORE VOTING HOOKS ═══════════════════════════
 
@@ -798,9 +978,50 @@ class MomentumExpert(VotingExpertBase):
                 momentum_acceleration,
             )
             
+            # ═══════════════════════════════════════════════════════════════
+            # MULTI-TIMEFRAME CONFIRMATION (NEW)
+            # Check if higher timeframes (H4, D1) agree with the H1 signal
+            # ═══════════════════════════════════════════════════════════════
+            mtf_adjustment = 0.0
+            mtf_info = ''
+            
+            if self.use_mtf_confirmation and action in ('long', 'short'):
+                mtf_analysis = self._analyze_multi_timeframe_momentum(inst)
+                
+                if mtf_analysis.get('available'):
+                    dominant = mtf_analysis.get('dominant_direction', 'neutral')
+                    alignment = mtf_analysis.get('alignment_score', 0.5)
+                    
+                    signal_is_bullish = action == 'long'
+                    mtf_is_bullish = dominant == 'bullish'
+                    mtf_is_bearish = dominant == 'bearish'
+                    
+                    if signal_is_bullish and mtf_is_bullish:
+                        mtf_adjustment = self.mtf_agreement_bonus * alignment
+                        mtf_info = f'MTF+ (align={alignment:.2f})'
+                    elif not signal_is_bullish and mtf_is_bearish:
+                        mtf_adjustment = self.mtf_agreement_bonus * alignment
+                        mtf_info = f'MTF+ (align={alignment:.2f})'
+                    elif (signal_is_bullish and mtf_is_bearish) or (not signal_is_bullish and mtf_is_bullish):
+                        mtf_adjustment = -self.mtf_disagreement_penalty * alignment
+                        mtf_info = f'MTF- (align={alignment:.2f})'
+                        if alignment >= 0.7:
+                            action = 'flat'
+                            inst_confidence = 0.15
+                            signal_strength = 0.05
+                            mtf_info = 'MTF override → flat'
+                    else:
+                        mtf_adjustment = -0.03
+                        mtf_info = 'MTF neutral'
+                    
+                    inst_confidence = max(0.1, min(0.95, inst_confidence + mtf_adjustment))
+                    per_instrument_analysis[inst_norm] = per_instrument_analysis.get(inst_norm, {})
+                    per_instrument_analysis[inst_norm]['mtf_analysis'] = mtf_analysis
+                    per_instrument_analysis[inst_norm]['mtf_adjustment'] = mtf_adjustment
+            
             self.momentum_performance[action]['signals'] += 1
             
-            thesis = f"{inst_norm}: Momentum {action} (net={net_momentum:.2%}, conf={inst_confidence:.1%})"
+            thesis = f'{inst_norm}: Momentum {action} (net={net_momentum:.2%}, conf={inst_confidence:.1%}) {mtf_info}'
             
             per_instrument_vote.set_proposal(
                 InstrumentProposal(

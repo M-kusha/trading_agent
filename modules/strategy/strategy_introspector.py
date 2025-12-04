@@ -371,6 +371,8 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             # Include in results so orchestrator publishes them
             results['trading_performance'] = trading_performance
             results['strategy_performance'] = strategy_performance
+            # FIX: Add trade_performance (singular) as contract-required alias
+            results['trade_performance'] = trading_performance
 
             # Contract-required: include initialization payload and thesis in outputs
             if not getattr(self, '_init_payload', None):
@@ -1792,6 +1794,13 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             strat_thesis = f"Strategy performance: effectiveness={results.get('strategy_performance', {}).get('effectiveness_score', 0.5):.2f}, confidence={results.get('strategy_performance', {}).get('confidence_score', 0.5):.2f}"
             self.smart_bus.set('strategy_performance', results.get('strategy_performance', {}),
                              module='StrategyIntrospector', thesis=strat_thesis)
+
+            # FIX: Also publish 'trade_performance' (singular) as alias for consumers that use this key
+            # Some modules request 'trade_performance' rather than 'trading_performance'
+            trade_perf = results.get('trading_performance', {})
+            trade_perf_thesis = f"Trade performance alias: WR={trade_perf.get('win_rate', 0.5):.1%}, PF={trade_perf.get('profit_factor', 1.0):.2f}"
+            self.smart_bus.set('trade_performance', trade_perf,
+                             module='StrategyIntrospector', thesis=trade_perf_thesis)
 
             # Publish module_data aggregator (merge existing to avoid overwriting other modules)
             existing_md = self.smart_bus.get('module_data', 'StrategyIntrospector') or {}

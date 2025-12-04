@@ -157,7 +157,7 @@ class TradingConfig:
     # ===================================================================
     data_dir: str = "data/processed"
     instruments: List[str] = field(default_factory=lambda: ["EUR_USD", "XAU_USD"])
-    timeframes: List[str] = field(default_factory=lambda: ["H1", "H4", "D1"])
+    timeframes: List[str] = field(default_factory=lambda: ["M15", "H1", "H4", "D1"])
 
     # ===================================================================
     # Trading Parameters (fallback only; modules own live values)
@@ -205,6 +205,7 @@ class TradingConfig:
 
     # Emergency behavior tuning (centralized, used by PositionManager and others)
     emergency_drawdown_trigger: float = 0.15   # trigger if current drawdown > 15%
+    emergency_exposure_trigger: float = 0.40   # trigger emergency if exposure > 40% (prop firm friendly)
     emergency_risk_score_threshold: float = 0.7  # require risk_score >= 0.7 to escalate
     emergency_breach_steps: int = 2             # consecutive steps required before hard emergency action
     emergency_warmup_steps: int = 20            # ignore emergency checks for first N steps
@@ -294,10 +295,20 @@ class TradingConfig:
         # ═══════════════════════════════════════════════════════════════
         # AUTO-SET TRADING MODE based on live_mode flag
         # This propagates to all mode-aware subsystems (gates, voting, rewards)
+        # IMPORTANT: Only upgrade to LIVE mode, never downgrade from LIVE to TRAINING
+        # This prevents module initialization from resetting an already-set LIVE mode
         # ═══════════════════════════════════════════════════════════════
         try:
             from modules.core.trading_mode import TradingModeManager
-            TradingModeManager.from_config(self, silent=True)
+            # Only change mode if:
+            # 1. We explicitly want LIVE mode (live_mode=True), OR
+            # 2. We're not already in LIVE mode (don't downgrade)
+            if self.live_mode:
+                TradingModeManager.set_mode("LIVE", silent=True)
+            elif not TradingModeManager.is_live():
+                # Only set TRAINING if not already LIVE
+                TradingModeManager.set_mode("TRAINING", silent=True)
+            # else: Already in LIVE mode, don't downgrade
         except ImportError:
             pass  # Module not available yet during early init
 
@@ -406,6 +417,9 @@ class TradingConfig:
             
             if "emergency_drawdown_trigger" in position_manager:
                 self.emergency_drawdown_trigger = float(position_manager["emergency_drawdown_trigger"])
+            
+            if "emergency_exposure_trigger" in position_manager:
+                self.emergency_exposure_trigger = float(position_manager["emergency_exposure_trigger"])
             
             # Smart position settings
             if "hard_stop_loss_eur" in smart_position:
@@ -670,7 +684,7 @@ class ConfigPresets:
             
             # Data
             instruments=["EUR_USD", "XAU_USD"],
-            timeframes=["H1", "H4", "D1"],
+            timeframes=["M15", "H1", "H4", "D1"],
             
             # No execution costs for clean exploration
             default_spread=0.0,
@@ -743,7 +757,7 @@ class ConfigPresets:
 
             # Single instrument to start
             instruments=["EUR_USD"],
-            timeframes=["H1", "H4", "D1"],
+            timeframes=["M15", "H1", "H4", "D1"],
         )
 
     @staticmethod
@@ -790,7 +804,7 @@ class ConfigPresets:
             eval_freq=2500,
 
             instruments=["EUR_USD", "XAU_USD"],
-            timeframes=["H1", "H4", "D1"],
+            timeframes=["M15", "H1", "H4", "D1"],
         )
 
     @staticmethod
@@ -837,7 +851,7 @@ class ConfigPresets:
             eval_freq=5000,
 
             instruments=["EUR_USD", "XAU_USD"],
-            timeframes=["H1", "H4", "D1"],
+            timeframes=["M15", "H1", "H4", "D1"],
         )
 
 

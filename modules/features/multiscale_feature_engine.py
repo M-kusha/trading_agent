@@ -48,7 +48,7 @@ class MultiScaleConfig:
 
     def __post_init__(self):
         if self.timeframes is None:
-            self.timeframes = ["H1", "H4", "D1"]
+            self.timeframes = ["M15", "H1", "H4", "D1"]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -196,7 +196,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
 
     def _build_networks(self, input_dim: int):
         """(Re)build networks for a given input_dim and move to device."""
-        tfs = self._cfg.timeframes or ["H1", "H4", "D1"]
+        tfs = self._cfg.timeframes or ["M15", "H1", "H4", "D1"]
         E = int(self._cfg.embed_dim)
 
         # Per-timeframe processor
@@ -319,7 +319,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
         # attention weights
         aw = attention_weights
         if aw is None:
-            T = len(self._cfg.timeframes or ["H1", "H4", "D1"])
+            T = len(self._cfg.timeframes or ["M15", "H1", "H4", "D1"])
             aw = np.zeros((int(self._cfg.num_attention_heads), T, T))
         if isinstance(aw, np.ndarray):
             out["attention_weights"] = aw.tolist()
@@ -515,7 +515,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
                 return v[-L:].astype(np.float32)
             return v.astype(np.float32)
 
-        tfs = list(self._cfg.timeframes or ["H1", "H4", "D1"])
+        tfs = list(self._cfg.timeframes or ["M15", "H1", "H4", "D1"])
         timeframe_features: Dict[str, np.ndarray] = {}
 
         # Use the same base vector per timeframe (with tiny deterministic scaling to avoid perfect duplicates)
@@ -564,7 +564,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
     async def _neural_forward(self, ms_result: Dict[str, Any]) -> Dict[str, Any]:
         t0 = time.time()
 
-        cfg_tfs = list(self._cfg.timeframes or ["H1", "H4", "D1"])
+        cfg_tfs = list(self._cfg.timeframes or ["M15", "H1", "H4", "D1"])
         available = list((ms_result.get("timeframe_features") or {}).keys())
         tfs = [tf for tf in cfg_tfs if tf in available] or available
 
@@ -856,7 +856,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
         self.neural_stats["failed_passes"] += 1
 
     def _create_neural_fallback_response(self, reason: str) -> Dict[str, Any]:
-        T = len(self._cfg.timeframes or ["H1", "H4", "D1"])
+        T = len(self._cfg.timeframes or ["M15", "H1", "H4", "D1"])
         fallback_embedding = self.last_embedding if isinstance(self.last_embedding, np.ndarray) and self.last_embedding.size > 0 else np.zeros(self.output_dim, dtype=np.float32)
         fallback_attention = np.zeros((1, T, T))  # batch=1 to match attention_fusion output
         return self._format_declared_outputs(

@@ -179,63 +179,78 @@ class RegimeMatrixComponent(BaseMarketComponent):
         }
 
     # ------------------------------
-    # Volatility (robust)
+    # Volatility (robust) - MULTI-TIMEFRAME ENHANCED
     # ------------------------------
     async def _calculate_volatility(self, market_data: Dict[str, Any]) -> float:
         """
-        Use best-available estimator:
-          1) If OHLC available: Garman–Klass (less noisy than CC)
-          2) Else: log return volatility (close/close)
+        Use best-available estimator across MULTIPLE TIMEFRAMES:
+          1) Calculate volatility for H1, H4, D1 timeframes
+          2) Weight them: H1=0.40 (short-term), H4=0.35 (medium), D1=0.25 (long-term)
+          3) If OHLC available: Garman–Klass (less noisy than CC)
+          4) Else: log return volatility (close/close)
         Then EWMA-smooth and return latest EWMA sigma.
+        
+        Multi-timeframe volatility gives better regime classification:
+        - H1 high + D1 low = short-term spike (may be temporary)
+        - H1 high + D1 high = true volatile regime
+        - H1 low + D1 low = calm regime
         """
-        # gather a short window of returns/estimates
-        sigmas: List[float] = []
+        # Timeframe weights for volatility aggregation (M15 for micro-volatility detection)
+        tf_weights = {'M15': 0.20, 'H1': 0.35, 'H4': 0.28, 'D1': 0.17}
+        timeframes = ['M15', 'H1', 'H4', 'D1']
+        
+        # Gather volatility estimates per instrument per timeframe
+        all_sigmas: List[float] = []
+        tf_sigmas: Dict[str, List[float]] = {tf: [] for tf in timeframes}
 
         instruments = self.config['instruments'] or ()
         for inst in instruments:
-            d = market_data.get(inst)
-            if not isinstance(d, dict):
+            inst_data = market_data.get(inst)
+            if not isinstance(inst_data, dict):
                 continue
 
-            # Try OHLC arrays
-            O, H, L, C = (d.get('open'), d.get('high'), d.get('low'), d.get('close'))
-            if all(isinstance(arr, (list, tuple)) for arr in (O, H, L, C)):
-                try:
-                    Oa = np.asarray(O, dtype=np.float64)
-                    Ha = np.asarray(H, dtype=np.float64)
-                    La = np.asarray(L, dtype=np.float64)
-                    Ca = np.asarray(C, dtype=np.float64)
-                    m = min(Oa.size, Ha.size, La.size, Ca.size)
-                    if m >= 10:
-                        Oa, Ha, La, Ca = Oa[-m:], Ha[-m:], La[-m:], Ca[-m:]
-                        # Garman–Klass variance
-                        # var = 0.5*(ln(H/L))^2 - (2ln2 -1)*(ln(C/O))^2
-                        log_hl = np.log(np.maximum(Ha, 1e-12)) - np.log(np.maximum(La, 1e-12))
-                        log_co = np.log(np.maximum(Ca, 1e-12)) - np.log(np.maximum(Oa, 1e-12))
-                        var = 0.5 * (log_hl ** 2) - (2.0 * np.log(2.0) - 1.0) * (log_co ** 2)
-                        var = np.clip(var, 0.0, None)
-                        sigma = float(np.sqrt(np.mean(var[-20:])))
-                        if np.isfinite(sigma) and sigma > 0:
-                            sigmas.append(sigma)
-                            continue
-                except Exception:
-                    pass
+            # Try each timeframe
+            for tf in timeframes:
+                tf_data = inst_data.get(tf)
+                
+                # Also try without timeframe nesting (flat structure)
+                if tf_data is None and tf == 'H1':
+                    tf_data = inst_data  # Fallback: assume flat structure is H1
+                
+                if not isinstance(tf_data, dict):
+                    continue
+                
+                sigma = self._calculate_single_tf_volatility(tf_data)
+                if sigma is not None and sigma > 0:
+                    tf_sigmas[tf].append(sigma)
 
-            # Fallback: close/close log-return std
-            C = d.get('close')
-            if isinstance(C, (list, tuple)) and len(C) >= 10:
-                ca = np.asarray(C, dtype=np.float64)
-                ca = ca[-min(ca.size, 200):]
-                rets = np.diff(np.log(np.maximum(ca, 1e-12)))
-                if rets.size >= 2:
-                    sigmas.append(float(np.std(rets[-min(rets.size, 50):])))
-
-        # Aggregate across instruments
-        if not sigmas:
-            # graceful default
-            sigma_now = 0.01
+        # If no timeframe-nested data found, try flat structure
+        if all(len(s) == 0 for s in tf_sigmas.values()):
+            for inst in instruments:
+                d = market_data.get(inst)
+                if not isinstance(d, dict):
+                    continue
+                sigma = self._calculate_single_tf_volatility(d)
+                if sigma is not None and sigma > 0:
+                    all_sigmas.append(sigma)
+        
+        # Aggregate with timeframe weighting
+        if any(len(s) > 0 for s in tf_sigmas.values()):
+            weighted_vol = 0.0
+            total_weight = 0.0
+            
+            for tf, sigmas in tf_sigmas.items():
+                if sigmas:
+                    tf_vol = float(np.median(sigmas))
+                    weight = tf_weights.get(tf, 0.33)
+                    weighted_vol += tf_vol * weight
+                    total_weight += weight
+            
+            sigma_now = weighted_vol / total_weight if total_weight > 0 else 0.01
+        elif all_sigmas:
+            sigma_now = float(np.median(all_sigmas))
         else:
-            sigma_now = float(np.median(sigmas))
+            sigma_now = 0.01
 
         # EWMA smooth with lambda
         lam = float(self.config['ewma_lambda'])
@@ -248,6 +263,41 @@ class RegimeMatrixComponent(BaseMarketComponent):
         self.vol_history.append(float(ewma))
         self.last_volatility = float(ewma)
         return float(ewma)
+    
+    def _calculate_single_tf_volatility(self, tf_data: Dict[str, Any]) -> Optional[float]:
+        """Calculate volatility for a single timeframe's data."""
+        # Try OHLC arrays (Garman-Klass)
+        O, H, L, C = (tf_data.get('open'), tf_data.get('high'), tf_data.get('low'), tf_data.get('close'))
+        if all(isinstance(arr, (list, tuple, np.ndarray)) for arr in (O, H, L, C)):
+            try:
+                Oa = np.asarray(O, dtype=np.float64)
+                Ha = np.asarray(H, dtype=np.float64)
+                La = np.asarray(L, dtype=np.float64)
+                Ca = np.asarray(C, dtype=np.float64)
+                m = min(Oa.size, Ha.size, La.size, Ca.size)
+                if m >= 10:
+                    Oa, Ha, La, Ca = Oa[-m:], Ha[-m:], La[-m:], Ca[-m:]
+                    # Garman–Klass variance
+                    log_hl = np.log(np.maximum(Ha, 1e-12)) - np.log(np.maximum(La, 1e-12))
+                    log_co = np.log(np.maximum(Ca, 1e-12)) - np.log(np.maximum(Oa, 1e-12))
+                    var = 0.5 * (log_hl ** 2) - (2.0 * np.log(2.0) - 1.0) * (log_co ** 2)
+                    var = np.clip(var, 0.0, None)
+                    sigma = float(np.sqrt(np.mean(var[-20:])))
+                    if np.isfinite(sigma) and sigma > 0:
+                        return sigma
+            except Exception:
+                pass
+
+        # Fallback: close/close log-return std
+        C = tf_data.get('close')
+        if isinstance(C, (list, tuple, np.ndarray)) and len(C) >= 10:
+            ca = np.asarray(C, dtype=np.float64)
+            ca = ca[-min(ca.size, 200):]
+            rets = np.diff(np.log(np.maximum(ca, 1e-12)))
+            if rets.size >= 2:
+                return float(np.std(rets[-min(rets.size, 50):]))
+        
+        return None
 
     # ------------------------------
     # PnL sourcing

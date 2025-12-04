@@ -365,18 +365,25 @@ class MarketDataConfig:
     
     # CSV/offline settings
     data_directory: str = "data/processed"
+    # Optional multi-source controls (align with system_config / module_registry defaults)
+    data_sources: List[str] = field(default_factory=lambda: ["primary", "backup"])
+    cache_duration: int = 60
+    quality_threshold: float = 0.95
     
     # MT5/live settings  
     mt5_account: Optional[int] = None
     mt5_password: Optional[str] = None
     mt5_server: Optional[str] = None
     mt5_timeout: int = 60000
+    timeout_ms: int = 5000
     mt5_reconnect_attempts: int = 3
     mt5_reconnect_delay: float = 5.0
+    # Module-level breaker guard (module_system injects this)
+    circuit_breaker_threshold: int = 3
     
     # Symbols and timeframes
     supported_symbols: List[str] = field(default_factory=lambda: ["XAU_USD", "EUR_USD"])
-    supported_timeframes: List[str] = field(default_factory=lambda: ["H1", "H4", "D1"])
+    supported_timeframes: List[str] = field(default_factory=lambda: ["M15", "H1", "H4", "D1"])
     primary_timeframe: str = "H4"        # drives time advancement
     
     # Data settings
@@ -522,7 +529,19 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         try:
             self.debug.log_csv_loading_start()
             
-            if self.cfg.mode == "live":
+            # Check InfoBus for execution_mode first (set by backend before orchestrator init)
+            # This allows dynamic mode switching when starting live trading
+            effective_mode = self.cfg.mode
+            try:
+                bus_mode = self.smart_bus.get("execution_mode", "MarketDataProvider", default=None)
+                if bus_mode in ("live", "LIVE"):
+                    effective_mode = "live"
+                    self.cfg.mode = "live"  # Update config to match
+                    self.debug.log_generic("INFO", "MODE_OVERRIDE", f"Mode overridden to LIVE from InfoBus (execution_mode={bus_mode})")
+            except Exception:
+                pass  # InfoBus not ready yet, use config default
+            
+            if effective_mode == "live":
                 # Live mode: connect to MT5
                 self._initialize_live_mode()
             else:
@@ -620,7 +639,13 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                         "timeout": self.cfg.mt5_timeout,
                     }
                 
-                if not mt5.initialize(**init_kwargs) if init_kwargs else mt5.initialize():
+                # FIX: Proper boolean check - the ternary was causing issues
+                if init_kwargs:
+                    init_result = mt5.initialize(**init_kwargs)
+                else:
+                    init_result = mt5.initialize()
+                
+                if not init_result:
                     error = mt5.last_error()
                     raise ConnectionError(f"MT5 initialization failed: {error}")
                 
@@ -766,8 +791,10 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         updated = False
         for tf in self.cfg.supported_timeframes:
             try:
-                # Fetch recent bars (just a few for update)
-                df = self._fetch_mt5_data(symbol, tf, min(50, self.cfg.live_bars_to_fetch))
+                # Fetch a full history window so downstream modules (Trend/Momentum/Theme)
+                # have enough bars for their longest lookbacks. Use live_bars_to_fetch,
+                # which is already sized to our rolling window configuration.
+                df = self._fetch_mt5_data(symbol, tf, self.cfg.live_bars_to_fetch)
                 if df is not None and not df.empty:
                     # Update store
                     self.tfs[symbol][tf] = _TFStore(df)
@@ -1269,7 +1296,11 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 'market_data', 'prices', 'price_data', 'ohlcv_data', 'volatility_data',
                 'volatility_level', 'multi_timeframe_data', 'historical_prices',
                 'session_type', 'trading_session', 'timestamp', 'step_idx',
-                'symbols', 'universe', 'watched_instruments'
+                'symbols', 'universe', 'watched_instruments',
+                # FIX: Per-instrument volatility keys for HorizonAligner
+                'volatility_level_by_instrument', 'volatility_by_instrument',
+                # Publish technical indicators so voting & risk modules see live MT5-derived signals
+                'technical_indicators',
             ]
             for key in core_keys:
                 if key in snapshot:
@@ -1355,7 +1386,9 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             multi_tf[symbol] = {}
             for tf, store in self.tfs[symbol].items():
                 end_idx = self.ptrs_by_tf.get(symbol, {}).get(tf, 0)
-                if store.n < self.cfg.window_min or end_idx < 0:
+                # Allow publishing whatever history is available; consumers (like ThemeExpert)
+                # will check sequence length against their own lookback requirements.
+                if store.n <= 0 or end_idx < 0:
                     continue
                 o, h, l, c, v = self._window_from_store(store, end_idx)
                 cur = self._bar_from_store(store, end_idx)
@@ -1432,11 +1465,17 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
         # Volatility & indicators
         vol_data = {}
+        vol_level_by_instrument = {}  # FIX: Per-instrument volatility level
+        vol_by_instrument = {}        # FIX: Per-instrument volatility value
         for s in self.cfg.supported_symbols:
             atr = float(self.technical_indicators[s].get("atr", 0.0))
             last = float(market_data[s]["close"]) if s in market_data else 0.0
             vol = float(atr / max(last, 1e-9)) if last > 0 else 0.0
             vol_data[s] = {"atr": atr, "volatility": vol}
+            # Determine per-instrument volatility level
+            inst_vol_level = "high" if vol > 0.02 else ("medium" if vol > 0.01 else "low")
+            vol_level_by_instrument[s] = inst_vol_level
+            vol_by_instrument[s] = vol
         vol_level = "high" if any(v.get("volatility", 0.0) > 0.02 for v in vol_data.values()) else \
                     ("medium" if any(v.get("volatility", 0.0) > 0.01 for v in vol_data.values()) else "low")
 
@@ -1481,6 +1520,9 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             "volatility": {s: float(self.technical_indicators[s].get("atr", 0.0)) for s in self.cfg.supported_symbols},
             "volatility_data": vol_data,
             "volatility_level": vol_level,
+            # FIX: Per-instrument volatility for HorizonAligner and Executor
+            "volatility_level_by_instrument": vol_level_by_instrument,
+            "volatility_by_instrument": vol_by_instrument,
             # UnifiedDataExtractor expectations
             "volume_data": volume_data,
             "liquidity_data": liquidity_data,

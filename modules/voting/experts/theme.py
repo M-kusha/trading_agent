@@ -272,6 +272,27 @@ class ThemeExpert(VotingExpertBase):
                     corr_regime, corr_score = self._analyze_correlation_regime(
                         close_prices, inst_market
                     )
+                    
+                    # ── MTF confirmation for trend/vol regimes ───────────────
+                    mtf_result = self._analyze_multi_timeframe_theme(inst_norm)
+                    if mtf_result["valid"]:
+                        # Adjust trend score based on MTF alignment
+                        if mtf_result["trend_aligned"]:
+                            trend_score = trend_score * 1.15  # +15% for MTF alignment
+                            self.log_debug(
+                                f"[THEME MTF] {inst_norm}: Trend aligned across TFs, boosting score"
+                            )
+                        elif mtf_result["trend_opposed"]:
+                            trend_score = trend_score * 0.75  # -25% for MTF opposition
+                            self.log_debug(
+                                f"[THEME MTF] {inst_norm}: Trend opposed across TFs, reducing score"
+                            )
+                        
+                        # Adjust vol score based on MTF volatility consistency
+                        if mtf_result["vol_consistent"]:
+                            vol_score = vol_score * 0.95  # Slight adjustment for consistency
+                        
+                        trend_score = float(np.clip(trend_score, -1, 1))
                     breadth_score = self._calculate_market_breadth(
                         close_prices, high_prices, low_prices
                     )
@@ -578,27 +599,46 @@ class ThemeExpert(VotingExpertBase):
         """
         inst_norm = normalize_instrument(instrument) if instrument else ""
 
+        def _best_array_from_candidates(candidates: List[np.ndarray]) -> np.ndarray:
+            """Pick the best candidate, preferring sequences >= vol_lookback, then longest."""
+            if not candidates:
+                return np.array([])
+            # First, candidates that satisfy lookback
+            long_enough = [c for c in candidates if len(c) >= self.vol_lookback]
+            if long_enough:
+                return max(long_enough, key=len)
+            return max(candidates, key=len)
+
+        candidates: List[np.ndarray] = []
+
         # Direct in market_data
         if isinstance(market_data, dict):
             if price_type in market_data:
                 data = market_data[price_type]
                 if isinstance(data, (list, np.ndarray)):
-                    return np.array(data, dtype=float)
+                    arr = np.array(data, dtype=float)
+                    candidates.append(arr)
 
-            # Nested TF structure
-            for tf in ["H1", "H4", "D1"]:
+            # Nested TF structure (M15 first, but fall back to higher TFs if M15 is short)
+            for tf in ["M15", "H1", "H4", "D1"]:
                 if tf in market_data and isinstance(market_data[tf], dict):
                     if price_type in market_data[tf]:
                         data = market_data[tf][price_type]
                         if isinstance(data, (list, np.ndarray)):
-                            return np.array(data, dtype=float)
+                            arr = np.array(data, dtype=float)
+                            candidates.append(arr)
 
         # Features
         if isinstance(features, dict):
             if price_type in features:
                 data = features[price_type]
                 if isinstance(data, (list, np.ndarray)):
-                    return np.array(data, dtype=float)
+                    arr = np.array(data, dtype=float)
+                    candidates.append(arr)
+
+        # If we already found usable candidates, choose the best and return
+        if candidates:
+            return _best_array_from_candidates(candidates)
 
         # Historical from InfoBus
         try:
@@ -626,18 +666,17 @@ class ThemeExpert(VotingExpertBase):
 
             sym_block = historical.get(symbol)
             if isinstance(sym_block, dict):
-                tf_rec = None
-                for tf in ("H4", "H1", "D1"):
+                tf_candidates: List[np.ndarray] = []
+                for tf in ("M15", "H4", "H1", "D1"):
                     candidate = sym_block.get(tf)
-                    if isinstance(candidate, dict):
-                        tf_rec = candidate
-                        break
-                if tf_rec is None and sym_block:
-                    tf_rec = sym_block.get(next(iter(sym_block.keys())))
-                if isinstance(tf_rec, dict):
-                    seq = tf_rec.get(price_type)
+                    if not isinstance(candidate, dict):
+                        continue
+                    seq = candidate.get(price_type)
                     if isinstance(seq, (list, np.ndarray)):
-                        return np.array(seq, dtype=float)
+                        arr = np.array(seq, dtype=float)
+                        tf_candidates.append(arr)
+                if tf_candidates:
+                    return _best_array_from_candidates(tf_candidates)
 
         return np.array([])
 
@@ -774,6 +813,165 @@ class ThemeExpert(VotingExpertBase):
 
         return regime, trend_score
 
+    def _analyze_multi_timeframe_theme(self, instrument: str) -> Dict[str, Any]:
+        """
+        Analyze theme signals across multiple timeframes for confirmation.
+        
+        Multi-timeframe confirmation:
+        - H1: Primary signal (40% weight)
+        - H4: Confirmation signal (35% weight)
+        - D1: Strategic direction (25% weight)
+        
+        Returns:
+            Dict with trend_aligned, trend_opposed, vol_consistent, valid flags
+        """
+        result = {
+            "valid": False,
+            "trend_aligned": False,
+            "trend_opposed": False,
+            "vol_consistent": False,
+            "m15_trend": 0.0,
+            "h1_trend": 0.0,
+            "h4_trend": 0.0,
+            "d1_trend": 0.0,
+            "m15_vol": 0.0,
+            "h1_vol": 0.0,
+            "h4_vol": 0.0,
+            "d1_vol": 0.0,
+        }
+        
+        try:
+            historical = self.smart_bus.get(
+                "historical_prices", self.module_name, default=None
+            )
+            if not isinstance(historical, dict) or not historical:
+                return result
+            
+            inst_norm = normalize_instrument(instrument)
+            inst_aliases = {
+                "EURUSD": ["EUR_USD", "EURUSD"],
+                "XAUUSD": ["XAU_USD", "XAUUSD", "GOLDUSD"],
+            }
+            aliases = inst_aliases.get(inst_norm, [inst_norm, instrument])
+            
+            symbol = None
+            for alias in aliases:
+                if alias in historical:
+                    symbol = alias
+                    break
+            
+            if symbol is None:
+                return result
+            
+            sym_block = historical.get(symbol)
+            if not isinstance(sym_block, dict):
+                return result
+            
+            # Analyze each timeframe
+            tf_trends = {}
+            tf_vols = {}
+            
+            for tf in ["M15", "H1", "H4", "D1"]:
+                tf_data = sym_block.get(tf)
+                if not isinstance(tf_data, dict):
+                    continue
+                
+                close = tf_data.get("close")
+                high = tf_data.get("high")
+                low = tf_data.get("low")
+                
+                if not all(isinstance(x, (list, np.ndarray)) for x in [close, high, low]):
+                    continue
+                
+                close_arr = np.array(close, dtype=float)
+                high_arr = np.array(high, dtype=float)
+                low_arr = np.array(low, dtype=float)
+                
+                if len(close_arr) < 20:
+                    continue
+                
+                # Calculate trend direction for this TF
+                sma_short = np.mean(close_arr[-10:])
+                sma_long = np.mean(close_arr[-20:])
+                
+                if sma_long > 0:
+                    trend_direction = (sma_short - sma_long) / sma_long
+                else:
+                    trend_direction = 0.0
+                
+                tf_trends[tf] = trend_direction
+                
+                # Calculate volatility for this TF (ATR proxy)
+                if len(high_arr) >= 14 and len(low_arr) >= 14:
+                    tr_vals = high_arr[-14:] - low_arr[-14:]
+                    atr = np.mean(tr_vals)
+                    avg_price = np.mean(close_arr[-14:])
+                    vol_pct = atr / avg_price if avg_price > 0 else 0.0
+                    tf_vols[tf] = vol_pct
+            
+            if len(tf_trends) < 2:
+                return result
+            
+            result["valid"] = True
+            
+            # Store individual TF values
+            result["m15_trend"] = tf_trends.get("M15", 0.0)
+            result["h1_trend"] = tf_trends.get("H1", 0.0)
+            result["h4_trend"] = tf_trends.get("H4", 0.0)
+            result["d1_trend"] = tf_trends.get("D1", 0.0)
+            result["m15_vol"] = tf_vols.get("M15", 0.0)
+            result["h1_vol"] = tf_vols.get("H1", 0.0)
+            result["h4_vol"] = tf_vols.get("H4", 0.0)
+            result["d1_vol"] = tf_vols.get("D1", 0.0)
+            
+            # Check trend alignment (M15/H1 should align with H4/D1)
+            m15_trend = tf_trends.get("M15", 0.0)
+            h1_trend = tf_trends.get("H1", 0.0)
+            h4_trend = tf_trends.get("H4", 0.0)
+            d1_trend = tf_trends.get("D1", 0.0)
+            
+            # Aligned = all same direction (all positive or all negative)
+            signs = [np.sign(m15_trend), np.sign(h1_trend), np.sign(h4_trend), np.sign(d1_trend)]
+            non_zero_signs = [s for s in signs if s != 0]
+            
+            if len(non_zero_signs) >= 2:
+                if all(s > 0 for s in non_zero_signs) or all(s < 0 for s in non_zero_signs):
+                    result["trend_aligned"] = True
+                elif len(non_zero_signs) >= 2:
+                    # Check if M15/H1 opposes higher TFs
+                    ltf_signs = [np.sign(m15_trend), np.sign(h1_trend)]
+                    ltf_signs = [s for s in ltf_signs if s != 0]
+                    htf_signs = [np.sign(h4_trend), np.sign(d1_trend)]
+                    htf_signs = [s for s in htf_signs if s != 0]
+                    
+                    if ltf_signs and htf_signs:
+                        ltf_consensus = ltf_signs[0] if len(set(ltf_signs)) == 1 else 0
+                        htf_consensus = htf_signs[0] if len(set(htf_signs)) == 1 else 0
+                        if ltf_consensus != 0 and htf_consensus != 0 and ltf_consensus != htf_consensus:
+                            result["trend_opposed"] = True
+            
+            # Check volatility consistency
+            if len(tf_vols) >= 2:
+                vol_values = list(tf_vols.values())
+                vol_std = np.std(vol_values)
+                vol_mean = np.mean(vol_values)
+                
+                # Consistent if coefficient of variation is low
+                if vol_mean > 0:
+                    cv = vol_std / vol_mean
+                    result["vol_consistent"] = cv < 0.5
+            
+            self.log_debug(
+                f"[THEME MTF] {inst_norm}: M15={m15_trend:.4f}, H1={h1_trend:.4f}, H4={h4_trend:.4f}, "
+                f"D1={d1_trend:.4f}, aligned={result['trend_aligned']}, "
+                f"opposed={result['trend_opposed']}"
+            )
+            
+        except Exception as e:
+            self.log_debug(f"[THEME MTF] Error analyzing {instrument}: {e}")
+        
+        return result
+
     def _wilder_smooth(self, data: np.ndarray, period: int) -> np.ndarray:
         """Apply Wilder's smoothing method."""
         result = np.zeros_like(data)
@@ -804,7 +1002,7 @@ class ThemeExpert(VotingExpertBase):
         prices_by_tf: Dict[str, np.ndarray] = {}
 
         if isinstance(market_data, dict):
-            for tf in ["H1", "H4", "D1"]:
+            for tf in ["M15", "H1", "H4", "D1"]:
                 if tf in market_data and isinstance(market_data[tf], dict):
                     if "close" in market_data[tf]:
                         tf_close = np.array(market_data[tf]["close"], dtype=float)

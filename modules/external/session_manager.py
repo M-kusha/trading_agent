@@ -499,6 +499,127 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                 session_pnl_data["last_step_pnl"] = trading_result_bus.get("pnl")
         return session_pnl_data
 
+    # FIX: Helper methods for missing bus keys
+    def _build_session_by_instrument(self) -> Dict[str, str]:
+        """Build per-instrument session labels for HorizonAligner."""
+        # All instruments share the same session in this implementation
+        # Could be enhanced for multi-market support
+        canonical = self._session_canonical()
+        instruments = ["EURUSD", "XAUUSD", "EUR/USD", "XAU/USD"]
+        return {inst: canonical for inst in instruments}
+
+    def _get_daily_pnl(self, session_pnl_data: Dict[str, Any], trading_result: Any) -> float:
+        """Get daily P&L for PositionManager loss tracking."""
+        # Try to extract from session_pnl_data first
+        if isinstance(session_pnl_data, dict):
+            pnl = session_pnl_data.get("daily_pnl") or session_pnl_data.get("current_pnl") or session_pnl_data.get("session_pnl")
+            if pnl is not None:
+                try:
+                    return float(pnl)
+                except (TypeError, ValueError):
+                    pass
+        # Try trading_result
+        if isinstance(trading_result, dict):
+            pnl = trading_result.get("pnl") or trading_result.get("daily_pnl")
+            if pnl is not None:
+                try:
+                    return float(pnl)
+                except (TypeError, ValueError):
+                    pass
+        # Try bus for portfolio_metrics
+        try:
+            pm = self.smart_bus.get("portfolio_metrics", "SessionManager", default=None)
+            if isinstance(pm, dict):
+                pnl = pm.get("current_pnl") or pm.get("daily_pnl")
+                if pnl is not None:
+                    return float(pnl)
+        except Exception:
+            pass
+        return 0.0
+
+    def _get_prop_firm_status(self, env_cfg: Dict[str, Any]) -> Dict[str, Any]:
+        """Get prop firm status for Environment checks."""
+        # Try to read from risk_policy.yaml
+        status = {
+            "enabled": False,
+            "account_type": "personal",
+            "max_daily_loss_pct": 5.0,
+            "max_total_loss_pct": 10.0,
+            "profit_target_pct": 8.0,
+            "timestamp": self._to_iso_ts(self.time_helper.get_utcnow()),
+        }
+        try:
+            import yaml
+            from pathlib import Path
+            risk_policy_path = Path("config/risk_policy.yaml")
+            if risk_policy_path.exists():
+                with open(risk_policy_path, "r", encoding="utf-8") as f:
+                    rp = yaml.safe_load(f) or {}
+                prop_firm = rp.get("prop_firm", {})
+                if prop_firm:
+                    status["enabled"] = bool(prop_firm.get("enabled", False))
+                    status["account_type"] = prop_firm.get("account_type", "personal")
+                    status["max_daily_loss_pct"] = float(prop_firm.get("max_daily_loss_pct", 5.0))
+                    status["max_total_loss_pct"] = float(prop_firm.get("max_total_loss_pct", 10.0))
+                    status["profit_target_pct"] = float(prop_firm.get("profit_target_pct", 8.0))
+        except Exception:
+            pass
+        return status
+
+    def _get_prop_firm_state(self, env_cfg: Dict[str, Any], session_pnl_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Get prop firm state for LotCalculator."""
+        state: Dict[str, Any] = {
+            "initial_balance": 100000.0,
+            "start_of_day_equity": 100000.0,
+            "yesterday_close_equity": 100000.0,
+            "daily_limit_base_equity": 100000.0,
+            "current_equity": 100000.0,
+            "daily_pnl": 0.0,
+            "timestamp": self._to_iso_ts(self.time_helper.get_utcnow()),
+        }
+        # Try to get initial balance from env_cfg
+        if isinstance(env_cfg, dict):
+            ib = env_cfg.get("initial_balance")
+            if ib is not None:
+                try:
+                    state["initial_balance"] = float(ib)
+                    state["start_of_day_equity"] = float(ib)
+                    state["yesterday_close_equity"] = float(ib)
+                    state["daily_limit_base_equity"] = float(ib)
+                except (TypeError, ValueError):
+                    pass
+        # Try to get from risk_policy.yaml
+        try:
+            import yaml
+            from pathlib import Path
+            risk_policy_path = Path("config/risk_policy.yaml")
+            if risk_policy_path.exists():
+                with open(risk_policy_path, "r", encoding="utf-8") as f:
+                    rp = yaml.safe_load(f) or {}
+                prop_firm = rp.get("prop_firm", {})
+                lot_sizing = rp.get("lot_sizing", {})
+                account_size = prop_firm.get("account_size") or lot_sizing.get("account_balance")
+                if account_size:
+                    state["initial_balance"] = float(account_size)
+                    state["start_of_day_equity"] = float(account_size)
+                    state["yesterday_close_equity"] = float(account_size)
+                    state["daily_limit_base_equity"] = float(account_size)
+        except Exception:
+            pass
+        # Try to get current equity from bus
+        try:
+            pm = self.smart_bus.get("portfolio_metrics", "SessionManager", default=None)
+            if isinstance(pm, dict):
+                eq = pm.get("equity") or pm.get("balance")
+                if eq is not None:
+                    state["current_equity"] = float(eq)
+                pnl = pm.get("current_pnl") or pm.get("daily_pnl")
+                if pnl is not None:
+                    state["daily_pnl"] = float(pnl)
+        except Exception:
+            pass
+        return state
+
     # Thesis (human-readable status string)
     def _build_session_thesis(
         self, *,
@@ -773,6 +894,13 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                     module='SessionManager',
                     thesis='Session type label'
                 )
+                # FIX: Publish per-instrument session for HorizonAligner
+                self.smart_bus.set(
+                    'session_canonical_by_instrument',
+                    self._build_session_by_instrument(),
+                    module='SessionManager',
+                    thesis='Per-instrument session labels'
+                )
             except Exception:
                 pass
 
@@ -783,6 +911,38 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
             # Derived
             session_pnl_data = self._build_pnl_data(portfolio_metrics, trading_result)
             system_health = self._build_system_health(session_health, system_performance, system_health_bus)
+
+            # FIX: Publish daily_pnl for PositionManager and other consumers
+            try:
+                daily_pnl_val = self._get_daily_pnl(session_pnl_data, trading_result)
+                self.smart_bus.set(
+                    'daily_pnl',
+                    daily_pnl_val,
+                    module='SessionManager',
+                    thesis=f'Daily PnL: {daily_pnl_val:.2f}'
+                )
+            except Exception:
+                pass
+            
+            # FIX: Publish prop_firm_status and prop_firm_state for Environment consumers
+            try:
+                env_cfg_tmp = dict(environment_config) if isinstance(environment_config, dict) else {}
+                prop_status = self._get_prop_firm_status(env_cfg_tmp)
+                self.smart_bus.set(
+                    'prop_firm_status',
+                    prop_status,
+                    module='SessionManager',
+                    thesis=f"Prop firm mode: {'active' if prop_status.get('enabled') else 'inactive'}"
+                )
+                prop_state = self._get_prop_firm_state(env_cfg_tmp, session_pnl_data)
+                self.smart_bus.set(
+                    'prop_firm_state',
+                    prop_state,
+                    module='SessionManager',
+                    thesis=f"Prop firm state: phase={prop_state.get('phase', 'N/A')}, daily_pnl={prop_state.get('daily_pnl', 0.0):.2f}"
+                )
+            except Exception:
+                pass
 
             # Performance metrics bundle
             perf_metrics: Dict[str, Any] = {
@@ -1028,6 +1188,13 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
             "system_health": session_health if error_context is None else session_health,
             "environment_config": env_cfg_out,
             "execution_mode": str(env_cfg_out.get("mode", "sim")).lower() if isinstance(env_cfg_out, dict) else "sim",
+            # FIX: Per-instrument session for HorizonAligner
+            "session_canonical_by_instrument": self._build_session_by_instrument(),
+            # FIX: Add daily_pnl for PositionManager daily loss tracking
+            "daily_pnl": self._get_daily_pnl(session_pnl_data, trading_result),
+            # FIX: Add prop_firm keys for LotCalculator and Environment
+            "prop_firm_status": self._get_prop_firm_status(env_cfg_out),
+            "prop_firm_state": self._get_prop_firm_state(env_cfg_out, session_pnl_data),
         }
 
         # Add an operator-facing narrative (safe, non-contract key)

@@ -178,7 +178,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             )
             self.smart_bus.set("feature_error", None, module="AdvancedFeatureEngine", thesis="No errors (baseline)")
             # Timeframe aliases
-            for tf in ("H1", "H4", "D1"):
+            for tf in ("M15", "H1", "H4", "D1"):
                 payload = {**adv_payload, "timeframe": tf, "alias_of": "advanced_features"}
                 self.smart_bus.set(f"advanced_features_{tf}", payload, module="AdvancedFeatureEngine", thesis=f"Advanced features ({tf}) baseline")
         except Exception:
@@ -674,7 +674,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         )
 
         # timeframe outputs (true per-TF if available, otherwise safe alias)
-        for tf in ("H1", "H4", "D1"):
+        for tf in ("M15", "H1", "H4", "D1"):
             key = f"advanced_features_{tf}"
             payload = timeframe_outputs.get(tf, {**adv_payload, "timeframe": tf, "alias_of": "advanced_features"})
             self.smart_bus.set(key, payload, module="AdvancedFeatureEngine", thesis=f"Advanced features ({tf})")
@@ -1077,7 +1077,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
 
         # Timeframe mirrors (true per-TF if provided, else alias mirror)
         tf_map = timeframe_outputs or {}
-        for tf in ("H1", "H4", "D1"):
+        for tf in ("M15", "H1", "H4", "D1"):
             alias = tf_map.get(tf)
             if not isinstance(alias, dict):
                 alias = {
@@ -1174,7 +1174,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         """
         outputs: Dict[str, Dict[str, Any]] = {}
         if not self._mtf_present:
-            for tf in ("H1", "H4", "D1"):
+            for tf in ("M15", "H1", "H4", "D1"):
                 outputs[tf] = {**base_adv, "timeframe": tf, "alias_of": "advanced_features", "mtf_available": False}
             return outputs
 
@@ -1184,7 +1184,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         except Exception:
             mtd = None
 
-        for tf in ("H1", "H4", "D1"):
+        for tf in ("M15", "H1", "H4", "D1"):
             prices = self._collect_mtf_prices(mtd, tf)
             if prices:
                 t0 = time.time()

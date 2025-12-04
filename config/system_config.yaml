@@ -97,7 +97,7 @@ execution:
     config:
       data_directory: "data/processed"
       supported_symbols: ["XAU_USD", "EUR_USD"]
-      supported_timeframes: ["H1", "H4", "D1"]
+      supported_timeframes: ["M15", "H1", "H4", "D1"]
       primary_timeframe: "H4"
       update_frequency: 0.0  # Always update on every call - no throttling to prevent stale data
       buffer_size: 5000
@@ -497,17 +497,19 @@ modules:
       timeout_ms: 200
       instruments:
         EUR_USD:
-          timeframes: ['H1', 'H4', 'D1']
+          timeframes: ['M15', 'H1', 'H4', 'D1']
           enabled: true
           priority: "high"
         XAU_USD:
-          timeframes: ['H1', 'H4', 'D1']
+          timeframes: ['M15', 'H1', 'H4', 'D1']
           enabled: true
           priority: "high"
       provides_data:
+        - market_data_EUR_USD_M15
         - market_data_EUR_USD_H1
         - market_data_EUR_USD_H4
         - market_data_EUR_USD_D1
+        - market_data_XAU_USD_M15
         - market_data_XAU_USD_H1
         - market_data_XAU_USD_H4
         - market_data_XAU_USD_D1

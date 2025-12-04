@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Enhanced AI Trading System Backend - Complete Version
 FastAPI server with comprehensive module integration and enhanced training metrics
@@ -285,7 +285,7 @@ class PPOTrainingConfig(BaseModel):
 class LiveTradingConfig(BaseModel):
     """Live trading configuration"""
     instruments: List[str] = Field(default=["EURUSD", "XAUUSD"])
-    timeframes: List[str] = Field(default=["H1", "H4", "D1"])
+    timeframes: List[str] = Field(default=["M15", "H1", "H4", "D1"])
     update_interval: int = Field(default=5, ge=1, le=60)
     max_position_size: float = Field(default=0.1, gt=0, le=1)
     max_total_exposure: float = Field(default=0.3, gt=0, le=1)
@@ -345,6 +345,16 @@ class EnhancedTradingSystemState:
     alerts: List[Dict[str, Any]]
     system_metrics: Dict[str, Any]
 
+    # Training state attributes
+    training_process: Optional[subprocess.Popen[str]]
+    training_mode: Optional[str]
+    training_start_time: Optional[datetime]
+    training_config: Optional['PPOTrainingConfig']
+    training_metrics: Dict[str, Any]
+    training_metrics_history: List[Dict[str, Any]]
+    training_in_progress: bool
+    live_trading_active: bool
+
     def __init__(self):
         self.startup_time = datetime.now()
 
@@ -357,12 +367,21 @@ class EnhancedTradingSystemState:
         # Process management
         self.trading_task = None
         self.monitoring_tasks = []
+        
+        # Training state
+        self.training_process = None
+        self.training_mode = None
+        self.training_start_time = None
+        self.training_config = None
+        self.training_metrics = {}
+        self.training_metrics_history = []
+        self.training_in_progress = False
+        self.live_trading_active = False
 
         # Trading state
         self.live_env = None
         self.model = None
         self.last_trade_time = {}
-        self.trading_config = None
         self.tensorboard_process = None
 
         # Performance tracking
@@ -704,6 +723,14 @@ async def start_live_trading(config: LiveTradingConfig):
 
         if state.trading_task and not state.trading_task.done():
             raise HTTPException(status_code=400, detail="Trading already active")
+
+        # STEP 0: Set global trading mode to LIVE - propagates to voting thresholds
+        try:
+            from modules.core.trading_mode import TradingModeManager
+            TradingModeManager.set_mode("LIVE")
+            logger.info("[LIVE MODE] TradingModeManager set to LIVE - conservative thresholds active")
+        except Exception as e:
+            logger.warning(f"Failed to set TradingModeManager to LIVE: {e}")
 
         # STEP 1: Set environment config on InfoBus BEFORE loading anything
         # This ensures modules that initialize will see the correct mode
@@ -1172,7 +1199,8 @@ async def auto_fix_sl_tp():
                 continue
 
             symbol = pos.symbol
-            symbol_config = sl_tp_config.get(symbol, sl_tp_config.get('default', {}))
+            _sym_cfg = sl_tp_config.get(symbol, sl_tp_config.get('default', {}))
+            symbol_config: Dict[str, Any] = _sym_cfg if isinstance(_sym_cfg, dict) else {}
             sl_pips = symbol_config.get('stop_loss_pips', 50)
             tp_pips = symbol_config.get('take_profit_pips', 100)
             
@@ -2177,7 +2205,7 @@ async def get_system_configuration():
         response = {
             "trading": {
                 "instruments": ["EURUSD", "XAUUSD"],
-                "timeframes": ["H1", "H4", "D1"],
+                "timeframes": ["M15", "H1", "H4", "D1"],
                 "update_interval": system_config.get("modules", {}).get("MarketDataProvider", {}).get("config", {}).get("update_frequency", 5),
                 "max_position_size": 0.1,
                 "max_total_exposure": 0.3,
@@ -2299,41 +2327,6 @@ async def get_trading_symbols():
     except Exception as e:
         logger.error(f"Error getting trading symbols: {e}")
         return HTTPException(status_code=500, detail=f"Failed to get symbols: {str(e)}")
-
-def sanitize_for_json(obj: Any) -> Any:
-    """
-    Recursively convert numpy types and other non-JSON-serializable objects to Python native types.
-    This fixes FastAPI JSON encoder errors with numpy.bool, numpy.int64, NaN/Inf floats, etc.
-    """
-    from collections import deque
-    
-    if obj is None:
-        return None
-    if isinstance(obj, (np.bool_, bool)):
-        return bool(obj)
-    if isinstance(obj, (np.integer, int)):
-        return int(obj)
-    if isinstance(obj, (np.floating, float)):
-        val = float(obj)
-        # JSON cannot encode NaN/Inf; treat them as missing values
-        if math.isnan(val) or math.isinf(val):
-            return None
-        return val
-    if isinstance(obj, np.ndarray):
-        return [sanitize_for_json(item) for item in obj.tolist()]
-    if isinstance(obj, dict):
-        return {k: sanitize_for_json(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [sanitize_for_json(item) for item in obj]
-    if isinstance(obj, (set, frozenset, deque)):
-        return [sanitize_for_json(item) for item in obj]
-    if hasattr(obj, '__dict__'):
-        # Handle objects with __dict__ (pydantic models, etc.)
-        try:
-            return sanitize_for_json(obj.__dict__)
-        except Exception:
-            return str(obj)
-    return obj
 
 def calculate_module_health(module: Dict[str, Any], live_data: Dict[str, Any], registry_info: Dict[str, Any]) -> int:
     """Calculate module health score (0-100) based on multiple factors"""
@@ -3689,6 +3682,7 @@ async def features_advanced():
             return 'n/a' if val is None else 'available'
         out.update({
             "advanced_features": summarize('advanced_features'),
+            "advanced_features_M15": summarize('advanced_features_M15'),
             "advanced_features_H1": summarize('advanced_features_H1'),
             "advanced_features_H4": summarize('advanced_features_H4'),
             "advanced_features_D1": summarize('advanced_features_D1'),

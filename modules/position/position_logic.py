@@ -1496,27 +1496,22 @@ class PositionManager(PositionManagerBase):
         """
         Fast local emergency gate (per-tick).
 
-        This is intentionally stricter and earlier than the account-level
-        EMERGENCY logic inside ExitStrategyEngine:
+        PROP FIRM LOGIC: Only care about ACTUAL RISK (drawdown, loss streaks).
+        Notional exposure is IRRELEVANT for prop firms - they only care if you
+        lose money, not how much margin you use.
 
-        - Here we protect *per-tick* against:
-            * too much exposure on a single instrument,
-            * account drawdown getting close to prop limits,
-            * long loss streaks,
-            * trading in very illiquid conditions.
-
-        Thresholds are read from risk_policy.position_manager and fall back
-        to prop-firm friendly defaults if not configured.
+        Emergency triggers:
+        - Drawdown approaching prop firm limits (5% daily, 10% total)
+        - Consecutive loss streaks (indicates system malfunction)
+        - Low liquidity (can't exit positions safely)
+        
+        NOTE: Exposure-based emergency is DISABLED for prop firms because:
+        - 0.08 lots XAUUSD = €33k notional but only €80 risk with proper SL
+        - Prop firms don't monitor margin/exposure, only P&L
         """
-        # Prop-firm style defaults; will be overridden by risk_policy.yaml:
-        #   position_manager.emergency_exposure_trigger: 0.20
-        #   position_manager.emergency_drawdown_trigger: 0.035
-        #   position_manager.max_consecutive_losses: 3
-        emergency_exposure_threshold = float(
-            self.Cval("emergency_exposure_trigger", 0.20)
-        )
+        # Prop-firm style defaults; will be overridden by risk_policy.yaml
         drawdown_trigger = float(
-            self.Cval("emergency_drawdown_trigger", 0.035)
+            self.Cval("emergency_drawdown_trigger", 0.035)  # 3.5% = emergency (daily limit is 5%)
         )
         max_losses = int(
             self.Cval("max_consecutive_losses", 3)
@@ -1524,11 +1519,18 @@ class PositionManager(PositionManagerBase):
         liquidity_floor = float(
             self.Cval("emergency_liquidity_threshold", 0.30)
         )
+        
+        # PROP FIRM MODE: Disable exposure-based emergency (it's meaningless for prop firms)
+        # Prop firms care about P&L drawdown, not notional exposure
+        use_exposure_trigger = bool(self.Cval("enable_exposure_emergency", False))
+        emergency_exposure_threshold = float(
+            self.Cval("emergency_exposure_trigger", 1.0)  # Default 100% = effectively disabled
+        )
 
         triggers = {
             "drawdown": context.drawdown >= drawdown_trigger,
             "loss_streak": self.consecutive_losses >= max_losses,
-            "exposure": context.current_exposure >= emergency_exposure_threshold,
+            "exposure": use_exposure_trigger and context.current_exposure >= emergency_exposure_threshold,
             "liquidity": context.liquidity_score <= liquidity_floor,
         }
 

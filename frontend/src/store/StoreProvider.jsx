@@ -122,7 +122,7 @@ const initialTradingState = {
   // Config
   tradingConfig: {
     instruments: ["EURUSD", "XAUUSD"],
-    timeframes: ["H1", "H4", "D1"],
+    timeframes: ["M15", "H1", "H4", "D1"],
     update_interval: 5,
     max_position_size: 0.1,
     max_total_exposure: 0.3,

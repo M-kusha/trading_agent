@@ -509,6 +509,12 @@ def aggregate_instrument_votes(
         act = prop.voting_action
         conf = _clamp_01(prop.confidence, default=0.0)
         mag = _clamp_01(prop.magnitude, default=0.0)
+        
+        # IMPORTANT: If magnitude is not set (0), use confidence as proxy
+        # Many experts don't set signal_strength/magnitude explicitly
+        if mag == 0.0 and conf > 0.0:
+            mag = conf  # Use confidence as magnitude fallback
+            
         base_weight = float(weights.get(vote.member, 1.0))
 
         # Every non-missing proposal counts as one "vote" for consensus ratio
@@ -519,13 +525,12 @@ def aggregate_instrument_votes(
             decision.flat_votes += 1
             continue
 
-        # Strong directional: requires confidence AND magnitude above thresholds
-        # This is stricter and appropriate for LIVE trading
-        strong_directional = act.is_directional and conf >= conf_threshold and mag >= min_strength
+        # Strong directional: requires confidence above threshold
+        # (magnitude already falls back to confidence, so we just check conf)
+        strong_directional = act.is_directional and conf >= conf_threshold
         
-        # Moderate directional: has good confidence but magnitude might be low
-        # Still counts as directional but with reduced weight
-        moderate_directional = act.is_directional and conf >= conf_threshold * 0.7 and mag >= min_strength * 0.5
+        # Moderate directional: has reasonable confidence (70% of threshold)
+        moderate_directional = act.is_directional and conf >= conf_threshold * 0.7
         
         if strong_directional:
             # Full weight for strong signals

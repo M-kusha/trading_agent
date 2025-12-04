@@ -327,7 +327,7 @@ class VotingExpertBase(VotingModuleBase):
                 if isinstance(sym_block, dict):
                     rec = sym_block.get(primary_tf)
                     if not isinstance(rec, dict):
-                        for tf in ('H4', 'H1', 'D1'):
+                        for tf in ('M15', 'H4', 'H1', 'D1'):
                             candidate = sym_block.get(tf)
                             if isinstance(candidate, dict):
                                 rec = candidate

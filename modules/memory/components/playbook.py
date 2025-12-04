@@ -118,7 +118,7 @@ class PlaybookComponent(MemoryComponent):
             
             # Only process CLOSED trades with actual realized PnL
             # Skip open trades (pnl=0, action contains 'open')
-            pnl_val = float(trade.get("pnl", 0) or trade.get("realized_pnl", 0) or 0)
+            pnl_val = safe_float(trade.get("pnl"), 0.0) or safe_float(trade.get("realized_pnl"), 0.0)
             action = str(trade.get("action", "")).lower()
             if pnl_val == 0 or "open" in action:
                 continue  # Skip open trades - they have no outcome yet
@@ -146,7 +146,7 @@ class PlaybookComponent(MemoryComponent):
 
             feats = self._extract_trade_features(trade, market_context, prices)
             action = self._extract_trade_action(trade)
-            pnl = float(trade.get("pnl", 0.0))
+            pnl = safe_float(trade.get("pnl", 0.0), 0.0)
 
             await self._store_trade(feats, action, pnl, market_context, trade)
             processed += 1
@@ -354,6 +354,34 @@ class PlaybookComponent(MemoryComponent):
                 market_context = context.get("market_context", {}) or {}
                 prices = context.get("prices", {}) or {}
                 query_features = self._create_query_features(market_context, prices)
+            else:
+                # Unwrap feature payloads published by AdvancedFeatureEngine / SmartInfoBus
+                if isinstance(query_features, dict):
+                    # Common case: {"raw_features": [...], "quality_score": float}
+                    if "raw_features" in query_features and isinstance(
+                        query_features.get("raw_features"), (list, tuple, np.ndarray)
+                    ):
+                        query_features = query_features["raw_features"]
+                    # Nested container: {"features": {"raw_features": [...]}}
+                    elif "features" in query_features and isinstance(query_features.get("features"), dict):
+                        inner = query_features["features"]
+                        if "raw_features" in inner and isinstance(
+                            inner.get("raw_features"), (list, tuple, np.ndarray)
+                        ):
+                            query_features = inner["raw_features"]
+                    else:
+                        # Fallback: try first list/array-like value, else regenerate from market context
+                        candidate = None
+                        for v in query_features.values():
+                            if isinstance(v, (list, tuple, np.ndarray)):
+                                candidate = v
+                                break
+                        if candidate is not None:
+                            query_features = candidate
+                        else:
+                            market_context = context.get("market_context", {}) or {}
+                            prices = context.get("prices", {}) or {}
+                            query_features = self._create_query_features(market_context, prices)
 
             q = np.asarray(query_features, dtype=np.float32).reshape(1, -1)
             q_scaled = self._scaler.transform(q)
@@ -362,7 +390,9 @@ class PlaybookComponent(MemoryComponent):
             idx = indices[0].tolist()
             dists = distances[0].astype(np.float32)
 
-            similar_pnls = [float(self.pnls[i]) for i in idx]
+            # Be robust to any historical schema changes that might have stored
+            # non-scalar objects in self.pnls.
+            similar_pnls = [safe_float(self.pnls[i], 0.0) for i in idx]
             similar_actions = [self.actions[i] for i in idx]
 
             expected_pnl = float(np.mean(similar_pnls)) if similar_pnls else 0.0

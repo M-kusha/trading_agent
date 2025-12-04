@@ -583,33 +583,15 @@ class Executor(BaseModule):
             pass
 
         # ==========================================================
-        # PORTFOLIO RISK ENFORCEMENT: Block positions exceeding limits
+        # PORTFOLIO RISK ENFORCEMENT: DISABLED FOR PROP FIRMS
+        # Prop firms only care about P&L drawdown, NOT notional exposure.
+        # This check was blocking positions based on exposure % which is
+        # meaningless - a 0.08 lot XAUUSD position has 33% notional exposure
+        # but only 0.08% actual risk with proper stop loss.
         # ==========================================================
         risk_blocked_instruments: Set[str] = set()
-        try:
-            # Get current risk signals (published separately by PortfolioRiskSystem)
-            # Note: risk_signals is published as its own key, not nested in portfolio_risk
-            risk_signals = self.bus.get("risk_signals", "Executor", default=None)
-            if isinstance(risk_signals, dict):
-                violations = risk_signals.get("violations", [])
-                if isinstance(violations, list):
-                    for v in violations:
-                        # Parse violation like "XAU_USD position 7.5% > limit 5.0%"
-                        if isinstance(v, str) and "position" in v and ">" in v and "limit" in v:
-                            parts = v.split()
-                            if len(parts) >= 1:
-                                inst = parts[0].upper().replace("/", "_")
-                                risk_blocked_instruments.add(inst)
-                    
-                    if risk_blocked_instruments:
-                        self.logger.warning(format_operator_message(
-                            icon="🛑",
-                            message="RISK_LIMIT_ENFORCEMENT",
-                            blocked_instruments=list(risk_blocked_instruments),
-                            reason="Position size exceeds portfolio risk limit",
-                        ))
-        except Exception as e:
-            self.logger.debug(f"Risk check failed: {e}")
+        # NOTE: Exposure-based blocking disabled. Prop firms don't monitor this.
+        # If you need exposure limits (non-prop firm), set enable_exposure_blocking: true in config
 
         # Helper to check if instrument is vetoed
         def _is_instrument_vetoed(inst: str) -> bool:
@@ -620,15 +602,8 @@ class Executor(BaseModule):
         
         # Helper to check if instrument is blocked by risk limits
         def _is_risk_blocked(inst: str, action: str) -> bool:
-            """Block new/scaling positions if instrument exceeds risk limits"""
-            normalized = str(inst).upper().replace("/", "_")
-            if normalized not in risk_blocked_instruments:
-                return False
-            # Only block actions that would INCREASE exposure
-            action_lower = action.lower()
-            if action_lower in ("open_long", "open_short", "buy", "sell", "scale_up"):
-                return True
-            return False
+            """DISABLED: Prop firms don't care about notional exposure"""
+            return False  # Never block based on exposure for prop firms
 
         # explicit order_queue
         oq = self.bus.get("order_queue", "Executor", default=[])

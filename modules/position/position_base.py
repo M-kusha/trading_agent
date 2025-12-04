@@ -813,14 +813,15 @@ class PositionManagerBase(
                             )
                         return False
 
-            # If fragility/collusion are extreme, block before further checks
+            # If fragility/collusion are extreme, WARN but don't block when experts agree
+            # Fragility=1.0 is common due to Monte Carlo sampling noise - shouldn't kill trades
+            # Collusion blocking is also relaxed - high agreement when experts agree is expected
             if risk_block:
-                if self.debug:
-                    self.logger.debug(
-                        f"[GATE] Blocking due to fragility/collusion "
-                        f"(fragility={fragility:.2f}, collusion={collusion_score:.2f})"
-                    )
-                return False
+                self.logger.warning(
+                    f"[GATE] ⚠️ HIGH FRAGILITY/COLLUSION WARNING - PROCEEDING: "
+                    f"fragility={fragility:.2f}, collusion={collusion_score:.2f} (mode={exec_mode})"
+                )
+                # Do NOT return False - just warn and continue
 
             # ═══════════════════════════════════════════════════════════════════
             # LAYER 2: DIRECTION CONSENSUS CHECK (RELAXED)

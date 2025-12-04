@@ -160,7 +160,9 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='MetaAgent',
         file='meta/meta_agent.py',
         provides=['automation_decisions', 'automation_metrics', 'meta_performance', 'system_mode',
-                  'MetaAgent_voting_proposal', 'MetaAgent_confidence'],
+                  'MetaAgent_voting_proposal', 'MetaAgent_confidence',
+                  # FIX: Add active_strategy and auto_mode for BackendAPI
+                  'active_strategy', 'auto_mode'],
         requires=['market_context', 'risk_signals', 'system_performance', 'time_risk_analysis', 'training_metrics'],
         # NOTE: is_voting_member=False - MetaAgent outputs risk gate signals (proceed/caution/halt),
         # NOT directional trading signals (long/short). It monitors system health, not market direction.
@@ -263,7 +265,9 @@ CONTRACTS: Dict[str, ModuleContract] = {
         file='strategy/strategy_introspector.py',
         provides=['adaptation_recommendations', 'behavior_patterns', 'introspection_metrics', 'module_data',
                   'strategy_analysis', 'strategy_introspector_initialization', 'strategy_performance',
-                  'strategy_profiles', 'trading_performance'],
+                  'strategy_profiles', 'trading_performance',
+                  # FIX: Add trade_performance for BackendAPI
+                  'trade_performance'],
         requires=['market_context', 'market_regime', 'recent_trades', 'risk_data', 'volatility_data'],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
               'category': 'strategy', 'version': '3.0.0'}
@@ -507,6 +511,10 @@ CONTRACTS: Dict[str, ModuleContract] = {
         provides=[
             'committee_votes', 'committee_summary', 'committee_decision_id',
             'raw_proposals', 'member_confidences', 'voting_weights',
+            # FIX: Add alias for committee_member_confidences (requested by ConsensusAnalyzer, HorizonAligner)
+            'committee_member_confidences',
+            # FIX: Add strategy_weights and member_performance (requested by StrategyIntrospector)
+            'strategy_weights', 'member_performance',
             # Backward compatibility
             'committee_decision', 'committee_confidence', 'votes', 'voting_summary',
             'strategy_arbiter_weights', 'committee_consensus'
@@ -652,6 +660,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
         provides=[
             # Fractal / Regime
             'fractal_metrics', 'market_regime', 'regime_data', 'regime_strength', 'timestamps', 'trend_direction',
+            # FIX: Per-instrument regime/session for HorizonAligner
+            'market_regime_by_instrument', 'regime_probabilities',
             # Liquidity
             'liquidity_capabilities', 'liquidity_prediction', 'liquidity_score', 'liquidity_thesis',
             'liquidity_score_by_instrument',  # FIX: Added for PositionManager instrument-level liquidity lookup
@@ -659,6 +669,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
             # Theme
             'market_theme', 'theme_detection', 'theme_detector_health', 'theme_detector_status',
             'theme_strength', 'theme_transition',
+            # FIX: Add market_themes, market_sentiment, volatility_analysis for BackendAPI
+            'market_themes', 'market_sentiment', 'volatility_analysis',
             # Regime performance matrix
             'backtesting_data', 'regime_accuracy', 'regime_analysis', 'regime_matrix_analysis',
             'regime_matrix_health', 'regime_matrix_status', 'regime_performance', 'regime_prediction',
@@ -693,8 +705,12 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'session_type', 'step_idx', 'symbols',
             'technical_indicators', 'timestamp', 'trading_session', 'volatility', 'volatility_data',
             'volatility_level', 'volume_data', 'liquidity_data',
+            # FIX: Per-instrument volatility for HorizonAligner and Executor
+            'volatility_level_by_instrument', 'volatility_by_instrument',
             # Specific instrument data
+            'market_data_EUR_USD_M15',
             'market_data_EUR_USD_H1', 'market_data_EUR_USD_H4', 'market_data_EUR_USD_D1',
+            'market_data_XAU_USD_M15',
             'market_data_XAU_USD_H1', 'market_data_XAU_USD_H4', 'market_data_XAU_USD_D1',
             'universe', 'watched_instruments'
         ],
@@ -724,7 +740,13 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'performance_data',  # canonical owner selected
             'playbook_entries', 'playbook_memory', 'session_pnl_data', 'session_context', 'session_metrics',
             'system_alerts', 'session_health', 'system_performance', 'system_health',  # FIX #3: Added system_health
-            'environment_config', 'execution_mode'    # fills gap for PM/Executor; may be moved to a dedicated Environment module
+            'environment_config', 'execution_mode',    # fills gap for PM/Executor; may be moved to a dedicated Environment module
+            # FIX: Per-instrument session for HorizonAligner
+            'session_canonical_by_instrument',
+            # FIX: Add daily_pnl for PositionManager daily loss tracking
+            'daily_pnl',
+            # FIX: Add prop_firm keys for LotCalculator and Environment
+            'prop_firm_status', 'prop_firm_state'
         ],
         requires=[],
         meta={'thesis_required': True, 'health_monitoring': True, 'performance_tracking': True,
@@ -741,6 +763,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         # FIX: Falls back to trade_vote_v2 from SlimVotingKernel if no per-instrument signal
         # FIX: Checks ppo_gate_passed for final GO/NO-GO from intelligent arbiter
         # NOTE: Removed market_conditions - uses market_context fallback
+        # FIX: Added position_limits - ensures PortfolioRiskSystem runs first so dynamic limits are available
         provides=['position_decisions', 'position_health', 'portfolio_state', 'order_queue', 'position_manager_data'],
         requires=['instrument_signals', 'trade_vote_v2', 'kernel_decision', 'environment_config', 'indicators', 'liquidity_capabilities', 'liquidity_score',
                   'market_context', 'market_data', 'market_liquidity',
@@ -748,7 +771,9 @@ CONTRACTS: Dict[str, ModuleContract] = {
                   'time_risk_analysis', 'volatility_data',
                   'memory_gate', 'playbook_recall', 'intuition_vector', 'danger_zones', 'mistake_avoidance',
                   # PPOAgent intelligent arbiter outputs (final gate)
-                  'ppo_final_decision', 'ppo_gate_passed', 'ppo_position_size'],
+                  'ppo_final_decision', 'ppo_gate_passed', 'ppo_position_size',
+                  # Risk limits from PortfolioRiskSystem (ensures proper execution order)
+                  'position_limits'],
         meta={'is_voting_member': False, 'thesis_required': True, 'explainable': True,
               'health_monitoring': True, 'performance_tracking': True,
               'category': 'position', 'version': '3.1.3'}

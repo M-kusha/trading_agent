@@ -31,6 +31,7 @@ class DataConfig:
     symbols: List[str] = field(default_factory=lambda: ["EURUSD", "XAUUSD"])
     timeframes: Dict[str, int] = field(
         default_factory=lambda: {
+            "M15": mt5.TIMEFRAME_M15,
             "H1": mt5.TIMEFRAME_H1,
             "H4": mt5.TIMEFRAME_H4,
             "D1": mt5.TIMEFRAME_D1,
@@ -128,13 +129,25 @@ class MT5DataCollector:
         try:
             self.logger.info(f"Fetching {symbol} {timeframe_name} data...")
             
-            # Get data from MT5
+            # Get data from MT5 - try copy_rates_range first
             rates = mt5.copy_rates_range(  # type: ignore[attr-defined]
                 symbol,
                 timeframe,
                 self.config.start_date,
                 self.config.end_date
             )
+            
+            # Fallback to copy_rates_from_pos for smaller timeframes (MT5 demo limitation)
+            if (rates is None or len(rates) == 0) and timeframe_name in ["M1", "M5", "M15", "M30"]:
+                self.logger.info(f"Trying fallback method for {symbol} {timeframe_name}...")
+                # Request maximum available bars (typically ~100k for M15 on demo)
+                max_bars = 100000 if timeframe_name == "M15" else 50000
+                rates = mt5.copy_rates_from_pos(  # type: ignore[attr-defined]
+                    symbol,
+                    timeframe,
+                    0,  # Start from most recent
+                    max_bars
+                )
             
             if rates is None or len(rates) == 0:
                 self.logger.error(f"No data returned for {symbol} {timeframe_name}")
@@ -352,6 +365,7 @@ class MT5DataCollector:
     def get_expected_interval(self, timeframe: str) -> timedelta:
         """Get expected time interval for timeframe"""
         intervals = {
+            'M15': timedelta(minutes=15),
             'H1': timedelta(hours=1),
             'H4': timedelta(hours=4),
             'D1': timedelta(days=1),

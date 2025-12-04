@@ -21,11 +21,11 @@ from modules.contracts import module_args
 from modules.core.module_base import module
 from modules.voting.core.base import VotingModuleBase
 from modules.voting.core.constants import (
-    CONFIDENCE_THRESHOLD,
-    CONSENSUS_THRESHOLD,
+    CONSENSUS_THRESHOLD_F,
     MAX_STALENESS_SECONDS,
     VotingAction,
     VotingBusKeys,
+    get_voting_mode,
 )
 # Per-instrument voting infrastructure
 from modules.voting.core.per_instrument import (
@@ -77,8 +77,8 @@ class CommitteeCoordinator(VotingModuleBase):
         if getattr(self, '_singleton_init_done', False):
             return
         
-        # Committee configuration
-        self.consensus_threshold = float(self.config.get('consensus_threshold', CONSENSUS_THRESHOLD))
+        # Committee configuration - use dynamic threshold for mode-awareness
+        self._config_consensus_threshold = self.config.get('consensus_threshold')
         self.minimum_voters = int(self.config.get('minimum_voters', 2))
         self.performance_weighting = bool(self.config.get('performance_weighting', True))
         self.max_vote_age_s = float(self.config.get('max_vote_age_s', MAX_STALENESS_SECONDS))
@@ -128,8 +128,9 @@ class CommitteeCoordinator(VotingModuleBase):
         
         self._decision_counter = 0
         
+        mode = get_voting_mode()
         self.logger.info(
-            f"[COMMITTEE] CommitteeCoordinator initialized | "
+            f"[COMMITTEE] CommitteeCoordinator initialized | MODE={mode} | "
             f"threshold={self.consensus_threshold:.1%} | "
             f"min_voters={self.minimum_voters} | "
             f"warmup_ticks={self.warmup_ticks} | "
@@ -140,6 +141,13 @@ class CommitteeCoordinator(VotingModuleBase):
         self._publish_committee_baseline()
         
         self._singleton_init_done = True
+    
+    @property
+    def consensus_threshold(self) -> float:
+        """Get consensus threshold (mode-aware)."""
+        if self._config_consensus_threshold is not None:
+            return float(self._config_consensus_threshold)
+        return CONSENSUS_THRESHOLD_F()
     
     def _publish_committee_baseline(self) -> None:
         """Publish baseline committee keys."""
@@ -741,9 +749,11 @@ class CommitteeCoordinator(VotingModuleBase):
         """
         Convert expert votes to PerInstrumentVote format.
         
-        Handles both:
-        - New format: votes with 'proposals' dict keyed by instrument
-        - Legacy format: single global vote (applied to all instruments)
+        Priority order for per-instrument data:
+        1. Check SmartInfoBus for {Expert}_per_instrument_votes (NEW - experts publish here)
+        2. Check for 'proposals' dict in vote_data 
+        3. Check for 'proposals' nested in vote dict
+        4. Fall back to legacy global vote (applied to all instruments)
         """
         per_inst_votes = []
         
@@ -753,7 +763,41 @@ class CommitteeCoordinator(VotingModuleBase):
                 vote = vote_data.get('vote', {})
                 confidence = float(vote_data.get('confidence', 0.5))
                 
-                # Check if this vote has per-instrument proposals
+                piv: Optional[PerInstrumentVote] = None
+                
+                # PRIORITY 1: Check SmartInfoBus for per-instrument votes
+                # Experts like MomentumExpert, TrendExpert publish to {Expert}_per_instrument_votes
+                per_inst_key = f'{expert_name}_per_instrument_votes'
+                bus_per_inst = self.smart_bus.get(per_inst_key, self.__class__.__name__, default=None)
+                
+                if bus_per_inst and isinstance(bus_per_inst, dict) and len(bus_per_inst) > 0:
+                    # Found per-instrument votes on bus!
+                    piv = PerInstrumentVote(member=expert_name)
+                    for inst, inst_vote in bus_per_inst.items():
+                        if isinstance(inst_vote, dict):
+                            inst_norm = normalize_instrument(inst)
+                            inst_action = str(inst_vote.get('action', 'flat')).lower()
+                            inst_conf = float(inst_vote.get('confidence', confidence))
+                            inst_mag = float(inst_vote.get('magnitude', inst_vote.get('signal_strength', inst_conf)))
+                            inst_rationale = str(inst_vote.get('rationale', f'Per-inst vote from {expert_name}'))
+                            
+                            piv.set_proposal(InstrumentProposal(
+                                instrument=inst_norm,
+                                action=inst_action,
+                                confidence=inst_conf,
+                                magnitude=inst_mag,
+                                rationale=inst_rationale,
+                            ))
+                    
+                    if piv.proposals:
+                        self.logger.debug(
+                            f"[CONVERT] {expert_name}: Using per-instrument votes from bus "
+                            f"({len(piv.proposals)} instruments)"
+                        )
+                        per_inst_votes.append(piv)
+                        continue
+                
+                # PRIORITY 2: Check if vote_data has per-instrument proposals
                 if 'proposals' in vote_data and isinstance(vote_data['proposals'], dict):
                     # New per-instrument format
                     piv = PerInstrumentVote.from_dict({
@@ -762,16 +806,24 @@ class CommitteeCoordinator(VotingModuleBase):
                         'action': vote_data.get('action', 'flat'),
                         'confidence': confidence,
                     })
+                    self.logger.debug(
+                        f"[CONVERT] {expert_name}: Using proposals from vote_data "
+                        f"({len(piv.proposals)} instruments)"
+                    )
+                # PRIORITY 3: Check if proposals nested in vote dict
                 elif 'proposals' in vote and isinstance(vote['proposals'], dict):
-                    # Proposals nested in vote dict
                     piv = PerInstrumentVote.from_dict({
                         'member': expert_name,
                         'proposals': vote['proposals'],
                         'action': vote.get('action', 'flat'),
                         'confidence': confidence,
                     })
+                    self.logger.debug(
+                        f"[CONVERT] {expert_name}: Using proposals from vote dict "
+                        f"({len(piv.proposals)} instruments)"
+                    )
+                # PRIORITY 4: Legacy global vote - apply to all instruments
                 else:
-                    # Legacy global vote - apply to all instruments
                     action = str(vote.get('action', 'flat')).lower()
                     magnitude = float(vote.get('signal_strength', vote.get('magnitude', confidence)))
                     
@@ -782,10 +834,15 @@ class CommitteeCoordinator(VotingModuleBase):
                             action=action,
                             confidence=confidence,
                             magnitude=magnitude,
-                            rationale=f"Legacy vote from {expert_name}",
+                            rationale=f"Legacy global vote from {expert_name}",
                         ))
+                    self.logger.debug(
+                        f"[CONVERT] {expert_name}: Using LEGACY global vote ({action}) "
+                        f"for all {len(DEFAULT_INSTRUMENTS)} instruments"
+                    )
                 
-                per_inst_votes.append(piv)
+                if piv is not None:
+                    per_inst_votes.append(piv)
                 
             except Exception as e:
                 self.logger.warning(f"Failed to convert vote to per-instrument: {e}")
@@ -806,6 +863,14 @@ class CommitteeCoordinator(VotingModuleBase):
         # Convert to PerInstrumentVote format
         per_inst_votes = self._convert_to_per_instrument_votes(expert_votes)
         
+        # Log per-instrument vote details for debugging
+        for piv in per_inst_votes:
+            for inst, prop in piv.proposals.items():
+                self.logger.debug(
+                    f"[PER-INST VOTE] {piv.member} → {inst}: "
+                    f"action={prop.action}, conf={prop.confidence:.2f}, mag={prop.magnitude:.2f}"
+                )
+        
         # Aggregate all instruments
         aggregated = aggregate_all_instruments(
             votes=per_inst_votes,
@@ -813,7 +878,7 @@ class CommitteeCoordinator(VotingModuleBase):
             weights=expert_weights,
         )
         
-        # Convert to dict format
+        # Convert to dict format and log aggregated decisions
         result = {}
         for inst, decision in aggregated.items():
             result[inst] = {
@@ -827,6 +892,12 @@ class CommitteeCoordinator(VotingModuleBase):
                 'weighted_score': decision.weighted_score,
                 'instrument': inst,
             }
+            # Log aggregated decision at INFO level
+            self.logger.info(
+                f"[COMMITTEE] {inst}: action={decision.action}, conf={decision.confidence:.2f}, "
+                f"consensus={decision.consensus_score:.2f}, "
+                f"votes={decision.long_votes}L/{decision.short_votes}S/{decision.flat_votes}F"
+            )
         
         return result
 
@@ -1008,6 +1079,10 @@ class CommitteeCoordinator(VotingModuleBase):
                 VotingBusKeys.STRATEGY_ARBITER_WEIGHTS: expert_weights,
                 'expert_votes': expert_votes,
                 'expert_weights': expert_weights,
+                # FIX: Add committee_member_confidences as contract-required alias
+                'committee_member_confidences': member_confidences_map,
+                'strategy_weights': expert_weights,
+                'member_performance': {m: {'confidence': float(member_confidences_map.get(m, 0.5)), 'weight': float(expert_weights.get(m, 0.5))} for m in committee_members},
                 'committee_analytics': dict(self.committee_analytics),
                 'committee_members': committee_members,
                 'n_members': n_members,
@@ -1103,6 +1178,13 @@ class CommitteeCoordinator(VotingModuleBase):
                 module=name,
                 thesis='Member confidences',
             )
+            # FIX: Publish committee_member_confidences alias for ConsensusAnalyzer and HorizonAligner
+            self.smart_bus.set(
+                'committee_member_confidences',
+                list(member_confidences_map.values()),
+                module=name,
+                thesis='Committee member confidences (alias)',
+            )
             self.smart_bus.set(
                 VotingBusKeys.COMMITTEE_DECISION_ID,
                 decision_id,
@@ -1110,6 +1192,27 @@ class CommitteeCoordinator(VotingModuleBase):
                 thesis='Decision ID',
             )
             self.smart_bus.set('committee_analytics', dict(self.committee_analytics), module=name, thesis='Analytics')
+            
+            # FIX: Publish strategy_weights and member_performance for StrategyIntrospector
+            self.smart_bus.set(
+                'strategy_weights',
+                {'by_member': expert_weights, 'members': committee_members, 'weights': list(expert_weights.values()), 'timestamp': datetime.datetime.now().isoformat()},
+                module=name,
+                thesis='Strategy weights per expert',
+            )
+            # Member performance: simple summary from analytics
+            member_perf = {}
+            for expert in committee_members:
+                member_perf[expert] = {
+                    'contribution_score': float(expert_weights.get(expert, 0.5)),
+                    'confidence': float(member_confidences_map.get(expert, 0.5)),
+                }
+            self.smart_bus.set(
+                'member_performance',
+                {'by_member': member_perf, 'timestamp': datetime.datetime.now().isoformat()},
+                module=name,
+                thesis='Member performance summary',
+            )
             
         except Exception as e:
             self.logger.error(f"Bus update failed: {e}")
@@ -1169,6 +1272,10 @@ class CommitteeCoordinator(VotingModuleBase):
             'raw_proposals': {},
             'member_confidences': {},
             'voting_weights': {},
+            # FIX: Add contract-required aliases
+            'committee_member_confidences': {},
+            'strategy_weights': {},
+            'member_performance': {},
             
             # Backward compatibility
             VotingBusKeys.VOTES: [],
@@ -1210,6 +1317,10 @@ class CommitteeCoordinator(VotingModuleBase):
             'raw_proposals': {},
             'member_confidences': {},
             'voting_weights': {},
+            # FIX: Add contract-required aliases
+            'committee_member_confidences': {},
+            'strategy_weights': {},
+            'member_performance': {},
             
             # Backward compatibility
             VotingBusKeys.VOTES: [],

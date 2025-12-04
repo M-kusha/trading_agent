@@ -214,14 +214,19 @@ class TradingModeManager:
         """
         Set mode based on TradingConfig object.
         
+        IMPORTANT: Only upgrades to LIVE mode, never downgrades from LIVE.
+        This prevents module initialization from resetting an already-set LIVE mode.
+        
         Args:
             config: TradingConfig instance with live_mode attribute
             silent: If True, suppress logging
         """
         if hasattr(config, 'live_mode') and config.live_mode:
             cls.set_mode("LIVE", silent=silent)
-        else:
+        elif not cls.is_live():
+            # Only set TRAINING if not already in LIVE mode
             cls.set_mode("TRAINING", silent=silent)
+        # else: Already in LIVE mode, don't downgrade
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
