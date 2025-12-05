@@ -293,6 +293,7 @@ class CommitteeCoordinator(VotingModuleBase):
             if self.discovery_mode in ('feed_only', 'feed_then_registry'):
                 try:
                     feed = self.smart_bus.get(self.expert_votes_bus_key, self.__class__.__name__) or []
+                    self.logger.debug(f"[COLLECT] Feed len={len(feed) if isinstance(feed, list) else 'n/a'} from key '{self.expert_votes_bus_key}'")
                     if isinstance(feed, list):
                         for raw in feed[-self.max_votes_per_tick:]:
                             norm = self._normalize_vote_entry(raw)
@@ -907,17 +908,32 @@ class CommitteeCoordinator(VotingModuleBase):
         """Main committee processing."""
         start_time = time.time()
         name = self.__class__.__name__
-        
+
         try:
+            # Check if price actually changed - skip voting if no change
+            provider_status = self.smart_bus.get('provider_status', name)
+            if provider_status:
+                price_changed = provider_status.get('price_changed', True)
+                if not price_changed:
+                    # No price change - skip processing to save resources
+                    return {
+                        'action': 'flat',
+                        'confidence': 0.0,
+                        'magnitude': 0.0,
+                        'decision_id': self.smart_bus.get('kernel_decision_id', name) or 'skip',
+                        'reasoning': 'No price change detected - skipped voting',
+                        'skipped': True,
+                    }
+
             # Track warmup progress
             self._tick_count += 1
-            
+
             # Get decision ID
             decision_id = self.smart_bus.get('kernel_decision_id', name)
             if not decision_id:
                 self._decision_counter += 1
                 decision_id = f"{datetime.datetime.now().isoformat()}#{self._decision_counter}"
-            
+
             # Collect votes
             expert_votes = await self._collect_expert_votes()
             expert_weights = await self._calculate_expert_weights(expert_votes)

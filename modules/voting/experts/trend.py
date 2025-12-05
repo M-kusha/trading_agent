@@ -166,6 +166,8 @@ class TrendExpert(VotingExpertBase):
             "short": {"signals": 0, "success": 0, "total_pnl": 0.0},
             "flat": {"signals": 0, "success": 0, "total_pnl": 0.0},
         }
+        # Debug throttle per instrument
+        self._debug_last_log: Dict[str, float] = {}
 
         self.log_info(
             f"[TREND] Advanced TrendExpert initialized | "
@@ -765,6 +767,10 @@ class TrendExpert(VotingExpertBase):
             features = self.smart_bus.get("features", name, default={})
 
             if not market_data and not features:
+                self.log_debug(
+                    f"[TREND][BUS] empty fetch: market_data_keys={list(market_data.keys()) if isinstance(market_data, dict) else market_data}, "
+                    f"features_keys={list(features.keys()) if isinstance(features, dict) else features}"
+                )
                 self.log_warning("[TREND] No market data or features available")
                 output = self._neutral_output("No market data available")
             else:
@@ -820,6 +826,37 @@ class TrendExpert(VotingExpertBase):
                     prices = list(state.get("price_history", []))
 
                     if len(prices) < self.slow_period + 10:
+                        tf_meta = {}
+                        # Fetch historical_prices from bus for MTF debug info
+                        try:
+                            historical = self.smart_bus.get("historical_prices", name, default=None)
+                        except Exception:
+                            historical = None
+                        if isinstance(historical, dict):
+                            # Find matching symbol in historical data
+                            matched_sym = None
+                            for sym in historical.keys():
+                                if normalize_instrument(sym) == inst_norm:
+                                    matched_sym = sym
+                                    break
+                            if matched_sym and isinstance(historical.get(matched_sym), dict):
+                                sym_block = historical[matched_sym]
+                                for tf in ("M15", "H1", "H4", "D1"):
+                                    rec = sym_block.get(tf)
+                                    if isinstance(rec, dict):
+                                        bars_avail = rec.get("bars_available")
+                                        cur_bar = rec.get("current_bar") if isinstance(rec.get("current_bar"), dict) else {}
+                                        last_ts = cur_bar.get("timestamp") if isinstance(cur_bar, dict) else None
+                                        close_len = 0
+                                        seq = rec.get("close")
+                                        try:
+                                            close_len = len(seq) if seq is not None else 0
+                                        except Exception:
+                                            close_len = 0
+                                        tf_meta[tf] = {"close_len": close_len, "bars_available": bars_avail, "last_ts": last_ts}
+                        self.log_debug(
+                            f"[TREND][DATA] {inst_norm} insufficient: price_len={len(prices)}, slow_period={self.slow_period}, tf_meta={tf_meta}"
+                        )
                         self.log_debug(
                             f"[TREND] Insufficient data for {inst}: {len(prices)} bars"
                         )
@@ -839,6 +876,43 @@ class TrendExpert(VotingExpertBase):
                             "confidence": 0.1,
                         }
                         continue
+                    # Periodic debug snapshot of data freshness/lengths
+                    now_ts = time.time()
+                    last_log = self._debug_last_log.get(inst_norm, 0.0)
+                    if now_ts - last_log > 15.0:
+                        tf_meta = {}
+                        # Fetch historical_prices from bus for MTF debug info
+                        try:
+                            historical = self.smart_bus.get("historical_prices", name, default=None)
+                        except Exception:
+                            historical = None
+                        if isinstance(historical, dict):
+                            # Find matching symbol in historical data
+                            matched_sym = None
+                            for sym in historical.keys():
+                                if normalize_instrument(sym) == inst_norm:
+                                    matched_sym = sym
+                                    break
+                            if matched_sym and isinstance(historical.get(matched_sym), dict):
+                                sym_block = historical[matched_sym]
+                                for tf in ("M15", "H1", "H4", "D1"):
+                                    rec = sym_block.get(tf)
+                                    if isinstance(rec, dict):
+                                        bars_avail = rec.get("bars_available")
+                                        cur_bar = rec.get("current_bar") if isinstance(rec.get("current_bar"), dict) else {}
+                                        last_ts = cur_bar.get("timestamp") if isinstance(cur_bar, dict) else None
+                                        close_len = 0
+                                        seq = rec.get("close")
+                                        try:
+                                            close_len = len(seq) if seq is not None else 0
+                                        except Exception:
+                                            close_len = 0
+                                        tf_meta[tf] = {"close_len": close_len, "bars_available": bars_avail, "last_ts": last_ts}
+                        self.log_debug(
+                            f"[TREND][DATA] {inst_norm}: price_len={len(prices)}, "
+                            f"latest={prices[-1] if prices else None}, tf_meta={tf_meta}"
+                        )
+                        self._debug_last_log[inst_norm] = now_ts
 
                     current_price = float(prices[-1])
                     highs = list(state.get("high_history", prices))

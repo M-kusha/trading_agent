@@ -214,6 +214,10 @@ class ThemeExpert(VotingExpertBase):
             features = self.smart_bus.get("features", name, default={})
 
             if not market_data and not features:
+                self.log_debug(
+                    f"[THEME][BUS] empty fetch: market_data_keys={list(market_data.keys()) if isinstance(market_data, dict) else market_data}, "
+                    f"features_keys={list(features.keys()) if isinstance(features, dict) else features}"
+                )
                 self.log_warning("[THEME] No market data or features available")
                 output = self._neutral_output("No market data available")
             else:
@@ -238,6 +242,45 @@ class ThemeExpert(VotingExpertBase):
                     )
 
                     if len(close_prices) < self.vol_lookback:
+                        # Debug snapshot of available data to diagnose insufficiency
+                        tf_meta = {}
+                        # Fetch historical_prices from bus for MTF debug info
+                        try:
+                            historical = self.smart_bus.get("historical_prices", name, default=None)
+                        except Exception:
+                            historical = None
+                        if isinstance(historical, dict):
+                            # Find matching symbol in historical data
+                            matched_sym = None
+                            for sym in historical.keys():
+                                if normalize_instrument(sym) == inst_norm:
+                                    matched_sym = sym
+                                    break
+                            if matched_sym and isinstance(historical.get(matched_sym), dict):
+                                sym_block = historical[matched_sym]
+                                for tf in ("M15", "H1", "H4", "D1"):
+                                    rec = sym_block.get(tf)
+                                    if isinstance(rec, dict):
+                                        bars_avail = rec.get("bars_available")
+                                        last_ts = None
+                                        cur_bar = rec.get("current_bar")
+                                        if isinstance(cur_bar, dict):
+                                            last_ts = cur_bar.get("timestamp")
+                                        close_len = 0
+                                        close_seq = rec.get("close")
+                                        try:
+                                            close_len = len(close_seq) if close_seq is not None else 0
+                                        except Exception:
+                                            close_len = 0
+                                        tf_meta[tf] = {
+                                            "close_len": close_len,
+                                            "bars_available": bars_avail,
+                                            "last_ts": last_ts,
+                                        }
+                        self.log_debug(
+                            f"[THEME][DATA] {inst_norm} insufficient data: "
+                            f"close_len={len(close_prices)}, lookback={self.vol_lookback}, tf_meta={tf_meta}"
+                        )
                         self.log_debug(
                             f"[THEME] Insufficient data for {inst_norm}, using neutral"
                         )
@@ -887,7 +930,11 @@ class ThemeExpert(VotingExpertBase):
                 high_arr = np.array(high, dtype=float)
                 low_arr = np.array(low, dtype=float)
                 
-                if len(close_arr) < 20:
+                # In live trading we don't want to wait too long
+                # for M15 to become usable. Allow a shorter history
+                # there while keeping higher TFs stricter.
+                min_required = 10 if tf == "M15" else 20
+                if len(close_arr) < min_required:
                     continue
                 
                 # Calculate trend direction for this TF

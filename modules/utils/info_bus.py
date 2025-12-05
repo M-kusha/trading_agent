@@ -566,26 +566,33 @@ class SmartInfoBus:
             ]
             for config_path in config_paths:
                 if os.path.exists(config_path):
-                    with open(config_path, 'r', encoding='utf-8') as f:
+                    with open(config_path, "r", encoding="utf-8") as f:
                         system_config = yaml_module.safe_load(f)
-                    if system_config and 'info_bus' in system_config:
-                        bus_cfg = system_config['info_bus']
+                    if system_config and "info_bus" in system_config:
+                        bus_cfg = system_config["info_bus"]
                         # Map YAML keys to InfoBusConfig fields
                         return InfoBusConfig(
-                            persistence_enabled=bus_cfg.get('persistence_enabled', True),
-                            persist_write_interval_seconds=float(bus_cfg.get('persist_write_interval_seconds', 0.5)),
-                            persistence_file=bus_cfg.get('persistence_file', 'state/infobus_data.json'),
-                            persist_keys=bus_cfg.get('persist_keys'),  # None means persist all
+                            # Cross-process persistence controls
+                            persistence_enabled=bus_cfg.get("persistence_enabled", True),
+                            persist_write_interval_seconds=float(
+                                bus_cfg.get("persist_write_interval_seconds", 0.5)
+                            ),
+                            persistence_file=bus_cfg.get("persistence_file", "state/infobus_data.json"),
+                            persist_keys=bus_cfg.get("persist_keys"),  # None means persist all
+                            # Optional live-mode + staleness overrides
+                            live_mode=bool(bus_cfg.get("live_mode", False)),
+                            max_data_age_seconds=int(bus_cfg.get("max_data_age_seconds", 600)),
                         )
                     break
         except Exception:
-            pass  # Fall back to defaults
+            # Fall back to defaults on any configuration load error
+            pass
         return None
 
     def __init__(self, config: Optional[InfoBusConfig] = None):
-            # Load config from system_config.yaml if not provided
-            if config is None:
-                config = self._load_config_from_yaml()
+        # Load config from system_config.yaml if not provided
+        if config is None:
+            config = self._load_config_from_yaml()
             self.config = config or InfoBusConfig()
 
             # Core data store + history
@@ -844,62 +851,81 @@ class SmartInfoBus:
 
 
     def _load_persisted_data(self) -> None:
-        """Load persisted data from file on startup.
-        
-        Note: Keys in config.no_load_keys are skipped to prevent accumulation
-        of stale memory-learning data across sessions.
-        """
-        try:
-            persist_file = getattr(self.config, 'persistence_file', self._persistence_file)
-            if os.path.exists(persist_file):
-                persisted_data = self._safe_read_json_file(persist_file)
-                
-                # Get keys that should NOT be loaded (memory learning data)
-                no_load_keys = set(getattr(self.config, 'no_load_keys', []) or [])
-                
-                loaded_count = 0
-                skipped_count = 0
-                
-                # Load persisted data into memory store if not already present
-                for key, data in persisted_data.items():
-                    # Skip memory-learning keys that accumulate incorrectly across sessions
-                    if key in no_load_keys:
-                        skipped_count += 1
-                        continue
-                        
-                    if key not in self._data_store:
-                        try:
-                            # Create a minimal DataVersion for persisted data
-                            data_version = DataVersion(
-                                value=data['value'],
-                                version=data.get('version', 1),
-                                timestamp=data.get('timestamp', time.time()),
-                                source_module='Persistence',
-                                thesis='Loaded from cross-process persistence',
-                                confidence=1.0
-                            )
-                            self._data_store[key] = data_version
-                            self._data_timestamps[key] = data_version.timestamp
-                            loaded_count += 1
-                        except Exception as e:
-                            self.logger.warning(f"[PERSISTENCE] Failed to load persisted key '{key}': {e}")
-                
-                self.logger.info(f"[PERSISTENCE] Loaded {loaded_count} keys, skipped {skipped_count} memory-learning keys (fresh session)")
-
-        except Exception as e:
-            self.logger.warning(f"[PERSISTENCE] Failed to load persisted data: {e}")
-
+          """Load persisted data from file on startup.
+          
+          Note: Keys in config.no_load_keys are skipped to prevent accumulation
+          of stale memory-learning data across sessions. If persist_keys is set,
+          only those keys are eligible for cross-process persistence.
+          """
+          try:
+              persist_file = getattr(self.config, "persistence_file", self._persistence_file)
+              if os.path.exists(persist_file):
+                  persisted_data = self._safe_read_json_file(persist_file)
+                  
+                  # Keys that should NOT be loaded (memory learning data)
+                  no_load_keys = set(getattr(self.config, "no_load_keys", []) or [])
+                  
+                  # Optional allowlist of keys that participate in persistence
+                  persist_keys = getattr(self.config, "persist_keys", None)
+                  persist_keys_set: Optional[Set[str]] = set(persist_keys) if isinstance(persist_keys, list) else None
+                  
+                  loaded_count = 0
+                  skipped_count = 0
+                  
+                  # Load persisted data into memory store if not already present
+                  for key, data in persisted_data.items():
+                      # Skip memory-learning keys that accumulate incorrectly across sessions
+                      if key in no_load_keys:
+                          skipped_count += 1
+                          continue
+                      
+                      # Skip keys not explicitly allowed when an allowlist is configured
+                      if persist_keys_set is not None and key not in persist_keys_set:
+                          skipped_count += 1
+                          continue
+                      
+                      if key not in self._data_store:
+                          try:
+                              # Create a minimal DataVersion for persisted data
+                              data_version = DataVersion(
+                                  value=data["value"],
+                                  version=data.get("version", 1),
+                                  timestamp=data.get("timestamp", time.time()),
+                                  source_module="Persistence",
+                                  thesis="Loaded from cross-process persistence",
+                                  confidence=1.0,
+                              )
+                              self._data_store[key] = data_version
+                              self._data_timestamps[key] = data_version.timestamp
+                              loaded_count += 1
+                          except Exception as e:
+                              self.logger.warning(
+                                  f"[PERSISTENCE] Failed to load persisted key '{key}': {e}"
+                              )
+                  
+                  self.logger.info(
+                      f"[PERSISTENCE] Loaded {loaded_count} keys, skipped {skipped_count} memory-learning keys (fresh session)"
+                  )
+          except Exception as e:
+              self.logger.warning(f"[PERSISTENCE] Failed to load persisted data: {e}")
+  
     def _get_persisted_value(self, key: str) -> Any:
-        """Get value from persistent storage if not in memory."""
-        try:
-            persist_file = getattr(self.config, 'persistence_file', self._persistence_file)
-            if os.path.exists(persist_file):
-                persisted_data = self._safe_read_json_file(persist_file)
-                if key in persisted_data:
-                    return persisted_data[key]['value']
-        except Exception as e:
-            self.logger.warning(f"[PERSISTENCE] Failed to get persisted value for '{key}': {e}")
-        return None
+          """Get value from persistent storage if not in memory."""
+          try:
+              # Respect persist_keys allowlist if configured - only keys explicitly
+              # allowed should ever be sourced from cross-process persistence.
+              persist_keys = getattr(self.config, "persist_keys", None)
+              if isinstance(persist_keys, list) and key not in persist_keys:
+                  return None
+              
+              persist_file = getattr(self.config, "persistence_file", self._persistence_file)
+              if os.path.exists(persist_file):
+                  persisted_data = self._safe_read_json_file(persist_file)
+                  if key in persisted_data:
+                      return persisted_data[key]["value"]
+          except Exception as e:
+              self.logger.warning(f"[PERSISTENCE] Failed to get persisted value for '{key}': {e}")
+          return None
 
     def _make_serializable(self, value: Any) -> Any:
         """Convert value to JSON-serializable format."""

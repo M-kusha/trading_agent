@@ -209,6 +209,14 @@ class SlimVotingKernel(VotingModuleBase):
                 self.log_warning(
                     "No votes available from committee - defaulting to ABSTAIN"
                 )
+                try:
+                    raw_keys = list(raw_proposals.keys()) if isinstance(raw_proposals, dict) else raw_proposals
+                    self.log_debug(
+                        f"[KERNEL][DATA] committee_votes_len={len(committee_votes)}, "
+                        f"raw_proposals_keys={raw_keys}"
+                    )
+                except Exception:
+                    pass
                 return self._make_abstain_result(
                     decision_id, "No votes from committee"
                 )

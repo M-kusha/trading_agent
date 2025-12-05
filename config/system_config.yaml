@@ -99,10 +99,22 @@ execution:
       supported_symbols: ["XAU_USD", "EUR_USD"]
       supported_timeframes: ["M15", "H1", "H4", "D1"]
       primary_timeframe: "H4"
-      update_frequency: 0.0  # Always update on every call - no throttling to prevent stale data
+      update_frequency: 1.0  # Update every second for live tick-by-tick data
       buffer_size: 5000
-      window_min: 100         # Minimum historical bars to provide (experts need 55-65 bars)
-      window_max: 200         # Maximum historical bars to provide
+      # Price change threshold for intra-bar updates (default: 0.0001)
+      # Smaller = more sensitive to price changes, more frequent voting
+      # Larger = less sensitive, less frequent voting (saves resources)
+      # How many bars to pull from MT5 (both initial and refresh)
+      # 3000 M15 bars = 30+ days of history
+      # Maintains full rolling history for accurate MTF regime detection (M15/H1/H4/D1)
+      # Without this, multi-timeframe patterns appear "frozen" after first refresh
+      live_bars_to_fetch: 3000
+      # Historical window configuration
+      # NOTE: window_min/max are legacy - actual window is now dynamically 1000 bars per timeframe
+      # Each timeframe gets 1000 bars for accurate MTF regime detection:
+      # M15: 1000 bars = 4.3 days | H1: 1000 bars = 41 days | H4: 1000 bars = 166 days | D1: 1000 bars = 2.7 years
+      window_min: 60          # Minimum historical bars to provide (experts need 55-65 bars)
+      window_max: 1000        # Maximum historical bars per timeframe (1000 for distinct MTF patterns)
       enable_technical_indicators: true
       timeout_ms: 5000  # Generous timeout for data loading and processing
 
@@ -614,8 +626,41 @@ modules:
 
 # InfoBus cross-process persistence (enables frontend to see training data)
 info_bus:
+  # Keep cross-process persistence enabled, but restrict it to
+  # slow-moving UI/monitoring keys only. Voting / market-state
+  # keys should be recomputed every session to avoid stale data.
   persistence_enabled: true
   persist_write_interval_seconds: 0.5
   persistence_file: "state/infobus_data.json"
-  # Keys to persist for frontend visibility (null = persist ALL keys)
-  persist_keys: null
+
+  # Treat this deployment as "live" from the bus perspective so
+  # staleness checks use the configured max_data_age_seconds and
+  # do NOT relax to multi-hour windows.
+  live_mode: true
+  max_data_age_seconds: 30    # Reject data older than ~30s by default
+
+  # Keys to persist for frontend visibility. Only these keys will be
+  # written to and loaded from the persistence file; all other keys
+  # (including voting outputs) start fresh each session.
+  persist_keys:
+    - dashboard_data
+    - visualization_data
+    - performance_charts
+    - trade_charts
+    - chart_statistics
+    - chart_history
+    - visualization_reports
+    - analytics_reports
+    - system_status
+    # Market data keys - needed for experts/PPO to access real-time data
+    - market_data
+    - historical_prices
+    - provider_status
+    - tick_prices
+    - multi_timeframe_data
+    - technical_indicators
+    - universe
+    - watched_instruments
+    - timestamp
+    - trading_session
+    - session_type
