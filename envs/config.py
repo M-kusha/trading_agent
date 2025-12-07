@@ -260,20 +260,26 @@ class TradingConfig:
     enable_visualization: bool = True
 
     # ===================================================================
-    # PPO Hyperparameters (legacy; agents (PPO/PPOLag) should own live HPs)
+    # PPO Hyperparameters (tuned for trading - v4.1)
     # ===================================================================
-    learning_rate: float = 3e-4
-    n_steps: int = 2048
-    batch_size: int = 64
-    n_epochs: int = 10
-    gamma: float = 0.99
-    gae_lambda: float = 0.95
-    clip_range: float = 0.2
+    # NOTE: Fine-tuned based on 100k training analysis:
+    # - Lower LR (1e-4) for more stable convergence in noisy trading env
+    # - Larger batch_size (128) for better gradient estimates
+    # - Higher ent_coef (0.02) to encourage exploration beyond HOLD
+    # - Tighter clip_range (0.15) to prevent policy collapse
+    # - Slightly lower gamma (0.97) for shorter-horizon trading decisions
+    learning_rate: float = 1e-4          # Reduced from 3e-4 for stability
+    n_steps: int = 2048                  # Keep - good for trading episodes
+    batch_size: int = 128                # Increased from 64 for better gradients
+    n_epochs: int = 10                   # Keep - good balance
+    gamma: float = 0.97                  # Reduced from 0.99 - trades resolve faster
+    gae_lambda: float = 0.95             # Keep - standard
+    clip_range: float = 0.15             # Reduced from 0.2 - more conservative updates
     clip_range_vf: Optional[float] = None
-    ent_coef: float = 0.01
-    vf_coef: float = 0.5
-    max_grad_norm: float = 0.5
-    target_kl: Optional[float] = 0.01
+    ent_coef: float = 0.02               # Increased from 0.01 - encourage exploration
+    vf_coef: float = 0.5                 # Keep - standard
+    max_grad_norm: float = 0.5           # Keep - standard
+    target_kl: Optional[float] = 0.015   # Slightly higher for more exploration
 
     # ===================================================================
     # Network Architecture (legacy defaults; agent modules own live nets)

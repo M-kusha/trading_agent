@@ -108,7 +108,8 @@ class CommitteeCoordinator(VotingModuleBase):
         self.max_votes_per_tick = int(self.config.get('max_votes_per_tick', 128))
         
         # Warmup configuration - wait for experts to have enough data before trading
-        self.warmup_ticks = int(self.config.get('warmup_ticks', 20))  # Wait 50 ticks before trading
+        # TUNED: Reduced from 20 to 10 ticks for faster training startup
+        self.warmup_ticks = int(self.config.get('warmup_ticks', 10))  
         self.min_directional_votes = int(self.config.get('min_directional_votes', 1))  # Need at least 1 long/short vote (PPOAgent usually provides one)
         self.warmup_complete = False
         self._tick_count = 0
